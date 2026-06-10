@@ -467,7 +467,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         cfg.framework,
         &islands_plugin_config,
     ) {
-        Ok(Some(payload)) => {
+        Ok((Some(payload), _marker_names)) => {
             // Write the stable `islands.js` bytes to disk so the dev
             // server's `ServeDir` can handle `GET /assets/islands.js`.
             // The bundler no longer writes to disk itself — the caller
@@ -514,7 +514,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 }
             }
         }
-        Ok(None) => {
+        Ok((None, _marker_names)) => {
             // No `"use client"` islands in the project. Leave the handle
             // at `None` so the server skips head injection entirely.
         }
@@ -535,7 +535,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let url_handle = Arc::clone(&islands_bundle_url_handle);
         let chunk_names = Arc::clone(&live_chunk_filenames);
         Some(Arc::new(move || -> Result<Option<IslandsBundleInfo>> {
-            let payload = crate::commands::build::build_default_islands_payload(
+            // Marker names are only needed by the production build pass; dev
+            // mode already surfaces unknown-marker warnings in the browser
+            // console via the runtime.ts warn path.
+            let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
                 &project_root,
                 &dist_root_for_islands,
                 framework,

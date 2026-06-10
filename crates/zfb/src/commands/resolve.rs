@@ -54,9 +54,12 @@ pub fn validate_outdir_safety(project_root: &Path, outdir: &Path) -> Result<()> 
         .canonicalize()
         .with_context(|| format!("failed to canonicalize outdir {}", outdir.display()))?;
 
-    let canonical_root = project_root
-        .canonicalize()
-        .with_context(|| format!("failed to canonicalize project root {}", project_root.display()))?;
+    let canonical_root = project_root.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize project root {}",
+            project_root.display()
+        )
+    })?;
 
     if canonical_out == canonical_root || canonical_root.starts_with(&canonical_out) {
         bail!(
@@ -87,22 +90,19 @@ pub fn wipe_outdir_contents(outdir: &Path) -> Result<()> {
         Ok(rd) => rd,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(e) => {
-            return Err(e).with_context(|| {
-                format!("failed to read outdir {} for wiping", outdir.display())
-            })
+            return Err(e)
+                .with_context(|| format!("failed to read outdir {} for wiping", outdir.display()))
         }
     };
 
     for entry in entries {
-        let entry = entry.with_context(|| {
-            format!("failed to iterate outdir entries in {}", outdir.display())
-        })?;
+        let entry = entry
+            .with_context(|| format!("failed to iterate outdir entries in {}", outdir.display()))?;
         let path = entry.path();
 
         // Use symlink_metadata so we detect symlinks without following them.
-        let meta = std::fs::symlink_metadata(&path).with_context(|| {
-            format!("failed to stat {} during outdir wipe", path.display())
-        })?;
+        let meta = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("failed to stat {} during outdir wipe", path.display()))?;
 
         if meta.file_type().is_symlink() {
             // Remove the link itself; do NOT recurse through it.
@@ -119,11 +119,13 @@ pub fn wipe_outdir_contents(outdir: &Path) -> Result<()> {
             };
             #[cfg(not(windows))]
             let rm_result = std::fs::remove_file(&path);
-            rm_result
-                .with_context(|| format!("failed to remove symlink {} from outdir", path.display()))?;
+            rm_result.with_context(|| {
+                format!("failed to remove symlink {} from outdir", path.display())
+            })?;
         } else if meta.is_dir() {
-            std::fs::remove_dir_all(&path)
-                .with_context(|| format!("failed to remove directory {} from outdir", path.display()))?;
+            std::fs::remove_dir_all(&path).with_context(|| {
+                format!("failed to remove directory {} from outdir", path.display())
+            })?;
         } else {
             std::fs::remove_file(&path)
                 .with_context(|| format!("failed to remove file {} from outdir", path.display()))?;
@@ -172,7 +174,11 @@ pub fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
         // Prefer IPv4 so the printed URL (http://localhost:PORT/) and the
         // actual bound address are on the same family; fall back to first if
         // the resolver returns only IPv6 (e.g. some Docker / minimal containers).
-        addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.first()).copied()
+        addrs
+            .iter()
+            .find(|a| a.is_ipv4())
+            .or_else(|| addrs.first())
+            .copied()
     } else {
         addrs.first().copied()
     };
@@ -289,7 +295,10 @@ mod tests {
         assert!(loopback.ip().is_loopback());
 
         let any = resolve_addr("0.0.0.0", 4321).unwrap();
-        assert!(any.ip().is_unspecified(), "0.0.0.0 must bind all interfaces");
+        assert!(
+            any.ip().is_unspecified(),
+            "0.0.0.0 must bind all interfaces"
+        );
     }
 
     /// Verify that `resolve_addr("localhost", …)` returns an IPv4 loopback
@@ -414,7 +423,10 @@ mod tests {
         wipe_outdir_contents(&outdir).unwrap();
 
         assert!(!link.exists(), "symlink must be removed from outdir");
-        assert!(target.exists(), "symlink target outside outdir must be untouched");
+        assert!(
+            target.exists(),
+            "symlink target outside outdir must be untouched"
+        );
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
     }
 

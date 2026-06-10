@@ -294,7 +294,8 @@ fn build_and_assert_corp_shape(
     for (path, original) in module_css_paths.iter().zip(original_module_css.iter()) {
         let current = fs::read_to_string(path).unwrap_or_default();
         assert_eq!(
-            &current, original,
+            &current,
+            original,
             "the user's source file at {} was modified by the build — \
              this is the symlink-write corruption hazard described in the \
              file-level //! doc comment. Wave 2's fix MUST replace the symlink \
@@ -377,9 +378,7 @@ fn build_and_assert_corp_shape(
                 .unwrap_or(false)
         })
         .unwrap_or_else(|| {
-            panic!(
-                "expected dist/assets/styles-<hash>.css to be emitted; got: {css_paths:#?}"
-            )
+            panic!("expected dist/assets/styles-<hash>.css to be emitted; got: {css_paths:#?}")
         });
     let css_body = fs::read_to_string(styles_css).unwrap();
 

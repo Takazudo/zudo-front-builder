@@ -27,9 +27,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use zfb_build::renderer::{EmbeddedV8Host, HttpResponseLike, RendererError};
-use zfb_render::{
-    BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike, PluginRegistryHooks,
-};
+use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike, PluginRegistryHooks};
 
 /// Message sent from the caller thread to the V8 host thread.
 ///
@@ -100,10 +98,8 @@ impl Drop for ThreadedV8Host {
             // Bounded join: if isolate teardown inside deno_core wedges, we
             // detach rather than hang the process.  A generous deadline is
             // fine — the goal is bounding the worst case, not a tight cutoff.
-            let _ = crate::bounded_join::join_with_deadline(
-                handle,
-                std::time::Duration::from_secs(10),
-            );
+            let _ =
+                crate::bounded_join::join_with_deadline(handle, std::time::Duration::from_secs(10));
         }
     }
 }
@@ -288,7 +284,9 @@ impl ThreadedV8Host {
                     // rx is closed (ThreadedV8Host was dropped); exit cleanly.
                 });
             })
-            .map_err(|e| RendererError::EmbeddedV8(format!("could not spawn V8 host thread: {e}")))?;
+            .map_err(|e| {
+                RendererError::EmbeddedV8(format!("could not spawn V8 host thread: {e}"))
+            })?;
 
         // Wait for the host to signal that boot succeeded.
         match boot_rx.recv() {
@@ -386,9 +384,9 @@ impl ThreadedV8Host {
             RendererError::EmbeddedV8("V8 host thread has exited unexpectedly".into())
         })?;
         // Block until the reply arrives.
-        reply_rx.recv().map_err(|_| {
-            RendererError::EmbeddedV8("V8 host thread closed reply channel".into())
-        })?
+        reply_rx
+            .recv()
+            .map_err(|_| RendererError::EmbeddedV8("V8 host thread closed reply channel".into()))?
     }
 }
 
@@ -442,10 +440,7 @@ pub fn translate_setup_registries_to_hooks(
     }
     let mut virtual_modules: HashMap<String, zfb_render::VirtualModuleHook> = HashMap::new();
     for (specifier, vm_entry) in registries.virtual_modules.iter() {
-        let source = virtual_sources
-            .get(specifier)
-            .cloned()
-            .unwrap_or_default();
+        let source = virtual_sources.get(specifier).cloned().unwrap_or_default();
         virtual_modules.insert(
             specifier.clone(),
             zfb_render::VirtualModuleHook {

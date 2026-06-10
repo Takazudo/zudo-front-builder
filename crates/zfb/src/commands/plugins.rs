@@ -53,10 +53,9 @@ pub async fn maybe_spawn_host(config: &Config) -> Result<Option<PluginHost>> {
     if specs.is_empty() {
         return Ok(None);
     }
-    let host =
-        PluginHost::spawn_with_timeout(specs, None, config.plugin_hook_timeout_secs)
-            .await
-            .context("plugin lifecycle: failed to spawn the plugin host")?;
+    let host = PluginHost::spawn_with_timeout(specs, None, config.plugin_hook_timeout_secs)
+        .await
+        .context("plugin lifecycle: failed to spawn the plugin host")?;
     Ok(Some(host))
 }
 
@@ -265,9 +264,8 @@ pub async fn build_dev_middleware_set(
             plugin: r.plugin,
         })
         .collect();
-    let dispatcher: Arc<dyn DevMiddlewareDispatcher> = Arc::new(HostDispatcher {
-        host: host.clone(),
-    });
+    let dispatcher: Arc<dyn DevMiddlewareDispatcher> =
+        Arc::new(HostDispatcher { host: host.clone() });
     Ok(Some(DevMiddlewareSet {
         registrations: Arc::new(registrations),
         dispatcher,
@@ -280,7 +278,10 @@ mod tests {
     use crate::config::PluginConfig;
 
     fn cfg_with_plugins(entries: Vec<PluginConfig>) -> Config {
-        Config { plugins: entries, ..Config::default() }
+        Config {
+            plugins: entries,
+            ..Config::default()
+        }
     }
 
     #[test]

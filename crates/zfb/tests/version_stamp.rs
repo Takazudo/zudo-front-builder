@@ -31,14 +31,7 @@ fn version_stamp_from_env() {
     // env!("CARGO") is the path to the cargo binary that invoked this test,
     // guaranteed to exist and match the toolchain in use.
     let output = Command::new(env!("CARGO"))
-        .args([
-            "run",
-            "--quiet",
-            "--package",
-            "zfb",
-            "--",
-            "--version",
-        ])
+        .args(["run", "--quiet", "--package", "zfb", "--", "--version"])
         .env("ZFB_RELEASE_VERSION", test_version)
         .env("CARGO_TARGET_DIR", &isolated_target)
         // Suppress build.rs binary downloads: binaries already staged in the

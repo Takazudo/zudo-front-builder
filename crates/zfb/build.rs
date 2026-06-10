@@ -571,9 +571,8 @@ fn download_binaries() -> Result<(), String> {
 fn stage_binaries_into_vendor(esbuild_slot: &Path, tailwind_slot: &Path) -> Result<(), String> {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let bin_dir = out_dir.join("vendor").join("bin");
-    fs::create_dir_all(&bin_dir).map_err(|e| {
-        format!("failed to create vendor bin dir {}: {e}", bin_dir.display())
-    })?;
+    fs::create_dir_all(&bin_dir)
+        .map_err(|e| format!("failed to create vendor bin dir {}: {e}", bin_dir.display()))?;
 
     // Re-emit rerun triggers so a manual re-fetch of either binary refreshes
     // the embedded snapshot on the next cargo build.
@@ -612,22 +611,13 @@ fn copy_executable(src: &Path, dst: &Path) -> Result<(), String> {
             src.display()
         ));
     }
-    fs::copy(src, dst).map_err(|e| {
-        format!(
-            "failed to copy {} → {}: {e}",
-            src.display(),
-            dst.display()
-        )
-    })?;
+    fs::copy(src, dst)
+        .map_err(|e| format!("failed to copy {} → {}: {e}", src.display(), dst.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dst, fs::Permissions::from_mode(0o755)).map_err(|e| {
-            format!(
-                "failed to set executable bit on {}: {e}",
-                dst.display()
-            )
-        })?;
+        fs::set_permissions(dst, fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("failed to set executable bit on {}: {e}", dst.display()))?;
     }
     Ok(())
 }

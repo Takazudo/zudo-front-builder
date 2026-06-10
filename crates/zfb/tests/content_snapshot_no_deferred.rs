@@ -92,8 +92,7 @@ fn getstaticprops_collection_appears_in_rendered_html() {
         "dist/index.html must be written by zfb build; \
          stdout: {stdout}\nstderr: {stderr}"
     );
-    let html = fs::read_to_string(&index_html)
-        .expect("read dist/index.html");
+    let html = fs::read_to_string(&index_html).expect("read dist/index.html");
 
     // The load-bearing assertion for issue #495: the content snapshot must
     // be embedded and getCollection("posts") must see the one fixture post.

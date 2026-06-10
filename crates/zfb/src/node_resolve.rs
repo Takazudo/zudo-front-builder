@@ -147,8 +147,7 @@ mod tests {
             if ty.is_dir() {
                 copy_dir_all(&entry.path(), &dst.join(entry.file_name()));
             } else {
-                std::fs::copy(entry.path(), dst.join(entry.file_name()))
-                    .expect("copy file");
+                std::fs::copy(entry.path(), dst.join(entry.file_name())).expect("copy file");
             }
         }
     }
@@ -193,9 +192,7 @@ mod tests {
         let tmp = TempDir::new().expect("create TempDir");
         let node_modules = tmp.path().join("parent").join("node_modules");
 
-        for entry in std::fs::read_dir(&src_root)
-            .expect("read parent-walk fixture src")
-        {
+        for entry in std::fs::read_dir(&src_root).expect("read parent-walk fixture src") {
             let entry = entry.expect("read dir entry");
             let dst = node_modules.join(entry.file_name());
             copy_dir_all(&entry.path(), &dst);
@@ -215,8 +212,8 @@ mod tests {
     #[test]
     fn a_main_field() {
         let tmp = build_fixture("main-field");
-        let result = resolve_node_bare_specifier("pkg-main", tmp.path())
-            .expect("should resolve pkg-main");
+        let result =
+            resolve_node_bare_specifier("pkg-main", tmp.path()).expect("should resolve pkg-main");
         assert!(
             result.starts_with("file://"),
             "expected file:// URL, got: {result}"
@@ -233,7 +230,10 @@ mod tests {
         let tmp = build_fixture("exports-string");
         let result = resolve_node_bare_specifier("pkg-exports-str", tmp.path())
             .expect("should resolve pkg-exports-str");
-        assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
+        assert!(
+            result.starts_with("file://"),
+            "expected file:// URL, got: {result}"
+        );
         assert!(
             result.ends_with("/x.js"),
             "expected to resolve to x.js, got: {result}"
@@ -246,7 +246,10 @@ mod tests {
         let tmp = build_fixture("exports-object");
         let result = resolve_node_bare_specifier("pkg-exports-obj", tmp.path())
             .expect("should resolve pkg-exports-obj");
-        assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
+        assert!(
+            result.starts_with("file://"),
+            "expected file:// URL, got: {result}"
+        );
         assert!(
             result.ends_with("/x.js"),
             "expected to resolve to x.js, got: {result}"
@@ -261,9 +264,12 @@ mod tests {
     #[test]
     fn d_conditional_exports_picks_import_branch() {
         let tmp = build_fixture("exports-conditional");
-        let result = resolve_node_bare_specifier("pkg-cond", tmp.path())
-            .expect("should resolve pkg-cond");
-        assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
+        let result =
+            resolve_node_bare_specifier("pkg-cond", tmp.path()).expect("should resolve pkg-cond");
+        assert!(
+            result.starts_with("file://"),
+            "expected file:// URL, got: {result}"
+        );
         assert!(
             result.ends_with("/index.mjs"),
             "expected to resolve to index.mjs (import branch), got: {result}"
@@ -280,7 +286,10 @@ mod tests {
         let tmp = build_fixture("scoped-package");
         let result = resolve_node_bare_specifier("@scope/pkg", tmp.path())
             .expect("should resolve @scope/pkg");
-        assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
+        assert!(
+            result.starts_with("file://"),
+            "expected file:// URL, got: {result}"
+        );
         assert!(
             result.contains("@scope/pkg"),
             "expected path to contain @scope/pkg, got: {result}"
@@ -299,7 +308,10 @@ mod tests {
         let (_tmp, child) = build_parent_walk_fixture();
         let result = resolve_node_bare_specifier("pkg-parent", &child)
             .expect("should walk up and find pkg-parent");
-        assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
+        assert!(
+            result.starts_with("file://"),
+            "expected file:// URL, got: {result}"
+        );
         assert!(
             result.ends_with("/index.js"),
             "expected to resolve to index.js, got: {result}"
@@ -330,10 +342,12 @@ mod tests {
     #[test]
     fn h_real_plugin_shape_snapshot() {
         let tmp = build_fixture("real-plugin-shape");
-        let result =
-            resolve_node_bare_specifier("@takazudo/zfb-plugin-example", tmp.path())
-                .expect("should resolve @takazudo/zfb-plugin-example");
-        assert!(result.starts_with("file://"), "expected file:// URL, got: {result}");
+        let result = resolve_node_bare_specifier("@takazudo/zfb-plugin-example", tmp.path())
+            .expect("should resolve @takazudo/zfb-plugin-example");
+        assert!(
+            result.starts_with("file://"),
+            "expected file:// URL, got: {result}"
+        );
         // Must resolve to the `import` branch, not `default` (CJS) or `types` (d.ts).
         assert!(
             result.ends_with("/dist/index.mjs"),
@@ -356,8 +370,8 @@ mod tests {
     #[test]
     fn rejects_empty_name() {
         let tmp = TempDir::new().expect("create TempDir");
-        let err = resolve_node_bare_specifier("", tmp.path())
-            .expect_err("empty name should be rejected");
+        let err =
+            resolve_node_bare_specifier("", tmp.path()).expect_err("empty name should be rejected");
         assert!(err.to_string().contains("non-empty"), "got: {err}");
     }
 

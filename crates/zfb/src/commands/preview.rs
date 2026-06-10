@@ -60,7 +60,7 @@ use crate::output;
 
 // Re-export from the canonical source so callers that already reference
 // `zfb::commands::preview::EXPECTED_WRANGLER_VERSION` keep compiling.
-pub use zfb_toolchain_pins::{EXPECTED_WRANGLER_VERSION, EXPECTED_WORKERD_VERSION};
+pub use zfb_toolchain_pins::{EXPECTED_WORKERD_VERSION, EXPECTED_WRANGLER_VERSION};
 
 /// Built-in default port for `zfb preview` when neither the CLI nor the
 /// project config supplies one. 4321 keeps `dev` (3000) and `preview`
@@ -101,15 +101,16 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
     //    the precedence note in the module doc comment.
     let outdir = resolve_under_root(&project_root, &args.outdir);
     let port = resolve_port(args.port, cfg.port, DEFAULT_PREVIEW_PORT);
-    let host = resolve_host(args.host.as_deref(), cfg.host.as_deref(), DEFAULT_PREVIEW_HOST);
+    let host = resolve_host(
+        args.host.as_deref(),
+        cfg.host.as_deref(),
+        DEFAULT_PREVIEW_HOST,
+    );
 
     // Verify the output directory exists *before* binding the port so
     // missing-build errors don't leave a half-started server behind.
     if !outdir.exists() {
-        anyhow::bail!(
-            "{} does not exist — run zfb build first",
-            outdir.display()
-        );
+        anyhow::bail!("{} does not exist — run zfb build first", outdir.display());
     }
 
     // 3. Branch on adapter. `AdapterChoice::from_config` validates the
@@ -404,10 +405,7 @@ async fn not_found_response(dist_root: &Path) -> Response {
 /// same code path avoids the two tables drifting over time.
 fn content_type_for_path(path: &Path) -> String {
     // Extract the extension without allocating when there is none.
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     zfb_server::content_type_for_extension(ext)
 }
 
@@ -560,10 +558,7 @@ fn version_shape(raw_token: &str) -> Option<String> {
         && !maj.is_empty()
         && !min.is_empty()
         && !patch.is_empty()
-        && patch
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_digit())
+        && patch.chars().next().is_some_and(|c| c.is_ascii_digit())
     {
         Some(body.to_string())
     } else {
@@ -784,10 +779,7 @@ mod tests {
             content_type_for_path(Path::new("foo.js")),
             "application/javascript; charset=utf-8"
         );
-        assert_eq!(
-            content_type_for_path(Path::new("foo.svg")),
-            "image/svg+xml"
-        );
+        assert_eq!(content_type_for_path(Path::new("foo.svg")), "image/svg+xml");
         assert_eq!(content_type_for_path(Path::new("foo.png")), "image/png");
         assert_eq!(
             content_type_for_path(Path::new("foo.wasm")),
@@ -976,12 +968,7 @@ mod tests {
         let router = build_static_router(dist.path().to_path_buf());
 
         let resp = router
-            .oneshot(
-                Request::builder()
-                    .uri("/nope")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/nope").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -1005,12 +992,7 @@ mod tests {
         let router = build_static_router(dir.path().to_path_buf());
 
         let resp = router
-            .oneshot(
-                Request::builder()
-                    .uri("/nope")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/nope").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -1128,8 +1110,12 @@ mod tests {
     fn wrangler_command_threads_user_supplied_port() {
         // `--port` must reflect whatever resolve_port produced — so
         // overriding from the CLI propagates all the way through.
-        let cmd =
-            build_wrangler_command(Path::new("/x"), Path::new("/x/dist"), DEFAULT_PREVIEW_HOST, 9000);
+        let cmd = build_wrangler_command(
+            Path::new("/x"),
+            Path::new("/x/dist"),
+            DEFAULT_PREVIEW_HOST,
+            9000,
+        );
         let args: Vec<String> = cmd
             .as_std()
             .get_args()
@@ -1262,10 +1248,7 @@ mod tests {
             );
         }
         // Unset = no value returned by the getter.
-        assert!(
-            !env_truthy(key, |_| None),
-            "unset env var must be falsy",
-        );
+        assert!(!env_truthy(key, |_| None), "unset env var must be falsy",);
     }
 
     // -------------------------------------------------------------------
@@ -1321,7 +1304,11 @@ mod tests {
         let dist = TempDir::new().unwrap();
         fs::write(dist.path().join("real.html"), b"<h1>real</h1>").unwrap();
         // Symlink inside dist pointing at another file inside dist.
-        symlink(dist.path().join("real.html"), dist.path().join("alias.html")).unwrap();
+        symlink(
+            dist.path().join("real.html"),
+            dist.path().join("alias.html"),
+        )
+        .unwrap();
 
         let router = build_static_router(dist.path().to_path_buf());
 
@@ -1341,6 +1328,9 @@ mod tests {
             "in-root symlink in preview dist must be served"
         );
         let body = body_string(resp).await;
-        assert!(body.contains("real"), "served body must match the symlink target");
+        assert!(
+            body.contains("real"),
+            "served body must match the symlink target"
+        );
     }
 }
