@@ -1719,7 +1719,7 @@ mod tests {
             .map(|i| format!("{{ params: {{ slug: \"post-{i}\" }} }}"))
             .collect::<Vec<_>>()
             .join(", ");
-        let body = format!("export function paths() {{ return [{entries}]; }}",);
+        let body = format!("export function paths() {{ return [{entries}]; }}");
         let (dir, pending) = stage_dynamic_page(
             "pages/blog/[slug].tsx",
             vec![
