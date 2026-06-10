@@ -52,6 +52,12 @@
 
 name: Release
 
+# Queue releases on the same ref; never cancel — a mid-publish run would leave
+# a partial npm publish that is worse than the storage cost.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 on:
   # X9: trigger on GitHub Release publish, not on tag push.
   # `/l-make-release` creates a DRAFT Release; publishing that draft (or

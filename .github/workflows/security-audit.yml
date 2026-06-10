@@ -12,6 +12,12 @@
 
 name: Security Audit
 
+# Weekly schedule — only one run at a time needed; cancel the stale one if
+# a manual workflow_dispatch overlaps with a scheduled run.
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   schedule:
     # Monday 07:17 UTC — low-traffic window
