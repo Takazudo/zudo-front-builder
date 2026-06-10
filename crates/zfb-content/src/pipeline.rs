@@ -24,8 +24,9 @@ use std::sync::Arc;
 
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
-use zfb_md_ast::HeadingIdStrategy;
+use zfb_md_ast::{HeadingIdStrategy, ReadRecorder};
 
+use crate::dep_manifest::DependencyManifest;
 use crate::path_norm::normalize_path_lexically;
 use crate::plugins::{
     BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin, ExternalLinksConfig,
@@ -438,6 +439,12 @@ pub struct Pipeline {
     /// (which produces the identical effective visitor chain — `add_toc`
     /// inserts at a fixed position) yields the same fingerprint.
     config_fingerprint_extras: Vec<String>,
+    /// Optional read-recorder shared with filesystem-reading feature
+    /// plugins (zfb#942). When set, `compile_mdx_to_jsx_module_cached`
+    /// clears it before each compile and drains the recorded reads into
+    /// the cache entry's [`DependencyManifest`] afterwards. See
+    /// [`Pipeline::set_read_recorder`].
+    read_recorder: Option<Arc<ReadRecorder>>,
 }
 
 impl Default for Pipeline {
@@ -511,6 +518,7 @@ impl Pipeline {
                 gfm_fingerprint_segment(resolved)
             )),
             config_fingerprint_extras: Vec::new(),
+            read_recorder: None,
         }
     }
 
@@ -917,6 +925,76 @@ impl Pipeline {
         if let Some(p) = self.resolve_links.as_mut() {
             p.replay_broken_links(diags);
         }
+    }
+
+    /// Attach the read-recorder filesystem-reading feature plugins
+    /// report their external reads through (zfb#942).
+    ///
+    /// The caller wires the SAME `Arc` into the plugins (they receive a
+    /// clone at construction) and into the pipeline here, so the
+    /// compile-cache choke point (`compile_mdx_to_jsx_module_cached`)
+    /// can scope the recording per compile: it clears the recorder
+    /// before each compile and drains the recorded reads into the
+    /// cache entry's [`DependencyManifest`] afterwards. Because of that
+    /// clear/drain cycle, a recorder instance must serve exactly ONE
+    /// pipeline — sharing it across pipelines would interleave reads
+    /// from unrelated compiles.
+    ///
+    /// **Fingerprint-neutral.** The recorder is observational: it never
+    /// changes the JSX a given input emits, so attaching it does NOT
+    /// invalidate [`Pipeline::config_fingerprint`]. (Whether the
+    /// *plugins that record* are fingerprintable is a separate,
+    /// pre-existing decision — today the `filesystem_dependent_feature`
+    /// gate in [`Pipeline::with_defaults_and_full_config`] still marks
+    /// such pipelines uncacheable; flipping that gate once the plugins
+    /// actually record is zfb#944.)
+    pub fn set_read_recorder(&mut self, recorder: Arc<ReadRecorder>) -> &mut Self {
+        self.read_recorder = Some(recorder);
+        self
+    }
+
+    /// The attached read-recorder, if any (see
+    /// [`Pipeline::set_read_recorder`]).
+    #[must_use]
+    pub fn read_recorder(&self) -> Option<&Arc<ReadRecorder>> {
+        self.read_recorder.as_ref()
+    }
+
+    /// Discard reads left in the recorder by an earlier compile (e.g.
+    /// one that aborted on a parse error), so they cannot leak into
+    /// the next entry's manifest. Called by
+    /// `compile_mdx_to_jsx_module_cached` before every compile. No-op
+    /// without a recorder.
+    pub(crate) fn clear_recorded_reads(&self) {
+        if let Some(r) = &self.read_recorder {
+            r.clear();
+        }
+    }
+
+    /// Drain the reads recorded since the last clear into the
+    /// [`DependencyManifest`] stored with the cache entry, normalising
+    /// each path via the shared `path_norm` helper. Empty manifest
+    /// without a recorder (the shape of every plain pipeline).
+    pub(crate) fn take_dependency_manifest(&self) -> DependencyManifest {
+        self.read_recorder
+            .as_ref()
+            .map(|r| DependencyManifest::from_recorded_reads(r.take_reads()))
+            .unwrap_or_default()
+    }
+
+    /// Test seam (zfb#942): push an mdast visitor WITHOUT invalidating
+    /// the config fingerprint, so the synthetic-recorder cache tests in
+    /// `mdx_jsx_emit` can make a cacheable pipeline record reads during
+    /// compile — standing in for the config-derived feature plugins
+    /// that will record for real in zfb#944. Production code must use
+    /// [`Pipeline::add_mdast_visitor`] (invalidating) or the private
+    /// config-derived helpers (see their invalidation-rule docs).
+    #[cfg(test)]
+    pub(crate) fn push_mdast_visitor_preserving_fingerprint_for_tests(
+        &mut self,
+        v: Box<dyn MdastVisitor>,
+    ) {
+        self.push_config_derived_mdast_visitor(v);
     }
 
     /// New pipeline preloaded with the project's default plugin chain.

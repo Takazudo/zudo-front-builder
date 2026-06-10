@@ -2,6 +2,7 @@
 
 pub mod collection;
 pub mod content_bridge;
+pub mod dep_manifest;
 pub mod diagnostics;
 pub mod frontmatter;
 pub mod heading_registry;
@@ -36,6 +37,14 @@ pub use zfb_md_extras::{
     directives_enabled, heading_id_strategy, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind,
     FeatureToggle, HeadingIdStrategy, HeadingIdsConfig, MarkdownFeaturesConfig, into_directive_def,
 };
+
+// Read-recorder surface (zfb#942): the recorder + outcome types live in
+// `zfb-md-ast` (so `zfb-md-extras` feature plugins can report reads
+// without depending on zfb-content); the manifest stored in the compile
+// cache lives here. Re-exported together so cache-side consumers can
+// name the whole contract from one crate.
+pub use dep_manifest::DependencyManifest;
+pub use zfb_md_ast::{ReadOutcome, ReadRecorder};
 
 pub use frontmatter::{FrontmatterError, UnifiedFrontmatter};
 pub use mdx_jsx_emit::{

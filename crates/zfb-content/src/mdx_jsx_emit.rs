@@ -48,6 +48,7 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use markdown::mdast::{AlignKind, AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
 
+use crate::dep_manifest::DependencyManifest;
 use crate::pipeline::{
     constructs_for_jsx_emit, mdast_to_hast_with, HastNode, JsxEmitStrategy, Pipeline,
     PipelineError, ResolvedGfmConstructs,
@@ -1957,17 +1958,27 @@ fn collection_and_slug(file_path: &Path) -> (String, String) {
 const MDX_MODULE_CACHE_CAP: usize = 4_096;
 
 /// One cache slot: the compiled output plus the broken-link
-/// diagnostics that compile produced (zfb#939).
+/// diagnostics that compile produced (zfb#939) plus the dependency
+/// manifest of external reads its feature plugins reported (zfb#942).
 ///
 /// Diagnostics are a side channel — call sites compile, then drain
 /// [`Pipeline::take_broken_links`] — so a cache hit must replay the
 /// stored vec back into the pipeline's `ResolveLinksPlugin`; without
 /// that, every hit would silently swallow the file's broken-link
 /// reports. Pipelines without a wired plugin always store an empty vec.
+///
+/// The manifest gates every hit: lookup re-probes each recorded
+/// dependency against the current filesystem
+/// ([`DependencyManifest::still_valid`]) and falls back to a full
+/// recompile (which re-records) on any change — edited, deleted, or
+/// newly-created-where-missing files, and any probe failure. Pipelines
+/// without a read-recorder always store an empty manifest, which
+/// validates trivially — zero behaviour or cost change for them.
 #[derive(Debug, Clone)]
 struct CachedMdxModule {
     compiled: CompiledMdx,
     broken_links: Vec<BrokenLinkDiagnostic>,
+    dependencies: DependencyManifest,
 }
 
 /// In-memory cache of compiled MDX modules, keyed by the SHA-256 of the
@@ -2106,6 +2117,18 @@ pub fn compile_mdx_to_jsx_module(
 /// receives a specifier matching its own path, so a hit can never leak
 /// another file's collection/slug.
 ///
+/// # Dependency-manifest validation (zfb#942)
+///
+/// A pipeline carrying a read-recorder ([`Pipeline::set_read_recorder`])
+/// has its plugins' external reads drained into a
+/// [`DependencyManifest`] stored with the entry. Every later lookup
+/// re-probes each recorded dependency (full re-hash) before honouring
+/// the hit; an edited, deleted, or newly-created-where-missing dep —
+/// or any probe failure — recompiles and re-records. A manifest that
+/// recorded a read *error* is never stored at all (it could never
+/// validate). Pipelines without a recorder store an empty manifest —
+/// validation is then a no-op and behaviour is unchanged.
+///
 /// # Broken-link diagnostics replay (zfb#939)
 ///
 /// A pipeline wired with `ResolveLinksPlugin` accumulates
@@ -2175,23 +2198,37 @@ pub fn compile_mdx_to_jsx_module_cached(
     };
 
     if let (Some(c), Some(key)) = (cache_for_lookup, cache_key.as_ref()) {
+        // Clone out of the lock before validating: dependency
+        // validation does filesystem reads (one re-hash per recorded
+        // dep) and must not serialise other cache users behind it.
         let hit = c.lock().get(key).cloned();
         if let Some(hit) = hit {
-            // Diagnostics replay (zfb#939): re-inject the stored
-            // broken-link diagnostics so the caller's post-compile
-            // `take_broken_links()` drain sees them despite the plugin
-            // never running on this hit.
-            if let Some(p) = pipeline.as_deref_mut() {
-                p.replay_broken_links(hit.broken_links);
+            // Dependency-manifest validation (zfb#942): a hit is
+            // honoured only while every external file the original
+            // compile read is byte-identical (and every file it found
+            // missing is still missing). Edited/deleted/created deps —
+            // and any probe failure — fall through to a fresh compile,
+            // which re-records the manifest and overwrites this entry
+            // under the same key. Per-entry rehash only; there is no
+            // reverse dep→entries graph to update. The empty manifest
+            // of a plain pipeline validates trivially.
+            if hit.dependencies.still_valid() {
+                // Diagnostics replay (zfb#939): re-inject the stored
+                // broken-link diagnostics so the caller's post-compile
+                // `take_broken_links()` drain sees them despite the plugin
+                // never running on this hit.
+                if let Some(p) = pipeline.as_deref_mut() {
+                    p.replay_broken_links(hit.broken_links);
+                }
+                return Ok(CompiledMdx {
+                    jsx_source: hit.compiled.jsx_source,
+                    content_hash: hit.compiled.content_hash.clone(),
+                    // Path-derived, so NOT taken from the cached entry: an
+                    // identical body first compiled at another path must
+                    // not hand this file the other file's collection/slug.
+                    specifier: format!("mdx://{collection}/{slug}#{}", hit.compiled.content_hash),
+                });
             }
-            return Ok(CompiledMdx {
-                jsx_source: hit.compiled.jsx_source,
-                content_hash: hit.compiled.content_hash.clone(),
-                // Path-derived, so NOT taken from the cached entry: an
-                // identical body first compiled at another path must
-                // not hand this file the other file's collection/slug.
-                specifier: format!("mdx://{collection}/{slug}#{}", hit.compiled.content_hash),
-            });
         }
     }
 
@@ -2200,6 +2237,14 @@ pub fn compile_mdx_to_jsx_module_cached(
     // snapshot walker never drains), and only the suffix THIS compile
     // appends belongs in the cached entry.
     let broken_links_before = pipeline.as_deref().map_or(0, Pipeline::broken_links_len);
+
+    // Scope read recording (zfb#942) to THIS compile: reads left by an
+    // earlier compile on the same pipeline (e.g. one that aborted on a
+    // parse error and was never drained) must not leak into this
+    // entry's manifest. No-op without a recorder.
+    if let Some(p) = pipeline.as_deref() {
+        p.clear_recorded_reads();
+    }
 
     let opts = MdxJsxOptions::default().with_filename(file_path.display().to_string());
     let jsx_source = mdx_to_jsx_module_inner(input, opts, pipeline.as_deref_mut())?;
@@ -2217,21 +2262,33 @@ pub fn compile_mdx_to_jsx_module_cached(
             .as_deref()
             .map(|p| p.broken_links_since(broken_links_before))
             .unwrap_or_default();
-        let mut guard = c.lock();
-        // Clear-on-overflow: if inserting this entry would push the map
-        // past the cap, evict everything first.  Simple and correct —
-        // the next hit on any previously-cached key will re-compile once,
-        // then re-populate.
-        if guard.len() >= MDX_MODULE_CACHE_CAP {
-            guard.clear();
+        // Drain the reads this compile's plugins reported into the
+        // entry's manifest (zfb#942). A manifest carrying a read
+        // *error* is unstorable: error states cannot be re-validated,
+        // so the entry could never be served — skip the insert and let
+        // every later call recompile until the read stops erroring.
+        let dependencies = pipeline
+            .as_deref()
+            .map(|p| p.take_dependency_manifest())
+            .unwrap_or_default();
+        if dependencies.is_storable() {
+            let mut guard = c.lock();
+            // Clear-on-overflow: if inserting this entry would push the map
+            // past the cap, evict everything first.  Simple and correct —
+            // the next hit on any previously-cached key will re-compile once,
+            // then re-populate.
+            if guard.len() >= MDX_MODULE_CACHE_CAP {
+                guard.clear();
+            }
+            guard.insert(
+                key,
+                CachedMdxModule {
+                    compiled: compiled.clone(),
+                    broken_links,
+                    dependencies,
+                },
+            );
         }
-        guard.insert(
-            key,
-            CachedMdxModule {
-                compiled: compiled.clone(),
-                broken_links,
-            },
-        );
     }
 
     Ok(compiled)
@@ -2338,6 +2395,232 @@ mod tests {
         assert_eq!(
             second.jsx_source, "__SENTINEL__",
             "unchanged file + same map + same source_dir must be a true cache hit"
+        );
+    }
+
+    // ── zfb#942: read-recorder + dependency-manifest cache validation ──
+    //
+    // Synthetic stand-in for a filesystem-reading feature plugin (the
+    // real ones — transclude, imageDimensions, linkValidation — start
+    // recording in zfb#944): on every visit it reports the configured
+    // reads through the recorder, exactly as a production plugin will.
+    struct SyntheticReadsVisitor {
+        recorder: std::sync::Arc<zfb_md_ast::ReadRecorder>,
+        files: Vec<std::path::PathBuf>,
+        explicit: Vec<(std::path::PathBuf, zfb_md_ast::ReadOutcome)>,
+    }
+
+    impl crate::pipeline::MdastVisitor for SyntheticReadsVisitor {
+        fn visit(&mut self, _node: &mut MdastNode) {
+            for f in &self.files {
+                let _ = self.recorder.record_file(f);
+            }
+            for (p, o) in &self.explicit {
+                self.recorder.record_outcome(p, o.clone());
+            }
+        }
+    }
+
+    /// Cacheable default pipeline + synthetic recording visitor. The
+    /// visitor is pushed through the fingerprint-preserving test seam
+    /// so every pipeline built here shares ONE fingerprint — the same
+    /// situation zfb#944 creates for config-derived recording plugins.
+    fn recording_pipeline(
+        files: &[std::path::PathBuf],
+        explicit: &[(std::path::PathBuf, zfb_md_ast::ReadOutcome)],
+    ) -> (Pipeline, std::sync::Arc<zfb_md_ast::ReadRecorder>) {
+        let recorder = std::sync::Arc::new(zfb_md_ast::ReadRecorder::new());
+        let mut p = full_config_pipeline(None);
+        p.push_mdast_visitor_preserving_fingerprint_for_tests(Box::new(SyntheticReadsVisitor {
+            recorder: std::sync::Arc::clone(&recorder),
+            files: files.to_vec(),
+            explicit: explicit.to_vec(),
+        }));
+        p.set_read_recorder(std::sync::Arc::clone(&recorder));
+        (p, recorder)
+    }
+
+    fn poke_sentinel(cache: &MdxModuleCache) {
+        for entry in cache.lock().values_mut() {
+            entry.compiled.jsx_source = "__SENTINEL__".to_string();
+        }
+    }
+
+    // zfb#942: an unchanged recorded dep keeps the entry a true hit; an
+    // edited dep is a miss; the recompile re-records the manifest so
+    // the edited state caches again.
+    #[test]
+    fn dep_edit_invalidates_then_recompile_recaches() {
+        let cache = MdxModuleCache::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dep = dir.path().join("include.md");
+        std::fs::write(&dep, "v1").expect("write dep");
+        let src = "# page\n";
+        let path = Path::new("/content/docs/page.mdx");
+        let deps = vec![dep.clone()];
+
+        let (mut p1, _) = recording_pipeline(&deps, &[]);
+        compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p1))
+            .expect("compile 1");
+        assert_eq!(cache.len(), 1, "recording pipeline must populate the cache");
+
+        poke_sentinel(&cache);
+        let (mut p2, _) = recording_pipeline(&deps, &[]);
+        let second = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p2))
+            .expect("compile 2");
+        assert_eq!(
+            second.jsx_source, "__SENTINEL__",
+            "unchanged dep must validate and serve the cached entry"
+        );
+
+        std::fs::write(&dep, "v2").expect("edit dep");
+        let (mut p3, _) = recording_pipeline(&deps, &[]);
+        let third = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p3))
+            .expect("compile 3");
+        assert_ne!(
+            third.jsx_source, "__SENTINEL__",
+            "edited dep must be a cache miss (recompile)"
+        );
+        assert_eq!(cache.len(), 1, "recompile overwrites the stale entry in place");
+
+        // The recompile re-recorded the manifest against v2: with the
+        // dep untouched since, the entry must hit again.
+        poke_sentinel(&cache);
+        let (mut p4, _) = recording_pipeline(&deps, &[]);
+        let fourth = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p4))
+            .expect("compile 4");
+        assert_eq!(
+            fourth.jsx_source, "__SENTINEL__",
+            "re-recorded manifest must validate against the edited dep"
+        );
+    }
+
+    // zfb#942: a read that found the file MISSING is recorded too — the
+    // entry stays valid while the file stays absent and invalidates the
+    // moment the file is created.
+    #[test]
+    fn missing_dep_created_later_invalidates_entry() {
+        let cache = MdxModuleCache::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dep = dir.path().join("not-yet.md");
+        let src = "missing include\n";
+        let path = Path::new("/content/docs/page.mdx");
+        let deps = vec![dep.clone()];
+
+        let (mut p1, _) = recording_pipeline(&deps, &[]);
+        compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p1))
+            .expect("compile 1");
+        assert_eq!(cache.len(), 1, "a Missing outcome is storable");
+
+        poke_sentinel(&cache);
+        let (mut p2, _) = recording_pipeline(&deps, &[]);
+        let second = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p2))
+            .expect("compile 2");
+        assert_eq!(
+            second.jsx_source, "__SENTINEL__",
+            "still-missing dep must keep the entry a hit"
+        );
+
+        std::fs::write(&dep, "created now").expect("create dep");
+        let (mut p3, _) = recording_pipeline(&deps, &[]);
+        let third = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p3))
+            .expect("compile 3");
+        assert_ne!(
+            third.jsx_source, "__SENTINEL__",
+            "creating a previously-missing dep must invalidate the entry"
+        );
+    }
+
+    // zfb#942: deleting a recorded dep is a miss; the recompile records
+    // the now-missing state, which then validates while it stays gone.
+    #[test]
+    fn deleted_dep_invalidates_entry() {
+        let cache = MdxModuleCache::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dep = dir.path().join("include.md");
+        std::fs::write(&dep, "v1").expect("write dep");
+        let src = "# page\n";
+        let path = Path::new("/content/docs/page.mdx");
+        let deps = vec![dep.clone()];
+
+        let (mut p1, _) = recording_pipeline(&deps, &[]);
+        compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p1))
+            .expect("compile 1");
+        poke_sentinel(&cache);
+
+        std::fs::remove_file(&dep).expect("delete dep");
+        let (mut p2, _) = recording_pipeline(&deps, &[]);
+        let second = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p2))
+            .expect("compile 2");
+        assert_ne!(
+            second.jsx_source, "__SENTINEL__",
+            "deleted dep must be a cache miss"
+        );
+
+        // The recompile recorded Missing — valid while the file stays gone.
+        poke_sentinel(&cache);
+        let (mut p3, _) = recording_pipeline(&deps, &[]);
+        let third = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p3))
+            .expect("compile 3");
+        assert_eq!(
+            third.jsx_source, "__SENTINEL__",
+            "re-recorded Missing must validate while the dep stays deleted"
+        );
+    }
+
+    // zfb#942: a read that errored (non-NotFound — permissions, I/O, …)
+    // can never be re-validated, so the entry is not stored at all and
+    // every call recompiles.
+    #[test]
+    fn read_error_prevents_caching() {
+        let cache = MdxModuleCache::new();
+        let src = "# page\n";
+        let path = Path::new("/content/docs/page.mdx");
+        let explicit = vec![(
+            std::path::PathBuf::from("/somewhere/locked.md"),
+            zfb_md_ast::ReadOutcome::Error,
+        )];
+
+        let (mut p1, _) = recording_pipeline(&[], &explicit);
+        let first = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p1))
+            .expect("compile 1");
+        assert_eq!(
+            cache.len(),
+            0,
+            "an Error outcome must make the entry unstorable"
+        );
+
+        let (mut p2, _) = recording_pipeline(&[], &explicit);
+        let second = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p2))
+            .expect("compile 2");
+        assert_eq!(cache.len(), 0, "still nothing cached on the second call");
+        assert_eq!(
+            first.jsx_source, second.jsx_source,
+            "sanity: both fresh compiles emit identical JSX"
+        );
+    }
+
+    // zfb#942: reads sitting in the recorder from BEFORE the compile
+    // (e.g. left by an aborted earlier compile on the same pipeline)
+    // are cleared at compile start — they must not poison this entry's
+    // manifest.
+    #[test]
+    fn stale_recorder_reads_do_not_leak_into_manifest() {
+        let cache = MdxModuleCache::new();
+        let src = "# page\n";
+        let path = Path::new("/content/docs/page.mdx");
+
+        let (mut p, recorder) = recording_pipeline(&[], &[]);
+        recorder.record_outcome(
+            Path::new("/stale/leftover.md"),
+            zfb_md_ast::ReadOutcome::Error,
+        );
+        compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p))
+            .expect("compile");
+        assert_eq!(
+            cache.len(),
+            1,
+            "the pre-compile Error read must be discarded, leaving a storable entry"
         );
     }
 
