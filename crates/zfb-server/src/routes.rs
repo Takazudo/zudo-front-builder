@@ -1102,6 +1102,12 @@ async fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Ve
         let Some(resolved) = resolve_within_root(path, dist_root).await else {
             continue;
         };
+        // Read the canonical path returned by resolve_within_root, not
+        // the original joined path — re-reading the original would reopen
+        // the check-then-use window.  Residual race: a directory component
+        // swapped for a symlink between canonicalize and open can still
+        // redirect the open; this is accepted (see assets_containment.rs
+        // module doc for the reference model and full rationale).
         if let Ok(bytes) = tokio::fs::read(&resolved).await {
             return Some(bytes);
         }
@@ -1142,6 +1148,12 @@ async fn read_from_public(public_root: &std::path::Path, trimmed: &str) -> Optio
     if is_dir {
         return None;
     }
+    // Read the canonical path returned by resolve_within_root, not
+    // the original joined path — re-reading the original would reopen
+    // the check-then-use window.  Residual race: a directory component
+    // swapped for a symlink between canonicalize and open can still
+    // redirect the open; this is accepted (see assets_containment.rs
+    // module doc for the reference model and full rationale).
     tokio::fs::read(&resolved).await.ok()
 }
 
