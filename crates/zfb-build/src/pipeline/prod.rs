@@ -733,6 +733,7 @@ mod tests {
             ),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: None,
         }
     }
@@ -746,6 +747,7 @@ mod tests {
             pages: PageSelection::Specific(sel),
             rerun_css: true,
             rerun_islands: true,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: vec![],
@@ -1172,6 +1174,7 @@ mod tests {
                 Ok(true)
             })),
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: None,
         };
         let pipeline = ProductionAssetPipeline::empty();
@@ -1212,12 +1215,14 @@ mod tests {
             render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: None,
         };
         let plan = RebuildPlan {
             pages: PageSelection::All,
             rerun_css: false,
             rerun_islands: false,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: vec![],

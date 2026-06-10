@@ -434,6 +434,20 @@ impl AssetPipeline for DevAssetPipeline {
             }
         }
 
+        // 4. Client scripts.
+        //
+        // Re-bundle all `*.client.{ts,tsx,js,jsx}` entries and write stable
+        // files under `dist/assets/client/<name>.js`. The runner returns
+        // `true` when at least one file changed (new bytes or new entry),
+        // which the SSE layer maps to a `ReloadEvent::Page` (full reload —
+        // v1 has no finer-grained client-script hot-swap).
+        if plan.rerun_client_scripts {
+            outcome.client_scripts_rerun = true;
+            if let Some(run) = &ctx.run_client_scripts {
+                outcome.client_scripts_changed = run()?;
+            }
+        }
+
         Ok(outcome)
     }
 }
@@ -467,6 +481,7 @@ mod tests {
             ),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: None,
         }
     }
@@ -493,6 +508,7 @@ mod tests {
             pages: PageSelection::Specific(sel),
             rerun_css: false,
             rerun_islands: false,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: vec![],
@@ -529,6 +545,7 @@ mod tests {
             pages: PageSelection::Specific(sel),
             rerun_css: false,
             rerun_islands: false,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: vec![],
@@ -559,6 +576,7 @@ mod tests {
                 Ok(true)
             })),
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: None,
         };
 
@@ -566,6 +584,7 @@ mod tests {
             pages: PageSelection::none(),
             rerun_css: true,
             rerun_islands: false,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: vec![],
@@ -603,6 +622,7 @@ mod tests {
             pages: PageSelection::Specific(sel.clone()),
             rerun_css: false,
             rerun_islands: false,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: vec![],
@@ -669,6 +689,7 @@ mod tests {
             pages: PageSelection::Specific(sel),
             rerun_css: false,
             rerun_islands: false,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: vec![],
@@ -726,6 +747,7 @@ mod tests {
             pages: PageSelection::Specific(sel),
             rerun_css: false,
             rerun_islands: false,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: vec![],
@@ -807,12 +829,14 @@ mod tests {
             render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: None,
         };
         let plan = RebuildPlan {
             pages: PageSelection::All,
             rerun_css: false,
             rerun_islands: false,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: vec![],
@@ -841,12 +865,14 @@ mod tests {
                     components: vec![],
                 }))
             })),
+            run_client_scripts: None,
             reload_renderer: None,
         };
         let plan = RebuildPlan {
             pages: PageSelection::none(),
             rerun_css: true,
             rerun_islands: true,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: vec![],
@@ -881,6 +907,7 @@ mod tests {
             ),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: Some(Arc::new(move || Ok(outcome.clone()))),
         }
     }
@@ -892,6 +919,7 @@ mod tests {
             pages: PageSelection::Specific(sel),
             rerun_css: false,
             rerun_islands: false,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: vec![],
@@ -987,6 +1015,7 @@ mod tests {
                 islands_calls_cb.fetch_add(1, Ordering::SeqCst);
                 Ok(None)
             })),
+            run_client_scripts: None,
             reload_renderer: Some(Arc::new(|| Ok(RefreshOutcome::Skipped))),
         };
 
@@ -1051,6 +1080,7 @@ mod tests {
             render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: Some(Arc::new(|| Ok(RefreshOutcome::Skipped))),
         };
         let mut plan = single_page_plan();
@@ -1109,6 +1139,7 @@ mod tests {
             ),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: Some(Arc::new(move || Ok(outcome.clone()))),
         }
     }
