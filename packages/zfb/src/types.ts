@@ -14,11 +14,14 @@
  *   `setTimeout(0)` on platforms without `requestIdleCallback`.
  * - `"load"` — hydrate immediately and synchronously. Default when
  *   `when` is omitted.
+ * - `"media"` — hydrate when a CSS media query first matches (matchMedia).
+ *   Requires the companion `media` prop on `<Island>`. Degrades to immediate
+ *   hydration when `window.matchMedia` is unavailable.
  */
-export type When = "visible" | "idle" | "load";
+export type When = "visible" | "idle" | "load" | "media";
 
 /** Public set of allowed `When` values, useful for runtime validation. */
-export const WHEN_VALUES: readonly When[] = ["visible", "idle", "load"];
+export const WHEN_VALUES: readonly When[] = ["visible", "idle", "load", "media"];
 
 /** Default `when` strategy applied when `when` is omitted. */
 export const DEFAULT_WHEN: When = "load";
@@ -42,7 +45,7 @@ export function resolveWhen(when: unknown): When {
     // eslint-disable-next-line no-console
     console.warn(
       `[zfb] <Island when="${String(when)}"> is not a valid value. ` +
-        `Expected "visible" | "idle" | "load". Falling back to "${DEFAULT_WHEN}".`,
+        `Expected "visible" | "idle" | "load" | "media". Falling back to "${DEFAULT_WHEN}".`,
     );
   }
   return DEFAULT_WHEN;

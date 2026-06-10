@@ -52,9 +52,18 @@ describe("Island JSX wrapper — default (hydrate) mode", () => {
 
   it("forwards a valid `when` value to data-when", () => {
     for (const value of WHEN_VALUES) {
+      // "media" requires the companion `media` prop — test it separately.
+      if (value === "media") continue;
       const node = Island({ when: value, children: vnode(NamedFn) });
       expect(node.props["data-when"]).toBe(value);
     }
+    // "media" with the required media prop.
+    const mediaNode = Island({
+      when: "media",
+      media: "(max-width: 768px)",
+      children: vnode(NamedFn),
+    });
+    expect(mediaNode.props["data-when"]).toBe("media");
   });
 
   it("preserves children verbatim", () => {
@@ -281,6 +290,68 @@ describe("Island JSX wrapper — data-props serialisation", () => {
   });
 });
 
+describe("Island JSX wrapper — when='media' + data-media emit", () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env["NODE_ENV"] = "development";
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    delete process.env["NODE_ENV"];
+  });
+
+  it("emits data-when=media and data-media when when=media + media prop are both present", () => {
+    const node = Island({ when: "media", media: "(max-width: 768px)", children: vnode(NamedFn) });
+    expect(node.props["data-when"]).toBe("media");
+    expect(node.props["data-media"]).toBe("(max-width: 768px)");
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("emits data-media in SSR-skip mode too (when=media + ssrFallback)", () => {
+    const fallback = vnode("div");
+    const node = Island({
+      when: "media",
+      media: "(min-width: 1024px)",
+      ssrFallback: fallback,
+      children: vnode(NamedFn),
+    });
+    expect(node.props["data-when"]).toBe("media");
+    expect(node.props["data-media"]).toBe("(min-width: 1024px)");
+    expect(node.props[SKIP_SSR_MARKER_ATTR]).toBe("NamedFn");
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("warns and falls back to DEFAULT_WHEN when when=media but media prop is missing", () => {
+    const node = Island({ when: "media", children: vnode(NamedFn) });
+    expect(node.props["data-when"]).toBe("load");
+    expect(node.props["data-media"]).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = String(warnSpy.mock.calls[0]?.[0] ?? "");
+    expect(msg).toContain('when="media"');
+    expect(msg).toContain("`media`");
+  });
+
+  it("warns and ignores media prop when when is not 'media'", () => {
+    const node = Island({ when: "idle", media: "(max-width: 768px)", children: vnode(NamedFn) });
+    expect(node.props["data-when"]).toBe("idle");
+    expect(node.props["data-media"]).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = String(warnSpy.mock.calls[0]?.[0] ?? "");
+    expect(msg).toContain("`media`");
+    expect(msg).toContain('when="media"');
+  });
+
+  it("does not warn in production for when=media without media prop (silently falls back)", () => {
+    process.env["NODE_ENV"] = "production";
+    const node = Island({ when: "media", children: vnode(NamedFn) });
+    expect(node.props["data-when"]).toBe("load");
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("resolveWhen", () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
@@ -301,6 +372,7 @@ describe("resolveWhen", () => {
     expect(resolveWhen("visible")).toBe("visible");
     expect(resolveWhen("idle")).toBe("idle");
     expect(resolveWhen("load")).toBe("load");
+    expect(resolveWhen("media")).toBe("media");
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
@@ -339,10 +411,11 @@ describe("resolveWhen", () => {
 });
 
 describe("isWhen", () => {
-  it("accepts the three valid strings only", () => {
+  it("accepts the four valid strings only", () => {
     expect(isWhen("visible")).toBe(true);
     expect(isWhen("idle")).toBe(true);
     expect(isWhen("load")).toBe(true);
+    expect(isWhen("media")).toBe(true);
     expect(isWhen("eager")).toBe(false);
     expect(isWhen("")).toBe(false);
     expect(isWhen(undefined)).toBe(false);

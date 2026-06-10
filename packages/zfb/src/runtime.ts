@@ -31,6 +31,7 @@ type SchedulerGlobal = typeof globalThis & {
   ) => number;
   cancelIdleCallback?: (handle: number) => void;
   IntersectionObserver?: typeof IntersectionObserver;
+  matchMedia?: typeof matchMedia;
 };
 
 const g = globalThis as SchedulerGlobal;
@@ -54,6 +55,10 @@ function scheduleHydrateInternal(
 
   if (resolved === "idle") {
     return { fired: false, cancel: scheduleIdle(fire) };
+  }
+
+  if (resolved === "media") {
+    return scheduleMedia(target, fire);
   }
 
   // "visible"
@@ -162,6 +167,50 @@ function scheduleVisible(
       const alreadyFired = gate.cancel();
       if (alreadyFired) return;
       observer.disconnect();
+    },
+  };
+}
+
+function scheduleMedia(target: Element, fire: () => void): { fired: boolean; cancel: () => void } {
+  const query = target.getAttribute("data-media");
+
+  // No matchMedia API (e.g. bare Node, very old browser) or missing/empty
+  // query — fail open and hydrate immediately so the island is at least
+  // functional.
+  if (typeof g.matchMedia !== "function" || !query) {
+    fire();
+    return { fired: true, cancel: noop };
+  }
+
+  const mql = g.matchMedia(query);
+
+  // Already matches — fire synchronously (no pending listener needed).
+  if (mql.matches) {
+    fire();
+    return { fired: true, cancel: noop };
+  }
+
+  const gate = oneShot(fire);
+
+  // Listen for the first change event where the query matches.
+  // We do NOT use `{once:true}` because we must ignore un-match events
+  // (e.g. viewport widens back above breakpoint) and only fire on the
+  // first match event — `{once:true}` would consume any change, including
+  // un-match changes.
+  const handler = (e: MediaQueryListEvent): void => {
+    if (!e.matches) return; // ignore un-match changes
+    mql.removeEventListener("change", handler);
+    gate.run();
+  };
+
+  mql.addEventListener("change", handler);
+
+  return {
+    fired: false,
+    cancel: () => {
+      const alreadyFired = gate.cancel();
+      if (alreadyFired) return;
+      mql.removeEventListener("change", handler);
     },
   };
 }
@@ -416,7 +465,6 @@ function scheduleMount(
     return;
   }
 
-  const props = readProps(element);
   const when = element.getAttribute("data-when") ?? undefined;
 
   // Two manifest shapes:
@@ -428,7 +476,7 @@ function scheduleMount(
   //     constructed a mount function for it. Skip the dynamic import
   //     and call the supplied function directly.
   if (typeof entry !== "string") {
-    fireInlineMount(element, entry, props, mode);
+    fireInlineMount(element, entry, mode);
     return;
   }
 
@@ -443,6 +491,12 @@ function scheduleMount(
     // When the deferred fire actually runs, the cancel handle is no longer
     // needed — remove it so pendingCancels doesn't hold stale entries.
     pendingCancels.delete(element);
+
+    // Lazy props parse: read and parse data-props only now that we know we
+    // are actually going to mount this island. For deferred strategies
+    // (media, visible, idle) this avoids JSON.parse work at boot time for
+    // islands that may never hydrate (e.g. media query never matches).
+    const props = readProps(element);
 
     // Mark as pending BEFORE firing the import so any concurrent
     // `mountIslands` invocation that arrives during the await window
@@ -539,12 +593,7 @@ function scheduleMount(
  * coordinate around — we just call `mount` / `default` directly,
  * gated by the same `data-when` semantics as the URL path.
  */
-function fireInlineMount(
-  element: Element,
-  mod: IslandModule,
-  props: Record<string, unknown>,
-  mode: "hydrate" | "render",
-): void {
+function fireInlineMount(element: Element, mod: IslandModule, mode: "hydrate" | "render"): void {
   const fn = mod.mount ?? mod.default;
   if (typeof fn !== "function") {
     if (typeof process !== "undefined" && process.env && process.env["NODE_ENV"] !== "production") {
@@ -565,6 +614,10 @@ function fireInlineMount(
     // Stale-mount race guard for deferred inline mounts: skip if the element
     // was detached (e.g. body swap) while the idle/visible callback was queued.
     if (!element.isConnected) return;
+    // Lazy props parse: read and parse data-props only at mount time.
+    // For deferred strategies (media, visible, idle) this avoids JSON.parse
+    // work at boot time for islands that may never hydrate.
+    const props = readProps(element);
     const unmountThunk = mod.unmount
       ? () => mod.unmount!(element)
       : () => {
