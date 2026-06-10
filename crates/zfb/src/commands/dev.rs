@@ -71,6 +71,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+#[cfg(feature = "embed_v8")]
+use sha2::{Digest as _, Sha256};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use zfb_build::bundler::{bundle, BundleMode, BundlerOutput};
@@ -78,14 +80,12 @@ use zfb_build::renderer::{
     render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
 };
 use zfb_build::{
-    BuildContext, BuildOrchestrator, BuildOutcome, CssRunner, DevAssetPipeline, DiscoveryOutcome,
-    IslandsBundleInfo, IslandsRunner, OrchestratorConfig, PageRenderer, RefreshOutcome,
-    RelDistPath, RenderedPage, RendererReloader,
+    BuildContext, BuildOrchestrator, BuildOutcome, ClientScriptsRunner, CssRunner,
+    DevAssetPipeline, DiscoveryOutcome, IslandsBundleInfo, IslandsRunner, OrchestratorConfig,
+    PageRenderer, RefreshOutcome, RelDistPath, RenderedPage, RendererReloader,
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
-#[cfg(feature = "embed_v8")]
-use sha2::{Digest as _, Sha256};
 use zfb_server::{
     outcome_to_events, serve_with_listener, PageCache, ReloadEvent, ServeOpts, SsrDispatcher,
     SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
@@ -227,10 +227,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     }
     if !dev_html_root.exists() {
         std::fs::create_dir_all(&dev_html_root).with_context(|| {
-            format!(
-                "failed to create dev html dir {}",
-                dev_html_root.display()
-            )
+            format!("failed to create dev html dir {}", dev_html_root.display())
         })?;
     }
 
@@ -354,9 +351,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // cache miss we construct a known-empty graph. Default was removed
     // from DependencyGraph to prevent silent empty-graph construction
     // elsewhere.
-    let graph = Arc::new(Mutex::new(
-        initial_graph.unwrap_or_default(),
-    ));
+    let graph = Arc::new(Mutex::new(initial_graph.unwrap_or_default()));
 
     // Seed the graph with all page source paths from the router scan so
     // `plan_for_changes` can resolve `PageSelection::All` to a concrete
@@ -386,9 +381,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         .collect();
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone())
         .with_extra_watch_paths(extra_watch_paths)
-        .with_policy(
-            zfb_build::GranularityPolicy::default().with_content_roots(content_roots),
-        );
+        .with_policy(zfb_build::GranularityPolicy::default().with_content_roots(content_roots));
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
     let render_pages: PageRenderer = match dev_session.as_ref() {
@@ -444,8 +437,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     // Tracks chunk filenames written by the most recent islands bundle so the
     // next rebundle tick can delete stale ones (issue #809).
-    let live_chunk_filenames: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(HashSet::new()));
+    let live_chunk_filenames: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
     // Eager initial bundle. Failures are non-fatal — we warn and let the
     // dev server boot anyway. The hot-rebuild path will retry on the next
@@ -583,9 +575,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                         p.into_inner()
                     });
                     let assets_dir = dist_root_for_islands.join(zfb_types::DIST_ASSETS_DIR);
-                    if let Err(e) =
-                        refresh_dev_island_chunks(&assets_dir, &[], &prev)
-                    {
+                    if let Err(e) = refresh_dev_island_chunks(&assets_dir, &[], &prev) {
                         tracing::warn!(
                             error = %e,
                             "dev islands: failed to prune stale chunks after no-bundle tick (ignored)"
@@ -659,8 +649,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //
     // Step 1: shared URL handle — the dev server reads from this on every
     // HTML response; the runner writes to it on every CSS rebuild tick.
-    let css_bundle_url_handle: zfb_server::CssBundleUrl =
-        Arc::new(std::sync::RwLock::new(None));
+    let css_bundle_url_handle: zfb_server::CssBundleUrl = Arc::new(std::sync::RwLock::new(None));
 
     // Step 2: eager initial CSS bundle at boot so the very first page
     // request already carries a `<link rel="stylesheet">` tag.
@@ -760,6 +749,69 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }))
     };
 
+    // Client-scripts: eager initial bundle at boot + watcher-driven
+    // rebuild. Mirrors the islands and CSS patterns above.
+    //
+    // Tracks which entry names were written by the most recent bundle so
+    // the next rebuild can prune stale files (removed or renamed entries).
+    let live_client_script_names: Arc<Mutex<std::collections::HashSet<String>>> =
+        Arc::new(Mutex::new(std::collections::HashSet::new()));
+
+    // Eager boot bundle — non-fatal, mirrors islands / CSS.
+    match crate::commands::build::build_dev_client_scripts_to_disk(
+        &project_root,
+        &dist_root,
+        cfg.framework,
+        &std::collections::HashSet::new(),
+    ) {
+        Ok((_, names)) => {
+            if let Ok(mut guard) = live_client_script_names.lock() {
+                *guard = names;
+            }
+        }
+        Err(err) => {
+            output::warn(format!(
+                "initial client-scripts bundle failed (no client scripts will be served \
+                 until the next successful rebuild): {err:#}"
+            ));
+        }
+    }
+
+    // Watcher-driven rebuild closure.
+    let run_client_scripts: Option<ClientScriptsRunner> = {
+        let project_root_for_cs = project_root.clone();
+        let dist_root_for_cs = dist_root.clone();
+        let framework = cfg.framework;
+        let entry_names = Arc::clone(&live_client_script_names);
+        Some(Arc::new(move || -> Result<bool> {
+            let prev = entry_names
+                .lock()
+                .unwrap_or_else(|p| {
+                    tracing::warn!(
+                        site = "dev.run_client_scripts.entry_names",
+                        "mutex poisoned, recovered"
+                    );
+                    p.into_inner()
+                })
+                .clone();
+            let (changed, new_names) = crate::commands::build::build_dev_client_scripts_to_disk(
+                &project_root_for_cs,
+                &dist_root_for_cs,
+                framework,
+                &prev,
+            )?;
+            let mut guard = entry_names.lock().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "dev.run_client_scripts.entry_names (write)",
+                    "mutex poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            *guard = new_names;
+            Ok(changed)
+        }))
+    };
+
     // Issue #807 — build the live SSR routes handle here, before the
     // reload_renderer closure, so the closure can hold a clone of the
     // Arc and update it on each tick. The dispatcher is built once and
@@ -846,6 +898,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         render_pages,
         run_css,
         run_islands,
+        run_client_scripts,
         reload_renderer,
     };
 
@@ -914,20 +967,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // from `dev_session` (the V8-backed renderer); `None` when the
     // renderer is disabled, which keeps the legacy add-needs-restart
     // behaviour.
-    let discover_hook: Option<zfb_build::DiscoveryHook> = dev_session
-        .as_ref()
-        .map(|session| {
-            make_discovery_hook(
-                session.clone(),
-                Arc::clone(&graph_for_save),
-                dev_html_root.clone(),
-                // Issue #807 — clone the live handle so the discovery hook can
-                // rewrite it on a watch-ADD tick (the pipeline skips
-                // reload_renderer when the discovery refresh marked the
-                // renderer fresh).
-                ssr_route_set.clone(),
-            )
-        });
+    let discover_hook: Option<zfb_build::DiscoveryHook> = dev_session.as_ref().map(|session| {
+        make_discovery_hook(
+            session.clone(),
+            Arc::clone(&graph_for_save),
+            dev_html_root.clone(),
+            // Issue #807 — clone the live handle so the discovery hook can
+            // rewrite it on a watch-ADD tick (the pipeline skips
+            // reload_renderer when the discovery refresh marked the
+            // renderer fresh).
+            ssr_route_set.clone(),
+        )
+    });
     let orch_handle = tokio::spawn(async move {
         if let Err(err) = orchestrator.run(ctx, discover_hook, on_outcome).await {
             output::error(format!("build orchestrator stopped: {err:#}"));
@@ -1166,8 +1217,7 @@ fn refresh_dev_island_chunks(
     companions: &[zfb_build::pipeline::CompanionFile],
     prev_filenames: &HashSet<String>,
 ) -> anyhow::Result<HashSet<String>> {
-    let new_filenames: HashSet<String> =
-        companions.iter().map(|c| c.filename.clone()).collect();
+    let new_filenames: HashSet<String> = companions.iter().map(|c| c.filename.clone()).collect();
 
     // Write each new chunk file. The entry was already written by the bundler
     // as a side effect of `bundle()`; these are the code-split companions.
@@ -1185,10 +1235,7 @@ fn refresh_dev_island_chunks(
         }
         let dest = assets_dir.join(&companion.filename);
         std::fs::write(&dest, &companion.bytes).with_context(|| {
-            format!(
-                "dev islands: failed to write chunk file {}",
-                dest.display()
-            )
+            format!("dev islands: failed to write chunk file {}", dest.display())
         })?;
     }
 
@@ -2031,12 +2078,7 @@ fn compute_bundle_skip_key(
     // filesystem walk order.
     let mut pairs: Vec<(String, String)> = routes
         .iter()
-        .map(|r| {
-            (
-                r.source_path.to_string_lossy().into_owned(),
-                r.template(),
-            )
-        })
+        .map(|r| (r.source_path.to_string_lossy().into_owned(), r.template()))
         .collect();
     pairs.sort_unstable();
     hasher.update(b"routes:");
@@ -2221,7 +2263,10 @@ fn build_dev_route_tables(
         // `commands/build.rs::eval_deferred_paths`.
         let runtime_expansion = {
             let mut lock = renderer.lock().unwrap_or_else(|p| {
-                tracing::warn!(site = "boot_dev_renderer.paths", "mutex poisoned, recovered");
+                tracing::warn!(
+                    site = "boot_dev_renderer.paths",
+                    "mutex poisoned, recovered"
+                );
                 p.into_inner()
             });
             let state = lock
@@ -2378,9 +2423,7 @@ fn boot_dev_renderer(
         bundle_path: bundler_out.bundle_path.clone(),
         sourcemap_path: bundler_out.sourcemap_path.clone(),
         backend: Backend::EmbeddedV8 {
-            host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
-                v8_plugin_hooks,
-            ),
+            host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(v8_plugin_hooks),
         },
         request_timeout: None,
     })
@@ -2876,10 +2919,9 @@ fn make_discovery_hook(
 fn build_ssr_route_set(session: Option<&DevRenderSession>) -> Option<SsrRoutesHandle> {
     let session = session?;
     let renderer_handle = session.renderer_handle();
-    let dispatcher: Arc<dyn SsrDispatcher> =
-        Arc::new(crate::ssr_adapter::EmbeddedV8SsrAdapter::new(
-            renderer_handle,
-        ));
+    let dispatcher: Arc<dyn SsrDispatcher> = Arc::new(
+        crate::ssr_adapter::EmbeddedV8SsrAdapter::new(renderer_handle),
+    );
     let initial_set = make_ssr_route_set(session, Arc::clone(&dispatcher));
     Some(Arc::new(std::sync::RwLock::new(initial_set)))
 }
@@ -3236,16 +3278,12 @@ mod tests {
         // Stub render-fn: create the output file in the tempdir and return
         // its absolute path — exercises the read_to_string round-trip.
         let tmp_path = tmp.path().to_path_buf();
-        let out = DevRenderSession::render_one_with(
-            &source_page,
-            &entries,
-            |entry| {
-                let dest = tmp_path.join(&entry.output_path);
-                std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
-                std::fs::write(&dest, format!("<html>{}</html>", entry.url_path)).unwrap();
-                Ok(dest)
-            },
-        )
+        let out = DevRenderSession::render_one_with(&source_page, &entries, |entry| {
+            let dest = tmp_path.join(&entry.output_path);
+            std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std::fs::write(&dest, format!("<html>{}</html>", entry.url_path)).unwrap();
+            Ok(dest)
+        })
         .expect("render_one_with must succeed");
 
         // One RenderedPage per entry.
@@ -3869,14 +3907,8 @@ mod tests {
             colon_template_to_bracket("/docs/:rest{.+}?"),
             "/docs/[[...rest]]",
         );
-        assert_eq!(
-            colon_template_to_bracket("/:rest{.+}?"),
-            "/[[...rest]]",
-        );
-        assert_eq!(
-            colon_template_to_bracket("/a/:b/c/:d"),
-            "/a/[b]/c/[d]",
-        );
+        assert_eq!(colon_template_to_bracket("/:rest{.+}?"), "/[[...rest]]",);
+        assert_eq!(colon_template_to_bracket("/a/:b/c/:d"), "/a/[b]/c/[d]",);
     }
 
     /// `ssr_patterns()` must hand the SsrRouteSet bracket-grammar
@@ -3905,7 +3937,10 @@ mod tests {
             )),
         };
         let patterns = session.ssr_patterns();
-        assert_eq!(patterns, vec!["/blog/[slug]".to_string(), "/api/x".to_string()]);
+        assert_eq!(
+            patterns,
+            vec!["/blog/[slug]".to_string(), "/api/x".to_string()]
+        );
     }
 
     /// Review-fix (codex finding 2): a discovery-hook refresh must rewrite
@@ -4016,9 +4051,7 @@ mod tests {
 
         // Generation 2: different chunks (simulates a dynamically-imported
         // module change so esbuild emits a new content hash).
-        let gen2 = vec![
-            make_companion("islands-chunk-GEN2CCCC.js", b"gen2-c"),
-        ];
+        let gen2 = vec![make_companion("islands-chunk-GEN2CCCC.js", b"gen2-c")];
         let next = refresh_dev_island_chunks(&assets, &gen2, &prev).unwrap();
 
         // New chunk exists.
@@ -4086,7 +4119,10 @@ mod tests {
         let gen2 = vec![make_companion(shared_chunk, b"stable-content")];
         let next = refresh_dev_island_chunks(&assets, &gen2, &prev).unwrap();
 
-        assert!(assets.join(shared_chunk).exists(), "kept chunk must still exist");
+        assert!(
+            assets.join(shared_chunk).exists(),
+            "kept chunk must still exist"
+        );
         assert!(
             !assets.join("islands-chunk-OLDCHUNK.js").exists(),
             "old chunk must be pruned"
@@ -4100,20 +4136,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let assets = dir.path().to_path_buf();
 
-        let bad_names = [
-            "../escape.js",
-            "subdir/chunk.js",
-            "subdir\\chunk.js",
-            "",
-        ];
+        let bad_names = ["../escape.js", "subdir/chunk.js", "subdir\\chunk.js", ""];
         for name in bad_names {
             let companion = make_companion(name, b"bytes");
             let result = refresh_dev_island_chunks(&assets, &[companion], &HashSet::new());
-            assert!(
-                result.is_err(),
-                "should reject unsafe filename {:?}",
-                name
-            );
+            assert!(result.is_err(), "should reject unsafe filename {:?}", name);
         }
     }
 

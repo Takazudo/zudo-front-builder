@@ -43,7 +43,7 @@
 import { jsx } from "react/jsx-runtime";
 
 import type { VNode } from "./jsx-types.js";
-import { resolveWhen, type When } from "./types.js";
+import { DEFAULT_WHEN, resolveWhen, type When } from "./types.js";
 
 // Re-export `resolveWhen` for back-compat: tests and downstream consumers
 // historically imported it from `./island.js`. The implementation lives in
@@ -87,6 +87,16 @@ export const PROPS_DATA_ATTR = "data-props";
 export interface IslandProps {
   /** Hydration scheduling strategy. Defaults to `"load"`. */
   when?: When;
+  /**
+   * CSS media query string for `when="media"` islands. The island hydrates
+   * when this query first matches (including later viewport changes). The
+   * runtime uses `window.matchMedia(media)` to register a listener.
+   *
+   * Ignored when `when` is not `"media"` (a dev warning is emitted).
+   * Required when `when === "media"` (omitting it falls back to DEFAULT_WHEN
+   * with a dev warning).
+   */
+  media?: string;
   /**
    * If supplied, switches the island into SSR-skip mode (Astro's
    * `client:only` equivalent). The wrapper emits the
@@ -138,7 +148,9 @@ export type IslandElement = {
  * through it.
  */
 export function Island(props: IslandProps): IslandElement {
-  const when = resolveWhen(props.when);
+  const resolvedWhen = resolveMediaProps(props);
+  const when = resolvedWhen.when;
+  const media = resolvedWhen.media;
   const componentName = captureComponentName(props.children);
   const isSkipSsr = props.ssrFallback !== undefined;
   // Always source props from `props.children` (the heavy component VNode),
@@ -152,6 +164,7 @@ export function Island(props: IslandProps): IslandElement {
       [SKIP_SSR_MARKER_ATTR]: componentName,
       "data-when": when,
     };
+    if (when === "media" && media !== undefined) skipSsrProps["data-media"] = media;
     if (dataProps !== undefined) skipSsrProps[PROPS_DATA_ATTR] = dataProps;
     return makeWrapper(skipSsrProps, props.ssrFallback ?? null);
   }
@@ -160,8 +173,44 @@ export function Island(props: IslandProps): IslandElement {
     [HYDRATE_MARKER_ATTR]: componentName,
     "data-when": when,
   };
+  if (when === "media" && media !== undefined) hydrateProps["data-media"] = media;
   if (dataProps !== undefined) hydrateProps[PROPS_DATA_ATTR] = dataProps;
   return makeWrapper(hydrateProps, props.children);
+}
+
+/**
+ * Validate and resolve the `when` / `media` props together.
+ *
+ * - `when="media"` without `media` → warn + fall back to `DEFAULT_WHEN`.
+ * - `media` without `when="media"` → warn-and-ignore; `media` is dropped.
+ */
+function resolveMediaProps(props: IslandProps): { when: When; media: string | undefined } {
+  const when = resolveWhen(props.when);
+  const media = props.media;
+
+  if (when === "media" && !media) {
+    if (typeof process !== "undefined" && process.env && process.env["NODE_ENV"] !== "production") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[zfb] <Island when="media"> requires the \`media\` prop (a CSS media query string). ` +
+          `Falling back to "${DEFAULT_WHEN}".`,
+      );
+    }
+    return { when: DEFAULT_WHEN, media: undefined };
+  }
+
+  if (media && when !== "media") {
+    if (typeof process !== "undefined" && process.env && process.env["NODE_ENV"] !== "production") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[zfb] The \`media\` prop is only used when \`when="media"\`. ` +
+          `Current when="${when}" — \`media\` will be ignored.`,
+      );
+    }
+    return { when, media: undefined };
+  }
+
+  return { when, media };
 }
 
 /**

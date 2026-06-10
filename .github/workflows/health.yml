@@ -101,6 +101,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Run the JS/TS test suites across all packages (@takazudo/zfb and
+      # @takazudo/zfb-runtime). Includes the slugify parity tests that
+      # consume the shared fixture in crates/zfb-content/tests/fixtures/
+      # (issue #973), so any drift between the TS port and the Rust
+      # slugifier fails here as well as in cargo test.
+      - run: pnpm -r test
+
       - run: pnpm format:check
 
       # Compiles every target (incl. benches/examples) AND triggers crates/zfb's

@@ -167,8 +167,8 @@ fn make_ctx(html_root: PathBuf, routes: RouteTable) -> BuildContext {
             for p in pages {
                 for output in table.get(p.path()).into_iter().flatten() {
                     let html = format!("<html><body><p>{output}</p></body></html>");
-                    let output_path = RelDistPath::new(output.clone())
-                        .expect("test output is a relative path");
+                    let output_path =
+                        RelDistPath::new(output.clone()).expect("test output is a relative path");
                     out.push(RenderedPage {
                         page: PageId::new(PathBuf::from(output)),
                         output_path,
@@ -181,6 +181,7 @@ fn make_ctx(html_root: PathBuf, routes: RouteTable) -> BuildContext {
         }),
         run_css: None,
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: None,
     }
 }
@@ -207,8 +208,8 @@ fn make_discovery_hook(
             // fall back to the raw path. This handles cases where the
             // incoming path is canonical but the prefix isn't (or vice versa).
             let c_norm = std::fs::canonicalize(c).unwrap_or_else(|_| c.clone());
-            let blog_norm = std::fs::canonicalize(&content_blog)
-                .unwrap_or_else(|_| content_blog.clone());
+            let blog_norm =
+                std::fs::canonicalize(&content_blog).unwrap_or_else(|_| content_blog.clone());
 
             if c_norm.starts_with(&blog_norm) {
                 let slug = c.file_stem().and_then(|s| s.to_str()).unwrap_or("post");
@@ -327,9 +328,7 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
     // ----------------------------------------------------------------
     // 2. Spin up the orchestrator run() loop with discovery hook wired.
     // ----------------------------------------------------------------
-    let orch_task = tokio::spawn(async move {
-        orch.run(ctx, Some(discover), |_outcome| {}).await
-    });
+    let orch_task = tokio::spawn(async move { orch.run(ctx, Some(discover), |_outcome| {}).await });
 
     // ----------------------------------------------------------------
     // 2b. Watcher-live handshake (deterministic warmup).
@@ -425,11 +424,7 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
     let mut got_200 = false;
     while std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        match client
-            .get(format!("http://{addr}/blog/foo"))
-            .send()
-            .await
-        {
+        match client.get(format!("http://{addr}/blog/foo")).send().await {
             Ok(resp) if resp.status().as_u16() == 200 => {
                 got_200 = true;
                 let body = resp.text().await.unwrap_or_default();
@@ -471,9 +466,10 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
     // 7. The discovery hook must have fired at least once for foo.mdx.
     // ----------------------------------------------------------------
     let invs = hook_invocations.lock().unwrap();
-    let hook_saw_foo = invs.iter().flatten().any(|p| {
-        p.file_name().and_then(|n| n.to_str()) == Some("foo.mdx")
-    });
+    let hook_saw_foo = invs
+        .iter()
+        .flatten()
+        .any(|p| p.file_name().and_then(|n| n.to_str()) == Some("foo.mdx"));
     assert!(
         hook_saw_foo,
         "the discovery hook must have been invoked with the new content file; \
@@ -577,14 +573,16 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
         .send()
         .await
         .expect("GET /blog/hello initial");
-    assert_eq!(r0.status().as_u16(), 200, "hello must serve 200 before edit");
+    assert_eq!(
+        r0.status().as_u16(),
+        200,
+        "hello must serve 200 before edit"
+    );
 
     // ----------------------------------------------------------------
     // 2. Spin up orchestrator run() with discovery hook wired.
     // ----------------------------------------------------------------
-    let orch_task = tokio::spawn(async move {
-        orch.run(ctx, Some(discover), |_outcome| {}).await
-    });
+    let orch_task = tokio::spawn(async move { orch.run(ctx, Some(discover), |_outcome| {}).await });
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -606,11 +604,7 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
     let mut got_200_after_edit = false;
     while std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        match client
-            .get(format!("http://{addr}/blog/hello"))
-            .send()
-            .await
-        {
+        match client.get(format!("http://{addr}/blog/hello")).send().await {
             Ok(resp) if resp.status().as_u16() == 200 => {
                 // We got 200 — the route still exists and the file was
                 // (re-)written. That's the hot-reload invariant.
@@ -713,6 +707,7 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
             }),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: Some(Arc::new(move || {
                 let fresh = std::fs::read_to_string(&hello_for_reload)?;
                 *snapshot_for_reload.lock().unwrap() = fresh;

@@ -412,6 +412,7 @@ mod tests {
             public_dir: PathBuf::from("/project/public"),
             heading_registry: None,
             diagnostics: None,
+            cross_file_links: None,
         };
         let resolved = resolve_src("./foo.png", &ctx);
         assert_eq!(resolved, Some(PathBuf::from("/project/foo.png")));
@@ -484,6 +485,7 @@ mod tests {
             public_dir: PathBuf::from(public_dir),
             heading_registry: None,
             diagnostics: Some(&mut sink),
+            cross_file_links: None,
         };
         try_inject_dimensions(&mut node, &mut ctx, &config, &cache, &read_count, None);
         sink.take()
@@ -563,6 +565,7 @@ mod tests {
             public_dir: dir.join("public"),
             heading_registry: None,
             diagnostics: None,
+            cross_file_links: None,
         };
         plugin.visit_with_context(&mut node, &mut ctx);
         recorder.take_reads()
@@ -639,6 +642,7 @@ mod tests {
                 public_dir: dir.path().join("public"),
                 heading_registry: None,
                 diagnostics: None,
+                cross_file_links: None,
             };
             plugin.visit_with_context(&mut node, &mut ctx);
             recorder.take_reads()

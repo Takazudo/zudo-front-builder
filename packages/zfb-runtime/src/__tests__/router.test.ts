@@ -947,3 +947,123 @@ describe("createPageRouter — optional catchall (issue #812)", () => {
     expect(res.status).toBe(404);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #974 — paths() memo: once per router instance (not per request)
+// ---------------------------------------------------------------------------
+
+describe("createPageRouter — paths() invocation-count memo (issue #974)", () => {
+  afterEach(() => {
+    setContentSnapshot(undefined);
+  });
+
+  it("invokes paths() exactly once across __paths__ + all page renders (not per-request)", async () => {
+    // Regression test for #974: before the memo, paths() was called on
+    // every request — GET /__paths__/<route> and each GET /blog/<slug>
+    // each triggered a fresh invocation. With 3 entries and 4 requests
+    // (1 __paths__ + 3 page renders) the counter reached 4 instead of 1.
+    // After the fix, the result is memoised per router instance so paths()
+    // runs exactly once regardless of how many requests are dispatched.
+    let counter = 0;
+    const blogPage: PageModule & { paths: () => unknown[] } = {
+      default: () => null,
+      paths: () => {
+        counter++;
+        return [
+          { params: { slug: "a" }, props: { title: "A" } },
+          { params: { slug: "b" }, props: { title: "B" } },
+          { params: { slug: "c" }, props: { title: "C" } },
+        ];
+      },
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/blog/:slug", module: () => Promise.resolve(blogPage) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    // The Rust build pipeline calls /__paths__ first to enumerate routes.
+    const encoded = encodeURIComponent("/blog/:slug");
+    const pathsRes = await router(new Request(`http://test.local/__paths__/${encoded}`));
+    expect(pathsRes.status).toBe(200);
+
+    // Then the renderer fetches each concrete URL.
+    const a = await router(new Request("http://test.local/blog/a"));
+    expect(a.status).toBe(200);
+    const b = await router(new Request("http://test.local/blog/b"));
+    expect(b.status).toBe(200);
+    const c = await router(new Request("http://test.local/blog/c"));
+    expect(c.status).toBe(200);
+
+    // paths() must have been invoked exactly once across all 4 requests.
+    expect(counter).toBe(1);
+  });
+
+  it("retries paths() after a throw (rejection is not cached)", async () => {
+    // A throwing paths() must not poison the memo so that a later
+    // request can succeed once the transient error resolves.
+    let callCount = 0;
+    const flakyPage: PageModule & { paths: () => unknown[] } = {
+      default: () => null,
+      paths: () => {
+        callCount++;
+        if (callCount === 1) throw new Error("transient failure");
+        return [{ params: { slug: "ok" } }];
+      },
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/retry/:slug", module: () => Promise.resolve(flakyPage) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    // First call throws → 500.
+    const encoded = encodeURIComponent("/retry/:slug");
+    const first = await router(new Request(`http://test.local/__paths__/${encoded}`));
+    expect(first.status).toBe(500);
+
+    // Second call succeeds — paths() is retried because the first threw.
+    const second = await router(new Request(`http://test.local/__paths__/${encoded}`));
+    expect(second.status).toBe(200);
+
+    // Two invocations: one fail + one success.
+    expect(callCount).toBe(2);
+  });
+
+  it("two separate createPageRouter instances each evaluate paths() once independently", async () => {
+    // Each router instance has its own memo map — they do not share state.
+    const makeModule = (counter: { n: number }): PageModule & { paths: () => unknown[] } => ({
+      default: () => null,
+      paths: () => {
+        counter.n++;
+        return [{ params: { slug: "x" } }];
+      },
+    });
+    const cA = { n: 0 };
+    const cB = { n: 0 };
+    const modA = makeModule(cA);
+    const modB = makeModule(cB);
+
+    const routerA = createPageRouter({
+      pages: [{ route: "/a/:slug", module: () => Promise.resolve(modA) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+    const routerB = createPageRouter({
+      pages: [{ route: "/a/:slug", module: () => Promise.resolve(modB) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    // Drive both routers — each should invoke paths() exactly once.
+    const encA = encodeURIComponent("/a/:slug");
+    await routerA(new Request(`http://test.local/__paths__/${encA}`));
+    await routerA(new Request("http://test.local/a/x"));
+
+    await routerB(new Request(`http://test.local/__paths__/${encA}`));
+    await routerB(new Request("http://test.local/a/x"));
+
+    expect(cA.n).toBe(1);
+    expect(cB.n).toBe(1);
+  });
+});

@@ -891,6 +891,7 @@ mod tests {
             public_dir: PathBuf::from("/tmp"),
             heading_registry: None,
             diagnostics: Some(&mut sink),
+            cross_file_links: None,
         };
         let mut plugin = TranscludePlugin::new(config);
         plugin.visit_with_context(&mut tree, &mut ctx);
@@ -1142,6 +1143,7 @@ mod tests {
             public_dir: PathBuf::from("/tmp"),
             heading_registry: None,
             diagnostics: Some(&mut sink),
+            cross_file_links: None,
         };
         let mut plugin =
             TranscludePlugin::new(TranscludeConfig::default()).with_recorder(Arc::clone(&recorder));

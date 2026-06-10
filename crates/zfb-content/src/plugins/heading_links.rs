@@ -127,6 +127,8 @@ impl SlugAllocator {
 ///
 /// Shared with `mdx_jsx_emit::collect_headings` so the JSX-emitted
 /// `headings[i].slug` cannot drift from the rendered `<hN id="...">`.
+///
+/// Parity-tested via `tests/fixtures/slugify-parity.json` (issue #973).
 #[must_use]
 pub fn next_slug(seen: &mut HashMap<String, usize>, base: &str) -> String {
     if base.is_empty() {
@@ -281,6 +283,11 @@ fn set_attr(attrs: &mut Vec<(String, String)>, key: &str, val: &str) {
 /// Everything else — Unicode letters, numbers, combining marks, symbols,
 /// emoji, CJK ideographs, kana, hangul — passes through, lowercased where
 /// casing applies.
+///
+/// **Parity target:** the TypeScript port lives in
+/// `packages/zfb/src/slugify.ts`. Both sides consume
+/// `tests/fixtures/slugify-parity.json` — see also [`next_slug`] and
+/// [`SlugAllocator`] (issue #973).
 #[must_use]
 pub fn slugify(input: &str) -> String {
     fn is_stripped(ch: char) -> bool {

@@ -34,7 +34,8 @@
 //!
 //! ## Event mapping rules
 //!
-//! - `outcome.pages_written.len() > 0`  ⇒  emit one [`ReloadEvent::Page`].
+//! - `outcome.pages_written.len() > 0` **or** `outcome.client_scripts_changed`
+//!   ⇒  emit one [`ReloadEvent::Page`] (deduplicated — at most one per tick).
 //! - `outcome.css_changed`              ⇒  emit one [`ReloadEvent::Css`].
 //! - `outcome.islands_bundle.is_some()` ⇒  emit one
 //!   [`ReloadEvent::Islands`] per re-bundled component, carrying the
@@ -136,7 +137,12 @@ pub use zfb_build::IslandsBundleInfo;
 /// `component`; it reads only `bundleUrl` to construct the swap URL.
 pub fn outcome_to_events(outcome: &BuildOutcome) -> Vec<ReloadEvent> {
     let mut events = Vec::new();
-    if !outcome.pages_written.is_empty() {
+    // Emit a single Page event if either pages were written OR the
+    // client-scripts bundle changed. Both cases require a full browser
+    // reload: re-rendered HTML may reference new page structure, and a
+    // changed `dist/assets/client/<name>.js` file is only picked up on
+    // a full document reload (v1 has no hot-swap event for client scripts).
+    if !outcome.pages_written.is_empty() || outcome.client_scripts_changed {
         events.push(ReloadEvent::Page);
     }
     if outcome.css_changed {
@@ -293,6 +299,44 @@ mod tests {
         assert!(outcome_to_events(&outcome).is_empty());
     }
 
+    /// Issue #979 — a changed client-script bundle requires a full page
+    /// reload: the stable `dist/assets/client/<name>.js` URL is only
+    /// re-fetched on a full document load (no hot-swap event in v1).
+    #[test]
+    fn client_scripts_changed_emits_page_reload() {
+        let outcome = BuildOutcome {
+            client_scripts_rerun: true,
+            client_scripts_changed: true,
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
+    }
+
+    /// Client-scripts runner ran but every output was byte-identical:
+    /// no event, no spurious browser reload.
+    #[test]
+    fn client_scripts_rerun_without_change_emits_nothing() {
+        let outcome = BuildOutcome {
+            client_scripts_rerun: true,
+            client_scripts_changed: false,
+            ..Default::default()
+        };
+        assert!(outcome_to_events(&outcome).is_empty());
+    }
+
+    /// Pages written AND client scripts changed in the same tick must
+    /// still emit exactly ONE Page event (deduplicated).
+    #[test]
+    fn pages_and_client_scripts_dedupe_to_single_page_event() {
+        let outcome = BuildOutcome {
+            pages_written: vec![pid("/a")],
+            client_scripts_rerun: true,
+            client_scripts_changed: true,
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
+    }
+
     #[test]
     fn islands_rerun_without_bundle_info_emits_nothing() {
         // The flags say a rerun ran but the runner populated no
@@ -390,7 +434,11 @@ mod tests {
             ..Default::default()
         };
         let events = outcome_to_events(&outcome);
-        assert_eq!(events.len(), 1, "expected exactly one event for empty components");
+        assert_eq!(
+            events.len(),
+            1,
+            "expected exactly one event for empty components"
+        );
         assert_eq!(
             events[0],
             ReloadEvent::Islands {

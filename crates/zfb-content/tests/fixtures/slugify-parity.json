@@ -1,0 +1,296 @@
+{
+  "_comment": "Shared parity fixture for the Rust slugify/SlugAllocator and the JS port in packages/zfb/src/slugify.ts. Consumed by BOTH crates/zfb-content/tests/slugify_parity.rs AND packages/zfb/src/__tests__/slugify.test.ts - neither side can drift silently.",
+  "slugify": [
+    {
+      "input": "Hello World",
+      "expected": "hello-world",
+      "_note": "basic"
+    },
+    {
+      "input": "Hello  World",
+      "expected": "hello-world",
+      "_note": "multiple spaces collapse to one dash"
+    },
+    {
+      "input": "  Hello World  ",
+      "expected": "hello-world",
+      "_note": "leading/trailing spaces stripped"
+    },
+    {
+      "input": "",
+      "expected": "",
+      "_note": "empty input"
+    },
+    {
+      "input": "   ",
+      "expected": "",
+      "_note": "whitespace-only"
+    },
+    {
+      "input": "a,b",
+      "expected": "a-b",
+      "_note": "DIVERGENCE: stripped punct emits dash (not github-slugger which strips silently)"
+    },
+    {
+      "input": "  --weird-- ",
+      "expected": "--weird--",
+      "_note": "DIVERGENCE: existing dashes pass through; only whitespace-edge gets the lastDash rule"
+    },
+    {
+      "input": "a-b",
+      "expected": "a-b",
+      "_note": "dash passes through"
+    },
+    {
+      "input": "a_b",
+      "expected": "a_b",
+      "_note": "underscore passes through"
+    },
+    {
+      "input": "Héllo",
+      "expected": "héllo",
+      "_note": "accented latin lowercased"
+    },
+    {
+      "input": "Café au lait",
+      "expected": "café-au-lait",
+      "_note": "decomposed combining accent preserved (e + U+0301 COMBINING ACUTE ACCENT)"
+    },
+    {
+      "input": "ΦΟΣ",
+      "expected": "φοσ",
+      "_note": "Greek capital sigma U+03A3 - per-code-point lowercase yields phi+omicron+sigma NOT phi+omicron+final-sigma (context-sensitive)"
+    },
+    {
+      "input": "İ",
+      "expected": "i̇",
+      "_note": "U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE lowercases to i + U+0307 (two code points)"
+    },
+    {
+      "input": "🚀 Launch",
+      "expected": "🚀-launch",
+      "_note": "emoji passes through; space -> dash"
+    },
+    {
+      "input": "a b",
+      "expected": "a-b",
+      "_note": "U+00A0 NO-BREAK SPACE is Unicode White_Space (both Rust and JS p{White_Space})"
+    },
+    {
+      "input": "a　b",
+      "expected": "a-b",
+      "_note": "U+3000 IDEOGRAPHIC SPACE is Unicode White_Space"
+    },
+    {
+      "input": "ab",
+      "expected": "a-b",
+      "_note": "U+0085 NEXT LINE (NEL) is Unicode White_Space in Rust and JS p{White_Space} (NOT in JS \\s)"
+    },
+    {
+      "input": "a﻿b",
+      "expected": "a﻿b",
+      "_note": "U+FEFF BYTE ORDER MARK: NOT Unicode White_Space in Rust or JS (removed from White_Space in Unicode 6.3) — passes through unchanged"
+    },
+    {
+      "input": "Hello! World",
+      "expected": "hello-world",
+      "_note": "! is stripped -> dash"
+    },
+    {
+      "input": "a.b",
+      "expected": "a-b",
+      "_note": ". is stripped -> dash"
+    },
+    {
+      "input": "a/b",
+      "expected": "a-b",
+      "_note": "/ is stripped -> dash"
+    },
+    {
+      "input": "a#b",
+      "expected": "a-b",
+      "_note": "# is stripped -> dash"
+    },
+    {
+      "input": "Hello\u0000World",
+      "expected": "hello-world",
+      "_note": "U+0000 NULL is Cc control -> stripped"
+    },
+    {
+      "input": "Hello\u001fWorld",
+      "expected": "hello-world",
+      "_note": "U+001F US separator is Cc control -> stripped"
+    },
+    {
+      "input": "中文标题",
+      "expected": "中文标题",
+      "_note": "CJK ideographs pass through unchanged"
+    },
+    {
+      "input": "日本語 見出し",
+      "expected": "日本語-見出し",
+      "_note": "CJK with space"
+    },
+    {
+      "input": "abc",
+      "expected": "abc",
+      "_note": "plain ASCII"
+    },
+    {
+      "input": "ABC",
+      "expected": "abc",
+      "_note": "uppercase -> lowercase"
+    }
+  ],
+  "allocate": [
+    {
+      "_note": "flat golden regression - mirrors heading_links.rs flat_golden_ids_unchanged test (:659-681).",
+      "strategy": "flat",
+      "headings": [
+        {
+          "depth": 2,
+          "text": "intro"
+        },
+        {
+          "depth": 3,
+          "text": "intro"
+        },
+        {
+          "depth": 3,
+          "text": ""
+        },
+        {
+          "depth": 2,
+          "text": "usage"
+        },
+        {
+          "depth": 4,
+          "text": "intro"
+        }
+      ],
+      "expected": ["intro", "intro-1", "", "usage", "intro-2"]
+    },
+    {
+      "_note": "flat - empty base short-circuits without mutating counter",
+      "strategy": "flat",
+      "headings": [
+        {
+          "depth": 2,
+          "text": "foo"
+        },
+        {
+          "depth": 3,
+          "text": ""
+        },
+        {
+          "depth": 2,
+          "text": "foo"
+        }
+      ],
+      "expected": ["foo", "", "foo-1"]
+    },
+    {
+      "_note": "hierarchical - deduped parent prefixes final id (:579-590). Second ## Foo becomes foo-1; child ### Bar becomes foo-1-bar.",
+      "strategy": "hierarchical",
+      "headings": [
+        {
+          "depth": 2,
+          "text": "foo"
+        },
+        {
+          "depth": 2,
+          "text": "foo"
+        },
+        {
+          "depth": 3,
+          "text": "bar"
+        }
+      ],
+      "expected": ["foo", "foo-1", "foo-1-bar"]
+    },
+    {
+      "_note": "hierarchical - empty heading skip (:596-603). Empty text -> empty string; deeper heading nests under nearest REAL ancestor.",
+      "strategy": "hierarchical",
+      "headings": [
+        {
+          "depth": 2,
+          "text": "a"
+        },
+        {
+          "depth": 3,
+          "text": ""
+        },
+        {
+          "depth": 4,
+          "text": "c"
+        }
+      ],
+      "expected": ["a", "", "a-c"]
+    },
+    {
+      "_note": "hierarchical - ancestor chain: h2 -> h3 -> h4",
+      "strategy": "hierarchical",
+      "headings": [
+        {
+          "depth": 2,
+          "text": "foo"
+        },
+        {
+          "depth": 3,
+          "text": "moo"
+        },
+        {
+          "depth": 4,
+          "text": "mew"
+        }
+      ],
+      "expected": ["foo", "foo-moo", "foo-moo-mew"]
+    },
+    {
+      "_note": "hierarchical - siblings pop stack; new h2 resets chain",
+      "strategy": "hierarchical",
+      "headings": [
+        {
+          "depth": 2,
+          "text": "a"
+        },
+        {
+          "depth": 3,
+          "text": "b"
+        },
+        {
+          "depth": 3,
+          "text": "c"
+        },
+        {
+          "depth": 2,
+          "text": "d"
+        },
+        {
+          "depth": 3,
+          "text": "e"
+        }
+      ],
+      "expected": ["a", "a-b", "a-c", "d", "d-e"]
+    },
+    {
+      "_note": "hierarchical - duplicate siblings under same parent get numbered on full path",
+      "strategy": "hierarchical",
+      "headings": [
+        {
+          "depth": 2,
+          "text": "a"
+        },
+        {
+          "depth": 3,
+          "text": "b"
+        },
+        {
+          "depth": 3,
+          "text": "b"
+        }
+      ],
+      "expected": ["a", "a-b", "a-b-1"]
+    }
+  ]
+}

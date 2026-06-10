@@ -65,8 +65,9 @@ use zfb_css::{
     CssPipelineConfig, TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 use zfb_islands::{
-    build_production_islands_asset, scan_islands_with_meta, BundleConfig, EsbuildSubprocessBundler,
-    EsbuildSubprocessConfig, FsResolver,
+    build_production_client_scripts, build_production_islands_asset, discover_client_scripts,
+    scan_islands_with_meta, BundleConfig, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
+    FrameworkKind, FsResolver,
 };
 use zfb_router::Router;
 
@@ -77,10 +78,9 @@ use crate::commands::resolve::{resolve_outdir, validate_outdir_safety, wipe_outd
 use crate::config::{Config, OutputMode};
 use crate::output;
 use crate::render_pipeline::{
-    build_prerender_map, build_route_universe, check_runtime_installed,
-    embedded_binary, embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes,
-    is_ssr_route, DeferredDynamicRoute, DynamicResolvedEntry,
-    RouteUniversePlan, WorkerDispatch,
+    build_prerender_map, build_route_universe, check_runtime_installed, embedded_binary,
+    embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes, is_ssr_route,
+    DeferredDynamicRoute, DynamicResolvedEntry, RouteUniversePlan, WorkerDispatch,
 };
 
 /// Entry point for `zfb build`.
@@ -149,8 +149,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
 
     // #805 — wipe outdir before preBuild so plugin-emitted files (emitted
     // after this point) always land in a clean directory.
-    validate_outdir_safety(&project_root, &outdir)
-        .context("outdir safety check failed")?;
+    validate_outdir_safety(&project_root, &outdir).context("outdir safety check failed")?;
     wipe_outdir_contents(&outdir)
         .with_context(|| format!("failed to wipe outdir {}", outdir.display()))?;
 
@@ -312,9 +311,7 @@ pub(crate) fn resolve_v8_mode(
             if ssr_routes.is_empty() {
                 Ok(V8Mode::Off)
             } else {
-                let first = ssr_routes
-                    .first()
-                    .expect("checked non-empty above");
+                let first = ssr_routes.first().expect("checked non-empty above");
                 let extra = if ssr_routes.len() > 1 {
                     format!(" (and {} more)", ssr_routes.len() - 1)
                 } else {
@@ -514,9 +511,8 @@ impl BuildRunner for DefaultRunner {
         Backend,
         WorkerHandle,
     )> {
-        let factory = crate::v8_host_adapter::make_v8_host_factory_with_hooks(
-            self.v8_plugin_hooks.clone(),
-        );
+        let factory =
+            crate::v8_host_adapter::make_v8_host_factory_with_hooks(self.v8_plugin_hooks.clone());
         if deferred.is_empty() {
             // No deferred routes: skip host construction entirely. Return the
             // factory so `render_all` can still boot the host for SSG.
@@ -593,7 +589,14 @@ impl BuildRunner for DefaultRunner {
             &self.islands_plugin_config,
         )
         .context("islands emitter (DefaultRunner) failed")?;
-        Ok(ProdAssetEmitterInputs { css, islands })
+        let client_scripts =
+            build_default_client_scripts_payloads(project_root, outdir, config.framework)
+                .context("client-script emitters (DefaultRunner) failed")?;
+        Ok(ProdAssetEmitterInputs {
+            css,
+            islands,
+            client_scripts,
+        })
     }
 }
 
@@ -962,18 +965,14 @@ pub(crate) fn compute_css_module_class_maps(
         return Ok(HashMap::new());
     }
 
-    let scan = zfb_css::scan_css_module_imports(&sources)
-        .context("CSS Modules import scan failed")?;
+    let scan =
+        zfb_css::scan_css_module_imports(&sources).context("CSS Modules import scan failed")?;
 
     // Auto-discovered modules: keep only resolved paths that exist on
     // disk — mirrors `CssPipeline::collect_modules`. Bare specifiers
     // (`@org/pkg/x.module.css`) cannot be compiled by lightningcss and
     // are dropped here too.
-    let module_files: Vec<PathBuf> = scan
-        .modules
-        .into_iter()
-        .filter(|m| m.exists())
-        .collect();
+    let module_files: Vec<PathBuf> = scan.modules.into_iter().filter(|m| m.exists()).collect();
     if module_files.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1211,6 +1210,297 @@ pub(crate) fn build_default_islands_payload(
     }
 }
 
+/// Discover `*.client.{ts,tsx,js,jsx}` files under the conventional
+/// project roots, bundle each with esbuild, and return their bytes-only
+/// payloads for [`ProductionAssetPipeline`].
+///
+/// Returns an empty Vec when no client-script entries are found. In that
+/// case the caller should NOT inject any `<script>` tags for client
+/// scripts; the production pipeline treats the empty Vec as "no
+/// client-script assets to emit" and skips all client-script emission —
+/// builds without client scripts remain byte-identical to before.
+///
+/// On `Ok(payloads)` each payload carries the stable URL constant from
+/// `zfb_types::stable_client_script_url(entry_name)` and the relative
+/// path `assets/client/<name>.js`. The `apply_asset_url_base` step later
+/// re-prefixes those stable URLs when `config.base` is set, keeping the
+/// renderer-emitted reference and the `boundary_replace` rewrite key in
+/// sync.
+pub(crate) fn build_default_client_scripts_payloads(
+    project_root: &Path,
+    outdir: &Path,
+    framework: crate::config::Framework,
+) -> Result<Vec<AssetEmitterPayload>> {
+    let (entries, collisions) =
+        discover_client_scripts(project_root).context("client-script discovery failed")?;
+
+    // Fail loudly on duplicate entry names — mirrors the islands
+    // scanner's behavior for duplicate marker names.
+    if !collisions.is_empty() {
+        let details: Vec<String> = collisions
+            .iter()
+            .map(|c| {
+                format!(
+                    "  `{}`: {} vs {}",
+                    c.name,
+                    c.kept_path.display(),
+                    c.dropped_path.display()
+                )
+            })
+            .collect();
+        return Err(anyhow::anyhow!(
+            "duplicate client-script entry names found (entry names must be unique across all \
+             discovery roots):\n{}",
+            details.join("\n")
+        ));
+    }
+
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Reuse the same embedded-esbuild + embedded-node_modules wiring as
+    // `build_default_islands_payload`. Client scripts are plain TS/JS
+    // files so the same NODE_PATH resolution strategy applies.
+    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
+    let _embedded_nm_handle: Option<tempfile::TempDir>;
+    let mut esbuild_cfg =
+        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf());
+    if detect_project_node_modules(project_root).is_some() {
+        _embedded_nm_handle = None;
+    } else {
+        match embedded_node_modules() {
+            Ok((handle, nm_path)) => {
+                esbuild_cfg = esbuild_cfg.with_extra_env("NODE_PATH", nm_path.into_os_string());
+                _embedded_nm_handle = Some(handle);
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded @takazudo packages for client-script bundler \
+                     ({e}); falling back to project_root node_modules walk"
+                ));
+                _embedded_nm_handle = None;
+            }
+        }
+    }
+    if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+        match crate::render_pipeline::embedded_binary("esbuild") {
+            Ok((handle, path)) => {
+                esbuild_cfg = esbuild_cfg.with_binary_path(path);
+                _embedded_esbuild_handle = Some(handle);
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded esbuild for client-script bundler ({e}); \
+                     falling back to default slot resolver"
+                ));
+                _embedded_esbuild_handle = None;
+            }
+        }
+    } else {
+        _embedded_esbuild_handle = None;
+    }
+
+    let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
+    // JSX is harmless for plain .ts files; reuse the islands JSX import
+    // source so Preact/React aliases apply consistently to any .tsx
+    // client scripts.
+    let client_scripts_jsx_import_source = match framework {
+        crate::config::Framework::Preact => FrameworkKind::Preact,
+        crate::config::Framework::React => FrameworkKind::React,
+    }
+    .jsx_import_source();
+    let bundle_cfg = BundleConfig::production()
+        .with_outdir(outdir.to_path_buf())
+        .with_jsx_import_source(client_scripts_jsx_import_source);
+
+    let assets = build_production_client_scripts(&bundler, &entries, &bundle_cfg)
+        .context("client-script bundler failed")?;
+
+    Ok(assets
+        .into_iter()
+        .map(|a| AssetEmitterPayload {
+            bytes: a.bytes,
+            relative_path: a.relative_path,
+            stable_url: a.stable_url,
+            companions: Vec::new(),
+        })
+        .collect())
+}
+
+/// Discover, bundle (dev mode — no minification), and write all
+/// `*.client.{ts,tsx,js,jsx}` entries to `dist_root/assets/client/<name>.js`.
+///
+/// This is the **dev-path** equivalent of [`build_default_client_scripts_payloads`]:
+/// it writes stable (un-hashed) files directly to disk so the dev server's
+/// `ServeDir` can serve `GET /assets/client/<name>.js` immediately.
+///
+/// ## Stale-file pruning
+///
+/// `prev_entry_names` is the set of entry names written by the *previous*
+/// call. Any name present in `prev_entry_names` but absent from the
+/// newly-discovered set has its on-disk file deleted. Pass an empty set on
+/// the first call (boot); update the tracker with the returned set on each
+/// subsequent call.
+///
+/// ## Return value
+///
+/// Returns `(changed, current_names)` where:
+/// - `changed` is `true` when at least one file was written with new or
+///   changed bytes (or any stale file was pruned). The dev-server wires
+///   this to a `ReloadEvent::Page`.
+/// - `current_names` is the set of entry names that were just written —
+///   pass it as `prev_entry_names` on the next call.
+pub(crate) fn build_dev_client_scripts_to_disk(
+    project_root: &Path,
+    dist_root: &Path,
+    framework: crate::config::Framework,
+    prev_entry_names: &std::collections::HashSet<String>,
+) -> Result<(bool, std::collections::HashSet<String>)> {
+    let (entries, collisions) =
+        discover_client_scripts(project_root).context("client-script discovery failed")?;
+
+    // Non-fatal collision warning (dev mode is lenient — the user sees
+    // the first winning entry rather than a hard build failure, matching
+    // the behaviour of not-yet-deployed production builds during active
+    // development).
+    if !collisions.is_empty() {
+        for c in &collisions {
+            output::warn(format!(
+                "client-script name collision: `{}` is claimed by both {} and {} \
+                 — only {} will be bundled",
+                c.name,
+                c.kept_path.display(),
+                c.dropped_path.display(),
+                c.kept_path.display(),
+            ));
+        }
+    }
+
+    let client_dir = dist_root
+        .join(zfb_types::DIST_ASSETS_DIR)
+        .join(zfb_types::DIST_CLIENT_SCRIPTS_DIR);
+
+    // Prune stale files first (entries that existed in the previous run
+    // but are absent now — renamed or deleted client scripts). Do this
+    // before writing so a rename whose new name arrives in the same tick
+    // lands cleanly.
+    let current_names: std::collections::HashSet<String> =
+        entries.iter().map(|e| e.entry_name.clone()).collect();
+    let mut any_changed = false;
+    for stale_name in prev_entry_names.difference(&current_names) {
+        let stale_path = client_dir.join(zfb_types::stable_client_script_filename(stale_name));
+        if stale_path.exists() {
+            if let Err(e) = std::fs::remove_file(&stale_path) {
+                output::warn(format!(
+                    "client-scripts dev: failed to prune stale file {}: {e}",
+                    stale_path.display()
+                ));
+            } else {
+                any_changed = true;
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        return Ok((any_changed, current_names));
+    }
+
+    // Set up the esbuild subprocess — same wiring as `build_default_client_scripts_payloads`
+    // but using `BundleConfig::dev()` (no minification, sourcemaps on).
+    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
+    let _embedded_nm_handle: Option<tempfile::TempDir>;
+    let mut esbuild_cfg =
+        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf());
+    if detect_project_node_modules(project_root).is_some() {
+        _embedded_nm_handle = None;
+    } else {
+        match embedded_node_modules() {
+            Ok((handle, nm_path)) => {
+                esbuild_cfg = esbuild_cfg.with_extra_env("NODE_PATH", nm_path.into_os_string());
+                _embedded_nm_handle = Some(handle);
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded @takazudo packages for client-script bundler \
+                     ({e}); falling back to project_root node_modules walk"
+                ));
+                _embedded_nm_handle = None;
+            }
+        }
+    }
+    if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+        match crate::render_pipeline::embedded_binary("esbuild") {
+            Ok((handle, path)) => {
+                esbuild_cfg = esbuild_cfg.with_binary_path(path);
+                _embedded_esbuild_handle = Some(handle);
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded esbuild for client-script bundler ({e}); \
+                     falling back to default slot resolver"
+                ));
+                _embedded_esbuild_handle = None;
+            }
+        }
+    } else {
+        _embedded_esbuild_handle = None;
+    }
+
+    let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
+    let jsx_import_source = match framework {
+        crate::config::Framework::Preact => FrameworkKind::Preact,
+        crate::config::Framework::React => FrameworkKind::React,
+    }
+    .jsx_import_source();
+    let bundle_cfg = BundleConfig::dev()
+        .with_outdir(dist_root.to_path_buf())
+        .with_jsx_import_source(jsx_import_source);
+
+    if let Some(parent) = client_dir.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "client-scripts dev: failed to create parent dir {}",
+                parent.display()
+            )
+        })?;
+    }
+    std::fs::create_dir_all(&client_dir).with_context(|| {
+        format!(
+            "client-scripts dev: failed to create client dir {}",
+            client_dir.display()
+        )
+    })?;
+
+    for entry in &entries {
+        let js = bundler
+            .bundle_client_script_file(&entry.entry_name, &entry.source_path, &bundle_cfg)
+            .with_context(|| {
+                format!(
+                    "client-scripts dev: bundler failed for entry `{}` ({})",
+                    entry.entry_name,
+                    entry.source_path.display()
+                )
+            })?;
+
+        let out_path = client_dir.join(zfb_types::stable_client_script_filename(&entry.entry_name));
+
+        // Only write (and signal changed) when the bytes differ from
+        // what's already on disk — avoids spurious page reloads on
+        // no-op saves.
+        let new_bytes = js.as_bytes();
+        let existing = std::fs::read(&out_path).unwrap_or_default();
+        if existing != new_bytes {
+            std::fs::write(&out_path, new_bytes).with_context(|| {
+                format!("client-scripts dev: failed to write {}", out_path.display())
+            })?;
+            any_changed = true;
+        }
+    }
+
+    Ok((any_changed, current_names))
+}
+
 /// Drive the build for a fully-resolved input set. Returns the number
 /// of pages written and the postBuild route manifest (#262).
 fn run_build<R: BuildRunner, A: AdapterRunner>(
@@ -1275,8 +1565,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // (see `expand_dynamic_routes` in render_pipeline.rs): without one the
     // route produces no pages and would silently 404 at serve time.
     let mut paths_cache = PathsCache::new();
-    let expansion =
-        expand_dynamic_routes(&ssg_deferred, project_root, &mut paths_cache)?;
+    let expansion = expand_dynamic_routes(&ssg_deferred, project_root, &mut paths_cache)?;
     static_routes.extend(expansion.resolved);
     let still_deferred = expansion.deferred;
 
@@ -1545,6 +1834,11 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // inclusion. Filter them out of the path list fed to the next two
     // post-processing passes so the contract is preserved when the
     // user has set `base` or enabled the prod asset pipeline.
+    //
+    // Known limitation (#976): because `.html`-source pages skip the
+    // rewrite pass entirely, a client-script stable URL
+    // (`/assets/client/<name>.js`) referenced inside one is NOT
+    // rewritten to its hashed equivalent — same as CSS/islands URLs.
     let static_html_set: std::collections::HashSet<&std::path::Path> = render_out
         .static_html_files_written
         .iter()
@@ -1565,12 +1859,12 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // file's stable URLs to the hashed equivalents in place. This is
     // a no-op (no asset writes, HTML round-tripped) when both
     // emitter slots returned `None`.
-    if prod_asset_inputs.css.is_some() || prod_asset_inputs.islands.is_some() {
-        let prod_pages = build_prod_rendered_files(
-            outdir,
-            &route_universe_for_rewrite,
-            &post_processable_pages,
-        );
+    if prod_asset_inputs.css.is_some()
+        || prod_asset_inputs.islands.is_some()
+        || !prod_asset_inputs.client_scripts.is_empty()
+    {
+        let prod_pages =
+            build_prod_rendered_files(outdir, &route_universe_for_rewrite, &post_processable_pages);
         apply_prod_asset_pipeline(outdir, prod_pages, prod_asset_inputs)
             .context("production asset pipeline (hash + URL rewrite) failed")?;
     }
@@ -1622,10 +1916,8 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // the runtime-narrowed one reaches the adapter (and therefore `dist/`).
     if !adapter.is_none() {
         let mut runtime_bundler_input = bundler_input_for_runtime;
-        runtime_bundler_input.worker_only_routes =
-            Some(ssr_route_keys_for_runtime_bundle);
-        runtime_bundler_input.bundle_basename =
-            Some("bundle-runtime.mjs".to_string());
+        runtime_bundler_input.worker_only_routes = Some(ssr_route_keys_for_runtime_bundle);
+        runtime_bundler_input.bundle_basename = Some("bundle-runtime.mjs".to_string());
         let runtime_bundler_out = runner
             .bundle(runtime_bundler_input)
             .context("runtime-only bundler step (for deploy adapter) failed")?;
@@ -1671,13 +1963,8 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     } else {
         None
     };
-    copy_public_dir(
-        project_root,
-        outdir,
-        &config.public_dir,
-        effective_base,
-    )
-    .context("public dir copy step failed")?;
+    copy_public_dir(project_root, outdir, &config.public_dir, effective_base)
+        .context("public dir copy step failed")?;
 
     // Build the postBuild route manifest (#262). Combines:
     // - static routes from the router scan (no params),
@@ -1771,9 +2058,7 @@ fn build_post_build_manifest(
             .into_owned();
 
         // Build the params map only when there are bindings.
-        let params = if dyn_entry.params.scalars.is_empty()
-            && dyn_entry.params.arrays.is_empty()
-        {
+        let params = if dyn_entry.params.scalars.is_empty() && dyn_entry.params.arrays.is_empty() {
             None
         } else {
             let mut map: BTreeMap<String, PostBuildParamValue> = BTreeMap::new();
@@ -1867,6 +2152,9 @@ fn apply_asset_url_base(inputs: &mut ProdAssetEmitterInputs, base: Option<&str>)
     if let Some(islands) = inputs.islands.as_mut() {
         islands.stable_url = format!("{prefix}{}", islands.stable_url);
     }
+    for cs in inputs.client_scripts.iter_mut() {
+        cs.stable_url = format!("{prefix}{}", cs.stable_url);
+    }
 }
 
 /// Derive the [`ProdHeadAssets`] payload for [`RendererInput`] from
@@ -1887,6 +2175,17 @@ fn derive_prod_head_assets(inputs: &ProdAssetEmitterInputs) -> Option<ProdHeadAs
     if let Some(islands) = inputs.islands.as_ref() {
         island_module_urls.push(islands.stable_url.clone());
     }
+    // Client scripts are deliberately NOT auto-injected here. Unlike the CSS
+    // and islands bundles — which every page needs — a client script ships to
+    // a page ONLY when that page explicitly references it via the
+    // `clientScript()` SSR helper (`<script src={clientScript("name")} />`).
+    // Auto-injecting all of them into every page's head would defeat the
+    // selective per-page loading contract and duplicate tags on pages that
+    // already render the reference deliberately. The client-script payloads
+    // still flow through `ProductionAssetPipeline` (hashing + the
+    // stable→hashed HTML rewrite over each page's explicit reference) via
+    // `prod_asset_inputs.client_scripts`; only this head auto-injection is
+    // removed (#971 P2).
     if css_url.is_none() && island_module_urls.is_empty() {
         return None;
     }
@@ -2096,9 +2395,7 @@ fn build_resolve_source_map_for_snapshot(
     project_root: &Path,
     config: &Config,
 ) -> Option<std::collections::HashMap<std::path::PathBuf, String>> {
-    use zfb_content::plugins::util::source_map::{
-        build_docs_source_map, DocsSourceMapOptions,
-    };
+    use zfb_content::plugins::util::source_map::{build_docs_source_map, DocsSourceMapOptions};
     let routes = resolve_links_routes_from_config(project_root, config)?;
     let map = build_docs_source_map(DocsSourceMapOptions {
         collections: routes,
@@ -2223,15 +2520,16 @@ fn copy_public_dir(
         outdir.join(&base_segment)
     };
 
-    for entry in walkdir::WalkDir::new(&src).into_iter().filter_map(|r| match r {
-        Ok(e) => Some(e),
-        Err(err) => {
-            output::warn(format!(
-                "public dir copy: skipping unreadable entry: {err}"
-            ));
-            None
-        }
-    }) {
+    for entry in walkdir::WalkDir::new(&src)
+        .into_iter()
+        .filter_map(|r| match r {
+            Ok(e) => Some(e),
+            Err(err) => {
+                output::warn(format!("public dir copy: skipping unreadable entry: {err}"));
+                None
+            }
+        })
+    {
         let rel = entry
             .path()
             .strip_prefix(&src)
@@ -2280,12 +2578,23 @@ mod tests {
     struct FakeRunner {
         bundle_calls: RefCell<Vec<BundlerInput>>,
         render_calls: RefCell<Vec<RendererInput>>,
+        /// Counts how many times `eval_deferred_paths` was invoked.
+        /// Guards the once-per-run_build call structure (issue #974).
+        eval_deferred_paths_calls: RefCell<usize>,
         mock_bundle_path: PathBuf,
         /// Canned production asset emitter inputs returned from
         /// `emit_prod_assets`. Default = empty (parity with
         /// `DefaultRunner`); tests can preload bytes to exercise the
         /// hash + URL rewrite path.
         prod_asset_inputs: RefCell<ProdAssetEmitterInputs>,
+        /// Stable client-script URLs that each rendered page explicitly
+        /// references via the `clientScript()` SSR helper. The real renderer
+        /// emits these because the page source calls `clientScript("name")`;
+        /// the fake splices a `<script src="…">` per URL into every page's
+        /// body so the post-render pipeline has an explicit reference to
+        /// hash-rewrite. This is independent of `prod_head_assets` — client
+        /// scripts are NOT auto-injected into the head (#971 P2).
+        page_client_script_refs: RefCell<Vec<String>>,
     }
 
     impl FakeRunner {
@@ -2293,8 +2602,10 @@ mod tests {
             Self {
                 bundle_calls: RefCell::new(Vec::new()),
                 render_calls: RefCell::new(Vec::new()),
+                eval_deferred_paths_calls: RefCell::new(0),
                 mock_bundle_path,
                 prod_asset_inputs: RefCell::new(ProdAssetEmitterInputs::default()),
+                page_client_script_refs: RefCell::new(Vec::new()),
             }
         }
 
@@ -2302,6 +2613,17 @@ mod tests {
         /// Used by the orchestrator-wiring tests below.
         fn with_prod_asset_inputs(self, inputs: ProdAssetEmitterInputs) -> Self {
             *self.prod_asset_inputs.borrow_mut() = inputs;
+            self
+        }
+
+        /// Declare client-script stable URLs that each rendered page
+        /// references explicitly (simulating a page that calls
+        /// `clientScript()`). The fake renderer splices a `<script src="…">`
+        /// tag per URL into every page body. Used by the client-script tests
+        /// to exercise the explicit-reference hash-rewrite path now that head
+        /// auto-injection is gone (#971 P2).
+        fn with_page_client_script_refs(self, urls: Vec<String>) -> Self {
+            *self.page_client_script_refs.borrow_mut() = urls;
             self
         }
     }
@@ -2338,6 +2660,7 @@ mod tests {
             Backend,
             WorkerHandle,
         )> {
+            *self.eval_deferred_paths_calls.borrow_mut() += 1;
             // The fake runner doesn't start a real host; return all deferred
             // routes unchanged (still deferred), and a no-op Stub backend
             // (the fake render_all ignores the backend).
@@ -2378,6 +2701,16 @@ mod tests {
                 }
                 None => String::new(),
             };
+            // Simulate a page that explicitly references client scripts via
+            // `clientScript()`: splice each declared URL as a `<script src>`
+            // in the body. The real renderer emits these from the page source,
+            // not from head auto-injection (#971 P2).
+            let body_extra: String = self
+                .page_client_script_refs
+                .borrow()
+                .iter()
+                .map(|src| format!("<script type=\"module\" src=\"{src}\"></script>"))
+                .collect();
             for entry in &input.route_universe {
                 let dest = input.dist_dir.join(&entry.output_path);
                 if let Some(parent) = dest.parent() {
@@ -2386,7 +2719,7 @@ mod tests {
                 std::fs::write(
                     &dest,
                     format!(
-                        "<html><head>{head_extra}</head><body><main>rendered {}</main></body></html>",
+                        "<html><head>{head_extra}</head><body><main>rendered {}</main>{body_extra}</body></html>",
                         entry.url_path,
                     ),
                 )
@@ -2418,6 +2751,7 @@ mod tests {
             Ok(ProdAssetEmitterInputs {
                 css: inputs.css.clone(),
                 islands: inputs.islands.clone(),
+                client_scripts: inputs.client_scripts.clone(),
             })
         }
     }
@@ -2926,7 +3260,10 @@ mod tests {
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), ..Config::default() };
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -2962,7 +3299,10 @@ mod tests {
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { adapter: Some("   ".into()), ..Config::default() };
+        let cfg = Config {
+            adapter: Some("   ".into()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
@@ -2994,8 +3334,8 @@ mod tests {
             static_route(vec![], "pages/index.tsx"),
             static_route(vec!["about"], "pages/about.tsx"),
         ];
-        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
-            ProdAssetEmitterInputs {
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
@@ -3003,8 +3343,8 @@ mod tests {
                     companions: Vec::new(),
                 }),
                 islands: None,
-            },
-        );
+                ..Default::default()
+            });
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
@@ -3067,6 +3407,156 @@ mod tests {
         assert!(prod_assets.island_module_urls.is_empty());
     }
 
+    /// Gate regression (#976) + explicit-reference contract (#971 P2):
+    /// with ONLY client-script payloads (css and islands both `None`) the
+    /// post-render pipeline must still fire — the gate also checks
+    /// `!client_scripts.is_empty()`. Without that check the hashed file
+    /// would never land and the explicit `clientScript()` reference in the
+    /// page would keep the stable URL.
+    ///
+    /// Client scripts are NOT auto-injected into the head; they ship only
+    /// via the page's own `clientScript()` reference (simulated here by
+    /// `with_page_client_script_refs`). `prod_head_assets` therefore stays
+    /// `None` when css/islands have no bytes.
+    #[test]
+    fn run_build_writes_hashed_client_script_and_rewrites_html() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+                css: None,
+                islands: None,
+                client_scripts: vec![zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b"// search widget".to_vec(),
+                    relative_path: PathBuf::from("assets/client/search-widget.js"),
+                    stable_url: "/assets/client/search-widget.js".to_string(),
+                    companions: Vec::new(),
+                }],
+            })
+            // The page explicitly references the client script via
+            // `clientScript("search-widget")`.
+            .with_page_client_script_refs(vec!["/assets/client/search-widget.js".to_string()]);
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        // (a) The bundle lands hashed at dist/assets/client/search-widget-<8hex>.js.
+        let client_entries: Vec<String> = std::fs::read_dir(outdir.join("assets/client"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            client_entries.len(),
+            1,
+            "expected exactly one hashed client-script asset; got {client_entries:?}",
+        );
+        let name = &client_entries[0];
+        assert!(
+            name.starts_with("search-widget-")
+                && name.ends_with(".js")
+                && name.len() == "search-widget-12345678.js".len(),
+            "expected search-widget-<8hex>.js; got {name}",
+        );
+
+        // (b) HTML carries the hashed URL (from the page's explicit
+        // reference, rewritten by the pipeline); the stable URL does not leak.
+        let hashed_url = format!("/assets/client/{name}");
+        let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        assert!(
+            html.contains(&hashed_url),
+            "hashed URL {hashed_url} missing from HTML: {html}",
+        );
+        assert!(
+            !html.contains("\"/assets/client/search-widget.js\""),
+            "stable URL leaked: {html}",
+        );
+
+        // (c) Client scripts are NOT auto-injected into the head: with no
+        // CSS/islands bytes, `prod_head_assets` is `None` (#971 P2). The
+        // client-script tag reaches HTML solely via the page's explicit
+        // reference, not via head injection.
+        let render_calls = runner.render_calls.borrow();
+        assert!(
+            render_calls[0].prod_head_assets.is_none(),
+            "client scripts must not be auto-injected into the head; \
+             prod_head_assets should be None with no css/islands bytes, got {:?}",
+            render_calls[0].prod_head_assets,
+        );
+    }
+
+    /// #971 P2 regression: a page that does NOT reference any client script
+    /// gets NO client-script tag, even when the build has client-script
+    /// payloads. The hashed asset still lands on disk (it is shipped for the
+    /// pages that DO reference it), but the unreferencing page's HTML carries
+    /// neither the stable nor the hashed client-script URL.
+    #[test]
+    fn run_build_does_not_inject_client_script_into_unreferencing_page() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        // A client-script payload exists, but the page never references it
+        // (no `with_page_client_script_refs`).
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+                css: None,
+                islands: None,
+                client_scripts: vec![zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b"// search widget".to_vec(),
+                    relative_path: PathBuf::from("assets/client/search-widget.js"),
+                    stable_url: "/assets/client/search-widget.js".to_string(),
+                    companions: Vec::new(),
+                }],
+            });
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        // The hashed bundle still lands on disk (shipped for referencing pages).
+        let client_entries: Vec<String> = std::fs::read_dir(outdir.join("assets/client"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(client_entries.len(), 1, "hashed asset still ships");
+
+        // The unreferencing page carries NO client-script URL — neither the
+        // stable URL nor any hashed `/assets/client/...` variant.
+        let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        assert!(
+            !html.contains("/assets/client/"),
+            "no client-script tag should appear on a page that did not \
+             reference it: {html}",
+        );
+
+        // And `prod_head_assets` is `None` (no css/islands, no auto-inject).
+        let render_calls = runner.render_calls.borrow();
+        assert!(render_calls[0].prod_head_assets.is_none());
+    }
+
     /// `apply_asset_url_base` mounts each emitter slot's `stable_url`
     /// under the configured `base` prefix. None / empty / "/" bases
     /// are pure no-ops (byte-identical to the pre-`base` engine).
@@ -3089,6 +3579,12 @@ mod tests {
                     stable_url: "/assets/islands.js".to_string(),
                     companions: Vec::new(),
                 }),
+                client_scripts: vec![zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b"// widget".to_vec(),
+                    relative_path: PathBuf::from("assets/client/search-widget.js"),
+                    stable_url: "/assets/client/search-widget.js".to_string(),
+                    companions: Vec::new(),
+                }],
             }
         }
 
@@ -3102,6 +3598,10 @@ mod tests {
         assert_eq!(
             inputs.islands.as_ref().unwrap().stable_url,
             "/assets/islands.js"
+        );
+        assert_eq!(
+            inputs.client_scripts[0].stable_url,
+            "/assets/client/search-widget.js"
         );
 
         // "" ⇒ no mutation.
@@ -3139,6 +3639,10 @@ mod tests {
             inputs.islands.as_ref().unwrap().stable_url,
             "/pj/zudo-doc/assets/islands.js"
         );
+        assert_eq!(
+            inputs.client_scripts[0].stable_url,
+            "/pj/zudo-doc/assets/client/search-widget.js"
+        );
 
         // "/pj/zudo-doc" (no trailing slash) ⇒ same prefix.
         let mut inputs = fixture();
@@ -3159,15 +3663,21 @@ mod tests {
             inputs.islands.as_ref().unwrap().stable_url,
             "https://cdn.example.com/assets/islands.js"
         );
+        assert_eq!(
+            inputs.client_scripts[0].stable_url,
+            "https://cdn.example.com/assets/client/search-widget.js"
+        );
 
-        // None slots stay None.
+        // None slots stay None; the empty client_scripts Vec stays empty.
         let mut inputs = ProdAssetEmitterInputs {
             css: None,
             islands: None,
+            ..Default::default()
         };
         apply_asset_url_base(&mut inputs, Some("/pj/zudo-doc/"));
         assert!(inputs.css.is_none());
         assert!(inputs.islands.is_none());
+        assert!(inputs.client_scripts.is_empty());
     }
 
     /// End-to-end: with `config.base = "/pj/zudo-doc/"` set, the
@@ -3187,8 +3697,8 @@ mod tests {
         let outdir = project_root.join("dist");
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
-        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
-            ProdAssetEmitterInputs {
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
@@ -3200,9 +3710,12 @@ mod tests {
                     companions: Vec::new(),
                 }),
                 islands: None,
-            },
-        );
-        let cfg = Config { base: Some("/pj/zudo-doc/".to_string()), ..Config::default() };
+                ..Default::default()
+            });
+        let cfg = Config {
+            base: Some("/pj/zudo-doc/".to_string()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -3283,8 +3796,8 @@ mod tests {
         let outdir = project_root.join("dist");
         make_runtime(project_root);
         let routes = vec![static_route(vec![], "pages/index.tsx")];
-        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs")).with_prod_asset_inputs(
-            ProdAssetEmitterInputs {
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
                 css: Some(zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b".btn{color:red}".to_vec(),
                     relative_path: PathBuf::from("assets/styles.css"),
@@ -3297,9 +3810,12 @@ mod tests {
                     stable_url: "/assets/islands.js".to_string(),
                     companions: Vec::new(),
                 }),
-            },
-        );
-        let cfg = Config { base: Some("/pj/zudo-doc/".to_string()), ..Config::default() };
+                ..Default::default()
+            });
+        let cfg = Config {
+            base: Some("/pj/zudo-doc/".to_string()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -3547,7 +4063,9 @@ mod tests {
         };
         let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
             .expect("should not error")
-            .expect("expected Some payload: authored CSS + module must ship even with tailwind off");
+            .expect(
+                "expected Some payload: authored CSS + module must ship even with tailwind off",
+            );
 
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
@@ -3654,8 +4172,14 @@ mod tests {
             ".keep { color: blue; }\n",
         );
         let out = strip_tailwind_imports(input);
-        assert!(!out.contains("tailwindcss"), "all tailwind imports gone; got:\n{out}");
-        assert!(out.contains("@import \"./vendor.css\""), "vendor import kept");
+        assert!(
+            !out.contains("tailwindcss"),
+            "all tailwind imports gone; got:\n{out}"
+        );
+        assert!(
+            out.contains("@import \"./vendor.css\""),
+            "vendor import kept"
+        );
         assert!(out.contains(".keep"), "authored rule kept");
     }
 
@@ -3665,7 +4189,10 @@ mod tests {
         let out = strip_tailwind_imports(input);
         // A commented-out import is inert; leaving it is harmless and the
         // trimmed line starts with `/*`, not `@import`.
-        assert!(out.contains("/* @import \"tailwindcss\"; */"), "commented import kept");
+        assert!(
+            out.contains("/* @import \"tailwindcss\"; */"),
+            "commented import kept"
+        );
         assert!(out.contains(".keep"), "authored rule kept");
     }
 
@@ -4047,7 +4574,10 @@ mod tests {
 
         let routes = vec![static_route(vec![], "pages/index.tsx")];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { base: Some("/pj/test/".to_string()), ..Config::default() };
+        let cfg = Config {
+            base: Some("/pj/test/".to_string()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
 
         run_build(BuildArgsResolved {
@@ -4099,10 +4629,7 @@ mod tests {
         use zfb_build::{PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest};
 
         let mut params = BTreeMap::new();
-        params.insert(
-            "slug".into(),
-            PostBuildParamValue::Scalar("hello".into()),
-        );
+        params.insert("slug".into(), PostBuildParamValue::Scalar("hello".into()));
 
         PostBuildRouteManifest {
             routes: vec![
@@ -4252,8 +4779,7 @@ mod tests {
     /// V8-off (no SSR routes → no V8 needed in the future-runtime sense).
     #[test]
     fn resolve_v8_mode_auto_on_pure_ssg_is_off() {
-        let mode = resolve_v8_mode(OutputMode::Auto, &[])
-            .expect("auto + no SSR routes resolves");
+        let mode = resolve_v8_mode(OutputMode::Auto, &[]).expect("auto + no SSR routes resolves");
         assert_eq!(mode, V8Mode::Off);
     }
 
@@ -4262,8 +4788,7 @@ mod tests {
     #[test]
     fn resolve_v8_mode_auto_with_ssr_routes_is_on() {
         let routes = [ssr_route("/api/me", "/api/me")];
-        let mode = resolve_v8_mode(OutputMode::Auto, &routes)
-            .expect("auto + SSR route resolves");
+        let mode = resolve_v8_mode(OutputMode::Auto, &routes).expect("auto + SSR route resolves");
         assert_eq!(mode, V8Mode::On);
     }
 
@@ -4271,15 +4796,15 @@ mod tests {
     /// V8-on regardless of detection.
     #[test]
     fn resolve_v8_mode_hybrid_on_pure_ssg_forces_on() {
-        let mode = resolve_v8_mode(OutputMode::Hybrid, &[])
-            .expect("hybrid + no SSR routes resolves");
+        let mode =
+            resolve_v8_mode(OutputMode::Hybrid, &[]).expect("hybrid + no SSR routes resolves");
         assert_eq!(mode, V8Mode::On);
         // Mirror with a project that already has SSR routes — same
         // result, just confirming hybrid is "always on" not "on when
         // SSR routes happen to be present".
         let routes = [ssr_route("/api/me", "/api/me")];
-        let mode = resolve_v8_mode(OutputMode::Hybrid, &routes)
-            .expect("hybrid + SSR route resolves");
+        let mode =
+            resolve_v8_mode(OutputMode::Hybrid, &routes).expect("hybrid + SSR route resolves");
         assert_eq!(mode, V8Mode::On);
     }
 
@@ -4288,8 +4813,8 @@ mod tests {
     /// from auto is that the user has declared intent.
     #[test]
     fn resolve_v8_mode_static_on_pure_ssg_is_off() {
-        let mode = resolve_v8_mode(OutputMode::Static, &[])
-            .expect("static + no SSR routes resolves");
+        let mode =
+            resolve_v8_mode(OutputMode::Static, &[]).expect("static + no SSR routes resolves");
         assert_eq!(mode, V8Mode::Off);
     }
 
@@ -4435,7 +4960,11 @@ mod tests {
             static_html: false,
         }];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), output: OutputMode::Static, ..Config::default() };
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            output: OutputMode::Static,
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
@@ -4506,7 +5035,10 @@ mod tests {
             },
         ];
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), ..Config::default() };
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -4610,7 +5142,10 @@ mod tests {
         // catch-all route. We use FakeRunner which records its inputs;
         // the SSR route must NOT appear in the deferred slice.
         let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
-        let cfg = Config { adapter: Some("@takazudo/zfb-adapter-cloudflare".into()), ..Config::default() };
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -4700,4 +5235,220 @@ mod tests {
     // Note: read_tsconfig_paths tests have been moved to
     // crates/zfb-plugin-resolver/src/lib.rs (read_tsconfig_paths_into_map
     // tests) as part of the shared-helper extraction in issue #901.
+
+    /// Issue #974 — eval_deferred_paths must be invoked exactly once per
+    /// run_build call, not once per deferred route or once per render pass.
+    ///
+    /// This guards the orchestration call structure: the build pipeline
+    /// resolves all deferred dynamic routes in a single `eval_deferred_paths`
+    /// call so that the runtime (embedded V8 or HTTP worker) is started once,
+    /// queried for every pending route, and then shut down. Re-invoking per
+    /// route would restart the worker N times and defeat the paths() memo in
+    /// the JS router.
+    #[test]
+    fn run_build_calls_eval_deferred_paths_exactly_once() {
+        // Stage two dynamic pages so there are multiple deferred routes.
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+
+        // pages/[slug].tsx — source exists so static expansion defers it
+        // (non-literal paths()); FakeRunner will keep it deferred.
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::write(
+            project_root.join("pages/[slug].tsx"),
+            "export async function paths() {\n\
+                const { getCollection } = await import('zfb/content');\n\
+                return [];\n\
+             }\n",
+        )
+        .unwrap();
+
+        // pages/[tag].tsx — same pattern, second deferred route.
+        std::fs::write(
+            project_root.join("pages/[tag].tsx"),
+            "export async function paths() {\n\
+                const { getCollection } = await import('zfb/content');\n\
+                return [];\n\
+             }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            dynamic_route("slug", "pages/[slug].tsx"),
+            dynamic_route("tag", "pages/[tag].tsx"),
+        ];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        // eval_deferred_paths must be called exactly once per run_build,
+        // not once per deferred route (which would be 2 here).
+        assert_eq!(
+            *runner.eval_deferred_paths_calls.borrow(),
+            1,
+            "eval_deferred_paths must be called exactly once per run_build (issue #974)"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // base="/foo/" + client-script end-to-end (#978)
+    // ---------------------------------------------------------------------------
+    //
+    // Acceptance: with `config.base = "/foo/"`, a client-script stable URL
+    // emitted by the renderer as `/foo/assets/client/x.js` (the base-prefixed
+    // stable URL) must be rewritten by `ProductionAssetPipeline` to
+    // `/foo/assets/client/x-<hash>.js`.  This proves that the base-prefixed
+    // stable URL is the exact rewrite key end-to-end.
+    //
+    // The stable URL that the renderer receives already carries the `/foo`
+    // prefix because `apply_asset_url_base` mutates `stable_url` in-place
+    // before handing it to the renderer.  `boundary_replace` then searches
+    // for that same prefixed string in the rendered HTML and replaces it with
+    // the hashed equivalent.  If either side used an unprefixed URL, the
+    // rewrite would never fire and the stable URL would leak.
+
+    #[test]
+    fn run_build_with_base_emits_prefixed_hashed_client_script_url_in_html() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        // Seed the runner with one client-script payload carrying the UNPREFIXED
+        // stable URL.  `apply_asset_url_base` (called inside run_build) will
+        // prepend "/foo" before handing it to the renderer and pipeline, so the
+        // test exercises the full base-rewrite path.
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+                css: None,
+                islands: None,
+                client_scripts: vec![zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b"// search widget".to_vec(),
+                    relative_path: PathBuf::from("assets/client/x.js"),
+                    // Seeded with the unprefixed stable URL; apply_asset_url_base
+                    // will prepend "/foo" → "/foo/assets/client/x.js".
+                    stable_url: "/assets/client/x.js".to_string(),
+                    companions: Vec::new(),
+                }],
+            })
+            // The page references the client script via `clientScript("x")`,
+            // which under `base="/foo/"` emits the base-prefixed stable URL.
+            // This is the explicit reference the pipeline rewrites — client
+            // scripts are not auto-injected into the head (#971 P2).
+            .with_page_client_script_refs(vec!["/foo/assets/client/x.js".to_string()]);
+        let cfg = Config {
+            base: Some("/foo/".to_string()),
+            ..Config::default()
+        };
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        // (a) The hashed bundle lands under dist/assets/client/x-<8hex>.js.
+        let client_entries: Vec<String> = std::fs::read_dir(outdir.join("assets/client"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            client_entries.len(),
+            1,
+            "expected exactly one hashed client-script asset; got {client_entries:?}",
+        );
+        let name = &client_entries[0];
+        assert!(
+            name.starts_with("x-") && name.ends_with(".js") && name.len() == "x-12345678.js".len(),
+            "expected x-<8hex>.js; got {name}",
+        );
+
+        // (b) The HTML carries the PREFIXED hashed URL; neither the prefixed
+        //     stable URL nor the unprefixed variants leak.
+        let prefixed_hashed = format!("/foo/assets/client/{name}");
+        let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        assert!(
+            html.contains(&prefixed_hashed),
+            "prefixed hashed URL {prefixed_hashed} missing from HTML:\n{html}",
+        );
+        assert!(
+            !html.contains("\"/foo/assets/client/x.js\""),
+            "prefixed stable URL leaked into HTML:\n{html}",
+        );
+        assert!(
+            !html.contains("\"/assets/client/x.js\""),
+            "unprefixed stable URL leaked into HTML:\n{html}",
+        );
+
+        // (c) Client scripts are NOT auto-injected into the head (#971 P2):
+        //     with no css/islands bytes, `prod_head_assets` is `None`. The
+        //     prefixed stable URL reaches HTML only via the page's explicit
+        //     `clientScript()` reference, and `apply_asset_url_base` still
+        //     prefixes the payload's `stable_url` so the pipeline's
+        //     boundary_replace rewrite key matches that explicit reference.
+        let render_calls = runner.render_calls.borrow();
+        assert!(
+            render_calls[0].prod_head_assets.is_none(),
+            "client scripts must not be auto-injected; prod_head_assets should \
+             be None with no css/islands bytes, got {:?}",
+            render_calls[0].prod_head_assets,
+        );
+    }
+
+    /// Zero-script build with no-base should produce byte-identical bundle to a
+    /// pre-#978 build: `globalThis.__zfb.base` must NOT appear in the bundle.
+    /// Guards the #261 zero-registration parity and #940 byte-identical dev
+    /// bundle skip invariants.
+    #[test]
+    fn run_build_without_client_scripts_does_not_emit_base_in_bundle() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        // No client_scripts in the prod asset inputs → base_prefix must stay None.
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        // The bundler input must have had base_prefix = None, which means the
+        // entry.mjs written to the shadow tree must NOT contain the base setter.
+        // FakeRunner records the BundlerInput via bundle_calls; check its base_prefix.
+        let bundle_calls = runner.bundle_calls.borrow();
+        assert!(
+            bundle_calls[0].base_prefix.is_none(),
+            "zero-script build must pass base_prefix=None to the bundler; got {:?}",
+            bundle_calls[0].base_prefix,
+        );
+    }
 }

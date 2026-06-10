@@ -309,6 +309,18 @@ pub struct IslandsBundleInfo {
 /// [`BuildOutcome::islands_rerun`] but emits no SSE event.
 pub type IslandsRunner = Arc<dyn Fn() -> Result<Option<IslandsBundleInfo>> + Send + Sync + 'static>;
 
+/// Function that re-bundles all `*.client.{ts,tsx,js,jsx}` entries and
+/// writes the stable per-entry files under `dist/assets/client/`.
+///
+/// Returns `true` when at least one client-script file was written (new
+/// bytes or new entry), `false` when everything was byte-identical. The
+/// dev pipeline emits a `ReloadEvent::Page` when this returns `true`.
+///
+/// The runner is responsible for pruning stale files (removed or renamed
+/// entries) as part of the same call. Returning `Ok(false)` on a
+/// no-change tick avoids a spurious full page reload.
+pub type ClientScriptsRunner = Arc<dyn Fn() -> Result<bool> + Send + Sync + 'static>;
+
 /// Outcome of one [`RendererReloader`] invocation (issue #956).
 ///
 /// An explicit three-state result — deliberately not a bare
@@ -404,6 +416,10 @@ pub struct BuildContext {
     /// silently skipped. Consumed by [`DevAssetPipeline`] only.
     pub run_islands: Option<IslandsRunner>,
 
+    /// Client-scripts bundler callback. Optional: if `None`, client-script
+    /// reruns are silently skipped. Consumed by [`DevAssetPipeline`] only.
+    pub run_client_scripts: Option<ClientScriptsRunner>,
+
     /// Renderer-reload hook invoked once per tick when pages need
     /// re-rendering. See [`RendererReloader`] for the contract.
     /// Optional: tests and one-off callers that don't own a renderer
@@ -420,6 +436,10 @@ impl std::fmt::Debug for BuildContext {
             .field(
                 "run_islands",
                 &self.run_islands.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "run_client_scripts",
+                &self.run_client_scripts.as_ref().map(|_| "<callback>"),
             )
             .field(
                 "reload_renderer",
@@ -452,6 +472,9 @@ pub struct DevBuildContext {
     /// Islands bundler callback. `None` = skip islands reruns.
     pub run_islands: Option<IslandsRunner>,
 
+    /// Client-scripts bundler callback. `None` = skip client-script reruns.
+    pub run_client_scripts: Option<ClientScriptsRunner>,
+
     /// Renderer-reload hook. `None` = no-op (e.g. no renderer session
     /// active in tests).
     pub reload_renderer: Option<RendererReloader>,
@@ -466,6 +489,7 @@ impl DevBuildContext {
             render_pages: self.render_pages,
             run_css: self.run_css,
             run_islands: self.run_islands,
+            run_client_scripts: self.run_client_scripts,
             reload_renderer: self.reload_renderer,
         }
     }
@@ -480,6 +504,10 @@ impl std::fmt::Debug for DevBuildContext {
             .field(
                 "run_islands",
                 &self.run_islands.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "run_client_scripts",
+                &self.run_client_scripts.as_ref().map(|_| "<callback>"),
             )
             .field(
                 "reload_renderer",
@@ -514,6 +542,7 @@ impl ProdBuildContext {
             render_pages: self.render_pages,
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: None,
         }
     }
@@ -556,6 +585,15 @@ pub struct BuildOutcome {
     /// this out to one `ReloadEvent::Islands` per component when
     /// `changed` is true.
     pub islands_bundle: Option<IslandsBundleInfo>,
+
+    /// Whether the client-scripts bundler ran this tick.
+    pub client_scripts_rerun: bool,
+
+    /// Whether the client-scripts bundler wrote at least one new or
+    /// changed file. When `true`, the SSE layer emits a
+    /// `ReloadEvent::Page` (full reload — v1 doesn't have a finer-
+    /// grained client-script hot-swap event).
+    pub client_scripts_changed: bool,
 
     /// Pages whose HTML was actually written (the file was new or the
     /// bytes changed). Useful for the dev preview server's WebSocket

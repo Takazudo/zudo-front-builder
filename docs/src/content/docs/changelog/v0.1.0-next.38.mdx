@@ -1,0 +1,16 @@
+---
+title: v0.1.0-next.38
+sidebar_position: 1038
+---
+
+# v0.1.0-next.38
+
+Released: 2026-06-11
+
+## Features
+
+- Post-compile cross-file anchor check in `bundle()` (#980): `linkValidation` now verifies `./other.md#fragment` links against the target file's actual headings, not just file existence. The check runs after all files are compiled so every file's heading map is complete. Headings injected via transclusion are included. Targets outside the bundler's walked directories degrade to existence-only validation (same behaviour as before).
+
+## Breaking Changes
+
+- Builds with `linkValidation: { failOnBroken: true }` that previously passed despite broken cross-file anchor fragments (e.g. `./target.mdx#typo`) will now fail. Audit your internal links if upgrading from an earlier release with `failOnBroken: true`.

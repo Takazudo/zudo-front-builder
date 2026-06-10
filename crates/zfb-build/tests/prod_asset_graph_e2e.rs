@@ -338,6 +338,7 @@ fn prod_asset_graph_emits_hashed_css_and_rewrites_html_via_real_orchestrator() {
             companions: Vec::new(),
         }),
         islands: None,
+        ..Default::default()
     };
     let outcome = apply_prod_asset_pipeline(&dist_dir, pages.clone(), inputs)
         .expect("apply_prod_asset_pipeline must succeed");
@@ -488,6 +489,7 @@ fn prod_asset_graph_emits_hashed_css_and_islands_when_project_has_both() {
             stable_url: STABLE_ISLANDS_URL.to_string(),
             companions: Vec::new(),
         }),
+        ..Default::default()
     };
     let outcome = apply_prod_asset_pipeline(&dist_dir, pages.clone(), inputs)
         .expect("apply_prod_asset_pipeline must succeed for css + islands");
@@ -571,6 +573,112 @@ fn prod_asset_graph_emits_hashed_css_and_islands_when_project_has_both() {
         .collect();
     assert!(urls.contains(&hashed_css_url));
     assert!(urls.contains(&hashed_islands_url));
+}
+
+// ---------------------------------------------------------------------------
+// Test — client-script entries (#976)
+// ---------------------------------------------------------------------------
+
+/// Client-script payloads route through the same orchestrator wiring as
+/// CSS/islands: each `*.client.ts` entry ships hashed to
+/// `dist/assets/client/<name>-<hash>.js` and every HTML reference to the
+/// stable `/assets/client/<name>.js` URL is rewritten — the #976
+/// acceptance criterion driven through the REAL
+/// `apply_prod_asset_pipeline` with a simulated renderer.
+///
+/// The bytes are synthetic (same shape `build_production_client_scripts`
+/// returns) — esbuild is covered by the `#[ignore]` integration test in
+/// `crates/zfb-islands/tests/integration.rs`; this test locks in the
+/// orchestrator + rewrite contract.
+#[test]
+fn prod_asset_graph_emits_hashed_client_script_and_rewrites_html() {
+    let fixture = stage_minimal_fixture();
+    let dist_dir = fixture.project_root.path().join("dist");
+    fs::create_dir_all(&dist_dir).unwrap();
+
+    let entry_name = "search-widget";
+    let stable_url = zfb_types::stable_client_script_url(entry_name);
+    let relative_path = zfb_types::stable_client_script_relative_path(entry_name);
+    let script_bytes = b"// bundled search widget\nconsole.log(\"hi\");\n".to_vec();
+
+    // Simulate a page that explicitly references the client script via the
+    // `clientScript()` SSR helper: the rendered HTML carries the stable
+    // client-script URL as a module script tag. Client scripts are NOT
+    // auto-injected into the head (#971 P2) — they reach a page only through
+    // such explicit references. We reuse the head-inject staging helper here
+    // purely to place the stable URL into the page; the pipeline rewrite is
+    // injection-point-agnostic (it rewrites any boundary-anchored match).
+    let head_assets = ProdHeadAssets {
+        css_url: None,
+        island_module_urls: vec![stable_url.clone()],
+    };
+    let pages = vec![
+        stage_html_with_head_inject(&dist_dir, "index.html", "Home", &head_assets),
+        stage_html_with_head_inject(&dist_dir, "about/index.html", "About", &head_assets),
+    ];
+
+    let inputs = ProdAssetEmitterInputs {
+        css: None,
+        islands: None,
+        client_scripts: vec![AssetEmitterPayload {
+            bytes: script_bytes,
+            relative_path,
+            stable_url: stable_url.clone(),
+            companions: Vec::new(),
+        }],
+    };
+    let outcome = apply_prod_asset_pipeline(&dist_dir, pages.clone(), inputs)
+        .expect("apply_prod_asset_pipeline must succeed for client scripts");
+
+    // Hashed file lands under dist/assets/client/.
+    let client_dir = dist_dir.join(DIST_ASSETS_DIR).join("client");
+    let entries: Vec<String> = fs::read_dir(&client_dir)
+        .unwrap_or_else(|e| panic!("dist/assets/client must exist after pipeline run: {e}"))
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected exactly one hashed client-script asset; got {entries:?}",
+    );
+    let hashed_filename = &entries[0];
+    let expected_len = entry_name.len() + "-12345678.js".len();
+    assert!(
+        hashed_filename.starts_with(&format!("{entry_name}-"))
+            && hashed_filename.ends_with(".js")
+            && hashed_filename.len() == expected_len,
+        "hashed filename must match `{entry_name}-<8hex>.js`; got {hashed_filename}",
+    );
+    assert!(!fs::read(client_dir.join(hashed_filename))
+        .unwrap()
+        .is_empty());
+
+    // HTML positive + disk-existence + negative.
+    let hashed_url = format!("/assets/client/{hashed_filename}");
+    for page in &pages {
+        let html = fs::read_to_string(dist_dir.join(page.output_path.as_path())).unwrap();
+        assert!(
+            html.contains(&island_module_script_tag(&hashed_url)),
+            "missing hashed client-script tag in {}: {html}",
+            page.output_path.as_path().display(),
+        );
+        let src = first_module_script_src(&html).expect("module script src");
+        let on_disk = url_to_disk_path(&dist_dir, &src);
+        assert!(
+            on_disk.is_file(),
+            "static-fallback contract violated: HTML claims {src} but {} missing on disk",
+            on_disk.display(),
+        );
+        assert!(
+            !html.contains(&format!("\"{stable_url}\"")),
+            "unhashed client-script URL leaked into {}: {html}",
+            page.output_path.as_path().display(),
+        );
+    }
+
+    // BuildOutcome reports the hashed client-script URL.
+    assert_eq!(outcome.hashed_asset_urls.len(), 1);
+    assert_eq!(outcome.hashed_asset_urls[0].1, hashed_url);
 }
 
 // ---------------------------------------------------------------------------
@@ -744,6 +852,7 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
             companions: Vec::new(),
         }),
         islands: None,
+        ..Default::default()
     };
     let _outcome =
         apply_prod_asset_pipeline(&dist_dir, pages.clone(), inputs).expect("pipeline must succeed");
@@ -835,6 +944,7 @@ fn prod_asset_graph_ships_dynamic_import_chunks_verbatim() {
                 bytes: chunk_bytes.clone(),
             }],
         }),
+        ..Default::default()
     };
     let outcome = apply_prod_asset_pipeline(&dist_dir, pages.clone(), inputs)
         .expect("apply_prod_asset_pipeline must succeed with chunks");
@@ -974,6 +1084,7 @@ fn prod_asset_graph_ships_dynamic_import_chunks_verbatim() {
             stable_url: STABLE_ISLANDS_URL.to_string(),
             companions: Vec::new(),
         }),
+        ..Default::default()
     };
     apply_prod_asset_pipeline(&dist2, pages2, inputs_no_chunks)
         .expect("zero-chunk pipeline run must succeed");

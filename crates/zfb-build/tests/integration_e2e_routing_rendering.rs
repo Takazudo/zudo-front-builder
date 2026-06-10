@@ -332,6 +332,7 @@ fn build_bundle(
         css_module_class_maps: std::collections::HashMap::new(),
         mdx_components_file: None,
         bundle_exclude: Vec::new(),
+        base_prefix: None,
     };
 
     let output = bundle(input).expect("bundle should succeed for fixture project");

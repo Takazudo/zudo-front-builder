@@ -33,13 +33,23 @@ export type VNodeObject = {
 };
 
 /**
- * A renderable JSX node: a primitive, `null`, `undefined`, an array, or a
- * structured VNode object.
+ * A renderable JSX node: a primitive, `null`, `undefined`, an array, a
+ * structured VNode object, or a bare `object`.
  *
  * This union covers every value both Preact and React treat as valid
- * `children`. Importantly it does **not** reference any framework-specific
- * type, so packages that depend on `zfb` need not install a React / Preact
- * `@types` package to satisfy this type.
+ * `children`. The bare `object` member is required to make Preact's
+ * `ComponentChildren` / `VNode<{}>` assignable without casts — Preact's own
+ * `ComponentChild` uses the same widening pattern. The loosening is safe
+ * because all SDK runtime code duck-types `unknown` at the boundary
+ * (island.ts, content.ts) and the Rust pipeline is type-erased.
+ *
+ * Importantly, the union does **not** reference any framework-specific type,
+ * so packages that depend on `zfb` need not install a React / Preact `@types`
+ * package to satisfy this type.
+ *
+ * **Name-collision note for Preact consumers:** if your file already has
+ * `import { VNode } from "preact"`, use a qualifier on the zfb import:
+ * `import type { VNode as ZfbVNode } from "@takazudo/zfb"`.
  */
 export type VNode =
   | string
@@ -49,7 +59,8 @@ export type VNode =
   | undefined
   | bigint
   | VNodeArray
-  | VNodeObject;
+  | VNodeObject
+  | object;
 
 export interface VNodeArray extends ReadonlyArray<VNode> {}
 

@@ -57,6 +57,10 @@
       "types": "./src/frontmatter.ts",
       "default": "./src/frontmatter.ts"
     },
+    "./slugify": {
+      "types": "./src/slugify.ts",
+      "default": "./src/slugify.ts"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -109,6 +113,10 @@
         "types": "./dist/frontmatter.d.ts",
         "default": "./dist/frontmatter.js"
       },
+      "./slugify": {
+        "types": "./dist/slugify.d.ts",
+        "default": "./dist/slugify.js"
+      },
       "./package.json": "./package.json"
     }
   },
@@ -119,7 +127,7 @@
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "pnpm build && pnpm test",
-    "test": "vitest run",
+    "test": "vitest run && tsc -p tsconfig.preact-fixture.json",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
@@ -127,6 +135,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "happy-dom": "^15.7.4",
+    "preact": "^10.29.0",
     "react": "^19.2.3",
     "typescript": "^5.9.0",
     "vitest": "^2.1.9"

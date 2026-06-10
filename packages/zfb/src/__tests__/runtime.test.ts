@@ -196,6 +196,270 @@ describe("scheduleHydrate", () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // when='media' — matchMedia-gated hydration
+  // ---------------------------------------------------------------------------
+
+  describe("when='media'", () => {
+    /** Build a fake MediaQueryList. `matches` controls the initial state. */
+    function fakeMql(matches: boolean) {
+      const listeners: Array<(e: MediaQueryListEvent) => void> = [];
+      const mql = {
+        matches,
+        addEventListener: vi.fn((_type: string, handler: (e: MediaQueryListEvent) => void) => {
+          listeners.push(handler);
+        }),
+        removeEventListener: vi.fn((_type: string, handler: (e: MediaQueryListEvent) => void) => {
+          const idx = listeners.indexOf(handler);
+          if (idx !== -1) listeners.splice(idx, 1);
+        }),
+        /** Simulate a media-query change event. */
+        dispatchChange(newMatches: boolean) {
+          const evt = { matches: newMatches } as MediaQueryListEvent;
+          for (const l of [...listeners]) l(evt);
+        },
+        listenerCount() {
+          return listeners.length;
+        },
+      };
+      return mql;
+    }
+
+    type FakeMql = ReturnType<typeof fakeMql>;
+
+    function stubMatchMedia(mql: FakeMql) {
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn((_q: string) => mql),
+      );
+    }
+
+    beforeEach(() => {
+      target.setAttribute("data-media", "(max-width: 768px)");
+    });
+
+    it("fires synchronously when the query already matches + no pendingCancel registered", () => {
+      const mql = fakeMql(true);
+      stubMatchMedia(mql);
+      // Ensure target is in the manifest as "Media" island for mountIslands test below.
+      target.setAttribute("data-when", "media");
+      target.setAttribute("data-media", "(max-width: 768px)");
+
+      const fire = vi.fn();
+      const cancel = scheduleHydrate(target, "media", fire);
+      expect(fire).toHaveBeenCalledTimes(1);
+      // No listener should have been registered — fired synchronously.
+      expect(mql.addEventListener).not.toHaveBeenCalled();
+      expect(typeof cancel).toBe("function");
+    });
+
+    it("does not fire when query does not initially match", () => {
+      const mql = fakeMql(false);
+      stubMatchMedia(mql);
+
+      const fire = vi.fn();
+      scheduleHydrate(target, "media", fire);
+      expect(fire).not.toHaveBeenCalled();
+      expect(mql.addEventListener).toHaveBeenCalledTimes(1);
+    });
+
+    it("fires exactly once on the first matching change event, then removes listener", () => {
+      const mql = fakeMql(false);
+      stubMatchMedia(mql);
+
+      const fire = vi.fn();
+      scheduleHydrate(target, "media", fire);
+      expect(fire).not.toHaveBeenCalled();
+
+      // Matching change event fires and removes listener.
+      mql.dispatchChange(true);
+      expect(fire).toHaveBeenCalledTimes(1);
+      expect(mql.removeEventListener).toHaveBeenCalledTimes(1);
+
+      // Second matching event is ignored (listener already removed).
+      mql.dispatchChange(true);
+      expect(fire).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores un-match (false) change events", () => {
+      const mql = fakeMql(false);
+      stubMatchMedia(mql);
+
+      const fire = vi.fn();
+      scheduleHydrate(target, "media", fire);
+
+      // Un-match change — must NOT fire.
+      mql.dispatchChange(false);
+      expect(fire).not.toHaveBeenCalled();
+      // Listener must still be registered (not consumed by the un-match).
+      expect(mql.listenerCount()).toBe(1);
+    });
+
+    it("cancel() removes the matchMedia listener and prevents later firing", () => {
+      const mql = fakeMql(false);
+      stubMatchMedia(mql);
+
+      const fire = vi.fn();
+      const cancel = scheduleHydrate(target, "media", fire);
+      expect(mql.addEventListener).toHaveBeenCalledTimes(1);
+
+      cancel();
+      expect(mql.removeEventListener).toHaveBeenCalledTimes(1);
+
+      // Simulate the change event after cancel — fire must NOT be called.
+      mql.dispatchChange(true);
+      expect(fire).not.toHaveBeenCalled();
+    });
+
+    it("fails open (fires immediately) when matchMedia is absent", () => {
+      vi.stubGlobal("matchMedia", undefined);
+
+      const fire = vi.fn();
+      scheduleHydrate(target, "media", fire);
+      expect(fire).toHaveBeenCalledTimes(1);
+    });
+
+    it("fails open (fires immediately) when data-media attribute is missing/empty", () => {
+      const mql = fakeMql(false);
+      stubMatchMedia(mql);
+      // Remove the attribute so the scheduler can't find a query.
+      target.removeAttribute("data-media");
+
+      const fire = vi.fn();
+      scheduleHydrate(target, "media", fire);
+      expect(fire).toHaveBeenCalledTimes(1);
+    });
+
+    it("falls back to legacy addListener/removeListener when addEventListener is missing (old Safari)", () => {
+      // Older Safari (<14) MediaQueryList has no EventTarget API — only the
+      // deprecated addListener/removeListener pair. The scheduler must not
+      // throw and must still fire-once + clean up via removeListener.
+      const listeners: Array<(e: MediaQueryListEvent) => void> = [];
+      const legacyMql = {
+        matches: false,
+        addListener: vi.fn((h: (e: MediaQueryListEvent) => void) => {
+          listeners.push(h);
+        }),
+        removeListener: vi.fn((h: (e: MediaQueryListEvent) => void) => {
+          const i = listeners.indexOf(h);
+          if (i !== -1) listeners.splice(i, 1);
+        }),
+        dispatchChange(m: boolean) {
+          for (const l of [...listeners]) l({ matches: m } as MediaQueryListEvent);
+        },
+      };
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => legacyMql),
+      );
+
+      const fire = vi.fn();
+      scheduleHydrate(target, "media", fire);
+      expect(legacyMql.addListener).toHaveBeenCalledTimes(1);
+      expect(fire).not.toHaveBeenCalled();
+
+      legacyMql.dispatchChange(true);
+      expect(fire).toHaveBeenCalledTimes(1);
+      expect(legacyMql.removeListener).toHaveBeenCalledTimes(1);
+    });
+
+    it("legacy API: cancel() removes the listener via removeListener", () => {
+      const listeners: Array<(e: MediaQueryListEvent) => void> = [];
+      const legacyMql = {
+        matches: false,
+        addListener: vi.fn((h: (e: MediaQueryListEvent) => void) => {
+          listeners.push(h);
+        }),
+        removeListener: vi.fn((h: (e: MediaQueryListEvent) => void) => {
+          const i = listeners.indexOf(h);
+          if (i !== -1) listeners.splice(i, 1);
+        }),
+        dispatchChange(m: boolean) {
+          for (const l of [...listeners]) l({ matches: m } as MediaQueryListEvent);
+        },
+      };
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => legacyMql),
+      );
+
+      const fire = vi.fn();
+      const cancel = scheduleHydrate(target, "media", fire);
+      cancel();
+      expect(legacyMql.removeListener).toHaveBeenCalledTimes(1);
+      legacyMql.dispatchChange(true);
+      expect(fire).not.toHaveBeenCalled();
+    });
+
+    it("fails open when MediaQueryList exposes no listener API at all", () => {
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => ({ matches: false })),
+      );
+
+      const fire = vi.fn();
+      scheduleHydrate(target, "media", fire);
+      expect(fire).toHaveBeenCalledTimes(1);
+    });
+
+    it("mountIslands-level: data-when=media island hydrates on first match", async () => {
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-when="media" data-media="(max-width: 768px)"></div>
+      `;
+      const mql = fakeMql(false);
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => mql),
+      );
+
+      const mount = vi.fn();
+      const restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+      try {
+        mountIslands({ Counter: "/islands/Counter-abc.js" });
+
+        // Before the query matches: import must not have started.
+        expect(mount).not.toHaveBeenCalled();
+
+        // Simulate query match.
+        mql.dispatchChange(true);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(mount).toHaveBeenCalledTimes(1);
+        expect(mount.mock.calls[0]![2]).toBe("hydrate");
+      } finally {
+        __setIslandImporterForTests(restoreImporter);
+      }
+    });
+
+    it("lazy props: data-props is NOT parsed until the media query matches", () => {
+      // Set up an island with malformed data-props — if props are parsed eagerly
+      // at boot time, this test would surface the malformed parse there. With
+      // lazy parse, the malformed attribute should not be touched until fire.
+      document.body.innerHTML = `
+        <div data-zfb-island="Counter" data-when="media" data-media="(max-width: 768px)" data-props='NOT_JSON'></div>
+      `;
+      const mql = fakeMql(false);
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => mql),
+      );
+
+      const mount = vi.fn();
+      const restoreImporter = __setIslandImporterForTests(async () => ({ mount }));
+      try {
+        // Boot time: scheduleMount should set up the listener but NOT parse props.
+        mountIslands({ Counter: { mount } });
+
+        // The island should not have mounted yet (query doesn't match).
+        expect(mount).not.toHaveBeenCalled();
+        // Props are not parsed until fire — no crash here.
+      } finally {
+        __setIslandImporterForTests(restoreImporter);
+      }
+    });
+  });
+
   describe("mountIslands", () => {
     type FakeMount = (
       props: Record<string, unknown>,

@@ -151,6 +151,10 @@ this when it builds the route table — see
   before any page evaluates, so there's no async boundary to wait
   on. Keep it pure-data and deterministic — the router calls it
   during route enumeration, well before render.
+- `paths()` is **evaluated once per route per build** — the result is
+  memoised and reused for every page rendered from the same route
+  template. Per-entry work inside `paths()` (such as mapping a
+  collection) is safe and will not be repeated for each output URL.
 - Two routes that resolve to the same template raise
   `RouterError::AmbiguousRoute` at build time. The router also raises
   `RouterError::AmbiguousShape` when two routes differ only in

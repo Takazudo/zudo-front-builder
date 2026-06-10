@@ -31,24 +31,34 @@ SSR 時、`<Island>` ラッパーは `<div data-zfb-island="Counter" data-when="
 ```ts
 interface IslandProps {
   when?: When;
+  media?: string;
   ssrFallback?: VNode;
   children?: VNode;
 }
 ```
 
 - `when` — ハイドレーション戦略。デフォルトは `"load"`。後述の [ハイドレーション戦略](#ハイドレーション戦略) を参照してください。
+- `media` — `when="media"` 島用の CSS メディアクエリ文字列。このクエリが最初にマッチしたとき（リサイズや回転による後続のビューポート変更を含む）にハイドレートします。`when="media"` のときに必須で、他の戦略には無視されます（開発時に警告が出ます）。
 - `ssrFallback` — SSR スキップモードを有効にします（Astro の `client:only` に相当）。指定すると、重い `children` はサーバーサイドで評価され**ません**。代わりに `ssrFallback` がレンダリングされ、クライアントはハイドレーション時に本物のコンポーネントに差し替えます。
 - `children` — ハイドレートするコンポーネント。
 
 ## ハイドレーション戦略
 
-`when` プロップは 3 つの値を受け付けます。いずれも現在出荷済みです。
+`when` プロップは 4 つの値を受け付けます。いずれも現在出荷済みです。
 
 | 値 | 振る舞い |
 | --- | --- |
 | `"load"` | ページの JavaScript が実行されたら即座にハイドレートします。`when` を省略した場合のデフォルトです。 |
 | `"visible"` | 島のルート要素がビューポートに入ったときにハイドレートします（IntersectionObserver、しきい値 0）。画面外コンテンツに対して最も低コストの遅延手段です。 |
 | `"idle"` | ブラウザの次のアイドルコールバック時にハイドレートします。`requestIdleCallback` がないプラットフォームでは `setTimeout(0)` にフォールバックします。 |
+| `"media"` | CSS メディアクエリが最初にマッチしたときにハイドレートします（`window.matchMedia`）。同伴の `media` プロップが必要です。後続のビューポート変更（リサイズ、画面向き変更）にも対応します。`matchMedia` が使用できない場合は即座にハイドレートにフォールバックします。**注意:** SSR スキップ（`ssrFallback`）島は `when` を完全に無視し、即座にレンダリングします。 |
+
+```tsx
+// 狭いビューポート（例: モバイルメニュー）でのみハイドレートする
+<Island when="media" media="(max-width: 768px)">
+  <MobileMenu />
+</Island>
+```
 
 ## SSR スキップモード
 
@@ -68,6 +78,60 @@ export default function Page() {
 ```
 
 サーバーは `<div data-zfb-island-skip-ssr="HeavyChart" data-when="load">…fallback…</div>` を発行します。ハイドレーション時にクライアントランタイムがプレースホルダーへ `HeavyChart` をレンダリングします。
+
+## VNode 型のエクスポート
+
+`VNode`、`VNodeArray`、`VNodeObject` は `"@takazudo/zfb"` からパブリック型としてエクスポートされます。
+
+```ts
+import type { VNode, VNodeArray, VNodeObject } from "@takazudo/zfb";
+```
+
+これらの構造的型はフレームワーク非依存です。`VNode` には素の `object` メンバーが含まれており（Preact 自身の `ComponentChild` 設計と同じパターン）、Preact の `ComponentChildren`・`VNode<Props>`・`JSX.Element`・`JSX.Element[]` は `Island` の入力境界（`children` と `ssrFallback`）に `as unknown as` キャストなしで直接代入できます。
+
+```tsx
+import type { ComponentChildren } from "preact";
+import { Island } from "@takazudo/zfb";
+
+// ComponentChildren を children として転送 — キャスト不要
+function Wrapper({ children }: { children: ComponentChildren }) {
+  return <Island when="load">{children}</Island>;
+}
+
+// ComponentChildren を ssrFallback として転送 — キャスト不要
+function SkipWrapper({ fallback }: { fallback: ComponentChildren }) {
+  return (
+    <Island ssrFallback={fallback}>
+      <HeavyWidget />
+    </Island>
+  );
+}
+```
+
+### スロットを ComponentChildren として型注釈する（返却方向）
+
+スロット変数が `<Island>` の返り値を保持する場合は、型を `IslandElement` ではなく `ComponentChildren` や `JSX.Element` で注釈してください。`IslandElement` は `props.children` を必須とする意図的な狭い構造型であり、Preact の `VNode<{}>` はこれに代入できません。代わりに Preact ネイティブの型を使用してください。
+
+```tsx
+import type { ComponentChildren } from "preact";
+
+function Page() {
+  const slot: ComponentChildren = (
+    <Island when="visible">
+      <Counter />
+    </Island>
+  );
+  return <main>{slot}</main>;
+}
+```
+
+### Preact 利用者向けの名前衝突に関する注意
+
+ファイルがすでに `import { VNode } from "preact"` を持っている場合は、名前の衝突を避けるために修飾インポートを使用してください。
+
+```ts
+import type { VNode as ZfbVNode } from "@takazudo/zfb";
+```
 
 ## エクスポートされる定数とヘルパー
 

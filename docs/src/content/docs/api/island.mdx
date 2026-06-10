@@ -31,24 +31,34 @@ At SSR time the `<Island>` wrapper emits a `<div data-zfb-island="Counter" data-
 ```ts
 interface IslandProps {
   when?: When;
+  media?: string;
   ssrFallback?: VNode;
   children?: VNode;
 }
 ```
 
 - `when` — hydration strategy. Defaults to `"load"`. See [Hydration strategies](#hydration-strategies) below.
+- `media` — CSS media query string for `when="media"` islands. The island hydrates when this query first matches (including later viewport changes via resize or rotation). Required when `when="media"`; ignored (with a dev warning) for other strategies.
 - `ssrFallback` — enables SSR-skip mode (equivalent to Astro's `client:only`). When provided, the heavy `children` are **not** evaluated server-side; `ssrFallback` is rendered in their place and the client swaps in the real component on hydration.
 - `children` — the component to hydrate.
 
 ## Hydration strategies
 
-The `when` prop accepts three values, all shipped today:
+The `when` prop accepts four values, all shipped today:
 
 | Value | Behaviour |
 | --- | --- |
 | `"load"` | Hydrate immediately when the page's JavaScript runs. This is the default when `when` is omitted. |
 | `"visible"` | Hydrate when the island's root element enters the viewport (IntersectionObserver, threshold 0). Cheapest deferral for off-screen content. |
 | `"idle"` | Hydrate during the browser's next idle callback. Falls back to `setTimeout(0)` on platforms without `requestIdleCallback`. |
+| `"media"` | Hydrate when a CSS media query first matches (`window.matchMedia`). Requires the companion `media` prop. Continues to respond to later viewport changes (resize, orientation). Degrades to immediate hydration when `matchMedia` is unavailable. **Note:** SSR-skip (`ssrFallback`) islands ignore `when` entirely — they render immediately. |
+
+```tsx
+// Hydrate only on narrow viewports (e.g. mobile menu)
+<Island when="media" media="(max-width: 768px)">
+  <MobileMenu />
+</Island>
+```
 
 ## SSR-skip mode
 
@@ -68,6 +78,60 @@ export default function Page() {
 ```
 
 The server emits `<div data-zfb-island-skip-ssr="HeavyChart" data-when="load">…fallback…</div>`. On hydration the client runtime renders `HeavyChart` into the placeholder.
+
+## VNode type export
+
+`VNode`, `VNodeArray`, and `VNodeObject` are exported as public types from `"@takazudo/zfb"`:
+
+```ts
+import type { VNode, VNodeArray, VNodeObject } from "@takazudo/zfb";
+```
+
+These structural types are framework-agnostic. `VNode` includes a bare `object` member (matching Preact's own `ComponentChild` design), so Preact's `ComponentChildren`, `VNode<Props>`, `JSX.Element`, and `JSX.Element[]` are all directly assignable at `Island` input boundaries — `children` and `ssrFallback` — with no `as unknown as` casts:
+
+```tsx
+import type { ComponentChildren } from "preact";
+import { Island } from "@takazudo/zfb";
+
+// Forwarding ComponentChildren as children — no cast needed
+function Wrapper({ children }: { children: ComponentChildren }) {
+  return <Island when="load">{children}</Island>;
+}
+
+// Forwarding ComponentChildren as ssrFallback — no cast needed
+function SkipWrapper({ fallback }: { fallback: ComponentChildren }) {
+  return (
+    <Island ssrFallback={fallback}>
+      <HeavyWidget />
+    </Island>
+  );
+}
+```
+
+### Annotating slots as ComponentChildren (return direction)
+
+When a slot variable holds the return value of `<Island>`, annotate its type as `ComponentChildren` or `JSX.Element` — not as `IslandElement`. `IslandElement` is intentionally a narrow structural type that requires `props.children`, and `VNode<{}>` from Preact is NOT assignable to it by design. Use a Preact-native type for the slot instead:
+
+```tsx
+import type { ComponentChildren } from "preact";
+
+function Page() {
+  const slot: ComponentChildren = (
+    <Island when="visible">
+      <Counter />
+    </Island>
+  );
+  return <main>{slot}</main>;
+}
+```
+
+### Name-collision note for Preact consumers
+
+If a file already has `import { VNode } from "preact"`, use a qualified import to avoid the name clash:
+
+```ts
+import type { VNode as ZfbVNode } from "@takazudo/zfb";
+```
 
 ## Exported constants and helpers
 

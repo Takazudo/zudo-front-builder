@@ -90,6 +90,7 @@ fn touching_a_md_file_only_rerenders_its_page() {
         }),
         run_css: None,
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: None,
     };
 
@@ -165,6 +166,7 @@ fn editing_a_global_css_file_triggers_css_only_rebuild() {
             islands_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(None)
         })),
+        run_client_scripts: None,
         reload_renderer: None,
     };
 
@@ -256,6 +258,7 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
                 components: vec!["Counter".to_string()],
             }))
         })),
+        run_client_scripts: None,
         reload_renderer: None,
     };
 
@@ -348,6 +351,7 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
         }),
         run_css: None,
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: None,
     };
 
@@ -539,6 +543,7 @@ fn fanout_ctx(
         }),
         run_css: None,
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: None,
     }
 }
@@ -827,6 +832,7 @@ fn ctx_with_route_prune(
         }),
         run_css: None,
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: Some(Arc::new(move || {
             // Return the vanished absolute paths and clear the shared cell
             // so subsequent ticks don't re-prune the same paths.
@@ -1124,6 +1130,7 @@ fn removed_content_file_drops_graph_edge() {
         }),
         run_css: None,
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: None,
     };
 
@@ -1229,6 +1236,7 @@ impl ReloadProbe {
             }),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: Some(Arc::new(move || {
                 reload_events.lock().unwrap().push("reload");
                 Ok(RefreshOutcome::Refreshed {
@@ -1480,6 +1488,7 @@ fn ssr_only_project_edit_tick_reloads_renderer() {
         render_pages: Arc::new(|_pages, _| Ok(vec![])),
         run_css: None,
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
             Ok(RefreshOutcome::Refreshed {
@@ -1542,6 +1551,7 @@ fn ssr_only_project_css_only_tick_does_not_reload_renderer() {
             Ok(true)
         })),
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
             Ok(RefreshOutcome::Refreshed {
@@ -1600,6 +1610,7 @@ fn ssr_only_project_global_change_reloads_renderer() {
         render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: None,
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
             Ok(RefreshOutcome::Refreshed {
@@ -1672,6 +1683,7 @@ fn removed_stylesheet_only_tick_reruns_css() {
             Ok(true)
         })),
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
             Ok(RefreshOutcome::Refreshed {
@@ -1731,6 +1743,7 @@ fn removed_islands_module_only_tick_reruns_islands() {
             islands_runs_cb.fetch_add(1, Ordering::SeqCst);
             Ok(None)
         })),
+        run_client_scripts: None,
         reload_renderer: Some(Arc::new(|| {
             Ok(RefreshOutcome::Refreshed {
                 vanished: vec![],
@@ -1786,6 +1799,7 @@ fn removed_ssr_source_only_tick_reloads_renderer() {
         render_pages: Arc::new(|_, _| Ok(vec![])),
         run_css: None,
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: Some(Arc::new(move || {
             reload_events_cb.lock().unwrap().push("reload");
             Ok(RefreshOutcome::Refreshed {
@@ -1807,5 +1821,225 @@ fn removed_ssr_source_only_tick_reloads_renderer() {
         *reload_events.lock().unwrap(),
         vec!["reload"],
         "deleting an SSR-relevant source must reload the renderer so a now-removed SSR route stops serving stale output"
+    );
+}
+
+// ── Client-scripts dev-loop: edit → rebuild → stable file rewritten → Page reload (issue #979) ─
+
+/// End-to-end dev-loop test: editing a `*.client.ts` file under `src/`
+/// triggers a client-scripts rebuild, rewrites the stable
+/// `dist/assets/client/<name>.js` file, and sets `client_scripts_changed`
+/// (which `outcome_to_events` in `zfb-server` maps to `ReloadEvent::Page`).
+///
+/// Uses a `run_client_scripts` callback that writes a fixed JS string to
+/// the stable path and returns `true` (changed). Tests:
+/// - `outcome.client_scripts_rerun == true`
+/// - `outcome.client_scripts_changed == true`
+/// - Stable file on disk matches the callback output
+#[test]
+fn client_script_edit_triggers_rebuild_and_stable_file_rewritten() {
+    use zfb_build::ClientScriptsRunner;
+    use zfb_types::{DIST_ASSETS_DIR, DIST_CLIENT_SCRIPTS_DIR};
+
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+
+    // Create the fixture — a project with a client script under `src/`.
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::create_dir_all(project.join("pages")).unwrap();
+    std::fs::write(project.join("src/search.client.ts"), "// initial").unwrap();
+    std::fs::write(project.join("pages/index.tsx"), "// page").unwrap();
+
+    // Ensure the client output dir exists before the runner writes to it.
+    let client_dir = project
+        .join("dist")
+        .join(DIST_ASSETS_DIR)
+        .join(DIST_CLIENT_SCRIPTS_DIR);
+    std::fs::create_dir_all(&client_dir).unwrap();
+
+    // Track how many times the runner was called.
+    let runner_calls = Arc::new(AtomicUsize::new(0));
+    let runner_calls_cb = runner_calls.clone();
+
+    // Stable output path the runner will write.
+    let stable_path = client_dir.join("search.js");
+    let stable_path_for_runner = stable_path.clone();
+
+    // The runner writes a deterministic string so we can assert the content.
+    let run_client_scripts: ClientScriptsRunner = Arc::new(move || -> anyhow::Result<bool> {
+        runner_calls_cb.fetch_add(1, Ordering::SeqCst);
+        std::fs::write(&stable_path_for_runner, "// bundled").unwrap();
+        Ok(true) // report "changed"
+    });
+
+    let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+    let pipeline = DevAssetPipeline::new();
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("src")]),
+        graph,
+        pipeline,
+    );
+
+    let ctx = BuildContext {
+        dist_root: project.join("dist"),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
+        run_css: None,
+        run_islands: None,
+        run_client_scripts: Some(run_client_scripts),
+        reload_renderer: None,
+    };
+
+    // Tick: the client script changed.
+    let outcome = orch
+        .tick(vec![project.join("src/search.client.ts")], &ctx)
+        .expect("tick succeeded")
+        .expect("client-script edit must be non-noop");
+
+    // 1. The runner was invoked.
+    assert_eq!(
+        runner_calls.load(Ordering::SeqCst),
+        1,
+        "runner must be called once"
+    );
+
+    // 2. The outcome flags are set correctly.
+    assert!(
+        outcome.client_scripts_rerun,
+        "client_scripts_rerun must be true"
+    );
+    assert!(
+        outcome.client_scripts_changed,
+        "client_scripts_changed must be true"
+    );
+
+    // 3. The stable file was written to disk.
+    let on_disk = std::fs::read_to_string(&stable_path)
+        .expect("stable client-script file must exist after rebuild");
+    assert_eq!(
+        on_disk, "// bundled",
+        "stable file must contain the bundled JS"
+    );
+
+    // 4. `client_scripts_changed = true` is the signal that `zfb-server`'s
+    //    `outcome_to_events` maps to `ReloadEvent::Page` (see livereload.rs).
+    //    We validate the field directly here to avoid a circular crate dep.
+    assert!(
+        outcome.client_scripts_changed,
+        "client_scripts_changed must be set so outcome_to_events emits ReloadEvent::Page"
+    );
+}
+
+/// Same as above but the `*.client.ts` file is under `pages/` — the
+/// historically-problematic root where the file classifies as `PathClass::Page`,
+/// not `Module`, so the islands-candidate gate doesn't fire. The per-issue
+/// fix adds the `is_client_script_candidate` check OUTSIDE the PathClass match
+/// so `pages/*.client.ts` edits still trigger the client-scripts pass.
+#[test]
+fn client_script_under_pages_triggers_rebuild_and_page_reload() {
+    use zfb_build::ClientScriptsRunner;
+    use zfb_types::{DIST_ASSETS_DIR, DIST_CLIENT_SCRIPTS_DIR};
+
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+
+    std::fs::create_dir_all(project.join("pages")).unwrap();
+    std::fs::write(project.join("pages/analytics.client.ts"), "// initial").unwrap();
+
+    let client_dir = project
+        .join("dist")
+        .join(DIST_ASSETS_DIR)
+        .join(DIST_CLIENT_SCRIPTS_DIR);
+    std::fs::create_dir_all(&client_dir).unwrap();
+
+    let runner_calls = Arc::new(AtomicUsize::new(0));
+    let runner_calls_cb = runner_calls.clone();
+    let stable_path = client_dir.join("analytics.js");
+    let stable_path_for_runner = stable_path.clone();
+
+    let run_client_scripts: ClientScriptsRunner = Arc::new(move || -> anyhow::Result<bool> {
+        runner_calls_cb.fetch_add(1, Ordering::SeqCst);
+        std::fs::write(&stable_path_for_runner, "// bundled analytics").unwrap();
+        Ok(true)
+    });
+
+    let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+    let pipeline = DevAssetPipeline::new();
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("pages")]),
+        graph,
+        pipeline,
+    );
+
+    let ctx = BuildContext {
+        dist_root: project.join("dist"),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
+        run_css: None,
+        run_islands: None,
+        run_client_scripts: Some(run_client_scripts),
+        reload_renderer: None,
+    };
+
+    let outcome = orch
+        .tick(vec![project.join("pages/analytics.client.ts")], &ctx)
+        .expect("tick succeeded")
+        .expect("pages/ *.client.ts edit must be non-noop");
+
+    assert_eq!(
+        runner_calls.load(Ordering::SeqCst),
+        1,
+        "runner must be called once for pages/ client script"
+    );
+    assert!(outcome.client_scripts_rerun);
+    // `client_scripts_changed = true` is the signal that `zfb-server`'s
+    // `outcome_to_events` maps to `ReloadEvent::Page` (see livereload.rs).
+    // We validate the field directly to avoid a circular crate dep.
+    assert!(
+        outcome.client_scripts_changed,
+        "pages/ *.client.ts change must set client_scripts_changed so outcome_to_events emits ReloadEvent::Page"
+    );
+}
+
+/// `run_client_scripts` returning `false` (no bytes changed) must NOT
+/// emit a Page reload event — avoids spurious reloads on no-op saves.
+#[test]
+fn client_script_unchanged_does_not_emit_reload() {
+    use zfb_build::ClientScriptsRunner;
+
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+    std::fs::create_dir_all(project.join("components")).unwrap();
+    std::fs::write(project.join("components/widget.client.ts"), "// same").unwrap();
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+
+    let run_client_scripts: ClientScriptsRunner = Arc::new(|| Ok(false)); // no change
+
+    let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+    let pipeline = DevAssetPipeline::new();
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(project, vec![PathBuf::from("components")]),
+        graph,
+        pipeline,
+    );
+
+    let ctx = BuildContext {
+        dist_root: project.join("dist"),
+        render_pages: Arc::new(|_, _| Ok(vec![])),
+        run_css: None,
+        run_islands: None,
+        run_client_scripts: Some(run_client_scripts),
+        reload_renderer: None,
+    };
+
+    let outcome = orch
+        .tick(vec![project.join("components/widget.client.ts")], &ctx)
+        .expect("tick succeeded")
+        .expect("client-script edit is non-noop even when unchanged");
+
+    assert!(outcome.client_scripts_rerun, "runner must have run");
+    // `client_scripts_changed = false` means `zfb-server`'s `outcome_to_events`
+    // will NOT emit a Page reload event (see livereload.rs).
+    assert!(
+        !outcome.client_scripts_changed,
+        "no-change runner must report false so outcome_to_events does NOT emit Page reload"
     );
 }
