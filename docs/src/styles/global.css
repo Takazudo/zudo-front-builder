@@ -1,6 +1,14 @@
 @import "tailwindcss/preflight";
 @import "tailwindcss/utilities";
 
+/* Package utilities: @takazudo/zudo-doc 0.2.0 ships safelist.css (zudolab/zudo-doc#1996),
+ * which lists every Tailwind class the package emits as @source inline values.
+ * Importing it lets Tailwind v4 generate the package utilities without the
+ * old vendor-copy workaround (the .zudo-doc-tw/ directory and vendor script are gone).
+ * Must stay up here with the other @import rules — CSS requires @import to precede
+ * all other at-rules, so placing it after the @source block risks it being ignored. */
+@import "@takazudo/zudo-doc/safelist.css";
+
 /* ========================================
  * Tailwind v4 content sources
  *
@@ -25,12 +33,6 @@
 @source "src/hooks/**/*.{tsx,ts,jsx,js}";
 @source "src/utils/**/*.{tsx,ts,jsx,js}";
 @source "pages/**/*.{tsx,ts,jsx,js}";
-
-/* Package utilities: @takazudo/zudo-doc 0.2.0 ships safelist.css (zudolab/zudo-doc#1996),
- * which lists every Tailwind class the package emits as @source inline values.
- * Importing it lets Tailwind v4 generate the package utilities without the
- * old vendor-copy workaround (the .zudo-doc-tw/ directory and vendor script are gone). */
-@import "@takazudo/zudo-doc/safelist.css";
 
 /* ========================================
  * Design Token System
