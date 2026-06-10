@@ -46,7 +46,7 @@ type IslandsBundle = {
 };
 
 /** Recognised values for data-when. Absent ⇒ "load". */
-const WHEN_VALUES = ["load", "idle", "visible"] as const;
+const WHEN_VALUES = ["load", "idle", "visible", "media"] as const;
 type When = (typeof WHEN_VALUES)[number];
 
 /** Pull the islands-bundle URL off the runtime's own <script> tag. */
