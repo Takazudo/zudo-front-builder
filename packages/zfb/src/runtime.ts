@@ -195,6 +195,8 @@ function scheduleMedia(target: Element, fire: () => void): { fired: boolean; can
 
   const gate = oneShot(fire);
 
+  let removeListener = noop;
+
   // Listen for the first change event where the query matches.
   // We do NOT use `{once:true}` because we must ignore un-match events
   // (e.g. viewport widens back above breakpoint) and only fire on the
@@ -202,18 +204,31 @@ function scheduleMedia(target: Element, fire: () => void): { fired: boolean; can
   // un-match changes.
   const handler = (e: MediaQueryListEvent): void => {
     if (!e.matches) return; // ignore un-match changes
-    mql.removeEventListener("change", handler);
+    removeListener();
     gate.run();
   };
 
-  mql.addEventListener("change", handler);
+  // Modern browsers expose the EventTarget API on MediaQueryList; older
+  // Safari (<14) only has the deprecated addListener/removeListener pair
+  // and throws on addEventListener. Prefer modern, fall back to legacy,
+  // and fail open when neither exists (mirrors the missing-matchMedia case).
+  if (typeof mql.addEventListener === "function") {
+    mql.addEventListener("change", handler);
+    removeListener = () => mql.removeEventListener("change", handler);
+  } else if (typeof mql.addListener === "function") {
+    mql.addListener(handler);
+    removeListener = () => mql.removeListener(handler);
+  } else {
+    fire();
+    return { fired: true, cancel: noop };
+  }
 
   return {
     fired: false,
     cancel: () => {
       const alreadyFired = gate.cancel();
       if (alreadyFired) return;
-      mql.removeEventListener("change", handler);
+      removeListener();
     },
   };
 }

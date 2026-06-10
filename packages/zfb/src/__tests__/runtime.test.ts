@@ -330,6 +330,78 @@ describe("scheduleHydrate", () => {
       expect(fire).toHaveBeenCalledTimes(1);
     });
 
+    it("falls back to legacy addListener/removeListener when addEventListener is missing (old Safari)", () => {
+      // Older Safari (<14) MediaQueryList has no EventTarget API — only the
+      // deprecated addListener/removeListener pair. The scheduler must not
+      // throw and must still fire-once + clean up via removeListener.
+      const listeners: Array<(e: MediaQueryListEvent) => void> = [];
+      const legacyMql = {
+        matches: false,
+        addListener: vi.fn((h: (e: MediaQueryListEvent) => void) => {
+          listeners.push(h);
+        }),
+        removeListener: vi.fn((h: (e: MediaQueryListEvent) => void) => {
+          const i = listeners.indexOf(h);
+          if (i !== -1) listeners.splice(i, 1);
+        }),
+        dispatchChange(m: boolean) {
+          for (const l of [...listeners]) l({ matches: m } as MediaQueryListEvent);
+        },
+      };
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => legacyMql),
+      );
+
+      const fire = vi.fn();
+      scheduleHydrate(target, "media", fire);
+      expect(legacyMql.addListener).toHaveBeenCalledTimes(1);
+      expect(fire).not.toHaveBeenCalled();
+
+      legacyMql.dispatchChange(true);
+      expect(fire).toHaveBeenCalledTimes(1);
+      expect(legacyMql.removeListener).toHaveBeenCalledTimes(1);
+    });
+
+    it("legacy API: cancel() removes the listener via removeListener", () => {
+      const listeners: Array<(e: MediaQueryListEvent) => void> = [];
+      const legacyMql = {
+        matches: false,
+        addListener: vi.fn((h: (e: MediaQueryListEvent) => void) => {
+          listeners.push(h);
+        }),
+        removeListener: vi.fn((h: (e: MediaQueryListEvent) => void) => {
+          const i = listeners.indexOf(h);
+          if (i !== -1) listeners.splice(i, 1);
+        }),
+        dispatchChange(m: boolean) {
+          for (const l of [...listeners]) l({ matches: m } as MediaQueryListEvent);
+        },
+      };
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => legacyMql),
+      );
+
+      const fire = vi.fn();
+      const cancel = scheduleHydrate(target, "media", fire);
+      cancel();
+      expect(legacyMql.removeListener).toHaveBeenCalledTimes(1);
+      legacyMql.dispatchChange(true);
+      expect(fire).not.toHaveBeenCalled();
+    });
+
+    it("fails open when MediaQueryList exposes no listener API at all", () => {
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => ({ matches: false })),
+      );
+
+      const fire = vi.fn();
+      scheduleHydrate(target, "media", fire);
+      expect(fire).toHaveBeenCalledTimes(1);
+    });
+
     it("mountIslands-level: data-when=media island hydrates on first match", async () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-when="media" data-media="(max-width: 768px)"></div>
