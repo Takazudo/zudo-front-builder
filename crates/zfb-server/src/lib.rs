@@ -41,6 +41,7 @@
 //! a different runtime (Cloudflare Workers, an edge CDN, …) and must
 //! not pull in `zfb-server`.
 
+pub mod assets_containment;
 pub mod embed;
 pub mod embed_handlers;
 pub mod injected_routes;

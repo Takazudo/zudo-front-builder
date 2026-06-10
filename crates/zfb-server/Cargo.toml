@@ -43,6 +43,14 @@ mime_guess = "2"
 # public assets via `tokio::fs` so they don't block request workers.
 tokio = { version = "1", features = ["sync", "rt", "macros", "time", "net", "signal", "fs"] }
 tower-http = { version = "0.6", features = ["fs", "trace"] }
+# Symlink-containment wrapper in `assets_containment.rs` replicates
+# ServeDir's percent-decode step to know the exact FS path before
+# canonicalizing. tower-http already re-exports this transitively via
+# axum; we declare it directly so our dep is explicit and version-locked.
+percent-encoding = "2"
+# The containment wrapper is a Tower Service; we need the tower-service
+# trait directly (tower is only in dev-dependencies for ServiceExt).
+tower-service = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 serde = { workspace = true }

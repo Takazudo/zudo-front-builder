@@ -22,6 +22,66 @@ use zfb_build::bundler::{BundleMode, BundlerInput};
 
 use crate::config::Config;
 
+/// The single Config → [`zfb_content::PipelineSpec`] assembly (zfb#917).
+///
+/// Every markdown-pipeline knob the bundler AND the snapshot walker see is
+/// resolved from the project [`Config`] here — this is the one place the
+/// `zfb.config.ts` surface maps onto the shared pipeline knob set, so the
+/// two consumers structurally cannot disagree on a knob's value. Both
+/// `assemble_bundler_input` (below) and the snapshot path
+/// (`build_content_snapshot_json` in `commands/build.rs`) call this.
+///
+/// The struct literal is intentionally exhaustive (no `..Default`):
+/// adding a field to `PipelineSpec` fails compilation HERE until the
+/// author decides how the new knob resolves from `Config` — the
+/// command-layer half of the drift guard whose pipeline-construction
+/// half lives in `PipelineSpec::build_pipeline`.
+///
+/// `resolve_source_map` is the one knob NOT resolved here (left `None`):
+/// it is derivation-owned per surface. The snapshot path fills it via
+/// `build_resolve_source_map_for_snapshot`; the bundler derives it inside
+/// `zfb_build::bundler::bundle` from `BundlerInput::resolve_markdown_links`
+/// (which needs the bundler's path resolver and carries the
+/// `on_broken_links` build policy). Both derivations share
+/// `resolve_links_routes_from_config` + `build_docs_source_map`, so the
+/// resulting `path → URL` maps are identical — required for snapshot ↔
+/// bundler `content_hash` parity (zfb#188).
+pub(crate) fn pipeline_spec_from_config(
+    project_root: &Path,
+    config: &Config,
+) -> zfb_content::PipelineSpec {
+    zfb_content::PipelineSpec {
+        // `codeHighlight.theme` — named syntect theme for fenced code
+        // blocks instead of the default `base16-ocean.dark`.
+        code_highlight_theme: config.code_highlight.as_ref().and_then(|c| c.theme.clone()),
+        // `codeHighlight.themesDir` — resolved to an absolute path HERE so
+        // both surfaces load the same `.tmTheme` files.
+        code_highlight_themes_dir: config
+            .code_highlight
+            .as_ref()
+            .and_then(|c| c.themes_dir.as_ref())
+            .map(|td| project_root.join(td)),
+        // Opt-in `stripMdExt` flag (zfb#127 / #129).
+        strip_md_ext: config.strip_md_ext,
+        // Derivation-owned — see the doc comment above.
+        resolve_source_map: None,
+        gfm_constructs: crate::config::resolve_gfm_constructs(config.markdown.as_ref()),
+        toc: config.markdown.as_ref().and_then(|m| m.toc.clone()),
+        // `markdown.externalLinks`; the `site` origin (top-level
+        // `config.site`, #254) lets `ExternalLinksPlugin` classify
+        // same-origin absolute URLs as internal.
+        external_links: config
+            .markdown
+            .as_ref()
+            .and_then(|m| m.external_links.clone())
+            .map(|el| (el.into_content_config(), config.site.clone())),
+        cjk_friendly: crate::config::resolve_cjk_friendly(config.markdown.as_ref()),
+        hard_breaks: crate::config::resolve_hard_breaks(config.markdown.as_ref()),
+        // `markdown.features` (#586) — opt-in feature plugins (mermaid, …).
+        features: config.markdown.as_ref().and_then(|m| m.features.clone()),
+    }
+}
+
 /// How to handle a CSS-Modules class-map computation failure.
 ///
 /// `zfb build` propagates the error (the user must fix the CSS before the
@@ -180,11 +240,13 @@ pub(crate) fn assemble_bundler_input(
             },
         };
 
-    // Thread the opt-in `stripMdExt` flag from `zfb.config.ts` into the
-    // bundler so the hoisted MDX pre-compile pipeline appends
-    // `StripMdExtensionPlugin`. Mirrored in both commands so dev and build
-    // produce the same href shape (zfb#127 / #129).
-    bundler_input.strip_md_ext = config.strip_md_ext;
+    // The shared markdown-pipeline knob set (zfb#917) — the SAME
+    // `PipelineSpec` shape the snapshot path builds via this helper, so
+    // the bundler's MDX pipelines and the snapshot walker's pipelines
+    // agree on every knob and produce byte-identical `content_hash`
+    // values. (`resolve_source_map` stays `None` here; `bundle()` derives
+    // it from `resolve_markdown_links` below.)
+    bundler_input.pipeline_spec = pipeline_spec_from_config(project_root, config);
 
     // Thread the opt-in `resolveMarkdownLinks` config into the bundler so
     // the hoisted MDX pre-compile pipeline appends `ResolveLinksPlugin`.
@@ -194,7 +256,9 @@ pub(crate) fn assemble_bundler_input(
     // transformation in dist HTML (sub #234 / zudolab/zudo-doc#1577). The
     // shared helper `resolve_links_routes_from_config` builds the same
     // per-route map the snapshot path uses so content_hash stays
-    // deterministic.
+    // deterministic. This stays a separate bundler-side input (not a
+    // `PipelineSpec` knob) — see the shape-decision note on
+    // `BundlerInput::resolve_markdown_links`.
     if let Some(routes) =
         crate::commands::build::resolve_links_routes_from_config(project_root, config)
     {
@@ -221,31 +285,6 @@ pub(crate) fn assemble_bundler_input(
             });
     }
 
-    // Thread the optional `codeHighlight.theme` from `zfb.config.ts`
-    // so the hoisted MDX pre-compile pipeline uses the configured
-    // syntect theme instead of the default `base16-ocean.dark`.
-    bundler_input.code_highlight_theme =
-        config.code_highlight.as_ref().and_then(|c| c.theme.clone());
-
-    // Thread the optional `codeHighlight.themesDir` (resolved to an
-    // absolute path here) so the bundler loads custom .tmTheme files
-    // before constructing the SyntectPlugin.  MUST stay in sync with
-    // the snapshot wiring so both content_hash inputs agree.
-    bundler_input.code_highlight_themes_dir = config
-        .code_highlight
-        .as_ref()
-        .and_then(|c| c.themes_dir.as_ref())
-        .map(|td| project_root.join(td));
-
-    // Thread the optional `markdown.gfm` constructs config into the bundler
-    // so the hoisted MDX pre-compile pipeline parses the same GFM constructs
-    // the snapshot walker uses.  The snapshot wiring resolves from the same
-    // source, so both `content_hash` inputs stay byte-identical (the
-    // snapshot ↔ bundler land mine called out at
-    // `crates/zfb-content/src/content_bridge.rs:118-153`).
-    bundler_input.gfm_constructs =
-        crate::config::resolve_gfm_constructs(config.markdown.as_ref());
-
     // Thread the optional `site` canonical-origin URL from `zfb.config.ts`
     // so the bundler emits `globalThis.__zfb.site` in `entry.mjs` for
     // layout-side canonical tag, OG URL, and sitemap construction (sub #254).
@@ -259,26 +298,6 @@ pub(crate) fn assemble_bundler_input(
         .as_ref()
         .and_then(|p| p.disabled)
         .unwrap_or(false);
-
-    bundler_input.toc = config.markdown.as_ref().and_then(|m| m.toc.clone());
-
-    // Thread `markdown.externalLinks` into the bundler so the hoisted MDX
-    // pre-compile pipeline appends `ExternalLinksPlugin`. MUST mirror the
-    // snapshot wiring; divergence shifts `content_hash` and breaks the
-    // snapshot ↔ bundler bridge lookup.
-    // `site` (top-level config.site, #254) lets `ExternalLinksPlugin`
-    // classify same-origin absolute URLs as internal.
-    bundler_input.external_links = config
-        .markdown
-        .as_ref()
-        .and_then(|m| m.external_links.clone())
-        .map(|el| (el.into_content_config(), config.site.clone()));
-
-    bundler_input.cjk_friendly =
-        crate::config::resolve_cjk_friendly(config.markdown.as_ref());
-
-    bundler_input.hard_breaks =
-        crate::config::resolve_hard_breaks(config.markdown.as_ref());
 
     // #664 / #672 — thread `bundle.exclude` so the bundler keeps the listed
     // project-relative globs out of the esbuild graph (both the shadow-tree
@@ -296,12 +315,6 @@ pub(crate) fn assemble_bundler_input(
     bundler_input
         .external
         .extend(crate::config::resolve_bundle_external(config.bundle.as_ref()));
-
-    // #586 — thread `markdown.features` into the bundler so opt-in feature
-    // plugins (mermaid, …) fire per the configured toggles.
-    // `None` keeps the legacy always-on chain, byte-identical to today.
-    bundler_input.markdown_features =
-        config.markdown.as_ref().and_then(|m| m.features.clone());
 
     // #268 — thread plugin-registered aliases and virtual modules into the
     // main bundler's esbuild invocation so page / layout / shared SSR-only

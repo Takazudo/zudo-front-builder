@@ -13,7 +13,7 @@
 //!
 //! Since #586 the bundler builds its pipeline via
 //! [`Pipeline::with_defaults_and_full_config`], dispatching on
-//! `BundlerInput::markdown_features`. This test leaves `markdown_features`
+//! `BundlerInput::pipeline_spec.features` (zfb#917). This test leaves `features`
 //! at `None` — the **legacy always-on branch**, byte-for-byte equivalent to
 //! [`Pipeline::with_defaults()`] — so the three markers below MUST still
 //! appear (a default `zfb.config.ts` with no `features` key is unchanged by
@@ -276,7 +276,7 @@ fn write_mermaid_fixture(root: &std::path::Path) {
 /// #586 — the opt-in `Some(..)` branch of the feature-aware pipeline.
 ///
 /// Setting `markdown.features.mermaid` flips whether the mermaid wrapper is
-/// emitted, proving `BundlerInput::markdown_features` is actually threaded
+/// emitted, proving `BundlerInput::pipeline_spec.features` is actually threaded
 /// into the MDX pre-compile pipeline (the bug the issue describes was that it
 /// was parsed but dropped on the floor).
 #[test]
@@ -294,7 +294,7 @@ fn bundler_threads_markdown_features_through_mdx_compile() {
     let root_on = tmp_on.path().to_path_buf();
     write_mermaid_fixture(&root_on);
     let mut input_on = make_input(&root_on, &esbuild, "dist");
-    input_on.markdown_features = Some(zfb_content::MarkdownFeaturesConfig {
+    input_on.pipeline_spec.features = Some(zfb_content::MarkdownFeaturesConfig {
         mermaid: Some(zfb_content::FeatureToggle::Bool(true)),
         ..Default::default()
     });
@@ -312,7 +312,7 @@ fn bundler_threads_markdown_features_through_mdx_compile() {
     let root_off = tmp_off.path().to_path_buf();
     write_mermaid_fixture(&root_off);
     let mut input_off = make_input(&root_off, &esbuild, "dist");
-    input_off.markdown_features = Some(zfb_content::MarkdownFeaturesConfig {
+    input_off.pipeline_spec.features = Some(zfb_content::MarkdownFeaturesConfig {
         mermaid: Some(zfb_content::FeatureToggle::Bool(false)),
         ..Default::default()
     });
@@ -365,18 +365,10 @@ fn make_input(
             "posts",
             PathBuf::from("content/posts"),
         )],
-        strip_md_ext: false,
-        code_highlight_theme: None,
-        code_highlight_themes_dir: None,
+        pipeline_spec: zfb_content::PipelineSpec::default(),
         resolve_markdown_links: None,
-        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
         prefetch_disabled: false,
-        toc: None,
-            external_links: None,
-            cjk_friendly: true,
-            hard_breaks: false,
-        markdown_features: None,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,

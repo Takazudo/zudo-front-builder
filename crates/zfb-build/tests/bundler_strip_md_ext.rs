@@ -2,7 +2,7 @@
 //! (zfb#127 / #129).
 //!
 //! Pins the contract that
-//! [`zfb_build::bundler::BundlerInput::strip_md_ext`] is honoured at
+//! `BundlerInput::pipeline_spec.strip_md_ext` (zfb#917) is honoured at
 //! both MDX pre-compile call sites the Sub 1 hoist exposed
 //! (`materialise_shadow` for pages, `materialise_collection` for
 //! collections). When the flag is `true`, `[link](other.md)` style
@@ -103,18 +103,13 @@ fn make_input(
             "posts",
             PathBuf::from("content/posts"),
         )],
-        strip_md_ext,
-        code_highlight_theme: None,
-        code_highlight_themes_dir: None,
+        pipeline_spec: zfb_content::PipelineSpec {
+            strip_md_ext,
+            ..Default::default()
+        },
         resolve_markdown_links: None,
-        gfm_constructs: zfb_content::ResolvedGfmConstructs::default(),
         site: None,
         prefetch_disabled: false,
-        toc: None,
-            external_links: None,
-            cjk_friendly: true,
-            hard_breaks: false,
-            markdown_features: None,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,

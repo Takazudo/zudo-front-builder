@@ -59,7 +59,7 @@ impl<H: RenderHost> Renderer<H> {
     /// Build a renderer, optionally enabling the
     /// [`StripMdExtensionPlugin`] in the loader's MDX content pipeline.
     ///
-    /// Mirrors [`zfb_build::BundlerInput::strip_md_ext`] (zfb#127 /
+    /// Mirrors the bundler's `pipeline_spec.strip_md_ext` knob (zfb#127 /
     /// #129); the build CLI threads `Config::strip_md_ext` here so
     /// `zfb dev` and `zfb build` produce identical href shapes.
     ///
