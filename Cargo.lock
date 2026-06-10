@@ -5691,9 +5691,12 @@ dependencies = [
 name = "zfb-md-ast"
 version = "0.0.0"
 dependencies = [
+ "hex",
  "markdown",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
