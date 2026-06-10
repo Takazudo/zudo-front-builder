@@ -358,6 +358,60 @@ mod tests {
         );
     }
 
+    /// #977 fingerprint-neutrality tripwire: the cross-file anchor side
+    /// channels (candidates + per-file headings) are OBSERVATIONAL, like
+    /// the `ReadRecorder` — they must not touch the pipeline config
+    /// fingerprint or the cache-key shape. An accidental fingerprint
+    /// change splits every user's warm compile cache on upgrade, so the
+    /// exact pre-#977 digests are pinned here as literals (captured at
+    /// HEAD c47e644, before the channels landed).
+    ///
+    /// If this test fails because you INTENTIONALLY changed a
+    /// fingerprint input (new config knob, FINGERPRINT_VERSION bump,
+    /// feature-JSON shape change), re-capture the two digests and update
+    /// the literals in the same commit — and say so in the commit
+    /// message. If you did NOT intend to change fingerprint inputs, your
+    /// change is silently invalidating every warm cache: fix it instead.
+    #[test]
+    fn side_channels_keep_fingerprint_byte_identical_to_pre_977() {
+        let default_fp = PipelineSpec::default()
+            .build_pipeline()
+            .expect("builds")
+            .config_fingerprint()
+            .expect("fingerprintable");
+        assert_eq!(
+            default_fp, "87680d4705178c808751765ad1a8861b5ef0c004a3a185323af27ea506d8e6ca",
+            "default-spec fingerprint drifted from pre-#977 HEAD"
+        );
+
+        let feats: zfb_md_extras::MarkdownFeaturesConfig =
+            serde_json::from_value(serde_json::json!({ "linkValidation": {} })).expect("valid");
+        let armed = PipelineSpec {
+            features: Some(feats),
+            build_context_roots: Some((
+                PathBuf::from("/tmp/proj"),
+                PathBuf::from("/tmp/proj/public"),
+            )),
+            ..Default::default()
+        };
+        let armed_fp = armed
+            .build_pipeline()
+            .expect("builds")
+            .config_fingerprint()
+            .expect("fingerprintable");
+        assert_eq!(
+            armed_fp, "91afeca864efa22103b54bab3a0a28a7f90e3f5afa51bb48a198fc60222c821c",
+            "linkValidation-armed fingerprint drifted from pre-#977 HEAD"
+        );
+
+        // Draining the channels is part of the observational contract
+        // too — it must not perturb the fingerprint.
+        let mut p = armed.build_pipeline().expect("builds");
+        let _ = p.take_cross_file_link_candidates();
+        let _ = p.take_file_headings();
+        assert_eq!(p.config_fingerprint().as_deref(), Some(armed_fp.as_str()));
+    }
+
     /// zfb#952: an absolute `publicDir` value is passed through unchanged by
     /// `resolve_under_root` — verified here by checking that the path stored in
     /// `build_context_roots` equals the input absolute path verbatim.
