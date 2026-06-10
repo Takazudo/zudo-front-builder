@@ -147,16 +147,13 @@ pub fn apply_prod_asset_pipeline(
     // determinism helps `BuildOutcome::pages_written`).
     let dist_root = dist_dir.to_path_buf();
     let pages_for_callback = pages.clone();
-    // Local type alias would require naming the concrete closure, which is not possible.
-    #[allow(clippy::type_complexity)]
-    let render_pages: Arc<
-        dyn Fn(&[PageId]) -> Result<Vec<RenderedPage>> + Send + Sync + 'static,
-    > = Arc::new(move |_requested: &[PageId]| {
+    let render_pages: crate::pipeline::PageRenderer = Arc::new(move |_requested: &[PageId], _narrowing| {
         // The plan's page set MUST already cover every page in
         // `pages_for_callback` (we constructed the plan that way), so
         // we ignore `_requested` and return the full list. The plan
         // ordering doesn't matter; `apply` just iterates the result
-        // verbatim.
+        // verbatim. The narrowing hint is ignored — production renders
+        // every page in full (issue #958).
         let mut out = Vec::with_capacity(pages_for_callback.len());
         for entry in &pages_for_callback {
             let on_disk = dist_root.join(entry.output_path.as_path());
@@ -210,6 +207,7 @@ pub fn apply_prod_asset_pipeline(
         ssr_reload_needed: false,
         prune_paths: vec![],
         triggers: vec![],
+        content_narrowing: None,
     };
 
     pipeline.apply(&plan, &ctx)

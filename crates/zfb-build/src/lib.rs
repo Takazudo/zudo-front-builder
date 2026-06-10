@@ -92,7 +92,7 @@ pub use pipeline::{
     ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile, ProductionAssetPipeline,
     ProductionEmitters, RefreshOutcome, RelDistPath, RenderedPage, RendererReloader,
 };
-pub use plan::{PageSelection, RebuildPlan};
+pub use plan::{ContentNarrowing, PageSelection, RebuildPlan};
 pub use policy::{classify_change, classify_change_with_content_roots, GranularityPolicy, PathClass};
 pub use renderer::{
     render_all, render_one, reload, shutdown, start, Backend, EmbeddedV8Host,

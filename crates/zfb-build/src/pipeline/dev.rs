@@ -122,7 +122,7 @@ impl AssetPipeline for DevAssetPipeline {
                 // nothing to prune.
                 let vanished = match reload()? {
                     RefreshOutcome::Skipped => Vec::new(),
-                    RefreshOutcome::Refreshed { vanished } => vanished,
+                    RefreshOutcome::Refreshed { vanished, .. } => vanished,
                 };
                 if !vanished.is_empty() {
                     outcome.pages_pruned.extend(vanished.iter().cloned());
@@ -169,6 +169,17 @@ impl AssetPipeline for DevAssetPipeline {
         // already makes. CSS, islands, and plan prune paths still run.
         let mut renderer_refresh_skipped = false;
 
+        // Content-narrowing hint for the render callback (issue #958).
+        // Defensive G6: the hint must never coexist with a discovery-
+        // refreshed renderer (`renderer_fresh`) — the discovery regime
+        // implies created files, which the orchestrator never produces a
+        // hint for, but if both ever appear together the safe direction
+        // is full fan-out.
+        let mut narrowing: Option<&crate::ContentNarrowing> = plan.content_narrowing.as_ref();
+        if plan.renderer_fresh {
+            narrowing = None;
+        }
+
         if !pages.is_empty() {
             // Reload the SSR renderer (embedded V8 host) before rendering
             // pages whenever the dirty set is non-empty — UNLESS the
@@ -191,7 +202,22 @@ impl AssetPipeline for DevAssetPipeline {
                 if let Some(reload) = &ctx.reload_renderer {
                     match reload()? {
                         RefreshOutcome::Skipped => renderer_refresh_skipped = true,
-                        RefreshOutcome::Refreshed { vanished } => {
+                        RefreshOutcome::Refreshed {
+                            vanished,
+                            changed_sources,
+                        } => {
+                            // Fallback G5 (issue #958): the refresh ran
+                            // BEFORE the render, so the route table the
+                            // narrowing would match against is the
+                            // post-edit one — but if the refresh reports
+                            // that any source's route-entry set changed
+                            // (or any output path vanished), the route
+                            // structure moved this tick and narrowing
+                            // could orphan a brand-new URL. Render the
+                            // full selected set instead.
+                            if !vanished.is_empty() || !changed_sources.is_empty() {
+                                narrowing = None;
+                            }
                             route_vanished.extend(vanished);
                         }
                     }
@@ -205,7 +231,7 @@ impl AssetPipeline for DevAssetPipeline {
         // stale-output candidates nor the live-dests bookkeeping run — an
         // unrendered URL can never be mistaken for a vanished one.
         if !pages.is_empty() && !renderer_refresh_skipped {
-            let rendered = (ctx.render_pages)(&pages)?;
+            let rendered = (ctx.render_pages)(&pages, narrowing)?;
             outcome.pages_rendered = rendered.len();
 
             // Collect prune candidates and the live dest set during the
@@ -434,7 +460,7 @@ mod tests {
     ) -> BuildContext {
         BuildContext {
             dist_root,
-            render_pages: Arc::new(move |_pages: &[PageId]| {
+            render_pages: Arc::new(move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| {
                 invocations.fetch_add(1, Ordering::SeqCst);
                 Ok(rendered.clone())
             }),
@@ -470,6 +496,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         };
 
         let outcome = pipeline.apply(&plan, &ctx).unwrap();
@@ -505,6 +532,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         };
 
         let first = pipeline.apply(&plan, &ctx).unwrap();
@@ -524,7 +552,7 @@ mod tests {
         let css_calls_cb = css_calls.clone();
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
-            render_pages: Arc::new(|_| Ok(vec![])),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: Some(Arc::new(move || {
                 css_calls_cb.fetch_add(1, Ordering::SeqCst);
                 Ok(true)
@@ -541,6 +569,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         };
 
         let outcome = pipeline.apply(&plan, &ctx).unwrap();
@@ -577,6 +606,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         };
         let first = pipeline.apply(&plan, &ctx_a).unwrap();
         assert_eq!(first.pages_written.len(), 1);
@@ -642,6 +672,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         };
         let first = pipeline.apply(&plan, &ctx).unwrap();
         let second = pipeline.apply(&plan, &ctx).unwrap();
@@ -698,6 +729,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         };
         let first = pipeline.apply(&plan, &ctx1).unwrap();
         assert_eq!(first.pages_written.len(), 2);
@@ -771,7 +803,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
-            render_pages: Arc::new(|_| Ok(vec![])),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: None,
             run_islands: None,
             reload_renderer: None,
@@ -784,6 +816,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         };
         assert!(pipeline.apply(&plan, &ctx).is_err());
     }
@@ -798,7 +831,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
-            render_pages: Arc::new(|_| Ok(vec![])),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: Some(Arc::new(|| Ok(true))),
             run_islands: Some(Arc::new(|| {
                 Ok(Some(crate::pipeline::IslandsBundleInfo {
@@ -817,6 +850,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         };
         let outcome = pipeline.apply(&plan, &ctx).unwrap();
         assert!(
@@ -838,7 +872,7 @@ mod tests {
     ) -> BuildContext {
         BuildContext {
             dist_root,
-            render_pages: Arc::new(move |_pages: &[PageId]| {
+            render_pages: Arc::new(move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| {
                 render_calls.fetch_add(1, Ordering::SeqCst);
                 Ok(rendered.clone())
             }),
@@ -859,6 +893,7 @@ mod tests {
             ssr_reload_needed: false,
             prune_paths: vec![],
             triggers: vec![],
+            content_narrowing: None,
         }
     }
 
@@ -884,7 +919,10 @@ mod tests {
             dir.path().to_path_buf(),
             rendered.clone(),
             calls1.clone(),
-            RefreshOutcome::Refreshed { vanished: vec![] },
+            RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            },
         );
         let first = pipeline.apply(&plan, &ctx1).unwrap();
         assert_eq!(first.pages_rendered, 1);
@@ -932,7 +970,7 @@ mod tests {
         let islands_calls_cb = islands_calls.clone();
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
-            render_pages: Arc::new(move |_pages: &[PageId]| {
+            render_pages: Arc::new(move |_pages: &[PageId], _: Option<&crate::ContentNarrowing>| {
                 render_calls_cb.fetch_add(1, Ordering::SeqCst);
                 Ok(vec![])
             }),
@@ -1005,7 +1043,7 @@ mod tests {
 
         let ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
-            render_pages: Arc::new(|_| Ok(vec![])),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: None,
             run_islands: None,
             reload_renderer: Some(Arc::new(|| Ok(RefreshOutcome::Skipped))),
@@ -1036,11 +1074,238 @@ mod tests {
                 content_type: None,
             }],
             calls.clone(),
-            RefreshOutcome::Refreshed { vanished: vec![] },
+            RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            },
         );
         let outcome = pipeline.apply(&single_page_plan(), &ctx).unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1, "render ran");
         assert_eq!(outcome.pages_rendered, 1);
         assert!(dir.path().join("a/index.html").exists());
+    }
+
+    // ── Content-narrowing hint forwarding (issue #958) ───────────────────
+
+    /// Context whose render callback records the narrowing hint it
+    /// received and whose reloader reports the given outcome.
+    fn ctx_recording_narrowing(
+        dist_root: PathBuf,
+        outcome: RefreshOutcome,
+        seen: Arc<Mutex<Vec<Option<crate::ContentNarrowing>>>>,
+    ) -> BuildContext {
+        BuildContext {
+            dist_root,
+            render_pages: Arc::new(
+                move |_pages: &[PageId], narrowing: Option<&crate::ContentNarrowing>| {
+                    seen.lock().unwrap().push(narrowing.cloned());
+                    Ok(vec![])
+                },
+            ),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: Some(Arc::new(move || Ok(outcome.clone()))),
+        }
+    }
+
+    fn narrowed_plan() -> RebuildPlan {
+        let mut plan = single_page_plan();
+        plan.content_narrowing = Some(crate::ContentNarrowing {
+            changed_content: vec![PathBuf::from("/proj/content/post.md")],
+        });
+        plan
+    }
+
+    /// Happy path: a plan-carried narrowing hint reaches the render
+    /// callback verbatim when the refresh reports no structural change.
+    #[test]
+    fn narrowing_hint_reaches_render_callback() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let ctx = ctx_recording_narrowing(
+            dir.path().to_path_buf(),
+            RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            },
+            seen.clone(),
+        );
+        pipeline.apply(&narrowed_plan(), &ctx).unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "render callback invoked once");
+        assert_eq!(
+            seen[0],
+            Some(crate::ContentNarrowing {
+                changed_content: vec![PathBuf::from("/proj/content/post.md")],
+            }),
+            "the hint must be forwarded when the route table did not move"
+        );
+    }
+
+    /// Fallback G5 (issue #958): a refresh that reports changed source
+    /// route sets disables narrowing for the tick — the render callback
+    /// must see `None`.
+    #[test]
+    fn refresh_changed_sources_disable_narrowing() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let ctx = ctx_recording_narrowing(
+            dir.path().to_path_buf(),
+            RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![pid("/p/blog/[slug].tsx")],
+            },
+            seen.clone(),
+        );
+        pipeline.apply(&narrowed_plan(), &ctx).unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0], None,
+            "non-empty changed_sources must force full fan-out (G5)"
+        );
+    }
+
+    /// Fallback G5, vanished arm: globally-vanished routes also mean the
+    /// route structure moved — no narrowing this tick.
+    #[test]
+    fn refresh_vanished_routes_disable_narrowing() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let ctx = ctx_recording_narrowing(
+            dir.path().to_path_buf(),
+            RefreshOutcome::Refreshed {
+                vanished: vec![dir.path().join("gone/index.html")],
+                changed_sources: vec![],
+            },
+            seen.clone(),
+        );
+        pipeline.apply(&narrowed_plan(), &ctx).unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0], None,
+            "non-empty vanished must force full fan-out (G5)"
+        );
+    }
+
+    /// Fallback G6 (defensive): a hint must never survive on a
+    /// renderer-fresh tick (discovery regime) — the callback sees `None`.
+    #[test]
+    fn renderer_fresh_tick_drops_narrowing_hint() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let ctx = ctx_recording_narrowing(
+            dir.path().to_path_buf(),
+            RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            },
+            seen.clone(),
+        );
+        let mut plan = narrowed_plan();
+        plan.renderer_fresh = true;
+        pipeline.apply(&plan, &ctx).unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0], None,
+            "renderer_fresh must drop the narrowing hint (G6)"
+        );
+    }
+
+    /// Prune-safety on a narrowed tick (issue #958 §7 / #727): when the
+    /// render callback returns only a SUBSET of the selected pages (the
+    /// narrowed set), the sibling pages' on-disk HTML and pipeline
+    /// bookkeeping (`last_bytes` / `last_output_path`) must survive
+    /// untouched — an unrendered sibling URL is never treated as
+    /// vanished, and a later full tick still byte-dedups it.
+    #[test]
+    fn narrowed_tick_leaves_sibling_outputs_and_bookkeeping_intact() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+
+        let page_a = RenderedPage {
+            page: pid("blog/a/index.html"),
+            output_path: RelDistPath::new("blog/a/index.html").unwrap(),
+            html: "<p>A v1</p>".into(),
+            content_type: None,
+        };
+        let page_b = RenderedPage {
+            page: pid("blog/b/index.html"),
+            output_path: RelDistPath::new("blog/b/index.html").unwrap(),
+            html: "<p>B v1</p>".into(),
+            content_type: None,
+        };
+
+        let mut sel = BTreeSet::new();
+        sel.insert(pid("/p/blog/[slug].tsx"));
+        let mut plan = RebuildPlan::empty();
+        plan.pages = PageSelection::Specific(sel);
+
+        // Tick 1: full fan-out renders A and B.
+        let full = vec![page_a.clone(), page_b.clone()];
+        let ctx1 = ctx_with_renderer(
+            dir.path().to_path_buf(),
+            full,
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let first = pipeline.apply(&plan, &ctx1).unwrap();
+        assert_eq!(first.pages_written.len(), 2);
+        assert!(dir.path().join("blog/b/index.html").exists());
+
+        // Tick 2: narrowed — the callback returns ONLY A (new bytes).
+        let narrowed = vec![RenderedPage {
+            html: "<p>A v2</p>".into(),
+            ..page_a.clone()
+        }];
+        let ctx2 = ctx_with_renderer(
+            dir.path().to_path_buf(),
+            narrowed,
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let second = pipeline.apply(&plan, &ctx2).unwrap();
+        assert_eq!(second.pages_written, vec![page_a.page.clone()]);
+        assert!(
+            second.pages_pruned.is_empty(),
+            "an unrendered sibling must never be treated as vanished; pruned={:?}",
+            second.pages_pruned,
+        );
+        assert!(
+            dir.path().join("blog/b/index.html").exists(),
+            "sibling HTML must survive a narrowed tick"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("blog/b/index.html")).unwrap(),
+            "<p>B v1</p>",
+        );
+
+        // Tick 3: full fan-out again with byte-identical content — the
+        // sibling's `last_bytes` slot survived the narrowed tick, so B
+        // byte-dedups (not re-written); A's v2 bytes also dedup.
+        let full_again = vec![
+            RenderedPage {
+                html: "<p>A v2</p>".into(),
+                ..page_a
+            },
+            page_b,
+        ];
+        let ctx3 = ctx_with_renderer(
+            dir.path().to_path_buf(),
+            full_again,
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let third = pipeline.apply(&plan, &ctx3).unwrap();
+        assert!(
+            third.pages_written.is_empty(),
+            "bookkeeping intact: a later full tick byte-skips unchanged \
+             siblings; written={:?}",
+            third.pages_written,
+        );
+        assert!(third.pages_pruned.is_empty());
     }
 }
