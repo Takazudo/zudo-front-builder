@@ -1,0 +1,125 @@
+---
+title: クライアントスクリプト
+description: ブラウザで実行する TypeScript/JavaScript ファイルを配信する方法 — .client.ts 規約、clientScript() ヘルパー、ハッシュ、制限事項。
+sidebar_position: 8
+---
+
+<Info title="このページで解説すること">
+
+`*.client.ts` ファイルをバンドルしてブラウザに配信する方法、`clientScript()` を使って SSR 時に URL を参照する方法、プロダクションパイプラインでのコンテンツハッシュの仕組み、そして現在の `.html` ソースページとブラウザコンテキストの制限について解説します。
+
+</Info>
+
+## `.client.*` 規約
+
+`pages/`、`components/`、`src/` 配下にある TypeScript または JavaScript ファイルで、`.client.<ext>`（`<ext>` は `ts`、`tsx`、`js`、`jsx` のいずれか）で終わるものは**クライアントスクリプトエントリ**として扱われます。
+
+```
+pages/
+  search-widget.client.ts   ← "search-widget" としてバンドル
+components/
+  analytics.client.tsx      ← "analytics" としてバンドル
+src/
+  my-lib.client.js          ← "my-lib" としてバンドル
+```
+
+**エントリ名**はファイルのステム（`.client` を除いた部分）です。たとえば `search-widget.client.ts` → `"search-widget"` となります。エントリ名はすべての探索ルートを通じてユニークでなければなりません。重複があるとビルドエラーになります。
+
+`layouts/` は探索対象から意図的に除外されています。サイト全体にわたるクライアントスクリプトは `layouts/` ではなく `components/` や `src/` に置いてください。
+
+## ページからクライアントスクリプトを参照する
+
+`clientScript()` SSR ヘルパーを使うと、レンダリング時に正しい URL を取得できます。
+
+```tsx
+import { clientScript } from "@takazudo/zfb";
+
+export default function SearchPage() {
+  return (
+    <html>
+      <head>
+        <title>検索</title>
+      </head>
+      <body>
+        <div id="search-root" />
+        {/* clientScript は安定 URL を返す。ビルドパイプラインが書き換える */}
+        <script type="module" src={clientScript("search-widget")} />
+      </body>
+    </html>
+  );
+}
+```
+
+`clientScript("search-widget")` は `/assets/client/search-widget.js`（または `base` が設定されていればそのプレフィックス付きの URL）を返します。プロダクションビルドパイプラインは、最終的な HTML の中でこの URL をハッシュ付きの URL（`/assets/client/search-widget-<hash>.js`）に書き換えます。
+
+## ビルド時に何が起きるか
+
+`zfb build` は発見した各エントリに対して 3 つのステップを実行します。
+
+1. **バンドル** — 各 `.client.*` ファイルは esbuild に渡され、独立した ESM モジュールとしてバンドルされます。バンドルにはエントリとそのインポート先のみが含まれます。フレームワーク（`preact`、`react` など）をインポートしている場合はそれも含まれます。
+2. **ハッシュ** — `ProductionAssetPipeline` がバンドルのバイト列を読み込み、コンテンツハッシュを計算して `dist/assets/client/<name>-<hash>.js` に書き出します。
+3. **書き換え** — レンダリングされた HTML 内にある安定 URL（`/assets/client/<name>.js`、`base` プレフィックス付きの場合もあり）のすべての出現がハッシュ付き URL に置き換えられます。
+
+`zfb dev` ではクライアントスクリプトはバンドルされますが、**ハッシュは付きません**。安定 URL がそのまま配信されます。そのため `clientScript()` が返す URL は、フルページサイクルなしで開発中にライブリロードできます。
+
+## サブパスデプロイ（`base`）
+
+サイトをサブパス配下でホストする場合（例：`zfb.config.json` に `base: "/pj/mysite/"` を設定）、`clientScript()` は自動的にプレフィックスを付加します。
+
+```ts
+// base="/pj/mysite/" が設定されている場合：
+clientScript("search-widget")
+// → "/pj/mysite/assets/client/search-widget.js"
+```
+
+プロダクションパイプラインも同じベースプレフィックス付き URL を書き換えキーとして使用するため、ハッシュの置き換えも正しく動作します。プレフィックスを手動で管理する必要はありません。
+
+## SSR 専用の注意点（v1）
+
+`clientScript()` は **SSR コンテキストでの使用**を想定して設計されています。サーバーサイドレンダリング中に `<script>` タグをレンダリングする用途です。ブラウザで実行されるコードから呼び出すことも可能ですが、v1 では base プレフィックス（`globalThis.__zfb.base`）はブラウザに送られないため、ブラウザ側からの呼び出しではプレフィックスなしの安定 URL が返されます。
+
+SSR レンダリング時に `<script src="…">` タグを生成するという典型的なユースケースでは、これは問題になりません。タグは SSR レンダラーが 1 回だけ書き出し、その時点で URL は正しい値になっています。
+
+## `.html` ソースページの制限
+
+プレーンな `.html` ファイルとして書かれたページ（Option B、`pages/my-page.html`）は、アセット URL 書き換えパスを完全にスキップします。`.html` ソースページの中に埋め込まれた `clientScript()` の URL は、ハッシュ付きの URL に**書き換えられません**。静的 HTML ページでハッシュ付きのクライアントスクリプト URL が必要な場合は、代わりに `.tsx` ページに変換してください。
+
+## 使用例
+
+**`pages/search-widget.client.ts`** — クライアントエントリ：
+
+```ts
+// pages/search-widget.client.ts
+import { h, render } from "preact";
+
+function SearchWidget() {
+  return <div class="search-widget">検索…</div>;
+}
+
+const root = document.getElementById("search-root");
+if (root) {
+  render(<SearchWidget />, root);
+}
+```
+
+**`pages/search.tsx`** — ウィジェットを読み込む SSR ページ：
+
+```tsx
+import { clientScript } from "@takazudo/zfb";
+
+export default function SearchPage() {
+  return (
+    <html>
+      <head>
+        <title>検索</title>
+      </head>
+      <body>
+        <div id="search-root" />
+        <script type="module" src={clientScript("search-widget")} />
+      </body>
+    </html>
+  );
+}
+```
+
+開発中はブラウザが安定 URL `/assets/client/search-widget.js` をフェッチします。`zfb build` 後は HTML に `/assets/client/search-widget-<hash>.js` が含まれ、ハッシュ付きファイルが `dist/assets/client/` に存在します。

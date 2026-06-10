@@ -1,0 +1,159 @@
+---
+title: Client Scripts
+description: How to ship TypeScript/JavaScript files that run in the browser — the .client.ts convention, the clientScript() helper, hashing, and limitations.
+sidebar_position: 8
+---
+
+<Info title="What this page covers">
+
+How to author `*.client.ts` files that are bundled and served to the browser,
+how to reference their URLs at SSR time with `clientScript()`, how the
+production pipeline content-hashes them, and the current `.html`-source-page
+and browser-context limitations.
+
+</Info>
+
+## The `.client.*` convention
+
+Any TypeScript or JavaScript file under `pages/`, `components/`, or `src/`
+that ends with `.client.<ext>` (where `<ext>` is `ts`, `tsx`, `js`, or `jsx`)
+is treated as a **client-script entry**:
+
+```
+pages/
+  search-widget.client.ts   ← bundled as "search-widget"
+components/
+  analytics.client.tsx      ← bundled as "analytics"
+src/
+  my-lib.client.js          ← bundled as "my-lib"
+```
+
+The **entry name** is the file stem minus `.client` — so
+`search-widget.client.ts` → `"search-widget"`. Entry names must be unique
+across all discovery roots; a duplicate triggers a build error.
+
+`layouts/` is intentionally excluded from discovery: client scripts that span
+the whole site belong in `components/` or `src/`, not `layouts/`.
+
+## Referencing a client script from a page
+
+Use the `clientScript()` SSR helper to get the correct URL at render time:
+
+```tsx
+import { clientScript } from "@takazudo/zfb";
+
+export default function SearchPage() {
+  return (
+    <html>
+      <head>
+        <title>Search</title>
+      </head>
+      <body>
+        <div id="search-root" />
+        {/* clientScript returns the stable URL; the build pipeline rewrites it */}
+        <script type="module" src={clientScript("search-widget")} />
+      </body>
+    </html>
+  );
+}
+```
+
+`clientScript("search-widget")` returns
+`/assets/client/search-widget.js` (or the base-prefixed equivalent). The
+production build pipeline rewrites this to the hashed URL
+(`/assets/client/search-widget-<hash>.js`) in the final HTML.
+
+## What happens at build time
+
+`zfb build` runs three steps for each discovered entry:
+
+1. **Bundle** — each `.client.*` file is passed to esbuild and bundled
+   independently as an ESM module. The bundle includes only the entry and its
+   transitive imports. If the entry imports a framework (`preact`, `react`),
+   those are bundled in too.
+2. **Hash** — the `ProductionAssetPipeline` reads the bundle bytes,
+   content-hashes them, and writes `dist/assets/client/<name>-<hash>.js`.
+3. **Rewrite** — every occurrence of the stable URL
+   (`/assets/client/<name>.js`, possibly with a `base` prefix) in the
+   rendered HTML is replaced with the hashed URL.
+
+During `zfb dev`, client scripts are bundled but **not** hashed. The stable
+URL is served directly. This means the URL returned by `clientScript()` is
+live-reloadable in dev without a full page cycle.
+
+## Sub-path deploy (`base`)
+
+If your site mounts under a sub-path (e.g. `base: "/pj/mysite/"` in
+`zfb.config.json`), `clientScript()` automatically includes the prefix:
+
+```ts
+// With base="/pj/mysite/" configured:
+clientScript("search-widget")
+// → "/pj/mysite/assets/client/search-widget.js"
+```
+
+The production pipeline uses the same base-prefixed URL as the rewrite key, so
+the hash swap still fires. You do not need to manage the prefix manually.
+
+## SSR-only note (v1)
+
+`clientScript()` is designed for **SSR-context use**: rendering a `<script>`
+tag during server-side render. Calling it in browser-executed code also works,
+but the base prefix (`globalThis.__zfb.base`) is not shipped to the browser in
+v1 — so a browser-side call returns the unprefixed stable URL rather than the
+base-prefixed one.
+
+For the typical use-case of generating a `<script src="…">` tag at render
+time, this is not a problem: the tag is written once by the SSR renderer and
+the URL is correct.
+
+## `.html`-source-page limitation
+
+Pages authored as plain `.html` files (Option B, `pages/my-page.html`) bypass
+the asset URL rewrite pass entirely. A `clientScript()` URL embedded inside an
+`.html`-source page is **not** rewritten to the hashed equivalent. If you need
+hashed client-script URLs on a static HTML page, convert it to a `.tsx` page
+instead.
+
+## Full example
+
+**`pages/search-widget.client.ts`** — the client entry:
+
+```ts
+// pages/search-widget.client.ts
+import { h, render } from "preact";
+
+function SearchWidget() {
+  return <div class="search-widget">Search…</div>;
+}
+
+const root = document.getElementById("search-root");
+if (root) {
+  render(<SearchWidget />, root);
+}
+```
+
+**`pages/search.tsx`** — the SSR page that loads the widget:
+
+```tsx
+import { clientScript } from "@takazudo/zfb";
+
+export default function SearchPage() {
+  return (
+    <html>
+      <head>
+        <title>Search</title>
+      </head>
+      <body>
+        <div id="search-root" />
+        <script type="module" src={clientScript("search-widget")} />
+      </body>
+    </html>
+  );
+}
+```
+
+In development the browser fetches the stable URL
+`/assets/client/search-widget.js`. After `zfb build` the HTML contains
+`/assets/client/search-widget-<hash>.js` and the hashed file is present in
+`dist/assets/client/`.
