@@ -22,9 +22,7 @@ pub use content_bridge::{
 };
 pub use pipeline_spec::{PipelineSpec, PipelineSpecError};
 
-pub use pipeline::{
-    constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs,
-};
+pub use pipeline::{constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs};
 pub use plugins::{ExternalLinksConfig, ExternalLinksPlugin};
 
 pub use plugins::toc::TocConfig;
@@ -34,8 +32,9 @@ pub use plugins::toc::TocConfig;
 // threading `markdown.features` into the feature-aware pipeline constructor,
 // without taking a direct dependency on `zfb-md-ast` / `zfb-md-extras`.
 pub use zfb_md_extras::{
-    directives_enabled, heading_id_strategy, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind,
-    FeatureToggle, HeadingIdStrategy, HeadingIdsConfig, MarkdownFeaturesConfig, into_directive_def,
+    directives_enabled, heading_id_strategy, into_directive_def, DirectiveFullSpec, DirectiveSpec,
+    DirectiveSpecKind, FeatureToggle, HeadingIdStrategy, HeadingIdsConfig, ImageDimensionsConfig,
+    LinkValidationConfig, MarkdownFeaturesConfig, TranscludeConfig,
 };
 
 // Read-recorder surface (zfb#942): the recorder + outcome types live in
@@ -56,4 +55,3 @@ pub use tsx_frontmatter::{
     extract as extract_tsx_frontmatter, filename_extension_candidate, TsxFrontmatter,
     TsxFrontmatterError,
 };
-
