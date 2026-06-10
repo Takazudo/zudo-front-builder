@@ -79,8 +79,8 @@ use zfb_build::renderer::{
 };
 use zfb_build::{
     BuildContext, BuildOrchestrator, BuildOutcome, CssRunner, DevAssetPipeline, DiscoveryOutcome,
-    IslandsBundleInfo, IslandsRunner, OrchestratorConfig, PageRenderer, RelDistPath, RenderedPage,
-    RendererReloader,
+    IslandsBundleInfo, IslandsRunner, OrchestratorConfig, PageRenderer, RefreshOutcome,
+    RelDistPath, RenderedPage, RendererReloader,
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
@@ -784,9 +784,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // the renderer is disabled (no SSR in this project).
         let ssr_handle_for_reload = ssr_route_set.clone();
         Arc::new(move || {
-            let (changed, vanished_rel) = session
+            let (changed, vanished_rel) = match session
                 .refresh_bundle_and_routes()
-                .context("edit-tick bundle refresh failed")?;
+                .context("edit-tick bundle refresh failed")?
+            {
+                // Phase-B skip (issue #940): the live host, route tables,
+                // and SSR route set were all left untouched — report
+                // `Skipped` so DevAssetPipeline bypasses the render
+                // fan-out for the tick (issue #956).
+                BundleRefresh::Skipped => return Ok(RefreshOutcome::Skipped),
+                BundleRefresh::Refreshed { changed, vanished } => (changed, vanished),
+            };
             if !changed.is_empty() {
                 tracing::debug!(
                     count = changed.len(),
@@ -811,7 +819,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     "edit-tick refresh found globally-vanished routes"
                 );
             }
-            Ok(vanished_abs)
+            Ok(RefreshOutcome::Refreshed {
+                vanished: vanished_abs,
+            })
         }) as RendererReloader
     });
 
@@ -1277,11 +1287,12 @@ struct DevRenderInner {
 
     /// Skip key from the last SUCCESSFUL `refresh_bundle_and_routes` call
     /// (issue #940 — Phase B). Hashes bundle bytes + the router scan's
-    /// sorted source paths + route templates so a no-op tick (identical
-    /// bundle, identical route universe) skips V8 host boot + swap and
-    /// the `paths()` re-expansion. Stored only after ALL of: host boot,
-    /// swap, AND route-table rebuild succeed — a failed refresh must NOT
-    /// poison this field so the next byte-identical tick can retry.
+    /// sorted source paths + route templates + static `pages/**.html`
+    /// bodies (issue #956) so a no-op tick (identical bundle, identical
+    /// route universe) skips V8 host boot + swap and the `paths()`
+    /// re-expansion. Stored only after ALL of: host boot, swap, AND
+    /// route-table rebuild succeed — a failed refresh must NOT poison
+    /// this field so the next byte-identical tick can retry.
     ///
     /// `None` on first tick (cold start) — forces a full refresh.
     /// Wrapped in a `Mutex` so `&self.refresh_bundle_and_routes` can
@@ -1515,6 +1526,11 @@ impl DevRenderSession {
     /// that vanished from the global live route set. The caller is
     /// responsible for joining the relative paths with the appropriate dist
     /// root before propagating them (issue #804 P2).
+    ///
+    /// A Phase-B skip during discovery is folded back into the empty
+    /// change/vanish tuple here (pre-#956 behaviour): the discovery hook
+    /// still reports `renderer_reloaded = true`, so the tick behaves as a
+    /// completed refresh (issue #940 Inv 3).
     #[cfg(feature = "embed_v8")]
     fn discover_created(
         &self,
@@ -1523,7 +1539,10 @@ impl DevRenderSession {
         if created.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
-        self.refresh_bundle_and_routes()
+        match self.refresh_bundle_and_routes()? {
+            BundleRefresh::Skipped => Ok((Vec::new(), Vec::new())),
+            BundleRefresh::Refreshed { changed, vanished } => Ok((changed, vanished)),
+        }
     }
 
     /// Re-bundle the SSR worker, swap in a freshly-started embedded V8
@@ -1564,10 +1583,12 @@ impl DevRenderSession {
     ///    change a dynamic route's `paths()` output surface without a
     ///    restart.
     ///
-    /// Returns `(changed_sources, vanished_output_paths)` where:
-    /// - `changed_sources`: source [`PageId`]s whose route set changed
+    /// Returns [`BundleRefresh::Skipped`] when the Phase-B check (issue
+    /// #940) proved nothing observable changed, otherwise
+    /// [`BundleRefresh::Refreshed`] with:
+    /// - `changed`: source [`PageId`]s whose route set changed
     ///   (empty for a plain content edit).
-    /// - `vanished_output_paths`: relative output paths (under dist) that
+    /// - `vanished`: relative output paths (under dist) that
     ///   existed in the old live route set but are absent from the new one,
     ///   globally across all sources. Used by the caller to prune stale
     ///   HTML files and invalidate PageCache entries (issue #804).
@@ -1575,7 +1596,7 @@ impl DevRenderSession {
     /// `embed_v8`-gated like `boot_dev_renderer` — the host start +
     /// `paths()` runtime eval need the embedded V8 host.
     #[cfg(feature = "embed_v8")]
-    fn refresh_bundle_and_routes(&self) -> Result<(Vec<PageId>, Vec<std::path::PathBuf>)> {
+    fn refresh_bundle_and_routes(&self) -> Result<BundleRefresh> {
         let project_root = &self.inner.project_root;
         let inputs = &self.inner.rebuild_inputs;
 
@@ -1602,14 +1623,18 @@ impl DevRenderSession {
         // Phase B (issue #940) — skip key check.
         //
         // Compute a digest over bundle bytes + the router-scan signature
-        // (sorted source paths + route templates). If the new key matches
-        // the previous SUCCESSFUL tick's key, nothing observable changed:
+        // (sorted source paths + route templates) + static pages/**.html
+        // bodies (issue #956 gate (a)). If the new key matches the previous
+        // SUCCESSFUL tick's key, nothing observable changed:
         // - bundle bytes ≡ snapshot unchanged ≡ V8 host would observe
         //   identical globals,
-        // - router signature unchanged ≡ pages/ universe identical.
-        // Return early with empty (changed, vanished) — the caller treats
-        // this as a completed refresh (Inv 3: renderer_reloaded=true via
-        // the DiscoveryOutcome path above us).
+        // - router signature unchanged ≡ pages/ universe identical,
+        // - static-HTML bodies unchanged ≡ verbatim-copied routes identical.
+        // Return `Skipped` — the discovery caller treats this as a
+        // completed refresh (Inv 3: renderer_reloaded=true via the
+        // DiscoveryOutcome path above us), while the per-tick reloader
+        // propagates it so DevAssetPipeline bypasses the render fan-out
+        // (issue #956).
         //
         // Key is stored only AFTER the full success path below (host swap +
         // route rebuild). A failed refresh — e.g. host start error — must
@@ -1622,10 +1647,10 @@ impl DevRenderSession {
                 "bundle skip: byte-identical bundle + unchanged route universe; \
                  skipping V8 host boot and paths() re-expansion"
             );
-            // Early return — behaves as a completed refresh with empty
-            // change/vanish sets (Inv 3).  The skip key is already
-            // stored from the last successful tick; no update needed.
-            return Ok((Vec::new(), Vec::new()));
+            // Early return — the live host and route tables were left
+            // untouched. The skip key is already stored from the last
+            // successful tick; no update needed.
+            return Ok(BundleRefresh::Skipped);
         }
 
         // 2. Start a NEW embedded V8 host against the rebuilt bundle,
@@ -1740,8 +1765,31 @@ impl DevRenderSession {
         // `None`-clears-the-key rationale.
         self.inner.commit_skip_key(new_skip_key);
 
-        Ok((changed, vanished_output_paths))
+        Ok(BundleRefresh::Refreshed {
+            changed,
+            vanished: vanished_output_paths,
+        })
     }
+}
+
+/// Result of one [`DevRenderSession::refresh_bundle_and_routes`] call —
+/// the dev session's internal counterpart of
+/// [`zfb_build::RefreshOutcome`] (issue #956), carrying the extra
+/// `changed` source set the discovery path needs.
+#[cfg(feature = "embed_v8")]
+enum BundleRefresh {
+    /// Phase-B skip (issue #940): byte-identical bundle + unchanged route
+    /// universe (including static `pages/**.html` bodies). The live V8
+    /// host and route tables were left untouched.
+    Skipped,
+    /// Full refresh completed (host swap + route-table rebuild).
+    Refreshed {
+        /// Source [`PageId`]s whose route set changed.
+        changed: Vec<PageId>,
+        /// Relative output paths (under dist) that vanished from the
+        /// global live route set.
+        vanished: Vec<std::path::PathBuf>,
+    },
 }
 
 impl Drop for DevRenderInner {
@@ -1832,9 +1880,17 @@ fn assemble_and_bundle_dev(
 ///    (e.g. a `.tsx` page added with no JS-visible impact on the snapshot),
 ///    satisfying Inv 2 (§3 of the roadmap, issue #935).
 ///
-/// Returns `None` if the bundle file cannot be read — the caller treats
-/// that as a forced full refresh (safe direction: false-invalidate, never
-/// false-reuse).
+/// 3. **Static `pages/**.html` bodies** (issue #956 gate (a)) — routes
+///    with `static_html = true` bypass the JS bundle entirely: the
+///    renderer copies the source file from disk at render time
+///    (`zfb-build/src/renderer.rs`), so neither the bundle bytes nor the
+///    route signature reflect an edit to such a file's CONTENT. Hashing
+///    the bodies here keeps a static-HTML edit from being swallowed by
+///    the skip.
+///
+/// Returns `None` if the bundle file or any static-HTML source cannot be
+/// read — the caller treats that as a forced full refresh (safe
+/// direction: false-invalidate, never false-reuse).
 #[cfg(feature = "embed_v8")]
 fn compute_bundle_skip_key(
     bundler_out: &BundlerOutput,
@@ -1882,6 +1938,38 @@ fn compute_bundle_skip_key(
         hasher.update(src.as_bytes());
         hasher.update(b"=");
         hasher.update(tpl.as_bytes());
+        hasher.update(b"\n");
+    }
+
+    // Part 3: static pages/**.html bodies (issue #956 gate (a)). Sorted by
+    // source_path for a deterministic order; the paths come straight from
+    // the router's WalkDir over `<project_root>/pages`, so reading them
+    // here sees exactly the files the renderer would copy at render time.
+    let mut static_html_routes: Vec<&zfb_router::Route> =
+        routes.iter().filter(|r| r.static_html).collect();
+    static_html_routes.sort_unstable_by(|a, b| a.source_path.cmp(&b.source_path));
+    hasher.update(b"static-html:");
+    hasher.update((static_html_routes.len() as u64).to_le_bytes());
+    hasher.update(b":");
+    for route in static_html_routes {
+        let body = match std::fs::read(&route.source_path) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::warn!(
+                    site = "compute_bundle_skip_key",
+                    path = %route.source_path.display(),
+                    error = %err,
+                    "could not read static .html page for skip-key; \
+                     will perform full refresh"
+                );
+                return None;
+            }
+        };
+        hasher.update(route.source_path.to_string_lossy().as_bytes());
+        hasher.update(b"=");
+        hasher.update((body.len() as u64).to_le_bytes());
+        hasher.update(b":");
+        hasher.update(&body);
         hasher.update(b"\n");
     }
 
@@ -3295,6 +3383,88 @@ mod tests {
             !inner.should_skip_refresh(Some(key_k)),
             "committing None must clear the stored key so a later tick \
              with the old key cannot skip against the wrong host state"
+        );
+    }
+
+    // ── Static pages/**.html skip-key coverage (issue #956 gate (a)) ────────
+    //
+    // Static `.html` page routes bypass the JS bundle entirely (the
+    // renderer copies the source body from disk at render time), so their
+    // CONTENT is invisible to bundle bytes and to the route signature.
+    // `compute_bundle_skip_key` must fold their bodies into the key.
+
+    /// Build a `static_html` route pointing at `src`.
+    #[cfg(feature = "embed_v8")]
+    fn make_static_html_route(src: PathBuf) -> zfb_router::Route {
+        zfb_router::Route {
+            source_path: src,
+            segments: vec![zfb_router::Segment::Static("about".into())],
+            kind: zfb_router::RouteKind::Static,
+            specificity: 100,
+            output_extension: None,
+            static_html: true,
+        }
+    }
+
+    /// Editing a static `.html` page's bytes must change the skip key even
+    /// when bundle bytes and the route signature are identical — otherwise
+    /// the edit would be silently swallowed by the Phase-B skip.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn bundle_skip_key_changes_on_static_html_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = make_bundler_out(write_temp_bundle(&dir, b"identical-bundle"));
+
+        let html_path = dir.path().join("about.html");
+        std::fs::write(&html_path, "<h1>v1</h1>").unwrap();
+        let routes = vec![make_static_html_route(html_path.clone())];
+
+        let k1 = compute_bundle_skip_key(&out, &routes);
+        // Edit ONLY the static html body — same path, same route
+        // signature, same bundle bytes.
+        std::fs::write(&html_path, "<h1>v2</h1>").unwrap();
+        let k2 = compute_bundle_skip_key(&out, &routes);
+
+        assert!(k1.is_some());
+        assert!(k2.is_some());
+        assert_ne!(
+            k1, k2,
+            "a static pages/*.html content edit must defeat the skip \
+             even when bundle bytes and route signature are unchanged"
+        );
+    }
+
+    /// Unchanged static `.html` bodies keep the key stable — the skip
+    /// still fires for genuine no-op ticks on projects with static pages.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn bundle_skip_key_stable_when_static_html_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = make_bundler_out(write_temp_bundle(&dir, b"identical-bundle"));
+
+        let html_path = dir.path().join("about.html");
+        std::fs::write(&html_path, "<h1>same</h1>").unwrap();
+        let routes = vec![make_static_html_route(html_path)];
+
+        let k1 = compute_bundle_skip_key(&out, &routes);
+        let k2 = compute_bundle_skip_key(&out, &routes);
+        assert!(k1.is_some());
+        assert_eq!(k1, k2, "identical static html bodies → identical keys");
+    }
+
+    /// An unreadable static `.html` source forces `None` (full refresh) —
+    /// the safe direction, mirroring the unreadable-bundle case.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn bundle_skip_key_returns_none_for_unreadable_static_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = make_bundler_out(write_temp_bundle(&dir, b"bundle"));
+
+        let routes = vec![make_static_html_route(dir.path().join("missing.html"))];
+        let key = compute_bundle_skip_key(&out, &routes);
+        assert!(
+            key.is_none(),
+            "an unreadable static html source must force a full refresh"
         );
     }
 }

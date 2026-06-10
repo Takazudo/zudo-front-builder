@@ -90,7 +90,7 @@ pub use pipeline::{
     AssetKind, AssetPipeline, BuildContext, BuildMode, BuildOutcome, CssRunner, DevAssetPipeline,
     DevBuildContext, EmittedAsset, IslandsBundleInfo, IslandsRunner, PageRenderer,
     ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile, ProductionAssetPipeline,
-    ProductionEmitters, RelDistPath, RenderedPage, RendererReloader,
+    ProductionEmitters, RefreshOutcome, RelDistPath, RenderedPage, RendererReloader,
 };
 pub use plan::{PageSelection, RebuildPlan};
 pub use policy::{classify_change, classify_change_with_content_roots, GranularityPolicy, PathClass};
