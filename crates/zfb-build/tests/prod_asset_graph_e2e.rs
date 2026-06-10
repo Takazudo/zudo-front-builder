@@ -601,9 +601,13 @@ fn prod_asset_graph_emits_hashed_client_script_and_rewrites_html() {
     let relative_path = zfb_types::stable_client_script_relative_path(entry_name);
     let script_bytes = b"// bundled search widget\nconsole.log(\"hi\");\n".to_vec();
 
-    // Simulate renderer: HTML carries the stable client-script URL as a
-    // module script tag (v1 routes client scripts through
-    // `island_module_urls`; see `derive_prod_head_assets`).
+    // Simulate a page that explicitly references the client script via the
+    // `clientScript()` SSR helper: the rendered HTML carries the stable
+    // client-script URL as a module script tag. Client scripts are NOT
+    // auto-injected into the head (#971 P2) — they reach a page only through
+    // such explicit references. We reuse the head-inject staging helper here
+    // purely to place the stable URL into the page; the pipeline rewrite is
+    // injection-point-agnostic (it rewrites any boundary-anchored match).
     let head_assets = ProdHeadAssets {
         css_url: None,
         island_module_urls: vec![stable_url.clone()],

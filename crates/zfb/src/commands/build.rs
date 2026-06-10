@@ -2175,13 +2175,17 @@ fn derive_prod_head_assets(inputs: &ProdAssetEmitterInputs) -> Option<ProdHeadAs
     if let Some(islands) = inputs.islands.as_ref() {
         island_module_urls.push(islands.stable_url.clone());
     }
-    // Client-script stable URLs are also injected as `<script type="module">`
-    // tags. The wave-2 `clientScript()` SSR helper will insert them per-page
-    // at the right injection point; for v1 they travel through the same
-    // `island_module_urls` Vec so the renderer's head injection picks them up.
-    for cs in &inputs.client_scripts {
-        island_module_urls.push(cs.stable_url.clone());
-    }
+    // Client scripts are deliberately NOT auto-injected here. Unlike the CSS
+    // and islands bundles — which every page needs — a client script ships to
+    // a page ONLY when that page explicitly references it via the
+    // `clientScript()` SSR helper (`<script src={clientScript("name")} />`).
+    // Auto-injecting all of them into every page's head would defeat the
+    // selective per-page loading contract and duplicate tags on pages that
+    // already render the reference deliberately. The client-script payloads
+    // still flow through `ProductionAssetPipeline` (hashing + the
+    // stable→hashed HTML rewrite over each page's explicit reference) via
+    // `prod_asset_inputs.client_scripts`; only this head auto-injection is
+    // removed (#971 P2).
     if css_url.is_none() && island_module_urls.is_empty() {
         return None;
     }
@@ -2583,6 +2587,14 @@ mod tests {
         /// `DefaultRunner`); tests can preload bytes to exercise the
         /// hash + URL rewrite path.
         prod_asset_inputs: RefCell<ProdAssetEmitterInputs>,
+        /// Stable client-script URLs that each rendered page explicitly
+        /// references via the `clientScript()` SSR helper. The real renderer
+        /// emits these because the page source calls `clientScript("name")`;
+        /// the fake splices a `<script src="…">` per URL into every page's
+        /// body so the post-render pipeline has an explicit reference to
+        /// hash-rewrite. This is independent of `prod_head_assets` — client
+        /// scripts are NOT auto-injected into the head (#971 P2).
+        page_client_script_refs: RefCell<Vec<String>>,
     }
 
     impl FakeRunner {
@@ -2593,6 +2605,7 @@ mod tests {
                 eval_deferred_paths_calls: RefCell::new(0),
                 mock_bundle_path,
                 prod_asset_inputs: RefCell::new(ProdAssetEmitterInputs::default()),
+                page_client_script_refs: RefCell::new(Vec::new()),
             }
         }
 
@@ -2600,6 +2613,17 @@ mod tests {
         /// Used by the orchestrator-wiring tests below.
         fn with_prod_asset_inputs(self, inputs: ProdAssetEmitterInputs) -> Self {
             *self.prod_asset_inputs.borrow_mut() = inputs;
+            self
+        }
+
+        /// Declare client-script stable URLs that each rendered page
+        /// references explicitly (simulating a page that calls
+        /// `clientScript()`). The fake renderer splices a `<script src="…">`
+        /// tag per URL into every page body. Used by the client-script tests
+        /// to exercise the explicit-reference hash-rewrite path now that head
+        /// auto-injection is gone (#971 P2).
+        fn with_page_client_script_refs(self, urls: Vec<String>) -> Self {
+            *self.page_client_script_refs.borrow_mut() = urls;
             self
         }
     }
@@ -2677,6 +2701,16 @@ mod tests {
                 }
                 None => String::new(),
             };
+            // Simulate a page that explicitly references client scripts via
+            // `clientScript()`: splice each declared URL as a `<script src>`
+            // in the body. The real renderer emits these from the page source,
+            // not from head auto-injection (#971 P2).
+            let body_extra: String = self
+                .page_client_script_refs
+                .borrow()
+                .iter()
+                .map(|src| format!("<script type=\"module\" src=\"{src}\"></script>"))
+                .collect();
             for entry in &input.route_universe {
                 let dest = input.dist_dir.join(&entry.output_path);
                 if let Some(parent) = dest.parent() {
@@ -2685,7 +2719,7 @@ mod tests {
                 std::fs::write(
                     &dest,
                     format!(
-                        "<html><head>{head_extra}</head><body><main>rendered {}</main></body></html>",
+                        "<html><head>{head_extra}</head><body><main>rendered {}</main>{body_extra}</body></html>",
                         entry.url_path,
                     ),
                 )
@@ -3373,11 +3407,17 @@ mod tests {
         assert!(prod_assets.island_module_urls.is_empty());
     }
 
-    /// Gate regression (#976): with ONLY client-script payloads (css
-    /// and islands both `None`) the post-render pipeline must still
-    /// fire — the `:1568` gate now also checks
-    /// `!client_scripts.is_empty()`. Without that check the hashed
-    /// file would never land and the stable URL would leak into HTML.
+    /// Gate regression (#976) + explicit-reference contract (#971 P2):
+    /// with ONLY client-script payloads (css and islands both `None`) the
+    /// post-render pipeline must still fire — the gate also checks
+    /// `!client_scripts.is_empty()`. Without that check the hashed file
+    /// would never land and the explicit `clientScript()` reference in the
+    /// page would keep the stable URL.
+    ///
+    /// Client scripts are NOT auto-injected into the head; they ship only
+    /// via the page's own `clientScript()` reference (simulated here by
+    /// `with_page_client_script_refs`). `prod_head_assets` therefore stays
+    /// `None` when css/islands have no bytes.
     #[test]
     fn run_build_writes_hashed_client_script_and_rewrites_html() {
         let tmp = tempdir().unwrap();
@@ -3395,7 +3435,10 @@ mod tests {
                     stable_url: "/assets/client/search-widget.js".to_string(),
                     companions: Vec::new(),
                 }],
-            });
+            })
+            // The page explicitly references the client script via
+            // `clientScript("search-widget")`.
+            .with_page_client_script_refs(vec!["/assets/client/search-widget.js".to_string()]);
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
@@ -3428,7 +3471,8 @@ mod tests {
             "expected search-widget-<8hex>.js; got {name}",
         );
 
-        // (b) HTML carries the hashed URL; the stable URL does not leak.
+        // (b) HTML carries the hashed URL (from the page's explicit
+        // reference, rewritten by the pipeline); the stable URL does not leak.
         let hashed_url = format!("/assets/client/{name}");
         let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
         assert!(
@@ -3440,18 +3484,77 @@ mod tests {
             "stable URL leaked: {html}",
         );
 
-        // (c) The renderer was handed the stable client-script URL via
-        // prod_head_assets (travels through island_module_urls in v1).
+        // (c) Client scripts are NOT auto-injected into the head: with no
+        // CSS/islands bytes, `prod_head_assets` is `None` (#971 P2). The
+        // client-script tag reaches HTML solely via the page's explicit
+        // reference, not via head injection.
         let render_calls = runner.render_calls.borrow();
-        let prod_assets = render_calls[0]
-            .prod_head_assets
-            .as_ref()
-            .expect("prod_head_assets must be populated for client scripts");
-        assert!(prod_assets.css_url.is_none());
-        assert_eq!(
-            prod_assets.island_module_urls,
-            vec!["/assets/client/search-widget.js".to_string()],
+        assert!(
+            render_calls[0].prod_head_assets.is_none(),
+            "client scripts must not be auto-injected into the head; \
+             prod_head_assets should be None with no css/islands bytes, got {:?}",
+            render_calls[0].prod_head_assets,
         );
+    }
+
+    /// #971 P2 regression: a page that does NOT reference any client script
+    /// gets NO client-script tag, even when the build has client-script
+    /// payloads. The hashed asset still lands on disk (it is shipped for the
+    /// pages that DO reference it), but the unreferencing page's HTML carries
+    /// neither the stable nor the hashed client-script URL.
+    #[test]
+    fn run_build_does_not_inject_client_script_into_unreferencing_page() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        // A client-script payload exists, but the page never references it
+        // (no `with_page_client_script_refs`).
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+                css: None,
+                islands: None,
+                client_scripts: vec![zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b"// search widget".to_vec(),
+                    relative_path: PathBuf::from("assets/client/search-widget.js"),
+                    stable_url: "/assets/client/search-widget.js".to_string(),
+                    companions: Vec::new(),
+                }],
+            });
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        // The hashed bundle still lands on disk (shipped for referencing pages).
+        let client_entries: Vec<String> = std::fs::read_dir(outdir.join("assets/client"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(client_entries.len(), 1, "hashed asset still ships");
+
+        // The unreferencing page carries NO client-script URL — neither the
+        // stable URL nor any hashed `/assets/client/...` variant.
+        let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        assert!(
+            !html.contains("/assets/client/"),
+            "no client-script tag should appear on a page that did not \
+             reference it: {html}",
+        );
+
+        // And `prod_head_assets` is `None` (no css/islands, no auto-inject).
+        let render_calls = runner.render_calls.borrow();
+        assert!(render_calls[0].prod_head_assets.is_none());
     }
 
     /// `apply_asset_url_base` mounts each emitter slot's `stable_url`
@@ -5240,7 +5343,12 @@ mod tests {
                     stable_url: "/assets/client/x.js".to_string(),
                     companions: Vec::new(),
                 }],
-            });
+            })
+            // The page references the client script via `clientScript("x")`,
+            // which under `base="/foo/"` emits the base-prefixed stable URL.
+            // This is the explicit reference the pipeline rewrites — client
+            // scripts are not auto-injected into the head (#971 P2).
+            .with_page_client_script_refs(vec!["/foo/assets/client/x.js".to_string()]);
         let cfg = Config {
             base: Some("/foo/".to_string()),
             ..Config::default()
@@ -5291,20 +5399,18 @@ mod tests {
             "unprefixed stable URL leaked into HTML:\n{html}",
         );
 
-        // (c) The renderer was handed the PREFIXED stable URL
-        //     (`/foo/assets/client/x.js`) so the boundary_replace rewrite key
-        //     in the pipeline matches the URL the renderer inserted.
+        // (c) Client scripts are NOT auto-injected into the head (#971 P2):
+        //     with no css/islands bytes, `prod_head_assets` is `None`. The
+        //     prefixed stable URL reaches HTML only via the page's explicit
+        //     `clientScript()` reference, and `apply_asset_url_base` still
+        //     prefixes the payload's `stable_url` so the pipeline's
+        //     boundary_replace rewrite key matches that explicit reference.
         let render_calls = runner.render_calls.borrow();
-        let prod_assets = render_calls[0]
-            .prod_head_assets
-            .as_ref()
-            .expect("prod_head_assets must be populated for client scripts");
         assert!(
-            prod_assets
-                .island_module_urls
-                .contains(&"/foo/assets/client/x.js".to_string()),
-            "renderer must receive the prefixed stable URL; got {:?}",
-            prod_assets.island_module_urls,
+            render_calls[0].prod_head_assets.is_none(),
+            "client scripts must not be auto-injected; prod_head_assets should \
+             be None with no css/islands bytes, got {:?}",
+            render_calls[0].prod_head_assets,
         );
     }
 
