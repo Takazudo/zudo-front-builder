@@ -262,7 +262,6 @@ fn fail_on_broken_true_emits_error() {
     let md = "[foo](#no-such-heading)\n";
     let cfg = LinkValidationConfig {
         fail_on_broken: Some(true),
-        allow_external: None,
     };
     let diags = run(
         md,

@@ -686,8 +686,8 @@ export type ImageDimensionsConfig = Record<string, never>;
  * Options for the `linkValidation` feature.
  *
  * Validates internal `[text](file.md#anchor)` and `[text](#anchor)` links at
- * build time. External URLs (`http://`, `https://`, `mailto:`) are skipped by
- * default.
+ * build time. External URLs (`http://`, `https://`, `mailto:`) are always
+ * skipped — network validation is out of scope.
  *
  * Mirrors `LinkValidationConfig` in `crates/zfb-md-ast/src/features_config.rs`.
  */
@@ -697,14 +697,6 @@ export type LinkValidationConfig = {
    * Default: `false` (warn-only).
    */
   failOnBroken?: boolean;
-  /**
-   * When `true` (default), external URLs are silently skipped.
-   *
-   * Accepted for API completeness, but network validation of external
-   * links is not implemented yet — `false` currently behaves the same
-   * as `true` (external URLs are always skipped).
-   */
-  allowExternal?: boolean;
 };
 
 /**

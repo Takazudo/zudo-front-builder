@@ -136,7 +136,8 @@ pub struct ImageDimensionsConfig {
 /// Validates internal `[text](file.md#anchor)` and `[text](#anchor)` links at
 /// build time using the cross-file heading-ID registry built by
 /// `HeadingLinksPlugin` (wave 6, #568). External URLs (`http://`, `https://`,
-/// `mailto:`, etc.) are skipped by default.
+/// `mailto:`, etc.) are always silently skipped — network validation is out of
+/// scope.
 ///
 /// Mirrors `LinkValidationConfig` in `packages/zfb/src/config.ts`.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -147,11 +148,6 @@ pub struct LinkValidationConfig {
     /// `false` (warn-only; build continues).
     #[serde(default)]
     pub fail_on_broken: Option<bool>,
-    /// When `true` (default), external URLs (`http://`, `https://`, `mailto:`,
-    /// etc.) are silently skipped. Set to `false` to validate external links
-    /// too (useful in CI link-checking pipelines).
-    #[serde(default)]
-    pub allow_external: Option<bool>,
 }
 
 /// Options for the `transclude` feature.

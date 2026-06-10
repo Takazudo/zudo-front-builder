@@ -9,8 +9,8 @@
 //!   existing source file whose registry entry contains that heading ID.
 //! - **File-relative links without anchor** (`./other.md`) resolve to an
 //!   existing file on disk (under `project_root`).
-//! - **External URLs** (`http://`, `https://`, `mailto:`, etc.) are skipped
-//!   silently when `allowExternal` is `true` (the default).
+//! - **External URLs** (`http://`, `https://`, `mailto:`, etc.) are always
+//!   skipped silently — network validation is out of scope.
 //!
 //! Broken links are emitted as [`MarkdownDiagnostic::BrokenLink`] through
 //! `ctx.diagnostics`. Severity is `Warning` (default) or `Error` when
@@ -149,11 +149,6 @@ impl LinkValidationPlugin {
             DiagnosticSeverity::Warning
         }
     }
-
-    /// Returns true when external URLs should be silently skipped (default).
-    fn allow_external(&self) -> bool {
-        self.config.allow_external.unwrap_or(true)
-    }
 }
 
 impl HastVisitor for LinkValidationPlugin {
@@ -169,7 +164,6 @@ impl HastVisitor for LinkValidationPlugin {
         };
         // Walk the tree collecting (href, severity) diagnostics.
         let severity = self.severity();
-        let allow_external = self.allow_external();
         let project_root = ctx.project_root.clone();
         collect_diagnostics(
             node,
@@ -177,7 +171,6 @@ impl HastVisitor for LinkValidationPlugin {
             &project_root,
             ctx,
             severity,
-            allow_external,
         );
     }
 }
@@ -191,7 +184,6 @@ fn collect_diagnostics(
     project_root: &Path,
     ctx: &mut BuildContext<'_>,
     severity: DiagnosticSeverity,
-    allow_external: bool,
 ) {
     match node {
         HastNode::Element {
@@ -231,7 +223,6 @@ fn collect_diagnostics(
                     project_root,
                     ctx,
                     severity,
-                    allow_external,
                     is_img,
                 );
             }
@@ -244,7 +235,6 @@ fn collect_diagnostics(
                     project_root,
                     ctx,
                     severity,
-                    allow_external,
                 );
             }
         }
@@ -256,7 +246,6 @@ fn collect_diagnostics(
                     project_root,
                     ctx,
                     severity,
-                    allow_external,
                 );
             }
         }
@@ -277,15 +266,12 @@ fn validate_link(
     project_root: &Path,
     ctx: &mut BuildContext<'_>,
     severity: DiagnosticSeverity,
-    allow_external: bool,
     is_img: bool,
 ) {
     let parsed = parse_link(href);
     match parsed {
         ParsedLink::External => {
-            // Skip external URLs — `allow_external` is accepted for API
-            // completeness but network validation is out of scope for now.
-            let _ = allow_external;
+            // External URLs are always skipped — network validation is out of scope.
         }
         ParsedLink::BareFragment(fragment) => {
             if is_img {
