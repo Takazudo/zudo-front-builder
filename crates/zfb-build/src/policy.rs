@@ -253,6 +253,37 @@ pub fn classify_change_with_content_roots(
     classify_by_extension(lower_ext.as_deref())
 }
 
+/// Returns `true` when the filename looks like a `*.client.{ts,tsx,js,jsx}`
+/// client-script entry.
+///
+/// The check mirrors `zfb_islands::client_scripts::is_client_script_file` and
+/// is intentionally kept in sync with it. We duplicate the tiny predicate here
+/// rather than introducing a cross-crate dependency (`zfb-build` does not (and
+/// should not) depend on `zfb-islands`) so the policy module stays a lightweight
+/// leaf.
+///
+/// The check is purely filename-based (no filesystem access).
+pub(crate) fn is_client_script_path(path: &Path) -> bool {
+    let file_name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return false,
+    };
+    for ext in ["ts", "tsx", "js", "jsx"] {
+        let suffix = format!(".client.{ext}");
+        if file_name.ends_with(&suffix) && file_name.len() > suffix.len() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Client-script discovery roots (project-root-relative).
+///
+/// Mirrors `zfb_islands::client_scripts::CLIENT_SCRIPT_DISCOVERY_ROOTS`.
+/// Kept in sync by convention: if the discovery roots ever change in
+/// `zfb-islands`, this constant must be updated too.
+pub(crate) const CLIENT_SCRIPT_ROOTS: &[&str] = &["pages", "components", "src"];
+
 /// Classify a path by its extension alone, without any directory-name
 /// inspection. Shared between the in-tree root-segment-walk fallback
 /// and the out-of-root extra-watch-path branch.
@@ -330,6 +361,27 @@ impl GranularityPolicy {
     pub fn is_islands_candidate(&self, path: &Path) -> bool {
         for root in &self.islands_roots {
             if path_starts_with_segment(path, root) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns `true` when `path` is a `*.client.{ts,tsx,js,jsx}` file
+    /// under one of the three conventional client-script discovery roots
+    /// (`pages/`, `components/`, `src/`).
+    ///
+    /// This check is **path-classification-independent**: a
+    /// `*.client.ts` file under `pages/` classifies as `PathClass::Page`
+    /// (not `Module`), so the normal `is_islands_candidate` gate does not
+    /// fire. We call this predicate *after* the `PathClass` switch so it
+    /// covers all three roots regardless of classification.
+    pub fn is_client_script_candidate(&self, path: &Path) -> bool {
+        if !is_client_script_path(path) {
+            return false;
+        }
+        for root in CLIENT_SCRIPT_ROOTS {
+            if path_starts_with_segment(path, Path::new(root)) {
                 return true;
             }
         }
@@ -756,6 +808,104 @@ mod tests {
         assert_eq!(
             classify_change(Path::new("/srv/shared/Makefile"), proj(), never_global,),
             PathClass::External,
+        );
+    }
+
+    // ── Client-script candidate detection (issue #979) ──────────────────
+
+    /// Editing a `*.client.ts` under `pages/` must trigger
+    /// `rerun_client_scripts`, even though the file also classifies as
+    /// `PathClass::Page`. This is the BLOCKING acceptance requirement:
+    /// the orchestrator checks `is_client_script_candidate` independently
+    /// of the `PathClass` match so `pages/` files are NOT excluded.
+    #[test]
+    fn client_script_under_pages_is_candidate() {
+        let policy = GranularityPolicy::default();
+        assert!(
+            policy.is_client_script_candidate(Path::new("/proj/pages/analytics.client.ts")),
+            "pages/ *.client.ts must be a client-script candidate"
+        );
+        // All supported extensions.
+        for ext in ["ts", "tsx", "js", "jsx"] {
+            let path = format!("/proj/pages/widget.client.{ext}");
+            assert!(
+                policy.is_client_script_candidate(Path::new(&path)),
+                "pages/ *.client.{ext} must be a candidate"
+            );
+        }
+    }
+
+    /// Editing a `*.client.ts` under `components/` must trigger
+    /// `rerun_client_scripts`. `components/` is a default islands root so
+    /// the file also classifies as `Module` — but the client-scripts pass
+    /// must fire regardless of the islands bundler.
+    #[test]
+    fn client_script_under_components_is_candidate() {
+        let policy = GranularityPolicy::default();
+        assert!(
+            policy
+                .is_client_script_candidate(Path::new("/proj/components/search-widget.client.ts")),
+            "components/ *.client.ts must be a client-script candidate"
+        );
+        for ext in ["ts", "tsx", "js", "jsx"] {
+            let path = format!("/proj/components/widget.client.{ext}");
+            assert!(
+                policy.is_client_script_candidate(Path::new(&path)),
+                "components/ *.client.{ext} must be a candidate"
+            );
+        }
+    }
+
+    /// Editing a `*.client.ts` under `src/` must trigger
+    /// `rerun_client_scripts`. `src/` is a default islands root too — the
+    /// client-scripts trigger is independent.
+    #[test]
+    fn client_script_under_src_is_candidate() {
+        let policy = GranularityPolicy::default();
+        assert!(
+            policy.is_client_script_candidate(Path::new("/proj/src/my-lib.client.ts")),
+            "src/ *.client.ts must be a client-script candidate"
+        );
+        // Nested subdirectory (should still match via path_starts_with_segment).
+        assert!(
+            policy.is_client_script_candidate(Path::new("/proj/src/widgets/fancy.client.tsx")),
+            "src/widgets/ *.client.tsx must be a candidate (nested)"
+        );
+    }
+
+    /// Non-client files under the discovery roots must NOT trigger the
+    /// client-scripts pass.
+    #[test]
+    fn regular_tsx_files_are_not_client_script_candidates() {
+        let policy = GranularityPolicy::default();
+        for path in [
+            "/proj/pages/index.tsx",
+            "/proj/components/Button.tsx",
+            "/proj/src/utils.ts",
+            "/proj/content/post.md",
+            "/proj/layouts/base.tsx",
+        ] {
+            assert!(
+                !policy.is_client_script_candidate(Path::new(path)),
+                "regular file must NOT be a client-script candidate: {path}"
+            );
+        }
+    }
+
+    /// Files outside the three conventional roots are NOT candidates,
+    /// even if they have the `.client.ts` suffix.
+    #[test]
+    fn client_script_outside_discovery_roots_is_not_candidate() {
+        let policy = GranularityPolicy::default();
+        // `layouts/` is explicitly excluded from the discovery roots.
+        assert!(
+            !policy.is_client_script_candidate(Path::new("/proj/layouts/header-toggle.client.ts")),
+            "layouts/ must NOT be a client-script candidate (excluded from discovery)"
+        );
+        // A file outside all known roots.
+        assert!(
+            !policy.is_client_script_candidate(Path::new("/proj/lib/util.client.ts")),
+            "lib/ must NOT be a client-script candidate (not a discovery root)"
         );
     }
 }

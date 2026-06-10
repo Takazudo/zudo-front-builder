@@ -187,6 +187,7 @@ pub fn apply_prod_asset_pipeline(
         render_pages,
         run_css: None,
         run_islands: None,
+        run_client_scripts: None,
         reload_renderer: None,
     };
 
@@ -210,6 +211,10 @@ pub fn apply_prod_asset_pipeline(
         pages: PageSelection::Specific(selection),
         rerun_css: true,
         rerun_islands: true,
+        // Production builds do not run the dev client-scripts runner —
+        // production client scripts are handled through the AssetEmitter
+        // path in ProductionAssetPipeline.
+        rerun_client_scripts: false,
         // One-shot production build: the render session is constructed
         // against the bundle that was just built — nothing to reload.
         renderer_fresh: true,

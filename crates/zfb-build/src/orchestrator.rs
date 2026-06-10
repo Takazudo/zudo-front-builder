@@ -334,6 +334,26 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     plan.mark_ssr_reload_needed();
                 }
             }
+
+            // Client-script rebuild trigger — evaluated after the class
+            // switch so it fires for ALL three discovery roots:
+            //
+            // - `components/` and `src/` files classify as `Module`, which
+            //   the class match above already handles for islands. Client
+            //   scripts under these roots also need the client-scripts pass.
+            // - `pages/` files classify as `Page`, NOT `Module`, so the
+            //   `is_islands_candidate` gate in the Module branch never fires
+            //   for them. We check `is_client_script_candidate` here, outside
+            //   the match, so `pages/analytics.client.ts` triggers a rebuild
+            //   even though it's classified as a Page change.
+            //
+            // `Global` already returns early with `full_rebuild()` which sets
+            // `rerun_client_scripts = true`, so we never reach this point on a
+            // Global change — the `is_client_script_candidate` guard here is
+            // therefore only ever evaluated for non-Global changes.
+            if self.config.policy.is_client_script_candidate(&path) {
+                plan.mark_client_scripts();
+            }
         }
 
         plan
@@ -376,6 +396,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         if plan.pages.is_empty()
             && !plan.rerun_css
             && !plan.rerun_islands
+            && !plan.rerun_client_scripts
             && !plan.ssr_reload_needed
         {
             return Ok(None);
@@ -611,6 +632,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         if plan.pages.is_empty()
             && !plan.rerun_css
             && !plan.rerun_islands
+            && !plan.rerun_client_scripts
             && !plan.ssr_reload_needed
             && plan.prune_paths.is_empty()
         {
@@ -955,6 +977,7 @@ mod tests {
             render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: None,
         }
     }
@@ -1126,6 +1149,7 @@ mod tests {
             }),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: None,
         };
 
@@ -1164,6 +1188,80 @@ mod tests {
         );
     }
 
+    // ── Client-script rebuild trigger — per-root coverage (issue #979) ────
+
+    /// Editing `pages/analytics.client.ts` must set `rerun_client_scripts`
+    /// even though the file classifies as `PathClass::Page` (not Module).
+    ///
+    /// This is the BLOCKING acceptance test for the pages/ root: without the
+    /// post-match `is_client_script_candidate` check in `plan_for_changes`,
+    /// a `pages/*.client.ts` edit would never trigger the client-scripts
+    /// rebuild pass because the `mark_islands` gate only fires for Module
+    /// changes inside `islands_roots`.
+    #[test]
+    fn client_script_edit_under_pages_sets_rerun_client_scripts() {
+        let orch = make_orch(CountingPipeline::default());
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/proj/pages/analytics.client.ts")]);
+        assert!(
+            plan.rerun_client_scripts,
+            "*.client.ts under pages/ must set rerun_client_scripts"
+        );
+        // Also: the page edit path still fires.
+        assert!(
+            !plan.rerun_islands,
+            "pages/ file must NOT trigger islands rerun"
+        );
+    }
+
+    /// Editing `components/search-widget.client.ts` must set
+    /// `rerun_client_scripts`. (`components/` is also an islands root, so
+    /// `rerun_islands` fires here too — but the client-scripts rebuild is
+    /// independent.)
+    #[test]
+    fn client_script_edit_under_components_sets_rerun_client_scripts() {
+        let orch = make_orch(CountingPipeline::default());
+        let plan = orch.plan_for_changes(vec![PathBuf::from(
+            "/proj/components/search-widget.client.ts",
+        )]);
+        assert!(
+            plan.rerun_client_scripts,
+            "*.client.ts under components/ must set rerun_client_scripts"
+        );
+        assert!(
+            plan.rerun_islands,
+            "components/ is an islands root — rerun_islands must also fire"
+        );
+    }
+
+    /// Editing `src/my-lib.client.ts` must set `rerun_client_scripts`.
+    /// (`src/` is also an islands root, same dual-trigger expectation as
+    /// `components/`.)
+    #[test]
+    fn client_script_edit_under_src_sets_rerun_client_scripts() {
+        let orch = make_orch(CountingPipeline::default());
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/proj/src/my-lib.client.ts")]);
+        assert!(
+            plan.rerun_client_scripts,
+            "*.client.ts under src/ must set rerun_client_scripts"
+        );
+        assert!(
+            plan.rerun_islands,
+            "src/ is an islands root — rerun_islands must also fire"
+        );
+    }
+
+    /// A regular (non-client) `.tsx` edit under `pages/` must NOT set
+    /// `rerun_client_scripts`.
+    #[test]
+    fn regular_tsx_edit_under_pages_does_not_set_rerun_client_scripts() {
+        let orch = make_orch(CountingPipeline::default());
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/proj/pages/index.tsx")]);
+        assert!(
+            !plan.rerun_client_scripts,
+            "regular .tsx under pages/ must NOT set rerun_client_scripts"
+        );
+    }
+
     /// `initial_build` on an empty graph (no pages) is a clean no-op,
     /// not an error — the dev server still boots (e.g. an SSR-only
     /// project) so the user can poke at it.
@@ -1184,6 +1282,7 @@ mod tests {
             render_pages: Arc::new(|_, _| Ok(vec![])),
             run_css: None,
             run_islands: None,
+            run_client_scripts: None,
             reload_renderer: None,
         };
         assert!(

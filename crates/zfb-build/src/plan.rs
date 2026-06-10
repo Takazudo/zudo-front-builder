@@ -44,6 +44,14 @@ pub struct RebuildPlan {
     /// Whether the islands bundler should run again.
     pub rerun_islands: bool,
 
+    /// Whether the client-scripts bundler should run again.
+    ///
+    /// Set whenever a `*.client.{ts,tsx,js,jsx}` file changes under any of
+    /// the conventional discovery roots (`pages/`, `components/`, `src/`).
+    /// The dev pipeline calls `ctx.run_client_scripts` when this is true
+    /// and emits a `ReloadEvent::Page` on a successful re-bundle.
+    pub rerun_client_scripts: bool,
+
     /// True when the renderer's bundle was already refreshed for this
     /// tick — by the boot bundle (initial render) or by the watch-ADD
     /// discovery hook's re-bundle + host reload. The pipeline consults
@@ -135,6 +143,7 @@ impl RebuildPlan {
             pages: PageSelection::none(),
             rerun_css: false,
             rerun_islands: false,
+            rerun_client_scripts: false,
             renderer_fresh: false,
             ssr_reload_needed: false,
             prune_paths: Vec::new(),
@@ -149,6 +158,7 @@ impl RebuildPlan {
             pages: PageSelection::All,
             rerun_css: true,
             rerun_islands: true,
+            rerun_client_scripts: true,
             renderer_fresh: false,
             ssr_reload_needed: true,
             prune_paths: Vec::new(),
@@ -197,12 +207,18 @@ impl RebuildPlan {
         self.rerun_islands = true;
     }
 
+    /// Mark client scripts as needing a rerun.
+    pub fn mark_client_scripts(&mut self) {
+        self.rerun_client_scripts = true;
+    }
+
     /// True iff the plan would do nothing — no pages, no CSS, no
-    /// islands, no paths to prune, and no SSR-only host reload needed.
-    /// The orchestrator skips empty plans.
+    /// islands, no client scripts, no paths to prune, and no SSR-only
+    /// host reload needed. The orchestrator skips empty plans.
     pub fn is_noop(&self) -> bool {
         !self.rerun_css
             && !self.rerun_islands
+            && !self.rerun_client_scripts
             && !self.ssr_reload_needed
             && self.pages.is_empty()
             && self.prune_paths.is_empty()

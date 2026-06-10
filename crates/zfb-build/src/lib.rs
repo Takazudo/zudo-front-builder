@@ -78,10 +78,11 @@ pub use head_inject::{
 pub use orchestrator::{BuildOrchestrator, DiscoveryHook, DiscoveryOutcome, OrchestratorConfig};
 pub use pipeline::{
     apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitter, AssetEmitterPayload,
-    AssetKind, AssetPipeline, BuildContext, BuildMode, BuildOutcome, CssRunner, DevAssetPipeline,
-    DevBuildContext, EmittedAsset, IslandsBundleInfo, IslandsRunner, PageRenderer,
-    ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile, ProductionAssetPipeline,
-    ProductionEmitters, RefreshOutcome, RelDistPath, RenderedPage, RendererReloader,
+    AssetKind, AssetPipeline, BuildContext, BuildMode, BuildOutcome, ClientScriptsRunner,
+    CssRunner, DevAssetPipeline, DevBuildContext, EmittedAsset, IslandsBundleInfo, IslandsRunner,
+    PageRenderer, ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile,
+    ProductionAssetPipeline, ProductionEmitters, RefreshOutcome, RelDistPath, RenderedPage,
+    RendererReloader,
 };
 pub use plan::{ContentNarrowing, PageSelection, RebuildPlan};
 pub use plugin_registries::{
