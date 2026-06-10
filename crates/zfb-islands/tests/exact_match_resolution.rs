@@ -145,7 +145,8 @@ fn alias_matches_exact_specifier() {
     let out = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)
         .expect("exact-match alias `@/foo` must resolve");
-    let body = fs::read_to_string(&out.asset_path).expect("read bundle");
+    // Bundler carries bytes in memory — no disk write.
+    let body = String::from_utf8(out.bytes).expect("bundled bytes are valid UTF-8");
     assert!(
         body.contains("AliasedFooMarker"),
         "exact-match alias bundle should contain the aliased target's \
@@ -238,7 +239,8 @@ fn virtual_module_matches_exact_specifier() {
     let out = bundler
         .bundle(&[Island::new("Counter", &island_path)], &bundle_cfg)
         .expect("exact-match virtual module `virtual:foo` must resolve");
-    let body = fs::read_to_string(&out.asset_path).expect("read bundle");
+    // Bundler carries bytes in memory — no disk write.
+    let body = String::from_utf8(out.bytes).expect("bundled bytes are valid UTF-8");
     assert!(
         body.contains("VirtualFooMarker"),
         "exact-match virtual-module bundle should contain the loader's \

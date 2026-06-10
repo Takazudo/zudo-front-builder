@@ -405,9 +405,9 @@ fn splitting_emits_chunk_for_dynamic_import() {
         .bundle(&[Island::new("Island", island_src)], &cfg)
         .expect("real esbuild splitting bundle");
 
-    // Entry exists and is the stable name.
-    assert!(out.asset_path.exists());
-    let entry = std::fs::read_to_string(&out.asset_path).expect("read entry");
+    // Entry JS arrives in memory — the bundler does not write to disk.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
+    let entry = String::from_utf8(out.bytes.clone()).expect("entry bytes are valid UTF-8");
 
     // At least one chunk emitted.
     assert!(
@@ -507,7 +507,9 @@ fn no_dynamic_import_yields_single_file() {
         .bundle(&[Island::new("Island", island_src)], &cfg)
         .expect("real esbuild bundle");
 
-    assert!(out.asset_path.exists());
+    // Entry JS arrives in memory — the bundler does not write to disk.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
+    assert!(!out.bytes.is_empty(), "entry bytes must be non-empty");
     assert!(
         out.chunks.is_empty(),
         "a zero-dynamic-import project must emit exactly the entry, no chunks: {:?}",

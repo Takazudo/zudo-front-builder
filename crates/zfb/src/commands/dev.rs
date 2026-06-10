@@ -478,20 +478,29 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             // server's `ServeDir` can handle `GET /assets/islands.js`.
             // The bundler no longer writes to disk itself — the caller
             // owns the disk write (same pattern as the CSS path below).
+            // Only publish the bundle URL when the write succeeded —
+            // setting it on a failed write would inject a `<script>` tag
+            // pointing at a file that 404s (mirrors the pre-change
+            // behaviour where a bundler write failure produced no URL).
             let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
             let islands_out_path = assets_dir.join(zfb_types::STABLE_ISLANDS_FILENAME);
             if let Some(parent) = islands_out_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            if let Err(e) = std::fs::write(&islands_out_path, &payload.bytes) {
-                output::warn(format!(
-                    "initial islands bundle write failed (islands may 404 \
-                     until the next rebuild): {e:#}"
-                ));
-            }
-            let url = prefixed_islands_url(payload.stable_url);
-            if let Ok(mut guard) = islands_bundle_url_handle.write() {
-                *guard = Some(url);
+            match std::fs::write(&islands_out_path, &payload.bytes) {
+                Ok(()) => {
+                    let url = prefixed_islands_url(payload.stable_url);
+                    if let Ok(mut guard) = islands_bundle_url_handle.write() {
+                        *guard = Some(url);
+                    }
+                }
+                Err(e) => {
+                    output::warn(format!(
+                        "initial islands bundle write failed (no <script \
+                         type=\"module\"> will be injected until the next \
+                         successful rebuild): {e:#}"
+                    ));
+                }
             }
             // Write chunk companions alongside islands.js and seed the
             // live-chunk tracker. Boot failures here are non-fatal —
