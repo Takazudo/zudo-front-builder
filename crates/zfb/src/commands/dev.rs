@@ -1226,7 +1226,7 @@ struct DevRenderSession {
 /// The provenance is what lets a content edit narrow a dynamic source's
 /// render fan-out to the routes whose params match the edited entry's
 /// slug candidates — see [`compute_tick_narrowing`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct DevRouteEntry {
     entry: RouteUniverseEntry,
     /// Per-URL params retained from `DynamicExpansion::resolved_with_params`
@@ -1520,15 +1520,15 @@ impl DevRenderSession {
             // prune (DevAssetPipeline.last_output_path) was designed around a
             // *stable source id* whose output_path can flip across ticks (e.g.
             // sitemap.xml → sitemap.rss); output-path keying makes such a flip
-            // produce two distinct keys, so the old artifact would orphan in
-            // dist/. Still unreachable after #659 (which added live table
-            // rebuilding in `discover_created`): that function's diff gate
-            // (lines ~1289-1301) only re-renders sources whose entry COUNT
-            // changed (`prev.len() != entries.len()`), so an output_path flip
-            // on a stable-count source is never re-rendered/pruned and the
-            // orphan path is never triggered. If entry-count-stable output_path
-            // flips must be handled, restore source-path keying for static
-            // routes (or key dynamic entries on (source_path, output_path)).
+            // produce two distinct keys, so that per-page prune mechanism can
+            // never fire for it. Since #958 strengthened `diff_route_tables`
+            // to full entry-set comparison, a stable-count output_path flip IS
+            // re-rendered — but the old artifact is deleted by the GLOBAL
+            // vanished-output diff (#804: the old path drops out of the live
+            // route set and `route_vanished` prunes it from disk + cache), so
+            // no orphan accumulates. If that global diff is ever weakened,
+            // restore source-path keying for static routes (or key dynamic
+            // entries on (source_path, output_path)).
             out.push(RenderedPage {
                 page: PageId::new(entry.output_path.clone()),
                 output_path,
@@ -1804,44 +1804,13 @@ impl DevRenderSession {
             build_dev_route_tables(&router, &plan, project_root, &self.inner.renderer)
                 .context("dev refresh: route-table rebuild failed")?;
 
-        // 4. Diff against the frozen table to find:
-        //    (a) which source pages gained/changed entries, and
-        //    (b) which output paths vanished globally (were live before
-        //        but are absent from every source in the new table).
-        //    The global diff is critical: if route A loses /x while route B
-        //    simultaneously gains /x, /x must NOT be considered vanished.
+        // 4. Diff against the frozen table — see [`diff_route_tables`]
+        //    for the exact semantics (issue #958: the `changed` set is
+        //    the G5 narrowing gate, so it compares full entry SETS, not
+        //    just counts).
         let (changed, vanished_output_paths) = {
             let old = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
-
-            let changed: Vec<PageId> = new_routes_by_source
-                .iter()
-                .filter(|(src, entries)| {
-                    old.routes_by_source
-                        .get(*src)
-                        .map(|prev| prev.len() != entries.len())
-                        .unwrap_or(true)
-                })
-                .map(|(src, _)| PageId::new(src.clone()))
-                .collect();
-
-            // Collect the globally-live output_path sets for old and new.
-            // Use HashSet for O(1) membership checks.
-            let old_live: std::collections::HashSet<std::path::PathBuf> = old
-                .routes_by_source
-                .values()
-                .flat_map(|entries| entries.iter().map(|e| e.entry.output_path.clone()))
-                .collect();
-            let new_live: std::collections::HashSet<std::path::PathBuf> = new_routes_by_source
-                .values()
-                .flat_map(|entries| entries.iter().map(|e| e.entry.output_path.clone()))
-                .collect();
-
-            let vanished: Vec<std::path::PathBuf> = old_live
-                .difference(&new_live)
-                .cloned()
-                .collect();
-
-            (changed, vanished)
+            diff_route_tables(&old.routes_by_source, &new_routes_by_source)
         };
         {
             let mut tables = self.inner.routes.write().unwrap_or_else(|p| p.into_inner());
@@ -1878,12 +1847,57 @@ enum BundleRefresh {
     Skipped,
     /// Full refresh completed (host swap + route-table rebuild).
     Refreshed {
-        /// Source [`PageId`]s whose route set changed.
+        /// Source [`PageId`]s whose route-entry set changed (see
+        /// [`diff_route_tables`]).
         changed: Vec<PageId>,
         /// Relative output paths (under dist) that vanished from the
         /// global live route set.
         vanished: Vec<std::path::PathBuf>,
     },
+}
+
+/// Diff a freshly-rebuilt `routes_by_source` map against the frozen one:
+///
+/// - `changed`: sources whose route-entry SET changed — new sources, and
+///   sources whose entries differ in any way (URL, output path, params).
+///   NOT a count-only comparison: issue #958's narrowing gate (fallback
+///   G5) rides on this set, and a `paths()` refresh can replace routes
+///   without changing their count (e.g. a two-page URL swap), which a
+///   count diff reports as unchanged — a narrowed render would then skip
+///   the brand-new route (silent under-render; review finding on #958).
+///   The full-set comparison also feeds the watch-ADD discovery path,
+///   where firing more often only re-renders more (safe direction).
+/// - `vanished`: output paths that were live before but are absent from
+///   every source in the new table. The diff is GLOBAL on purpose: if
+///   route A loses /x while route B simultaneously gains /x, /x must NOT
+///   be considered vanished (#727 two-page swap).
+#[cfg(feature = "embed_v8")]
+fn diff_route_tables(
+    old: &HashMap<PathBuf, Vec<DevRouteEntry>>,
+    new: &HashMap<PathBuf, Vec<DevRouteEntry>>,
+) -> (Vec<PageId>, Vec<std::path::PathBuf>) {
+    let changed: Vec<PageId> = new
+        .iter()
+        .filter(|(src, entries)| old.get(*src).map(|prev| prev != *entries).unwrap_or(true))
+        .map(|(src, _)| PageId::new(src.clone()))
+        .collect();
+
+    // Collect the globally-live output_path sets for old and new. Use
+    // HashSet for O(1) membership checks.
+    let old_live: HashSet<&PathBuf> = old
+        .values()
+        .flat_map(|entries| entries.iter().map(|e| &e.entry.output_path))
+        .collect();
+    let new_live: HashSet<&PathBuf> = new
+        .values()
+        .flat_map(|entries| entries.iter().map(|e| &e.entry.output_path))
+        .collect();
+    let vanished: Vec<std::path::PathBuf> = old_live
+        .difference(&new_live)
+        .map(|p| (*p).clone())
+        .collect();
+
+    (changed, vanished)
 }
 
 impl Drop for DevRenderInner {
@@ -3731,6 +3745,79 @@ mod tests {
                 surviving_outputs(&session, &narrowing, &source),
                 vec![PathBuf::from("docs/custom/path/index.html")],
                 "the frontmatter slug candidate must match the override route"
+            );
+        }
+
+        /// Review finding on #958 (G5 gate integrity): the refresh diff's
+        /// `changed` set must compare full route-entry SETS, not entry
+        /// counts — a `paths()` refresh that replaces a route with a new
+        /// URL at the same cardinality must mark the source changed, or
+        /// a narrowed tick could skip the brand-new route.
+        #[test]
+        fn diff_route_tables_flags_same_count_route_replacement() {
+            let source = PathBuf::from("pages/blog/[slug].tsx");
+            let old_entries = vec![with_params(
+                route_entry("/blog/x", "blog/x/index.html", "/blog/:slug"),
+                scalar_params(&[("slug", "x")]),
+            )];
+            let new_entries = vec![with_params(
+                route_entry("/blog/y", "blog/y/index.html", "/blog/:slug"),
+                scalar_params(&[("slug", "y")]),
+            )];
+            let old = HashMap::from([(source.clone(), old_entries)]);
+            let new = HashMap::from([(source.clone(), new_entries)]);
+
+            let (changed, vanished) = diff_route_tables(&old, &new);
+            assert_eq!(
+                changed,
+                vec![PageId::new(source)],
+                "a same-count URL replacement must mark the source changed (G5)"
+            );
+            assert_eq!(
+                vanished,
+                vec![PathBuf::from("blog/x/index.html")],
+                "the replaced output path globally vanished"
+            );
+        }
+
+        /// `diff_route_tables` reports identical tables as unchanged, and
+        /// the vanished diff stays GLOBAL: a route moving between sources
+        /// (#727 two-page swap) flags both sources changed but vanishes
+        /// nothing.
+        #[test]
+        fn diff_route_tables_identity_and_cross_source_swap() {
+            let src_a = PathBuf::from("pages/a/[slug].tsx");
+            let src_b = PathBuf::from("pages/b/[slug].tsx");
+            let entry_x = with_params(
+                route_entry("/x", "x/index.html", "/a/:slug"),
+                scalar_params(&[("slug", "x")]),
+            );
+            let entry_y = with_params(
+                route_entry("/y", "y/index.html", "/b/:slug"),
+                scalar_params(&[("slug", "y")]),
+            );
+
+            let old = HashMap::from([
+                (src_a.clone(), vec![entry_x.clone()]),
+                (src_b.clone(), vec![entry_y.clone()]),
+            ]);
+
+            // Identity: nothing changed, nothing vanished.
+            let (changed, vanished) = diff_route_tables(&old, &old.clone());
+            assert!(changed.is_empty(), "identical tables must diff empty");
+            assert!(vanished.is_empty());
+
+            // Swap: A now serves /y, B now serves /x.
+            let new = HashMap::from([
+                (src_a.clone(), vec![entry_y]),
+                (src_b.clone(), vec![entry_x]),
+            ]);
+            let (mut changed, vanished) = diff_route_tables(&old, &new);
+            changed.sort_by(|a, b| a.path().cmp(b.path()));
+            assert_eq!(changed, vec![PageId::new(src_a), PageId::new(src_b)]);
+            assert!(
+                vanished.is_empty(),
+                "globally-live paths swapped between sources must not vanish"
             );
         }
 
