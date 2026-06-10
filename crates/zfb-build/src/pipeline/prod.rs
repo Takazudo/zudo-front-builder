@@ -80,6 +80,10 @@ pub enum AssetKind {
     /// The islands client bundle emitted by the islands pipeline.
     /// Mirrors `zfb_islands::BundleOutput`.
     Islands,
+    /// One per-entry client-script bundle emitted by the client-script
+    /// pipeline. Each `*.client.{ts,tsx,js,jsx}` entry produces one
+    /// `ClientScript` asset shipped to `dist/assets/client/<name>-<hash>.js`.
+    ClientScript,
 }
 
 /// One verbatim companion file shipped alongside an [`EmittedAsset`] entry.
@@ -177,9 +181,9 @@ where
 
 /// Bundle of emitters [`ProductionAssetPipeline`] consults each tick.
 ///
-/// Both emitters are optional: a project with no CSS or no islands
-/// simply leaves the corresponding slot `None` and the pipeline skips
-/// it.
+/// Both optional single-asset slots and the `client_scripts` Vec are additive:
+/// a project with no CSS, no islands, and no client-script entries simply
+/// leaves those slots empty and the pipeline skips them silently.
 #[derive(Default)]
 pub struct ProductionEmitters {
     /// Emitter for the global CSS asset. Called when
@@ -188,6 +192,12 @@ pub struct ProductionEmitters {
     /// Emitter for the islands client bundle. Called when
     /// `plan.rerun_islands == true`.
     pub islands: Option<Box<dyn AssetEmitter>>,
+    /// Zero or more per-entry client-script emitters. Each element
+    /// corresponds to one `*.client.{ts,tsx,js,jsx}` entry the discovery
+    /// pass found. Applied unconditionally when present (client scripts
+    /// always rerun with the build; no `plan.rerun_client_scripts` gate
+    /// exists yet — v1 conservatively reruns all entries each build).
+    pub client_scripts: Vec<Box<dyn AssetEmitter>>,
 }
 
 impl std::fmt::Debug for ProductionEmitters {
@@ -195,6 +205,10 @@ impl std::fmt::Debug for ProductionEmitters {
         f.debug_struct("ProductionEmitters")
             .field("css", &self.css.as_ref().map(|_| "<emitter>"))
             .field("islands", &self.islands.as_ref().map(|_| "<emitter>"))
+            .field(
+                "client_scripts",
+                &format!("[{} emitter(s)]", self.client_scripts.len()),
+            )
             .finish()
     }
 }
@@ -288,6 +302,23 @@ impl AssetPipeline for ProductionAssetPipeline {
                         rewrites.push((stable, hashed_url));
                     }
                     outcome.islands_changed = true;
+                }
+            }
+        }
+
+        // Client-script entries: apply each emitter unconditionally. In v1
+        // there is no per-entry `plan.rerun_*` gate — all entries rerun with
+        // the build. A project with no client scripts has an empty Vec, so this
+        // loop is a no-op and the outcome is byte-identical to a pre-client-script
+        // build.
+        for em in &self.emitters.client_scripts {
+            if let Some(asset) = em
+                .emit()
+                .context("production client-script emitter failed")?
+            {
+                let hashed_url = ship_asset(ctx, &asset, AssetKind::ClientScript, &mut outcome)?;
+                if let Some(stable) = asset.stable_url {
+                    rewrites.push((stable, hashed_url));
                 }
             }
         }
@@ -743,6 +774,7 @@ mod tests {
         let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
             css: Some(Box::new(css_emitter)),
             islands: None,
+            ..Default::default()
         });
         let pages = vec![render_one(
             "<html><head><link rel=\"stylesheet\" href=\"/assets/styles.css\"></head><body/></html>",
@@ -802,6 +834,7 @@ mod tests {
                     }))
                 })),
                 islands: None,
+                ..Default::default()
             });
             let ctx = ctx_with_pages(dir.path().to_path_buf(), vec![]);
             let plan = plan_full(vec![]);
@@ -822,6 +855,7 @@ mod tests {
                     }))
                 })),
                 islands: None,
+                ..Default::default()
             });
             let ctx = ctx_with_pages(dir.path().to_path_buf(), vec![]);
             let plan = plan_full(vec![]);
@@ -846,6 +880,7 @@ mod tests {
                     }))
                 })),
                 islands: None,
+                ..Default::default()
             });
             let ctx = ctx_with_pages(dir.path().to_path_buf(), vec![]);
             let plan = plan_full(vec![]);
@@ -879,6 +914,7 @@ mod tests {
         let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
             css: Some(Box::new(css_emitter)),
             islands: Some(Box::new(islands_emitter)),
+            ..Default::default()
         });
 
         let html = "\
@@ -924,6 +960,109 @@ mod tests {
             .any(|n| n.starts_with("islands-") && n.ends_with(".js")));
     }
 
+    /// Client-script emitters ship through the same hash + rewrite path
+    /// as CSS/islands: each entry lands at
+    /// `dist/assets/client/<name>-<hash>.js` and every page-body
+    /// reference to the stable `/assets/client/<name>.js` URL is
+    /// rewritten to the hashed URL — with no stable-URL leak (#976
+    /// acceptance).
+    #[test]
+    fn prod_pipeline_hashes_client_scripts_and_rewrites_html() {
+        let dir = tempdir().unwrap();
+        let widget_emitter = || {
+            Ok(Some(EmittedAsset {
+                bytes: b"// search widget".to_vec(),
+                relative_path: PathBuf::from("assets/client/search-widget.js"),
+                stable_url: Some("/assets/client/search-widget.js".into()),
+                companions: Vec::new(),
+            }))
+        };
+        let analytics_emitter = || {
+            Ok(Some(EmittedAsset {
+                bytes: b"// analytics".to_vec(),
+                relative_path: PathBuf::from("assets/client/analytics.js"),
+                stable_url: Some("/assets/client/analytics.js".into()),
+                companions: Vec::new(),
+            }))
+        };
+        let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
+            css: None,
+            islands: None,
+            client_scripts: vec![Box::new(widget_emitter), Box::new(analytics_emitter)],
+        });
+
+        let html = "\
+            <html><head>\
+            <script type=\"module\" src=\"/assets/client/search-widget.js\"></script>\
+            </head><body>\
+            <script type=\"module\" src=\"/assets/client/analytics.js\"></script>\
+            </body></html>";
+        let pages = vec![render_one(html, "/index.html")];
+        let ctx = ctx_with_pages(dir.path().to_path_buf(), pages);
+        let plan = plan_full(vec!["//index.html"]);
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+
+        assert_eq!(outcome.hashed_asset_urls.len(), 2);
+        assert!(outcome
+            .hashed_asset_urls
+            .iter()
+            .all(|(k, _)| *k == AssetKind::ClientScript));
+
+        let dist_html = std::fs::read_to_string(dir.path().join("index.html")).unwrap();
+        assert!(
+            !dist_html.contains("/assets/client/search-widget.js\"")
+                && !dist_html.contains("/assets/client/analytics.js\""),
+            "stable URLs leaked: {dist_html}",
+        );
+        for (_, url) in &outcome.hashed_asset_urls {
+            assert!(
+                url.starts_with("/assets/client/"),
+                "hashed URL must stay in the client namespace: {url}"
+            );
+            assert!(
+                dist_html.contains(url),
+                "hashed url {url} missing from HTML: {dist_html}"
+            );
+        }
+
+        // Both hashed files exist under dist/assets/client/ with no
+        // stable-named copies left behind.
+        let client_assets: Vec<String> = std::fs::read_dir(dir.path().join("assets/client"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(client_assets.len(), 2, "assets: {client_assets:?}");
+        assert!(client_assets
+            .iter()
+            .any(|n| n.starts_with("search-widget-") && n.ends_with(".js")));
+        assert!(client_assets
+            .iter()
+            .any(|n| n.starts_with("analytics-") && n.ends_with(".js")));
+    }
+
+    /// An empty `client_scripts` Vec is a strict no-op: no asset
+    /// writes, no rewrite entries, HTML round-tripped byte-identical —
+    /// the #976 "builds with NO client scripts are byte-identical"
+    /// acceptance at the pipeline layer.
+    #[test]
+    fn prod_pipeline_empty_client_scripts_is_noop() {
+        let dir = tempdir().unwrap();
+        let html = "<html><head></head><body>hello</body></html>";
+        let pages = vec![render_one(html, "/index.html")];
+        let ctx = ctx_with_pages(dir.path().to_path_buf(), pages);
+        let pipeline = ProductionAssetPipeline::new(ProductionEmitters::default());
+        let plan = plan_full(vec!["//index.html"]);
+        let outcome = pipeline.apply(&plan, &ctx).unwrap();
+
+        assert!(outcome.hashed_asset_urls.is_empty());
+        assert!(
+            !dir.path().join("assets").exists(),
+            "no assets dir should be created"
+        );
+        let dist_html = std::fs::read_to_string(dir.path().join("index.html")).unwrap();
+        assert_eq!(dist_html, html, "HTML must round-trip byte-identical");
+    }
+
     /// Companion files are written verbatim beside the hashed entry —
     /// no content hashing, no rename, no HTML rewrite touching their
     /// bytes (#808).
@@ -946,6 +1085,7 @@ mod tests {
         let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
             css: None,
             islands: Some(Box::new(islands_emitter)),
+            ..Default::default()
         });
         let ctx = ctx_with_pages(dir.path().to_path_buf(), vec![]);
         let plan = plan_full(vec![]);
@@ -1003,6 +1143,7 @@ mod tests {
             let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
                 css: None,
                 islands: Some(Box::new(islands_emitter)),
+                ..Default::default()
             });
             let ctx = ctx_with_pages(dir.path().to_path_buf(), vec![]);
             let plan = plan_full(vec![]);
