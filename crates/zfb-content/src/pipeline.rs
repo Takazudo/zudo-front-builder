@@ -25,7 +25,7 @@ use std::sync::Arc;
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
 use zfb_md_ast::diagnostics::MarkdownDiagnostic;
-use zfb_md_ast::{HeadingIdStrategy, ReadRecorder};
+use zfb_md_ast::{CrossFileLinkCandidate, FileHeadings, HeadingIdStrategy, ReadRecorder};
 
 use crate::dep_manifest::DependencyManifest;
 use crate::path_norm::normalize_path_lexically;
@@ -459,6 +459,27 @@ pub struct Pipeline {
     /// and replay it on a hit; call sites drain via
     /// [`Pipeline::take_markdown_diagnostics`].
     markdown_diagnostics: Vec<MarkdownDiagnostic>,
+    /// Cross-file fragment-link candidates recorded by
+    /// `LinkValidationPlugin` through the per-file `BuildContext` during
+    /// JSX-emit compiles (#960 / #977). Buffered exactly like
+    /// [`Pipeline::markdown_diagnostics`] — observational side channel,
+    /// never part of the config fingerprint or cache-key shape — so the
+    /// compile cache can store the slice one compile appended and
+    /// replay it on a hit; the post-compile cross-file check drains via
+    /// [`Pipeline::take_cross_file_link_candidates`].
+    cross_file_link_candidates: Vec<CrossFileLinkCandidate>,
+    /// Per-file heading records surfaced from the JSX-emit path's
+    /// canonical `collect_headings` walk during context-armed compiles
+    /// (#960 / #977). Same buffering/store/replay discipline as the
+    /// candidates channel above; drained via
+    /// [`Pipeline::take_file_headings`].
+    file_headings: Vec<FileHeadings>,
+    /// Whether `markdown.features.linkValidation` is enabled
+    /// (#960 / #977). Gates the per-file headings side channel in the
+    /// JSX-emit path so configs without linkValidation record nothing.
+    /// Derived purely from the `features` config (already in the
+    /// fingerprint) — NEVER fingerprinted separately.
+    link_validation_enabled: bool,
 }
 
 impl Default for Pipeline {
@@ -533,6 +554,9 @@ impl Pipeline {
             read_recorder: None,
             build_context_roots: None,
             markdown_diagnostics: Vec::new(),
+            cross_file_link_candidates: Vec::new(),
+            file_headings: Vec::new(),
+            link_validation_enabled: false,
         }
     }
 
@@ -1119,6 +1143,104 @@ impl Pipeline {
         self.extend_markdown_diagnostics(diags);
     }
 
+    /// Drain the cross-file fragment-link candidates recorded during
+    /// JSX-emit compiles since the last drain (#960 / #977) — the input
+    /// of the post-compile cross-file anchor check. Mirrors
+    /// [`Pipeline::take_markdown_diagnostics`]; empty unless
+    /// [`Pipeline::set_build_context_roots`] armed context threading AND
+    /// `linkValidation` is enabled.
+    pub fn take_cross_file_link_candidates(&mut self) -> Vec<CrossFileLinkCandidate> {
+        std::mem::take(&mut self.cross_file_link_candidates)
+    }
+
+    /// Number of buffered (not yet drained) cross-file link candidates.
+    /// The compile cache snapshots this before a compile so it can slice
+    /// off exactly the candidates that compile appended (mirroring
+    /// [`Pipeline::markdown_diagnostics_len`]).
+    pub(crate) fn cross_file_link_candidates_len(&self) -> usize {
+        self.cross_file_link_candidates.len()
+    }
+
+    /// Clone the cross-file link candidates buffered at index `from`
+    /// onward, without draining (see
+    /// [`Pipeline::cross_file_link_candidates_len`]).
+    pub(crate) fn cross_file_link_candidates_since(
+        &self,
+        from: usize,
+    ) -> Vec<CrossFileLinkCandidate> {
+        self.cross_file_link_candidates
+            .get(from..)
+            .unwrap_or_default()
+            .to_vec()
+    }
+
+    /// Append candidates collected by the JSX-emit path's per-file
+    /// context buffer (#977). Internal — the emit path flushes its
+    /// per-compile vec here after the visitor chains run.
+    pub(crate) fn extend_cross_file_link_candidates(
+        &mut self,
+        candidates: Vec<CrossFileLinkCandidate>,
+    ) {
+        self.cross_file_link_candidates.extend(candidates);
+    }
+
+    /// Cache-hit replay (#977): re-inject cross-file link candidates
+    /// stored with a cached compile so call sites draining
+    /// [`Pipeline::take_cross_file_link_candidates`] after a hit observe
+    /// exactly what the fresh compile produced (the sibling of
+    /// [`Pipeline::replay_markdown_diagnostics`]).
+    pub(crate) fn replay_cross_file_link_candidates(
+        &mut self,
+        candidates: Vec<CrossFileLinkCandidate>,
+    ) {
+        self.extend_cross_file_link_candidates(candidates);
+    }
+
+    /// Drain the per-file heading records surfaced during JSX-emit
+    /// compiles since the last drain (#960 / #977) — the lookup side of
+    /// the post-compile cross-file anchor check. Mirrors
+    /// [`Pipeline::take_markdown_diagnostics`]; empty unless
+    /// [`Pipeline::set_build_context_roots`] armed context threading AND
+    /// `linkValidation` is enabled.
+    pub fn take_file_headings(&mut self) -> Vec<FileHeadings> {
+        std::mem::take(&mut self.file_headings)
+    }
+
+    /// Whether `markdown.features.linkValidation` was enabled at
+    /// construction (#977) — the JSX-emit path consults this to gate the
+    /// per-file headings side channel.
+    pub(crate) fn link_validation_enabled(&self) -> bool {
+        self.link_validation_enabled
+    }
+
+    /// Number of buffered (not yet drained) per-file heading records
+    /// (the slicing snapshot — see
+    /// [`Pipeline::cross_file_link_candidates_len`]).
+    pub(crate) fn file_headings_len(&self) -> usize {
+        self.file_headings.len()
+    }
+
+    /// Clone the per-file heading records buffered at index `from`
+    /// onward, without draining (see [`Pipeline::file_headings_len`]).
+    pub(crate) fn file_headings_since(&self, from: usize) -> Vec<FileHeadings> {
+        self.file_headings.get(from..).unwrap_or_default().to_vec()
+    }
+
+    /// Append per-file heading records surfaced by the JSX-emit path
+    /// (#977). Internal — the emit path flushes one record per
+    /// context-armed compile.
+    pub(crate) fn extend_file_headings(&mut self, headings: Vec<FileHeadings>) {
+        self.file_headings.extend(headings);
+    }
+
+    /// Cache-hit replay (#977): re-inject per-file heading records
+    /// stored with a cached compile so call sites draining
+    /// [`Pipeline::take_file_headings`] after a hit observe exactly what
+    /// the fresh compile produced.
+    pub(crate) fn replay_file_headings(&mut self, headings: Vec<FileHeadings>) {
+        self.extend_file_headings(headings);
+    }
+
     /// Test seam (zfb#942): push an mdast visitor WITHOUT invalidating
     /// the config fingerprint, so the synthetic-recorder cache tests in
     /// `mdx_jsx_emit` can make a cacheable pipeline record reads during
@@ -1510,6 +1632,16 @@ impl Pipeline {
             || features.image_dimensions.is_some()
             || features.link_validation.is_some();
         let read_recorder = filesystem_dependent_feature.then(|| Arc::new(ReadRecorder::new()));
+        // Cross-file anchor side channels (#960 / #977): the per-file
+        // headings channel only carries data when `linkValidation` is
+        // enabled — it exists solely for the post-compile cross-file
+        // anchor check, so configs without linkValidation record NOTHING
+        // (the candidates channel is implicitly gated the same way:
+        // only `LinkValidationPlugin` writes to it). The flag is a pure
+        // function of `features` — already covered by the canonical
+        // features JSON in the fingerprint below — so it cannot split
+        // cache keys or desynchronise store/replay.
+        p.link_validation_enabled = features.link_validation.is_some();
         // Single call-path from zfb-content into zfb-md-extras: adds the opt-in
         // visitors in the correct phase/position (before SyntectPlugin for
         // mermaid; after for post-syntect). The `_config_derived` variant

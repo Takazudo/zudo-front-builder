@@ -90,6 +90,7 @@ fn transclude_link_validation_broken_link_in_snippet() {
         public_dir: project_root.clone(),
         heading_registry: Some(&mut registry),
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
 
     let _hast = pipeline
@@ -198,6 +199,7 @@ fn image_dimensions_injects_width_and_height() {
         public_dir: PathBuf::from(fixtures_dir),
         heading_registry: None,
         diagnostics: None,
+        cross_file_links: None,
     };
 
     let hast = pipeline
@@ -366,6 +368,7 @@ fn transclude_cycle_produces_generic_not_broken_link() {
         public_dir: project_root.clone(),
         heading_registry: Some(&mut registry),
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
 
     let _ = pipeline.run_with_context(&input, &mut ctx);
@@ -535,6 +538,7 @@ fn all_features_on_does_not_crash() {
         public_dir: project_root.clone(),
         heading_registry: Some(&mut registry),
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
 
     let hast = pipeline

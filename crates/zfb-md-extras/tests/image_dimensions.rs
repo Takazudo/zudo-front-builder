@@ -397,6 +397,7 @@ fn emits_warning_for_missing_file() {
         public_dir: fixtures.clone(),
         heading_registry: None,
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
     plugin.visit_with_context(&mut tree, &mut ctx);
 
@@ -425,6 +426,7 @@ fn emits_warning_for_non_image_file() {
         public_dir: fixtures.clone(),
         heading_registry: None,
         diagnostics: Some(&mut sink),
+        cross_file_links: None,
     };
     plugin.visit_with_context(&mut tree, &mut ctx);
 
