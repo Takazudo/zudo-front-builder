@@ -93,20 +93,15 @@ The following flags are set in `src/config/settings.ts` and are currently enable
 
 ## Package CSS generation (`@takazudo/zudo-doc`)
 
-`@takazudo/zudo-doc` ships **no precompiled CSS** — its header/sidebar/doclayout/toc/footer
-components carry their styles as Tailwind class literals (`"sticky top-0 z-50 …"`) baked into the
-compiled dist JS (inline on `class`/`className`, but also in module consts, ternary/`&&` branches,
-and backtick templates). As the **consumer**, this site is responsible for generating those
-utilities. The monorepo covers them with `@source "packages/zudo-doc/src"`; a consumer can't scan
-the monorepo source.
+`@takazudo/zudo-doc` 0.2.0 ships **`safelist.css`** (zudolab/zudo-doc#1996), which lists every
+Tailwind class the package emits as `@source` inline values. Importing it in `global.css` is all
+that is needed for Tailwind v4 to generate the package utilities:
 
-Tailwind v4 **deliberately excludes node_modules** from class scanning — a bare
-`@source "node_modules/@takazudo/zudo-doc/dist/**"` emits **zero** package utilities (proven:
-`.sticky` etc. absent from the built CSS — see zudolab/zudo-doc#1971, #883). So
-`scripts/vendor-zudo-doc-dist.mjs` **copies the package dist** to `docs/.zudo-doc-tw/` (a
-non-node_modules, gitignored build artifact) before every `zfb build`/`zfb dev` (chained with `&&`
-in the `build`/`dev` scripts in `package.json`), and `global.css` points `@source` at the **copy**.
-Tailwind's own scanner then extracts every class candidate from the dist — robust to all literal
-forms, which a hand-rolled token extractor was not. **Complete and dep-bump-safe** (the copy is
-regenerated from the installed dist each build). Do **not** point `@source` back at node_modules —
-Tailwind won't scan it and the package classes vanish.
+```css
+@import "@takazudo/zudo-doc/safelist.css";
+```
+
+**History note:** before 0.2.0, the package shipped no precompiled CSS and Tailwind v4 deliberately
+excluded `node_modules` from scanning, so this repo used a vendor-copy workaround
+(`scripts/vendor-zudo-doc-dist.mjs` + `@source "./.zudo-doc-tw/**"`) to make the package classes
+available. That machinery was deleted when the safelist mechanism landed (zudolab/zudo-doc#1996).
