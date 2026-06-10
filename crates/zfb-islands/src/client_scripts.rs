@@ -40,6 +40,15 @@ use crate::bundler::BundleConfig;
 use crate::esbuild::EsbuildSubprocessBundler;
 use zfb_types::{stable_client_script_relative_path, stable_client_script_url};
 
+// The `.client.*` filename contract (infix, accepted extensions, and the
+// `is_client_script_file` / `client_script_entry_name` predicates) is the
+// single source of truth in `zfb-types` so the router (`zfb-router`) can skip
+// `.client.*` files from route scanning without depending on this crate. We
+// re-export them here to keep this module's public API stable.
+pub use zfb_types::{
+    client_script_entry_name, is_client_script_file, CLIENT_SCRIPT_EXTENSIONS, CLIENT_SCRIPT_INFIX,
+};
+
 /// Discovery roots for `.client.*` files (project-root-relative).
 ///
 /// `pages/` plus the `GranularityPolicy::islands_roots` defaults
@@ -48,12 +57,6 @@ use zfb_types::{stable_client_script_relative_path, stable_client_script_url};
 /// if discovery and classification diverge, a newly-created `.client.ts` file
 /// under a root that discovery misses would never trigger a dev rebuild.
 pub const CLIENT_SCRIPT_DISCOVERY_ROOTS: &[&str] = &["pages", "components", "src"];
-
-/// File extensions recognised as `.client.*` entries.
-pub const CLIENT_SCRIPT_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx"];
-
-/// The `.client.` infix that marks a file as a client-script entry.
-pub const CLIENT_SCRIPT_INFIX: &str = ".client.";
 
 /// One discovered `*.client.{ts,tsx,js,jsx}` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,41 +178,6 @@ pub fn discover_client_scripts(
     Ok((entries, collisions))
 }
 
-/// Returns `true` when `path` looks like a `*.client.{ts,tsx,js,jsx}` file.
-///
-/// The check is purely filename-based — no filesystem access.
-pub fn is_client_script_file(path: &Path) -> bool {
-    let file_name = match path.file_name().and_then(|n| n.to_str()) {
-        Some(n) => n,
-        None => return false,
-    };
-    for ext in CLIENT_SCRIPT_EXTENSIONS {
-        let suffix = format!("{CLIENT_SCRIPT_INFIX}{ext}");
-        if file_name.ends_with(&suffix) && file_name.len() > suffix.len() {
-            return true;
-        }
-    }
-    false
-}
-
-/// Derive the entry name from a `*.client.<ext>` file path.
-///
-/// Returns `Some("search-widget")` for `path/search-widget.client.ts`, or
-/// `None` if the file does not match the convention.
-pub fn client_script_entry_name(path: &Path) -> Option<String> {
-    let file_name = path.file_name()?.to_str()?;
-    for ext in CLIENT_SCRIPT_EXTENSIONS {
-        let suffix = format!("{CLIENT_SCRIPT_INFIX}{ext}");
-        if file_name.ends_with(&suffix) {
-            let stem = &file_name[..file_name.len() - suffix.len()];
-            if !stem.is_empty() {
-                return Some(stem.to_string());
-            }
-        }
-    }
-    None
-}
-
 /// Run the esbuild bundler over each discovered client-script entry and return
 /// production asset payloads.
 ///
@@ -261,79 +229,10 @@ pub fn build_production_client_scripts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    // -----------------------------------------------------------------------
-    // is_client_script_file
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn is_client_script_file_matches_all_extensions() {
-        for ext in ["ts", "tsx", "js", "jsx"] {
-            let path = PathBuf::from(format!("components/search-widget.client.{ext}"));
-            assert!(
-                is_client_script_file(&path),
-                "expected match for .client.{ext}"
-            );
-        }
-    }
-
-    #[test]
-    fn is_client_script_file_rejects_non_client_files() {
-        let non_client = [
-            "components/button.tsx",
-            "components/button.ts",
-            "pages/index.tsx",
-            "src/utils.ts",
-            "analytics.js",
-        ];
-        for p in &non_client {
-            assert!(
-                !is_client_script_file(Path::new(p)),
-                "should not match: {p}"
-            );
-        }
-    }
-
-    #[test]
-    fn is_client_script_file_rejects_bare_client_prefix() {
-        // `.client.ts` with no stem is not a valid entry.
-        assert!(!is_client_script_file(Path::new(".client.ts")));
-        assert!(!is_client_script_file(Path::new("components/.client.ts")));
-    }
-
-    // -----------------------------------------------------------------------
-    // client_script_entry_name
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn client_script_entry_name_strips_client_suffix() {
-        assert_eq!(
-            client_script_entry_name(Path::new("components/search-widget.client.ts")),
-            Some("search-widget".into())
-        );
-        assert_eq!(
-            client_script_entry_name(Path::new("pages/analytics.client.tsx")),
-            Some("analytics".into())
-        );
-        assert_eq!(
-            client_script_entry_name(Path::new("src/my-lib.client.js")),
-            Some("my-lib".into())
-        );
-        assert_eq!(
-            client_script_entry_name(Path::new("src/fancy.client.jsx")),
-            Some("fancy".into())
-        );
-    }
-
-    #[test]
-    fn client_script_entry_name_returns_none_for_non_client_files() {
-        assert_eq!(
-            client_script_entry_name(Path::new("components/button.tsx")),
-            None
-        );
-        assert_eq!(client_script_entry_name(Path::new("index.ts")), None);
-    }
+    // The `is_client_script_file` / `client_script_entry_name` filename
+    // predicates now live in `zfb-types`; their unit tests live there too.
+    // The discovery tests below still exercise them through the re-export.
 
     // -----------------------------------------------------------------------
     // discover_client_scripts (filesystem-based)

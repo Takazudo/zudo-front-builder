@@ -256,25 +256,13 @@ pub fn classify_change_with_content_roots(
 /// Returns `true` when the filename looks like a `*.client.{ts,tsx,js,jsx}`
 /// client-script entry.
 ///
-/// The check mirrors `zfb_islands::client_scripts::is_client_script_file` and
-/// is intentionally kept in sync with it. We duplicate the tiny predicate here
-/// rather than introducing a cross-crate dependency (`zfb-build` does not (and
-/// should not) depend on `zfb-islands`) so the policy module stays a lightweight
-/// leaf.
-///
-/// The check is purely filename-based (no filesystem access).
+/// Delegates to the canonical filename predicate in `zfb-types`
+/// (`zfb_types::is_client_script_file`) — the single source of truth for the
+/// `.client.` infix and accepted extensions, shared with `zfb-islands`'s
+/// discovery and `zfb-router`'s page-scan skip. The check is purely
+/// filename-based (no filesystem access).
 pub(crate) fn is_client_script_path(path: &Path) -> bool {
-    let file_name = match path.file_name().and_then(|n| n.to_str()) {
-        Some(n) => n,
-        None => return false,
-    };
-    for ext in ["ts", "tsx", "js", "jsx"] {
-        let suffix = format!(".client.{ext}");
-        if file_name.ends_with(&suffix) && file_name.len() > suffix.len() {
-            return true;
-        }
-    }
-    false
+    zfb_types::is_client_script_file(path)
 }
 
 /// Client-script discovery roots (project-root-relative).

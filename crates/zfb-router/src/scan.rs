@@ -120,6 +120,18 @@ pub fn scan_pages(pages_dir: &Path) -> Result<Vec<Route>, RouterError> {
             continue;
         }
 
+        // Skip `*.client.{ts,tsx,js,jsx}` client-script entries. A file like
+        // `pages/search-widget.client.tsx` is bundled by the client-script
+        // pipeline (`zfb-islands`), not rendered as a page — it has no page
+        // default export. Without this skip the `.tsx`/`.jsx` extension would
+        // make `scan_pages` accept it as a `/search-widget.client` route, so
+        // the build/render would fail or ship an unintended route. The
+        // filename contract is the single source of truth in `zfb-types`,
+        // shared with `zfb-islands`'s discovery.
+        if zfb_types::is_client_script_file(path) {
+            continue;
+        }
+
         // Accept .tsx, .mdx, .md, .html as page sources. Warn on any other
         // extension so authors notice accidental mis-placements in pages/.
         match ext {
@@ -1316,6 +1328,55 @@ mod tests {
         fs::write(pages.join("_private.md"), "# private").unwrap();
         let routes = scan_pages(pages).expect("scan");
         assert!(routes.is_empty(), "underscore .md file should be skipped");
+    }
+
+    // ---- client-script files are not routes (#971 P1) ----------------------
+
+    #[test]
+    fn client_script_file_produces_no_route() {
+        // `pages/search-widget.client.tsx` is a client-script entry, not a
+        // page — it must NOT be scanned into a `/search-widget.client` route.
+        // Its sibling regular page is unaffected.
+        let routes = scan_tree(&["search-widget.client.tsx", "index.tsx"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert!(
+            templates.contains(&"/".to_string()),
+            "regular index page must still route: {templates:?}",
+        );
+        assert!(
+            !templates.iter().any(|t| t.contains("client")),
+            "client-script file must not produce a route: {templates:?}",
+        );
+        assert_eq!(routes.len(), 1, "exactly the index route: {templates:?}");
+    }
+
+    #[test]
+    fn client_script_all_extensions_produce_no_route() {
+        // Every `.client.<ext>` shape is skipped; the regular `.tsx`/`.jsx`
+        // siblings still route.
+        let routes = scan_tree(&[
+            "a.client.ts",
+            "b.client.tsx",
+            "c.client.js",
+            "d.client.jsx",
+            "real.tsx",
+        ])
+        .expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(
+            templates,
+            vec!["/real".to_string()],
+            "only the non-client page routes: {templates:?}",
+        );
+    }
+
+    #[test]
+    fn regular_page_with_dotted_stem_still_routes() {
+        // A page whose stem merely contains a dot (but not the `.client.`
+        // infix) is unaffected — `pages/clientele.tsx` → `/clientele`.
+        let routes = scan_tree(&["clientele.tsx"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/clientele".to_string()]);
     }
 
     // ---- unknown-extension warning (Sub 406) --------------------------------
