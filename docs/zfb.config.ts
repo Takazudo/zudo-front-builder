@@ -117,17 +117,18 @@ const integrationPlugins = [
         },
       ]
     : []),
-  {
-    name: "./plugins/copy-public-plugin.mjs",
-    options: {
-      publicDir: "public",
-    },
-  },
 ];
 
 export default defineConfig({
   framework: "preact",
   tailwind: { enabled: true },
+  // Docs site deploys under base "/pj/zudo-front-builder/" via
+  // `cp -a docs/dist/. deploy-root/pj/zudo-front-builder/` — the
+  // deploy workflow relocates the entire dist/ tree, so flat-copying
+  // public/ to dist/ (not to dist/pj/zudo-front-builder/) is the
+  // correct placement. copyPublicWithBase:false replaces the old
+  // copy-public-plugin.mjs that did the same thing manually.
+  copyPublicWithBase: false,
   collections,
   stripMdExt: true,
   resolveMarkdownLinks: {
