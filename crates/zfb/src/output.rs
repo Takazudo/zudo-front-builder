@@ -399,6 +399,24 @@ fn looks_like_file_path(path: &str) -> bool {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// `owo_colors::set_override` / `unset_override` are process-wide globals, so
+/// tests that toggle them race under the parallel test harness (zfb#963).
+/// Every override-touching test (here and in `crate::diagnostics`) takes this
+/// lock for its whole body before the first toggle.
+#[cfg(test)]
+pub(crate) mod color_override_lock {
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    pub(crate) fn lock() -> MutexGuard<'static, ()> {
+        // A test that panicked while holding the lock poisons it; the global
+        // override state is still consistent enough for the next test (each
+        // test sets it explicitly first), so recover instead of cascading.
+        LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,6 +515,7 @@ mod tests {
 
     #[test]
     fn format_error_uses_framed_renderer_when_chain_carries_framed_error() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let diag = crate::diagnostics::Diagnostic::with_source(
             "posts/intro.md",
@@ -597,6 +616,7 @@ mod tests {
     /// fmt_ready_multi with a mock network_urls slice — no real network state.
     #[test]
     fn fmt_ready_multi_renders_expected_shape() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let network_urls = vec![
             "http://192.168.1.10:3000/".to_string(),
@@ -625,6 +645,7 @@ mod tests {
     /// When network_urls is empty, the banner should still render gracefully.
     #[test]
     fn fmt_ready_multi_handles_no_network_interfaces() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let rendered = fmt_ready_multi("http", 8080, &[]);
         let plain = strip_ansi(&rendered);
@@ -645,6 +666,7 @@ mod tests {
     /// NO_COLOR suppression: owo-colors override=false means no ANSI in output.
     #[test]
     fn fmt_ready_multi_no_color_suppresses_ansi() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let network_urls = vec!["http://192.168.1.1:3000/".to_string()];
         let rendered = fmt_ready_multi("http", 3000, &network_urls);
@@ -658,6 +680,7 @@ mod tests {
     /// With colour override on, ANSI escapes must be present.
     #[test]
     fn fmt_ready_multi_with_color_emits_ansi() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(true);
         let network_urls = vec!["http://192.168.1.1:3000/".to_string()];
         let rendered = fmt_ready_multi("http", 3000, &network_urls);
@@ -673,6 +696,7 @@ mod tests {
         // owo-colors exposes a process-wide override. We toggle it explicitly
         // to verify the formatting helpers honour it (which is the same code
         // path consulted when NO_COLOR is set in the environment).
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(true);
         let coloured = fmt_info("hello");
         assert!(

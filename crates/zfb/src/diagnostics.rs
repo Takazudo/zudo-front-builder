@@ -330,6 +330,7 @@ mod tests {
 
     #[test]
     fn render_framed_includes_path_line_col_and_caret() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let src = "line 1\nline 2 has the bug\nline 3\nline 4\n";
         let diag = Diagnostic::with_source("project/file.md", 2, 8, "kaboom", src);
@@ -347,6 +348,7 @@ mod tests {
 
     #[test]
     fn render_framed_without_source_emits_header_only() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let diag = Diagnostic::new("file.tsx", 4, 2, "kapow");
         let out = strip_ansi(&render_framed(&diag));
@@ -358,6 +360,7 @@ mod tests {
 
     #[test]
     fn render_framed_clamps_window_at_file_start() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let src = "first\nsecond\nthird\n";
         let diag = Diagnostic::with_source("a.md", 1, 1, "early", src);
@@ -369,6 +372,7 @@ mod tests {
 
     #[test]
     fn frontmatter_yaml_error_locates_within_user_file() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         // YAML on line 2 is broken; serde_yaml reports its own line 1
         // for the unbalanced bracket. We expect that to map to user
@@ -406,6 +410,7 @@ mod tests {
         let path = PathBuf::from("posts/oops.md");
         let err = zfb_content::frontmatter::extract(&path, src).expect_err("should fail");
         let diag = from_frontmatter_error(&path, src, &err);
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let out = strip_ansi(&render_framed(&diag));
         assert!(out.contains("frontmatter unterminated"), "got:\n{out}");
@@ -414,6 +419,7 @@ mod tests {
 
     #[test]
     fn tsx_frontmatter_missing_export_locates_at_top_of_file() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let src = "export default function Page() { return null; }\n";
         let path = PathBuf::from("pages/page.tsx");
@@ -432,6 +438,7 @@ mod tests {
     fn tsx_frontmatter_wrong_shape_carries_line_col() {
         // `frontmatter` must be an object literal — array fails with
         // WrongShape and carries a position.
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let src = "\nexport const frontmatter = [1, 2, 3];\nexport default function Page() { return null; }\n";
         let path = PathBuf::from("pages/page.tsx");
@@ -450,6 +457,7 @@ mod tests {
 
     #[test]
     fn directive_diagnostic_renders_with_position_when_known() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let src = "# Hello\n\n:::nope\nbody\n:::\n";
         let path = PathBuf::from("docs/intro.md");
@@ -467,6 +475,7 @@ mod tests {
 
     #[test]
     fn paths_error_locates_export_paths_ident() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let src = "import x from 'y';\n\nexport function paths() {\n    return [{ params: { wrong: 'x' } }];\n}\n";
         let path = PathBuf::from("pages/blog/[slug].tsx");
@@ -489,6 +498,7 @@ mod tests {
 
     #[test]
     fn js_runtime_error_falls_back_to_bundle_when_no_sourcemap() {
+        let _color_lock = crate::output::color_override_lock::lock();
         owo_colors::set_override(false);
         let bundle = "var a;\nthrow new Error('boom');\n";
         let path = PathBuf::from(".zfb/build/ssg-render.js");
