@@ -20,8 +20,8 @@ async fn touching_file_emits_change() {
 
     // Watch `content/` (existing) and `data/` (deliberately missing — the
     // watcher must not crash on this).
-    let (_watcher, mut rx) = Watcher::start(root.path(), ["content", "data"])
-        .expect("start watcher");
+    let (_watcher, mut rx) =
+        Watcher::start(root.path(), ["content", "data"]).expect("start watcher");
 
     // Give notify a beat to register its OS-level watch before we start
     // poking the filesystem. Otherwise on slower CI machines the very
@@ -35,8 +35,7 @@ async fn touching_file_emits_change() {
     // Canonicalizing upfront also ensures the file exists before we try
     // to call canonicalize on reported paths (macOS FSEvents can report
     // the parent directory path in addition to the file path).
-    let target_canon = std::fs::canonicalize(&target)
-        .expect("canonicalize target");
+    let target_canon = std::fs::canonicalize(&target).expect("canonicalize target");
 
     // Drain events until we find one whose canonical path matches the
     // file we wrote. We loop because macOS FSEvents may fire a change for

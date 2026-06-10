@@ -66,8 +66,7 @@ async fn alias_hit_resolves_to_aliased_file() {
     let mut hooks = PluginRegistryHooks::new();
     hooks.add_alias("@my/lib", lib_path.clone(), "test-plugin");
 
-    let loader =
-        BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
     let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
 
     let bundle = bundle_importing("@my/lib", "greeting");
@@ -173,11 +172,7 @@ async fn alias_transitively_loads_sibling_files() {
     // sibling-directory disk-read support, the transitive import
     // would fail with "no in-memory source".
     let dir = TempDir::new().expect("tempdir");
-    let _helper = write_temp_file(
-        &dir,
-        "helper.js",
-        r#"export const help = "from helper";"#,
-    );
+    let _helper = write_temp_file(&dir, "helper.js", r#"export const help = "from helper";"#);
     let lib_path = write_temp_file(
         &dir,
         "lib.js",

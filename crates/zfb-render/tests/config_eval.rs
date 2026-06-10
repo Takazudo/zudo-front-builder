@@ -18,7 +18,7 @@
 
 #![cfg(feature = "embed_v8")]
 
-use zfb_render::{ConfigEvalError, ThreadedConfigEvaluator, config_eval};
+use zfb_render::{config_eval, ConfigEvalError, ThreadedConfigEvaluator};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -153,8 +153,8 @@ async fn test_g_bare_specifier_import_rejected() {
 #[test]
 fn test_thread_pinned_two_sequential_calls() {
     // First call.
-    let val1 = ThreadedConfigEvaluator::eval_bundle(r#"export default { call: 1 };"#)
-        .expect("first call");
+    let val1 =
+        ThreadedConfigEvaluator::eval_bundle(r#"export default { call: 1 };"#).expect("first call");
     assert_eq!(val1, serde_json::json!({ "call": 1 }));
 
     // Second call — fresh isolate, fresh thread.
@@ -192,7 +192,10 @@ async fn test_spawn_blocking_does_not_starve_tokio_workers() {
     );
 
     // The V8 eval also completes successfully.
-    let val = eval_handle.await.expect("spawn_blocking join").expect("eval");
+    let val = eval_handle
+        .await
+        .expect("spawn_blocking join")
+        .expect("eval");
     assert_eq!(val, serde_json::json!({ "ok": true }));
 }
 
@@ -204,35 +207,33 @@ async fn test_spawn_blocking_does_not_starve_tokio_workers() {
 /// esbuild emits `new URL(...)` calls to resolve module specifiers.
 #[tokio::test]
 async fn test_h_url_pathname_accessible() {
-    let val = eval(
-        r#"export default { p: new URL("https://example.com/path?q=1").pathname };"#,
-    )
-    .await
-    .expect("URL should be defined in config-eval isolate");
+    let val = eval(r#"export default { p: new URL("https://example.com/path?q=1").pathname };"#)
+        .await
+        .expect("URL should be defined in config-eval isolate");
     assert_eq!(val, serde_json::json!({ "p": "/path" }));
 }
 
 /// `typeof URL` must be `"function"` and `TextEncoder().encode("hi").length` must be `2`.
 #[tokio::test]
 async fn test_h_url_and_text_encoder_types() {
-    let val = eval(
-        r#"export default { t: typeof URL, encLen: new TextEncoder().encode("hi").length };"#,
-    )
-    .await
-    .expect("URL and TextEncoder should be defined");
+    let val =
+        eval(r#"export default { t: typeof URL, encLen: new TextEncoder().encode("hi").length };"#)
+            .await
+            .expect("URL and TextEncoder should be defined");
     assert_eq!(val["t"], "function", "typeof URL should be 'function'");
-    assert_eq!(val["encLen"], 2, "TextEncoder().encode('hi').length should be 2");
+    assert_eq!(
+        val["encLen"], 2,
+        "TextEncoder().encode('hi').length should be 2"
+    );
 }
 
 /// `typeof process` and `typeof Buffer` must both be `"undefined"` — the
 /// no-Node-globals contract must not be broken by the polyfill bootstrap.
 #[tokio::test]
 async fn test_h_no_node_globals_contract_intact() {
-    let val = eval(
-        r#"export default { proc: typeof process, buf: typeof Buffer };"#,
-    )
-    .await
-    .expect("should succeed — no Node globals present");
+    let val = eval(r#"export default { proc: typeof process, buf: typeof Buffer };"#)
+        .await
+        .expect("should succeed — no Node globals present");
     assert_eq!(
         val["proc"], "undefined",
         "typeof process must be 'undefined' in config-eval isolate"
@@ -250,13 +251,11 @@ async fn test_h_no_node_globals_contract_intact() {
 #[tokio::test]
 async fn test_v8_double_init_safety() {
     // Boot the render host (initialises V8 platform).
-    let _render_host = zfb_render::EmbeddedV8RenderHost::new()
-        .expect("render host boot");
+    let _render_host = zfb_render::EmbeddedV8RenderHost::new().expect("render host boot");
 
     // Now evaluate a config bundle — uses a separate JsRuntime but the same
     // V8 platform. Should not double-init or crash.
-    let val =
-        ThreadedConfigEvaluator::eval_bundle(r#"export default { platform: "shared" };"#)
-            .expect("config eval after render host init");
+    let val = ThreadedConfigEvaluator::eval_bundle(r#"export default { platform: "shared" };"#)
+        .expect("config eval after render host init");
     assert_eq!(val, serde_json::json!({ "platform": "shared" }));
 }

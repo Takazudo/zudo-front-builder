@@ -218,14 +218,10 @@ impl EmbeddedV8RenderHost {
     fn bootstrap_host_shim(&mut self) -> Result<()> {
         self.runtime
             .execute_script("zfb:web_polyfills", extensions::WEB_POLYFILLS_SRC)
-            .map_err(|e| {
-                RenderError::Runtime(format!("web polyfills init failed: {e}"))
-            })?;
+            .map_err(|e| RenderError::Runtime(format!("web polyfills init failed: {e}")))?;
         self.runtime
             .execute_script("zfb:browser_event", extensions::BROWSER_EVENT_SRC)
-            .map_err(|e| {
-                RenderError::Runtime(format!("browser-event globals init failed: {e}"))
-            })?;
+            .map_err(|e| RenderError::Runtime(format!("browser-event globals init failed: {e}")))?;
         self.runtime
             .execute_script("zfb:host_shim", extensions::HOST_GLOBALS_SHIM_SRC)
             .map_err(|e| RenderError::Runtime(format!("host shim init failed: {e}")))?;
@@ -277,9 +273,9 @@ impl EmbeddedV8RenderHost {
         let set_bundle_fn = zfb_obj
             .get(scope, set_bundle_key.into())
             .ok_or_else(|| RenderError::Runtime("__zfb.setBundle missing".into()))?;
-        let set_bundle_fn: v8::Local<v8::Function> = set_bundle_fn.try_into().map_err(|_| {
-            RenderError::Runtime("__zfb.setBundle is not a function".into())
-        })?;
+        let set_bundle_fn: v8::Local<v8::Function> = set_bundle_fn
+            .try_into()
+            .map_err(|_| RenderError::Runtime("__zfb.setBundle is not a function".into()))?;
         let recv: v8::Local<v8::Value> = zfb_obj.into();
         // Build a TryCatch via the macro so the scope plumbing is
         // correct — see v8 crate's `tc_scope!` for the pinned-ref
@@ -310,10 +306,7 @@ impl EmbeddedV8RenderHost {
     /// `execute_module` MUST have been called for at least one bundle
     /// before this is called; otherwise the host returns a `Runtime`
     /// error.
-    pub async fn dispatch_fetch(
-        &mut self,
-        request: HttpRequestLike,
-    ) -> Result<HttpResponseLike> {
+    pub async fn dispatch_fetch(&mut self, request: HttpRequestLike) -> Result<HttpResponseLike> {
         if !*self.bundle_installed.borrow() {
             let base = "embedded V8 host: dispatch_fetch called before any bundle was loaded \
                  (call execute_module() first)";
@@ -337,10 +330,7 @@ impl EmbeddedV8RenderHost {
         let resolve_future = self.runtime.resolve(promise);
         let resolved = self
             .runtime
-            .with_event_loop_promise(
-                Box::pin(resolve_future),
-                PollEventLoopOptions::default(),
-            )
+            .with_event_loop_promise(Box::pin(resolve_future), PollEventLoopOptions::default())
             .await
             .map_err(|e| RenderError::Runtime(format_js_error(&e)))?;
         // Pull the resolved JS object back out as a Rust struct.
@@ -367,10 +357,7 @@ impl EmbeddedV8RenderHost {
     /// Invoke `__zfb.dispatch(...)` for `request` and return the
     /// resulting v8 Promise as a `Global<Value>`. The caller is
     /// responsible for awaiting / resolving it.
-    fn invoke_dispatch_js(
-        &mut self,
-        request: &HttpRequestLike,
-    ) -> Result<v8::Global<v8::Value>> {
+    fn invoke_dispatch_js(&mut self, request: &HttpRequestLike) -> Result<v8::Global<v8::Value>> {
         // We construct the call as a small JS expression rather than
         // wrestling with v8::Function::call from Rust — `serde_v8`'s
         // round trip on the input arguments is brittle when the body
@@ -452,10 +439,7 @@ impl EmbeddedV8RenderHost {
 
     /// Lookup `(handle, module_id)` for an already-registered module.
     fn module_id_for(&self, handle: &ModuleHandle) -> Option<ModuleId> {
-        self.handles
-            .borrow()
-            .get(&handle.name)
-            .map(|(_, id)| *id)
+        self.handles.borrow().get(&handle.name).map(|(_, id)| *id)
     }
 }
 
@@ -558,15 +542,15 @@ impl RenderHost for EmbeddedV8RenderHost {
             let local_ns: v8::Local<v8::Object> = v8::Local::new(scope, namespace);
             let key = v8::String::new(scope, "default")
                 .ok_or_else(|| RenderError::Runtime("v8 string alloc failed".into()))?;
-            let default_val = local_ns.get(scope, key.into()).ok_or_else(|| {
-                RenderError::MissingDefaultExport(handle.name.clone())
-            })?;
+            let default_val = local_ns
+                .get(scope, key.into())
+                .ok_or_else(|| RenderError::MissingDefaultExport(handle.name.clone()))?;
             if !default_val.is_function() {
                 return Err(RenderError::MissingDefaultExport(handle.name.clone()));
             }
-            let func: v8::Local<v8::Function> = default_val.try_into().map_err(|_| {
-                RenderError::MissingDefaultExport(handle.name.clone())
-            })?;
+            let func: v8::Local<v8::Function> = default_val
+                .try_into()
+                .map_err(|_| RenderError::MissingDefaultExport(handle.name.clone()))?;
             // Marshal `props` from JSON to a v8 Value via serde_v8.
             let props_v8 = serde_v8::to_v8(scope, props).map_err(|e| {
                 RenderError::Runtime(format!("encoding props for default() failed: {e}"))
@@ -581,9 +565,8 @@ impl RenderHost for EmbeddedV8RenderHost {
                     .unwrap_or_else(|| "<no exception>".to_string());
                 return Err(RenderError::Runtime(msg));
             }
-            let result = result.ok_or_else(|| {
-                RenderError::Runtime("default() returned no value".into())
-            })?;
+            let result =
+                result.ok_or_else(|| RenderError::Runtime("default() returned no value".into()))?;
             v8::Global::new(tc, result)
         };
         // If the result was a Promise, await it; else short-circuit.
@@ -592,10 +575,7 @@ impl RenderHost for EmbeddedV8RenderHost {
         let resolve_future = self.runtime.resolve(promise);
         let resolved = self
             .runtime
-            .with_event_loop_promise(
-                Box::pin(resolve_future),
-                PollEventLoopOptions::default(),
-            )
+            .with_event_loop_promise(Box::pin(resolve_future), PollEventLoopOptions::default())
             .await
             .map_err(|e| RenderError::Runtime(format_js_error(&e)))?;
         deno_core::scope!(scope, &mut self.runtime);
@@ -640,10 +620,7 @@ impl RenderHost for EmbeddedV8RenderHost {
 // `to_rust_string_lossy(&Isolate)` works on a `Local<v8::String>`;
 // we accept `&Isolate` here so the caller can pass either the
 // isolate or anything that derefs to it.
-fn local_to_string_if_string(
-    isolate: &v8::Isolate,
-    local: v8::Local<v8::Value>,
-) -> Option<String> {
+fn local_to_string_if_string(isolate: &v8::Isolate, local: v8::Local<v8::Value>) -> Option<String> {
     if local.is_string() {
         let s: v8::Local<v8::String> = local.try_into().ok()?;
         Some(s.to_rust_string_lossy(isolate))

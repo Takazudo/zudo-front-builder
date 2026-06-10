@@ -88,23 +88,15 @@ pub fn apply_link_base_rewrite(
         if !is_html_path(page) {
             continue;
         }
-        let bytes = std::fs::read(page).with_context(|| {
-            format!(
-                "link-base-rewrite: failed to read {}",
-                page.display()
-            )
-        })?;
+        let bytes = std::fs::read(page)
+            .with_context(|| format!("link-base-rewrite: failed to read {}", page.display()))?;
         // The renderer wrote UTF-8 HTML; bail if a binary-ish file
         // somehow snuck through with a `.html` extension instead of
         // silently corrupting it via lossy decoding.
-        let html = std::str::from_utf8(&bytes).with_context(|| {
-            format!(
-                "link-base-rewrite: {} is not valid UTF-8",
-                page.display()
-            )
-        })?;
-        let new_html = rewrite_links_in_html(html, &prefix, add_trailing_slash)
-            .with_context(|| {
+        let html = std::str::from_utf8(&bytes)
+            .with_context(|| format!("link-base-rewrite: {} is not valid UTF-8", page.display()))?;
+        let new_html =
+            rewrite_links_in_html(html, &prefix, add_trailing_slash).with_context(|| {
                 format!(
                     "link-base-rewrite: lol_html failed on {} (under {})",
                     page.display(),
@@ -113,10 +105,7 @@ pub fn apply_link_base_rewrite(
             })?;
         if new_html != html {
             std::fs::write(page, new_html).with_context(|| {
-                format!(
-                    "link-base-rewrite: failed to write {}",
-                    page.display()
-                )
+                format!("link-base-rewrite: failed to write {}", page.display())
             })?;
         }
     }
@@ -250,22 +239,14 @@ mod tests {
             "http://example.com/x",
             "https://example.com/x",
         ] {
-            assert_eq!(
-                compute_prefixed(v, "/foo"),
-                None,
-                "expected skip for {v}"
-            );
+            assert_eq!(compute_prefixed(v, "/foo"), None, "expected skip for {v}");
         }
     }
 
     #[test]
     fn compute_prefixed_skips_relative_paths() {
         for v in ["foo.html", "./foo", "../foo", "page", "page/sub.html"] {
-            assert_eq!(
-                compute_prefixed(v, "/foo"),
-                None,
-                "expected skip for {v}"
-            );
+            assert_eq!(compute_prefixed(v, "/foo"), None, "expected skip for {v}");
         }
     }
 
@@ -385,10 +366,7 @@ mod tests {
             );
         }
         // And nothing got prefixed.
-        assert!(
-            !out.contains("/foo/"),
-            "no rewrites expected; got: {out}"
-        );
+        assert!(!out.contains("/foo/"), "no rewrites expected; got: {out}");
     }
 
     #[test]
@@ -415,10 +393,7 @@ mod tests {
         // Already-prefixed stays as-is.
         assert!(out.contains(r#"href="/foo/already""#), "got: {out}");
         // External stays as-is.
-        assert!(
-            out.contains(r#"href="https://example.com/""#),
-            "got: {out}"
-        );
+        assert!(out.contains(r#"href="https://example.com/""#), "got: {out}");
     }
 
     #[test]
@@ -465,7 +440,8 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<!doctype html><html><body><a href="/about">About</a></body></html>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false)
+            .unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert!(
             after.contains(r#"href="/foo/about""#),
@@ -492,7 +468,13 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("https://cdn.example.com/"), false).unwrap();
+        apply_link_base_rewrite(
+            tmp.path(),
+            std::slice::from_ref(&p),
+            Some("https://cdn.example.com/"),
+            false,
+        )
+        .unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert_eq!(after, body, "user links should stay same-origin");
     }
@@ -502,12 +484,10 @@ mod tests {
         let tmp = tempdir().unwrap();
         let xml_body = r#"<?xml version="1.0"?><feed><link href="/post/1"/></feed>"#;
         let xml = write_file(tmp.path(), "feed.xml", xml_body);
-        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&xml), Some("/foo"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&xml), Some("/foo"), false)
+            .unwrap();
         let after = fs::read_to_string(&xml).unwrap();
-        assert_eq!(
-            after, xml_body,
-            "non-HTML file should not be touched"
-        );
+        assert_eq!(after, xml_body, "non-HTML file should not be touched");
     }
 
     #[test]
@@ -517,7 +497,8 @@ mod tests {
             <form action="/submit" method="post"><button>go</button></form>
         </body></html>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false)
+            .unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert!(
             after.contains(r#"action="/foo/submit""#),
@@ -532,9 +513,11 @@ mod tests {
         let tmp = tempdir().unwrap();
         let body = r#"<a href="/about">about</a>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false)
+            .unwrap();
         let after_first = fs::read_to_string(&p).unwrap();
-        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false)
+            .unwrap();
         let after_second = fs::read_to_string(&p).unwrap();
         assert_eq!(after_first, after_second);
         assert!(after_second.contains(r#"href="/foo/about""#));
@@ -549,7 +532,8 @@ mod tests {
             <a href="/legal" data-no-base>legal-stays-bare</a>
         </body></html>"#;
         let p = write_file(tmp.path(), "index.html", body);
-        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false).unwrap();
+        apply_link_base_rewrite(tmp.path(), std::slice::from_ref(&p), Some("/foo/"), false)
+            .unwrap();
         let after = fs::read_to_string(&p).unwrap();
         assert!(after.contains(r#"href="/foo/about""#), "got: {after}");
         assert!(after.contains(r#"href="/legal""#), "got: {after}");

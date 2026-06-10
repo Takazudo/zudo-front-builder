@@ -71,7 +71,10 @@ async fn module_top_level_extends_event_loads() {
         .expect("dispatch");
     assert_eq!(resp.status, 200);
     let body = resp.body_utf8().expect("utf-8 body");
-    assert!(body.contains(r#""type":"zfb:before-preparation""#), "body={body}");
+    assert!(
+        body.contains(r#""type":"zfb:before-preparation""#),
+        "body={body}"
+    );
     assert!(body.contains(r#""cancelable":true"#), "body={body}");
     assert!(body.contains(r#""defaultPrevented":false"#), "body={body}");
     assert!(body.contains(r#""payload":{"ok":true}"#), "body={body}");

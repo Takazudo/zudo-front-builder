@@ -160,17 +160,17 @@ mod tests {
 
     #[test]
     fn escape_html_all_specials() {
-        assert_eq!(
-            escape_html("& < > \" '"),
-            "&amp; &lt; &gt; &quot; &#39;"
-        );
+        assert_eq!(escape_html("& < > \" '"), "&amp; &lt; &gt; &quot; &#39;");
     }
 
     // ── path_to_posix_string ──────────────────────────────────────────────────
 
     #[test]
     fn path_to_posix_unix_path() {
-        assert_eq!(path_to_posix_string(Path::new("/abs/foo.tsx")), "/abs/foo.tsx");
+        assert_eq!(
+            path_to_posix_string(Path::new("/abs/foo.tsx")),
+            "/abs/foo.tsx"
+        );
     }
 
     #[test]
@@ -186,7 +186,10 @@ mod tests {
 
     #[test]
     fn path_to_posix_relative() {
-        assert_eq!(path_to_posix_string(Path::new("sub/dir/file.ts")), "sub/dir/file.ts");
+        assert_eq!(
+            path_to_posix_string(Path::new("sub/dir/file.ts")),
+            "sub/dir/file.ts"
+        );
     }
 
     // ── normalize_path_lexical ────────────────────────────────────────────────

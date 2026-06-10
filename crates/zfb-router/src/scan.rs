@@ -75,7 +75,10 @@ pub fn scan_pages(pages_dir: &Path) -> Result<Vec<Route>, RouterError> {
 
     let mut routes: Vec<Route> = Vec::new();
 
-    for entry in WalkDir::new(pages_dir).follow_links(false).sort_by_file_name() {
+    for entry in WalkDir::new(pages_dir)
+        .follow_links(false)
+        .sort_by_file_name()
+    {
         let entry = entry.map_err(|e| RouterError::Io {
             path: e
                 .path()
@@ -154,9 +157,7 @@ pub fn scan_pages(pages_dir: &Path) -> Result<Vec<Route>, RouterError> {
         // pure .md or .html file cannot carry). Skip them with a loud
         // warning so authors notice rather than shipping a green build
         // that silently produces no pages.
-        if matches!(ext, Some("md") | Some("html"))
-            && !matches!(route.kind, RouteKind::Static)
-        {
+        if matches!(ext, Some("md") | Some("html")) && !matches!(route.kind, RouteKind::Static) {
             tracing::warn!(
                 path = %rel.display(),
                 kind = ?route.kind,
@@ -255,10 +256,7 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
     let total = raw_segments.len();
     for (i, raw) in raw_segments.iter().enumerate() {
         let parsed = parse_segment(source, raw)?;
-        if matches!(
-            &parsed,
-            Segment::Catchall(_) | Segment::OptionalCatchall(_)
-        ) && i != total - 1
+        if matches!(&parsed, Segment::Catchall(_) | Segment::OptionalCatchall(_)) && i != total - 1
         {
             return Err(RouterError::CatchallNotLast {
                 path: source.to_path_buf(),
@@ -869,8 +867,7 @@ mod tests {
         // first-match would send `/docs` to the less-specific `/[id]`.
         let routes = scan_tree(&["[id].tsx", "docs/[[...slug]].tsx"]).expect("scan");
         assert!(
-            template_index(&routes, "/docs/:slug{.+}?")
-                < template_index(&routes, "/:id"),
+            template_index(&routes, "/docs/:slug{.+}?") < template_index(&routes, "/:id"),
             "optional catchall /docs/[[...slug]] must sort before /[id]: {:?}",
             routes.iter().map(Route::template).collect::<Vec<_>>(),
         );
@@ -885,8 +882,7 @@ mod tests {
         // static-vs-dynamic at index 0 — so it must sort FIRST.
         let routes = scan_tree(&["[lang]/[slug].tsx", "docs/[[...slug]].tsx"]).expect("scan");
         assert!(
-            template_index(&routes, "/docs/:slug{.+}?")
-                < template_index(&routes, "/:lang/:slug"),
+            template_index(&routes, "/docs/:slug{.+}?") < template_index(&routes, "/:lang/:slug"),
             "optional catchall /docs/[[...slug]] must sort before /[lang]/[slug]: {:?}",
             routes.iter().map(Route::template).collect::<Vec<_>>(),
         );
@@ -998,8 +994,7 @@ mod tests {
     #[test]
     fn nested_dynamic_siblings_with_different_param_names_conflict() {
         // Mixed static + dynamic shape: `/docs/:*/edit` shared by both.
-        let err =
-            scan_tree(&["docs/[a]/edit.tsx", "docs/[b]/edit.tsx"]).unwrap_err();
+        let err = scan_tree(&["docs/[a]/edit.tsx", "docs/[b]/edit.tsx"]).unwrap_err();
         assert!(matches!(err, RouterError::AmbiguousShape { .. }));
     }
 
@@ -1077,10 +1072,7 @@ mod tests {
         assert_eq!(r.template(), "/sitemap.xml");
         assert_eq!(r.output_extension.as_deref(), Some("xml"));
         assert_eq!(r.kind, RouteKind::Static);
-        assert_eq!(
-            r.output_filename(None),
-            PathBuf::from("sitemap.xml"),
-        );
+        assert_eq!(r.output_filename(None), PathBuf::from("sitemap.xml"),);
     }
 
     #[test]
@@ -1090,10 +1082,7 @@ mod tests {
         let r = route_from("api.v2.json.tsx");
         assert_eq!(r.template(), "/api.v2.json");
         assert_eq!(r.output_extension.as_deref(), Some("json"));
-        assert_eq!(
-            r.output_filename(None),
-            PathBuf::from("api.v2.json"),
-        );
+        assert_eq!(r.output_filename(None), PathBuf::from("api.v2.json"),);
     }
 
     #[test]
@@ -1101,10 +1090,7 @@ mod tests {
         // `pages/sitemap.xml.tsx` with frontmatter `extension: "rss"`
         // should write to `sitemap.rss`.
         let r = route_from("sitemap.xml.tsx");
-        assert_eq!(
-            r.output_filename(Some("rss")),
-            PathBuf::from("sitemap.rss"),
-        );
+        assert_eq!(r.output_filename(Some("rss")), PathBuf::from("sitemap.rss"),);
     }
 
     #[test]
@@ -1112,7 +1098,10 @@ mod tests {
         // No filename extension and no frontmatter override → standard
         // `<path>/index.html` layout.
         let about = route_from("about.tsx");
-        assert_eq!(about.output_filename(None), PathBuf::from("about/index.html"));
+        assert_eq!(
+            about.output_filename(None),
+            PathBuf::from("about/index.html")
+        );
 
         let root = route_from("index.tsx");
         assert_eq!(root.output_filename(None), PathBuf::from("index.html"));
@@ -1161,10 +1150,7 @@ mod tests {
         // literally named `blog`. It should write to `blog/index.xml`.
         let r = route_from("blog/index.xml.tsx");
         assert_eq!(r.output_extension.as_deref(), Some("xml"));
-        assert_eq!(
-            r.output_filename(None),
-            PathBuf::from("blog/index.xml"),
-        );
+        assert_eq!(r.output_filename(None), PathBuf::from("blog/index.xml"),);
     }
 
     // ---- error-page convention (Sub 107) ------------------------------------
@@ -1194,20 +1180,14 @@ mod tests {
         // `pages/foo/404.tsx` is a regular page: `foo/404/index.html`.
         let r = route_from("foo/404.tsx");
         assert_eq!(r.template(), "/foo/404");
-        assert_eq!(
-            r.output_filename(None),
-            PathBuf::from("foo/404/index.html"),
-        );
+        assert_eq!(r.output_filename(None), PathBuf::from("foo/404/index.html"),);
     }
 
     #[test]
     fn about_still_uses_directory_index() {
         // Non-error pages are unaffected.
         let r = route_from("about.tsx");
-        assert_eq!(
-            r.output_filename(None),
-            PathBuf::from("about/index.html"),
-        );
+        assert_eq!(r.output_filename(None), PathBuf::from("about/index.html"),);
     }
 
     // ---- .md page sources (Sub 406) ----------------------------------------
@@ -1391,7 +1371,10 @@ mod tests {
         let pages = tmp.path();
         fs::write(pages.join("notes.txt"), "hello").unwrap();
         let routes = scan_pages(pages).expect("scan");
-        assert!(routes.is_empty(), "unknown extension file should be skipped");
+        assert!(
+            routes.is_empty(),
+            "unknown extension file should be skipped"
+        );
         assert!(
             logs_contain("unrecognised extension"),
             "expected a warning about the unrecognised extension"

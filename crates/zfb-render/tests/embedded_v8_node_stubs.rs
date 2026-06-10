@@ -42,15 +42,11 @@ async fn assert_import_resolves(specifier: &str, named_import: &str) {
     );
     host.execute_module("bundle.mjs", &bundle)
         .await
-        .unwrap_or_else(|e| {
-            panic!("bundle importing {specifier} failed to load: {e}")
-        });
+        .unwrap_or_else(|e| panic!("bundle importing {specifier} failed to load: {e}"));
     let resp = host
         .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
         .await
-        .unwrap_or_else(|e| {
-            panic!("dispatch after importing {specifier} failed: {e}")
-        });
+        .unwrap_or_else(|e| panic!("dispatch after importing {specifier} failed: {e}"));
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body_utf8(), Some("loaded"));
 }
@@ -77,16 +73,12 @@ async fn assert_call_throws(specifier: &str, member_call: &str) {
     );
     host.execute_module("bundle.mjs", &bundle)
         .await
-        .unwrap_or_else(|e| {
-            panic!("bundle importing {specifier} failed to load: {e}")
-        });
+        .unwrap_or_else(|e| panic!("bundle importing {specifier} failed to load: {e}"));
     let err = match host
         .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
         .await
     {
-        Ok(_) => panic!(
-            "expected dispatch to throw for {specifier}, but it returned a response"
-        ),
+        Ok(_) => panic!("expected dispatch to throw for {specifier}, but it returned a response"),
         Err(e) => e,
     };
     let msg = err.to_string();
@@ -120,11 +112,7 @@ async fn node_url_resolves_and_throws_on_call() {
     // `node:url` is the deprecated Node namespace; the global
     // `URL` from the polyfill is unaffected (covered separately
     // in `embedded_v8_smoke.rs::handles_hono_shape_router`).
-    assert_call_throws(
-        "node:url",
-        "nodeStub.fileURLToPath('file:///a')",
-    )
-    .await;
+    assert_call_throws("node:url", "nodeStub.fileURLToPath('file:///a')").await;
 }
 
 #[tokio::test]

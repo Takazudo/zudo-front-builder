@@ -501,13 +501,19 @@ mod tests {
     #[test]
     fn classify_create_is_created() {
         use notify::event::{CreateKind, EventKind};
-        assert_eq!(classify(&EventKind::Create(CreateKind::File)), Some(ChangeKind::Created));
+        assert_eq!(
+            classify(&EventKind::Create(CreateKind::File)),
+            Some(ChangeKind::Created)
+        );
     }
 
     #[test]
     fn classify_remove_is_removed() {
         use notify::event::{EventKind, RemoveKind};
-        assert_eq!(classify(&EventKind::Remove(RemoveKind::File)), Some(ChangeKind::Removed));
+        assert_eq!(
+            classify(&EventKind::Remove(RemoveKind::File)),
+            Some(ChangeKind::Removed)
+        );
     }
 
     #[test]
@@ -666,8 +672,14 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let file = tmp.path().join("any.txt");
         std::fs::write(&file, b"x").expect("write");
-        assert_eq!(resolve_emit_kind(&file, ChangeKind::Created), ChangeKind::Created);
-        assert_eq!(resolve_emit_kind(&file, ChangeKind::Modified), ChangeKind::Modified);
+        assert_eq!(
+            resolve_emit_kind(&file, ChangeKind::Created),
+            ChangeKind::Created
+        );
+        assert_eq!(
+            resolve_emit_kind(&file, ChangeKind::Modified),
+            ChangeKind::Modified
+        );
     }
 
     #[test]
@@ -757,9 +769,8 @@ mod tests {
         std::fs::write(&target, b"original\n").expect("seed file");
 
         let debounce = Duration::from_millis(200);
-        let (watcher, mut rx) =
-            Watcher::start_with_debounce(&root, std::iter::once("."), debounce)
-                .expect("watcher start");
+        let (watcher, mut rx) = Watcher::start_with_debounce(&root, std::iter::once("."), debounce)
+            .expect("watcher start");
 
         // Let the OS watch settle and drain the seed/create noise.
         let _ = last_kind_for(&mut rx, &target, Duration::from_millis(500)).await;
@@ -787,9 +798,8 @@ mod tests {
         std::fs::write(&target, b"original\n").expect("seed file");
 
         let debounce = Duration::from_millis(200);
-        let (watcher, mut rx) =
-            Watcher::start_with_debounce(&root, std::iter::once("."), debounce)
-                .expect("watcher start");
+        let (watcher, mut rx) = Watcher::start_with_debounce(&root, std::iter::once("."), debounce)
+            .expect("watcher start");
 
         let _ = last_kind_for(&mut rx, &target, Duration::from_millis(500)).await;
 

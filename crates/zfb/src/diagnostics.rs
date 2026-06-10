@@ -35,8 +35,7 @@ use std::path::Path;
 
 // Re-export the core types so callers can keep using `zfb::diagnostics::*`.
 pub use zfb_diagnostics::{
-    locate_export_ident, project_relative, render_framed, DecodedPosition, Diagnostic,
-    FramedError,
+    locate_export_ident, project_relative, render_framed, DecodedPosition, Diagnostic, FramedError,
 };
 
 // ---------------------------------------------------------------------------
@@ -110,13 +109,9 @@ pub fn from_tsx_frontmatter_error(
     use zfb_content::TsxFrontmatterError;
     let file = project_relative(path, None);
     match err {
-        TsxFrontmatterError::Parse { message, .. } => Diagnostic::with_source(
-            file,
-            1,
-            1,
-            format!("TSX parse error: {message}"),
-            source,
-        ),
+        TsxFrontmatterError::Parse { message, .. } => {
+            Diagnostic::with_source(file, 1, 1, format!("TSX parse error: {message}"), source)
+        }
         TsxFrontmatterError::MissingFrontmatter { .. } => Diagnostic::with_source(
             file,
             1,
@@ -124,7 +119,9 @@ pub fn from_tsx_frontmatter_error(
             "missing required `export const frontmatter`",
             source,
         ),
-        TsxFrontmatterError::DuplicateExport { name, line, col, .. } => Diagnostic::with_source(
+        TsxFrontmatterError::DuplicateExport {
+            name, line, col, ..
+        } => Diagnostic::with_source(
             file,
             *line,
             *col,
@@ -132,18 +129,24 @@ pub fn from_tsx_frontmatter_error(
             source,
         ),
         TsxFrontmatterError::ComputedValue {
-            export, reason, line, col, ..
+            export,
+            reason,
+            line,
+            col,
+            ..
         } => Diagnostic::with_source(
             file,
             *line,
             *col,
-            format!(
-                "non-literal value not allowed in `export const {export}` ({reason})"
-            ),
+            format!("non-literal value not allowed in `export const {export}` ({reason})"),
             source,
         ),
         TsxFrontmatterError::WrongShape {
-            export, reason, line, col, ..
+            export,
+            reason,
+            line,
+            col,
+            ..
         } => Diagnostic::with_source(
             file,
             *line,
@@ -219,11 +222,16 @@ pub fn from_paths_error(
                  expected one of [{pretty}], got `{name}`"
             )
         }
-        PathsError::InvalidParamType { name, reason, route } => format!(
-            "paths() entry has invalid param `{name}` for route `{route}`: {reason}"
-        ),
+        PathsError::InvalidParamType {
+            name,
+            reason,
+            route,
+        } => format!("paths() entry has invalid param `{name}` for route `{route}`: {reason}"),
         PathsError::InvalidPathsExport {
-            field, reason, expected, route,
+            field,
+            reason,
+            expected,
+            route,
         } => {
             let field_note = match field {
                 Some(f) => format!(" at `{f}`"),
@@ -293,9 +301,7 @@ pub fn from_js_runtime_error(
         message,
         sourcemap_json,
         project_root,
-        |map, line, col| {
-            zfb_render::sourcemap::decode_position(map, line, col).map(RenderDecoded)
-        },
+        |map, line, col| zfb_render::sourcemap::decode_position(map, line, col).map(RenderDecoded),
     )
 }
 
@@ -423,8 +429,7 @@ mod tests {
         owo_colors::set_override(false);
         let src = "export default function Page() { return null; }\n";
         let path = PathBuf::from("pages/page.tsx");
-        let err =
-            zfb_content::extract_tsx_frontmatter(src, "page.tsx").expect_err("should fail");
+        let err = zfb_content::extract_tsx_frontmatter(src, "page.tsx").expect_err("should fail");
         let diag = from_tsx_frontmatter_error(&path, src, &err);
         let out = strip_ansi(&render_framed(&diag));
         assert!(
@@ -442,15 +447,11 @@ mod tests {
         owo_colors::set_override(false);
         let src = "\nexport const frontmatter = [1, 2, 3];\nexport default function Page() { return null; }\n";
         let path = PathBuf::from("pages/page.tsx");
-        let err =
-            zfb_content::extract_tsx_frontmatter(src, "page.tsx").expect_err("should fail");
+        let err = zfb_content::extract_tsx_frontmatter(src, "page.tsx").expect_err("should fail");
         let diag = from_tsx_frontmatter_error(&path, src, &err);
         let out = strip_ansi(&render_framed(&diag));
         // Frame should point at line 2 (1-based) of the source.
-        assert!(
-            out.contains(" --> pages/page.tsx:2:"),
-            "got:\n{out}"
-        );
+        assert!(out.contains(" --> pages/page.tsx:2:"), "got:\n{out}");
         assert!(out.contains("export const frontmatter"), "got:\n{out}");
         assert!(out.contains("must be an object literal"), "got:\n{out}");
     }
@@ -505,6 +506,9 @@ mod tests {
         let d = from_js_runtime_error(&path, bundle, 2, 7, "boom", None, None);
         let out = strip_ansi(&render_framed(&d));
         assert!(out.contains("JS runtime error"), "got:\n{out}");
-        assert!(out.contains(" --> .zfb/build/ssg-render.js:2:7\n"), "got:\n{out}");
+        assert!(
+            out.contains(" --> .zfb/build/ssg-render.js:2:7\n"),
+            "got:\n{out}"
+        );
     }
 }

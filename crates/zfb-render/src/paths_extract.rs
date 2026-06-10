@@ -92,10 +92,7 @@ pub enum PathsExtractError {
 /// surfaced as [`PathsExtractError::Parse`] rather than panics.
 pub fn extract_paths(source: &str, file_name: &str) -> Result<PathsExtraction, PathsExtractError> {
     let cm: Lrc<SourceMap> = Default::default();
-    let fm = cm.new_source_file(
-        FileName::Real(file_name.into()).into(),
-        source.to_string(),
-    );
+    let fm = cm.new_source_file(FileName::Real(file_name.into()).into(), source.to_string());
 
     let lexer = Lexer::new(
         Syntax::Typescript(TsSyntax {
@@ -130,9 +127,7 @@ pub fn extract_paths(source: &str, file_name: &str) -> Result<PathsExtraction, P
         match &export_decl.decl {
             // export function paths() { return [...] }
             Decl::Fn(fn_decl) if fn_decl.ident.sym.as_ref() == "paths" => {
-                return Ok(extract_from_block_stmt(
-                    fn_decl.function.body.as_ref(),
-                ));
+                return Ok(extract_from_block_stmt(fn_decl.function.body.as_ref()));
             }
             // export const paths = <init>;
             Decl::Var(var_decl) if matches!(var_decl.kind, VarDeclKind::Const) => {
@@ -289,8 +284,7 @@ fn expr_to_json(expr: &Expr) -> Result<JsonValue, String> {
         Expr::Tpl(tpl) => {
             if !tpl.exprs.is_empty() {
                 return Err(
-                    "template strings with substitutions are not statically resolvable"
-                        .to_string(),
+                    "template strings with substitutions are not statically resolvable".to_string(),
                 );
             }
             Ok(JsonValue::String(tpl_quasi_to_string(tpl)))
@@ -303,9 +297,8 @@ fn expr_to_json(expr: &Expr) -> Result<JsonValue, String> {
                     } else {
                         n.value
                     };
-                    number_to_json(value).ok_or_else(|| {
-                        "non-finite number is not representable in JSON".to_string()
-                    })
+                    number_to_json(value)
+                        .ok_or_else(|| "non-finite number is not representable in JSON".to_string())
                 }
                 _ => Err("unary operator only allowed in front of a numeric literal".to_string()),
             },
@@ -341,7 +334,7 @@ fn object_to_json(obj: &ObjectLit) -> Result<JsonValue, String> {
                 }
                 Prop::Shorthand(_) => {
                     return Err(
-                        "shorthand property references a variable, not a literal".to_string(),
+                        "shorthand property references a variable, not a literal".to_string()
                     );
                 }
                 Prop::Method(_) => {
@@ -453,7 +446,10 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::MetaProp(_) => "meta-property",
         Expr::Await(_) => "`await` expression",
         Expr::Paren(_) => "parenthesized expression",
-        Expr::JSXElement(_) | Expr::JSXFragment(_) | Expr::JSXEmpty(_) | Expr::JSXMember(_)
+        Expr::JSXElement(_)
+        | Expr::JSXFragment(_)
+        | Expr::JSXEmpty(_)
+        | Expr::JSXMember(_)
         | Expr::JSXNamespacedName(_) => "JSX expression",
         _ => "expression",
     }
@@ -625,10 +621,7 @@ mod tests {
         "#;
         match extract_ok(src) {
             PathsExtraction::NonLiteral { reason } => {
-                assert!(
-                    !reason.is_empty(),
-                    "non-literal reason should not be empty",
-                );
+                assert!(!reason.is_empty(), "non-literal reason should not be empty",);
             }
             other => unreachable!("expected NonLiteral, got {other:?}"),
         }
@@ -691,7 +684,10 @@ mod tests {
         "#;
         // The `if` is a non-return statement — extraction bails before
         // it gets to count returns. Either way: NonLiteral.
-        assert!(matches!(extract_ok(src), PathsExtraction::NonLiteral { .. }));
+        assert!(matches!(
+            extract_ok(src),
+            PathsExtraction::NonLiteral { .. }
+        ));
     }
 
     #[test]
@@ -755,10 +751,7 @@ mod tests {
         "#;
         match extract_ok(src) {
             PathsExtraction::Literal(v) => {
-                assert_eq!(
-                    v,
-                    json!([{ "params": { "slug": ["a", "b", "c"] } }]),
-                );
+                assert_eq!(v, json!([{ "params": { "slug": ["a", "b", "c"] } }]),);
             }
             other => unreachable!("expected Literal, got {other:?}"),
         }

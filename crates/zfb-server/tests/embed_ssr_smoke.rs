@@ -174,11 +174,9 @@ async fn rust_handler_wins_over_ssr_for_overlapping_pattern() {
 
     let handlers = EmbedHandlerSet::new(vec![EmbedHandler {
         pattern: "/dynamic".into(),
-        handler: erase_handler_for_test(
-            |req: Request<Body>, _params: RouteParams| async move {
-                (StatusCode::OK, format!("rust-handler|{}", req.uri().path()))
-            },
-        ),
+        handler: erase_handler_for_test(|req: Request<Body>, _params: RouteParams| async move {
+            (StatusCode::OK, format!("rust-handler|{}", req.uri().path()))
+        }),
     }]);
 
     let (addr, server, _tmp) = boot(handlers, ssr_set).await;
@@ -259,10 +257,7 @@ async fn plugin_dev_middleware_wins_over_rust_handler() {
         body: b"ssr".to_vec(),
     };
     let ssr_dispatcher = Arc::new(CountingSsrDispatcher::new(canned_ssr));
-    let ssr_set = SsrRouteSet::new(
-        Vec::new(),
-        ssr_dispatcher.clone() as Arc<dyn SsrDispatcher>,
-    );
+    let ssr_set = SsrRouteSet::new(Vec::new(), ssr_dispatcher.clone() as Arc<dyn SsrDispatcher>);
 
     let rust_handler_calls = Arc::new(AtomicU32::new(0));
     let counter = Arc::clone(&rust_handler_calls);
@@ -283,12 +278,10 @@ async fn plugin_dev_middleware_wins_over_rust_handler() {
             handler_id: "h1".into(),
             plugin: "test".into(),
         }]),
-        dispatcher: Arc::new(AlwaysRespondingPluginDispatcher)
-            as Arc<dyn DevMiddlewareDispatcher>,
+        dispatcher: Arc::new(AlwaysRespondingPluginDispatcher) as Arc<dyn DevMiddlewareDispatcher>,
     };
 
-    let (addr, server, _tmp) =
-        boot_with_plugins(handlers, ssr_set, Some(plugin_set)).await;
+    let (addr, server, _tmp) = boot_with_plugins(handlers, ssr_set, Some(plugin_set)).await;
 
     let client = reqwest::Client::builder().build().unwrap();
     let resp = client

@@ -70,10 +70,8 @@ use axum::response::IntoResponse;
 /// Default bind address for an embedded server: `127.0.0.1:0` so the
 /// OS picks an ephemeral port. The actual port is readable from
 /// [`ServerHandle::addr`] once the server is running.
-const DEFAULT_BIND: SocketAddr = SocketAddr::new(
-    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-    0,
-);
+const DEFAULT_BIND: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 
 /// Server flavour. Controls which dev-flavoured surfaces the server
 /// exposes (live-reload script injection, `/__zfb/*` SSE endpoint,
@@ -99,7 +97,6 @@ pub enum ServerMode {
     /// per-request Tauri context, SSR handlers, etc.
     Embed,
 }
-
 
 /// A built, ready-to-serve embedded server. Construct via
 /// [`Server::builder`]; consume via [`Server::serve`] (async) or
@@ -171,8 +168,7 @@ impl Server {
     /// the thread fails to boot (bind error, runtime error).
     pub fn serve_in_thread(self) -> anyhow::Result<ServerHandle> {
         let bind = self.bind;
-        let (boot_tx, boot_rx) =
-            mpsc::sync_channel::<anyhow::Result<SocketAddr>>(0);
+        let (boot_tx, boot_rx) = mpsc::sync_channel::<anyhow::Result<SocketAddr>>(0);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let thread_handle = thread::Builder::new()
@@ -251,11 +247,7 @@ impl Server {
     /// Internal: serve on the supplied listener. Replicates the logic
     /// of [`crate::serve_with_listener`] but threads the
     /// request-extension layer that the embed builder accumulated.
-    async fn serve_with_listener<S>(
-        self,
-        listener: TcpListener,
-        shutdown: S,
-    ) -> anyhow::Result<()>
+    async fn serve_with_listener<S>(self, listener: TcpListener, shutdown: S) -> anyhow::Result<()>
     where
         S: Future<Output = ()> + Send + 'static,
     {
@@ -272,12 +264,8 @@ impl Server {
         // a non-loopback bind enforces the built-in allowlist
         // (localhost forms + the bound IP); the default loopback bind
         // disables validation entirely.
-        let host_validation = crate::host_validation::HostValidation::for_bind(
-            actual.ip(),
-            None,
-            &[],
-            self.mode,
-        );
+        let host_validation =
+            crate::host_validation::HostValidation::for_bind(actual.ip(), None, &[], self.mode);
         let state = AppState {
             mode: self.mode,
             pages: self.pages,
@@ -472,14 +460,12 @@ impl ServerBuilder {
     ///   parse (JSON only in this milestone; `.ts` is not yet loadable
     ///   from this crate).
     pub fn build(self) -> anyhow::Result<Server> {
-        let config_path = self
-            .config_path
-            .ok_or_else(|| {
-                anyhow!(
-                    "ServerBuilder::build: missing project source — call \
+        let config_path = self.config_path.ok_or_else(|| {
+            anyhow!(
+                "ServerBuilder::build: missing project source — call \
                      `.config_path(...)` before `.build()`"
-                )
-            })?;
+            )
+        })?;
 
         let (project_root, dist_root, public_root, base, trailing_slash) =
             load_embed_config(&config_path)?;
@@ -511,7 +497,6 @@ impl ServerBuilder {
             request_extensions: self.request_extensions,
         })
     }
-
 }
 
 /// Runtime handle for a server started by [`Server::serve_in_thread`].
@@ -676,9 +661,7 @@ fn load_embed_config(
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    let project_root = project_root
-        .canonicalize()
-        .unwrap_or(project_root);
+    let project_root = project_root.canonicalize().unwrap_or(project_root);
 
     let dist_root = if cfg.out_dir.is_absolute() {
         cfg.out_dir
@@ -746,7 +729,10 @@ mod tests {
         let (project_root, dist_root, public_root, base, trailing_slash) =
             load_embed_config(&json_path).unwrap();
         // Canonicalised project root must point at the config's parent.
-        let expected_root = tmp.path().canonicalize().unwrap_or_else(|_| tmp.path().to_path_buf());
+        let expected_root = tmp
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| tmp.path().to_path_buf());
         assert_eq!(project_root, expected_root);
         assert_eq!(dist_root, project_root.join("build"));
         assert_eq!(public_root, project_root.join("static"));

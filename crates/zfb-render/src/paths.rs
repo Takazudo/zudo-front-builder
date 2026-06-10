@@ -692,7 +692,10 @@ mod tests {
         assert!(msg.contains("got []"), "got: {msg}");
         match err {
             PathsError::MissingParam { provided, .. } => {
-                assert!(provided.is_empty(), "expected empty provided, got {provided:?}");
+                assert!(
+                    provided.is_empty(),
+                    "expected empty provided, got {provided:?}"
+                );
             }
             other => unreachable!("expected MissingParam, got {other:?}"),
         }
@@ -920,11 +923,13 @@ mod tests {
             { "params": { "slug": [] }, "props": { "title": "Docs home" } }
         ]);
 
-        let out =
-            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap();
+        let out = resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap();
 
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].url, "/docs", "zero segments must map to the bare URL");
+        assert_eq!(
+            out[0].url, "/docs",
+            "zero segments must map to the bare URL"
+        );
         assert_eq!(out[0].params.get("slug").unwrap(), "");
         assert_eq!(out[0].props, json!({ "title": "Docs home" }));
     }
@@ -939,8 +944,7 @@ mod tests {
             { "params": { "slug": "c/d" } }
         ]);
 
-        let out =
-            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap();
+        let out = resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap();
 
         let urls: Vec<&str> = out.iter().map(|r| r.url.as_str()).collect();
         assert_eq!(urls, vec!["/docs", "/docs/a/b", "/docs/c/d"]);
@@ -963,8 +967,7 @@ mod tests {
         let segs = route_docs_optional_catchall();
         let export = json!([{ "params": { "slug": "" } }]);
 
-        let err =
-            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
+        let err = resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
         assert!(matches!(err, PathsError::InvalidParamType { .. }));
         assert!(
             err.to_string().contains("[]"),
@@ -978,8 +981,7 @@ mod tests {
         let segs = route_docs_optional_catchall();
         let export = json!([{ "params": { "slug": "/" } }]);
 
-        let err =
-            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
+        let err = resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
         assert!(matches!(err, PathsError::InvalidParamType { .. }));
     }
 
@@ -989,8 +991,7 @@ mod tests {
         let segs = route_docs_optional_catchall();
         let export = json!([{ "params": { "slug": [""] } }]);
 
-        let err =
-            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
+        let err = resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
         assert!(matches!(err, PathsError::InvalidParamType { .. }));
     }
 
@@ -1002,8 +1003,7 @@ mod tests {
         let segs = route_docs_optional_catchall();
         let export = json!([{ "params": {} }]);
 
-        let err =
-            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
+        let err = resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
         assert!(matches!(err, PathsError::MissingParam { .. }));
     }
 
@@ -1016,8 +1016,7 @@ mod tests {
             { "params": { "slug": [] } }
         ]);
 
-        let err =
-            resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
+        let err = resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap_err();
         assert!(matches!(err, PathsError::AmbiguousResolution { .. }));
     }
 

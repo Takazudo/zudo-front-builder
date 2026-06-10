@@ -348,12 +348,12 @@ impl ModuleLoader for BundleModuleLoader {
                     let path = match module_specifier.to_file_path() {
                         Ok(p) => p,
                         Err(_) => {
-                            return ModuleLoadResponse::Sync(Err(
-                                ModuleLoaderError::generic(format!(
+                            return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
+                                format!(
                                     "embedded V8 host: alias-rooted target `{spec_str}` \
                                      is not a valid file:// URL"
-                                )),
-                            ));
+                                ),
+                            )));
                         }
                     };
                     // v1 limitation: the V8 host does not transpile
@@ -362,27 +362,27 @@ impl ModuleLoader for BundleModuleLoader {
                     // error on the user's source.
                     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                         if matches!(ext, "ts" | "tsx" | "mts" | "cts") {
-                            return ModuleLoadResponse::Sync(Err(
-                                ModuleLoaderError::generic(format!(
+                            return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
+                                format!(
                                     "embedded V8 host: alias target `{}` (plugin `{plugin_name}`) \
                                      has a TypeScript extension, but the V8 host only accepts \
                                      pre-compiled ESM JavaScript. Point the alias at a `.js` \
                                      file or have your bundler pre-process the target.",
                                     path.display()
-                                )),
-                            ));
+                                ),
+                            )));
                         }
                     }
                     let src = match std::fs::read_to_string(&path) {
                         Ok(s) => s,
                         Err(e) => {
-                            return ModuleLoadResponse::Sync(Err(
-                                ModuleLoaderError::generic(format!(
+                            return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
+                                format!(
                                     "embedded V8 host: alias-rooted file `{}` (under plugin \
                                      `{plugin_name}`'s alias) could not be read: {e}",
                                     path.display()
-                                )),
-                            ));
+                                ),
+                            )));
                         }
                     };
                     return ok_js(module_specifier, &src);

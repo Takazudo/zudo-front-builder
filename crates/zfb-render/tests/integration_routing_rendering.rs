@@ -51,8 +51,7 @@ fn pages_dir() -> PathBuf {
 
 #[test]
 fn router_discovers_all_required_routes() {
-    let routes = scan_pages(&pages_dir())
-        .unwrap_or_else(|e| panic!("scan_pages failed: {e}"));
+    let routes = scan_pages(&pages_dir()).unwrap_or_else(|e| panic!("scan_pages failed: {e}"));
     let templates: Vec<String> = routes.iter().map(|r| r.template()).collect();
     for required in [
         "/",
@@ -73,8 +72,7 @@ fn router_discovers_all_required_routes() {
 
 #[test]
 fn router_classifies_route_kinds_correctly() {
-    let routes = scan_pages(&pages_dir())
-        .unwrap_or_else(|e| panic!("scan_pages failed: {e}"));
+    let routes = scan_pages(&pages_dir()).unwrap_or_else(|e| panic!("scan_pages failed: {e}"));
 
     let kind_of = |template: &str| -> RouteKind {
         routes

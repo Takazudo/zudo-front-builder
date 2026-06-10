@@ -78,20 +78,16 @@ impl SsrDispatcher for EmbeddedV8SsrAdapter {
                 Ok(g) => g,
                 Err(p) => p.into_inner(),
             };
-            let st = guard
-                .as_mut()
-                .ok_or_else(|| {
-                    zfb_build::renderer::RendererError::EmbeddedV8(
-                        "renderer state has been shut down".into(),
-                    )
-                })?;
-            let host = st
-                .embedded_v8_host_mut()
-                .ok_or_else(|| {
-                    zfb_build::renderer::RendererError::EmbeddedV8(
-                        "renderer is not backed by an embedded V8 host".into(),
-                    )
-                })?;
+            let st = guard.as_mut().ok_or_else(|| {
+                zfb_build::renderer::RendererError::EmbeddedV8(
+                    "renderer state has been shut down".into(),
+                )
+            })?;
+            let host = st.embedded_v8_host_mut().ok_or_else(|| {
+                zfb_build::renderer::RendererError::EmbeddedV8(
+                    "renderer is not backed by an embedded V8 host".into(),
+                )
+            })?;
             host.dispatch_fetch_full(
                 &request.url_path,
                 &request.method,

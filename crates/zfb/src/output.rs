@@ -119,8 +119,7 @@ pub fn ready(url: &str) {
 fn fmt_ready_multi(scheme: &str, port: u16, network_urls: &[String]) -> String {
     let arrow = "→".if_supports_color(Stream::Stdout, |t| t.green().to_string());
     let local_url = format!("{}://localhost:{}/", scheme, port);
-    let local_styled =
-        local_url.if_supports_color(Stream::Stdout, |t| t.bold().to_string());
+    let local_styled = local_url.if_supports_color(Stream::Stdout, |t| t.bold().to_string());
     let mut out = format!("{} ready\n", arrow);
     out.push_str(&format!("  Local:    {}\n", local_styled));
     if network_urls.is_empty() {
@@ -216,9 +215,9 @@ impl BuildProgress {
         // The template is intentionally kept simple; if it fails to parse
         // (which shouldn't happen given the literal string), we fall back
         // to indicatif's default style.
-        if let Ok(style) = ProgressStyle::with_template(
-            "{spinner:.cyan} [{bar:30.green/dim}] {pos}/{len} {msg}",
-        ) {
+        if let Ok(style) =
+            ProgressStyle::with_template("{spinner:.cyan} [{bar:30.green/dim}] {pos}/{len} {msg}")
+        {
             bar.set_style(style.progress_chars("=> "));
         }
         Self { bar }
@@ -244,7 +243,12 @@ impl BuildProgress {
 #[allow(dead_code)]
 fn fmt_summary(count: u64, elapsed: Duration) -> String {
     let mark = "✓".if_supports_color(Stream::Stdout, |t| t.green().to_string());
-    format!("{} {} pages built in {:.2}s", mark, count, elapsed.as_secs_f64())
+    format!(
+        "{} {} pages built in {:.2}s",
+        mark,
+        count,
+        elapsed.as_secs_f64()
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -466,10 +470,9 @@ mod tests {
 
     #[test]
     fn format_error_surfaces_path_line_hint() {
-        let err: anyhow::Error =
-            Err::<(), _>(anyhow!("invalid value at config.toml:12"))
-                .context("parsing zfb.toml")
-                .unwrap_err();
+        let err: anyhow::Error = Err::<(), _>(anyhow!("invalid value at config.toml:12"))
+            .context("parsing zfb.toml")
+            .unwrap_err();
 
         let rendered = format_error(&err);
         assert!(
@@ -480,10 +483,9 @@ mod tests {
 
     #[test]
     fn format_error_does_not_treat_urls_as_locations() {
-        let err: anyhow::Error =
-            Err::<(), _>(anyhow!("connection refused: http://localhost:8080"))
-                .context("starting dev server")
-                .unwrap_err();
+        let err: anyhow::Error = Err::<(), _>(anyhow!("connection refused: http://localhost:8080"))
+            .context("starting dev server")
+            .unwrap_err();
 
         let rendered = format_error(&err);
         assert!(
@@ -525,13 +527,15 @@ mod tests {
             "line 1\nline 2 has the bug\nline 3\n",
         );
         let err: anyhow::Error =
-            anyhow::Error::new(crate::diagnostics::FramedError(diag))
-                .context("rendering page");
+            anyhow::Error::new(crate::diagnostics::FramedError(diag)).context("rendering page");
 
         let rendered = format_error(&err);
         // Framed renderer used → starts with the framed header.
         assert!(rendered.starts_with("error: kaboom\n"), "got:\n{rendered}");
-        assert!(rendered.contains(" --> posts/intro.md:2:8\n"), "got:\n{rendered}");
+        assert!(
+            rendered.contains(" --> posts/intro.md:2:8\n"),
+            "got:\n{rendered}"
+        );
         // anyhow `.context(...)` messages are also surfaced — they
         // were silently dropped before. The framed body does not
         // already contain "rendering page", so it must show up under

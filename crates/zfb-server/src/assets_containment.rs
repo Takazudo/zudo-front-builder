@@ -294,9 +294,7 @@ mod tests {
     /// Build a `ContainedAssetsService` backed by a tempdir, run `setup`
     /// inside it, and return `(service, tempdir)`.  The `tempdir` is
     /// returned so the caller keeps it alive for the test duration.
-    fn make_service(
-        setup: impl FnOnce(&Path),
-    ) -> (ContainedAssetsService, tempfile::TempDir) {
+    fn make_service(setup: impl FnOnce(&Path)) -> (ContainedAssetsService, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         setup(dir.path());
         let svc = ContainedAssetsService::new(dir.path().to_path_buf());
@@ -305,12 +303,7 @@ mod tests {
 
     async fn status_for(svc: ContainedAssetsService, path: &str) -> StatusCode {
         let resp = svc
-            .oneshot(
-                Request::builder()
-                    .uri(path)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
             .await
             .unwrap();
         resp.status()
@@ -414,8 +407,7 @@ mod tests {
         // Either is acceptable here — we just confirm the wrapper doesn't
         // block range requests.
         assert!(
-            resp.status() == StatusCode::PARTIAL_CONTENT
-                || resp.status() == StatusCode::OK,
+            resp.status() == StatusCode::PARTIAL_CONTENT || resp.status() == StatusCode::OK,
             "range request must not be blocked by the containment wrapper (got {:?})",
             resp.status()
         );
@@ -436,11 +428,7 @@ mod tests {
 
         let (svc, _assets) = make_service(|assets| {
             // Symlink inside assets pointing to a file outside the dir.
-            symlink(
-                outside.path().join("secret.txt"),
-                assets.join("evil.txt"),
-            )
-            .unwrap();
+            symlink(outside.path().join("secret.txt"), assets.join("evil.txt")).unwrap();
         });
 
         let status = status_for(svc, "/evil.txt").await;

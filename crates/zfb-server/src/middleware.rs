@@ -37,8 +37,7 @@ use axum::Router;
 /// Type-erased "insert a clone of the captured value into the
 /// request's extensions map" closure. One closure per
 /// `.with_request_extension(value)` call.
-pub(crate) type RequestExtensionInjector =
-    Arc<dyn Fn(&mut Extensions) + Send + Sync + 'static>;
+pub(crate) type RequestExtensionInjector = Arc<dyn Fn(&mut Extensions) + Send + Sync + 'static>;
 
 /// Build a single [`RequestExtensionInjector`] that clones `value` into
 /// each incoming request's extensions. `T: Clone + Send + Sync +
@@ -114,10 +113,7 @@ mod tests {
     /// must all reach the handler.
     #[tokio::test]
     async fn injects_multiple_types_into_request_extensions() {
-        let injectors = vec![
-            make_injector(CtxA("hello")),
-            make_injector(CtxB(42)),
-        ];
+        let injectors = vec![make_injector(CtxA("hello")), make_injector(CtxB(42))];
 
         let router: Router = Router::new().route(
             "/",
@@ -130,12 +126,7 @@ mod tests {
         let router = apply_request_extension_layer(router, injectors);
 
         let resp = router
-            .oneshot(
-                HttpRequest::builder()
-                    .uri("/")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(HttpRequest::builder().uri("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
         let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
@@ -157,12 +148,7 @@ mod tests {
         let router = apply_request_extension_layer(router, Vec::new());
 
         let resp = router
-            .oneshot(
-                HttpRequest::builder()
-                    .uri("/")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(HttpRequest::builder().uri("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
         let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();

@@ -33,8 +33,8 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use zfb_server::livereload::ReloadEvent;
 use zfb_server::{
-    serve_with_listener, DevMiddlewareDispatcher, DevMiddlewareSet, PageCache,
-    PluginDispatchError, PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
+    serve_with_listener, DevMiddlewareDispatcher, DevMiddlewareSet, PageCache, PluginDispatchError,
+    PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
     PluginResponseEncoding, ServeOpts, SsrDispatchError, SsrDispatcher, SsrRequest, SsrResponse,
     SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
 };
@@ -279,7 +279,9 @@ async fn enforced_bind_protects_base_prefixed_router_too() {
         ..Default::default()
     })
     .await;
-    pages.insert("/", "<html><body>docs home</body></html>").await;
+    pages
+        .insert("/", "<html><body>docs home</body></html>")
+        .await;
 
     // Disallowed Host under the prefix → 403.
     let resp = client()
@@ -333,7 +335,11 @@ async fn cross_origin_post_to_ssr_route_is_rejected_without_dispatch() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 403);
-    assert_eq!(dispatcher.count(), 0, "dispatcher must not run on a rejected request");
+    assert_eq!(
+        dispatcher.count(),
+        0,
+        "dispatcher must not run on a rejected request"
+    );
 
     // Allowed-origin POST (port differs — only the host matters) → dispatched.
     let resp = client()
@@ -389,7 +395,11 @@ async fn cross_origin_post_to_plugin_route_is_rejected_without_dispatch() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 403);
-    assert_eq!(dispatcher.count(), 0, "plugin must not run on a rejected request");
+    assert_eq!(
+        dispatcher.count(),
+        0,
+        "plugin must not run on a rejected request"
+    );
 
     let resp = client()
         .post(local_url(addr, "/api/echo"))

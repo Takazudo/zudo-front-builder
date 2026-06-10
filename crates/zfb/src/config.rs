@@ -1039,9 +1039,9 @@ impl ExternalLinksConfig {
     #[must_use]
     pub fn into_content_config(self) -> zfb_content::ExternalLinksConfig {
         zfb_content::ExternalLinksConfig {
-            rel: self.rel.unwrap_or_else(|| {
-                vec!["noopener".to_string(), "noreferrer".to_string()]
-            }),
+            rel: self
+                .rel
+                .unwrap_or_else(|| vec!["noopener".to_string(), "noreferrer".to_string()]),
             target: self.target.unwrap_or_else(|| "_blank".to_string()),
         }
     }
@@ -1334,10 +1334,7 @@ pub async fn load_from_dir(dir: &Path) -> Result<Config> {
 
 /// Variant of [`load_from_dir`] with explicit knobs. Most callers want
 /// [`load_from_dir`].
-pub async fn load_from_dir_with_options(
-    dir: &Path,
-    opts: &LoadOptions,
-) -> Result<Config> {
+pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Result<Config> {
     let ts_path = dir.join("zfb.config.ts");
     let json_path = dir.join("zfb.config.json");
 
@@ -1485,11 +1482,7 @@ fn resolve_plugin_path_to_file_url(name: &str, dir: &Path) -> Result<Option<Stri
 /// parse the JSON envelope (`{ config, plugins }`) the loader emits, and
 /// merge the resolved plugin module specifiers back onto
 /// `Config.plugins[].resolved_module`.
-async fn load_from_ts_file(
-    ts_path: &Path,
-    dir: &Path,
-    opts: &LoadOptions,
-) -> Result<Config> {
+async fn load_from_ts_file(ts_path: &Path, dir: &Path, opts: &LoadOptions) -> Result<Config> {
     let json = if let Some(canned) = opts.test_default_export_json.as_deref() {
         canned.to_string()
     } else {
@@ -1617,12 +1610,11 @@ async fn load_ts_via_inprocess_v8(
 
     // Evaluate in a dedicated OS thread so V8 startup doesn't pin a
     // tokio worker (V8 boot can take hundreds of ms).
-    let raw_value = tokio::task::spawn_blocking(move || {
-        ThreadedConfigEvaluator::eval_bundle(&bundle_src)
-    })
-    .await
-    .map_err(|e| anyhow!("config eval join error: {e}"))?
-    .map_err(|e| anyhow!("embedded V8 evaluator failed: {e}"))?;
+    let raw_value =
+        tokio::task::spawn_blocking(move || ThreadedConfigEvaluator::eval_bundle(&bundle_src))
+            .await
+            .map_err(|e| anyhow!("config eval join error: {e}"))?
+            .map_err(|e| anyhow!("embedded V8 evaluator failed: {e}"))?;
 
     // raw_value is the user's `default` export as a serde_json::Value.
     // We need to walk the plugins[] array and resolve each entry's `name`
@@ -1659,8 +1651,7 @@ async fn load_ts_via_inprocess_v8(
         "config": raw_value,
         "plugins": resolved_plugins,
     });
-    serde_json::to_string(&envelope)
-        .context("config loader: failed to serialise V8 eval envelope")
+    serde_json::to_string(&envelope).context("config loader: failed to serialise V8 eval envelope")
 }
 
 /// Internal envelope shape produced by the TS config evaluator.
@@ -1775,11 +1766,7 @@ fn resolve_esbuild_binary_with_handle(
 /// Slim-build fallback: available only when `embed_v8` is disabled so the
 /// node subprocess path is preserved for the slim-build audience.
 #[cfg(not(feature = "embed_v8"))]
-async fn load_ts_via_subprocess(
-    ts_path: &Path,
-    dir: &Path,
-    opts: &LoadOptions,
-) -> Result<String> {
+async fn load_ts_via_subprocess(ts_path: &Path, dir: &Path, opts: &LoadOptions) -> Result<String> {
     // The TempDir handle (when the embedded extraction tier is taken) must
     // outlive every subprocess spawn below — esbuild and node both reference
     // the extracted binary path. Drop only happens at function return.
@@ -1914,19 +1901,16 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         if !seen.insert(c.name.as_str()) {
             bail!("duplicate collection name {:?}", c.name);
         }
-        ensure_path_in_root(&c.path, dir)
-            .with_context(|| format!("collection {:?}", c.name))?;
+        ensure_path_in_root(&c.path, dir).with_context(|| format!("collection {:?}", c.name))?;
     }
     if let Some(ch) = &cfg.code_highlight {
         if let Some(td) = &ch.themes_dir {
-            ensure_path_in_root(td, dir)
-                .context("codeHighlight.themesDir")?;
+            ensure_path_in_root(td, dir).context("codeHighlight.themesDir")?;
         }
     }
     if let Some(rml) = &cfg.resolve_markdown_links {
         if !rml.docs_dir.as_os_str().is_empty() {
-            ensure_path_in_root(&rml.docs_dir, dir)
-                .context("resolveMarkdownLinks.docsDir")?;
+            ensure_path_in_root(&rml.docs_dir, dir).context("resolveMarkdownLinks.docsDir")?;
         }
         for (i, d) in rml.dirs.iter().enumerate() {
             ensure_path_in_root(&d.dir, dir)
@@ -1938,8 +1922,7 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         // path-style base must start with `/` so the rendered asset
         // URLs (`/pj/foo/assets/...`) match the on-disk dist layout.
         let trimmed = b.trim();
-        let looks_absolute_url =
-            trimmed.starts_with("http://") || trimmed.starts_with("https://");
+        let looks_absolute_url = trimmed.starts_with("http://") || trimmed.starts_with("https://");
         if !trimmed.is_empty() && !looks_absolute_url && !trimmed.starts_with('/') {
             bail!(
                 "base {:?} must start with `/` (e.g. \"/pj/zudo-doc/\") or be an absolute URL",
@@ -2018,10 +2001,7 @@ fn ensure_path_in_root(path: &Path, dir: &Path) -> Result<()> {
             Component::ParentDir => {
                 depth -= 1;
                 if depth < 0 {
-                    bail!(
-                        "path {:?} escapes the project root via `..`",
-                        path
-                    );
+                    bail!("path {:?} escapes the project root via `..`", path);
                 }
             }
             Component::Normal(_) | Component::CurDir => {
@@ -2112,8 +2092,7 @@ mod tests {
     #[test]
     fn json_schema_rejects_unknown_type_string() {
         let v = serde_json::json!({ "type": "timestamp" });
-        let err = JsonSchema::try_from_value(v)
-            .expect_err("unknown type should be rejected");
+        let err = JsonSchema::try_from_value(v).expect_err("unknown type should be rejected");
         assert!(err.contains("\"timestamp\""), "err: {err}");
         assert!(err.contains("not recognised"), "err: {err}");
     }
@@ -2121,32 +2100,30 @@ mod tests {
     #[test]
     fn json_schema_rejects_unknown_type_in_array() {
         let v = serde_json::json!({ "type": ["string", "date"] });
-        let err = JsonSchema::try_from_value(v)
-            .expect_err("unknown type in array should be rejected");
+        let err =
+            JsonSchema::try_from_value(v).expect_err("unknown type in array should be rejected");
         assert!(err.contains("\"date\""), "err: {err}");
     }
 
     #[test]
     fn json_schema_rejects_non_string_in_type_array() {
         let v = serde_json::json!({ "type": ["string", 42] });
-        let err = JsonSchema::try_from_value(v)
-            .expect_err("non-string in type array should be rejected");
+        let err =
+            JsonSchema::try_from_value(v).expect_err("non-string in type array should be rejected");
         assert!(err.contains("must contain strings"), "err: {err}");
     }
 
     #[test]
     fn json_schema_rejects_non_object_type_field() {
         let v = serde_json::json!({ "type": true });
-        let err = JsonSchema::try_from_value(v)
-            .expect_err("boolean type field should be rejected");
+        let err = JsonSchema::try_from_value(v).expect_err("boolean type field should be rejected");
         assert!(err.contains("must be a string or array"), "err: {err}");
     }
 
     #[test]
     fn json_schema_rejects_non_object_properties() {
         let v = serde_json::json!({ "type": "object", "properties": ["a", "b"] });
-        let err = JsonSchema::try_from_value(v)
-            .expect_err("array properties should be rejected");
+        let err = JsonSchema::try_from_value(v).expect_err("array properties should be rejected");
         assert!(err.contains("\"properties\""), "err: {err}");
         assert!(err.contains("must be a JSON object"), "err: {err}");
     }
@@ -2294,20 +2271,14 @@ mod tests {
         // The PR #1361 acceptance case: `/pj/zudo-doc/` ⇒
         // `/pj/zudo-doc` so concatenation with `/assets/...` produces
         // a single delimiter.
-        assert_eq!(
-            asset_url_base_prefix(Some("/pj/zudo-doc/")),
-            "/pj/zudo-doc"
-        );
+        assert_eq!(asset_url_base_prefix(Some("/pj/zudo-doc/")), "/pj/zudo-doc");
     }
 
     #[test]
     fn asset_url_base_prefix_subpath_without_trailing_slash_is_idempotent() {
         // Authors who omit the trailing slash get the same prefix as
         // those who include it.
-        assert_eq!(
-            asset_url_base_prefix(Some("/pj/zudo-doc")),
-            "/pj/zudo-doc"
-        );
+        assert_eq!(asset_url_base_prefix(Some("/pj/zudo-doc")), "/pj/zudo-doc");
     }
 
     #[test]
@@ -2397,7 +2368,10 @@ mod tests {
         .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
-        assert_eq!(ch.themes_dir.as_deref(), Some(std::path::Path::new("./themes")));
+        assert_eq!(
+            ch.themes_dir.as_deref(),
+            Some(std::path::Path::new("./themes"))
+        );
     }
 
     #[tokio::test]
@@ -2412,7 +2386,10 @@ mod tests {
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
         assert_eq!(ch.theme.as_deref(), Some("Dracula"));
-        assert_eq!(ch.themes_dir.as_deref(), Some(std::path::Path::new("themes")));
+        assert_eq!(
+            ch.themes_dir.as_deref(),
+            Some(std::path::Path::new("themes"))
+        );
     }
 
     #[tokio::test]
@@ -2424,7 +2401,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let err = load_from_dir(tmp.path()).await.expect_err("must reject absolute path");
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("must reject absolute path");
         // anyhow chains context messages; use {:#} to get the full chain.
         let msg = format!("{err:#}");
         assert!(
@@ -2442,7 +2421,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let err = load_from_dir(tmp.path()).await.expect_err("must reject .. escape");
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("must reject .. escape");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("codeHighlight.themesDir"),
@@ -2542,10 +2523,7 @@ mod tests {
         assert_eq!(cfg.collections.len(), 2);
         assert_eq!(cfg.collections[0].name, "blog");
         assert_eq!(cfg.collections[1].path, PathBuf::from("content/docs"));
-        assert_eq!(
-            cfg.tailwind,
-            Some(TailwindConfig { enabled: false })
-        );
+        assert_eq!(cfg.tailwind, Some(TailwindConfig { enabled: false }));
         assert_eq!(cfg.plugins.len(), 1);
         assert_eq!(cfg.plugins[0].name, "./plugin.mjs");
     }
@@ -2570,9 +2548,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let err = load_from_dir(tmp.path())
-            .await
-            .expect_err("should reject");
+        let err = load_from_dir(tmp.path()).await.expect_err("should reject");
         let msg = format!("{err:#}");
         assert!(msg.contains("zfb.config.json"), "msg: {msg}");
         assert!(msg.contains("line"), "msg: {msg}");
@@ -2594,10 +2570,7 @@ mod tests {
             .await
             .expect_err("should reject duplicates");
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("duplicate collection name"),
-            "msg: {msg}"
-        );
+        assert!(msg.contains("duplicate collection name"), "msg: {msg}");
     }
 
     #[tokio::test]
@@ -2778,7 +2751,10 @@ mod tests {
             .await
             .expect_err("count mismatch must be rejected");
         let msg = format!("{err:#}");
-        assert!(msg.contains("plugin resolution count mismatch"), "msg: {msg}");
+        assert!(
+            msg.contains("plugin resolution count mismatch"),
+            "msg: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -2831,10 +2807,7 @@ mod tests {
             .await
             .expect_err("should reject duplicates from TS too");
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("duplicate collection name"),
-            "msg: {msg}"
-        );
+        assert!(msg.contains("duplicate collection name"), "msg: {msg}");
     }
 
     #[tokio::test]
@@ -2842,12 +2815,9 @@ mod tests {
         // Both files present → TS wins. The JSON file is ignored and the
         // test override is used to inject the canned TS export JSON.
         let tmp = TempDir::new().unwrap();
-        tokio::fs::write(
-            tmp.path().join("zfb.config.json"),
-            r#"{"port": 5500}"#,
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), r#"{"port": 5500}"#)
+            .await
+            .unwrap();
         tokio::fs::write(
             tmp.path().join("zfb.config.ts"),
             "import { defineConfig } from \"zfb/config\";\n\
@@ -2871,12 +2841,9 @@ mod tests {
     async fn json_used_when_no_ts_present() {
         // Only a JSON file → JSON is loaded (TS is not required).
         let tmp = TempDir::new().unwrap();
-        tokio::fs::write(
-            tmp.path().join("zfb.config.json"),
-            r#"{"port": 5500}"#,
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), r#"{"port": 5500}"#)
+            .await
+            .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("json load ok");
         assert_eq!(cfg.port, Some(5500));
     }
@@ -3002,9 +2969,10 @@ mod tests {
             .await
             .expect("bare specifier with installed package must not error");
         assert_eq!(cfg.plugins.len(), 1);
-        let resolved = cfg.plugins[0].resolved_module.as_deref().expect(
-            "bare specifier with node_modules present must populate resolved_module",
-        );
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("bare specifier with node_modules present must populate resolved_module");
         assert!(
             resolved.starts_with("file://"),
             "resolved_module should be a file:// URL, got {resolved:?}"
@@ -3128,10 +3096,7 @@ mod tests {
             msg.contains("not found in PATH"),
             "msg should call out PATH: {msg}"
         );
-        assert!(
-            msg.contains("Node.js"),
-            "msg should mention Node.js: {msg}"
-        );
+        assert!(msg.contains("Node.js"), "msg should mention Node.js: {msg}");
     }
 
     /// Sub #212 — when neither `LoadOptions::esbuild_binary` nor the
@@ -3193,7 +3158,10 @@ mod tests {
             msg.contains("zfb.config.ts"),
             "msg should name the file: {msg}"
         );
-        assert!(msg.contains("received"), "msg should echo the payload: {msg}");
+        assert!(
+            msg.contains("received"),
+            "msg should echo the payload: {msg}"
+        );
     }
 
     // --- MarkdownConfig / GFM resolution tests ----------------------------
@@ -3289,7 +3257,7 @@ mod tests {
         };
         let resolved = cfg.resolve_constructs(ResolvedGfmConstructs::CONSERVATIVE);
         assert!(resolved.strikethrough); // conservative-default stayed
-        assert!(!resolved.table);        // explicit override
+        assert!(!resolved.table); // explicit override
     }
 
     // Serde round-trip — the TS `gfm: true` shorthand and the
@@ -3385,7 +3353,10 @@ mod tests {
 
     #[tokio::test]
     async fn allowed_hosts_rejects_empty_and_bare_dot_entries() {
-        for bad in [r#"{ "allowedHosts": [""] }"#, r#"{ "allowedHosts": ["."] }"#] {
+        for bad in [
+            r#"{ "allowedHosts": [""] }"#,
+            r#"{ "allowedHosts": ["."] }"#,
+        ] {
             let tmp = TempDir::new().unwrap();
             tokio::fs::write(tmp.path().join("zfb.config.json"), bad)
                 .await
@@ -3459,7 +3430,8 @@ mod tests {
             .expect_err("relative path should be rejected");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("site") && (msg.contains("not a valid absolute URL") || msg.contains("scheme")),
+            msg.contains("site")
+                && (msg.contains("not a valid absolute URL") || msg.contains("scheme")),
             "expected error mentioning 'site' and URL validity; got: {msg}"
         );
     }
@@ -3468,12 +3440,9 @@ mod tests {
     async fn site_rejects_empty_string() {
         // Empty string has no semantic value for a canonical URL.
         let tmp = TempDir::new().unwrap();
-        tokio::fs::write(
-            tmp.path().join("zfb.config.json"),
-            r#"{ "site": "" }"#,
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), r#"{ "site": "" }"#)
+            .await
+            .unwrap();
         let err = load_from_dir(tmp.path())
             .await
             .expect_err("empty string should be rejected");
@@ -3521,7 +3490,9 @@ mod tests {
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         assert_eq!(
             cfg.prefetch,
-            Some(PrefetchConfig { disabled: Some(true) }),
+            Some(PrefetchConfig {
+                disabled: Some(true)
+            }),
         );
     }
 
@@ -3589,8 +3560,8 @@ mod tests {
         assert_eq!(cfg.cjk_friendly, Some(true));
 
         // Absent field → None (default-on at resolve time).
-        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({}))
-            .expect("empty object deserialises");
+        let cfg: MarkdownConfig =
+            serde_json::from_value(serde_json::json!({})).expect("empty object deserialises");
         assert_eq!(cfg.cjk_friendly, None);
     }
 
@@ -3645,8 +3616,8 @@ mod tests {
         assert_eq!(cfg.hard_breaks, Some(false));
 
         // Absent field → None (default-off at resolve time).
-        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({}))
-            .expect("empty object deserialises");
+        let cfg: MarkdownConfig =
+            serde_json::from_value(serde_json::json!({})).expect("empty object deserialises");
         assert_eq!(cfg.hard_breaks, None);
     }
 
@@ -3674,8 +3645,8 @@ mod tests {
     fn bundle_absent_resolves_to_empty_exclude() {
         // Absent `bundle` key → None → resolver yields empty (skip nothing,
         // byte-identical to a build without the knob).
-        let cfg: Config = serde_json::from_value(serde_json::json!({}))
-            .expect("empty config deserialises");
+        let cfg: Config =
+            serde_json::from_value(serde_json::json!({})).expect("empty config deserialises");
         assert!(cfg.bundle.is_none());
         assert!(resolve_bundle_exclude(cfg.bundle.as_ref()).is_empty());
 
@@ -3705,8 +3676,8 @@ mod tests {
 
     #[test]
     fn bundle_absent_resolves_to_empty_main_fields_and_external() {
-        let cfg: Config = serde_json::from_value(serde_json::json!({}))
-            .expect("empty config deserialises");
+        let cfg: Config =
+            serde_json::from_value(serde_json::json!({})).expect("empty config deserialises");
         assert!(resolve_bundle_main_fields(cfg.bundle.as_ref()).is_empty());
         assert!(resolve_bundle_external(cfg.bundle.as_ref()).is_empty());
 
@@ -3737,11 +3708,9 @@ mod tests {
             (OutputMode::Hybrid, "hybrid"),
             (OutputMode::Auto, "auto"),
         ] {
-            let json = serde_json::to_string(&variant)
-                .expect("serialise OutputMode");
+            let json = serde_json::to_string(&variant).expect("serialise OutputMode");
             assert_eq!(json, format!("\"{wire}\""));
-            let parsed: OutputMode = serde_json::from_str(&json)
-                .expect("deserialise OutputMode");
+            let parsed: OutputMode = serde_json::from_str(&json).expect("deserialise OutputMode");
             assert_eq!(parsed, variant);
         }
     }
@@ -3801,20 +3770,14 @@ mod tests {
     #[tokio::test]
     async fn output_unknown_variant_is_rejected() {
         let tmp = TempDir::new().unwrap();
-        tokio::fs::write(
-            tmp.path().join("zfb.config.json"),
-            r#"{ "output": "ssr" }"#,
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), r#"{ "output": "ssr" }"#)
+            .await
+            .unwrap();
         let err = load_from_dir(tmp.path())
             .await
             .expect_err("unknown output variant should be rejected at load time");
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("ssr") || msg.contains("variant"),
-            "msg: {msg}"
-        );
+        assert!(msg.contains("ssr") || msg.contains("variant"), "msg: {msg}");
     }
 
     // --- Sub #417 V8 evaluator wiring tests ----------------------------------
@@ -4046,10 +4009,7 @@ mod tests {
             msg.contains("not found in PATH"),
             "msg should call out PATH: {msg}"
         );
-        assert!(
-            msg.contains("Node.js"),
-            "msg should mention Node.js: {msg}"
-        );
+        assert!(msg.contains("Node.js"), "msg should mention Node.js: {msg}");
     }
 
     // --- MarkdownFeaturesConfig tests (#566) ---------------------------------
@@ -4133,10 +4093,7 @@ mod tests {
         }))
         .expect("readingTime: true deserialises");
         let features = cfg.features.expect("features present");
-        assert_eq!(
-            features.reading_time,
-            Some(ReadingTimeFeature::Bool(true))
-        );
+        assert_eq!(features.reading_time, Some(ReadingTimeFeature::Bool(true)));
     }
 
     // readingTime: { bogus: true } must be rejected. `deny_unknown_fields` on
@@ -4321,9 +4278,8 @@ mod tests {
     // string parses as Short(...).
     #[test]
     fn directive_spec_untagged_ordering() {
-        let full: DirectiveSpec =
-            serde_json::from_value(serde_json::json!({ "component": "Kbd" }))
-                .expect("object deserialises");
+        let full: DirectiveSpec = serde_json::from_value(serde_json::json!({ "component": "Kbd" }))
+            .expect("object deserialises");
         assert!(matches!(full, DirectiveSpec::Full(_)));
         let short: DirectiveSpec =
             serde_json::from_value(serde_json::json!("Spoiler")).expect("string deserialises");

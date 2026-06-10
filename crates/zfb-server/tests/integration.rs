@@ -171,7 +171,11 @@ async fn asset_route_serves_static_files() {
 async fn public_files_serve_at_site_root() {
     let h = Harness::start().await;
     let resp = reqwest::get(h.url("/favicon.ico")).await.unwrap();
-    assert_eq!(resp.status(), 200, "public file should be reachable at root");
+    assert_eq!(
+        resp.status(),
+        200,
+        "public file should be reachable at root"
+    );
     let body = resp.bytes().await.unwrap();
     assert_eq!(body.as_ref(), b"\x00FAVICON\x00");
 }
@@ -202,9 +206,7 @@ async fn page_cache_wins_over_public_file() {
     // Stage a "page" at /robots.txt in the cache while a same-named
     // file exists in public/ (we add one via the harness's tempdir).
     std::fs::write(h.public_root().join("robots.txt"), b"FROM PUBLIC").unwrap();
-    h.pages
-        .insert("/robots.txt", "FROM PAGE CACHE")
-        .await;
+    h.pages.insert("/robots.txt", "FROM PAGE CACHE").await;
 
     let resp = reqwest::get(h.url("/robots.txt")).await.unwrap();
     assert_eq!(resp.status(), 200);
@@ -569,11 +571,7 @@ async fn islands_chunks_served_from_assets_dir() {
     let chunk_js = b"export function LazyComponent() {}";
 
     std::fs::write(dist_root.join("assets/islands.js"), islands_js).unwrap();
-    std::fs::write(
-        dist_root.join("assets/islands-chunk-TESTHASH.js"),
-        chunk_js,
-    )
-    .unwrap();
+    std::fs::write(dist_root.join("assets/islands-chunk-TESTHASH.js"), chunk_js).unwrap();
 
     // The entry must be served.
     let resp = reqwest::get(h.url("/assets/islands.js")).await.unwrap();
@@ -613,7 +611,11 @@ async fn stale_chunk_pruned_after_rebundle() {
     let resp = reqwest::get(h.url(&format!("/assets/{gen1_chunk}")))
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "gen-1 chunk must be served before rebundle");
+    assert_eq!(
+        resp.status(),
+        200,
+        "gen-1 chunk must be served before rebundle"
+    );
 
     // Simulate a rebundle: delete the old chunk, write the new one.
     std::fs::remove_file(assets_dir.join(gen1_chunk)).unwrap();

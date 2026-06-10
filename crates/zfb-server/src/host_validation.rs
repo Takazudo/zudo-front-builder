@@ -198,10 +198,7 @@ impl HostValidation {
         let Some((_, rest)) = trimmed.split_once("://") else {
             return false;
         };
-        let authority = rest
-            .split(['/', '?', '#'])
-            .next()
-            .unwrap_or(rest);
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
         self.host_allowed(authority)
     }
 }
@@ -226,9 +223,9 @@ fn host_without_port(raw: &str) -> Option<String> {
         // Accepting `[::1]evil.test` would hand the trailing garbage a free
         // pass through the always-allowed IP-literal rule.
         let after = &rest[end + 1..];
-        let valid_port = after.strip_prefix(':').is_some_and(|p| {
-            !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())
-        });
+        let valid_port = after
+            .strip_prefix(':')
+            .is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
         if !(after.is_empty() || valid_port) {
             return None;
         }
@@ -500,12 +497,7 @@ mod tests {
 
     #[test]
     fn bound_host_and_bind_ip_are_always_allowed() {
-        let v = HostValidation::for_bind(
-            LAN_IP,
-            Some("mydev.local"),
-            &[],
-            ServerMode::Dev,
-        );
+        let v = HostValidation::for_bind(LAN_IP, Some("mydev.local"), &[], ServerMode::Dev);
         assert!(v.is_enforced());
         assert!(v.host_allowed("192.168.1.5:3000"));
         assert!(v.host_allowed("mydev.local:3000"));
@@ -612,12 +604,8 @@ mod tests {
 
     #[tokio::test]
     async fn layer_passes_allowed_host_through() {
-        let v = HostValidation::for_bind(
-            ANY_IP,
-            None,
-            &["allowed.test".to_string()],
-            ServerMode::Dev,
-        );
+        let v =
+            HostValidation::for_bind(ANY_IP, None, &["allowed.test".to_string()], ServerMode::Dev);
         let router = apply_host_validation_layer(test_router(), v);
         let (status, body) = status_for(router, Some("allowed.test:3000")).await;
         assert_eq!(status, StatusCode::OK);
@@ -634,8 +622,7 @@ mod tests {
 
     #[tokio::test]
     async fn layer_is_noop_when_not_enforced() {
-        let router =
-            apply_host_validation_layer(test_router(), HostValidation::disabled());
+        let router = apply_host_validation_layer(test_router(), HostValidation::disabled());
         let (status, _) = status_for(router, Some("evil.test")).await;
         assert_eq!(status, StatusCode::OK);
     }
