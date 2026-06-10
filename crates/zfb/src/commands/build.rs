@@ -2280,6 +2280,9 @@ mod tests {
     struct FakeRunner {
         bundle_calls: RefCell<Vec<BundlerInput>>,
         render_calls: RefCell<Vec<RendererInput>>,
+        /// Counts how many times `eval_deferred_paths` was invoked.
+        /// Guards the once-per-run_build call structure (issue #974).
+        eval_deferred_paths_calls: RefCell<usize>,
         mock_bundle_path: PathBuf,
         /// Canned production asset emitter inputs returned from
         /// `emit_prod_assets`. Default = empty (parity with
@@ -2293,6 +2296,7 @@ mod tests {
             Self {
                 bundle_calls: RefCell::new(Vec::new()),
                 render_calls: RefCell::new(Vec::new()),
+                eval_deferred_paths_calls: RefCell::new(0),
                 mock_bundle_path,
                 prod_asset_inputs: RefCell::new(ProdAssetEmitterInputs::default()),
             }
@@ -2338,6 +2342,7 @@ mod tests {
             Backend,
             WorkerHandle,
         )> {
+            *self.eval_deferred_paths_calls.borrow_mut() += 1;
             // The fake runner doesn't start a real host; return all deferred
             // routes unchanged (still deferred), and a no-op Stub backend
             // (the fake render_all ignores the backend).
@@ -4700,4 +4705,71 @@ mod tests {
     // Note: read_tsconfig_paths tests have been moved to
     // crates/zfb-plugin-resolver/src/lib.rs (read_tsconfig_paths_into_map
     // tests) as part of the shared-helper extraction in issue #901.
+
+    /// Issue #974 — eval_deferred_paths must be invoked exactly once per
+    /// run_build call, not once per deferred route or once per render pass.
+    ///
+    /// This guards the orchestration call structure: the build pipeline
+    /// resolves all deferred dynamic routes in a single `eval_deferred_paths`
+    /// call so that the runtime (embedded V8 or HTTP worker) is started once,
+    /// queried for every pending route, and then shut down. Re-invoking per
+    /// route would restart the worker N times and defeat the paths() memo in
+    /// the JS router.
+    #[test]
+    fn run_build_calls_eval_deferred_paths_exactly_once() {
+        // Stage two dynamic pages so there are multiple deferred routes.
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+
+        // pages/[slug].tsx — source exists so static expansion defers it
+        // (non-literal paths()); FakeRunner will keep it deferred.
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::write(
+            project_root.join("pages/[slug].tsx"),
+            "export async function paths() {\n\
+                const { getCollection } = await import('zfb/content');\n\
+                return [];\n\
+             }\n",
+        )
+        .unwrap();
+
+        // pages/[tag].tsx — same pattern, second deferred route.
+        std::fs::write(
+            project_root.join("pages/[tag].tsx"),
+            "export async function paths() {\n\
+                const { getCollection } = await import('zfb/content');\n\
+                return [];\n\
+             }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            dynamic_route("slug", "pages/[slug].tsx"),
+            dynamic_route("tag", "pages/[tag].tsx"),
+        ];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        // eval_deferred_paths must be called exactly once per run_build,
+        // not once per deferred route (which would be 2 here).
+        assert_eq!(
+            *runner.eval_deferred_paths_calls.borrow(),
+            1,
+            "eval_deferred_paths must be called exactly once per run_build (issue #974)"
+        );
+    }
 }

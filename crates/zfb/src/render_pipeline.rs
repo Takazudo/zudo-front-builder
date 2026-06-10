@@ -1704,6 +1704,49 @@ mod tests {
         assert_eq!(cache.hit_count(), 0);
     }
 
+    /// Issue #974 — PathsCache hit/miss counters guard the once-per-route
+    /// extraction contract for a route with many entries.
+    ///
+    /// Expanding a route with N entries calls `resolve_paths` once
+    /// (one cache miss). Re-expanding the same route with the identical
+    /// paths() payload hits the cache (one cache hit). This pins the
+    /// Rust-side once-per-route invariant that the JS-side memo parallels.
+    #[test]
+    fn expand_dynamic_routes_paths_cache_once_per_route_many_entries() {
+        // Build a paths() that returns 10 entries — enough to confirm the
+        // counter isn't incremented per-entry.
+        let entries: String = (0..10)
+            .map(|i| format!("{{ params: {{ slug: \"post-{i}\" }} }}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let body = format!("export function paths() {{ return [{entries}]; }}",);
+        let (dir, pending) = stage_dynamic_page(
+            "pages/blog/[slug].tsx",
+            vec![
+                Segment::Static("blog".into()),
+                Segment::Dynamic("slug".into()),
+            ],
+            "/blog/:slug",
+            &body,
+        );
+
+        let mut cache = PathsCache::new();
+
+        // First expansion: one cache miss, no hits.
+        let out = expand_dynamic_routes(&[pending.clone()], dir.path(), &mut cache)
+            .expect("expansion should succeed");
+        assert_eq!(out.resolved.len(), 10);
+        assert_eq!(cache.miss_count(), 1, "first expand: expected 1 miss");
+        assert_eq!(cache.hit_count(), 0, "first expand: expected 0 hits");
+
+        // Second expansion with the same route/payload: one cache hit.
+        let out2 = expand_dynamic_routes(&[pending], dir.path(), &mut cache)
+            .expect("second expansion should succeed");
+        assert_eq!(out2.resolved.len(), 10);
+        assert_eq!(cache.miss_count(), 1, "second expand: miss_count unchanged");
+        assert_eq!(cache.hit_count(), 1, "second expand: expected 1 hit");
+    }
+
     #[test]
     fn expand_dynamic_routes_respects_output_extension_for_non_html() {
         // `[slug].xml.tsx` should resolve to `<slug>.xml`, not
