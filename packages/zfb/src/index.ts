@@ -44,6 +44,8 @@ export {
   type ZfbPluginLogger,
 } from "./plugins.js";
 
+export { slugify, SlugAllocator } from "./slugify.js";
+
 export {
   ContentBlockquote,
   ContentCode,

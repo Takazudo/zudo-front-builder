@@ -57,6 +57,10 @@
       "types": "./src/frontmatter.ts",
       "default": "./src/frontmatter.ts"
     },
+    "./slugify": {
+      "types": "./src/slugify.ts",
+      "default": "./src/slugify.ts"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -108,6 +112,10 @@
       "./frontmatter": {
         "types": "./dist/frontmatter.d.ts",
         "default": "./dist/frontmatter.js"
+      },
+      "./slugify": {
+        "types": "./dist/slugify.d.ts",
+        "default": "./dist/slugify.js"
       },
       "./package.json": "./package.json"
     }
