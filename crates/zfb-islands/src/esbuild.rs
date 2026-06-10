@@ -675,7 +675,9 @@ impl EsbuildSubprocessBundler {
         // Runtime bundle: same out-of-scope, splitting-off handling as the
         // per-island entries above — dynamic imports inline, no chunks emitted,
         // take only the entry JS.
-        let runtime_js = self.bundle_one_entry(&runtime_entry_source, config, false)?.js;
+        let runtime_js = self
+            .bundle_one_entry(&runtime_entry_source, config, false)?
+            .js;
         let runtime_asset_path = islands_dir.join("islands-runtime.js");
         std::fs::write(&runtime_asset_path, runtime_js.as_bytes())
             .with_context(|| format!("failed to write {}", runtime_asset_path.display()))?;
@@ -2529,7 +2531,9 @@ mod tests {
         assert!(
             in_memory.contains(r#"import * as __zfb_island_0 from "/abs/components/Counter.tsx";"#)
         );
-        assert!(in_memory.contains(r#"import * as __zfb_island_1 from "/abs/components/Modal.tsx";"#));
+        assert!(
+            in_memory.contains(r#"import * as __zfb_island_1 from "/abs/components/Modal.tsx";"#)
+        );
         assert!(
             in_memory.contains(r#"import * as __zfb_island_2 from "/abs/components/Sidebar.tsx";"#)
         );

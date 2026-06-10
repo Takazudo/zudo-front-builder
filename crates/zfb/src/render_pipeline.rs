@@ -1733,7 +1733,7 @@ mod tests {
         let mut cache = PathsCache::new();
 
         // First expansion: one cache miss, no hits.
-        let out = expand_dynamic_routes(&[pending.clone()], dir.path(), &mut cache)
+        let out = expand_dynamic_routes(std::slice::from_ref(&pending), dir.path(), &mut cache)
             .expect("expansion should succeed");
         assert_eq!(out.resolved.len(), 10);
         assert_eq!(cache.miss_count(), 1, "first expand: expected 1 miss");
