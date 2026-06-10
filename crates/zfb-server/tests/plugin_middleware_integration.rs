@@ -357,3 +357,110 @@ async fn post_to_unregistered_path_returns_405() {
 
     server.abort();
 }
+
+// -------------------------------------------------------------------
+// Issue #926 — error-body gating: Dev vs Preview/Embed
+// -------------------------------------------------------------------
+
+/// A dispatcher that always returns an error, used to exercise the
+/// error-body gating logic for the plugin path.
+struct AlwaysFailingDispatcher;
+
+#[async_trait]
+impl DevMiddlewareDispatcher for AlwaysFailingDispatcher {
+    async fn dispatch(
+        &self,
+        _id: &str,
+        _request: PluginRequest,
+    ) -> Result<PluginDispatchOutcome, PluginDispatchError> {
+        Err(PluginDispatchError {
+            plugin: "test-fail".into(),
+            message: "simulated plugin failure".into(),
+        })
+    }
+}
+
+async fn boot_with_failing_dispatcher(
+    mode: zfb_server::ServerMode,
+) -> (SocketAddr, tokio::task::JoinHandle<anyhow::Result<()>>, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dist_root = tmp.path().join("dist");
+    let public_root = tmp.path().join("public");
+    std::fs::create_dir_all(dist_root.join("assets")).unwrap();
+    std::fs::create_dir_all(&public_root).unwrap();
+
+    let (tx, _rx) = broadcast::channel::<ReloadEvent>(8);
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let plugin_set = DevMiddlewareSet {
+        registrations: Arc::new(vec![PluginRegistration {
+            path: "/api/fail".into(),
+            handler_id: "h-fail".into(),
+            plugin: "test-fail".into(),
+        }]),
+        dispatcher: Arc::new(AlwaysFailingDispatcher) as Arc<dyn DevMiddlewareDispatcher>,
+    };
+    let opts = ServeOpts {
+        project_root: tmp.path().to_path_buf(),
+        dist_root: dist_root.clone(),
+        html_root: dist_root,
+        public_root,
+        addr,
+        pages: PageCache::new(),
+        broadcast: tx,
+        plugins: Some(plugin_set),
+        injected_routes: None,
+        ssr_routes: None,
+        base: None,
+        trailing_slash: false,
+        mode,
+        islands_bundle_url: None,
+        css_bundle_url: None,
+    };
+    let server = tokio::spawn(async move {
+        serve_with_listener(opts, listener, std::future::pending::<()>()).await
+    });
+    tokio::task::yield_now().await;
+    (addr, server, tmp)
+}
+
+/// In Dev mode, a plugin dispatch error must return a 500 whose body
+/// contains the underlying error message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_error_body_is_verbose_in_dev_mode() {
+    let (addr, server, _tmp) =
+        boot_with_failing_dispatcher(zfb_server::ServerMode::Dev).await;
+
+    let resp = reqwest::get(format!("http://{addr}/api/fail")).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 500);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("simulated plugin failure"),
+        "Dev mode must include the plugin error detail in the body; got: {body}"
+    );
+
+    server.abort();
+}
+
+/// In Preview mode, a plugin dispatch error must return a 500 with a
+/// generic body — the plugin/internal detail must not leak to the client.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_error_body_is_generic_in_preview_mode() {
+    let (addr, server, _tmp) =
+        boot_with_failing_dispatcher(zfb_server::ServerMode::Preview).await;
+
+    let resp = reqwest::get(format!("http://{addr}/api/fail")).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 500);
+    let body = resp.text().await.unwrap();
+    assert!(
+        !body.contains("simulated plugin failure"),
+        "Preview mode must not leak the plugin error detail in the body; got: {body}"
+    );
+    assert!(
+        body.contains("Internal Server Error"),
+        "Preview mode must return a generic error body; got: {body}"
+    );
+
+    server.abort();
+}
