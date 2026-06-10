@@ -8,12 +8,13 @@
 //! implementation that wraps the esbuild subprocess.
 //!
 //! Mirror of `zfb_css::engine::TailwindSubprocessEngine`: a config struct
-//! that locates the binary (defaulting to
-//! `crates/zfb/binaries/esbuild`), an implementation that builds the
-//! command line, runs it, and writes
-//! `{outdir}/assets/islands.js` (the **stable** name —
-//! `ProductionAssetPipeline` is the single source of truth for
-//! content hashing per the Prod Asset Graph epic).
+//! that locates the binary (defaulting to `crates/zfb/binaries/esbuild`),
+//! an implementation that builds the command line, runs esbuild, reads the
+//! output back into memory, and returns it in [`crate::bundler::BundleOutput`]
+//! — the bundler does NOT write `islands.js` to disk. Downstream consumers
+//! (the prod pipeline, the dev server) own all disk writes.
+//! `ProductionAssetPipeline` is the single source of truth for content
+//! hashing per the Prod Asset Graph epic.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -41,10 +42,11 @@ pub use zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION;
 /// esbuild `--entry-names` template for the shared islands bundle.
 ///
 /// `islands` (no extension — esbuild appends `.js`) pins the entry's
-/// basename to the stable `STABLE_ISLANDS_FILENAME` so the read-back and
-/// the prod pipeline can rely on `islands.js`. A `debug_assert!` in
-/// `bundle_one_entry` ties this template to `STABLE_ISLANDS_FILENAME`'s
-/// stem so the two can never silently drift.
+/// basename to the stable `STABLE_ISLANDS_FILENAME` so the staging
+/// read-back can recognise the entry file among the esbuild outdir
+/// contents. A `debug_assert!` in `bundle_one_entry` ties this template
+/// to `STABLE_ISLANDS_FILENAME`'s stem so the two can never silently
+/// drift.
 pub(crate) const ESBUILD_ENTRY_NAME_TEMPLATE: &str = "islands";
 
 /// esbuild `--chunk-names` template for code-split chunks.
@@ -464,12 +466,13 @@ impl EsbuildSubprocessConfig {
 /// directory mode): the entry is emitted under the stable name `islands.js`
 /// (`--entry-names=islands`) and any code-split chunks under self-hashed
 /// flat names (`--chunk-names=islands-chunk-[hash]`). All emitted files are
-/// read back into memory; the entry is then written to the **stable** path
-/// `{outdir}/assets/islands.js` and chunks are returned via
-/// [`BundleOutput::chunks`] for the prod pipeline / dev server to place
-/// (see that field's contract). `ProductionAssetPipeline` performs the
-/// content-hash + rename pass on the *entry* at deploy time; chunks already
-/// carry esbuild's own content hash and must never be renamed.
+/// read back into memory and returned via [`BundleOutput`] — the bundler
+/// does **NOT** write to `{outdir}/assets/islands.js`. Downstream consumers
+/// (prod pipeline, dev server) own all disk writes; chunks are returned via
+/// [`BundleOutput::chunks`] (see that field's contract).
+/// `ProductionAssetPipeline` performs the content-hash + rename pass on the
+/// *entry* at deploy time; chunks already carry esbuild's own content hash
+/// and must never be renamed.
 ///
 /// ### Example
 ///
@@ -508,16 +511,14 @@ impl EsbuildSubprocessBundler {
 
     /// Internal: produce the JS payload for the given islands. Split out so
     /// tests can drive it directly without going through `bundle`'s
-    /// asset-write step.
+    /// [`BundleOutput`] assembly step.
     ///
     /// Implementation: synthesizes a single-entry source that imports
     /// every island module by absolute path, then routes through
     /// [`Self::bundle_one_entry`] (single input + `--outdir`). This
-    /// keeps the on-disk contract for the shared bundle
-    /// (`dist/assets/islands.js`) stable while sidestepping esbuild's
-    /// "Must use \"outdir\" when there are multiple input files" rule
-    /// (issue #138): passing N island `source_path`s as N separate
-    /// inputs trips it for any N >= 2.
+    /// sidesteps esbuild's "Must use \"outdir\" when there are multiple
+    /// input files" rule (issue #138): passing N island `source_path`s
+    /// as N separate inputs trips it for any N >= 2.
     ///
     /// Returns the entry JS plus any code-split chunks esbuild emitted
     /// (empty for a zero-dynamic-import islands set).
@@ -1124,22 +1125,23 @@ pub(crate) fn build_esbuild_args(
         args.push(OsString::from("--sourcemap=linked"));
     }
     // Directory-mode output: esbuild writes the entry (and, when splitting is
-    // on, any chunks) into `out_dir`. `--outdir` is always present — the
-    // read-back walks this dir for the stable `islands.js` entry regardless of
-    // splitting. `--entry-names` forces the entry's stable basename (`islands`,
-    // sans extension — esbuild appends `.js`) so the read-back + downstream
-    // pipeline can rely on `islands.js`.
-    // `--chunk-names` (splitting only) self-content-hashes each chunk FLAT in
-    // the same dir (`islands-chunk-<hash>.js`); esbuild bakes relative
-    // `import("./...")` references between them, so the names must never be
-    // renamed downstream. It is meaningless without `--splitting`, so it is
-    // omitted on the per-island/runtime path (which never emits chunks).
-    // See `ESBUILD_ENTRY_NAME_TEMPLATE` / `ESBUILD_CHUNK_NAME_TEMPLATE` and the
-    // `BundleOutput::chunks` contract for the full rationale. Flag spellings
-    // verified against the pinned esbuild 0.25.x CLI.
+    // on, any chunks) into the *staging* `out_dir` (a throwaway tempdir —
+    // NOT `dist/assets/`). `--outdir` is always present — the read-back
+    // walks this dir for the `islands.js` entry regardless of splitting.
+    // `--entry-names` pins the entry's basename to `islands` (esbuild
+    // appends `.js`) so `read_back_outdir` can identify it by name and
+    // return it as `OneEntryOutput::js`; the caller (`bundle()`) packages
+    // those bytes into `BundleOutput::bytes` — no write to `dist/`.
+    // `--chunk-names` (splitting only) self-content-hashes each chunk FLAT
+    // in the same dir (`islands-chunk-<hash>.js`); esbuild bakes relative
+    // `import("./...")` references between them, so names must never be
+    // renamed downstream. Omitted without `--splitting` (per-island path).
+    // See `ESBUILD_ENTRY_NAME_TEMPLATE` / `ESBUILD_CHUNK_NAME_TEMPLATE` and
+    // the `BundleOutput::chunks` contract for the full rationale.
+    // Flag spellings verified against the pinned esbuild 0.25.x CLI.
     // The entry-name template must produce exactly `STABLE_ISLANDS_FILENAME`
-    // (esbuild appends `.js`), or the read-back won't recognise the entry and
-    // the downstream stable-URL contract breaks. Assert the two stay in sync.
+    // (esbuild appends `.js`), or the read-back won't recognise the entry.
+    // Assert the two stay in sync.
     debug_assert_eq!(
         format!("{ESBUILD_ENTRY_NAME_TEMPLATE}.js"),
         zfb_types::STABLE_ISLANDS_FILENAME,
@@ -1204,11 +1206,10 @@ pub(crate) fn build_esbuild_args(
 /// makes a zero-island slice produce non-empty JS.
 ///
 /// The shared bundle's contract is "every island module's source code
-/// is present in `dist/assets/islands.js` so the runtime's DOM walk can
+/// is present in the islands JS asset so the runtime's DOM walk can
 /// find each `data-zfb-island="…"` element's component bundled into the
 /// page". Producing one synthetic entry sidesteps esbuild's
-/// multi-input-with-`--outfile` restriction (issue #138) without
-/// changing the public on-disk shape (`dist/assets/islands.js`).
+/// multi-input-with-`--outfile` restriction (issue #138).
 ///
 /// # Why we call `mountIslands` from the entry
 ///
@@ -1218,9 +1219,9 @@ pub(crate) fn build_esbuild_args(
 /// activates (issue #146 / zudolab/zudo-doc#1355 Wave 6). The
 /// per-island path emits `mountIslands(MANIFEST)` from
 /// `render_runtime_entry_source`; the shared-bundle path mirrors that
-/// here so the on-disk contract (`dist/assets/islands.js`) is the only
-/// script the page needs to load to get hydration glue **and** the
-/// island source code in one HTTP request.
+/// here so the islands bundle is the only script the page needs to load
+/// to get hydration glue **and** the island source code in one HTTP
+/// request.
 ///
 /// The synthesised entry imports each island as a namespace and
 /// **registers** it into a manifest at top-level using a
@@ -1564,35 +1565,32 @@ impl ClientBundler for EsbuildSubprocessBundler {
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput> {
         let OneEntryOutput { js, chunks } = self.produce_bundle_js(islands, config)?;
 
-        // Stable filename: `dist/assets/islands.js`. Per the Prod
-        // Asset Graph epic, the **single source of truth for content
-        // hashing is `ProductionAssetPipeline`** — no emitter under
-        // `zfb-islands` may bake a hash into the on-disk filename or
-        // public URL anymore. The pipeline reads these stable bytes,
-        // computes `sha256(bytes)[..8]`, renames to
-        // `assets/islands-<hash>.js`, and rewrites the
-        // `STABLE_ISLANDS_URL` references in rendered HTML in one
-        // pass. Without this stable-filename contract the pipeline
-        // would double-hash (S0 spec, acceptance criterion 3).
+        // Carry the entry JS **in memory** — do NOT write `islands.js` to
+        // disk here. Per the Prod Asset Graph epic, the single source of
+        // truth for all disk writes is the downstream consumer:
+        //
+        // - Production: `ProductionAssetPipeline` hashes these bytes,
+        //   writes `assets/islands-<hash>.js`, rewrites HTML references in
+        //   one pass. Writing a stable `islands.js` here too would produce
+        //   two byte-identical files on every production deploy
+        //   (zudolab/zzmod#497).
+        // - Dev server: the dev path explicitly writes `islands.js` from
+        //   `BundleOutput::bytes` (mirroring the CSS pipeline) so
+        //   `ServeDir` can serve the stable URL.
+        //
+        // `asset_path` is the canonical path the caller SHOULD write to
+        // (used for URL derivation and caller-side assertions); the bundler
+        // itself never touches it.
         let asset_path = config
             .outdir
             .join(zfb_types::DIST_ASSETS_DIR)
             .join(zfb_types::STABLE_ISLANDS_FILENAME);
 
-        if let Some(parent) = asset_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        std::fs::write(&asset_path, js.as_bytes())
-            .with_context(|| format!("failed to write {}", asset_path.display()))?;
-
-        // Code-split chunks are returned in-memory only. The prod pipeline
-        // (#808) writes them verbatim beside the (later content-hashed)
-        // entry under `dist/assets/`, and the dev server (#809) serves them;
-        // `bundle()` deliberately does NOT write chunks to `dist/` itself
-        // (the pipeline owns all `dist` writes — see `BundleOutput::chunks`).
-        // Chunks already carry esbuild's content hash in their filenames, so
-        // the pipeline must NOT re-hash or rename them.
+        // Chunks are returned in-memory only. The prod pipeline (#808)
+        // writes them verbatim beside the (later content-hashed) entry
+        // under `dist/assets/`, and the dev server (#809) serves them.
+        // Chunks already carry esbuild's content hash in their filenames,
+        // so the pipeline must NOT re-hash or rename them.
 
         let asset_url = bundle_link_href(&config.base_url, &asset_path);
 
@@ -1604,6 +1602,7 @@ impl ClientBundler for EsbuildSubprocessBundler {
         let module_ids: Vec<ModuleId> = islands.iter().map(|i| i.component_name.clone()).collect();
 
         Ok(BundleOutput {
+            bytes: js.into_bytes(),
             asset_path,
             asset_url,
             module_ids,
@@ -2331,15 +2330,16 @@ mod tests {
         let out = bundler.bundle(&islands, &cfg).expect("multi-island bundle");
 
         // Stable filename + URL — the multi-input fix must NOT change
-        // the on-disk shape (the legacy contract S0 / S4 depend on).
+        // the asset_path / asset_url shape.
         assert_eq!(out.asset_url, "/assets/islands.js");
         assert_eq!(out.asset_path, dir.path().join("assets").join("islands.js"));
-        assert!(out.asset_path.exists());
+        // Bundler carries bytes in memory — no disk write.
+        assert!(!out.asset_path.exists(), "bundler must not write to disk");
 
         // Module IDs preserve input order.
         assert_eq!(out.module_ids, vec!["Counter", "Modal", "Sidebar"]);
 
-        // The bytes on disk are the synthesized entry source (echoed by
+        // The in-memory bytes are the synthesized entry source (echoed by
         // mock mode) — verify each island path appears in it under the
         // namespace-import shape (issue #144 fix). The previous shape
         // (`import "<path>";` side-effect import) tree-shook every
@@ -2347,19 +2347,19 @@ mod tests {
         //
         // The bytes also carry the `mountIslands(...)` invocation that
         // the issue #146 fix added so the SSR'd markers hydrate.
-        let on_disk = std::fs::read_to_string(&out.asset_path).expect("read asset");
+        let in_memory = String::from_utf8(out.bytes).expect("bytes are valid UTF-8");
         assert!(
-            on_disk.contains(r#"import * as __zfb_island_0 from "/abs/components/Counter.tsx";"#)
+            in_memory.contains(r#"import * as __zfb_island_0 from "/abs/components/Counter.tsx";"#)
         );
-        assert!(on_disk.contains(r#"import * as __zfb_island_1 from "/abs/components/Modal.tsx";"#));
+        assert!(in_memory.contains(r#"import * as __zfb_island_1 from "/abs/components/Modal.tsx";"#));
         assert!(
-            on_disk.contains(r#"import * as __zfb_island_2 from "/abs/components/Sidebar.tsx";"#)
+            in_memory.contains(r#"import * as __zfb_island_2 from "/abs/components/Sidebar.tsx";"#)
         );
-        assert!(on_disk.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#));
-        assert!(on_disk.contains("mountIslands(__zfb_manifest);"));
-        assert!(on_disk.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\");"));
-        assert!(on_disk.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\");"));
-        assert!(on_disk.contains("__zfb_register(__zfb_island_2, \"Sidebar\", \"Sidebar\");"));
+        assert!(in_memory.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#));
+        assert!(in_memory.contains("mountIslands(__zfb_manifest);"));
+        assert!(in_memory.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\");"));
+        assert!(in_memory.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\");"));
+        assert!(in_memory.contains("__zfb_register(__zfb_island_2, \"Sidebar\", \"Sidebar\");"));
     }
 
     #[test]
@@ -2776,9 +2776,8 @@ mod tests {
         let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
         let bundle_cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
         let out = bundler.bundle(&islands, &bundle_cfg).unwrap();
-        // Mock output is returned verbatim.
-        let content = std::fs::read_to_string(&out.asset_path).unwrap();
-        assert_eq!(content, "// alias mock output");
+        // Mock output is returned in-memory — no disk write.
+        assert_eq!(out.bytes, b"// alias mock output");
     }
 
     /// Bundling in mock mode with virtual modules — the mock path must succeed.
@@ -2798,8 +2797,8 @@ mod tests {
         let islands = vec![Island::new("Counter", "/abs/components/Counter.tsx")];
         let bundle_cfg = BundleConfig::default().with_outdir(dir.path().to_path_buf());
         let out = bundler.bundle(&islands, &bundle_cfg).unwrap();
-        let content = std::fs::read_to_string(&out.asset_path).unwrap();
-        assert_eq!(content, "// virtual mock output");
+        // Mock output is returned in-memory — no disk write.
+        assert_eq!(out.bytes, b"// virtual mock output");
     }
 
     /// Verify that the `with_alias_entries` + `with_virtual_modules` builders
