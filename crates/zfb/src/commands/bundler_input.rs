@@ -320,6 +320,40 @@ pub(crate) fn assemble_bundler_input(
         .and_then(|p| p.disabled)
         .unwrap_or(false);
 
+    // #978 — thread `base_prefix` so the bundler emits
+    // `globalThis.__zfb.base = "<prefix>"` in `entry.mjs` when the project
+    // has at least one `*.client.*` entry. The emission is gated on
+    // discovery so zero-script builds remain byte-for-byte identical.
+    //
+    // Production vs dev differ in how they normalise an absolute-URL `base`
+    // (e.g. `https://cdn.example.com/`):
+    //   - prod: `asset_url_base_prefix` keeps the full origin prefix
+    //     (`"https://cdn.example.com"`) because the rewrite keys embed
+    //     the full URL.
+    //   - dev: `dev_mount_prefix` collapses absolute-URL bases to `None`
+    //     (the dev server cannot serve a CDN origin), which we map to `""`
+    //     so `clientScript(name)` still returns the bare stable URL.
+    //
+    // Collisions (duplicate entry names across roots) are surfaced later
+    // by `build_default_client_scripts_payloads`; we silently ignore them
+    // here — discovery is just a presence check.
+    {
+        use zfb_islands::discover_client_scripts;
+        let has_client_scripts = discover_client_scripts(project_root)
+            .map(|(entries, _)| !entries.is_empty())
+            .unwrap_or(false);
+        if has_client_scripts {
+            bundler_input.base_prefix = Some(match bundle_mode {
+                BundleMode::Production => {
+                    crate::config::asset_url_base_prefix(config.base.as_deref())
+                }
+                BundleMode::Development => {
+                    zfb_types::dev_mount_prefix(config.base.as_deref()).unwrap_or_default()
+                }
+            });
+        }
+    }
+
     // #664 / #672 — thread `bundle.exclude` so the bundler keeps the listed
     // project-relative globs out of the esbuild graph (both the shadow-tree
     // copy and the #665 import.meta.glob expansion).  Empty → skip nothing.

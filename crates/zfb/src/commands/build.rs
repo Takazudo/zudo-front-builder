@@ -5021,4 +5021,150 @@ mod tests {
             "eval_deferred_paths must be called exactly once per run_build (issue #974)"
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // base="/foo/" + client-script end-to-end (#978)
+    // ---------------------------------------------------------------------------
+    //
+    // Acceptance: with `config.base = "/foo/"`, a client-script stable URL
+    // emitted by the renderer as `/foo/assets/client/x.js` (the base-prefixed
+    // stable URL) must be rewritten by `ProductionAssetPipeline` to
+    // `/foo/assets/client/x-<hash>.js`.  This proves that the base-prefixed
+    // stable URL is the exact rewrite key end-to-end.
+    //
+    // The stable URL that the renderer receives already carries the `/foo`
+    // prefix because `apply_asset_url_base` mutates `stable_url` in-place
+    // before handing it to the renderer.  `boundary_replace` then searches
+    // for that same prefixed string in the rendered HTML and replaces it with
+    // the hashed equivalent.  If either side used an unprefixed URL, the
+    // rewrite would never fire and the stable URL would leak.
+
+    #[test]
+    fn run_build_with_base_emits_prefixed_hashed_client_script_url_in_html() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        // Seed the runner with one client-script payload carrying the UNPREFIXED
+        // stable URL.  `apply_asset_url_base` (called inside run_build) will
+        // prepend "/foo" before handing it to the renderer and pipeline, so the
+        // test exercises the full base-rewrite path.
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+                css: None,
+                islands: None,
+                client_scripts: vec![zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b"// search widget".to_vec(),
+                    relative_path: PathBuf::from("assets/client/x.js"),
+                    // Seeded with the unprefixed stable URL; apply_asset_url_base
+                    // will prepend "/foo" → "/foo/assets/client/x.js".
+                    stable_url: "/assets/client/x.js".to_string(),
+                    companions: Vec::new(),
+                }],
+            });
+        let cfg = Config {
+            base: Some("/foo/".to_string()),
+            ..Config::default()
+        };
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        // (a) The hashed bundle lands under dist/assets/client/x-<8hex>.js.
+        let client_entries: Vec<String> = std::fs::read_dir(outdir.join("assets/client"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            client_entries.len(),
+            1,
+            "expected exactly one hashed client-script asset; got {client_entries:?}",
+        );
+        let name = &client_entries[0];
+        assert!(
+            name.starts_with("x-") && name.ends_with(".js") && name.len() == "x-12345678.js".len(),
+            "expected x-<8hex>.js; got {name}",
+        );
+
+        // (b) The HTML carries the PREFIXED hashed URL; neither the prefixed
+        //     stable URL nor the unprefixed variants leak.
+        let prefixed_hashed = format!("/foo/assets/client/{name}");
+        let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        assert!(
+            html.contains(&prefixed_hashed),
+            "prefixed hashed URL {prefixed_hashed} missing from HTML:\n{html}",
+        );
+        assert!(
+            !html.contains("\"/foo/assets/client/x.js\""),
+            "prefixed stable URL leaked into HTML:\n{html}",
+        );
+        assert!(
+            !html.contains("\"/assets/client/x.js\""),
+            "unprefixed stable URL leaked into HTML:\n{html}",
+        );
+
+        // (c) The renderer was handed the PREFIXED stable URL
+        //     (`/foo/assets/client/x.js`) so the boundary_replace rewrite key
+        //     in the pipeline matches the URL the renderer inserted.
+        let render_calls = runner.render_calls.borrow();
+        let prod_assets = render_calls[0]
+            .prod_head_assets
+            .as_ref()
+            .expect("prod_head_assets must be populated for client scripts");
+        assert!(
+            prod_assets
+                .island_module_urls
+                .contains(&"/foo/assets/client/x.js".to_string()),
+            "renderer must receive the prefixed stable URL; got {:?}",
+            prod_assets.island_module_urls,
+        );
+    }
+
+    /// Zero-script build with no-base should produce byte-identical bundle to a
+    /// pre-#978 build: `globalThis.__zfb.base` must NOT appear in the bundle.
+    /// Guards the #261 zero-registration parity and #940 byte-identical dev
+    /// bundle skip invariants.
+    #[test]
+    fn run_build_without_client_scripts_does_not_emit_base_in_bundle() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        // No client_scripts in the prod asset inputs → base_prefix must stay None.
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        // The bundler input must have had base_prefix = None, which means the
+        // entry.mjs written to the shadow tree must NOT contain the base setter.
+        // FakeRunner records the BundlerInput via bundle_calls; check its base_prefix.
+        let bundle_calls = runner.bundle_calls.borrow();
+        assert!(
+            bundle_calls[0].base_prefix.is_none(),
+            "zero-script build must pass base_prefix=None to the bundler; got {:?}",
+            bundle_calls[0].base_prefix,
+        );
+    }
 }
