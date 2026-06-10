@@ -529,8 +529,8 @@ mod tests {
             }),
             ..Default::default()
         };
-        let on = build_snapshot_with_config(&[collection()], &on_cfg)
-            .expect("snapshot (features on)");
+        let on =
+            build_snapshot_with_config(&[collection()], &on_cfg).expect("snapshot (features on)");
 
         let spec_off = &off.collections.get("docs").expect("docs off")[0].module_specifier;
         let spec_on = &on.collections.get("docs").expect("docs on")[0].module_specifier;
@@ -845,17 +845,17 @@ mod tests {
             // constructs. Hash must agree byte-for-byte.
             let mut pipeline =
                 crate::pipeline::Pipeline::with_defaults_and_theme_and_gfm(None, resolved);
-            let compiled =
-                compile_mdx_to_jsx_module_cached(body, &path, None, Some(&mut pipeline))
-                    .expect("bundler-style compile must succeed");
+            let compiled = compile_mdx_to_jsx_module_cached(body, &path, None, Some(&mut pipeline))
+                .expect("bundler-style compile must succeed");
 
-            let snap_spec = parse_mdx_specifier(&entry.module_specifier)
-                .expect("snapshot specifier parses");
-            let bridge_spec = parse_mdx_specifier(&compiled.specifier)
-                .expect("bundler specifier parses");
+            let snap_spec =
+                parse_mdx_specifier(&entry.module_specifier).expect("snapshot specifier parses");
+            let bridge_spec =
+                parse_mdx_specifier(&compiled.specifier).expect("bundler specifier parses");
 
             assert_eq!(
-                snap_spec.content_hash, bridge_spec.content_hash,
+                snap_spec.content_hash,
+                bridge_spec.content_hash,
                 "snapshot ↔ bundler hash divergence under gfm={label}: \
                  snapshot={snap}, bundler={bridge} — this is the \
                  sub-#61 / zfb#132 hazard (see content_bridge.rs:118-153)",

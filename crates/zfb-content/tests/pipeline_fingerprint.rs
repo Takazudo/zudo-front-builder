@@ -97,7 +97,13 @@ fn every_knob_changes_the_fingerprint() {
         ),
         (
             "cjk-off",
-            full_config(None, ResolvedGfmConstructs::CONSERVATIVE, false, false, None),
+            full_config(
+                None,
+                ResolvedGfmConstructs::CONSERVATIVE,
+                false,
+                false,
+                None,
+            ),
         ),
         (
             "hard-breaks",
@@ -160,7 +166,9 @@ fn every_knob_changes_the_fingerprint() {
                 ResolvedGfmConstructs::CONSERVATIVE,
                 true,
                 false,
-                Some(&features(json!({ "headingIds": { "strategy": "hierarchical" } }))),
+                Some(&features(
+                    json!({ "headingIds": { "strategy": "hierarchical" } }),
+                )),
             ),
         ),
         ("legacy-defaults-chain", Pipeline::with_defaults()),
@@ -193,10 +201,7 @@ fn every_knob_changes_the_fingerprint() {
     variants.push(("external-links-default", external));
 
     let mut external_site = baseline();
-    external_site.add_external_links(
-        ExternalLinksConfig::default(),
-        Some("https://example.com"),
-    );
+    external_site.add_external_links(ExternalLinksConfig::default(), Some("https://example.com"));
     variants.push(("external-links-with-site", external_site));
 
     let mut strategy = baseline();
@@ -488,9 +493,9 @@ fn filesystem_reading_features_keep_the_pipeline_cacheable() {
             false,
             Some(&feats),
         );
-        let fp = p.config_fingerprint().unwrap_or_else(|| {
-            panic!("features.{label} must keep a config fingerprint (zfb#944)")
-        });
+        let fp = p
+            .config_fingerprint()
+            .unwrap_or_else(|| panic!("features.{label} must keep a config fingerprint (zfb#944)"));
         assert!(
             p.read_recorder().is_some(),
             "features.{label} must wire a read-recorder so its reads join \
@@ -534,13 +539,18 @@ fn build_context_roots_join_the_fingerprint() {
 
     let mut a = baseline();
     a.set_build_context_roots("/proj".into(), "/proj/public".into());
-    let a = a.config_fingerprint().expect("armed pipeline stays fingerprinted");
+    let a = a
+        .config_fingerprint()
+        .expect("armed pipeline stays fingerprinted");
 
     let mut b = baseline();
     b.set_build_context_roots("/proj".into(), "/proj/public".into());
     let b = b.config_fingerprint().expect("fingerprinted");
     assert_eq!(a, b, "equal roots must share one fingerprint");
-    assert_ne!(a, unarmed, "arming context roots must split the fingerprint");
+    assert_ne!(
+        a, unarmed,
+        "arming context roots must split the fingerprint"
+    );
 
     let mut c = baseline();
     c.set_build_context_roots("/other".into(), "/other/public".into());
@@ -621,7 +631,9 @@ fn themes_dir_contents_are_part_of_the_fingerprint() {
     );
 
     // And a themes_dir-less pipeline must not collide with either.
-    let fp_none = Pipeline::with_defaults().config_fingerprint().expect("fingerprinted");
+    let fp_none = Pipeline::with_defaults()
+        .config_fingerprint()
+        .expect("fingerprinted");
     assert_ne!(fp_none, fp_a1);
     assert_ne!(fp_none, fp_b);
 }

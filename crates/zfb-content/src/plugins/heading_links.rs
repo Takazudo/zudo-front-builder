@@ -170,7 +170,11 @@ impl HastVisitor for HeadingLinksPlugin {
     /// Zero-cost when `ctx.heading_registry` is `None` — no registry writes
     /// are performed.
     fn visit_with_context(&mut self, node: &mut HastNode, ctx: &mut BuildContext<'_>) {
-        self.visit_node(node, ctx.heading_registry.as_deref_mut(), ctx.source_path.clone());
+        self.visit_node(
+            node,
+            ctx.heading_registry.as_deref_mut(),
+            ctx.source_path.clone(),
+        );
     }
 }
 

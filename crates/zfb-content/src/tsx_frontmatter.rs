@@ -124,7 +124,9 @@ pub enum TsxFrontmatterError {
     /// nested value inside it) is not a literal. The error names the
     /// export, the file, the offending span, and a short reason that
     /// describes which non-literal shape was encountered.
-    #[error("{file}:{line}:{col}: non-literal value not allowed in `export const {export}` ({reason})")]
+    #[error(
+        "{file}:{line}:{col}: non-literal value not allowed in `export const {export}` ({reason})"
+    )]
     ComputedValue {
         file: String,
         export: String,
@@ -476,11 +478,7 @@ fn expect_object<'a>(
 
 /// Expect an expression to be a string literal (or a substitution-free
 /// template literal). `extension` and `contentType` go through here.
-fn expect_string(
-    expr: &Expr,
-    export: &str,
-    ctx: &Ctx<'_>,
-) -> Result<String, TsxFrontmatterError> {
+fn expect_string(expr: &Expr, export: &str, ctx: &Ctx<'_>) -> Result<String, TsxFrontmatterError> {
     match unwrap_ts_wrappers(expr) {
         Expr::Lit(Lit::Str(s)) => Ok(wtf8_to_string(&s.value)),
         Expr::Tpl(tpl) if tpl.exprs.is_empty() => Ok(tpl_quasi_to_string(tpl)),
@@ -583,11 +581,9 @@ fn prop_name_to_string(
             export,
             "BigInt property keys are not representable in JSON",
         )),
-        PropName::Computed(c) => Err(ctx.computed(
-            c.span,
-            export,
-            "computed property keys are not allowed",
-        )),
+        PropName::Computed(c) => {
+            Err(ctx.computed(c.span, export, "computed property keys are not allowed"))
+        }
     }
 }
 
@@ -621,11 +617,7 @@ fn expr_to_json(
                         // `[1, , 3]` — a "hole". JSON has no concept
                         // of holes, and silently coercing one into
                         // `null` would lie about what the source said.
-                        return Err(ctx.computed(
-                            arr.span,
-                            export,
-                            "array holes are not allowed",
-                        ));
+                        return Err(ctx.computed(arr.span, export, "array holes are not allowed"));
                     }
                 }
             }
@@ -666,81 +658,47 @@ fn expr_to_json(
                     "unary operator only allowed in front of a numeric literal",
                 )),
             },
-            _ => Err(ctx.computed(
-                u.span,
-                export,
-                "unary operator is not a literal value",
-            )),
+            _ => Err(ctx.computed(u.span, export, "unary operator is not a literal value")),
         },
         // Everything below requires runtime evaluation or is otherwise
         // not a literal; report with a kind-specific reason so the
         // page author sees what they used.
-        Expr::Ident(i) => Err(ctx.computed(
-            i.span,
-            export,
-            "identifier reference is not a literal",
-        )),
+        Expr::Ident(i) => {
+            Err(ctx.computed(i.span, export, "identifier reference is not a literal"))
+        }
         Expr::Call(c) => Err(ctx.computed(c.span, export, "function call is not a literal")),
         Expr::New(n) => Err(ctx.computed(n.span, export, "`new` expression is not a literal")),
-        Expr::Member(m) => Err(ctx.computed(
-            m.span,
-            export,
-            "member access is not a literal",
-        )),
-        Expr::Bin(b) => Err(ctx.computed(
-            b.span,
-            export,
-            "binary expression is not a literal",
-        )),
-        Expr::Cond(c) => Err(ctx.computed(
-            c.span,
-            export,
-            "conditional expression is not a literal",
-        )),
+        Expr::Member(m) => Err(ctx.computed(m.span, export, "member access is not a literal")),
+        Expr::Bin(b) => Err(ctx.computed(b.span, export, "binary expression is not a literal")),
+        Expr::Cond(c) => {
+            Err(ctx.computed(c.span, export, "conditional expression is not a literal"))
+        }
         Expr::Arrow(a) => Err(ctx.computed(a.span, export, "arrow function is not a literal")),
         Expr::Fn(f) => Err(ctx.computed(
             f.function.span,
             export,
             "function expression is not a literal",
         )),
-        Expr::Class(c) => Err(ctx.computed(
-            c.class.span,
-            export,
-            "class expression is not a literal",
-        )),
+        Expr::Class(c) => {
+            Err(ctx.computed(c.class.span, export, "class expression is not a literal"))
+        }
         Expr::This(t) => Err(ctx.computed(t.span, export, "`this` is not a literal")),
-        Expr::Update(u) => Err(ctx.computed(
-            u.span,
-            export,
-            "update expression is not a literal",
-        )),
-        Expr::Assign(a) => Err(ctx.computed(
-            a.span,
-            export,
-            "assignment expression is not a literal",
-        )),
-        Expr::Seq(s) => Err(ctx.computed(
-            s.span,
-            export,
-            "sequence expression is not a literal",
-        )),
+        Expr::Update(u) => Err(ctx.computed(u.span, export, "update expression is not a literal")),
+        Expr::Assign(a) => {
+            Err(ctx.computed(a.span, export, "assignment expression is not a literal"))
+        }
+        Expr::Seq(s) => Err(ctx.computed(s.span, export, "sequence expression is not a literal")),
         Expr::Yield(y) => Err(ctx.computed(y.span, export, "`yield` is not a literal")),
         Expr::Await(a) => Err(ctx.computed(a.span, export, "`await` is not a literal")),
-        Expr::TaggedTpl(t) => Err(ctx.computed(
-            t.span,
-            export,
-            "tagged template literal is not a literal",
-        )),
-        Expr::JSXElement(j) => Err(ctx.computed(
-            j.span,
-            export,
-            "JSX element is not a literal value",
-        )),
-        Expr::JSXFragment(j) => Err(ctx.computed(
-            j.span,
-            export,
-            "JSX fragment is not a literal value",
-        )),
+        Expr::TaggedTpl(t) => {
+            Err(ctx.computed(t.span, export, "tagged template literal is not a literal"))
+        }
+        Expr::JSXElement(j) => {
+            Err(ctx.computed(j.span, export, "JSX element is not a literal value"))
+        }
+        Expr::JSXFragment(j) => {
+            Err(ctx.computed(j.span, export, "JSX fragment is not a literal value"))
+        }
         // Catch-all for anything not enumerated above; we still emit a
         // span so the page author can find it.
         other => Err(ctx.computed(
@@ -754,11 +712,7 @@ fn expr_to_json(
 /// Convert a single literal node into a JSON value. Regex / BigInt /
 /// raw JSXText literals can't survive a round-trip through JSON, so
 /// they're rejected.
-fn lit_to_json(
-    lit: &Lit,
-    export: &str,
-    ctx: &Ctx<'_>,
-) -> Result<JsonValue, TsxFrontmatterError> {
+fn lit_to_json(lit: &Lit, export: &str, ctx: &Ctx<'_>) -> Result<JsonValue, TsxFrontmatterError> {
     match lit {
         Lit::Str(s) => Ok(JsonValue::String(wtf8_to_string(&s.value))),
         Lit::Bool(b) => Ok(JsonValue::Bool(b.value)),
@@ -775,16 +729,10 @@ fn lit_to_json(
             export,
             "BigInt literal is not representable in JSON",
         )),
-        Lit::Regex(r) => Err(ctx.computed(
-            r.span,
-            export,
-            "regex literal is not representable in JSON",
-        )),
-        Lit::JSXText(j) => Err(ctx.computed(
-            j.span,
-            export,
-            "JSX text is not a literal value",
-        )),
+        Lit::Regex(r) => {
+            Err(ctx.computed(r.span, export, "regex literal is not representable in JSON"))
+        }
+        Lit::JSXText(j) => Err(ctx.computed(j.span, export, "JSX text is not a literal value")),
     }
 }
 
@@ -1218,9 +1166,8 @@ mod tests {
             export const frontmatter = { title: "X" };
             export const prerender = decide();
         "#;
-        let out = extract(src, "page.tsx").expect(
-            "computed prerender must not error — it should fall back to the default",
-        );
+        let out = extract(src, "page.tsx")
+            .expect("computed prerender must not error — it should fall back to the default");
         assert!(
             out.prerender,
             "computed prerender should fall back to default `true`, not silently flip to `false`",
@@ -1267,9 +1214,8 @@ mod tests {
             export const frontmatter = { title: "X" };
             export const prerender = !true;
         "#;
-        let out = extract(src, "page.tsx").expect(
-            "unary-not prerender must not error — it should fall back to the default",
-        );
+        let out = extract(src, "page.tsx")
+            .expect("unary-not prerender must not error — it should fall back to the default");
         assert!(
             out.prerender,
             "`!true` is not a literal — should fall back to default `true`",

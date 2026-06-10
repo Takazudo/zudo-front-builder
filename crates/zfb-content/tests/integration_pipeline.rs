@@ -471,12 +471,10 @@ fn run_without_context_is_byte_identical_to_run() {
     };
     pipeline.reset_per_entry();
     let html_with_ctx = {
-        let mut ctx = BuildContext::for_paths(
-            "/docs/page.md",
-            "/project",
-            "/project/public",
-        );
-        let hast = pipeline.run_with_context(md, &mut ctx).expect("run_with_context ok");
+        let mut ctx = BuildContext::for_paths("/docs/page.md", "/project", "/project/public");
+        let hast = pipeline
+            .run_with_context(md, &mut ctx)
+            .expect("run_with_context ok");
         serialize(&hast)
     };
 
@@ -503,7 +501,9 @@ fn heading_links_populates_registry_when_present() {
     };
 
     let mut pipeline = Pipeline::with_defaults();
-    pipeline.run_with_context(md, &mut ctx).expect("pipeline ok");
+    pipeline
+        .run_with_context(md, &mut ctx)
+        .expect("pipeline ok");
 
     let entries = registry.get(&source).expect("entries must be recorded");
     assert_eq!(entries.len(), 3, "expected 3 headings: {entries:?}");
@@ -523,7 +523,9 @@ fn heading_links_zero_writes_without_registry() {
     // heading_registry is None — no writes should occur.
 
     let mut pipeline = Pipeline::with_defaults();
-    pipeline.run_with_context(md, &mut ctx).expect("pipeline ok");
+    pipeline
+        .run_with_context(md, &mut ctx)
+        .expect("pipeline ok");
     // No registry to query — this test just asserts no panic + context is accessible.
     assert!(ctx.source_path.as_deref() == Some(std::path::Path::new("/docs/page.md")));
 }
@@ -538,11 +540,7 @@ fn diagnostics_sink_smoke_test() {
     impl HastVisitor for ParagraphWarner {
         fn visit(&mut self, _node: &mut HastNode) {}
 
-        fn visit_with_context(
-            &mut self,
-            node: &mut HastNode,
-            ctx: &mut BuildContext<'_>,
-        ) {
+        fn visit_with_context(&mut self, node: &mut HastNode, ctx: &mut BuildContext<'_>) {
             match node {
                 HastNode::Element { tag, children, .. } if tag == "p" => {
                     if let Some(sink) = ctx.diagnostics.as_deref_mut() {
@@ -575,7 +573,9 @@ fn diagnostics_sink_smoke_test() {
 
     let mut pipeline = Pipeline::with_mdx();
     pipeline.add_hast_visitor(Box::new(ParagraphWarner));
-    pipeline.run_with_context(md, &mut ctx).expect("pipeline ok");
+    pipeline
+        .run_with_context(md, &mut ctx)
+        .expect("pipeline ok");
 
     let diags = sink.take();
     assert!(
@@ -602,11 +602,7 @@ fn context_survives_through_pipeline() {
     impl HastVisitor for ContextChecker {
         fn visit(&mut self, _node: &mut HastNode) {}
 
-        fn visit_with_context(
-            &mut self,
-            _node: &mut HastNode,
-            ctx: &mut BuildContext<'_>,
-        ) {
+        fn visit_with_context(&mut self, _node: &mut HastNode, ctx: &mut BuildContext<'_>) {
             self.saw_path = ctx.source_path.clone();
         }
     }
@@ -628,10 +624,14 @@ fn context_survives_through_pipeline() {
     };
 
     let mut pipeline = Pipeline::with_defaults();
-    pipeline.run_with_context(md, &mut ctx).expect("pipeline ok");
+    pipeline
+        .run_with_context(md, &mut ctx)
+        .expect("pipeline ok");
 
     // The registry was populated from context — proving context reached the visitor.
-    let entries = registry.get(&source).expect("context must have reached HeadingLinksPlugin");
+    let entries = registry
+        .get(&source)
+        .expect("context must have reached HeadingLinksPlugin");
     assert_eq!(entries[0].id, "check");
     drop(checker); // suppress unused warning
 }

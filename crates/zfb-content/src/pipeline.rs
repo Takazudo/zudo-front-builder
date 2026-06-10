@@ -1031,10 +1031,11 @@ impl Pipeline {
     /// produce different output/diagnostics per file. See the key-shape
     /// docs on `compile_mdx_to_jsx_module_cached`.
     ///
-    /// The heading registry is deliberately NOT threaded here — it is
-    /// per-build orchestration state; cross-file anchor validation
-    /// through the cache is follow-up work. The per-compile context
-    /// carries `heading_registry: None`.
+    /// The per-compile context carries a compile-local `HeadingRegistry`
+    /// seeded from `collect_headings` (same-file anchor validation, zfb#954).
+    /// BUILD-scoped cross-file registry (validating `./other.md#frag` across
+    /// files) remains deferred to #960 — structurally incompatible with
+    /// cache-hit replay today (HeadingLinksPlugin never runs on a hit).
     ///
     /// Production pipelines (`PipelineSpec::build_pipeline` — bundler and
     /// snapshot walker; `zfb dev` is the bundler in Development mode) arm

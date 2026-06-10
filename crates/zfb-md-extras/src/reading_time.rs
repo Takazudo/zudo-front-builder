@@ -264,7 +264,7 @@ pub fn compute_reading_time_minutes(node: &MdastNode, wpm: u32) -> u32 {
     extract_mdast_text(node, &mut text);
     let words = count_words(&text);
     let wpm = wpm.max(1); // guard against divide-by-zero
-    // Ceiling division: always at least 1 minute.
+                          // Ceiling division: always at least 1 minute.
     words.div_ceil(wpm).max(1)
 }
 
@@ -332,9 +332,8 @@ impl MdastVisitor for ReadingTimePlugin {
         // Marker prefix `/* zfb-synth-export */` distinguishes this node
         // from user-authored MDX ESM nodes so the emitter can emit it
         // without re-emitting user imports/exports.
-        let esm_value = format!(
-            "/* zfb-synth-export */ export const readingTimeMinutes = {minutes};"
-        );
+        let esm_value =
+            format!("/* zfb-synth-export */ export const readingTimeMinutes = {minutes};");
         root.children.push(MdastNode::MdxjsEsm(MdxjsEsm {
             value: esm_value,
             position: None,

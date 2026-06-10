@@ -89,9 +89,9 @@ fn parse_alert_prefix(text: &str) -> Option<(&'static str, &str)> {
     // Nothing else is allowed on the prefix line (e.g. `[!NOTE] title` is NOT
     // supported — the GFM alert spec has no inline title syntax).
     let after_bracket = &inner[close + 1..]; // everything after `]`
-    // Tolerate a CRLF line ending (Windows-authored markdown): the `markdown`
-    // crate preserves a literal `\r` in the text value, so `after_bracket` may
-    // begin with `\r\n` rather than `\n`.
+                                             // Tolerate a CRLF line ending (Windows-authored markdown): the `markdown`
+                                             // crate preserves a literal `\r` in the text value, so `after_bracket` may
+                                             // begin with `\r\n` rather than `\n`.
     let after = after_bracket.strip_prefix('\r').unwrap_or(after_bracket);
     // `after` must be either empty or start with `\n`
     if !after.is_empty() && !after.starts_with('\n') {
@@ -153,8 +153,7 @@ fn try_rewrite_blockquote(node: &mut MdastNode) -> bool {
     let mut bq_children = std::mem::take(&mut bq.children);
 
     // Mutate the first paragraph's first text node.
-    let first_para_children = if let Some(MdastNode::Paragraph(ref mut p)) =
-        bq_children.first_mut()
+    let first_para_children = if let Some(MdastNode::Paragraph(ref mut p)) = bq_children.first_mut()
     {
         // Update the text value.
         if let Some(MdastNode::Text(ref mut t)) = p.children.first_mut() {

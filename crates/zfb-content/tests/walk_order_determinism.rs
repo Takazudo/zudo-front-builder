@@ -78,7 +78,9 @@ fn without_reset_repeated_heading_gets_different_slug_second_time() {
     // First document — heading slug should be "setup".
     let first = compile(doc_a_body(), &mut p);
     assert!(
-        first.contains("\"setup\"") || first.contains("id=\\\"setup\\\"") || first.contains("#setup"),
+        first.contains("\"setup\"")
+            || first.contains("id=\\\"setup\\\"")
+            || first.contains("#setup"),
         "first pass: heading id must be 'setup', got: {first:.200}"
     );
 
@@ -150,8 +152,7 @@ fn build_snapshot_resets_pipeline_per_entry_so_hashes_match_bundler() {
         std::fs::write(root.join(name), body).unwrap();
     }
 
-    let snap =
-        build_snapshot(&[CollectionConfig::new("docs", &root)]).expect("snapshot ok");
+    let snap = build_snapshot(&[CollectionConfig::new("docs", &root)]).expect("snapshot ok");
     let entries = snap.collections.get("docs").expect("docs collection");
     assert_eq!(entries.len(), 5);
 
@@ -162,10 +163,15 @@ fn build_snapshot_resets_pipeline_per_entry_so_hashes_match_bundler() {
     for (i, (name, body)) in bodies.iter().enumerate() {
         bundler_pipeline.reset_per_entry();
         // Strip frontmatter the same way build_snapshot does.
-        let stripped = body.split_once("---\n").and_then(|(_, rest)| rest.split_once("---\n")).map(|(_, b)| b).unwrap_or(body);
+        let stripped = body
+            .split_once("---\n")
+            .and_then(|(_, rest)| rest.split_once("---\n"))
+            .map(|(_, b)| b)
+            .unwrap_or(body);
         let path = root.join(name);
-        let compiled = compile_mdx_to_jsx_module_cached(stripped, &path, None, Some(&mut bundler_pipeline))
-            .expect("compile ok");
+        let compiled =
+            compile_mdx_to_jsx_module_cached(stripped, &path, None, Some(&mut bundler_pipeline))
+                .expect("compile ok");
         let snap_entry = &entries[i];
         let snap_hash = snap_entry
             .module_specifier

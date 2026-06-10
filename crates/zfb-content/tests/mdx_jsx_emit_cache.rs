@@ -186,7 +186,11 @@ fn config_built_pipeline_uses_the_cache() {
     let second =
         compile_mdx_to_jsx_module_cached(src, &path, Some(&cache), Some(&mut equally_configured))
             .unwrap();
-    assert_eq!(cache.len(), 1, "same config + same input must hit, not re-insert");
+    assert_eq!(
+        cache.len(),
+        1,
+        "same config + same input must hit, not re-insert"
+    );
     assert_eq!(first, second, "cached value must match the original");
 }
 
