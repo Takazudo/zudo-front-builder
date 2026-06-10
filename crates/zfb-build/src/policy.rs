@@ -479,7 +479,11 @@ mod tests {
     #[test]
     fn no_content_roots_preserves_legacy_module_walk() {
         assert_eq!(
-            classify_change(Path::new("/proj/src/mdx/notes/foo.mdx"), proj(), never_global),
+            classify_change(
+                Path::new("/proj/src/mdx/notes/foo.mdx"),
+                proj(),
+                never_global
+            ),
             PathClass::Module
         );
     }
@@ -516,11 +520,7 @@ mod tests {
             PathClass::Page,
         );
         assert_eq!(
-            classify_change(
-                Path::new("/proj/pages/llms.txt.tsx"),
-                proj(),
-                never_global,
-            ),
+            classify_change(Path::new("/proj/pages/llms.txt.tsx"), proj(), never_global,),
             PathClass::Page,
         );
     }
@@ -674,11 +674,7 @@ mod tests {
         // fires. The classifier must skip the root-segment walk for
         // out-of-root paths and drop straight to extension sniff.
         assert_eq!(
-            classify_change(
-                Path::new("/srv/shared/public/foo.md"),
-                proj(),
-                never_global,
-            ),
+            classify_change(Path::new("/srv/shared/public/foo.md"), proj(), never_global,),
             PathClass::Content,
         );
         assert_eq!(
@@ -758,11 +754,7 @@ mod tests {
         );
         // No extension at all under an extra watch root → External.
         assert_eq!(
-            classify_change(
-                Path::new("/srv/shared/Makefile"),
-                proj(),
-                never_global,
-            ),
+            classify_change(Path::new("/srv/shared/Makefile"), proj(), never_global,),
             PathClass::External,
         );
     }

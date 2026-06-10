@@ -70,9 +70,7 @@ pub fn rewrite_links_in_html(
     add_trailing_slash: bool,
 ) -> Result<String, lol_html::errors::RewritingError> {
     let a_selector: Selector = "a[href]".parse().expect("static selector is valid");
-    let form_selector: Selector = "form[action]"
-        .parse()
-        .expect("static selector is valid");
+    let form_selector: Selector = "form[action]".parse().expect("static selector is valid");
 
     // Each handler is `FnMut + Send + Sync`; capture an owned `String`
     // clone of the prefix so the closures don't borrow from the outer
@@ -86,37 +84,42 @@ pub fn rewrite_links_in_html(
             element_content_handlers: vec![
                 (
                     Cow::Owned(a_selector),
-                    ElementContentHandlers::default().element(move |el: &mut Element<'_, '_, _>| {
-                        if has_no_base_optout(el) {
-                            return Ok(());
-                        }
-                        if let Some(href) = el.get_attribute("href") {
-                            if let Some(rewritten) = compute_prefixed_with_trailing_slash(
-                                &href,
-                                &prefix_for_a,
-                                add_trailing_slash,
-                            ) {
-                                el.set_attribute("href", &rewritten)?;
+                    ElementContentHandlers::default().element(
+                        move |el: &mut Element<'_, '_, _>| {
+                            if has_no_base_optout(el) {
+                                return Ok(());
                             }
-                        }
-                        Ok(())
-                    }),
+                            if let Some(href) = el.get_attribute("href") {
+                                if let Some(rewritten) = compute_prefixed_with_trailing_slash(
+                                    &href,
+                                    &prefix_for_a,
+                                    add_trailing_slash,
+                                ) {
+                                    el.set_attribute("href", &rewritten)?;
+                                }
+                            }
+                            Ok(())
+                        },
+                    ),
                 ),
                 (
                     Cow::Owned(form_selector),
-                    ElementContentHandlers::default().element(move |el: &mut Element<'_, '_, _>| {
-                        if has_no_base_optout(el) {
-                            return Ok(());
-                        }
-                        if let Some(action) = el.get_attribute("action") {
-                            // Form actions are POST/GET targets, not
-                            // page URLs — never append trailing slash.
-                            if let Some(rewritten) = compute_prefixed(&action, &prefix_for_form) {
-                                el.set_attribute("action", &rewritten)?;
+                    ElementContentHandlers::default().element(
+                        move |el: &mut Element<'_, '_, _>| {
+                            if has_no_base_optout(el) {
+                                return Ok(());
                             }
-                        }
-                        Ok(())
-                    }),
+                            if let Some(action) = el.get_attribute("action") {
+                                // Form actions are POST/GET targets, not
+                                // page URLs — never append trailing slash.
+                                if let Some(rewritten) = compute_prefixed(&action, &prefix_for_form)
+                                {
+                                    el.set_attribute("action", &rewritten)?;
+                                }
+                            }
+                            Ok(())
+                        },
+                    ),
                 ),
             ],
             ..RewriteStrSettings::new()
@@ -252,10 +255,7 @@ fn is_under_prefix(value: &str, prefix: &str) -> bool {
         return false;
     }
     let rest = &value[prefix.len()..];
-    rest.is_empty()
-        || rest.starts_with('/')
-        || rest.starts_with('?')
-        || rest.starts_with('#')
+    rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#')
 }
 
 /// Insert `/` between the path part and the `?query`/`#fragment`
@@ -270,9 +270,7 @@ fn maybe_insert_trailing_slash(value: &str) -> String {
         return value.to_string();
     }
     // Split off the suffix (?... or #...) so we only touch the path.
-    let suffix_idx = value
-        .find(['?', '#'])
-        .unwrap_or(value.len());
+    let suffix_idx = value.find(['?', '#']).unwrap_or(value.len());
     let (path, suffix) = value.split_at(suffix_idx);
     if path.is_empty() {
         return value.to_string();
@@ -395,22 +393,14 @@ mod tests {
             "http://example.com/x",
             "https://example.com/x",
         ] {
-            assert_eq!(
-                compute_prefixed(v, "/foo"),
-                None,
-                "expected skip for {v}"
-            );
+            assert_eq!(compute_prefixed(v, "/foo"), None, "expected skip for {v}");
         }
     }
 
     #[test]
     fn skips_relative_paths() {
         for v in ["foo.html", "./foo", "../foo", "page", "page/sub.html"] {
-            assert_eq!(
-                compute_prefixed(v, "/foo"),
-                None,
-                "expected skip for {v}"
-            );
+            assert_eq!(compute_prefixed(v, "/foo"), None, "expected skip for {v}");
         }
     }
 
@@ -612,8 +602,7 @@ mod tests {
             Some("/foo/sitemap.xml")
         );
         assert_eq!(
-            compute_prefixed_with_trailing_slash("/files/report.pdf?dl=1", "/foo", true)
-                .as_deref(),
+            compute_prefixed_with_trailing_slash("/files/report.pdf?dl=1", "/foo", true).as_deref(),
             Some("/foo/files/report.pdf?dl=1")
         );
     }

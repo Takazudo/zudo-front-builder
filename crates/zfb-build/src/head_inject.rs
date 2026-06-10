@@ -309,10 +309,7 @@ mod tests {
         let html = "<html><head></head><body/></html>";
         let assets = ProdHeadAssets {
             css_url: Some("/assets/styles.css".into()),
-            island_module_urls: vec![
-                "/assets/islands.js".into(),
-                "/assets/extra.js".into(),
-            ],
+            island_module_urls: vec!["/assets/islands.js".into(), "/assets/extra.js".into()],
         };
         let out = inject_prod_head_assets(html, &assets);
         let out = out.as_ref();
@@ -417,7 +414,9 @@ mod tests {
     #[test]
     fn needs_doctype_for_bare_html_document() {
         // The preact-render-to-string shell: starts with `<html …>`, no doctype.
-        assert!(needs_html5_doctype("<html lang=\"en\"><head></head><body></body></html>"));
+        assert!(needs_html5_doctype(
+            "<html lang=\"en\"><head></head><body></body></html>"
+        ));
         assert!(needs_html5_doctype("<html><body>x</body></html>"));
     }
 
@@ -426,7 +425,9 @@ mod tests {
         // Case-insensitive; never doubles an existing doctype.
         assert!(!needs_html5_doctype("<!doctype html><html></html>"));
         assert!(!needs_html5_doctype("<!DOCTYPE HTML><html></html>"));
-        assert!(!needs_html5_doctype("<!Doctype html>\n<html lang=\"en\"></html>"));
+        assert!(!needs_html5_doctype(
+            "<!Doctype html>\n<html lang=\"en\"></html>"
+        ));
     }
 
     #[test]

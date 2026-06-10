@@ -65,7 +65,7 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use zfb_graph::PageId;
 
 use crate::plan::RebuildPlan;
@@ -245,8 +245,7 @@ pub struct RenderedPage {
 /// the renderer can decide to render them serially (cheap, dev) or in
 /// parallel (production). Errors abort the tick — the watcher stays
 /// alive but the rebuild is reported as failed.
-pub type PageRenderer =
-    Arc<dyn Fn(&[PageId]) -> Result<Vec<RenderedPage>> + Send + Sync + 'static>;
+pub type PageRenderer = Arc<dyn Fn(&[PageId]) -> Result<Vec<RenderedPage>> + Send + Sync + 'static>;
 
 /// Function that runs the CSS pipeline once and returns whether the
 /// emitted asset is new (i.e. whether the asset URL changed).
@@ -294,8 +293,7 @@ pub struct IslandsBundleInfo {
 /// shape when the bundler ran but the output was byte-identical to the
 /// previous run; the orchestrator records the rerun in
 /// [`BuildOutcome::islands_rerun`] but emits no SSE event.
-pub type IslandsRunner =
-    Arc<dyn Fn() -> Result<Option<IslandsBundleInfo>> + Send + Sync + 'static>;
+pub type IslandsRunner = Arc<dyn Fn() -> Result<Option<IslandsBundleInfo>> + Send + Sync + 'static>;
 
 /// Outcome of one [`RendererReloader`] invocation (issue #956).
 ///

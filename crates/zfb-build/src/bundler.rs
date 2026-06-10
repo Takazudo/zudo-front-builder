@@ -115,6 +115,7 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
+use zfb_content::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic};
 use zfb_content::frontmatter as zfb_frontmatter;
 use zfb_content::plugins::util::source_map::{
     build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
@@ -873,6 +874,12 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // After the walk completes, handled according to `on_broken_links`.
     let mut all_broken_links: Vec<(String, String)> = Vec::new(); // (file_path, url)
 
+    // Accumulated markdown diagnostics (transclude errors, imageDimensions
+    // warnings, linkValidation findings) across all materialise calls.
+    // Drained adjacent to `take_broken_links`; policy applied after ALL walks
+    // complete — mirroring the broken-links gate above (zfb#953).
+    let mut all_markdown_diagnostics: Vec<MarkdownDiagnostic> = Vec::new();
+
     // Compile `bundle.exclude` once and share it across every
     // `materialise_shadow` call (pages / content / components / layouts /
     // extra top-level dirs). Empty patterns → a matcher that never matches,
@@ -916,12 +923,14 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     let mut routes: Vec<RouteEntry> = Vec::new();
     {
         let mut broken = Vec::new();
+        let mut md_diags = Vec::new();
         materialise_shadow(
             &pages_dir,
             &shadow_pages,
             &mut routes,
             &mat_ctx,
             &mut broken,
+            &mut md_diags,
         )
         .with_context(|| {
             format!(
@@ -930,6 +939,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             )
         })?;
         all_broken_links.extend(broken);
+        all_markdown_diagnostics.extend(md_diags);
     }
 
     // Per-collection content materialisation (#506).
@@ -950,6 +960,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             let col_root = resolver.resolve(&col.root);
             let dest = shadow_content.join(&col.name);
             let mut broken = Vec::new();
+            let mut md_diags = Vec::new();
             materialise_collection(
                 &col_root,
                 &dest,
@@ -960,6 +971,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 col.exclude.as_deref(),
                 col.id_strip_suffix.as_deref(),
                 &mut broken,
+                &mut md_diags,
             )
             .with_context(|| {
                 format!(
@@ -969,6 +981,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
                 )
             })?;
             all_broken_links.extend(broken);
+            all_markdown_diagnostics.extend(md_diags);
         }
         // Deterministic ordering — keys are `(collection, rel_path)`
         // so the emitted import indices match the underlying file
@@ -976,12 +989,14 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         content_imports.sort_by(|a, b| a.shadow_rel_path.cmp(&b.shadow_rel_path));
     } else {
         let mut broken = Vec::new();
+        let mut md_diags = Vec::new();
         materialise_shadow(
             &content_dir,
             &shadow_content,
             &mut Vec::new(),
             &mat_ctx,
             &mut broken,
+            &mut md_diags,
         )
         .with_context(|| {
             format!(
@@ -990,16 +1005,19 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             )
         })?;
         all_broken_links.extend(broken);
+        all_markdown_diagnostics.extend(md_diags);
     }
 
     {
         let mut broken = Vec::new();
+        let mut md_diags = Vec::new();
         materialise_shadow(
             &components_dir,
             &shadow_components,
             &mut Vec::new(),
             &mat_ctx,
             &mut broken,
+            &mut md_diags,
         )
         .with_context(|| {
             format!(
@@ -1008,15 +1026,18 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             )
         })?;
         all_broken_links.extend(broken);
+        all_markdown_diagnostics.extend(md_diags);
     }
     {
         let mut broken = Vec::new();
+        let mut md_diags = Vec::new();
         materialise_shadow(
             &layouts_dir,
             &shadow_layouts,
             &mut Vec::new(),
             &mat_ctx,
             &mut broken,
+            &mut md_diags,
         )
         .with_context(|| {
             format!(
@@ -1025,6 +1046,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             )
         })?;
         all_broken_links.extend(broken);
+        all_markdown_diagnostics.extend(md_diags);
     }
 
     // 2a-extra. Materialise any *other* directories at the project root
@@ -1062,14 +1084,23 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
             let name = src_dir.file_name().unwrap_or_default().to_os_string();
             let dst_dir = shadow.join(&name);
             let mut broken = Vec::new();
-            materialise_shadow(&src_dir, &dst_dir, &mut Vec::new(), &mat_ctx, &mut broken)
-                .with_context(|| {
-                    format!(
-                        "bundler: failed materialising extra dir {} into shadow",
-                        src_dir.display()
-                    )
-                })?;
+            let mut md_diags = Vec::new();
+            materialise_shadow(
+                &src_dir,
+                &dst_dir,
+                &mut Vec::new(),
+                &mat_ctx,
+                &mut broken,
+                &mut md_diags,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: failed materialising extra dir {} into shadow",
+                    src_dir.display()
+                )
+            })?;
             all_broken_links.extend(broken);
+            all_markdown_diagnostics.extend(md_diags);
         }
     }
 
@@ -1097,12 +1128,108 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         }
     }
 
-    // 2c. Handle broken links collected across all materialise calls.
+    // 2c. Handle markdown diagnostics (transclude errors, imageDimensions
+    // warnings, linkValidation findings) collected across all materialise calls.
+    //
+    // All walks ran to completion first so the full set is reported in one
+    // pass — same contract as the broken-links gate below.
+    //
+    // Ordering note: this block intentionally runs BEFORE the broken-links
+    // gate (2d) so that markdown-diagnostic errors (e.g. transclude failures)
+    // are always surfaced even when `onBrokenLinks: error` would bail first.
+    // Both gates collect after all walks, so neither skips any findings.
+    //
+    // Severity routing:
+    //   Info / Warning  → stderr warn lines with path(:line) prefix; build succeeds.
+    //   Error           → bail! listing all findings; build fails.
+    //
+    // Intentional divergence from #948's original wording:
+    //   #948 said "warnings for imageDimensions/transclude", but transclude
+    //   failures are Error severity by plugin design (the include node is
+    //   dropped when the file cannot be read — the output is broken), so
+    //   they FAIL the build.  imageDimensions failures are Warning severity
+    //   (the <img> is left unchanged) and only warn.  linkValidation severity
+    //   is governed by the `failOnBroken` config flag (Warning by default,
+    //   Error when set).  This divergence is intentional and permanent; do
+    //   not "fix" it to match the original wording (zfb#953).
+    if !all_markdown_diagnostics.is_empty() {
+        // Format a location prefix: "path" or "path:line" when available.
+        let fmt_location = |d: &MarkdownDiagnostic| -> String {
+            let loc = match d {
+                MarkdownDiagnostic::BrokenLink { location, .. } => location.as_ref(),
+                MarkdownDiagnostic::Generic { location, .. } => location.as_ref(),
+            };
+            match loc {
+                Some(l) => {
+                    let path_str = l
+                        .path
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
+                    match l.line {
+                        Some(line) => format!("{path_str}:{line}"),
+                        None => path_str,
+                    }
+                }
+                None => String::new(),
+            }
+        };
+        let fmt_message = |d: &MarkdownDiagnostic| -> String {
+            match d {
+                MarkdownDiagnostic::BrokenLink { url, .. } => {
+                    format!("broken link: {url}")
+                }
+                MarkdownDiagnostic::Generic { message, .. } => message.clone(),
+            }
+        };
+
+        let errors: Vec<&MarkdownDiagnostic> = all_markdown_diagnostics
+            .iter()
+            .filter(|d| d.severity() == DiagnosticSeverity::Error)
+            .collect();
+
+        // Emit Info / Warning diagnostics regardless of whether there are
+        // errors — the user should see all findings before the build aborts.
+        for d in &all_markdown_diagnostics {
+            if d.severity() < DiagnosticSeverity::Error {
+                let loc = fmt_location(d);
+                let msg = fmt_message(d);
+                if loc.is_empty() {
+                    eprintln!("zfb warn: {msg}");
+                } else {
+                    eprintln!("zfb warn: {loc}: {msg}");
+                }
+            }
+        }
+
+        if !errors.is_empty() {
+            let mut msg = format!(
+                "bundler: {} markdown diagnostic error(s) found:\n",
+                errors.len()
+            );
+            for d in &errors {
+                let loc = fmt_location(d);
+                let text = fmt_message(d);
+                if loc.is_empty() {
+                    msg.push_str(&format!("  error: {text}\n"));
+                } else {
+                    msg.push_str(&format!("  {loc}: {text}\n"));
+                }
+            }
+            bail!("{}", msg.trim_end());
+        }
+    }
+
+    // 2d. Handle broken links collected across all materialise calls.
     //
     // All calls ran to completion first so the full set of broken links is
     // reported in one pass (consistent with the `onBrokenLinks: 'error'`
     // contract in the issue spec). Warnings are emitted to stderr so they
     // are visible to both the CLI user and CI log scanners.
+    //
+    // Ordering note: placed AFTER the markdown-diagnostics gate (2c) so that
+    // transclude/imageDimensions errors are surfaced even when this gate would
+    // bail first (both gates run after all walks, so no findings are missed).
     if !all_broken_links.is_empty() {
         let on_broken = input
             .resolve_markdown_links
@@ -1136,7 +1263,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         }
     }
 
-    // 2d. CSS Modules — rewrite every `.module.css` file in the shadow
+    // 2e. CSS Modules — rewrite every `.module.css` file in the shadow
     //     tree to a JS module that re-exports its scoped class-name
     //     map as the default export. Paired with the
     //     `--loader:.module.css=js` esbuild flag, this makes a user's
@@ -1146,7 +1273,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     rewrite_css_modules_in_shadow(shadow, &input.project_root, &input.css_module_class_maps)
         .context("bundler: failed rewriting CSS Modules in shadow tree")?;
 
-    // 2e. Project-root `mdx-components.tsx` global override map (#616).
+    // 2f. Project-root `mdx-components.tsx` global override map (#616).
     //     A root-level FILE is not materialised by any pass above, so copy
     //     it into the shadow root here. The returned spec is threaded into
     //     `write_entry_module`, which emits the `import` + the
@@ -1548,6 +1675,7 @@ fn materialise_shadow(
     routes: &mut Vec<RouteEntry>,
     ctx: &MaterialiseCtx<'_>,
     broken_links_out: &mut Vec<(String, String)>,
+    markdown_diagnostics_out: &mut Vec<MarkdownDiagnostic>,
 ) -> Result<()> {
     if !src.exists() {
         // A missing source dir is non-fatal — not every project has e.g.
@@ -1738,6 +1866,11 @@ fn materialise_shadow(
             for diag in pipeline.take_broken_links() {
                 broken_links_out.push((from.display().to_string(), diag.url));
             }
+            // Drain generic markdown diagnostics (transclude errors,
+            // imageDimensions warnings, linkValidation findings) — adjacent
+            // to the broken-links drain so all pipeline output is collected
+            // before the shadow write (zfb#953).
+            markdown_diagnostics_out.extend(pipeline.take_markdown_diagnostics());
             fs::write(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
         } else if is_md && is_pages_dir {
@@ -1788,6 +1921,9 @@ fn materialise_shadow(
             for diag in pipeline.take_broken_links() {
                 broken_links_out.push((from.display().to_string(), diag.url));
             }
+            // Drain generic markdown diagnostics adjacent to broken-links
+            // drain (zfb#953).
+            markdown_diagnostics_out.extend(pipeline.take_markdown_diagnostics());
             // Derive slug from the relative path so the title fallback matches
             // the URL: `about.md` → "about", `index.md` → "index",
             // `blog/post.md` → "post".
@@ -2128,6 +2264,7 @@ fn materialise_collection(
     exclude: Option<&[String]>,
     id_strip_suffix: Option<&str>,
     broken_links_out: &mut Vec<(String, String)>,
+    markdown_diagnostics_out: &mut Vec<MarkdownDiagnostic>,
 ) -> Result<()> {
     if !src.exists() {
         return Ok(());
@@ -2304,6 +2441,9 @@ fn materialise_collection(
             for diag in pipeline.take_broken_links() {
                 broken_links_out.push((from.display().to_string(), diag.url));
             }
+            // Drain generic markdown diagnostics adjacent to broken-links
+            // drain (zfb#953).
+            markdown_diagnostics_out.extend(pipeline.take_markdown_diagnostics());
             fs::write(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
 
@@ -4869,6 +5009,7 @@ mod tests {
             None,
             None,
             &mut Vec::new(),
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -4955,6 +5096,7 @@ mod tests {
             None,
             None,
             None,
+            &mut Vec::new(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -5121,6 +5263,7 @@ mod tests {
             None,
             None,
             None,
+            &mut Vec::new(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -5705,6 +5848,7 @@ mod tests {
             &mut routes,
             &ctx,
             &mut Vec::new(),
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -5779,6 +5923,7 @@ mod tests {
             &shadow_pages_dest,
             &mut routes,
             &ctx,
+            &mut Vec::new(),
             &mut Vec::new(),
         )
         .unwrap();
@@ -5996,6 +6141,7 @@ mod tests {
             &mut routes,
             &ctx,
             &mut Vec::new(),
+            &mut Vec::new(),
         )
         .expect_err("expected a route collision error");
         err.to_string()
@@ -6190,7 +6336,15 @@ mod tests {
         let mut routes = Vec::new();
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(&src, &dest, &mut routes, &ctx, &mut Vec::new()).unwrap();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut routes,
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
 
         // Route is detected for /about.
         assert_eq!(routes.len(), 1, "expected one route; got {routes:?}");
@@ -6253,7 +6407,15 @@ mod tests {
         let mut routes = Vec::new();
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(&src, &dest, &mut routes, &ctx, &mut Vec::new()).unwrap();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut routes,
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
 
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].route, "/");
@@ -6279,7 +6441,15 @@ mod tests {
         let mut routes = Vec::new();
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(&src, &dest, &mut routes, &ctx, &mut Vec::new()).unwrap();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut routes,
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
 
         // In non-pages dir: post.md copied verbatim (not compiled into shell).
         let shadow_file = dest.join("post.md");
@@ -6321,7 +6491,15 @@ mod tests {
         let mut routes = Vec::new();
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(&src, &dest, &mut routes, &ctx, &mut Vec::new()).unwrap();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut routes,
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
 
         let body = fs::read_to_string(dest.join("_zfb_md_body_about.jsx")).unwrap();
 
@@ -6388,7 +6566,15 @@ mod tests {
             let dest_shadow = tmp.path().join("shadow");
             let exclude = no_bundle_exclude();
             let ctx = default_mat_ctx(tmp.path(), &exclude);
-            materialise_shadow(&src, &dest_shadow, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
+            materialise_shadow(
+                &src,
+                &dest_shadow,
+                &mut Vec::new(),
+                &ctx,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .unwrap();
 
             let shadow_files = collect_dest_files(&dest_shadow);
             assert!(
@@ -6413,6 +6599,7 @@ mod tests {
                 None,
                 None,
                 None,
+                &mut Vec::new(),
                 &mut Vec::new(),
             )
             .unwrap();
@@ -6448,7 +6635,15 @@ mod tests {
         let dest = tmp.path().join("shadow");
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(&src, &dest, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
 
         let files = collect_dest_files(&dest);
         assert!(
@@ -6475,7 +6670,15 @@ mod tests {
         let dest = tmp.path().join("shadow");
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_shadow(&src, &dest, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
 
         let files = collect_dest_files(&dest);
         assert!(
@@ -6717,7 +6920,15 @@ mod tests {
         let dest = dest_tmp.path().join("shadow");
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(src_tmp.path(), &exclude);
-        materialise_shadow(&src, &dest, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
 
         for filename in &["style.css", "image.png"] {
             let dest_file = dest.join(filename);
@@ -6773,6 +6984,7 @@ mod tests {
             None,
             None,
             &mut Vec::new(),
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -6827,6 +7039,7 @@ mod tests {
                 dest_tmp.path(),
                 &mut Vec::new(),
                 &ctx,
+                &mut Vec::new(),
                 &mut Vec::new(),
             )
             .unwrap();
@@ -6987,7 +7200,15 @@ mod tests {
         let dest = root.path().join("shadow").join("components");
         let matcher = BundleExcludeMatcher::new(&["components/*.stories.tsx".to_string()]).unwrap();
         let ctx = default_mat_ctx(root.path(), &matcher);
-        materialise_shadow(&src, &dest, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
 
         assert!(dest.join("Keep.tsx").exists(), "non-matching file kept");
         assert!(
@@ -7009,7 +7230,15 @@ mod tests {
         let dest = root.path().join("shadow").join("components");
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(root.path(), &exclude);
-        materialise_shadow(&src, &dest, &mut Vec::new(), &ctx, &mut Vec::new()).unwrap();
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
 
         assert!(
             dest.join("Keep.tsx").exists(),

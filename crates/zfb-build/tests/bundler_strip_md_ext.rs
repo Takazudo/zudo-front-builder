@@ -204,9 +204,7 @@ fn strip_md_ext_off_preserves_md_hrefs() {
     // verbatim into the bundle. This pins the "opt-in by default"
     // contract from the issue.
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_strip_md_ext] no esbuild binary available; skipping."
-        );
+        eprintln!("[bundler_strip_md_ext] no esbuild binary available; skipping.");
         return;
     };
 

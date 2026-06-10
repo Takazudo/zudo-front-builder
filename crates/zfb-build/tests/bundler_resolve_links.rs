@@ -229,9 +229,7 @@ fn resolve_links_good_link_rewrites_to_route_url() {
 #[test]
 fn resolve_links_warn_mode_succeeds_despite_broken_link() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_resolve_links] no esbuild binary available; skipping."
-        );
+        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
         return;
     };
 
@@ -250,9 +248,7 @@ fn resolve_links_warn_mode_succeeds_despite_broken_link() {
 #[test]
 fn resolve_links_error_mode_fails_on_broken_link() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_resolve_links] no esbuild binary available; skipping."
-        );
+        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
         return;
     };
 
@@ -261,9 +257,8 @@ fn resolve_links_error_mode_fails_on_broken_link() {
     write_fixture_project(&root);
 
     let input = make_input_with_resolve(&root, &esbuild, "dist-c", OnBrokenLinks::Error);
-    let err = bundle(input).expect_err(
-        "bundle should fail with onBrokenLinks: error when broken links exist",
-    );
+    let err = bundle(input)
+        .expect_err("bundle should fail with onBrokenLinks: error when broken links exist");
     let msg = format!("{err:#}");
     // The error message must identify the broken link.
     assert!(
@@ -281,9 +276,7 @@ fn resolve_links_error_mode_fails_on_broken_link() {
 #[test]
 fn resolve_links_disabled_preserves_raw_mdx_hrefs() {
     let Some(esbuild) = locate_esbuild() else {
-        eprintln!(
-            "[bundler_resolve_links] no esbuild binary available; skipping."
-        );
+        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
         return;
     };
 

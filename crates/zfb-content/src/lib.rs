@@ -33,7 +33,8 @@ pub use plugins::toc::TocConfig;
 // without taking a direct dependency on `zfb-md-ast` / `zfb-md-extras`.
 pub use zfb_md_extras::{
     directives_enabled, heading_id_strategy, into_directive_def, DirectiveFullSpec, DirectiveSpec,
-    DirectiveSpecKind, FeatureToggle, HeadingIdStrategy, HeadingIdsConfig, MarkdownFeaturesConfig,
+    DirectiveSpecKind, FeatureToggle, HeadingIdStrategy, HeadingIdsConfig, ImageDimensionsConfig,
+    LinkValidationConfig, MarkdownFeaturesConfig, TranscludeConfig,
 };
 
 // Read-recorder surface (zfb#942): the recorder + outcome types live in

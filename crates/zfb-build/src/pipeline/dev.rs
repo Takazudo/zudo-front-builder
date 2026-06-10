@@ -139,14 +139,13 @@ impl AssetPipeline for DevAssetPipeline {
                             })
                             .remove(prev);
                         {
-                            let mut last_out =
-                                self.last_output_path.lock().unwrap_or_else(|p| {
-                                    tracing::warn!(
-                                        site = "DevAssetPipeline.last_output_path (ssr-only-prune)",
-                                        "mutex poisoned, recovering"
-                                    );
-                                    p.into_inner()
-                                });
+                            let mut last_out = self.last_output_path.lock().unwrap_or_else(|p| {
+                                tracing::warn!(
+                                    site = "DevAssetPipeline.last_output_path (ssr-only-prune)",
+                                    "mutex poisoned, recovering"
+                                );
+                                p.into_inner()
+                            });
                             last_out.retain(|_, v| v != prev);
                         }
                     }

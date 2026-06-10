@@ -287,6 +287,13 @@ pub fn build_snapshot_with_config(
             collection: cfg.name.clone(),
             source,
         })?;
+        // `pipeline` is intentionally NOT drained here — the snapshot walk
+        // runs first and its per-collection pipelines are dropped undrained.
+        // Compile-cache replay (`mdx_jsx_emit.rs` — `replay_markdown_diagnostics`)
+        // re-injects the same diagnostics into the bundler's walk when it hits
+        // cached entries, so bundler-only reporting is sufficient and avoids
+        // double-reporting the same finding on every dev tick (A1 decision,
+        // zfb#951; implementation in zfb#953).
 
         let mut snapshots: Vec<EntrySnapshot> = entries
             .into_iter()

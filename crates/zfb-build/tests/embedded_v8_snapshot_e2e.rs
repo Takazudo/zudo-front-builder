@@ -227,16 +227,8 @@ fn snapshot_json_is_deterministic_across_calls() {
     fs::create_dir_all(&docs).unwrap();
     fs::create_dir_all(&blog).unwrap();
 
-    fs::write(
-        docs.join("zz-last.md"),
-        "---\ntitle: \"Z\"\n---\nlast\n",
-    )
-    .unwrap();
-    fs::write(
-        docs.join("aa-first.md"),
-        "---\ntitle: \"A\"\n---\nfirst\n",
-    )
-    .unwrap();
+    fs::write(docs.join("zz-last.md"), "---\ntitle: \"Z\"\n---\nlast\n").unwrap();
+    fs::write(docs.join("aa-first.md"), "---\ntitle: \"A\"\n---\nfirst\n").unwrap();
     fs::write(
         blog.join("beta.md"),
         "---\ntitle: \"Beta\"\n---\nbeta body\n",
@@ -323,16 +315,8 @@ fn snapshot_json_is_stable_under_reversed_config_order() {
     let b_dir = fixture_tmp.path().join("b");
     fs::create_dir_all(&a_dir).unwrap();
     fs::create_dir_all(&b_dir).unwrap();
-    fs::write(
-        a_dir.join("one.md"),
-        "---\ntitle: \"One\"\n---\none\n",
-    )
-    .unwrap();
-    fs::write(
-        b_dir.join("two.md"),
-        "---\ntitle: \"Two\"\n---\ntwo\n",
-    )
-    .unwrap();
+    fs::write(a_dir.join("one.md"), "---\ntitle: \"One\"\n---\none\n").unwrap();
+    fs::write(b_dir.join("two.md"), "---\ntitle: \"Two\"\n---\ntwo\n").unwrap();
 
     let forward = vec![
         CollectionConfig::new("a", &a_dir),
@@ -343,14 +327,10 @@ fn snapshot_json_is_stable_under_reversed_config_order() {
         CollectionConfig::new("a", &a_dir),
     ];
 
-    let json_fwd = serde_json::to_string(
-        &build_snapshot(&forward).expect("forward snapshot"),
-    )
-    .expect("serialize forward");
-    let json_rev = serde_json::to_string(
-        &build_snapshot(&reversed).expect("reversed snapshot"),
-    )
-    .expect("serialize reversed");
+    let json_fwd = serde_json::to_string(&build_snapshot(&forward).expect("forward snapshot"))
+        .expect("serialize forward");
+    let json_rev = serde_json::to_string(&build_snapshot(&reversed).expect("reversed snapshot"))
+        .expect("serialize reversed");
 
     let hash_fwd = {
         let mut h = Sha256::new();
@@ -680,8 +660,7 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
     };
 
     let out = bundle(input).expect("bundle should succeed for fixture project");
-    let bundle_source = fs::read_to_string(&out.bundle_path)
-        .expect("read produced bundle.mjs");
+    let bundle_source = fs::read_to_string(&out.bundle_path).expect("read produced bundle.mjs");
 
     // Spot-check: the snapshot literal made it into the bundle. This
     // guarantees the bundler-level wiring is correct; the V8 host
@@ -705,7 +684,8 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
         .unwrap_or_else(|e| panic!("dispatch / failed: {e}"));
 
     assert_eq!(
-        resp.status, 200,
+        resp.status,
+        200,
         "homepage must render 200; got status {}, body={:?}",
         resp.status,
         resp.body_utf8(),
@@ -876,7 +856,8 @@ async fn embedded_v8_md_page_renders_to_html() {
         .unwrap_or_else(|e| panic!("dispatch /about failed: {e}"));
 
     assert_eq!(
-        resp.status, 200,
+        resp.status,
+        200,
         "/about must render 200; got status {}, body={:?}",
         resp.status,
         resp.body_utf8(),
@@ -932,9 +913,7 @@ fn html_page_written_verbatim_via_render_all() {
     // never reach the backend for the legal route.
     let backend = Backend::Stub {
         handler: Arc::new(|path: &str| {
-            panic!(
-                "backend must not be dispatched for static_html routes; got path: {path}"
-            )
+            panic!("backend must not be dispatched for static_html routes; got path: {path}")
         }),
     };
 
@@ -1364,8 +1343,8 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
          zfb/content instance broke the snapshot bridge again. body: {body}"
     );
 
-    let json: serde_json::Value =
-        serde_json::from_str(&body).unwrap_or_else(|e| panic!("paths() body is not JSON: {e} — body: {body}"));
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("paths() body is not JSON: {e} — body: {body}"));
     let arr = json
         .as_array()
         .unwrap_or_else(|| panic!("paths() must return a JSON array; got: {body}"));
