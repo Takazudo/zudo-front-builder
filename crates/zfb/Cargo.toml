@@ -55,7 +55,12 @@ indicatif = "0.17"
 # the same rewrite to served HTML (issue #229), the pure-string pieces
 # moved to `zfb_build::link_base_rewrite` so both consumers funnel
 # through the same code. We no longer call `lol_html` directly from
-# this crate.
+# this crate for the link-rewrite path.
+#
+# Issue #990 re-introduces a direct `lol_html` usage for the read-only
+# island-marker-check pass (`commands/island_marker_check.rs`).  Same
+# workspace pin as the existing users (`zfb-build`, `zfb-islands`).
+lol_html = "2.8.1"
 owo-colors = { version = "4", features = ["supports-colors"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

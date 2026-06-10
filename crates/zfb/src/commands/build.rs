@@ -434,12 +434,16 @@ trait BuildRunner {
     /// - `FakeRunner` (test-only) — returns whatever bytes the test
     ///   set up so the rewrite path can be exercised without running
     ///   Tailwind / esbuild subprocesses.
+    /// Returns both the bytes-only emitter inputs (CSS / islands / client
+    /// scripts) **and** the set of registered island marker names collected by
+    /// the islands scanner.  The marker-name set is empty when no islands were
+    /// found; callers that only need the pipeline bytes may simply ignore it.
     fn emit_prod_assets(
         &self,
         project_root: &Path,
         outdir: &Path,
         config: &Config,
-    ) -> Result<ProdAssetEmitterInputs>;
+    ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)>;
 }
 
 /// Opaque handle that keeps a background renderer state alive.
@@ -573,7 +577,7 @@ impl BuildRunner for DefaultRunner {
         project_root: &Path,
         outdir: &Path,
         config: &Config,
-    ) -> Result<ProdAssetEmitterInputs> {
+    ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
         // Run `CssPipeline::build_emitter` and
         // `build_production_islands_asset` eagerly (before render) so
         // head injection knows which stable URLs are backed by
@@ -582,7 +586,7 @@ impl BuildRunner for DefaultRunner {
         // `"use client"` components, etc.).
         let css = build_default_css_payload(project_root, outdir, config)
             .context("CSS emitter (DefaultRunner) failed")?;
-        let islands = build_default_islands_payload(
+        let (islands, registered_marker_names) = build_default_islands_payload(
             project_root,
             outdir,
             config.framework,
@@ -592,11 +596,14 @@ impl BuildRunner for DefaultRunner {
         let client_scripts =
             build_default_client_scripts_payloads(project_root, outdir, config.framework)
                 .context("client-script emitters (DefaultRunner) failed")?;
-        Ok(ProdAssetEmitterInputs {
-            css,
-            islands,
-            client_scripts,
-        })
+        Ok((
+            ProdAssetEmitterInputs {
+                css,
+                islands,
+                client_scripts,
+            },
+            registered_marker_names,
+        ))
     }
 }
 
@@ -1008,12 +1015,23 @@ pub(crate) fn compute_css_module_class_maps(
 /// the stable URL (`/assets/islands.js`) which the rewrite step
 /// replaces with the hashed form; no stable `islands.js` is written
 /// to disk in production (the bundler carries bytes in memory only).
+///
+/// The second return value is the set of **registered marker names** from
+/// `islands_set` — the strings the SSR side will write into
+/// `data-zfb-island` / `data-zfb-island-skip-ssr` attributes.  The build
+/// pass uses this for the island-marker-check (#984 / #990).  It is empty
+/// (not `None`) when no islands were found or when the scanner failed, so
+/// the marker-check pass can still warn about rendered markers with zero
+/// registered islands.
 pub(crate) fn build_default_islands_payload(
     project_root: &Path,
     outdir: &Path,
     framework: crate::config::Framework,
     plugin_config: &IslandsPluginConfig,
-) -> Result<Option<AssetEmitterPayload>> {
+) -> Result<(
+    Option<AssetEmitterPayload>,
+    std::collections::BTreeSet<String>,
+)> {
     // Walk the conventional islands roots. The scanner DFS-walks
     // imports starting from each entry path, so seeding with the
     // pages dir is enough — anything reachable through a
@@ -1035,7 +1053,7 @@ pub(crate) fn build_default_islands_payload(
         }
     }
     if entries.is_empty() {
-        return Ok(None);
+        return Ok((None, std::collections::BTreeSet::new()));
     }
 
     let resolver = FsResolver::new();
@@ -1045,7 +1063,7 @@ pub(crate) fn build_default_islands_payload(
             output::warn(format!(
                 "islands scanner failed ({e}); skipping islands asset emission"
             ));
-            return Ok(None);
+            return Ok((None, std::collections::BTreeSet::new()));
         }
     };
     // Issue #289: a project may use `<ClientRouter />` without any
@@ -1083,8 +1101,14 @@ pub(crate) fn build_default_islands_payload(
                 if entries.len() == 1 { "y" } else { "ies" }
             ));
         }
-        return Ok(None);
+        return Ok((None, std::collections::BTreeSet::new()));
     }
+
+    // Collect the registered marker names now — needed by the build-time
+    // island-marker-check pass (#984 / #990) even when esbuild later decides
+    // no bundle is needed (client-router-only projects).
+    let registered_marker_names: std::collections::BTreeSet<String> =
+        islands_set.iter().map(|i| i.marker_name.clone()).collect();
 
     // Sub #212 follow-up — extend embedded-binary AND embedded-node_modules
     // extraction to the islands bundler.
@@ -1199,14 +1223,17 @@ pub(crate) fn build_default_islands_payload(
                     bytes: c.bytes,
                 })
                 .collect();
-            Ok(Some(AssetEmitterPayload {
-                bytes: asset.bytes,
-                relative_path: asset.relative_path,
-                stable_url: asset.stable_url,
-                companions,
-            }))
+            Ok((
+                Some(AssetEmitterPayload {
+                    bytes: asset.bytes,
+                    relative_path: asset.relative_path,
+                    stable_url: asset.stable_url,
+                    companions,
+                }),
+                registered_marker_names,
+            ))
         }
-        None => Ok(None),
+        None => Ok((None, registered_marker_names)),
     }
 }
 
@@ -1793,7 +1820,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     //      never written would leak the unhashed `/assets/styles.css`
     //      URL into shipped HTML (the prod pipeline only rewrites
     //      stable→hashed for slots it actually emits).
-    let mut prod_asset_inputs = runner
+    let (mut prod_asset_inputs, registered_marker_names) = runner
         .emit_prod_assets(project_root, outdir, config)
         .context("production asset emitters failed")?;
     apply_asset_url_base(&mut prod_asset_inputs, config.base.as_deref());
@@ -1886,6 +1913,19 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         config.trailing_slash,
     )
     .context("link base rewrite failed")?;
+
+    // 3.7. Island-marker check (issue #984 / #990).
+    //
+    // Walk the post-processed HTML pages and warn for every
+    // `data-zfb-island="X"` / `data-zfb-island-skip-ssr="X"` marker
+    // whose name is absent from the scanner's registry set.  Non-fatal:
+    // the build succeeds; the warning is the signal.  Runs even when
+    // `registered_marker_names` is empty (zero registered islands + a
+    // rendered marker is exactly the scenario this check targets).
+    crate::commands::island_marker_check::check_island_markers(
+        &post_processable_pages,
+        &registered_marker_names,
+    );
 
     // Surface embedded V8 host runtime logs (console output from the
     // worker) on a green build — they are often informative about
@@ -2744,15 +2784,18 @@ mod tests {
             _project_root: &Path,
             _outdir: &Path,
             _config: &Config,
-        ) -> Result<ProdAssetEmitterInputs> {
+        ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
             // Clone the canned inputs so multiple tests can share the
             // same FakeRunner without consuming its state.
             let inputs = self.prod_asset_inputs.borrow();
-            Ok(ProdAssetEmitterInputs {
-                css: inputs.css.clone(),
-                islands: inputs.islands.clone(),
-                client_scripts: inputs.client_scripts.clone(),
-            })
+            Ok((
+                ProdAssetEmitterInputs {
+                    css: inputs.css.clone(),
+                    islands: inputs.islands.clone(),
+                    client_scripts: inputs.client_scripts.clone(),
+                },
+                std::collections::BTreeSet::new(),
+            ))
         }
     }
 
@@ -3111,8 +3154,11 @@ mod tests {
                 _project_root: &Path,
                 _outdir: &Path,
                 _config: &Config,
-            ) -> Result<ProdAssetEmitterInputs> {
-                Ok(ProdAssetEmitterInputs::default())
+            ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
+                Ok((
+                    ProdAssetEmitterInputs::default(),
+                    std::collections::BTreeSet::new(),
+                ))
             }
         }
         let tmp = tempdir().unwrap();
@@ -4205,7 +4251,7 @@ mod tests {
         let project_root = tmp.path();
         // No pages/, so the entry walk returns empty and we never
         // reach the scanner or esbuild.
-        let payload = build_default_islands_payload(
+        let (payload, names) = build_default_islands_payload(
             project_root,
             &project_root.join("dist"),
             crate::config::Framework::Preact,
@@ -4215,6 +4261,10 @@ mod tests {
         assert!(
             payload.is_none(),
             "expected None when project has no pages/; got {payload:?}",
+        );
+        assert!(
+            names.is_empty(),
+            "expected empty names when no pages/; got {names:?}"
         );
     }
 
@@ -4232,7 +4282,7 @@ mod tests {
             "export default function Index() { return null; }\n",
         )
         .unwrap();
-        let payload = build_default_islands_payload(
+        let (payload, names) = build_default_islands_payload(
             project_root,
             &project_root.join("dist"),
             crate::config::Framework::Preact,
@@ -4242,6 +4292,10 @@ mod tests {
         assert!(
             payload.is_none(),
             "expected None when no use-client components; got {payload:?}",
+        );
+        assert!(
+            names.is_empty(),
+            "expected empty names when no islands; got {names:?}"
         );
     }
 
@@ -4273,7 +4327,7 @@ mod tests {
              export function Counter() { return null; }\n",
         )
         .unwrap();
-        let payload = build_default_islands_payload(
+        let (payload, names) = build_default_islands_payload(
             project_root,
             &project_root.join("dist"),
             crate::config::Framework::Preact,
@@ -4283,6 +4337,10 @@ mod tests {
         assert!(
             payload.is_none(),
             "expected None for a misplaced use-client directive; got {payload:?}",
+        );
+        assert!(
+            names.is_empty(),
+            "expected empty names for near-miss directive; got {names:?}"
         );
     }
 
