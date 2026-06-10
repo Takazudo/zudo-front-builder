@@ -190,13 +190,13 @@ export class SlugAllocator {
     if (base === "") return "";
 
     // Pop ancestors whose depth >= this heading's depth
-    while (this.stack.length > 0 && this.stack[this.stack.length - 1][0] >= depth) {
+    let top = this.stack.at(-1);
+    while (top !== undefined && top[0] >= depth) {
       this.stack.pop();
+      top = this.stack.at(-1);
     }
 
-    const parent = this.stack.length > 0 ? this.stack[this.stack.length - 1][1] : null;
-
-    const candidate = parent !== null ? `${parent}-${base}` : base;
+    const candidate = top !== undefined ? `${top[1]}-${base}` : base;
     const slug = nextSlug(this.seen, candidate);
     this.stack.push([depth, slug]);
     return slug;
