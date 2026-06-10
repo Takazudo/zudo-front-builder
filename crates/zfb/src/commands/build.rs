@@ -65,8 +65,9 @@ use zfb_css::{
     CssPipelineConfig, TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 use zfb_islands::{
-    build_production_islands_asset, scan_islands_with_meta, BundleConfig, EsbuildSubprocessBundler,
-    EsbuildSubprocessConfig, FsResolver,
+    build_production_client_scripts, build_production_islands_asset, discover_client_scripts,
+    scan_islands_with_meta, BundleConfig, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
+    FrameworkKind, FsResolver,
 };
 use zfb_router::Router;
 
@@ -593,7 +594,14 @@ impl BuildRunner for DefaultRunner {
             &self.islands_plugin_config,
         )
         .context("islands emitter (DefaultRunner) failed")?;
-        Ok(ProdAssetEmitterInputs { css, islands })
+        let client_scripts =
+            build_default_client_scripts_payloads(project_root, outdir, config.framework)
+                .context("client-script emitters (DefaultRunner) failed")?;
+        Ok(ProdAssetEmitterInputs {
+            css,
+            islands,
+            client_scripts,
+        })
     }
 }
 
@@ -1211,6 +1219,124 @@ pub(crate) fn build_default_islands_payload(
     }
 }
 
+/// Discover `*.client.{ts,tsx,js,jsx}` files under the conventional
+/// project roots, bundle each with esbuild, and return their bytes-only
+/// payloads for [`ProductionAssetPipeline`].
+///
+/// Returns an empty Vec when no client-script entries are found. In that
+/// case the caller should NOT inject any `<script>` tags for client
+/// scripts; the production pipeline treats the empty Vec as "no
+/// client-script assets to emit" and skips all client-script emission —
+/// builds without client scripts remain byte-identical to before.
+///
+/// On `Ok(payloads)` each payload carries the stable URL constant from
+/// `zfb_types::stable_client_script_url(entry_name)` and the relative
+/// path `assets/client/<name>.js`. The `apply_asset_url_base` step later
+/// re-prefixes those stable URLs when `config.base` is set, keeping the
+/// renderer-emitted reference and the `boundary_replace` rewrite key in
+/// sync.
+pub(crate) fn build_default_client_scripts_payloads(
+    project_root: &Path,
+    outdir: &Path,
+    framework: crate::config::Framework,
+) -> Result<Vec<AssetEmitterPayload>> {
+    let (entries, collisions) =
+        discover_client_scripts(project_root).context("client-script discovery failed")?;
+
+    // Fail loudly on duplicate entry names — mirrors the islands
+    // scanner's behavior for duplicate marker names.
+    if !collisions.is_empty() {
+        let details: Vec<String> = collisions
+            .iter()
+            .map(|c| {
+                format!(
+                    "  `{}`: {} vs {}",
+                    c.name,
+                    c.kept_path.display(),
+                    c.dropped_path.display()
+                )
+            })
+            .collect();
+        return Err(anyhow::anyhow!(
+            "duplicate client-script entry names found (entry names must be unique across all \
+             discovery roots):\n{}",
+            details.join("\n")
+        ));
+    }
+
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Reuse the same embedded-esbuild + embedded-node_modules wiring as
+    // `build_default_islands_payload`. Client scripts are plain TS/JS
+    // files so the same NODE_PATH resolution strategy applies.
+    let _embedded_esbuild_handle: Option<tempfile::TempDir>;
+    let _embedded_nm_handle: Option<tempfile::TempDir>;
+    let mut esbuild_cfg =
+        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf());
+    if detect_project_node_modules(project_root).is_some() {
+        _embedded_nm_handle = None;
+    } else {
+        match embedded_node_modules() {
+            Ok((handle, nm_path)) => {
+                esbuild_cfg = esbuild_cfg.with_extra_env("NODE_PATH", nm_path.into_os_string());
+                _embedded_nm_handle = Some(handle);
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded @takazudo packages for client-script bundler \
+                     ({e}); falling back to project_root node_modules walk"
+                ));
+                _embedded_nm_handle = None;
+            }
+        }
+    }
+    if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+        match crate::render_pipeline::embedded_binary("esbuild") {
+            Ok((handle, path)) => {
+                esbuild_cfg = esbuild_cfg.with_binary_path(path);
+                _embedded_esbuild_handle = Some(handle);
+            }
+            Err(e) => {
+                output::warn(format!(
+                    "could not extract embedded esbuild for client-script bundler ({e}); \
+                     falling back to default slot resolver"
+                ));
+                _embedded_esbuild_handle = None;
+            }
+        }
+    } else {
+        _embedded_esbuild_handle = None;
+    }
+
+    let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
+    // JSX is harmless for plain .ts files; reuse the islands JSX import
+    // source so Preact/React aliases apply consistently to any .tsx
+    // client scripts.
+    let client_scripts_jsx_import_source = match framework {
+        crate::config::Framework::Preact => FrameworkKind::Preact,
+        crate::config::Framework::React => FrameworkKind::React,
+    }
+    .jsx_import_source();
+    let bundle_cfg = BundleConfig::production()
+        .with_outdir(outdir.to_path_buf())
+        .with_jsx_import_source(client_scripts_jsx_import_source);
+
+    let assets = build_production_client_scripts(&bundler, &entries, &bundle_cfg)
+        .context("client-script bundler failed")?;
+
+    Ok(assets
+        .into_iter()
+        .map(|a| AssetEmitterPayload {
+            bytes: a.bytes,
+            relative_path: a.relative_path,
+            stable_url: a.stable_url,
+            companions: Vec::new(),
+        })
+        .collect())
+}
+
 /// Drive the build for a fully-resolved input set. Returns the number
 /// of pages written and the postBuild route manifest (#262).
 fn run_build<R: BuildRunner, A: AdapterRunner>(
@@ -1545,6 +1671,11 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // inclusion. Filter them out of the path list fed to the next two
     // post-processing passes so the contract is preserved when the
     // user has set `base` or enabled the prod asset pipeline.
+    //
+    // Known limitation (#976): because `.html`-source pages skip the
+    // rewrite pass entirely, a client-script stable URL
+    // (`/assets/client/<name>.js`) referenced inside one is NOT
+    // rewritten to its hashed equivalent — same as CSS/islands URLs.
     let static_html_set: std::collections::HashSet<&std::path::Path> = render_out
         .static_html_files_written
         .iter()
@@ -1565,12 +1696,12 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // file's stable URLs to the hashed equivalents in place. This is
     // a no-op (no asset writes, HTML round-tripped) when both
     // emitter slots returned `None`.
-    if prod_asset_inputs.css.is_some() || prod_asset_inputs.islands.is_some() {
-        let prod_pages = build_prod_rendered_files(
-            outdir,
-            &route_universe_for_rewrite,
-            &post_processable_pages,
-        );
+    if prod_asset_inputs.css.is_some()
+        || prod_asset_inputs.islands.is_some()
+        || !prod_asset_inputs.client_scripts.is_empty()
+    {
+        let prod_pages =
+            build_prod_rendered_files(outdir, &route_universe_for_rewrite, &post_processable_pages);
         apply_prod_asset_pipeline(outdir, prod_pages, prod_asset_inputs)
             .context("production asset pipeline (hash + URL rewrite) failed")?;
     }
@@ -1867,6 +1998,9 @@ fn apply_asset_url_base(inputs: &mut ProdAssetEmitterInputs, base: Option<&str>)
     if let Some(islands) = inputs.islands.as_mut() {
         islands.stable_url = format!("{prefix}{}", islands.stable_url);
     }
+    for cs in inputs.client_scripts.iter_mut() {
+        cs.stable_url = format!("{prefix}{}", cs.stable_url);
+    }
 }
 
 /// Derive the [`ProdHeadAssets`] payload for [`RendererInput`] from
@@ -1886,6 +2020,13 @@ fn derive_prod_head_assets(inputs: &ProdAssetEmitterInputs) -> Option<ProdHeadAs
     let mut island_module_urls: Vec<String> = Vec::new();
     if let Some(islands) = inputs.islands.as_ref() {
         island_module_urls.push(islands.stable_url.clone());
+    }
+    // Client-script stable URLs are also injected as `<script type="module">`
+    // tags. The wave-2 `clientScript()` SSR helper will insert them per-page
+    // at the right injection point; for v1 they travel through the same
+    // `island_module_urls` Vec so the renderer's head injection picks them up.
+    for cs in &inputs.client_scripts {
+        island_module_urls.push(cs.stable_url.clone());
     }
     if css_url.is_none() && island_module_urls.is_empty() {
         return None;
@@ -2418,6 +2559,7 @@ mod tests {
             Ok(ProdAssetEmitterInputs {
                 css: inputs.css.clone(),
                 islands: inputs.islands.clone(),
+                client_scripts: inputs.client_scripts.clone(),
             })
         }
     }
@@ -3003,8 +3145,8 @@ mod tests {
                     companions: Vec::new(),
                 }),
                 islands: None,
-            },
-        );
+                ..Default::default()
+            });
         let cfg = Config::default();
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
@@ -3067,6 +3209,87 @@ mod tests {
         assert!(prod_assets.island_module_urls.is_empty());
     }
 
+    /// Gate regression (#976): with ONLY client-script payloads (css
+    /// and islands both `None`) the post-render pipeline must still
+    /// fire — the `:1568` gate now also checks
+    /// `!client_scripts.is_empty()`. Without that check the hashed
+    /// file would never land and the stable URL would leak into HTML.
+    #[test]
+    fn run_build_writes_hashed_client_script_and_rewrites_html() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+                css: None,
+                islands: None,
+                client_scripts: vec![zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b"// search widget".to_vec(),
+                    relative_path: PathBuf::from("assets/client/search-widget.js"),
+                    stable_url: "/assets/client/search-widget.js".to_string(),
+                    companions: Vec::new(),
+                }],
+            });
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+        run_build(BuildArgsResolved {
+            project_root,
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        })
+        .unwrap();
+
+        // (a) The bundle lands hashed at dist/assets/client/search-widget-<8hex>.js.
+        let client_entries: Vec<String> = std::fs::read_dir(outdir.join("assets/client"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            client_entries.len(),
+            1,
+            "expected exactly one hashed client-script asset; got {client_entries:?}",
+        );
+        let name = &client_entries[0];
+        assert!(
+            name.starts_with("search-widget-")
+                && name.ends_with(".js")
+                && name.len() == "search-widget-12345678.js".len(),
+            "expected search-widget-<8hex>.js; got {name}",
+        );
+
+        // (b) HTML carries the hashed URL; the stable URL does not leak.
+        let hashed_url = format!("/assets/client/{name}");
+        let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        assert!(
+            html.contains(&hashed_url),
+            "hashed URL {hashed_url} missing from HTML: {html}",
+        );
+        assert!(
+            !html.contains("\"/assets/client/search-widget.js\""),
+            "stable URL leaked: {html}",
+        );
+
+        // (c) The renderer was handed the stable client-script URL via
+        // prod_head_assets (travels through island_module_urls in v1).
+        let render_calls = runner.render_calls.borrow();
+        let prod_assets = render_calls[0]
+            .prod_head_assets
+            .as_ref()
+            .expect("prod_head_assets must be populated for client scripts");
+        assert!(prod_assets.css_url.is_none());
+        assert_eq!(
+            prod_assets.island_module_urls,
+            vec!["/assets/client/search-widget.js".to_string()],
+        );
+    }
+
     /// `apply_asset_url_base` mounts each emitter slot's `stable_url`
     /// under the configured `base` prefix. None / empty / "/" bases
     /// are pure no-ops (byte-identical to the pre-`base` engine).
@@ -3089,6 +3312,12 @@ mod tests {
                     stable_url: "/assets/islands.js".to_string(),
                     companions: Vec::new(),
                 }),
+                client_scripts: vec![zfb_build::pipeline::AssetEmitterPayload {
+                    bytes: b"// widget".to_vec(),
+                    relative_path: PathBuf::from("assets/client/search-widget.js"),
+                    stable_url: "/assets/client/search-widget.js".to_string(),
+                    companions: Vec::new(),
+                }],
             }
         }
 
@@ -3102,6 +3331,10 @@ mod tests {
         assert_eq!(
             inputs.islands.as_ref().unwrap().stable_url,
             "/assets/islands.js"
+        );
+        assert_eq!(
+            inputs.client_scripts[0].stable_url,
+            "/assets/client/search-widget.js"
         );
 
         // "" ⇒ no mutation.
@@ -3139,6 +3372,10 @@ mod tests {
             inputs.islands.as_ref().unwrap().stable_url,
             "/pj/zudo-doc/assets/islands.js"
         );
+        assert_eq!(
+            inputs.client_scripts[0].stable_url,
+            "/pj/zudo-doc/assets/client/search-widget.js"
+        );
 
         // "/pj/zudo-doc" (no trailing slash) ⇒ same prefix.
         let mut inputs = fixture();
@@ -3159,15 +3396,21 @@ mod tests {
             inputs.islands.as_ref().unwrap().stable_url,
             "https://cdn.example.com/assets/islands.js"
         );
+        assert_eq!(
+            inputs.client_scripts[0].stable_url,
+            "https://cdn.example.com/assets/client/search-widget.js"
+        );
 
-        // None slots stay None.
+        // None slots stay None; the empty client_scripts Vec stays empty.
         let mut inputs = ProdAssetEmitterInputs {
             css: None,
             islands: None,
+            ..Default::default()
         };
         apply_asset_url_base(&mut inputs, Some("/pj/zudo-doc/"));
         assert!(inputs.css.is_none());
         assert!(inputs.islands.is_none());
+        assert!(inputs.client_scripts.is_empty());
     }
 
     /// End-to-end: with `config.base = "/pj/zudo-doc/"` set, the
@@ -3200,9 +3443,12 @@ mod tests {
                     companions: Vec::new(),
                 }),
                 islands: None,
-            },
-        );
-        let cfg = Config { base: Some("/pj/zudo-doc/".to_string()), ..Config::default() };
+                ..Default::default()
+            });
+        let cfg = Config {
+            base: Some("/pj/zudo-doc/".to_string()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
@@ -3297,9 +3543,12 @@ mod tests {
                     stable_url: "/assets/islands.js".to_string(),
                     companions: Vec::new(),
                 }),
-            },
-        );
-        let cfg = Config { base: Some("/pj/zudo-doc/".to_string()), ..Config::default() };
+                ..Default::default()
+            });
+        let cfg = Config {
+            base: Some("/pj/zudo-doc/".to_string()),
+            ..Config::default()
+        };
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
