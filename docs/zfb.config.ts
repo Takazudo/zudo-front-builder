@@ -137,6 +137,9 @@ export default defineConfig({
   // public/ to dist/ (not to dist/pj/zudo-front-builder/) is the
   // correct placement. copyPublicWithBase:false replaces the old
   // copy-public-plugin.mjs that did the same thing manually.
+  // @ts-expect-error -- copyPublicWithBase is honored by the local engine on main but
+  // missing from the pinned @takazudo/zfb 0.1.0-next.35 ZfbConfig type (#946); this
+  // directive errors (forcing its removal) once the bump to a typed version lands.
   copyPublicWithBase: false,
   collections,
   stripMdExt: true,
