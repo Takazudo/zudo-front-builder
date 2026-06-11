@@ -13,12 +13,21 @@ for snapshot comparison.
 Finds an esbuild binary suitable for integration tests. Resolution order:
 
 1. `ZFB_ESBUILD_BIN` env var — if set and points to an existing file, return immediately.
-2. Workspace-local slot: `<workspace_root>/crates/zfb/binaries/esbuild/<binary>`.
-3. pnpm nested store: `node_modules/.pnpm/*/node_modules/@esbuild/<suffix>/bin/<binary>`.
-4. pnpm flat store: `node_modules/.pnpm/node_modules/esbuild/bin/<binary>`.
+2. Workspace-local slot: `<workspace_root>/crates/zfb/binaries/esbuild/<binary>`, probed for
+   every candidate workspace root. Roots are re-derived **at runtime** (walk up from
+   `current_dir()`, then `current_exe()` ancestry, looking for the `Cargo.toml` + `crates/`
+   marker); the compile-time `CARGO_MANIFEST_DIR`-derived root is only a fallback. A stale
+   rlib reused from another checkout path (shared target dir, issue #1007) therefore cannot
+   pin an outdated path and silently skip gated tests.
+3. pnpm nested store, per root: `node_modules/.pnpm/*/node_modules/@esbuild/<suffix>/bin/<binary>`.
+4. pnpm flat store, per root: `node_modules/.pnpm/node_modules/esbuild/bin/<binary>`.
 5. Portable `PATH` walk via `std::env::split_paths` (no `which` shell-out — absent on Windows).
 
-Returns `None` if no candidate is found. Callers should gate with:
+Returns `None` if no candidate is found — a graceful skip; machines without esbuild stay
+green. Panics **only** on the harness-bug state: the expected slot binary exists as a file
+under a candidate root, yet lookup still failed (the issue #1007 silent-skip incident). The
+slot directory being non-empty never triggers the panic (it permanently holds `.gitkeep`
+and `README.md`). Callers should gate with:
 
 ```rust,ignore
 let Some(esbuild) = zfb_test_utils::locate_esbuild() else { return; };
