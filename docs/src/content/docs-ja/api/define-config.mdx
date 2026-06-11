@@ -40,7 +40,7 @@ defineConfig(config: ZfbConfig): ZfbConfig
 - `stripMdExt?: boolean` — MDX コンパイル時に内部リンクの href から `.md` / `.mdx` 拡張子を取り除き、末尾に `/` を付与します。デフォルト: `false`。
 - `trailingSlash?: boolean` — base パスの書き換え時に、拡張子なしの絶対 href に末尾の `/` を付与します。デフォルト: `false`。
 - `markdown?: MarkdownConfig` — Markdown / MDX のパースオプション（例: GFM の切り替え）。[Markdown Features](/ja/docs/markdown-features/) のセクションを参照してください。
-- `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — マークダウンリンクリゾルバの設定。`[label](./other.mdx)` のリンクをレンダリング後のルート URL に書き換えるには有効にします。
+- `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — マークダウンリンクリゾルバの設定。`[label](./other.mdx)` のリンクをレンダリング後のルート URL に書き換えるには有効にします。拡張子なし（`./other`）およびディレクトリ形式（`other/`）のターゲットも解決され、`{name}.mdx` → `{name}.md` → `{name}/index.mdx` → `{name}/index.md` の順に探索されます。
 - `emitRoutesManifest?: boolean` — `zfb build` がビルド後のルートマニフェストを `<outDir>/__zfb/routes.json` に書き出すかどうか。デフォルト: `true`（書き出す）。`false` を設定すると抑制します。
 - `extraWatchPaths?: string[]` — プロジェクト内のソースルートに加えて、dev ウォッチャーが追跡する追加の絶対ファイルシステムパス。[プロジェクトルート外のパスを監視する](#プロジェクトルート外のパスを監視する) を参照してください。
 

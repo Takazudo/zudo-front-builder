@@ -302,7 +302,10 @@ export type ZfbConfig = {
    * mdast pipeline so author-written `[label](./other.mdx)` links are
    * rewritten to the corresponding rendered route URL — bypassing the
    * file→directory transformation that breaks relative paths in dist
-   * HTML when `foo.mdx` becomes `foo/index.html`.
+   * HTML when `foo.mdx` becomes `foo/index.html`. Extensionless
+   * (`./other`) and directory-style (`other/`) targets resolve too,
+   * probing `{name}.mdx`, `{name}.md`, `{name}/index.mdx`,
+   * `{name}/index.md` in that order.
    *
    * Two ways to specify the source dirs:
    *

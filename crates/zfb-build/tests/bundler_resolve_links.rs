@@ -309,6 +309,86 @@ fn resolve_links_disabled_preserves_raw_mdx_hrefs() {
     );
 }
 
+/// Fixture for the directory-relative link repro (zfb#1004):
+///
+/// - `content/docs/section/index.mdx` — links `[pkg](other-page/)`.
+/// - `content/docs/section/other-page.mdx` — the sibling target.
+fn write_dir_link_fixture_project(root: &std::path::Path) {
+    for d in ["pages", "content/docs/section", "components", "layouts"] {
+        fs::create_dir_all(root.join(d)).unwrap();
+    }
+    fs::write(
+        root.join("layouts/default.tsx"),
+        "export default function DefaultLayout({ children }) { return children; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/index.mdx"),
+        "---\ntitle: Home\n---\n\nWelcome.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("content/docs/section/other-page.mdx"),
+        "---\ntitle: Other Page\n---\n\nTarget body.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("content/docs/section/index.mdx"),
+        "---\ntitle: Section Index\n---\n\n[pkg](other-page/)\n",
+    )
+    .unwrap();
+}
+
+/// (f) zfb#1004 — a directory-relative link (`other-page/`) from a category
+///     index page must resolve to the sibling page's route URL, and must
+///     NOT count as a broken link.
+///
+/// `linkValidation` is armed with `failOnBroken: true` — the configuration
+/// whose warning motivated the issue. Pre-fix, the href passed through
+/// verbatim, linkValidation classified it as an on-disk `FilePath`, the
+/// existence check failed, and the build errored. Post-fix the resolver
+/// rewrites it to a site-absolute URL, which linkValidation skips as
+/// URL-space — so a successful bundle proves the diagnostic is gone
+/// end-to-end.
+#[test]
+fn resolve_links_dir_relative_link_rewrites_to_route_url() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_dir_link_fixture_project(&root);
+
+    let mut input = make_input_with_resolve(&root, &esbuild, "dist-f", OnBrokenLinks::Error);
+    input.pipeline_spec = zfb_content::PipelineSpec {
+        features: Some(zfb_content::MarkdownFeaturesConfig {
+            link_validation: Some(zfb_content::LinkValidationConfig {
+                fail_on_broken: Some(true),
+            }),
+            ..Default::default()
+        }),
+        build_context_roots: Some((root.clone(), root.join("public"))),
+        ..zfb_content::PipelineSpec::default()
+    };
+    let out = bundle(input).expect("bundle must succeed — dir-relative link is resolvable");
+
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    assert!(
+        body.contains("/docs/section/other-page/"),
+        "dir-relative link must be rewritten to /docs/section/other-page/. \
+         Bundle excerpt: {}",
+        &body[..body.len().min(800)]
+    );
+    assert!(
+        !body.contains("\"other-page/\""),
+        "the raw dir-relative href must not survive as a verbatim string \
+         literal in the bundle. Bundle excerpt: {}",
+        &body[..body.len().min(800)]
+    );
+}
+
 /// (e) zfb#939 — error mode must STILL fail when every MDX compile is a
 ///     process-global cache hit.
 ///
