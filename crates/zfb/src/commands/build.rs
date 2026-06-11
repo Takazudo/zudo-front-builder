@@ -1111,6 +1111,29 @@ pub(crate) fn build_default_islands_payload(
     let registered_marker_names: std::collections::BTreeSet<String> =
         islands_set.iter().map(|i| i.marker_name.clone()).collect();
 
+    // #999: scanning `node_modules` for dist-shipped islands makes
+    // duplicate marker names far more likely — e.g. a local
+    // `ThemeToggle` component and a package-provided `ThemeToggle` from
+    // `@takazudo/zudo-doc`. The manifest keys on marker name and keeps
+    // only the first by source-path sort order, silently dropping the
+    // rest; the dropped island then ships a dead SSR marker that never
+    // hydrates. Surface every such collision loudly with BOTH source
+    // paths so the author can disambiguate (rename one component, or give
+    // it a distinct `displayName`) instead of debugging a silent
+    // dead-island. This does not change selection behaviour — it only
+    // warns.
+    let island_manifest = zfb_islands::Manifest::from_islands(&islands_set);
+    for collision in island_manifest.collisions() {
+        output::warn(format!(
+            "island marker name collision: \"{}\" is produced by two different source files — \
+             keeping {} and dropping {}. Only the kept island will hydrate; rename one component \
+             or give it a distinct `displayName` so both register under unique marker names.",
+            collision.name,
+            collision.kept_path.display(),
+            collision.dropped_path.display(),
+        ));
+    }
+
     // Sub #212 follow-up — extend embedded-binary AND embedded-node_modules
     // extraction to the islands bundler.
     //

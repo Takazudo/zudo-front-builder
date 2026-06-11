@@ -1,3 +1,5 @@
+"use client";
+
 // W6A stub — no-op default Preact wrapper.
 //
 // When the designTokenPanel feature is enabled, the feature template

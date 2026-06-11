@@ -121,7 +121,10 @@ pub fn check_island_markers(pages: &[PathBuf], registered_names: &BTreeSet<Strin
                  `export function {name}()` or `export const {name} = …`) with \
                  the `\"use client\"` directive and is reachable from a file in pages/. \
                  If `{name}` comes from a `displayName` assignment, verify the \
-                 scanner-visible export identifier matches.",
+                 scanner-visible export identifier matches. \
+                 If `{name}` is provided by an installed npm package, make sure it is \
+                 reachable through the package's `exports` map (a directly-imported \
+                 subpath, or a barrel the package re-exports it from).",
             ));
         }
     }
