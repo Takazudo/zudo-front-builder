@@ -1498,6 +1498,22 @@ async fn load_from_ts_file(ts_path: &Path, dir: &Path, opts: &LoadOptions) -> Re
     parse_loader_envelope(&json, ts_path)
 }
 
+/// Boxed future returned by an attempt closure passed to [`output_bounded_with`].
+///
+/// The erased `Pin<Box<dyn Future<...>>>` seam avoids the borrow-checker
+/// friction that arises when `FnMut() -> Fut` (with a named `Fut` type
+/// parameter) re-borrows `&mut Command` across loop iterations.
+type AttemptFut = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+            Output = Result<
+                std::io::Result<std::process::Output>,
+                tokio::time::error::Elapsed,
+            >,
+        >,
+    >,
+>;
+
 /// Spawn `cmd` and wait for output, bounded by `timeout`.
 ///
 /// `Command::output()` reads stdout/stderr pipes to EOF, so any grandchild
@@ -1516,20 +1532,7 @@ async fn output_bounded(
 ) -> Result<std::io::Result<std::process::Output>> {
     cmd.kill_on_drop(true);
     output_bounded_with(
-        || {
-            let fut = cmd.output();
-            Box::pin(tokio::time::timeout(timeout, fut))
-                as std::pin::Pin<
-                    Box<
-                        dyn std::future::Future<
-                            Output = Result<
-                                std::io::Result<std::process::Output>,
-                                tokio::time::error::Elapsed,
-                            >,
-                        >,
-                    >,
-                >
-        },
+        || Box::pin(tokio::time::timeout(timeout, cmd.output())) as AttemptFut,
         timeout,
         name,
     )
@@ -1539,27 +1542,13 @@ async fn output_bounded(
 /// Private generic helper that owns the ETXTBSY-classify/sleep/retry/exhaustion
 /// logic for [`output_bounded`]. The `attempt` closure produces one
 /// timeout-wrapped spawn attempt; this helper drives the retry loop.
-///
-/// Using `FnMut() -> Pin<Box<dyn Future<...>>>` rather than a plain
-/// `FnMut() -> Fut` avoids the borrow-checker friction that arises when
-/// re-borrowing `&mut Command` across loop iterations through a named type
-/// parameter (the erased box breaks the lifetime dependency).
 async fn output_bounded_with<F>(
     mut attempt: F,
     timeout: std::time::Duration,
     name: &str,
 ) -> Result<std::io::Result<std::process::Output>>
 where
-    F: FnMut() -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                Output = Result<
-                    std::io::Result<std::process::Output>,
-                    tokio::time::error::Elapsed,
-                >,
-            >,
-        >,
-    >,
+    F: FnMut() -> AttemptFut,
 {
     let mut etxtbsy_attempts = 0u32;
     loop {
@@ -4483,18 +4472,7 @@ mod tests {
     ///
     /// `#[cfg(unix)]` because `ExitStatusExt::from_raw` is Unix-only.
     #[cfg(unix)]
-    fn make_attempt(
-        result: std::io::Result<std::process::Output>,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                Output = Result<
-                    std::io::Result<std::process::Output>,
-                    tokio::time::error::Elapsed,
-                >,
-            >,
-        >,
-    > {
+    fn make_attempt(result: std::io::Result<std::process::Output>) -> AttemptFut {
         Box::pin(std::future::ready(Ok(result)))
     }
 
@@ -4508,12 +4486,6 @@ mod tests {
 
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let counter_clone = counter.clone();
-
-        let success_output = std::process::Output {
-            status: std::process::ExitStatus::from_raw(0),
-            stdout: vec![],
-            stderr: vec![],
-        };
 
         // Attempt returns ETXTBSY twice, then succeeds.
         let attempt = move || {
@@ -4529,8 +4501,6 @@ mod tests {
             };
             make_attempt(result)
         };
-
-        let _ = success_output; // suppress unused warning
 
         let result = output_bounded_with(
             attempt,
