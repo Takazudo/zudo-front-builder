@@ -1602,6 +1602,7 @@ export function mount(props, element, mode) {{
   }}
 }}
 export function unmount(element) {{
+  if (!__zfb_ok) return;
   const root = __zfb_roots.get(element);
   if (root) {{ root.unmount(); __zfb_roots.delete(element); }}
 }}
