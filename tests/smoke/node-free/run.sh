@@ -184,9 +184,17 @@ zfb dev --port "$PORT" 2>"$DEV_LOG" &
 DEV_PID=$!
 
 # Register cleanup so the dev server is killed even if assertions below fail.
+# On a failing exit, dump the dev server's captured stderr first — every
+# assertion below runs against the live server, so its log is the primary
+# diagnostic for any failure from this point on.
 cleanup() {
+    STATUS=$?
     if kill -0 "$DEV_PID" 2>/dev/null; then
         kill "$DEV_PID"
+    fi
+    if [ "$STATUS" -ne 0 ] && [ -s "$DEV_LOG" ]; then
+        printf '%s\n' '--- zfb dev stderr (last 50 lines) ---' >&2
+        tail -n 50 "$DEV_LOG" >&2
     fi
     rm -f "$DEV_LOG"
 }
@@ -228,34 +236,35 @@ pass "dev server served dynamic slug /posts/hello/ with expected post title"
 # release binary's serve path). The initial curl assertions above guarantee the
 # server is fully up before we touch the file.
 #
-# Poll deadline: 60 s — well within the 6-minute job timeout. Each attempt
-# sleeps 1 s between curl calls; 60 attempts × 1 s = 60 s max.
+# Poll deadline: 60 s wall-clock — well within the 6-minute job timeout. The
+# deadline is checked against `date +%s` (not an attempt counter) so a hung
+# curl (bounded at --max-time 5) cannot stretch the wait past the budget.
+# On timeout, fail() exits non-zero and the cleanup trap dumps dev stderr.
 
 EDIT_MARKER="smoke-edit-marker-$$"
 printf '==> appending edit marker to content/posts/hello.md\n'
 printf '\n%s\n' "$EDIT_MARKER" >> "${SITE_DIR}/content/posts/hello.md"
 
-printf '==> polling http://localhost:%d/posts/hello/ for edit marker (up to 60s)\n' "$PORT"
 EDIT_DEADLINE=60
-EDIT_ELAPSED=0
+printf '==> polling http://localhost:%d/posts/hello/ for edit marker (deadline %ds)\n' "$PORT" "$EDIT_DEADLINE"
+EDIT_START=$(date +%s)
 EDIT_FOUND=0
-while [ "$EDIT_ELAPSED" -lt "$EDIT_DEADLINE" ]; do
+while :; do
     EDIT_RESPONSE=$(curl -fsS --max-time 5 "http://localhost:${PORT}/posts/hello/" 2>/dev/null || true)
     if printf '%s' "$EDIT_RESPONSE" | grep -q "$EDIT_MARKER"; then
         EDIT_FOUND=1
         break
     fi
+    if [ $(( $(date +%s) - EDIT_START )) -ge "$EDIT_DEADLINE" ]; then
+        break
+    fi
     sleep 1
-    EDIT_ELAPSED=$((EDIT_ELAPSED + 1))
 done
 
 if [ "$EDIT_FOUND" -eq 0 ]; then
-    printf '[FAIL] dev server did not reflect edit marker within %ds\n' "$EDIT_DEADLINE" >&2
-    printf '--- dev stderr (last %d lines) ---\n' "50" >&2
-    tail -n 50 "$DEV_LOG" >&2
-    exit 1
+    fail "dev server did not reflect the content edit within ${EDIT_DEADLINE}s (marker: $EDIT_MARKER)"
 fi
-pass "dev server reflected content edit (marker appeared after ~${EDIT_ELAPSED}s)"
+pass "dev server reflected content edit (marker served after ~$(( $(date +%s) - EDIT_START ))s)"
 
 # cleanup trap kills dev server on exit.
 printf '==> All smoke assertions passed.\n'
