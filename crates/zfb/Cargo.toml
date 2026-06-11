@@ -140,6 +140,11 @@ tar = "0.4"
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
+# Async client for the dev E2E harness (dev_serve_e2e.rs, #1018): HTTP
+# marker polling + SSE event-stream reads against a live `zfb dev`.
+# Plain-HTTP loopback only, so no TLS backend; `stream` enables
+# `bytes_stream()` for the SSE reader in zfb-test-utils.
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 # `test-util` enables `start_paused` on `#[tokio::test]` for virtual-time
 # backoff in the ETXTBSY retry tests (zfb#1014). Dev-only — production
 # feature set (`rt-multi-thread`, `macros`, …) is unchanged.
