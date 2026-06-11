@@ -1220,6 +1220,36 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     args
 }
 
+/// JS boolean expression that tests whether `value_var` is component-shaped:
+/// a plain function, or a compat `memo()`/`forwardRef()` object carrying
+/// `$$typeof` (issue #998). `dollar_receiver` is the expression used to read
+/// `.$$typeof` off the value — the per-island sites (TS `.tsx` entries where
+/// the value is typed `any`) cast via `(Component as any)`, the shared-bundle
+/// sites read it directly. Hoisted so all four island render paths share one
+/// predicate instead of copy-pasting it.
+fn component_shape_predicate(value_var: &str, dollar_receiver: &str) -> String {
+    format!(
+        "typeof {value_var} === \"function\" || (typeof {value_var} === \"object\" && {value_var} !== null && {dollar_receiver}.$$typeof)"
+    )
+}
+
+/// JS `console.warn(...)` statement emitted when an island export is not
+/// component-shaped (issue #998). `export_name_expr` / `module_label_expr`
+/// are JS expressions naming the export and its source module; `action` is
+/// the skipped-verb phrase (`"registration"` for the shared bundle,
+/// `"mount"` for per-island). Hoisted so all four island render paths emit
+/// one identical warning string instead of copy-pasting it.
+fn non_component_warn(
+    value_var: &str,
+    export_name_expr: &str,
+    module_label_expr: &str,
+    action: &str,
+) -> String {
+    format!(
+        "console.warn(\"[zfb] island export \" + {export_name_expr} + \" from \" + {module_label_expr} + \" is not a component (got \" + ({value_var} === null ? \"null\" : typeof {value_var}) + \"); skipping {action}.\");"
+    )
+}
+
 /// Generate the synthetic single-entry source for the legacy shared
 /// bundle.
 ///
@@ -1250,28 +1280,22 @@ pub(crate) fn build_esbuild_args_with_entry_name(
 ///
 /// The synthesised entry imports each island as a namespace and
 /// **registers** it into a manifest at top-level using a
-/// `__zfb_register(ns, exportName, fallback)` helper: the helper picks
-/// the component (named export first, then `default`), reads its
-/// `displayName ?? name` to derive the **registered name** the SSR
-/// markers carry, and stashes a Preact-mount thunk under that key.
+/// `__zfb_register(ns, exportName, markerName, moduleLabel)` helper: the
+/// helper picks the component (`__zfb_pick` — named export first, then
+/// `default`) and stashes a mount thunk under `markerName`.
 ///
-/// Why dynamic key derivation rather than a static literal?
-///
-/// The SSR side (`packages/zfb/src/island.ts::captureComponentName`)
-/// computes the marker value `data-zfb-island="…"` from the JSX
-/// child's runtime identity (`type.displayName ?? type.name`). For
-/// host-shape islands authored as
-/// `export default function SidebarToggle(...)`, the scanner records
-/// `Island::component_name = "default"` (the export-side name), while
-/// the SSR marker is `"SidebarToggle"` (the function-identifier
-/// name). Keying the manifest on `Island::component_name` straight
-/// from the bundler — which the original #146 fix did — collapses
-/// every host-shape island onto the literal `"default"` key, esbuild
-/// flags duplicate-key warnings and only the last survives, and at
-/// runtime no marker ever matches. Reading `displayName ?? name` off
-/// the component at module-init time mirrors the SSR derivation
-/// exactly so both sides of the boundary agree (issue #147 / Wave 6
-/// follow-up).
+/// `markerName` is the **scanner-derived SSR-marker name** baked into the
+/// generated source as a static JSON literal — NOT a runtime
+/// `displayName ?? name` read. It matches the value the SSR side
+/// (`packages/zfb/src/island.ts::captureComponentName`, which derives
+/// `data-zfb-island="…"` from `type.displayName ?? type.name`) writes onto
+/// the marker, so both sides of the boundary agree on the key. Keying on
+/// the export-side `Island::component_name` instead would collapse every
+/// host-shape default-export island onto the literal `"default"` key (issue
+/// #149); a runtime `function.name` read is unsafe because esbuild
+/// minification renames functions (lesson from PR #148). `moduleLabel`
+/// names the source module in the non-component skip warning (#998). See
+/// the inline `__zfb_register` comment below for the full rationale.
 ///
 /// The runtime's `mountIslands` accepts this object shape directly
 /// (no second dynamic import) — see the `IslandManifestValue`
@@ -1389,14 +1413,15 @@ pub fn render_shared_bundle_entry_source(
     // `ns.default`. That mirrors `render_island_entry_source` for the
     // per-island path.
     //
-    // `__zfb_register(ns, exportName, markerName)` writes a Preact
-    // mount thunk for the resolved component under the **static
-    // marker name** the scanner discovered for this island (issue
-    // #149). The marker name is a JSON-encoded literal in the
-    // generated source, NOT a runtime introspection of
-    // `displayName ?? name` — that's the lesson from the previous
-    // round (PR #148): esbuild minification renames functions, so
+    // `__zfb_register(ns, exportName, markerName, moduleLabel)` writes a
+    // mount thunk for the resolved component under the **static marker
+    // name** the scanner discovered for this island (issue #149). The marker
+    // name is a JSON-encoded literal in the generated source, NOT a runtime
+    // introspection of `displayName ?? name` — that's the lesson from the
+    // previous round (PR #148): esbuild minification renames functions, so
     // `function.name` is unstable and unsafe to key the manifest on.
+    // `moduleLabel` names the source module in the non-component skip
+    // warning (#998).
     //
     // The mount thunk picks `hydrate` vs `render` based on the SSR /
     // SSR-skip mode the runtime supplies, mirroring the per-island
@@ -1412,16 +1437,24 @@ function __zfb_pick(ns, exportName) {\n\
     // the per-island path's `FrameworkKind` arms exactly. Keeping the
     // helper-function shape identical across frameworks (same name, same
     // args, same `__zfb_manifest[markerName]` slot) means only the thunk
-    // internals change.
-    match framework {
-        FrameworkKind::Preact => out.push_str(
-            "function __zfb_register(ns, exportName, markerName, moduleLabel) {\n\
+    // internals change. The guard prelude (component-shape check + the
+    // non-component skip warning) is identical for both frameworks, so it
+    // is built once from the shared helpers (#998).
+    let register_prelude = format!(
+        "function __zfb_register(ns, exportName, markerName, moduleLabel) {{\n\
   const C = __zfb_pick(ns, exportName);\n\
-  if (!(typeof C === \"function\" || (typeof C === \"object\" && C !== null && C.$$typeof))) {\n\
-    console.warn(\"[zfb] island export \" + exportName + \" from \" + moduleLabel + \" is not a component (got \" + (C === null ? \"null\" : typeof C) + \"); skipping registration.\");\n\
+  if (!({predicate})) {{\n\
+    {warn}\n\
     return;\n\
-  }\n\
-  __zfb_manifest[markerName] = {\n\
+  }}\n",
+        predicate = component_shape_predicate("C", "C"),
+        warn = non_component_warn("C", "exportName", "moduleLabel", "registration"),
+    );
+    match framework {
+        FrameworkKind::Preact => {
+            out.push_str(&register_prelude);
+            out.push_str(
+                "  __zfb_manifest[markerName] = {\n\
     mount: (props, element, mode) => {\n\
       const v = h(C, props);\n\
       if (mode === \"hydrate\") { hydrate(v, element); } else { render(v, element); }\n\
@@ -1429,15 +1462,12 @@ function __zfb_pick(ns, exportName) {\n\
     unmount: (element) => { render(null, element); },\n\
   };\n\
 }\n",
-        ),
-        FrameworkKind::React => out.push_str(
-            "function __zfb_register(ns, exportName, markerName, moduleLabel) {\n\
-  const C = __zfb_pick(ns, exportName);\n\
-  if (!(typeof C === \"function\" || (typeof C === \"object\" && C !== null && C.$$typeof))) {\n\
-    console.warn(\"[zfb] island export \" + exportName + \" from \" + moduleLabel + \" is not a component (got \" + (C === null ? \"null\" : typeof C) + \"); skipping registration.\");\n\
-    return;\n\
-  }\n\
-  __zfb_manifest[markerName] = {\n\
+            );
+        }
+        FrameworkKind::React => {
+            out.push_str(&register_prelude);
+            out.push_str(
+                "  __zfb_manifest[markerName] = {\n\
     mount: (props, element, mode) => {\n\
       const v = createElement(C, props);\n\
       if (mode === \"hydrate\") {\n\
@@ -1455,7 +1485,8 @@ function __zfb_pick(ns, exportName) {\n\
     },\n\
   };\n\
 }\n",
-        ),
+            );
+        }
     }
     // One register call per island. The `__zfb_register(...)` calls
     // are top-level side effects esbuild MUST preserve, and they
@@ -1504,6 +1535,12 @@ pub fn render_island_entry_source(framework: FrameworkKind, island: &Island) -> 
     let path_lit = json_string(&path);
     let component_name = &island.component_name;
     let component_lit = json_string(component_name);
+    // Component-shape guard + non-component skip warning, hoisted into the
+    // shared helpers so the shared-bundle path and both per-island framework
+    // arms emit one identical snippet (#998). `Component` is typed `any`
+    // here (it comes off `(Mod as any)[…]`), so the `$$typeof` read is cast.
+    let predicate = component_shape_predicate("Component", "(Component as any)");
+    let warn = non_component_warn("Component", &component_lit, &path_lit, "mount");
     match framework {
         FrameworkKind::Preact => format!(
             r#"// Generated by zfb-islands::EsbuildSubprocessBundler::bundle_per_island
@@ -1515,9 +1552,9 @@ const Component = (Mod as any)[{component_lit}] ?? (Mod as any).default;
 // carrying `$$typeof`. Anything else (a string/object constant that slipped
 // through as an island marker) is skipped with a loud warning rather than
 // handed to h() — which would otherwise build a DOM element from a bogus type.
-const __zfb_ok = typeof Component === "function" || (typeof Component === "object" && Component !== null && (Component as any).$$typeof);
+const __zfb_ok = {predicate};
 if (!__zfb_ok) {{
-  console.warn("[zfb] island export " + {component_lit} + " from " + {path_lit} + " is not a component (got " + (Component === null ? "null" : typeof Component) + "); skipping mount.");
+  {warn}
 }}
 export function mount(props, element, mode) {{
   if (!__zfb_ok) return;
@@ -1547,9 +1584,9 @@ const Component = (Mod as any)[{component_lit}] ?? (Mod as any).default;
 // as an island marker) is skipped with a loud warning rather than handed to
 // createElement() — which would otherwise try to build a DOM element from a
 // bogus type.
-const __zfb_ok = typeof Component === "function" || (typeof Component === "object" && Component !== null && (Component as any).$$typeof);
+const __zfb_ok = {predicate};
 if (!__zfb_ok) {{
-  console.warn("[zfb] island export " + {component_lit} + " from " + {path_lit} + " is not a component (got " + (Component === null ? "null" : typeof Component) + "); skipping mount.");
+  {warn}
 }}
 const __zfb_roots = new WeakMap();
 export function mount(props, element, mode) {{
