@@ -1437,7 +1437,7 @@ struct DevRenderInner {
 
     /// Cross-tick per-file content-hash cache (#994 item C) for the two
     /// SWC-parse extraction passes of the route-table build: TSX
-    /// prerender frontmatter ([`build_prerender_map`]) and static
+    /// prerender frontmatter ([`build_prerender_map_cached`]) and static
     /// `paths()` extraction. Keyed by SHA-256 of the bytes read each
     /// tick, so any source change invalidates exactly; see
     /// [`crate::render_pipeline::SourceExtractCache`] for the safety
