@@ -16,9 +16,12 @@
 //! 3. `{name}/index.mdx`
 //! 4. `{name}/index.md`
 //!
-//! Directory-style hrefs (`{name}/`, zfb#1004) are treated as
-//! extensionless: trailing slashes are stripped before the candidate
-//! probe, so `other-page/` resolves exactly like `other-page` would.
+//! Directory-style hrefs (`{name}/`, zfb#1004) probe the same four
+//! candidates after the trailing slash is stripped. Because the slash
+//! explicitly says "directory", a dotted last segment is NOT treated as
+//! a file extension (`v1.0/` probes `v1.0.mdx` … `v1.0/index.md`), and
+//! dot segments probe their index candidates only (`../` →
+//! `../index.mdx`, `../index.md`). A bare `/` is left alone.
 //!
 //! Resolved URLs always end with `/` (they come directly from the
 //! source map), which is shape-compatible with the trailing-slash mode
@@ -160,14 +163,35 @@ impl ResolveLinksPlugin {
             };
         }
 
-        // Directory-style hrefs (`other-page/`) are extensionless targets with
-        // a trailing slash. Strip it before candidate generation — otherwise
-        // candidate 1 becomes the never-matching `other-page/.mdx` and the
-        // href passes through verbatim, warning as broken once linkValidation
-        // is armed (zfb#1004). An all-slash href (`/`) strips to empty —
-        // nothing to probe.
-        let path_part = path_part.trim_end_matches('/');
-        if path_part.is_empty() {
+        // Directory-style hrefs (`other-page/`, `./`, `../`, `v1.0/` —
+        // zfb#1004): the trailing slash says "directory", so the
+        // non-md-extension guard below must NOT apply (`v1.0/` names a
+        // directory, not a file with extension `.0`). Strip the slash and
+        // probe sibling-file candidates ({name}.mdx/.md — their routes ARE
+        // `{name}/` in trailing-slash mode) plus the index candidates that
+        // already resolved pre-#1004 via the double-slash join quirk
+        // (`name//index.mdx`). Dot segments (`./`, `../`) get index
+        // candidates only — `..mdx` is not a thing.
+        if let Some(stripped) = path_part.strip_suffix('/') {
+            let name = stripped.trim_end_matches('/');
+            if name.is_empty() {
+                // Bare `/` is the site root — never rewrite it to the
+                // current directory's index.
+                return Ok(None);
+            }
+            let last_segment = name.rsplit('/').next().unwrap_or(name);
+            let file_candidates = (last_segment != "." && last_segment != "..")
+                .then(|| [format!("{name}.mdx"), format!("{name}.md")]);
+            let index_candidates = [format!("{name}/index.mdx"), format!("{name}/index.md")];
+            for candidate in file_candidates
+                .into_iter()
+                .flatten()
+                .chain(index_candidates)
+            {
+                if let Some(result) = self.lookup_path(&candidate, suffix) {
+                    return Ok(Some(result));
+                }
+            }
             return Ok(None);
         }
 
@@ -651,11 +675,10 @@ mod tests {
     }
 
     #[test]
-    fn dotted_dir_slug_left_alone() {
-        // `v1.0/` strips to `v1.0`, whose last segment carries a dot — the
-        // non-md-extension guard skips it, same as extensionless `v1.0`
-        // (pre-existing boundary, pinned here so the slash strip doesn't
-        // silently widen it).
+    fn dotted_dir_slug_resolves_sibling_mdx() {
+        // `v1.0/` — the trailing slash means "directory", so the dotted
+        // last segment is NOT a file extension. The sibling `v1.0.mdx`
+        // (whose route IS `v1.0/`) must resolve.
         let dir = PathBuf::from("/site/docs");
         let mut map = HashMap::new();
         map.insert(
@@ -668,8 +691,83 @@ mod tests {
         });
         let mut root = root_with_link("v1.0/");
         plugin.visit(&mut root);
-        assert_eq!(link_url(&root), "v1.0/");
+        assert_eq!(link_url(&root), "/docs/v1.0/");
+    }
+
+    #[test]
+    fn dotted_dir_slug_resolves_index_mdx() {
+        // `v1.0/` backed by `v1.0/index.mdx` resolved pre-#1004 via the
+        // double-slash join quirk — pinned so the dir-style branch keeps it.
+        let dir = PathBuf::from("/site/docs");
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/v1.0/index.mdx"),
+            "/docs/v1.0/".to_string(),
+        );
+        let mut plugin = ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
+            source_map: map,
+            source_dir: Some(dir),
+        });
+        let mut root = root_with_link("v1.0/");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "/docs/v1.0/");
+    }
+
+    #[test]
+    fn dotted_name_without_slash_still_skipped() {
+        // Extensionless `v1.0` (no trailing slash) keeps the pre-existing
+        // non-md-extension boundary: the dotted last segment looks like a
+        // file extension, so no candidates are probed.
+        let dir = PathBuf::from("/site/docs");
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/v1.0.mdx"),
+            "/docs/v1.0/".to_string(),
+        );
+        let mut plugin = ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
+            source_map: map,
+            source_dir: Some(dir),
+        });
+        let mut root = root_with_link("v1.0");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "v1.0");
         assert!(plugin.take_broken_links().is_empty());
+    }
+
+    #[test]
+    fn dot_slash_resolves_current_dir_index() {
+        // `./` resolved to the current directory's index pre-#1004 (via
+        // the `.//index.mdx` candidate) — the dir-style branch must keep
+        // that working.
+        let dir = PathBuf::from("/site/docs/guides");
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/guides/index.mdx"),
+            "/docs/guides/".to_string(),
+        );
+        let mut plugin = ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
+            source_map: map,
+            source_dir: Some(dir),
+        });
+        let mut root = root_with_link("./");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "/docs/guides/");
+    }
+
+    #[test]
+    fn dot_dot_slash_resolves_parent_index() {
+        // `../` resolved to the parent directory's index pre-#1004 — same
+        // pre-existing behavior pin as `./`.
+        let dir = PathBuf::from("/site/docs/guides");
+        let mut map = HashMap::new();
+        map.insert(PathBuf::from("/site/docs/index.mdx"), "/docs/".to_string());
+        let mut plugin = ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
+            source_map: map,
+            source_dir: Some(dir),
+        });
+        let mut root = root_with_link("../");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "/docs/");
     }
 
     #[test]
