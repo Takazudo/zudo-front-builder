@@ -408,18 +408,35 @@ impl FsResolver {
     /// entries (`*` wildcards) are intentionally not handled here.
     ///
     /// Bare-package imports (no subpath) read `package.json` and try
-    /// `source` (the convention pnpm-workspace TypeScript packages use
-    /// for un-built sources), then `module`, then `main`. If
-    /// `package.json` is missing or doesn't point at a scannable file,
-    /// fall back to probing `src/index.<ext>` and `index.<ext>` inside
+    /// `exports["."]` first, then `source` (the convention pnpm-workspace
+    /// TypeScript packages use for un-built sources), then `module`, then
+    /// `main`. If `package.json` is missing or doesn't point at a scannable
+    /// file, fall back to probing `src/index.<ext>` and `index.<ext>` inside
     /// the package root — both common shapes for un-built workspace
     /// packages.
+    ///
+    /// **`exports` encapsulation gate** (`is_workspace = false`): Node treats
+    /// a package declaring `exports` as encapsulated — `main`/`module`/
+    /// top-level files are unreachable, and only the conditions listed in
+    /// `exports` resolve. So when a REGULAR npm package has an `exports`
+    /// field that yields no usable ESM target (e.g. a require-only CJS map),
+    /// it is inert to this ESM-only scanner: the `source`/`module`/`main`
+    /// and conventional `src/index`/`index` fallbacks are skipped, so a
+    /// stray top-level `index.js` the `exports` gate forbids is never scanned
+    /// (issue #999 require-only CJS hole). Workspace packages
+    /// (`is_workspace = true`) keep the fallback — their un-built TS source
+    /// commonly predates / omits an `exports` map.
     ///
     /// All resolved paths are clamped to live inside `pkg_dir` (after
     /// canonicalisation): a malicious `package.json` with
     /// `"source": "../../etc/passwd"` cannot punch out of the package
     /// directory.
-    fn probe_package_entry(&self, pkg_dir: &Path, subpath: &str) -> Option<PathBuf> {
+    fn probe_package_entry(
+        &self,
+        pkg_dir: &Path,
+        subpath: &str,
+        is_workspace: bool,
+    ) -> Option<PathBuf> {
         // Canonicalise once for clamp comparisons; if the package dir
         // can't be canonicalised (e.g. doesn't exist), fall back to the
         // raw path — the probe's `is_file()` checks will then fail
@@ -473,6 +490,15 @@ impl FsResolver {
                     if let Some(found) = probe_dir_or_file(candidate) {
                         return Some(found);
                     }
+                } else if !is_workspace && value.get("exports").is_some() {
+                    // `exports` present on a REGULAR npm package but no usable
+                    // ESM target: Node treats `exports` as an encapsulation
+                    // boundary, so `main`/`module`/top-level files are
+                    // unreachable. Bail out WITHOUT the conventional probe
+                    // below, which would otherwise scan a stray top-level
+                    // `index.js` the `exports` gate forbids (issue #999
+                    // require-only CJS hole). Workspace packages fall through.
+                    return None;
                 }
                 for field in ["source", "module", "main"] {
                     if let Some(rel) = value.get(field).and_then(|v| v.as_str()) {
@@ -847,6 +873,11 @@ fn flatten_exports_entry(value: &serde_json::Value) -> Option<String> {
             // scan ESM source. `default` is kept ahead of `import` to
             // preserve the pre-#999 contract (see the
             // `resolve_exports_subpath_prefers_*` tests).
+            // NOTE: Node resolves `exports` conditions in the order the
+            // package author writes them; this scanner deliberately imposes a
+            // fixed ESM-only priority instead — pinning `module` ahead of
+            // `default` — diverging from Node's author-controlled
+            // condition-order semantics.
             for cond in ["source", "module", "default", "import"] {
                 if let Some(inner) = value.get(cond) {
                     if let Some(found) = flatten_exports_entry(inner) {
@@ -940,50 +971,32 @@ impl Resolver for FsResolver {
             // work; failing the probe also means we skip them silently.
             let (pkg_name, subpath) = Self::split_bare_specifier(specifier);
             let pkg_dir = Self::locate_node_modules_pkg(importer_dir, &pkg_name)?;
-            // Descent policy for bare specifiers (issue #999):
+            // Descent policy for bare specifiers:
             //
             // - **pnpm-workspace packages** (a symlink at
             //   `node_modules/<pkg>` whose canonical target lives OUTSIDE
             //   `node_modules/`) are always entered — un-built TS source
             //   carries `"use client"` islands.
-            // - **Regular npm packages** (a published `@scope/pkg`
-            //   consumed from npm; the symlink resolves into
-            //   `node_modules/.pnpm/…`) are entered when the importer is
-            //   NOT itself inside `node_modules`. This is the #999 npm-dist
-            //   islands path: a page/component importing a dist-shipped
-            //   `"use client"` module (directly, or through the package's
-            //   own barrels via relative imports) must register its
-            //   islands.
+            // - **Regular npm packages** (the symlink resolves into
+            //   `node_modules/.pnpm/…`, or a plain installed dir) are entered
+            //   ONLY when the importer is NOT itself inside `node_modules` —
+            //   i.e. a page/component in project (or workspace-package)
+            //   source reaching a dist-shipped `"use client"` module
+            //   directly, or through the package's own relative-import
+            //   barrels.
             //
-            // The single hard invariant (the part of the PR #125 guarantee
-            // that still holds unconditionally): a bare import made from
-            // INSIDE `node_modules` — i.e. one regular package's dist
-            // reaching for `preact`, `@takazudo/zfb-runtime`, another
-            // `@scope/pkg`, … — is NEVER followed. So the scan never walks
-            // the *transitive* framework dependency graph; once inside a
-            // regular package only its own RELATIVE-import closure is
-            // traversed.
-            //
-            // What #999 DOES relax vs PR #125: a regular package's directly
-            // imported entry/subpath is now scanned (one parse, plus its
-            // relative closure), even for framework packages like `preact`.
-            // PR #125 skipped these outright. The cost is bounded — no
-            // transitive crawl — and real framework dist carries no
-            // `"use client"`, so no spurious islands are emitted; the
-            // trade is accepting those extra entry parses in exchange for
-            // surfacing islands genuinely published in npm dist. Note this
-            // relaxation also applies when the importer is a *workspace
-            // package's* source (which lives outside `node_modules`), not
-            // only top-level project source — distinguishing the two would
-            // require threading project-root provenance through the
-            // resolver, which is out of scope here.
-            if !Self::is_workspace_package(&pkg_dir)
-                && Self::is_inside_node_modules(importer_dir)
-            {
+            // Hard invariant: a bare import made from INSIDE `node_modules`
+            // — one package's dist reaching for `preact`,
+            // `@takazudo/zfb-runtime`, another `@scope/pkg`, … — is NEVER
+            // followed. The scan never walks the transitive framework
+            // dependency graph; once inside a regular package only its own
+            // RELATIVE-import closure is traversed.
+            let is_workspace = Self::is_workspace_package(&pkg_dir);
+            if !is_workspace && Self::is_inside_node_modules(importer_dir) {
                 return None;
             }
             return self
-                .probe_package_entry(&pkg_dir, &subpath)
+                .probe_package_entry(&pkg_dir, &subpath, is_workspace)
                 .map(canonicalize);
         }
 
@@ -4058,6 +4071,34 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(r#"{ "exports": { "./a": { "import": "I" } } }"#).unwrap();
         assert_eq!(resolve_exports_subpath(&json, "a"), Some("I".to_string()));
+    }
+
+    #[test]
+    fn resolve_exports_subpath_prefers_module_over_default() {
+        // `module` is pinned ahead of `default` regardless of the order the
+        // author writes the conditions — here `default` is written FIRST yet
+        // the `module` target must win. This intentionally diverges from
+        // Node's author-controlled condition-order semantics (ESM-only
+        // scanner; see `flatten_exports_entry`).
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "./a": { "default": "D", "module": "M" } } }"#)
+                .unwrap();
+        assert_eq!(resolve_exports_subpath(&json, "a"), Some("M".to_string()));
+    }
+
+    #[test]
+    fn resolve_exports_dot_prefers_module_over_default() {
+        // Same `module`-over-`default` precedence through the `"."` path —
+        // `default` written first, `module` still wins.
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { ".": { "default": "D", "module": "M" } } }"#)
+                .unwrap();
+        assert_eq!(resolve_exports_dot(&json), Some("M".to_string()));
+
+        // And via the dot-condition-object shorthand (no `"./"` keys).
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "default": "D", "module": "M" } }"#).unwrap();
+        assert_eq!(resolve_exports_dot(&json), Some("M".to_string()));
     }
 
     #[test]

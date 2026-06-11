@@ -331,6 +331,55 @@ fn require_only_cjs_package_yields_no_island() {
     );
 }
 
+/// Hardening for the #999 require-only CJS hole: a regular npm package whose
+/// `package.json` declares `exports` with ONLY `require` conditions (no
+/// usable ESM target) is `exports`-gated. Even when a STRAY top-level
+/// `index.js` carrying `"use client"` sits at the package root — the shape
+/// the conventional `src/index`/`index` probe would otherwise pick up — the
+/// package stays inert: Node treats `exports` as an encapsulation boundary,
+/// so that top-level file is unreachable and must never be scanned.
+#[test]
+fn require_only_cjs_package_with_stray_esm_index_stays_inert() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    let pkg = root.join("node_modules/@acme/legacy");
+    write(
+        &pkg.join("package.json"),
+        r#"{ "name": "@acme/legacy",
+            "exports": { ".": { "require": "./dist/index.cjs" } } }"#,
+    );
+    write(
+        &pkg.join("dist/index.cjs"),
+        r#""use client";
+        function Legacy() { return null; }
+        module.exports = { Legacy };
+        "#,
+    );
+    // The stray top-level ESM `index.js` the `exports` gate forbids. Without
+    // the gate, the conventional `index` probe would resolve and scan it,
+    // registering `StrayIsland` — exactly the hole this test pins shut.
+    write(
+        &pkg.join("index.js"),
+        r#""use client";
+        export function StrayIsland() { return null; }
+        "#,
+    );
+
+    let page = root.join("pages/home.tsx");
+    write(
+        &page,
+        r#"import { Legacy } from "@acme/legacy";
+        export default function Home() { return null; }
+        "#,
+    );
+
+    assert!(
+        scan_component_names(&page).is_empty(),
+        "a require-only CJS package must stay inert despite a stray top-level index.js"
+    );
+}
+
 /// When a local project-source component and a package-provided component
 /// share a marker name (e.g. both named `ThemeToggle`), the scanner emits
 /// two distinct islands (keyed by `(source_path, name)`), and the manifest
