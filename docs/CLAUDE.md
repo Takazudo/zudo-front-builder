@@ -32,7 +32,7 @@ All commands run from the **repo root** with the `--filter docs` workspace flag,
 docs/
 ├── pages/               # File-based routing (zfb page modules)
 │   └── lib/             # Shared page utilities (nav, locale merge, doc props)
-├── plugins/             # zfb integration plugins (copy-public, search-index, llms-txt, etc.)
+├── plugins/             # zfb integration plugins (doc-history, search-index, llms-txt, etc.)
 ├── public/              # Static assets copied flat to dist/ (favicons, img/)
 └── src/
     ├── components/      # Preact components
