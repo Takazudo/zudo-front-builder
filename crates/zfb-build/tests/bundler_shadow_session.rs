@@ -342,6 +342,188 @@ fn shadow_session_dirty_resets_after_error() {
     );
 }
 
+/// Path-type-flip regression (#987 review): a source path whose kind
+/// changes between two `bundle_with_session` calls (directory→file and
+/// file→directory) must succeed on the SAME call a fresh `bundle()`
+/// would — not error into the dirty-reset — and stay byte-identical to
+/// fresh. The widgets round-trip also pins `written`-hash invalidation:
+/// w1.ts is recreated with its ORIGINAL bytes, so a stale surviving hash
+/// would wrongly skip the re-write and drop the module from the bundle.
+#[test]
+fn shadow_session_survives_path_type_flips() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[shadow_session_survives_path_type_flips] no esbuild binary; \
+             set ZFB_ESBUILD_BIN, stage the slot, or install esbuild on PATH. Skipping."
+        );
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_fixture(root);
+    // Extensionless page-tree file that will flip into a directory later.
+    fs::write(root.join("pages/sub"), "placeholder, not a module\n").unwrap();
+
+    let mut session = ShadowSession::new().unwrap();
+
+    let mut assert_equal_bytes = |step: &str| {
+        let session_out = bundle_with_session(
+            make_input(root, Some(&esbuild), "dist-session"),
+            Some(&mut session),
+        )
+        .unwrap_or_else(|e| panic!("session bundle failed at step `{step}`: {e:#}"));
+        let fresh_out = bundle(make_input(root, Some(&esbuild), "dist-fresh"))
+            .unwrap_or_else(|e| panic!("fresh bundle failed at step `{step}`: {e:#}"));
+        let session_bytes = fs::read(&session_out.bundle_path).unwrap();
+        let fresh_bytes = fs::read(&fresh_out.bundle_path).unwrap();
+        assert_eq!(
+            session_bytes, fresh_bytes,
+            "session vs fresh bundle bytes diverged at step `{step}`"
+        );
+        session_bytes
+    };
+
+    assert_equal_bytes("baseline");
+
+    // directory→file: the glob-matched widgets DIR becomes a plain file
+    // at the same path. The stale shadow dir (with w1.ts inside) must be
+    // cleared at write time, and the prune must tolerate the now-gone
+    // w1.ts child whose ancestor is a file.
+    fs::remove_dir_all(root.join("components/widgets")).unwrap();
+    fs::write(root.join("components/widgets"), "not a directory anymore\n").unwrap();
+    let bytes = assert_equal_bytes("widgets dir→file");
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("w1"),
+        "bundle must drop the glob-matched widget after its dir became a file"
+    );
+
+    // file→directory (restore): w1.ts comes back with its ORIGINAL
+    // bytes. ensure_dir must clear the stale file, and the invalidated
+    // `written` hash must force a real re-write (a stale hash would skip
+    // it and leave the module missing).
+    fs::remove_file(root.join("components/widgets")).unwrap();
+    fs::create_dir_all(root.join("components/widgets")).unwrap();
+    fs::write(
+        root.join("components/widgets/w1.ts"),
+        "export const name = \"w1\";\n",
+    )
+    .unwrap();
+    let bytes = assert_equal_bytes("widgets file→dir restore");
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("w1"),
+        "restored glob-matched widget must re-enter the bundle"
+    );
+
+    // file→directory on the pages tree: the flip produces a NEW route,
+    // so the change is observable in the bundle bytes.
+    fs::remove_file(root.join("pages/sub")).unwrap();
+    fs::create_dir_all(root.join("pages/sub")).unwrap();
+    fs::write(
+        root.join("pages/sub/index.tsx"),
+        "export default function Sub() { return <p>sub-route-page</p>; }\n",
+    )
+    .unwrap();
+    let bytes = assert_equal_bytes("pages/sub file→dir");
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("sub-route-page"),
+        "page added via the file→dir flip must be bundled"
+    );
+
+    // directory→file back: the route must vanish again.
+    fs::remove_dir_all(root.join("pages/sub")).unwrap();
+    fs::write(root.join("pages/sub"), "placeholder again\n").unwrap();
+    let bytes = assert_equal_bytes("pages/sub dir→file");
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("sub-route-page"),
+        "page removed via the dir→file flip must leave the bundle"
+    );
+}
+
+/// Esbuild-free companion to the flip test above (mirrors the prune
+/// test's `mock_subprocess_output` pattern): asserts the SHADOW TREE
+/// shape directly across directory→file / file→directory mutations, for
+/// both the pages walk and a content-collection walk.
+#[test]
+fn shadow_session_path_type_flips_update_shadow_tree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_fixture(root);
+    fs::write(root.join("content/posts/media"), "extensionless asset\n").unwrap();
+
+    let mock_input = || BundlerInput {
+        mock_subprocess_output: Some("export default {};".to_string()),
+        ..make_input(root, None, "dist-session")
+    };
+    let mut session = ShadowSession::new().unwrap();
+    bundle_with_session(mock_input(), Some(&mut session)).unwrap();
+
+    let shadow = session.shadow_root().to_path_buf();
+    let widgets = shadow.join("components/widgets");
+    let w1 = shadow.join("components/widgets/w1.ts");
+    let media = shadow.join("content/posts/media");
+    // symlink_metadata (not `exists()`) so symlink-mode materialisation
+    // is asserted identically to copy-mode.
+    assert!(fs::symlink_metadata(&widgets).unwrap().is_dir());
+    assert!(fs::symlink_metadata(&w1).is_ok(), "w1.ts materialised");
+    assert!(
+        !fs::symlink_metadata(&media).unwrap().is_dir(),
+        "collection asset materialised as a file/symlink"
+    );
+
+    // directory→file (pages-family walk) + file→directory (collection
+    // walk), in the same tick.
+    fs::remove_dir_all(root.join("components/widgets")).unwrap();
+    fs::write(root.join("components/widgets"), "not a directory anymore\n").unwrap();
+    fs::remove_file(root.join("content/posts/media")).unwrap();
+    fs::create_dir_all(root.join("content/posts/media")).unwrap();
+    fs::write(root.join("content/posts/media/pic.txt"), "inner asset\n").unwrap();
+    bundle_with_session(mock_input(), Some(&mut session))
+        .expect("path-type flips must not fail the session call");
+
+    assert!(
+        !fs::symlink_metadata(&widgets).unwrap().is_dir(),
+        "stale shadow dir must be replaced by the new file"
+    );
+    assert!(
+        fs::symlink_metadata(&w1).is_err(),
+        "subtree of the replaced dir must be gone"
+    );
+    assert!(
+        fs::symlink_metadata(&media).unwrap().is_dir(),
+        "stale shadow file must be replaced by the new dir"
+    );
+    assert!(
+        fs::symlink_metadata(media.join("pic.txt")).is_ok(),
+        "child of the new dir materialised"
+    );
+
+    // Flip both back; the session must keep succeeding and converge to
+    // the original shape, with w1.ts re-written despite identical bytes
+    // (its `written` hash was invalidated with the deleted dir).
+    fs::remove_file(root.join("components/widgets")).unwrap();
+    fs::create_dir_all(root.join("components/widgets")).unwrap();
+    fs::write(
+        root.join("components/widgets/w1.ts"),
+        "export const name = \"w1\";\n",
+    )
+    .unwrap();
+    fs::remove_dir_all(root.join("content/posts/media")).unwrap();
+    fs::write(root.join("content/posts/media"), "extensionless asset\n").unwrap();
+    bundle_with_session(mock_input(), Some(&mut session))
+        .expect("reverse path-type flips must not fail the session call");
+
+    assert!(fs::symlink_metadata(&widgets).unwrap().is_dir());
+    assert!(
+        fs::symlink_metadata(&w1).is_ok(),
+        "w1.ts must be re-materialised after the round-trip"
+    );
+    assert!(!fs::symlink_metadata(&media).unwrap().is_dir());
+    assert!(
+        fs::symlink_metadata(media.join("pic.txt")).is_err(),
+        "child of the removed dir must be gone"
+    );
+}
+
 /// Spec test 4 (#993): diagnostics must be replayed on EVERY call,
 /// including a call where no input changed — the zfb#905 compile cache
 /// stores and replays them, and the session must never skip the

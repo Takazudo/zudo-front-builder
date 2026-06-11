@@ -893,6 +893,14 @@ fn bundler_timing_enabled() -> bool {
 ///   A session whose last call failed wipes the shadow dir and
 ///   materialises from scratch, so a half-updated tree can never feed
 ///   esbuild.
+/// - **Path-type flips heal in place**: a source path whose kind changes
+///   between calls (directory→file or file→directory) clears the stale
+///   shadow entry at write/mkdir time — recursively for directories,
+///   invalidating every `written` hash beneath — so the session succeeds
+///   on the same call a fresh [`bundle`] would, instead of erroring into
+///   the dirty-reset. Directories are never recorded in `visited` (the
+///   prune pass stays file-based); the prune tolerates a stale file path
+///   that a live directory has replaced.
 ///
 /// `zfb build` keeps calling [`bundle`], which passes no session — the
 /// production path is byte-for-byte unchanged.
@@ -1092,6 +1100,16 @@ impl<'s> ShadowWriter<'s> {
             // was last created as a symlink): remove first so we never
             // write THROUGH a symlink (#553).
             None => {
+                // A stale DIRECTORY at this path (directory→file source
+                // mutation during the dev session) would make the write
+                // fail until the next dirty wipe — a fresh bundle() would
+                // succeed immediately. Remove it recursively and drop
+                // every `written` hash beneath it, or a later write at a
+                // descendant path could be wrongly skipped.
+                if fs::symlink_metadata(to).is_ok_and(|m| m.is_dir()) {
+                    fs::remove_dir_all(to)?;
+                    session.written.retain(|p, _| !p.starts_with(&rel));
+                }
                 let _ = fs::remove_file(to);
                 fs::write(to, bytes)?;
                 session.written.insert(rel, hash);
@@ -1125,11 +1143,47 @@ impl<'s> ShadowWriter<'s> {
                 return Ok(());
             }
         }
+        // A stale DIRECTORY at this path (directory→file source mutation
+        // during the dev session) would make the symlink creation fail
+        // until the next dirty wipe. Remove it recursively and drop every
+        // `written` hash beneath it (see the matching block in
+        // `write_inner`). `symlink_metadata` reports a symlink-to-dir as
+        // a symlink, so only real directories take this branch — links
+        // are handled by `symlink_or_copy`'s remove-first.
+        if fs::symlink_metadata(to).is_ok_and(|m| m.is_dir()) {
+            fs::remove_dir_all(to)?;
+            cell.borrow_mut()
+                .written
+                .retain(|p, _| !p.starts_with(&rel));
+        }
         // (Re-)creating the link invalidates any recorded content hash:
         // the path's provenance is now "symlink", not "bytes we wrote",
         // so a later write_if_changed must take the remove-first branch.
         cell.borrow_mut().written.remove(&rel);
         symlink_or_copy(target, to)
+    }
+
+    /// Create the directory at `to` (and any missing parents). In session
+    /// mode a stale non-directory entry at `to` — a regular file, or a
+    /// symlink (which `create_dir_all` would FOLLOW, so a symlink whose
+    /// source path became a directory would alias the live source tree
+    /// and let later child writes escape the shadow — the #553 hazard) —
+    /// left by a previous call's file→directory source mutation is
+    /// removed first and its `written` hash dropped. Directories are NOT
+    /// recorded as visited: the prune pass stays file-based, and a stale
+    /// dir is instead cleared lazily by whichever later call needs a
+    /// file (`write_inner` / `symlink_if_absent`) or dir (here) at its
+    /// path. Passthrough mode is the plain pre-#993 `create_dir_all`
+    /// (the prod shadow tempdir is fresh, so no conflict can exist).
+    fn ensure_dir(&self, to: &Path) -> std::io::Result<()> {
+        if let Some(cell) = &self.session {
+            if fs::symlink_metadata(to).is_ok_and(|m| !m.is_dir()) {
+                fs::remove_file(to)?;
+                let rel = self.rel_of(to)?;
+                cell.borrow_mut().written.remove(&rel);
+            }
+        }
+        fs::create_dir_all(to)
     }
 
     /// Delete stale shadow files (`prev_visited − visited`) — MUST run
@@ -1155,6 +1209,45 @@ impl<'s> ShadowWriter<'s> {
                 continue;
             }
             let abs = self.shadow_root.join(&rel);
+            // Path-type flips (see the safety model on [`ShadowSession`])
+            // leave stale entries the plain remove_file below would choke
+            // on; discriminate via lstat first:
+            match fs::symlink_metadata(&abs) {
+                // file→dir flip: a materialise pass replaced the stale
+                // file with a LIVE directory this call (`ensure_dir`
+                // already deleted the file). Removing the dir would prune
+                // freshly-written output — keep it, drop the bookkeeping.
+                Ok(m) if m.is_dir() => {
+                    session.written.remove(&rel);
+                    continue;
+                }
+                Ok(_) => {}
+                // Already gone: deleted with an ancestor directory
+                // (dir→file flip removes whole subtrees — NotFound), or
+                // an ancestor is now a regular file so the path can no
+                // longer be traversed (NotADirectory). Nothing stale is
+                // on disk; drop the bookkeeping.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    session.written.remove(&rel);
+                    continue;
+                }
+                // Any other lstat failure: a stale file we cannot verify
+                // gone would feed esbuild wrong input — hard error, same
+                // self-healing contract as the remove_file arm below.
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!(
+                            "shadow session: failed to stat stale shadow path {}",
+                            abs.display()
+                        )
+                    });
+                }
+            }
             match fs::remove_file(&abs) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -2229,7 +2322,7 @@ fn symlink_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
 /// route through `writer` (#993) so the persistent shadow session skips
 /// byte-identical rewrites and tracks the files for the prune pass.
 fn copy_dir_recursive(src: &Path, dest: &Path, writer: &ShadowWriter<'_>) -> std::io::Result<()> {
-    fs::create_dir_all(dest)?;
+    writer.ensure_dir(dest)?;
     for entry in WalkDir::new(src)
         .follow_links(true)
         .into_iter()
@@ -2243,10 +2336,10 @@ fn copy_dir_recursive(src: &Path, dest: &Path, writer: &ShadowWriter<'_>) -> std
         };
         let to = dest.join(rel);
         if entry.file_type().is_dir() {
-            fs::create_dir_all(&to)?;
+            writer.ensure_dir(&to)?;
         } else if entry.file_type().is_file() {
             if let Some(parent) = to.parent() {
-                fs::create_dir_all(parent)?;
+                writer.ensure_dir(parent)?;
             }
             writer.copy_if_changed(from, &to)?;
         }
@@ -2322,7 +2415,9 @@ fn materialise_shadow(
         return Ok(());
     }
 
-    fs::create_dir_all(dest).with_context(|| format!("create dir {}", dest.display()))?;
+    ctx.writer
+        .ensure_dir(dest)
+        .with_context(|| format!("create dir {}", dest.display()))?;
     // Routes are only collected when the caller passed a `routes` vec
     // they actually intend to fill — by convention, only the call for
     // the pages root does this. We detect "is this the pages call?" by
@@ -2399,7 +2494,9 @@ fn materialise_shadow(
         let to = dest.join(rel);
 
         if entry.file_type().is_dir() {
-            fs::create_dir_all(&to).with_context(|| format!("create dir {}", to.display()))?;
+            ctx.writer
+                .ensure_dir(&to)
+                .with_context(|| format!("create dir {}", to.display()))?;
             continue;
         }
         if !entry.file_type().is_file() {
@@ -2920,7 +3017,9 @@ fn materialise_collection(
     if !src.exists() {
         return Ok(());
     }
-    fs::create_dir_all(dest).with_context(|| format!("create dir {}", dest.display()))?;
+    ctx.writer
+        .ensure_dir(dest)
+        .with_context(|| format!("create dir {}", dest.display()))?;
 
     // Compile the include / exclude globs once per collection. The
     // shared `CollectionFilter` MUST match `CollectionConfig::*` on the
@@ -2981,7 +3080,9 @@ fn materialise_collection(
         let to = dest.join(rel);
 
         if entry.file_type().is_dir() {
-            fs::create_dir_all(&to).with_context(|| format!("create dir {}", to.display()))?;
+            ctx.writer
+                .ensure_dir(&to)
+                .with_context(|| format!("create dir {}", to.display()))?;
             continue;
         }
         if !entry.file_type().is_file() {
