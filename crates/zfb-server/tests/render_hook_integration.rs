@@ -234,9 +234,8 @@ async fn hook_invoked_on_head_and_response_has_no_body() {
     .await;
 
     // Seed the cache so the server has something to respond with.
-    pages
-        .insert("/index", "<html><body>hello</body></html>")
-        .await;
+    // Root lookups probe `/` then `/index.html` (see lookup_keys).
+    pages.insert("/", "<html><body>hello</body></html>").await;
 
     let client = reqwest::Client::new();
     let resp = client.head(format!("http://{addr}/")).send().await.unwrap();
