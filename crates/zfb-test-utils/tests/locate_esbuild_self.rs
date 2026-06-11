@@ -75,6 +75,16 @@ fn runtime_derivation_finds_real_workspace_from_test_cwd() {
         "no candidate root contains crates/zfb-test-utils — runtime derivation failed; \
          candidates: {roots:?}"
     );
+    // Positively prove the RUNTIME derivation (not just the compile-time
+    // fallback, which would also satisfy the assert above on a fresh
+    // build): at least one candidate root must be an ancestor of the
+    // process cwd, which only the runtime walk-up can produce.
+    let cwd = std::env::current_dir().expect("test process must have a cwd");
+    assert!(
+        roots.iter().any(|r| cwd.starts_with(r)),
+        "no candidate root is an ancestor of the test cwd {cwd:?} — the runtime cwd \
+         walk-up is broken; candidates: {roots:?}"
+    );
 }
 
 #[test]

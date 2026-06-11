@@ -141,7 +141,10 @@ pub fn locate_esbuild() -> Option<PathBuf> {
             "zfb-test-utils harness bug (issue #1007): the esbuild slot binary exists at \
              {present:?} but locate_esbuild() failed to return it. Checked slot paths: \
              {checked:?}. This state must never become a silent skip — fix the lookup.",
-            present = present_slots,
+            present = present_slots
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>(),
             checked = checked_slots
                 .iter()
                 .map(|(p, _)| p.display().to_string())
