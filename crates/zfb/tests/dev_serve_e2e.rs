@@ -146,16 +146,29 @@ fn dump_logs(stdout_path: &Path, stderr_path: &Path) -> String {
 
 /// Extract the port from the dev ready banner, e.g.
 /// `→ ready on http://localhost:34567/`. Tolerates ANSI styling around
-/// the URL (digits stop at the first non-digit byte either way).
+/// the URL (digits stop at the first non-digit byte either way) and
+/// skips unrelated `http://` occurrences in earlier log lines by
+/// scanning every match until one yields a parseable port.
 fn parse_ready_port(log: &str) -> Option<u16> {
-    let idx = log.find("http://")?;
-    let rest = &log[idx + "http://".len()..];
-    let colon = rest.find(':')?;
-    let digits: String = rest[colon + 1..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    digits.parse().ok()
+    let mut rest = log;
+    while let Some(idx) = rest.find("http://") {
+        let candidate = &rest[idx + "http://".len()..];
+        // Confine the colon search to this URL token: stop at the first
+        // whitespace so a port-less URL can't borrow a colon from a
+        // later log line.
+        let token: &str = candidate.split_whitespace().next().unwrap_or("");
+        if let Some(colon) = token.find(':') {
+            let digits: String = token[colon + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if let Ok(port) = digits.parse() {
+                return Some(port);
+            }
+        }
+        rest = &rest[idx + "http://".len()..];
+    }
+    None
 }
 
 /// Poll `url` until the body contains `needle` (and the status is 200).
@@ -339,7 +352,12 @@ async fn run_scenarios(
         );
         tokio::time::sleep(POLL_INTERVAL).await;
     };
-    let base = format!("http://127.0.0.1:{port}");
+    // Connect via `localhost` — the same name `zfb dev` resolved to pick
+    // its bind address. Hard-coding 127.0.0.1 would target the wrong
+    // address family on IPv6-only hosts where `resolve_addr` falls back
+    // to binding ::1 (reqwest/hyper tries every resolved address, so
+    // this matches whichever family the listener actually bound).
+    let base = format!("http://localhost:{port}");
 
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
