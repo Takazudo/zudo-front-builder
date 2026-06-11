@@ -1417,6 +1417,22 @@ struct DevRenderInner {
     /// overlaps the renderer mutex, so SSR latency is unaffected.
     #[cfg(feature = "embed_v8")]
     shadow_session: Mutex<Option<ShadowSession>>,
+
+    /// Cross-tick [`PathsCache`] (#994 item B): seeded at boot and
+    /// passed into every route-table build, so a `paths()` JSON output
+    /// identical to a previous tick's skips the Rust-side
+    /// validate/URL-build in `resolve_paths`. NOTE the corrected scope
+    /// (#992): the cache lookup happens AFTER the V8 `/__paths__/`
+    /// dispatch — the key includes the hash of the dispatch RESULT — so
+    /// persistence does NOT skip the per-tick V8 evals; the saving is
+    /// the ~1–5 ms Rust tail only. Sound by construction: a changed
+    /// `paths()` output can never hit a stale entry (key = template +
+    /// JSON hash) and stale entries are inert. The lock is scoped to
+    /// the P3 route-table build; the renderer lock for phase-2 eval is
+    /// taken inside the build exactly as before, so renderer-mutex
+    /// hold time is unchanged.
+    #[cfg(feature = "embed_v8")]
+    paths_cache: Mutex<PathsCache>,
 }
 
 /// Per-source route filter for one narrowed tick (issue #958): which of a
@@ -1938,16 +1954,31 @@ impl DevRenderSession {
         self.inner.commit_skip_key(None);
 
         // P3 — route-table rebuild (re-expands `paths()` through the new
-        //      V8 host) with paths()-expansion sub-timing and PathsCache
-        //      hit/miss counts. The cache is constructed fresh each call
-        //      (dev.rs:2250), so 100% miss is expected here — instrumented
-        //      to measure; fix deferred (#991).
+        //      V8 host) with paths()-expansion sub-timing and this tick's
+        //      PathsCache hit/miss deltas. The cache persists across
+        //      ticks (#994 item B) — note the lookup happens AFTER the
+        //      V8 dispatch (keyed on its result), so hits save only the
+        //      Rust-side validate/URL-build, not the V8 evals.
         // 3. Rebuild the route tables through the reloaded host (re-expands
         //    `paths()`, so the dynamic source now resolves the new URL).
         let p3_start = tick_start.map(|_| std::time::Instant::now());
-        let (new_routes_by_source, new_ssr_routes, p3_cache_hits, p3_cache_misses) =
-            build_dev_route_tables_timed(&router, &plan, project_root, &self.inner.renderer)
-                .context("dev refresh: route-table rebuild failed")?;
+        let (new_routes_by_source, new_ssr_routes, p3_cache_hits, p3_cache_misses) = {
+            let mut paths_cache = self.inner.paths_cache.lock().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "refresh_bundle_and_routes",
+                    "paths cache mutex poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            build_dev_route_tables_timed(
+                &router,
+                &plan,
+                project_root,
+                &self.inner.renderer,
+                &mut paths_cache,
+            )
+            .context("dev refresh: route-table rebuild failed")?
+        };
         let p3_ms = p3_start.map(|t| t.elapsed().as_millis());
 
         // P4 — diff + RwLock table swap + skip-key commit.
@@ -2368,20 +2399,19 @@ type TimedRouteTables = (
 );
 
 /// Timed variant of [`build_dev_route_tables`]: returns the same tables plus
-/// the [`PathsCache`] hit and miss counters for P3 diagnostics (issue #991).
-///
-/// Note: the cache is constructed fresh on every call (see line below), so
-/// 100% miss is expected — this is instrumented here to confirm and to
-/// provide the data needed for the cache-reuse decision (deferred).
+/// the [`PathsCache`] hit and miss DELTAS for this call, for P3 diagnostics
+/// (issue #991). The cache persists across ticks (#994 item B) and its
+/// counters are cumulative, so the inner build reports per-call deltas.
 #[cfg(feature = "embed_v8")]
 fn build_dev_route_tables_timed(
     router: &zfb_router::Router,
     plan: &crate::render_pipeline::RouteUniversePlan,
     project_root: &Path,
     renderer: &Arc<Mutex<Option<RendererState>>>,
+    paths_cache: &mut PathsCache,
 ) -> Result<TimedRouteTables> {
     let (routes_by_source, ssr_routes, hits, misses) =
-        build_dev_route_tables_inner(router, plan, project_root, renderer)?;
+        build_dev_route_tables_inner(router, plan, project_root, renderer, paths_cache)?;
     Ok((routes_by_source, ssr_routes, hits, misses))
 }
 
@@ -2397,23 +2427,25 @@ fn build_dev_route_tables(
     plan: &crate::render_pipeline::RouteUniversePlan,
     project_root: &Path,
     renderer: &Arc<Mutex<Option<RendererState>>>,
+    paths_cache: &mut PathsCache,
 ) -> Result<BuiltRouteTables> {
     let (routes_by_source, ssr_routes, _hits, _misses) =
-        build_dev_route_tables_inner(router, plan, project_root, renderer)?;
+        build_dev_route_tables_inner(router, plan, project_root, renderer, paths_cache)?;
     Ok((routes_by_source, ssr_routes))
 }
 
 /// Inner implementation shared by [`build_dev_route_tables`] and
-/// [`build_dev_route_tables_timed`]. Returns the route tables plus the
-/// PathsCache hit/miss counts (issue #991 — cache is fresh-constructed per
-/// call, so 100% miss is expected; see the comment at the PathsCache::new()
-/// call below).
+/// [`build_dev_route_tables_timed`]. Returns the route tables plus this
+/// call's PathsCache hit/miss deltas (#991 instrumentation; the cache is
+/// caller-owned and persists across ticks per #994 item B, so the
+/// cumulative counters are differenced here).
 #[cfg(feature = "embed_v8")]
 fn build_dev_route_tables_inner(
     router: &zfb_router::Router,
     plan: &crate::render_pipeline::RouteUniversePlan,
     project_root: &Path,
     renderer: &Arc<Mutex<Option<RendererState>>>,
+    paths_cache: &mut PathsCache,
 ) -> Result<TimedRouteTables> {
     let prerender_map = build_prerender_map(router.routes(), project_root, |msg| {
         crate::output::warn(msg)
@@ -2503,13 +2535,13 @@ fn build_dev_route_tables_inner(
         .filter(|d| !crate::render_pipeline::is_ssr_route(&prerender_map, &d.template))
         .cloned()
         .collect();
-    // PathsCache hit/miss counters — issue #991 instrumentation.
-    // The cache is constructed fresh here on every call (not shared across
-    // ticks), so 100% miss is expected; these counts confirm that and feed
-    // the ZFB_DEV_TIMING P3 line. Deferred: caching across ticks is not
-    // done here.
-    let mut paths_cache_hits: u64 = 0;
-    let mut paths_cache_misses: u64 = 0;
+    // PathsCache hit/miss DELTAS for this call — issue #991
+    // instrumentation. The cache is caller-owned and persists across
+    // ticks (#994 item B), so its cumulative counters are snapshotted
+    // here and differenced at the end to feed the ZFB_DEV_TIMING P3
+    // line.
+    let hits_before = paths_cache.hit_count();
+    let misses_before = paths_cache.miss_count();
 
     if !ssg_deferred.is_empty() {
         // Map each route template back to its source path so the resolved
@@ -2523,13 +2555,10 @@ fn build_dev_route_tables_inner(
             .map(|d| (d.template.clone(), d.source_path.clone()))
             .collect();
 
-        let mut paths_cache = PathsCache::new();
-
         // Phase 1 — literal `paths()` arrays (no runtime needed).
         // A missing `paths()` export on an SSG route is a hard error here
         // too — consistent with `zfb build` (issue #520).
-        let static_expansion =
-            expand_dynamic_routes(&ssg_deferred, project_root, &mut paths_cache)?;
+        let static_expansion = expand_dynamic_routes(&ssg_deferred, project_root, paths_cache)?;
 
         // Phase 2 — evaluate the routes phase 1 couldn't resolve statically
         // through the running embedded V8 host. We borrow the live host out
@@ -2537,7 +2566,15 @@ fn build_dev_route_tables_inner(
         // RendererState>>>` the SSG render callback and the SSR adapter
         // share) and dispatch via `WorkerDispatch::EmbeddedV8`, exactly like
         // `commands/build.rs::eval_deferred_paths`.
-        let runtime_expansion = {
+        //
+        // The renderer mutex is only taken when phase 1 left anything to
+        // evaluate (#994 item B): when every `paths()` resolved
+        // statically there is nothing to dispatch, so borrowing the live
+        // host would be a pointless lock (and previously made an
+        // all-literal project hard-require a started renderer here).
+        let runtime_expansion = if static_expansion.deferred.is_empty() {
+            crate::render_pipeline::DynamicExpansion::default()
+        } else {
             let mut lock = renderer.lock().unwrap_or_else(|p| {
                 tracing::warn!(
                     site = "boot_dev_renderer.paths",
@@ -2558,14 +2595,10 @@ fn build_dev_route_tables_inner(
             eval_deferred_paths_via_worker(
                 &static_expansion.deferred,
                 &mut dispatch,
-                &mut paths_cache,
+                paths_cache,
                 None,
             )
         };
-
-        // Capture PathsCache stats before consuming the cache (issue #991).
-        paths_cache_hits = paths_cache.hit_count();
-        paths_cache_misses = paths_cache.miss_count();
 
         // Surface routes that still couldn't be expanded (after both phases)
         // as warnings so the user knows why a `[slug]` route didn't appear —
@@ -2630,8 +2663,8 @@ fn build_dev_route_tables_inner(
     Ok((
         routes_by_source,
         ssr_routes,
-        paths_cache_hits,
-        paths_cache_misses,
+        paths_cache.hit_count() - hits_before,
+        paths_cache.miss_count() - misses_before,
     ))
 }
 
@@ -2766,8 +2799,14 @@ fn boot_dev_renderer(
     // Build the route tables from the router scan + the live host (#659:
     // extracted into `build_dev_route_tables` so the watch-ADD rebuild
     // reproduces the boot tables exactly).
+    //
+    // #994 item B — the PathsCache is seeded here and stored on
+    // `DevRenderInner` below, so every refresh tick reuses the entries
+    // this boot-time build populated (boot/refresh parity: both go
+    // through the same cache).
+    let mut paths_cache = PathsCache::new();
     let (routes_by_source, ssr_routes) =
-        build_dev_route_tables(&router, &plan, project_root, &renderer)?;
+        build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
 
     // Issue #958 — seed the frontmatter gate cache so the FIRST body-only
     // edit of a pre-existing collection file can already narrow (G4 only
@@ -2788,6 +2827,7 @@ fn boot_dev_renderer(
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(fm_hashes),
             shadow_session: Mutex::new(Some(shadow_session)),
+            paths_cache: Mutex::new(paths_cache),
         }),
     })
 }
@@ -3404,6 +3444,7 @@ mod tests {
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),
             shadow_session: Mutex::new(None),
+            paths_cache: Mutex::new(PathsCache::new()),
         }
     }
 
@@ -3428,6 +3469,71 @@ mod tests {
     fn default_watch_roots_includes_zfb_config_json() {
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.json"));
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.ts"));
+    }
+
+    /// #994 item B — the PathsCache is caller-owned and persists across
+    /// route-table builds: a second build sharing the cache with
+    /// unchanged `paths()` JSON reports cache hits (delta counters) and
+    /// produces identical tables.
+    #[test]
+    #[cfg(feature = "embed_v8")]
+    fn build_dev_route_tables_shares_paths_cache_across_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        std::fs::create_dir_all(pages.join("blog")).unwrap();
+        std::fs::write(
+            pages.join("index.tsx"),
+            "export default function Home() { return null; }",
+        )
+        .unwrap();
+        std::fs::write(
+            pages.join("blog").join("[slug].tsx"),
+            r#"
+            export function paths() {
+                return [
+                    { params: { slug: "hello" } },
+                    { params: { slug: "world" } },
+                ];
+            }
+            export default function P() { return null; }
+            "#,
+        )
+        .unwrap();
+
+        let router = zfb_router::Router::scan(&pages).unwrap();
+        let plan = build_route_universe(router.routes());
+        // No live V8 host: the literal `paths()` resolves in phase 1, so
+        // the renderer mutex is never borrowed (see the phase-2 gate in
+        // `build_dev_route_tables_inner`).
+        let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(None));
+
+        let mut cache = PathsCache::new();
+        let (tables1, ssr1, hits1, misses1) =
+            build_dev_route_tables_timed(&router, &plan, dir.path(), &renderer, &mut cache)
+                .expect("first build");
+        assert_eq!(hits1, 0, "first build runs against a cold cache");
+        assert!(misses1 > 0, "first build must record a miss");
+        assert_eq!(
+            tables1
+                .get(&pages.join("blog").join("[slug].tsx"))
+                .map(Vec::len),
+            Some(2),
+            "literal paths() expands to 2 entries: {tables1:?}"
+        );
+
+        let (tables2, ssr2, hits2, misses2) =
+            build_dev_route_tables_timed(&router, &plan, dir.path(), &renderer, &mut cache)
+                .expect("second build");
+        assert!(
+            hits2 > 0,
+            "unchanged paths() JSON must hit the shared cache"
+        );
+        assert_eq!(misses2, 0, "second build must add no misses");
+        assert_eq!(
+            tables1, tables2,
+            "cache-sharing builds must produce identical tables"
+        );
+        assert_eq!(ssr1, ssr2);
     }
 
     fn cfg_with_collections(paths: &[&str]) -> config::Config {
