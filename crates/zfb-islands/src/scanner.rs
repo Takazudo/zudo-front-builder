@@ -44,11 +44,18 @@
 //!
 //! - `export function Foo() {}` → `"Foo"`
 //! - `export class Foo {}` → `"Foo"`
-//! - `export const Foo = …` (and `let` / `var`) → `"Foo"`
-//! - `export default …` → the literal string `"default"`
-//! - `export { A, B as C }` → `"A"`, `"C"`
-//! - `export * as ns from "./mod"` → `"ns"`
+//! - `export const Foo = …` (and `let` / `var`) → `"Foo"` when the
+//!   initialiser is component-plausible (function/arrow/call/tagged
+//!   template/identifier/…); a clearly-non-component literal value is
+//!   dropped (issue #998).
+//! - `export default …` → the literal string `"default"` (a
+//!   clearly-non-component literal default is dropped, issue #998)
+//! - `export { A, B as C }` → `"A"`, `"C"` (a local re-export resolving
+//!   to a clearly-non-component binding is dropped, issue #998)
 //! - `export d from "./mod"` (rare) → `"d"`
+//!
+//! `export * as ns from "./mod"` is NOT registered: a module-namespace
+//! object is never a mountable component (issue #998).
 //!
 //! The pair `(source_path, component_name)` is the stable identity used
 //! for dedup and ordering. Re-exports without a local declaration of the
@@ -1650,6 +1657,80 @@ struct IslandRecord {
     marker_name: String,
 }
 
+/// Return `true` when an initialiser expression is *clearly* a
+/// non-component value that must NOT be registered as a mountable island
+/// (issue #998).
+///
+/// The rule is deliberately CONSERVATIVE — it drops only shapes that can
+/// never be a component:
+///
+/// - primitive/literal values (`'foo'`, `42`, `true`, `null`, `/re/`, `1n`)
+/// - untagged template strings (`` `foo${x}` ``)
+/// - array literals
+/// - object literals
+///
+/// Everything else is treated as component-plausible and KEPT: function
+/// expressions, arrow functions, ANY call expression (`memo(...)`,
+/// `forwardRef(...)`, `lazy(...)`, `styled(...)`, `connect(...)(...)` — no
+/// callee whitelist), tagged templates (`` styled.div`…` `` parse as
+/// `Expr::TaggedTpl`, distinct from `Expr::Tpl`), bare identifiers,
+/// conditional expressions, `as`-casts / `satisfies`, member access, and
+/// anything else. When in doubt, keep.
+///
+/// `export const SIDEBAR_STORAGE_KEY = 'zudo-doc-sidebar-visible'` — the
+/// repro from #998 — is a string literal and gets dropped here.
+fn init_is_clearly_non_component(init: &Expr) -> bool {
+    match init {
+        Expr::Lit(_) | Expr::Tpl(_) | Expr::Array(_) | Expr::Object(_) => true,
+        // Peel a redundant wrapping paren and re-test. TS casts
+        // (`x as T`, `x satisfies T`, `x!`) are intentionally NOT peeled:
+        // the spec treats them as ambiguous and keeps them.
+        Expr::Paren(p) => init_is_clearly_non_component(&p.expr),
+        _ => false,
+    }
+}
+
+/// `true` when a single `const`/`let`/`var` declarator's initialiser is a
+/// clearly-non-component value. A declarator with no initialiser
+/// (`let Foo;`) is ambiguous → kept.
+fn var_declarator_is_clearly_non_component(d: &VarDeclarator) -> bool {
+    match d.init.as_ref() {
+        Some(init) => init_is_clearly_non_component(init),
+        None => false,
+    }
+}
+
+/// Collect the names of module-local `const`/`let`/`var` bindings whose
+/// initialiser is a clearly-non-component value (see
+/// [`init_is_clearly_non_component`]).
+///
+/// Used to drop *local* named re-exports — `const KEY = 'x'; export { KEY }`
+/// — that resolve to a non-component binding (issue #998). Bindings that
+/// are functions, classes, component-shaped initialisers, OR imported from
+/// another module are absent from this set, so a re-export of such a
+/// binding stays registered (resolving cross-module re-exports is out of
+/// scope; those are kept permissively).
+fn collect_non_component_local_bindings(module: &Module) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    for item in &module.body {
+        let decl = match item {
+            ModuleItem::Stmt(Stmt::Decl(decl)) => decl,
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ed)) => &ed.decl,
+            _ => continue,
+        };
+        if let Decl::Var(v) = decl {
+            for d in &v.decls {
+                if let Pat::Ident(bi) = &d.name {
+                    if var_declarator_is_clearly_non_component(d) {
+                        out.insert(bi.id.sym.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Walk the module's exports and pair each one with its SSR-marker name.
 ///
 /// The marker name is what the SSR side will write into the
@@ -1682,12 +1763,30 @@ struct IslandRecord {
 /// When found, the literal first-argument string overrides the
 /// rule-based `marker_name` so the manifest key matches
 /// `data-zfb-island-skip-ssr="X"` rather than the wrapper's identifier.
+///
+/// ## Component filtering (issue #998)
+///
+/// Clearly-non-component exports are dropped so they never become
+/// mountable-island registry entries — a string/number/object/array
+/// literal export of a `"use client"` module (e.g.
+/// `export const SIDEBAR_STORAGE_KEY = 'zudo-doc-sidebar-visible'`) is not
+/// a component. The filter is conservative (see
+/// [`init_is_clearly_non_component`]): only literal-shaped values, untagged
+/// template strings, `export * as ns from "…"` namespace re-exports, and
+/// local re-exports resolving to such values are dropped; everything
+/// ambiguous is kept. Re-exports from another module
+/// (`export { Foo } from "./x"`) are kept permissively.
 fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
     // 1. Build a side-table of `local_ident -> renderSsrSkipPlaceholder
     //    first-arg literal` for every function/variable declaration in
     //    the module body. Used below to override marker_name on the
     //    matching exported declaration.
     let body_markers = collect_body_markers(module);
+
+    // Names of module-local bindings whose value is clearly a
+    // non-component (issue #998) so local named re-exports of them can be
+    // dropped below.
+    let non_component_locals = collect_non_component_local_bindings(module);
 
     let mut out: Vec<IslandRecord> = Vec::new();
     for item in &module.body {
@@ -1721,6 +1820,12 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                 Decl::Var(v) => {
                     for d in &v.decls {
                         if let Pat::Ident(bi) = &d.name {
+                            // Issue #998: drop clearly-non-component exports
+                            // (`export const KEY = 'x'`) so a string / number /
+                            // object literal never becomes a mountable island.
+                            if var_declarator_is_clearly_non_component(d) {
+                                continue;
+                            }
                             let name = bi.id.sym.to_string();
                             let marker_from_init = marker_from_var_initialiser(d);
                             let marker = marker_from_init
@@ -1766,6 +1871,11 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                 }
             },
             ModuleDecl::ExportDefaultExpr(ee) => {
+                // Issue #998: `export default 'foo'` / `export default { … }`
+                // — a clearly-non-component default is not a mountable island.
+                if init_is_clearly_non_component(&ee.expr) {
+                    continue;
+                }
                 // `export default <expr>` — try to recover an identifier
                 // from common shapes (`export default Foo`,
                 // `export default forwardRef(Foo)`). Otherwise fall back
@@ -1797,6 +1907,16 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                             // `n.orig` — that's what the body-marker
                             // table is keyed on.
                             let local = module_export_name(&n.orig);
+                            // Issue #998: a *local* named re-export whose
+                            // binding resolves to a clearly-non-component
+                            // value (`const KEY = 'x'; export { KEY }`) must
+                            // not be registered. Re-exports from another
+                            // module (`export { Foo } from './x'`) carry a
+                            // `src` and are kept permissively — resolving the
+                            // other module is out of scope.
+                            if named.src.is_none() && non_component_locals.contains(&local) {
+                                continue;
+                            }
                             let marker = body_markers.get(&local).cloned().unwrap_or_else(|| {
                                 // `export { Foo as default }` — the exported alias
                                 // is "default" but the SSR side uses
@@ -1821,12 +1941,11 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                                 marker_name: name,
                             });
                         }
-                        ExportSpecifier::Namespace(n) => {
-                            let name = module_export_name(&n.name);
-                            out.push(IslandRecord {
-                                component_name: name.clone(),
-                                marker_name: name,
-                            });
+                        ExportSpecifier::Namespace(_n) => {
+                            // Issue #998: `export * as ns from "…"` binds a
+                            // module-namespace object, which is never a
+                            // mountable component — drop it.
+                            continue;
                         }
                     }
                 }
@@ -2692,13 +2811,16 @@ mod tests {
         let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
         let names: Vec<String> = islands.iter().map(|i| i.component_name.clone()).collect();
         // Sorted lexicographically by component name for the same source
-        // path: Bar, Foo, Qux, RenamedBaz, default.
+        // path: Bar, Foo, RenamedBaz, default.
+        //
+        // Issue #998: `export const Qux = 1` is a number-literal export —
+        // never a component — and is now dropped from the registry rather
+        // than registered as a mountable island.
         assert_eq!(
             names,
             vec![
                 "Bar".to_string(),
                 "Foo".to_string(),
-                "Qux".to_string(),
                 "RenamedBaz".to_string(),
                 "default".to_string(),
             ]
