@@ -140,6 +140,10 @@ tar = "0.4"
 [dev-dependencies]
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
+# `test-util` enables `start_paused` on `#[tokio::test]` for virtual-time
+# backoff in the ETXTBSY retry tests (zfb#1014). Dev-only — production
+# feature set (`rt-multi-thread`, `macros`, …) is unchanged.
+tokio = { version = "1", features = ["test-util"] }
 zfb-test-utils = { path = "../zfb-test-utils" }
 # Process-group kill for build_terminates e2e (#654).
 # libc is already a transitive dep (via wait-timeout); adding it here
