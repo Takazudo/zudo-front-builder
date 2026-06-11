@@ -53,11 +53,13 @@
 //!    surfaces that error verbatim instead of swallowing it.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use include_dir::{include_dir, Dir};
+use sha2::{Digest as _, Sha256};
 use zfb_build::renderer::RouteUniverseEntry;
 #[cfg(feature = "embed_v8")]
 use zfb_build::EmbeddedV8Host;
@@ -457,9 +459,23 @@ pub fn expand_dynamic_routes(
     project_root: &Path,
     cache: &mut PathsCache,
 ) -> anyhow::Result<DynamicExpansion> {
+    expand_dynamic_routes_cached(deferred, project_root, cache, None)
+}
+
+/// [`expand_dynamic_routes`] with an optional cross-call
+/// [`SourceExtractCache`] (#994 item C): on a per-file content-hash hit
+/// the static `paths()` SWC parse is skipped. `zfb dev` passes its
+/// session cache; `zfb build` goes through the plain wrapper (`None`)
+/// and is byte-for-byte unchanged.
+pub fn expand_dynamic_routes_cached(
+    deferred: &[PendingDynamicRoute],
+    project_root: &Path,
+    cache: &mut PathsCache,
+    mut extract_cache: Option<&mut SourceExtractCache>,
+) -> anyhow::Result<DynamicExpansion> {
     let mut out = DynamicExpansion::default();
     for route in deferred {
-        match try_expand_one(route, project_root, cache) {
+        match try_expand_one(route, project_root, cache, extract_cache.as_deref_mut()) {
             Ok((entries, params_entries)) => {
                 out.resolved.extend(entries);
                 out.resolved_with_params.extend(params_entries);
@@ -486,6 +502,99 @@ pub fn expand_dynamic_routes(
         }
     }
     Ok(out)
+}
+
+/// Cached prerender classification for one TSX/TS page source
+/// (#994 item C). Mirrors exactly the three ways
+/// [`build_prerender_map`] folds an `extract_tsx_frontmatter` outcome
+/// into the map, so replaying a cached entry is observationally
+/// identical to re-parsing unchanged bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CachedPrerender {
+    /// Frontmatter present and parsed — `prerender` flag extracted.
+    Value(bool),
+    /// No `export const frontmatter` at all — valid; no map entry
+    /// (renderer falls back to the SSG default) and no warning (#505).
+    AbsentFrontmatter,
+    /// Frontmatter present but malformed — no map entry; the warning is
+    /// emitted only when the entry is COMPUTED (cache miss), so the
+    /// per-tick repeat for an unchanged broken page dedupes to
+    /// once-per-edit.
+    Malformed,
+}
+
+/// Per-file content-hash cache for the SWC-parse extraction passes that
+/// run on every dev refresh tick (#994 item C): the
+/// [`build_prerender_map`] TSX-frontmatter extraction and the
+/// [`expand_dynamic_routes`] static `paths()` extraction. Both are pure
+/// functions of the file bytes, so entries are keyed by the SHA-256 of
+/// the bytes read this call — the read itself always happens (reads are
+/// cheap; only the SWC parse is skipped on a hit), which is also what
+/// makes invalidation exact: ANY byte change produces a different key.
+/// Read errors and parse errors are never cached — they fall through to
+/// the identical code path as today, every call.
+#[derive(Debug, Default)]
+pub struct SourceExtractCache {
+    /// abs source path -> (content hash, prerender classification).
+    prerender: HashMap<PathBuf, ([u8; 32], CachedPrerender)>,
+    /// abs source path -> (content hash, static `paths()` extraction).
+    paths: HashMap<PathBuf, ([u8; 32], PathsExtraction)>,
+    hits: u64,
+    misses: u64,
+}
+
+impl SourceExtractCache {
+    /// Construct an empty cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of per-file lookups answered from the cache (SWC parse
+    /// skipped). Exposed for tests and diagnostics.
+    pub fn hit_count(&self) -> u64 {
+        self.hits
+    }
+
+    /// Number of per-file lookups that had to (re)parse.
+    pub fn miss_count(&self) -> u64 {
+        self.misses
+    }
+}
+
+/// SHA-256 of `bytes` — the [`SourceExtractCache`] key material.
+fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.finalize().into()
+}
+
+/// [`extract_paths`] behind the optional [`SourceExtractCache`]
+/// (#994 item C). On a content-hash hit the SWC parse is skipped and the
+/// cached [`PathsExtraction`] is replayed. Parse errors propagate
+/// uncached, so a broken source re-parses (and re-reports) every call,
+/// exactly as without the cache.
+fn extract_paths_cached(
+    abs: &Path,
+    source: &str,
+    file_name: &str,
+    cache: Option<&mut SourceExtractCache>,
+) -> Result<PathsExtraction, PathsExtractError> {
+    let Some(cache) = cache else {
+        return extract_paths(source, file_name);
+    };
+    let hash = sha256_bytes(source.as_bytes());
+    if let Some((cached_hash, cached)) = cache.paths.get(abs) {
+        if *cached_hash == hash {
+            cache.hits += 1;
+            return Ok(cached.clone());
+        }
+    }
+    let computed = extract_paths(source, file_name)?;
+    cache.misses += 1;
+    cache
+        .paths
+        .insert(abs.to_path_buf(), (hash, computed.clone()));
+    Ok(computed)
 }
 
 /// Typed failure shape from `try_expand_one`.
@@ -516,6 +625,7 @@ fn try_expand_one(
     route: &PendingDynamicRoute,
     project_root: &Path,
     cache: &mut PathsCache,
+    extract_cache: Option<&mut SourceExtractCache>,
 ) -> Result<(Vec<RouteUniverseEntry>, Vec<DynamicResolvedEntry>), TryExpandFailure> {
     let abs = if route.source_path.is_absolute() {
         route.source_path.clone()
@@ -528,7 +638,7 @@ fn try_expand_one(
         .unwrap_or_else(|| route.source_path.display().to_string());
     let source = std::fs::read_to_string(&abs)
         .map_err(|e| TryExpandFailure::Other(format!("could not read {} ({e})", abs.display())))?;
-    let extraction = match extract_paths(&source, &file_name) {
+    let extraction = match extract_paths_cached(&abs, &source, &file_name, extract_cache) {
         Ok(x) => x,
         Err(PathsExtractError::Parse { file, message }) => {
             return Err(TryExpandFailure::Other(format!(
@@ -1105,7 +1215,23 @@ pub fn is_ssr_route(prerender_map: &BTreeMap<String, bool>, template: &str) -> b
 pub fn build_prerender_map(
     routes: &[Route],
     project_root: &Path,
+    warn_unreadable: impl FnMut(&str),
+) -> BTreeMap<String, bool> {
+    build_prerender_map_cached(routes, project_root, warn_unreadable, None)
+}
+
+/// [`build_prerender_map`] with an optional cross-call
+/// [`SourceExtractCache`] (#994 item C): on a per-file content-hash hit
+/// the TSX-frontmatter SWC parse is skipped and the cached
+/// classification is replayed. `zfb dev` passes its session cache;
+/// `zfb build` goes through the plain wrapper (`None`) and is
+/// byte-for-byte unchanged. Unreadable files are never cached — they
+/// warn-and-skip on every call, exactly as without the cache.
+pub fn build_prerender_map_cached(
+    routes: &[Route],
+    project_root: &Path,
     mut warn_unreadable: impl FnMut(&str),
+    mut cache: Option<&mut SourceExtractCache>,
 ) -> BTreeMap<String, bool> {
     let mut map = BTreeMap::new();
     for route in routes {
@@ -1133,33 +1259,73 @@ pub fn build_prerender_map(
                 continue;
             }
         };
-        let file_name = abs
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "<unknown>".into());
-        match extract_tsx_frontmatter(&source, &file_name) {
-            Ok(fm) => {
-                map.insert(route.template(), fm.prerender);
-            }
-            // A route page with no `export const frontmatter` is valid — the
-            // export is optional and an absent one simply means "use the SSG
-            // default". Warning on it is misleading (it reads as "your page is
-            // broken") and fires on every frontmatter-less page, so stay silent
-            // and let the missing-key default of `true` (SSG) apply. See #505.
-            Err(TsxFrontmatterError::MissingFrontmatter { .. }) => {}
-            // Any other extraction error means the frontmatter IS present but
-            // malformed (parse error, duplicate/computed/wrong-shape export).
-            // That's a real mistake worth surfacing.
-            Err(e) => {
-                warn_unreadable(&format!(
-                    "frontmatter extraction failed for {} ({}); defaulting to SSG",
-                    abs.display(),
-                    e
-                ));
-            }
+        let classification =
+            classify_prerender_cached(&abs, &source, &mut warn_unreadable, cache.as_deref_mut());
+        if let CachedPrerender::Value(prerender) = classification {
+            map.insert(route.template(), prerender);
         }
     }
     map
+}
+
+/// Classify one TSX/TS page source's `prerender` frontmatter, going
+/// through the optional [`SourceExtractCache`] (#994 item C). The
+/// classification (and the once-per-computation malformed-frontmatter
+/// warning) is exactly [`build_prerender_map`]'s historical per-file
+/// logic, factored out so the cached and uncached paths cannot drift.
+fn classify_prerender_cached(
+    abs: &Path,
+    source: &str,
+    warn_unreadable: &mut impl FnMut(&str),
+    cache: Option<&mut SourceExtractCache>,
+) -> CachedPrerender {
+    let Some(cache) = cache else {
+        return classify_prerender(abs, source, warn_unreadable);
+    };
+    let hash = sha256_bytes(source.as_bytes());
+    if let Some((cached_hash, cached)) = cache.prerender.get(abs) {
+        if *cached_hash == hash {
+            cache.hits += 1;
+            return *cached;
+        }
+    }
+    let computed = classify_prerender(abs, source, warn_unreadable);
+    cache.misses += 1;
+    cache.prerender.insert(abs.to_path_buf(), (hash, computed));
+    computed
+}
+
+/// Uncached per-file prerender classification — one
+/// [`extract_tsx_frontmatter`] call folded into [`CachedPrerender`].
+fn classify_prerender(
+    abs: &Path,
+    source: &str,
+    warn_unreadable: &mut impl FnMut(&str),
+) -> CachedPrerender {
+    let file_name = abs
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "<unknown>".into());
+    match extract_tsx_frontmatter(source, &file_name) {
+        Ok(fm) => CachedPrerender::Value(fm.prerender),
+        // A route page with no `export const frontmatter` is valid — the
+        // export is optional and an absent one simply means "use the SSG
+        // default". Warning on it is misleading (it reads as "your page is
+        // broken") and fires on every frontmatter-less page, so stay silent
+        // and let the missing-key default of `true` (SSG) apply. See #505.
+        Err(TsxFrontmatterError::MissingFrontmatter { .. }) => CachedPrerender::AbsentFrontmatter,
+        // Any other extraction error means the frontmatter IS present but
+        // malformed (parse error, duplicate/computed/wrong-shape export).
+        // That's a real mistake worth surfacing.
+        Err(e) => {
+            warn_unreadable(&format!(
+                "frontmatter extraction failed for {} ({}); defaulting to SSG",
+                abs.display(),
+                e
+            ));
+            CachedPrerender::Malformed
+        }
+    }
 }
 
 /// Verify that `@takazudo/zfb-runtime` is resolvable for the current build.
@@ -1417,6 +1583,92 @@ mod tests {
             "expected malformed.tsx in warning, got: {}",
             warnings[0]
         );
+    }
+
+    /// #994 item C — the per-file content-hash cache replays the
+    /// prerender classification on unchanged bytes (skipping the SWC
+    /// parse and deduping the malformed-frontmatter warning to once per
+    /// computation) and recomputes exactly when the bytes change.
+    #[test]
+    fn build_prerender_map_cached_replays_and_invalidates_on_content_change() {
+        let dir = tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            pages.join("about.tsx"),
+            "export const frontmatter = { title: 'A' };\nexport const prerender = false;\nexport default function() { return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pages.join("malformed.tsx"),
+            "const t = 'x';\nexport const frontmatter = { title: t };\nexport default function() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            static_route(vec!["about"], "pages/about.tsx"),
+            static_route(vec!["malformed"], "pages/malformed.tsx"),
+        ];
+
+        let mut cache = SourceExtractCache::new();
+        let mut warnings: Vec<String> = Vec::new();
+        let map1 = build_prerender_map_cached(
+            &routes,
+            dir.path(),
+            |msg| warnings.push(msg.to_string()),
+            Some(&mut cache),
+        );
+        assert_eq!(map1.get("/about"), Some(&false));
+        assert!(!map1.contains_key("/malformed"));
+        assert_eq!(
+            warnings.len(),
+            1,
+            "malformed warns on compute: {warnings:?}"
+        );
+        assert_eq!(cache.hit_count(), 0);
+        assert_eq!(cache.miss_count(), 2);
+
+        // Second pass with unchanged bytes: identical map, all hits, and
+        // the malformed warning is NOT repeated (deduped to once-per-edit).
+        let map2 = build_prerender_map_cached(
+            &routes,
+            dir.path(),
+            |msg| warnings.push(msg.to_string()),
+            Some(&mut cache),
+        );
+        assert_eq!(map1, map2, "cache replay must be observationally identical");
+        assert_eq!(
+            warnings.len(),
+            1,
+            "no repeated warning on a cache hit: {warnings:?}"
+        );
+        assert_eq!(cache.hit_count(), 2);
+        assert_eq!(cache.miss_count(), 2);
+
+        // Edit about.tsx (drop `prerender = false`): the content hash
+        // changes, so only that file recomputes — and the new
+        // classification (frontmatter present, prerender default true)
+        // is reflected. The unchanged malformed page still hits (and
+        // still does not re-warn).
+        std::fs::write(
+            pages.join("about.tsx"),
+            "export const frontmatter = { title: 'A' };\nexport default function() { return null; }\n",
+        )
+        .unwrap();
+        let map3 = build_prerender_map_cached(
+            &routes,
+            dir.path(),
+            |msg| warnings.push(msg.to_string()),
+            Some(&mut cache),
+        );
+        assert_eq!(
+            map3.get("/about"),
+            Some(&true),
+            "edited page must be reclassified from fresh bytes: {map3:?}"
+        );
+        assert_eq!(warnings.len(), 1, "no new warnings: {warnings:?}");
+        assert_eq!(cache.hit_count(), 3, "unchanged malformed page hits");
+        assert_eq!(cache.miss_count(), 3, "edited page recomputes");
     }
 
     #[test]
@@ -1745,6 +1997,75 @@ mod tests {
         assert_eq!(out2.resolved.len(), 10);
         assert_eq!(cache.miss_count(), 1, "second expand: miss_count unchanged");
         assert_eq!(cache.hit_count(), 1, "second expand: expected 1 hit");
+    }
+
+    /// #994 item C — `extract_paths` goes through the per-file
+    /// content-hash cache: unchanged sources skip the SWC parse on
+    /// re-expansion; an edit recomputes and the NEW `paths()` output is
+    /// reflected (invalidation keyed on exact bytes, so a stale entry
+    /// can never leak).
+    #[test]
+    fn expand_dynamic_routes_cached_hits_and_invalidates_on_edit() {
+        let body = r#"export function paths() { return [{ params: { slug: "one" } }]; }"#;
+        let (dir, pending) = stage_dynamic_page(
+            "pages/blog/[slug].tsx",
+            vec![
+                Segment::Static("blog".into()),
+                Segment::Dynamic("slug".into()),
+            ],
+            "/blog/:slug",
+            body,
+        );
+
+        let mut paths_cache = PathsCache::new();
+        let mut extract_cache = SourceExtractCache::new();
+        let out1 = expand_dynamic_routes_cached(
+            std::slice::from_ref(&pending),
+            dir.path(),
+            &mut paths_cache,
+            Some(&mut extract_cache),
+        )
+        .expect("first expansion");
+        assert_eq!(out1.resolved.len(), 1);
+        assert_eq!(out1.resolved[0].url_path, "/blog/one");
+        assert_eq!(extract_cache.hit_count(), 0);
+        assert_eq!(extract_cache.miss_count(), 1);
+
+        // Unchanged bytes: the extraction is replayed from the cache and
+        // the expansion output is identical.
+        let out2 = expand_dynamic_routes_cached(
+            std::slice::from_ref(&pending),
+            dir.path(),
+            &mut paths_cache,
+            Some(&mut extract_cache),
+        )
+        .expect("second expansion");
+        assert_eq!(out2.resolved.len(), 1);
+        assert_eq!(out2.resolved[0].url_path, "/blog/one");
+        assert_eq!(extract_cache.hit_count(), 1);
+        assert_eq!(extract_cache.miss_count(), 1);
+
+        // Edit the source: the content hash changes, the parse re-runs,
+        // and the new paths() output wins.
+        std::fs::write(
+            dir.path().join("pages/blog/[slug].tsx"),
+            r#"export function paths() { return [{ params: { slug: "two" } }]; }"#,
+        )
+        .unwrap();
+        let out3 = expand_dynamic_routes_cached(
+            &[pending],
+            dir.path(),
+            &mut paths_cache,
+            Some(&mut extract_cache),
+        )
+        .expect("third expansion");
+        assert_eq!(out3.resolved.len(), 1);
+        assert_eq!(
+            out3.resolved[0].url_path, "/blog/two",
+            "edited paths() must be re-extracted from fresh bytes"
+        );
+        assert_eq!(extract_cache.hit_count(), 1);
+        assert_eq!(extract_cache.miss_count(), 2);
     }
 
     #[test]
