@@ -1178,8 +1178,11 @@ impl<'s> ShadowWriter<'s> {
     fn ensure_dir(&self, to: &Path) -> std::io::Result<()> {
         if let Some(cell) = &self.session {
             if fs::symlink_metadata(to).is_ok_and(|m| !m.is_dir()) {
-                fs::remove_file(to)?;
+                // Validate the path is shadow-relative BEFORE the
+                // destructive removal (rel_of rejects out-of-shadow
+                // paths — none exist today, but never delete first).
                 let rel = self.rel_of(to)?;
+                fs::remove_file(to)?;
                 cell.borrow_mut().written.remove(&rel);
             }
         }
