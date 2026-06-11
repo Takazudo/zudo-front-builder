@@ -1007,6 +1007,12 @@ fn wipe_dir_contents(dir: &Path) -> Result<()> {
 /// outfile already resolves to, so esbuild emits clean relative comments with
 /// no tempdir name. Linux's `/tmp` is not a symlink, so this is a no-op there
 /// (which is why the divergence is macOS-only).
+///
+/// Gated to macOS: on Windows `fs::canonicalize` returns `\\?\`-prefixed
+/// verbatim paths, which would newly reach esbuild's entry/outfile args on a
+/// platform no CI runs tests on — and the underlying symlink divergence does
+/// not exist there (`%TEMP%` is not a symlink).
+#[cfg(target_os = "macos")]
 fn canonical_shadow_root(work: &Path) -> Result<PathBuf> {
     fs::canonicalize(work).with_context(|| {
         format!(
@@ -1014,6 +1020,11 @@ fn canonical_shadow_root(work: &Path) -> Result<PathBuf> {
             work.display()
         )
     })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn canonical_shadow_root(work: &Path) -> Result<PathBuf> {
+    Ok(work.to_path_buf())
 }
 
 /// Conditional-write seam threaded through [`MaterialiseCtx`] to every
