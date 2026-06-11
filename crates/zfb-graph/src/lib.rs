@@ -1111,10 +1111,14 @@ mod tests {
         // CSS consumers are not added to the source-rebuild set.
         assert!(!affected.contains(&pid("/pages/a.tsx")));
         // Reverse index is drained.
-        assert!(g.pages_using_css_module(&p("/styles/h.module.css")).is_empty());
+        assert!(g
+            .pages_using_css_module(&p("/styles/h.module.css"))
+            .is_empty());
         // The module path is removed from the page's asset record, but the
         // page record itself survives — the page was not deleted.
-        let rec = g.assets_for_page(&pid("/pages/a.tsx")).expect("page record should still exist");
+        let rec = g
+            .assets_for_page(&pid("/pages/a.tsx"))
+            .expect("page record should still exist");
         assert!(!rec.css_modules.contains(&p("/styles/h.module.css")));
     }
 

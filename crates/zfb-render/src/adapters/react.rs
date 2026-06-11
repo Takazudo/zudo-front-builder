@@ -100,8 +100,8 @@ impl Adapter for ReactAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::render_host::ModuleHandle;
+    use async_trait::async_trait;
     use serde_json::Value as JsonValue;
 
     /// In-memory `RenderHost` that records every module evaluation it

@@ -247,10 +247,7 @@ pub fn derive_output_extension(
 /// The known-extension table is intentionally small and only covers
 /// the cases we care about for static-site builds. Adding entries is
 /// a non-breaking change.
-pub fn derive_content_type(
-    extension: &str,
-    frontmatter_content_type: Option<&str>,
-) -> String {
+pub fn derive_content_type(extension: &str, frontmatter_content_type: Option<&str>) -> String {
     if let Some(ct) = frontmatter_content_type {
         return ct.to_string();
     }
@@ -638,8 +635,7 @@ mod tests {
 
         let page = root.join("pages/blog/[slug].tsx");
         let candidates = vec![blog.clone(), default];
-        let resolved =
-            resolve_meta(PageMeta::default(), &page, root, &candidates).unwrap();
+        let resolved = resolve_meta(PageMeta::default(), &page, root, &candidates).unwrap();
         assert_eq!(resolved.layout_path.as_deref(), Some(blog.as_path()));
     }
 
@@ -653,8 +649,7 @@ mod tests {
 
         let page = root.join("pages/blog/[slug].tsx");
         let candidates = vec![blog, default.clone()];
-        let resolved =
-            resolve_meta(PageMeta::default(), &page, root, &candidates).unwrap();
+        let resolved = resolve_meta(PageMeta::default(), &page, root, &candidates).unwrap();
         assert_eq!(resolved.layout_path.as_deref(), Some(default.as_path()));
     }
 
@@ -667,8 +662,7 @@ mod tests {
 
         let page = root.join("pages/about.tsx");
         let candidates = vec![default.clone()];
-        let resolved =
-            resolve_meta(PageMeta::default(), &page, root, &candidates).unwrap();
+        let resolved = resolve_meta(PageMeta::default(), &page, root, &candidates).unwrap();
         assert_eq!(resolved.layout_path.as_deref(), Some(default.as_path()));
     }
 
@@ -701,28 +695,19 @@ mod tests {
     #[test]
     fn derive_extension_frontmatter_beats_route() {
         // Frontmatter wins over filename convention.
-        assert_eq!(
-            derive_output_extension(Some("rss"), Some("xml")),
-            "rss",
-        );
+        assert_eq!(derive_output_extension(Some("rss"), Some("xml")), "rss",);
     }
 
     #[test]
     fn derive_extension_falls_through_to_route() {
         // No frontmatter override → use the filename convention.
-        assert_eq!(
-            derive_output_extension(None, Some("xml")),
-            "xml",
-        );
+        assert_eq!(derive_output_extension(None, Some("xml")), "xml",);
     }
 
     #[test]
     fn derive_extension_default_html() {
         // Neither override nor convention → html default.
-        assert_eq!(
-            derive_output_extension(None, None),
-            "html",
-        );
+        assert_eq!(derive_output_extension(None, None), "html",);
     }
 
     #[test]
@@ -736,11 +721,17 @@ mod tests {
 
     #[test]
     fn derive_content_type_extension_defaults() {
-        assert_eq!(derive_content_type("html", None), "text/html; charset=utf-8");
+        assert_eq!(
+            derive_content_type("html", None),
+            "text/html; charset=utf-8"
+        );
         assert_eq!(derive_content_type("xml", None), "application/xml");
         assert_eq!(derive_content_type("rss", None), "application/rss+xml");
         assert_eq!(derive_content_type("json", None), "application/json");
-        assert_eq!(derive_content_type("txt", None), "text/plain; charset=utf-8");
+        assert_eq!(
+            derive_content_type("txt", None),
+            "text/plain; charset=utf-8"
+        );
     }
 
     #[test]
@@ -767,7 +758,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolved.extension.as_deref(), Some("rss"));
-        assert_eq!(resolved.content_type.as_deref(), Some("application/rss+xml"));
+        assert_eq!(
+            resolved.content_type.as_deref(),
+            Some("application/rss+xml")
+        );
     }
 
     #[test]

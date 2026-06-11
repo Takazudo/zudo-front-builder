@@ -172,12 +172,20 @@ fn replay_line(line: &str, state: &mut State) {
             continue;
         }
         let mut bytes = segment.as_bytes();
-        let Some(delta) = decode_vlq(&mut bytes) else { return; };
+        let Some(delta) = decode_vlq(&mut bytes) else {
+            return;
+        };
         state.gen_col = state.gen_col.saturating_add(delta);
         if !bytes.is_empty() {
-            let Some(d1) = decode_vlq(&mut bytes) else { return; };
-            let Some(d2) = decode_vlq(&mut bytes) else { return; };
-            let Some(d3) = decode_vlq(&mut bytes) else { return; };
+            let Some(d1) = decode_vlq(&mut bytes) else {
+                return;
+            };
+            let Some(d2) = decode_vlq(&mut bytes) else {
+                return;
+            };
+            let Some(d3) = decode_vlq(&mut bytes) else {
+                return;
+            };
             state.src_idx = state.src_idx.saturating_add(d1);
             state.src_line = state.src_line.saturating_add(d2);
             state.src_col = state.src_col.saturating_add(d3);

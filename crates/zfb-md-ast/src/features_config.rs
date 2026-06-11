@@ -286,7 +286,9 @@ pub fn feature_enabled(toggle: &Option<FeatureToggle>) -> bool {
 /// accepts the rich `TocConfig` shape via [`HeadingMarkerTocFeature`].
 #[must_use]
 pub fn heading_marker_toc_enabled(toggle: &Option<HeadingMarkerTocFeature>) -> bool {
-    toggle.as_ref().is_some_and(HeadingMarkerTocFeature::is_enabled)
+    toggle
+        .as_ref()
+        .is_some_and(HeadingMarkerTocFeature::is_enabled)
 }
 
 /// Options for the `readingTime` feature.
@@ -655,7 +657,10 @@ mod tests {
         let json = serde_json::json!({ "headingIds": { "strategy": "flat" } });
         let cfg: MarkdownFeaturesConfig =
             serde_json::from_value(json).expect("headingIds flat deserialises");
-        assert_eq!(heading_id_strategy(&cfg.heading_ids), HeadingIdStrategy::Flat);
+        assert_eq!(
+            heading_id_strategy(&cfg.heading_ids),
+            HeadingIdStrategy::Flat
+        );
     }
 
     // `headingIds: {}` and an absent key both resolve to Flat.
@@ -664,7 +669,10 @@ mod tests {
         let json = serde_json::json!({ "headingIds": {} });
         let cfg: MarkdownFeaturesConfig =
             serde_json::from_value(json).expect("empty headingIds deserialises");
-        assert_eq!(heading_id_strategy(&cfg.heading_ids), HeadingIdStrategy::Flat);
+        assert_eq!(
+            heading_id_strategy(&cfg.heading_ids),
+            HeadingIdStrategy::Flat
+        );
         assert_eq!(heading_id_strategy(&None), HeadingIdStrategy::Flat);
     }
 

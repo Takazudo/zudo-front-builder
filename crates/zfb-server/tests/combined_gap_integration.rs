@@ -64,8 +64,7 @@ impl SsrDispatcher for FileSsrDispatcher {
             headers,
             // Wrap in minimal HTML so the livereload injection logic is
             // exercised the same way a real page would be.
-            body: format!("<html><body>{content}</body></html>")
-                .into_bytes(),
+            body: format!("<html><body>{content}</body></html>").into_bytes(),
         })
     }
 }
@@ -197,7 +196,11 @@ async fn gap1_ssr_and_gap2_watcher_work_together() {
         .send()
         .await
         .expect("GET /page v2");
-    assert_eq!(resp2.status().as_u16(), 200, "expected 200 for /page after edit");
+    assert_eq!(
+        resp2.status().as_u16(),
+        200,
+        "expected 200 for /page after edit"
+    );
     let body2 = resp2.text().await.expect("read body v2");
     assert!(
         body2.contains("v2 content"),

@@ -72,10 +72,14 @@ pub struct Island {
     /// `"default"` for `export default function Foo()` and is mangled by
     /// esbuild minification at runtime).
     ///
-    /// Resolution rules in the scanner (issue #149):
+    /// Resolution rules in the scanner (issues #149, #984):
     ///
     /// - `export default function Foo()` / `export default class Foo` →
     ///   `marker_name = "Foo"` (the identifier name), NOT `"default"`.
+    /// - `export { Foo as default }` / `export { Foo as "default" }` →
+    ///   `marker_name = "Foo"` (the local identifier), NOT `"default"`.
+    ///   This is the alias form tsup/esbuild emits when compiling
+    ///   `export default function Foo()`.
     /// - `export function Foo()` / `export class Foo` /
     ///   `export const Foo = ...` → `marker_name = "Foo"`.
     /// - When the body of an exported function calls

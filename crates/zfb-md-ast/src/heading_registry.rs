@@ -118,6 +118,8 @@ mod tests {
     #[test]
     fn query_unknown_path_returns_none() {
         let reg = HeadingRegistry::new();
-        assert!(reg.get(std::path::Path::new("/does/not/exist.md")).is_none());
+        assert!(reg
+            .get(std::path::Path::new("/does/not/exist.md"))
+            .is_none());
     }
 }

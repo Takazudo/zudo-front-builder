@@ -45,8 +45,8 @@ pub mod assets_containment;
 pub mod embed;
 pub mod embed_handlers;
 pub mod host_validation;
-pub mod injected_routes;
 pub mod inject;
+pub mod injected_routes;
 pub mod livereload;
 pub mod middleware;
 pub mod plugin_middleware;
@@ -103,7 +103,6 @@ pub use embed_handlers::{
 pub use host_validation::{apply_host_validation_layer, HostValidation};
 pub use inject::{inject_livereload, inject_livereload_into_tree, LIVERELOAD_TAG};
 pub use injected_routes::{pattern_matches, InjectedRouteSet};
-pub use zfb_build::InjectedRoute;
 pub use livereload::{outcome_to_events, IslandsBundleInfo, ReloadEvent, ReloadTx};
 pub use plugin_middleware::{
     path_matches_prefix, DevMiddlewareDispatcher, DevMiddlewareSet, PluginDispatchError,
@@ -118,6 +117,7 @@ pub use ssr::{
     SsrDispatchError, SsrDispatcher, SsrRequest, SsrResponse, SsrRouteRecord, SsrRouteSet,
     SsrRoutesHandle,
 };
+pub use zfb_build::InjectedRoute;
 
 /// Options for [`serve`].
 ///

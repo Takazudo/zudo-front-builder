@@ -5543,6 +5543,7 @@ dependencies = [
  "indicatif",
  "libc",
  "local-ip-address",
+ "lol_html",
  "owo-colors",
  "oxc_resolver",
  "reqwest",

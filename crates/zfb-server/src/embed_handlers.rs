@@ -118,9 +118,8 @@ pub type EmbedHandlerFuture = Pin<Box<dyn Future<Output = Response> + Send>>;
 /// `Fn(Request, RouteParams) -> Future<Output = Response>` because the
 /// public builder method takes an `async fn` (or async closure) and we
 /// box the resulting future once at registration time.
-pub type EmbedHandlerFn = Arc<
-    dyn Fn(Request<Body>, RouteParams) -> EmbedHandlerFuture + Send + Sync + 'static,
->;
+pub type EmbedHandlerFn =
+    Arc<dyn Fn(Request<Body>, RouteParams) -> EmbedHandlerFuture + Send + Sync + 'static>;
 
 /// One registered handler — pattern plus the boxed dispatch closure.
 #[derive(Clone)]
@@ -286,8 +285,7 @@ mod tests {
     use axum::http::StatusCode;
 
     fn matched(pattern: &str, url: &str) -> RouteParams {
-        pattern_matches(pattern, url)
-            .unwrap_or_else(|| panic!("expected {pattern} to match {url}"))
+        pattern_matches(pattern, url).unwrap_or_else(|| panic!("expected {pattern} to match {url}"))
     }
 
     #[test]
@@ -324,7 +322,10 @@ mod tests {
 
     #[test]
     fn mixed_pattern_captures_multiple_params() {
-        let params = matched("/projects/:proj/refs/*rest", "/projects/zfb/refs/heads/main");
+        let params = matched(
+            "/projects/:proj/refs/*rest",
+            "/projects/zfb/refs/heads/main",
+        );
         assert_eq!(params.get("proj"), Some("zfb"));
         assert_eq!(params.get("rest"), Some("heads/main"));
     }
@@ -345,13 +346,11 @@ mod tests {
 
     #[tokio::test]
     async fn erased_handler_forwards_request_and_params() {
-        let handler = erase_handler(
-            |req: Request<Body>, params: RouteParams| async move {
-                let path = req.uri().path().to_string();
-                let id = params.get("id").unwrap_or("none").to_string();
-                (StatusCode::OK, format!("{path}|{id}"))
-            },
-        );
+        let handler = erase_handler(|req: Request<Body>, params: RouteParams| async move {
+            let path = req.uri().path().to_string();
+            let id = params.get("id").unwrap_or("none").to_string();
+            (StatusCode::OK, format!("{path}|{id}"))
+        });
         let req = Request::builder()
             .uri("/users/42")
             .body(Body::empty())
@@ -367,12 +366,8 @@ mod tests {
 
     #[tokio::test]
     async fn handler_set_dispatches_first_match() {
-        let h1 = erase_handler(|_req, _params: RouteParams| async {
-            (StatusCode::OK, "first")
-        });
-        let h2 = erase_handler(|_req, _params: RouteParams| async {
-            (StatusCode::OK, "second")
-        });
+        let h1 = erase_handler(|_req, _params: RouteParams| async { (StatusCode::OK, "first") });
+        let h2 = erase_handler(|_req, _params: RouteParams| async { (StatusCode::OK, "second") });
         let set = EmbedHandlerSet::new(vec![
             EmbedHandler {
                 pattern: "/foo".into(),
@@ -384,10 +379,7 @@ mod tests {
             },
         ]);
         let (handler, _params) = set.find_match("/foo").expect("hit");
-        let req = Request::builder()
-            .uri("/foo")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/foo").body(Body::empty()).unwrap();
         let resp = handler(req, RouteParams::new()).await;
         let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
         assert_eq!(&body[..], b"first");

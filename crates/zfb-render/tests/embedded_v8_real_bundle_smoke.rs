@@ -66,12 +66,8 @@ async fn real_bundle_dispatches_representative_request_set() {
             path.display()
         );
     }
-    let source = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "failed to read bundle at `{}`: {e}",
-            path.display()
-        )
-    });
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read bundle at `{}`: {e}", path.display()));
     let mut host = EmbeddedV8RenderHost::new().expect("host boot");
     host.execute_module("bundle.mjs", &source)
         .await

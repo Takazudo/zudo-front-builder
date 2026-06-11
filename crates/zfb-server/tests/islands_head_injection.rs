@@ -107,8 +107,7 @@ const ISLANDS_URL: &str = "/assets/islands.js";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dev_mode_injects_islands_script_into_head_when_url_seeded() {
-    let handle: zfb_server::IslandsBundleUrl =
-        Arc::new(RwLock::new(Some(ISLANDS_URL.to_string())));
+    let handle: zfb_server::IslandsBundleUrl = Arc::new(RwLock::new(Some(ISLANDS_URL.to_string())));
     let h = Harness::start(zfb_server::ServerMode::Dev, Some(handle)).await;
 
     h.pages
@@ -211,8 +210,7 @@ async fn preview_mode_never_injects_islands_script_even_with_seeded_url() {
     // `/assets/islands.js` URL into production HTML would defeat the
     // prod pipeline's content-hash rewrite (which only matches its own
     // stable forms; an in-flight injection here would not).
-    let handle: zfb_server::IslandsBundleUrl =
-        Arc::new(RwLock::new(Some(ISLANDS_URL.to_string())));
+    let handle: zfb_server::IslandsBundleUrl = Arc::new(RwLock::new(Some(ISLANDS_URL.to_string())));
     let h = Harness::start(zfb_server::ServerMode::Preview, Some(handle)).await;
 
     h.pages
@@ -245,8 +243,7 @@ async fn clearing_the_shared_handle_stops_head_injection_on_next_request() {
     // server MUST stop injecting on the next request — otherwise the
     // previously-emitted bundle URL keeps appearing in HTML, leaving
     // stale hydration code referenced after the bundle is gone.
-    let handle: zfb_server::IslandsBundleUrl =
-        Arc::new(RwLock::new(Some(ISLANDS_URL.to_string())));
+    let handle: zfb_server::IslandsBundleUrl = Arc::new(RwLock::new(Some(ISLANDS_URL.to_string())));
     let h = Harness::start(zfb_server::ServerMode::Dev, Some(Arc::clone(&handle))).await;
 
     h.pages
@@ -286,8 +283,7 @@ async fn dev_mode_double_request_is_idempotent_on_head_injection() {
     // — the splicer is also called every time. Idempotency at the
     // splicer means the served body for two back-to-back requests
     // contains EXACTLY ONE islands `<script>` tag, not two.
-    let handle: zfb_server::IslandsBundleUrl =
-        Arc::new(RwLock::new(Some(ISLANDS_URL.to_string())));
+    let handle: zfb_server::IslandsBundleUrl = Arc::new(RwLock::new(Some(ISLANDS_URL.to_string())));
     let h = Harness::start(zfb_server::ServerMode::Dev, Some(handle)).await;
 
     h.pages

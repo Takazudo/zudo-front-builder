@@ -87,7 +87,13 @@ impl<H: RenderHost> Renderer<H> {
         strip_md_ext: bool,
         gfm_constructs: zfb_content::ResolvedGfmConstructs,
     ) -> Self {
-        Self::with_strip_md_ext_and_gfm_and_cjk(host, jsx_runtime, strip_md_ext, gfm_constructs, true)
+        Self::with_strip_md_ext_and_gfm_and_cjk(
+            host,
+            jsx_runtime,
+            strip_md_ext,
+            gfm_constructs,
+            true,
+        )
     }
 
     /// Constructor: forwards `strip_md_ext`, GFM constructs, and

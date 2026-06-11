@@ -111,10 +111,7 @@ fn serve_in_thread_lifecycle_round_trip() {
     );
     // The `/__zfb/reload` SSE endpoint must also not be mounted.
     let (sse_status, _sse_body) = rt.block_on(probe(addr, "/__zfb/reload"));
-    assert_eq!(
-        sse_status, 404,
-        "Embed mode must not mount /__zfb/reload",
-    );
+    assert_eq!(sse_status, 404, "Embed mode must not mount /__zfb/reload",);
 
     // Idempotent shutdown — first call signals, second is a no-op.
     handle.shutdown().expect("first shutdown");

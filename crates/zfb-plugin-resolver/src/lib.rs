@@ -275,7 +275,11 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
         paths_anchor: Option<PathBuf>,
     }
 
-    fn walk(file: &Path, depth: usize, mut state: WalkState) -> Option<(PathBuf, Vec<TsPathAlias>)> {
+    fn walk(
+        file: &Path,
+        depth: usize,
+        mut state: WalkState,
+    ) -> Option<(PathBuf, Vec<TsPathAlias>)> {
         if depth > 8 {
             return None;
         }
@@ -385,9 +389,7 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
 /// using [`resolve_tsconfig_path_target`].  Already-absolute targets are
 /// returned unchanged.  Missing file / parse errors / absent paths all
 /// return an empty map.
-pub fn read_tsconfig_paths_into_map(
-    project_root: &Path,
-) -> BTreeMap<String, Vec<String>> {
+pub fn read_tsconfig_paths_into_map(project_root: &Path) -> BTreeMap<String, Vec<String>> {
     let Some(parsed) = read_tsconfig_paths(project_root) else {
         return BTreeMap::new();
     };
@@ -673,7 +675,10 @@ mod tests {
         ];
         merge_into_tsconfig_paths(&mut paths, &entries);
         assert_eq!(paths.len(), 2);
-        assert_eq!(paths.get("@/foo").unwrap(), &vec!["/abs/foo.tsx".to_string()]);
+        assert_eq!(
+            paths.get("@/foo").unwrap(),
+            &vec!["/abs/foo.tsx".to_string()]
+        );
         assert_eq!(
             paths.get("virtual:meta").unwrap(),
             &vec!["/tmp/v.mjs".to_string()]
@@ -722,7 +727,10 @@ mod tests {
     /// slashes.
     #[test]
     fn to_posix_replaces_backslashes() {
-        assert_eq!(path_to_posix_string(Path::new("/abs/foo.tsx")), "/abs/foo.tsx");
+        assert_eq!(
+            path_to_posix_string(Path::new("/abs/foo.tsx")),
+            "/abs/foo.tsx"
+        );
         // Simulate a Windows-style path string. On Unix `Path` does not
         // recognize `\` as a separator, but `to_string_lossy()` still
         // returns the literal characters, which our replace then maps
@@ -958,8 +966,7 @@ mod tests {
     fn strip_tsconfig_jsonc_trailing_comma_pass_is_string_aware() {
         let input = r#"{ "a": "x, }", "b": "y" }"#;
         let cleaned = strip_tsconfig_jsonc(input);
-        let v: serde_json::Value =
-            serde_json::from_str(&cleaned).expect("must still parse");
+        let v: serde_json::Value = serde_json::from_str(&cleaned).expect("must still parse");
         assert_eq!(v["a"], "x, }", "comma inside string must survive");
     }
 

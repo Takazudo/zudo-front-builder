@@ -9,10 +9,9 @@
 use std::rc::Rc;
 
 use deno_core::{
-    v8, JsRuntime, ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse, ModuleLoader,
-    ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType, PollEventLoopOptions,
-    ResolutionKind, RuntimeOptions,
-    error::ModuleLoaderError,
+    error::ModuleLoaderError, v8, JsRuntime, ModuleLoadOptions, ModuleLoadReferrer,
+    ModuleLoadResponse, ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType,
+    PollEventLoopOptions, ResolutionKind, RuntimeOptions,
 };
 
 use super::{ConfigEvalError, NO_BARE_IMPORTS_ERROR};
@@ -36,9 +35,7 @@ pub(super) const MAIN_SPECIFIER: &str = "file:///zfb-config-eval/main.mjs";
 /// - The module source throws at top level
 /// - The `default` export is not a plain object
 /// - The source contains non-main-module imports
-pub async fn evaluate_config_bundle(
-    js_source: &str,
-) -> Result<serde_json::Value, ConfigEvalError> {
+pub async fn evaluate_config_bundle(js_source: &str) -> Result<serde_json::Value, ConfigEvalError> {
     let main_spec =
         ModuleSpecifier::parse(MAIN_SPECIFIER).expect("MAIN_SPECIFIER is a valid URL; qed");
     let loader = Rc::new(ConfigModuleLoader::new(MAIN_SPECIFIER, js_source));
@@ -60,7 +57,9 @@ pub async fn evaluate_config_bundle(
             "zfb:config_eval_polyfills",
             crate::embedded_v8::extensions::WEB_POLYFILLS_SRC,
         )
-        .map_err(|e| ConfigEvalError::Evaluation(format!("config-eval polyfill init failed: {e}")))?;
+        .map_err(|e| {
+            ConfigEvalError::Evaluation(format!("config-eval polyfill init failed: {e}"))
+        })?;
 
     evaluate_in_runtime(runtime, main_spec).await
 }
@@ -70,17 +69,14 @@ async fn evaluate_in_runtime(
     main_spec: ModuleSpecifier,
 ) -> Result<serde_json::Value, ConfigEvalError> {
     // Load + evaluate the main module.
-    let module_id = runtime
-        .load_main_es_module(&main_spec)
-        .await
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains(NO_BARE_IMPORTS_ERROR) {
-                ConfigEvalError::BareImportRejected(msg)
-            } else {
-                ConfigEvalError::ModuleLoad(msg)
-            }
-        })?;
+    let module_id = runtime.load_main_es_module(&main_spec).await.map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains(NO_BARE_IMPORTS_ERROR) {
+            ConfigEvalError::BareImportRejected(msg)
+        } else {
+            ConfigEvalError::ModuleLoad(msg)
+        }
+    })?;
 
     let evaluate = runtime.mod_evaluate(module_id);
     runtime
@@ -168,14 +164,16 @@ async fn evaluate_in_runtime(
             "JSON.stringify returned a non-string value (unexpected)".into(),
         ));
     }
-    let json_str: v8::Local<v8::String> = result.try_into().map_err(|_| {
-        ConfigEvalError::Evaluation("JSON.stringify result is not a String".into())
-    })?;
+    let json_str: v8::Local<v8::String> = result
+        .try_into()
+        .map_err(|_| ConfigEvalError::Evaluation("JSON.stringify result is not a String".into()))?;
     let json_rust = json_str.to_rust_string_lossy(tc);
 
     // Parse the JSON string back into a serde_json::Value.
     serde_json::from_str::<serde_json::Value>(&json_rust).map_err(|e| {
-        ConfigEvalError::Evaluation(format!("serde_json parsing of stringify result failed: {e}"))
+        ConfigEvalError::Evaluation(format!(
+            "serde_json parsing of stringify result failed: {e}"
+        ))
     })
 }
 

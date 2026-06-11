@@ -104,7 +104,11 @@ impl ValidatedAttrValue {
             | ValidatedAttrValue::Enum(s)
             | ValidatedAttrValue::Number(s) => s.as_str(),
             ValidatedAttrValue::Boolean(b) => {
-                if *b { "true" } else { "false" }
+                if *b {
+                    "true"
+                } else {
+                    "false"
+                }
             }
         }
     }
@@ -279,24 +283,22 @@ impl DirectiveDef {
                         });
                     }
                 }
-                Some(val) => {
-                    match coerce_value(&schema.ty, val) {
-                        Ok(v) => {
-                            validated.insert(schema.name.clone(), v);
-                        }
-                        Err(msg) => {
-                            errors.push(DirectiveDiagnostic {
-                                message: format!(
-                                    "directive `{}`: attr `{}` value `{val}` is not valid \
-                                     for type {:?}: {msg}",
-                                    self.name, schema.name, schema.ty,
-                                ),
-                                line: None,
-                                column: None,
-                            });
-                        }
+                Some(val) => match coerce_value(&schema.ty, val) {
+                    Ok(v) => {
+                        validated.insert(schema.name.clone(), v);
                     }
-                }
+                    Err(msg) => {
+                        errors.push(DirectiveDiagnostic {
+                            message: format!(
+                                "directive `{}`: attr `{}` value `{val}` is not valid \
+                                     for type {:?}: {msg}",
+                                self.name, schema.name, schema.ty,
+                            ),
+                            line: None,
+                            column: None,
+                        });
+                    }
+                },
             }
         }
 
@@ -323,15 +325,11 @@ fn coerce_value(ty: &AttrType, raw: &str) -> Result<ValidatedAttrValue, String> 
                 ))
             }
         }
-        AttrType::Boolean => {
-            match raw.to_lowercase().as_str() {
-                "true" | "" => Ok(ValidatedAttrValue::Boolean(true)),
-                "false" => Ok(ValidatedAttrValue::Boolean(false)),
-                _ => Err(format!(
-                    "expected `true` or `false`, got `{raw}`"
-                )),
-            }
-        }
+        AttrType::Boolean => match raw.to_lowercase().as_str() {
+            "true" | "" => Ok(ValidatedAttrValue::Boolean(true)),
+            "false" => Ok(ValidatedAttrValue::Boolean(false)),
+            _ => Err(format!("expected `true` or `false`, got `{raw}`")),
+        },
         AttrType::Number => {
             if raw.parse::<f64>().is_ok() {
                 Ok(ValidatedAttrValue::Number(raw.to_string()))

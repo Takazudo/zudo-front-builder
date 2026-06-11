@@ -15,8 +15,8 @@
 use std::path::PathBuf;
 
 use zfb::diagnostics::{
-    from_directive_diagnostic, from_frontmatter_error, from_js_runtime_error,
-    from_paths_error, render_framed,
+    from_directive_diagnostic, from_frontmatter_error, from_js_runtime_error, from_paths_error,
+    render_framed,
 };
 use zfb_content::plugins::DirectiveDiagnostic;
 use zfb_render::paths::PathsError;
@@ -25,8 +25,8 @@ fn fixture(name: &str) -> (PathBuf, String) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/error-ux")
         .join(name);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read fixture {name}: {e}"));
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read fixture {name}: {e}"));
     (path, text)
 }
 
@@ -74,7 +74,10 @@ fn frontmatter_yaml_error_frames_offending_line() {
         "must include relative path: {out}"
     );
     // Snippet must include the offending bracketed value.
-    assert!(out.contains("title: [unterminated"), "snippet missing: {out}");
+    assert!(
+        out.contains("title: [unterminated"),
+        "snippet missing: {out}"
+    );
     // Exactly one caret on its own line.
     assert!(
         out.matches("\n  | ").filter(|_| true).count() >= 1,
@@ -124,13 +127,8 @@ fn paths_missing_param_frames_export_paths_line() {
         Ok(zfb_render::paths_extract::PathsExtraction::Literal(v)) => v,
         other => unreachable!("expected literal extraction, got {other:?}"),
     };
-    let err = zfb_render::paths::resolve_paths(
-        &mut cache,
-        "blog/[slug].tsx",
-        &segs,
-        &extracted,
-    )
-    .expect_err("must fail with MissingParam");
+    let err = zfb_render::paths::resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &extracted)
+        .expect_err("must fail with MissingParam");
     assert!(matches!(err, PathsError::MissingParam { .. }));
     let d = from_paths_error(&path, &src, &err);
     let out = strip_ansi(&render_framed(&d));
@@ -143,7 +141,10 @@ fn paths_missing_param_frames_export_paths_line() {
         out.contains("paths-missing-param.tsx:7:"),
         "expected caret on `export function paths` line 7: {out}"
     );
-    assert!(out.contains("export function paths"), "snippet missing: {out}");
+    assert!(
+        out.contains("export function paths"),
+        "snippet missing: {out}"
+    );
 }
 
 #[test]
@@ -158,13 +159,8 @@ fn paths_shape_error_frames_export_paths_line() {
         Ok(zfb_render::paths_extract::PathsExtraction::Literal(v)) => v,
         other => unreachable!("expected literal extraction, got {other:?}"),
     };
-    let err = zfb_render::paths::resolve_paths(
-        &mut cache,
-        "[slug].tsx",
-        &segs,
-        &extracted,
-    )
-    .expect_err("must fail");
+    let err = zfb_render::paths::resolve_paths(&mut cache, "[slug].tsx", &segs, &extracted)
+        .expect_err("must fail");
     assert!(matches!(err, PathsError::InvalidPathsExport { .. }));
     let d = from_paths_error(&path, &src, &err);
     let out = strip_ansi(&render_framed(&d));

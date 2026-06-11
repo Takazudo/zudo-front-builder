@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use lightningcss::css_modules::{Config as LcssConfig, Pattern};
-use zfb_types::path_to_posix_string;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
+use zfb_types::path_to_posix_string;
 
 /// Configuration for [`CssModulesProcessor`].
 #[derive(Debug, Clone, Default)]

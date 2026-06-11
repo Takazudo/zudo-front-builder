@@ -85,13 +85,13 @@ use tower_http::trace::TraceLayer;
 use zfb_types::escape_html;
 
 use crate::assets_containment::ContainedAssetsService;
+use crate::embed_handlers::EmbedHandlerSet;
 use crate::inject::inject_livereload_with_prefix;
 use crate::livereload::{sse_response, ReloadTx};
 use crate::plugin_middleware::{
     DevMiddlewareSet, PluginDispatchOutcome, PluginRegistration, PluginRequest,
     PluginResponseEncoding,
 };
-use crate::embed_handlers::EmbedHandlerSet;
 use crate::ssr::{SsrRequest, SsrRouteSet};
 
 /// HTML body returned when a page is not in the cache.
@@ -869,10 +869,8 @@ async fn serve_page(
     // lock — the lock is released before any I/O so the writer (per-tick
     // reload) is never blocked by in-flight requests.
     if let Some(handle) = state.ssr_routes.as_ref() {
-        let set_snapshot: Option<crate::ssr::SsrRouteSet> = handle
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
+        let set_snapshot: Option<crate::ssr::SsrRouteSet> =
+            handle.read().unwrap_or_else(|p| p.into_inner()).clone();
         if let Some(set) = set_snapshot {
             let path_only = format!("/{trimmed}");
             if set.find_match(&path_only).is_some() {
@@ -1276,7 +1274,9 @@ async fn dispatch_plugin(
                                 "plugin `{}` returned an invalid base64 body: {}",
                                 reg.plugin, e
                             );
-                            return PluginDispatchAttempt::Errored(plugin_error_response(&msg, mode));
+                            return PluginDispatchAttempt::Errored(plugin_error_response(
+                                &msg, mode,
+                            ));
                         }
                     }
                 }
@@ -1305,17 +1305,20 @@ async fn dispatch_plugin(
             builder = builder.header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             match builder.body(axum::body::Body::from(body_bytes)) {
                 Ok(resp) => PluginDispatchAttempt::Responded(resp),
-                Err(e) => PluginDispatchAttempt::Errored(plugin_error_response(&format!(
-                    "failed to build response from plugin `{}`: {e}",
-                    reg.plugin,
-                ), mode)),
+                Err(e) => PluginDispatchAttempt::Errored(plugin_error_response(
+                    &format!("failed to build response from plugin `{}`: {e}", reg.plugin,),
+                    mode,
+                )),
             }
         }
         Ok(PluginDispatchOutcome::Passthrough) => PluginDispatchAttempt::Passthrough,
-        Err(err) => PluginDispatchAttempt::Errored(plugin_error_response(&format!(
-            "plugin `{}` dev-middleware failed: {}",
-            err.plugin, err.message,
-        ), mode)),
+        Err(err) => PluginDispatchAttempt::Errored(plugin_error_response(
+            &format!(
+                "plugin `{}` dev-middleware failed: {}",
+                err.plugin, err.message,
+            ),
+            mode,
+        )),
     }
 }
 
@@ -1377,8 +1380,7 @@ async fn dispatch_ssr(
         .map(|(_, v)| v.clone())
         .unwrap_or_else(|| "text/html; charset=utf-8".to_string());
     let is_html = content_type.to_ascii_lowercase().starts_with("text/html");
-    let status =
-        StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut out = page_response_bytes(
         status,
         resp.body,
@@ -1459,8 +1461,8 @@ async fn dispatch_embed_handler(
     // [`crate::middleware::apply_request_extension_layer`] are
     // forwarded verbatim so the handler can read host-supplied values
     // via `req.extensions().get::<T>()`.
-    let stripped = strip_prefix_from_full_uri(uri, base_prefix)
-        .unwrap_or_else(|| uri.path().to_string());
+    let stripped =
+        strip_prefix_from_full_uri(uri, base_prefix).unwrap_or_else(|| uri.path().to_string());
 
     let mut builder = Request::builder().method(method.clone()).uri(&stripped);
     for (name, value) in headers.iter() {
@@ -1469,9 +1471,10 @@ async fn dispatch_embed_handler(
     let mut req = match builder.body(Body::from(body)) {
         Ok(r) => r,
         Err(e) => {
-            return embed_handler_error_response(&format!(
-                "failed to rebuild request for embed handler: {e}"
-            ), mode);
+            return embed_handler_error_response(
+                &format!("failed to rebuild request for embed handler: {e}"),
+                mode,
+            );
         }
     };
     *req.extensions_mut() = extensions.clone();
@@ -1734,18 +1737,14 @@ pub(crate) fn page_response_bytes(
     // treated as absent (the bin crate seeds the handle with `None`
     // when no `"use client"` islands exist).
     let islands_script_url = if is_dev && inject_reload {
-        islands_bundle_url
-            .map(str::trim)
-            .filter(|u| !u.is_empty())
+        islands_bundle_url.map(str::trim).filter(|u| !u.is_empty())
     } else {
         None
     };
     // Issue #494 / #498: dev-mode injection of the CSS `<link>` tag.
     // Same gate as islands — Dev mode only, HTML responses only.
     let css_link_url = if is_dev && inject_reload {
-        css_bundle_url
-            .map(str::trim)
-            .filter(|u| !u.is_empty())
+        css_bundle_url.map(str::trim).filter(|u| !u.is_empty())
     } else {
         None
     };
@@ -2397,10 +2396,7 @@ mod tests {
         // HTML must include <head></head> so inject_prod_head_assets has an anchor.
         state
             .pages
-            .insert(
-                "/",
-                "<html><head></head><body><p>hello</p></body></html>",
-            )
+            .insert("/", "<html><head></head><body><p>hello</p></body></html>")
             .await;
         let router = test_router(state);
 
@@ -2423,10 +2419,7 @@ mod tests {
         let state = test_state();
         state
             .pages
-            .insert(
-                "/",
-                "<html><head></head><body><p>hello</p></body></html>",
-            )
+            .insert("/", "<html><head></head><body><p>hello</p></body></html>")
             .await;
         let router = test_router(state);
 
@@ -2465,10 +2458,7 @@ mod tests {
         };
         state
             .pages
-            .insert(
-                "/",
-                "<html><head></head><body><p>hello</p></body></html>",
-            )
+            .insert("/", "<html><head></head><body><p>hello</p></body></html>")
             .await;
         let router = test_router(state);
 
@@ -2512,10 +2502,7 @@ mod tests {
         };
         state
             .pages
-            .insert(
-                "/",
-                "<html><head></head><body><p>hello</p></body></html>",
-            )
+            .insert("/", "<html><head></head><body><p>hello</p></body></html>")
             .await;
         let router = test_router(state);
 
@@ -2562,8 +2549,7 @@ mod tests {
             &self,
             _id: &str,
             request: PluginRequest,
-        ) -> Result<PluginDispatchOutcome, crate::plugin_middleware::PluginDispatchError>
-        {
+        ) -> Result<PluginDispatchOutcome, crate::plugin_middleware::PluginDispatchError> {
             *self.last.lock().await = Some(request);
             Ok(self.outcome.clone())
         }
@@ -2580,10 +2566,7 @@ mod tests {
         })
     }
 
-    fn state_with_dispatcher(
-        dispatcher: Arc<RecordingDispatcher>,
-        path: &str,
-    ) -> AppState {
+    fn state_with_dispatcher(dispatcher: Arc<RecordingDispatcher>, path: &str) -> AppState {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
         let set = DevMiddlewareSet {
             registrations: Arc::new(vec![PluginRegistration {
@@ -2942,7 +2925,10 @@ mod tests {
             .and_then(|h| h.to_str().ok())
             .unwrap_or_default()
             .to_string();
-        assert_eq!(location, "/foo/", "expected redirect to /foo/, got {location}");
+        assert_eq!(
+            location, "/foo/",
+            "expected redirect to /foo/, got {location}"
+        );
     }
 
     #[tokio::test]
@@ -2954,12 +2940,7 @@ mod tests {
         let router = test_router_with_base(state);
 
         let resp = router
-            .oneshot(
-                Request::builder()
-                    .uri("/?x=1")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/?x=1").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -3132,12 +3113,7 @@ mod tests {
         let router = test_router_with_base(state);
 
         let resp = router
-            .oneshot(
-                Request::builder()
-                    .uri("/foo/")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/foo/").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -3349,7 +3325,11 @@ mod tests {
         let dist = tempfile::tempdir().expect("dist dir");
         std::fs::write(dist.path().join("real.html"), b"<h1>real</h1>").unwrap();
         // Symlink inside dist pointing at another file inside dist.
-        symlink(dist.path().join("real.html"), dist.path().join("alias.html")).unwrap();
+        symlink(
+            dist.path().join("real.html"),
+            dist.path().join("alias.html"),
+        )
+        .unwrap();
 
         let result = read_from_dist(dist.path(), "alias.html").await;
         assert_eq!(
@@ -3732,9 +3712,7 @@ mod tests {
             StatusCode::OK,
             "HEAD request for existing asset must return 200"
         );
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 1024)
-            .await
-            .unwrap();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
         assert!(
             body_bytes.is_empty(),
             "HEAD response body must be empty (got {} bytes)",

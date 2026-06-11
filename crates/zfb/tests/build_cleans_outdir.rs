@@ -76,7 +76,11 @@ fn run_zfb_build(root: &Path, esbuild: &Path) -> std::process::Output {
 
 /// Run `zfb build` in `root` with the supplied esbuild path, also passing
 /// `--outdir <outdir_arg>`.
-fn run_zfb_build_with_outdir(root: &Path, esbuild: &Path, outdir_arg: &str) -> std::process::Output {
+fn run_zfb_build_with_outdir(
+    root: &Path,
+    esbuild: &Path,
+    outdir_arg: &str,
+) -> std::process::Output {
     Command::new(zfb_binary!())
         .arg("build")
         .arg("--outdir")
@@ -133,11 +137,18 @@ fn stale_assets_and_orphan_html_are_removed_on_rebuild() {
     fs::write(&orphan_html, b"<html><body>dead page</body></html>").unwrap();
 
     assert!(stale_js.exists(), "stale JS must exist before rebuild");
-    assert!(orphan_html.exists(), "orphan HTML must exist before rebuild");
+    assert!(
+        orphan_html.exists(),
+        "orphan HTML must exist before rebuild"
+    );
 
     // Second build — wipe must remove the stale files.
     let out2 = run_zfb_build(root, &esbuild);
-    assert!(out2.status.success(), "second build failed\n{}", dump(&out2));
+    assert!(
+        out2.status.success(),
+        "second build failed\n{}",
+        dump(&out2)
+    );
 
     assert!(
         !stale_js.exists(),
@@ -187,7 +198,11 @@ fn dist_as_symlink_survives_with_fresh_target_contents() {
     symlink(&real_dist, &dist_link).unwrap();
 
     let out = run_zfb_build(root, &esbuild);
-    assert!(out.status.success(), "build with dist-as-symlink failed\n{}", dump(&out));
+    assert!(
+        out.status.success(),
+        "build with dist-as-symlink failed\n{}",
+        dump(&out)
+    );
 
     // The symlink must still be a symlink (not replaced by a directory).
     let meta = fs::symlink_metadata(&dist_link).expect("symlink_metadata on dist link");
@@ -243,7 +258,11 @@ fn child_symlink_in_dist_is_unlinked_target_untouched() {
 
     // Second build — the wipe must remove the link, not follow it.
     let out2 = run_zfb_build(root, &esbuild);
-    assert!(out2.status.success(), "second build failed\n{}", dump(&out2));
+    assert!(
+        out2.status.success(),
+        "second build failed\n{}",
+        dump(&out2)
+    );
 
     assert!(
         !child_link.exists(),

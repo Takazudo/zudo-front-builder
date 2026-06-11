@@ -27,8 +27,8 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use zfb_server::livereload::ReloadEvent;
 use zfb_server::{
-    serve_with_listener, DevMiddlewareDispatcher, DevMiddlewareSet, PageCache,
-    PluginDispatchError, PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
+    serve_with_listener, DevMiddlewareDispatcher, DevMiddlewareSet, PageCache, PluginDispatchError,
+    PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
     PluginResponseEncoding, ServeOpts, SsrDispatchError, SsrDispatcher, SsrRequest, SsrResponse,
     SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
 };
@@ -132,8 +132,7 @@ async fn boot_with_opts(
     let addr = listener.local_addr().unwrap();
 
     // Wrap the SsrRouteSet in the live handle (issue #807).
-    let ssr_handle: Option<SsrRoutesHandle> =
-        ssr_routes.map(|s| Arc::new(RwLock::new(Some(s))));
+    let ssr_handle: Option<SsrRoutesHandle> = ssr_routes.map(|s| Arc::new(RwLock::new(Some(s))));
 
     let opts = ServeOpts {
         project_root: tmp.path().to_path_buf(),
@@ -210,10 +209,7 @@ async fn matched_url_dispatches_through_ssr_layer() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    assert!(
-        ct.starts_with("text/html"),
-        "expected text/html, got {ct}"
-    );
+    assert!(ct.starts_with("text/html"), "expected text/html, got {ct}");
     let cookie = resp
         .headers()
         .get(reqwest::header::SET_COOKIE)
@@ -293,10 +289,7 @@ async fn unmatched_url_falls_through_to_page_cache() {
         body: b"ssr".to_vec(),
     };
     let ssr_dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
-    let set = ssr_set(
-        "/dynamic",
-        ssr_dispatcher.clone() as Arc<dyn SsrDispatcher>,
-    );
+    let set = ssr_set("/dynamic", ssr_dispatcher.clone() as Arc<dyn SsrDispatcher>);
     let (addr, pages, server, _tmp) = boot(Some(set), None).await;
 
     // Static page in the cache at a DIFFERENT URL — confirm the SSR
@@ -509,8 +502,11 @@ async fn adding_ssr_route_mid_session_becomes_dispatchable() {
 
     // Boot with an empty initial route set (no SSR routes at startup).
     let empty_set = SsrRouteSet::new(vec![], dispatcher.clone() as Arc<dyn SsrDispatcher>);
-    let (addr, handle, server, _tmp, _pages) =
-        boot_with_live_handle(Some(empty_set), dispatcher.clone() as Arc<dyn SsrDispatcher>).await;
+    let (addr, handle, server, _tmp, _pages) = boot_with_live_handle(
+        Some(empty_set),
+        dispatcher.clone() as Arc<dyn SsrDispatcher>,
+    )
+    .await;
 
     let client = reqwest::Client::new();
 
@@ -575,8 +571,11 @@ async fn removing_ssr_route_mid_session_becomes_404() {
         }],
         dispatcher.clone() as Arc<dyn SsrDispatcher>,
     );
-    let (addr, handle, server, _tmp, _pages) =
-        boot_with_live_handle(Some(initial_set), dispatcher.clone() as Arc<dyn SsrDispatcher>).await;
+    let (addr, handle, server, _tmp, _pages) = boot_with_live_handle(
+        Some(initial_set),
+        dispatcher.clone() as Arc<dyn SsrDispatcher>,
+    )
+    .await;
 
     let client = reqwest::Client::new();
 
@@ -659,7 +658,11 @@ async fn ssr_route_update_does_not_break_static_pages() {
         .send()
         .await
         .unwrap();
-    assert_eq!(r2.status().as_u16(), 200, "/ssr-new must dispatch after handle update");
+    assert_eq!(
+        r2.status().as_u16(),
+        200,
+        "/ssr-new must dispatch after handle update"
+    );
 
     // Static page still serves correctly after the SSR update.
     let r3 = client
@@ -673,7 +676,10 @@ async fn ssr_route_update_does_not_break_static_pages() {
         "/static must still serve 200 after SSR handle update"
     );
     let body = r3.text().await.unwrap();
-    assert!(body.contains("static"), "static page body must be unchanged");
+    assert!(
+        body.contains("static"),
+        "static page body must be unchanged"
+    );
 
     server.abort();
 }

@@ -130,7 +130,8 @@ impl DevMiddlewareSet {
         let mut best: Option<&PluginRegistration> = None;
         for reg in self.registrations.iter() {
             if path_matches_prefix(url_path, &reg.path)
-                && best.map(|b| b.path.len() < reg.path.len()).unwrap_or(true) {
+                && best.map(|b| b.path.len() < reg.path.len()).unwrap_or(true)
+            {
                 best = Some(reg);
             }
         }

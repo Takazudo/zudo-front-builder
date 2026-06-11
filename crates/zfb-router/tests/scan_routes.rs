@@ -132,7 +132,10 @@ fn dynamic_param_name_preserved() {
         .expect("/blog/:slug");
     assert_eq!(
         blog_slug.segments,
-        vec![Segment::Static("blog".into()), Segment::Dynamic("slug".into())],
+        vec![
+            Segment::Static("blog".into()),
+            Segment::Dynamic("slug".into())
+        ],
     );
 
     let pagination = router
@@ -156,7 +159,10 @@ fn dynamic_param_name_preserved() {
         .expect("/docs/:slug{.+}");
     assert_eq!(
         docs.segments,
-        vec![Segment::Static("docs".into()), Segment::Catchall("slug".into())],
+        vec![
+            Segment::Static("docs".into()),
+            Segment::Catchall("slug".into())
+        ],
     );
 }
 
@@ -238,10 +244,7 @@ fn ambiguous_routes_are_rejected() {
 
 #[test]
 fn missing_pages_dir_is_an_error() {
-    let err = Router::scan(Path::new(
-        "/this/path/should/not/exist/zfb-router/test",
-    ))
-    .unwrap_err();
+    let err = Router::scan(Path::new("/this/path/should/not/exist/zfb-router/test")).unwrap_err();
     assert!(matches!(err, RouterError::PagesDirMissing(_)));
 }
 

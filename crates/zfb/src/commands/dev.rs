@@ -75,7 +75,7 @@ use anyhow::{Context, Result};
 use sha2::{Digest as _, Sha256};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use zfb_build::bundler::{bundle, BundleMode, BundlerOutput};
+use zfb_build::bundler::{bundle_with_session, BundleMode, BundlerOutput, ShadowSession};
 use zfb_build::renderer::{
     render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
 };
@@ -467,7 +467,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         cfg.framework,
         &islands_plugin_config,
     ) {
-        Ok(Some(payload)) => {
+        Ok((Some(payload), _marker_names)) => {
             // Write the stable `islands.js` bytes to disk so the dev
             // server's `ServeDir` can handle `GET /assets/islands.js`.
             // The bundler no longer writes to disk itself — the caller
@@ -514,7 +514,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 }
             }
         }
-        Ok(None) => {
+        Ok((None, _marker_names)) => {
             // No `"use client"` islands in the project. Leave the handle
             // at `None` so the server skips head injection entirely.
         }
@@ -535,7 +535,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let url_handle = Arc::clone(&islands_bundle_url_handle);
         let chunk_names = Arc::clone(&live_chunk_filenames);
         Some(Arc::new(move || -> Result<Option<IslandsBundleInfo>> {
-            let payload = crate::commands::build::build_default_islands_payload(
+            // Marker names are only needed by the production build pass; dev
+            // mode already surfaces unknown-marker warnings in the browser
+            // console via the runtime.ts warn path.
+            let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
                 &project_root,
                 &dist_root_for_islands,
                 framework,
@@ -1330,6 +1333,26 @@ struct DevRebuildInputs {
     v8_plugin_hooks: zfb_render::PluginRegistryHooks,
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
+    /// Process-lifetime embedded-esbuild extraction (#994 item A): the
+    /// `(TempDir, PathBuf)` pair from one boot-time
+    /// [`crate::render_pipeline::embedded_binary`] call, threaded into
+    /// `assemble_bundler_input` on every tick so the per-tick tempdir
+    /// extraction (the bulk of the measured P1 `asm` cost) is skipped.
+    /// The TempDir handle lives as long as the dev session — i.e. it
+    /// outlives every `bundle()` call, trivially satisfying the
+    /// [`crate::commands::bundler_input::AssembledBundlerInput`]
+    /// lifetime contract. `None` when boot-time extraction failed
+    /// (non-fatal: warn + per-tick fallback) or when `ZFB_ESBUILD_BIN`
+    /// overrides the embedded binary.
+    esbuild: Option<(tempfile::TempDir, PathBuf)>,
+}
+
+#[cfg(feature = "embed_v8")]
+impl DevRebuildInputs {
+    /// Path of the boot-time extracted esbuild binary (#994 item A), if any.
+    fn esbuild_path(&self) -> Option<&Path> {
+        self.esbuild.as_ref().map(|(_, path)| path.as_path())
+    }
 }
 
 struct DevRenderInner {
@@ -1381,6 +1404,35 @@ struct DevRenderInner {
     /// labels) — no narrowing that tick.
     #[cfg(feature = "embed_v8")]
     fm_hashes: Mutex<HashMap<PathBuf, [u8; 32]>>,
+
+    /// Persistent dev shadow-tree session (issue #993): the bundler
+    /// reuses one shadow tempdir across all ticks, skipping
+    /// byte-identical rewrites ("compute always, write only if
+    /// changed" — see [`zfb_build::bundler::ShadowSession`] for the
+    /// safety model). Created at boot ([`boot_dev_renderer`]) and used
+    /// for the boot bundle AND every refresh, so both go through the
+    /// identical assembly path + shadow tree (#659 parity by
+    /// construction). The lock is held only across the P1 bundle step
+    /// of [`DevRenderSession::refresh_bundle_and_routes`] — it never
+    /// overlaps the renderer mutex, so SSR latency is unaffected.
+    #[cfg(feature = "embed_v8")]
+    shadow_session: Mutex<Option<ShadowSession>>,
+
+    /// Cross-tick [`PathsCache`] (#994 item B): seeded at boot and
+    /// passed into every route-table build, so a `paths()` JSON output
+    /// identical to a previous tick's skips the Rust-side
+    /// validate/URL-build in `resolve_paths`. NOTE the corrected scope
+    /// (#992): the cache lookup happens AFTER the V8 `/__paths__/`
+    /// dispatch — the key includes the hash of the dispatch RESULT — so
+    /// persistence does NOT skip the per-tick V8 evals; the saving is
+    /// the ~1–5 ms Rust tail only. Sound by construction: a changed
+    /// `paths()` output can never hit a stale entry (key = template +
+    /// JSON hash) and stale entries are inert. The lock is scoped to
+    /// the P3 route-table build; the renderer lock for phase-2 eval is
+    /// taken inside the build exactly as before, so renderer-mutex
+    /// hold time is unchanged.
+    #[cfg(feature = "embed_v8")]
+    paths_cache: Mutex<PathsCache>,
 }
 
 /// Per-source route filter for one narrowed tick (issue #958): which of a
@@ -1741,26 +1793,71 @@ impl DevRenderSession {
         let project_root = &self.inner.project_root;
         let inputs = &self.inner.rebuild_inputs;
 
+        // `ZFB_DEV_TIMING=1` — per-tick phase timing (issue #991).
+        // Checked once here; all Instant::now() calls inside are skipped
+        // when the flag is unset (zero overhead on the hot path).
+        let timing_enabled = dev_timing_enabled();
+        let tick_start = if timing_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        // P0 — router re-scan + route-universe plan.
+        let p0_start = tick_start.map(|_| std::time::Instant::now());
+        let pages_dir = project_root.join("pages");
         // Re-scan the router. `Router::scan` is unchanged by adding a
         // CONTENT file (the dynamic `[slug].tsx` source is the same), but
         // re-running it is cheap and keeps boot and rebuild symmetrical —
         // and it correctly picks up a brand-new `.tsx`/`.md` page placed
         // directly under `pages/` too.
-        let pages_dir = project_root.join("pages");
         let router = zfb_router::Router::scan(&pages_dir).map_err(anyhow::Error::from)?;
         let plan = build_route_universe(router.routes());
+        let p0_ms = p0_start.map(|t| t.elapsed().as_millis());
 
-        // 1. Re-bundle with a fresh content snapshot (reads every
+        // P1 — re-bundle with a fresh content snapshot (reads every
         //    configured collection from disk, so created AND edited
         //    entries are in the snapshot).
-        let bundler_out = assemble_and_bundle_dev(
-            project_root,
-            &inputs.cfg,
-            inputs.plugin_alias_entries.clone(),
-            inputs.plugin_virtual_modules.clone(),
-        )
-        .context("dev refresh: re-bundle failed")?;
+        //    Sub-phases: snapshot (content walk), assemble (BundlerInput
+        //    construction incl. embedded esbuild extraction), bundle/esbuild
+        //    (subprocess or embedded runner).
+        let p1_snapshot_start = tick_start.map(|_| std::time::Instant::now());
+        let bundle_result = {
+            // #993 — the persistent shadow session lock is scoped to the
+            // P1 bundle step only: it is released before the P2 renderer-
+            // mutex work below, so it can never overlap the renderer
+            // mutex (SSR latency unaffected). On a bundle error the `?`
+            // drops the guard and propagates above the swap — the
+            // previous renderer keeps serving and the session's dirty
+            // flag (set inside bundle_with_session) forces a from-scratch
+            // materialise next tick.
+            let mut session_guard = self.inner.shadow_session.lock().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "refresh_bundle_and_routes",
+                    "shadow session mutex poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            assemble_and_bundle_dev(
+                project_root,
+                &inputs.cfg,
+                inputs.plugin_alias_entries.clone(),
+                inputs.plugin_virtual_modules.clone(),
+                timing_enabled,
+                session_guard.as_mut(),
+                inputs.esbuild_path(),
+            )
+            .context("dev refresh: re-bundle failed")?
+        };
+        let p1_total_ms = p1_snapshot_start.map(|t| t.elapsed().as_millis());
+        // Sub-phase split is reported by assemble_and_bundle_dev into the
+        // BundleSubTiming fields when timing_enabled.
+        let p1_snapshot_ms = bundle_result.sub_timing.as_ref().map(|t| t.snapshot_ms);
+        let p1_assemble_ms = bundle_result.sub_timing.as_ref().map(|t| t.assemble_ms);
+        let p1_bundle_ms = bundle_result.sub_timing.as_ref().map(|t| t.bundle_ms);
+        let bundler_out = bundle_result.output;
 
+        // P1b — skip-key compute (SHA-256 over bundle + router + static HTML).
         // Phase B (issue #940) — skip key check.
         //
         // Compute a digest over bundle bytes + the router-scan signature
@@ -1781,7 +1878,9 @@ impl DevRenderSession {
         // route rebuild). A failed refresh — e.g. host start error — must
         // NOT update last_successful_skip_key so the next byte-identical
         // tick retries in full (Correctness Req 1, issue #940).
+        let p1b_start = tick_start.map(|_| std::time::Instant::now());
         let new_skip_key = compute_bundle_skip_key(&bundler_out, router.routes());
+        let p1b_ms = p1b_start.map(|t| t.elapsed().as_millis());
         if self.inner.should_skip_refresh(new_skip_key) {
             tracing::debug!(
                 site = "refresh_bundle_and_routes",
@@ -1794,44 +1893,53 @@ impl DevRenderSession {
             return Ok(BundleRefresh::Skipped);
         }
 
+        // P2 — V8 host boot, mutex swap, old-host shutdown (three separate
+        //      sub-timers: boot vs eval vs teardown; split matters for the
+        //      host-reuse decision).
         // 2. Start a NEW embedded V8 host against the rebuilt bundle,
         //    swap it into the existing mutex (the render callback + SSR
         //    adapter share this exact Arc), and shut the old host down
         //    only after the swap — a host-start failure must leave the
         //    previous renderer serving (see the method docs).
-        {
-            let started = start(RendererStartInput {
-                bundle_path: bundler_out.bundle_path.clone(),
-                sourcemap_path: bundler_out.sourcemap_path.clone(),
-                backend: Backend::EmbeddedV8 {
-                    host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
-                        inputs.v8_plugin_hooks.clone(),
-                    ),
-                },
-                request_timeout: None,
-            })
-            .map_err(anyhow::Error::from)
-            .context("dev refresh: renderer start failed (previous renderer kept serving)")?;
-            let previous = {
-                let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
-                    tracing::warn!(
-                        site = "refresh_bundle_and_routes",
-                        "renderer mutex poisoned, recovered"
-                    );
-                    p.into_inner()
-                });
-                lock.replace(started)
-            };
-            if let Some(prev) = previous {
-                if let Err(err) = shutdown(prev) {
-                    tracing::warn!(
-                        site = "refresh_bundle_and_routes",
-                        error = %err,
-                        "old renderer shutdown failed; continuing with new host"
-                    );
-                }
+        let p2_boot_start = tick_start.map(|_| std::time::Instant::now());
+        let started = start(RendererStartInput {
+            bundle_path: bundler_out.bundle_path.clone(),
+            sourcemap_path: bundler_out.sourcemap_path.clone(),
+            backend: Backend::EmbeddedV8 {
+                host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
+                    inputs.v8_plugin_hooks.clone(),
+                ),
+            },
+            request_timeout: None,
+        })
+        .map_err(anyhow::Error::from)
+        .context("dev refresh: renderer start failed (previous renderer kept serving)")?;
+        let p2_boot_ms = p2_boot_start.map(|t| t.elapsed().as_millis());
+
+        let p2_swap_start = tick_start.map(|_| std::time::Instant::now());
+        let previous = {
+            let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "refresh_bundle_and_routes",
+                    "renderer mutex poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            lock.replace(started)
+        };
+        let p2_swap_ms = p2_swap_start.map(|t| t.elapsed().as_millis());
+
+        let p2_shutdown_start = tick_start.map(|_| std::time::Instant::now());
+        if let Some(prev) = previous {
+            if let Err(err) = shutdown(prev) {
+                tracing::warn!(
+                    site = "refresh_bundle_and_routes",
+                    error = %err,
+                    "old renderer shutdown failed; continuing with new host"
+                );
             }
         }
+        let p2_shutdown_ms = p2_shutdown_start.map(|t| t.elapsed().as_millis());
 
         // Phase B (issue #940, review fix) — the live renderer just
         // diverged from whatever the stored skip key described. Invalidate
@@ -1845,16 +1953,40 @@ impl DevRenderSession {
         // touched, so the old key still describes it).
         self.inner.commit_skip_key(None);
 
+        // P3 — route-table rebuild (re-expands `paths()` through the new
+        //      V8 host) with paths()-expansion sub-timing and this tick's
+        //      PathsCache hit/miss deltas. The cache persists across
+        //      ticks (#994 item B) — note the lookup happens AFTER the
+        //      V8 dispatch (keyed on its result), so hits save only the
+        //      Rust-side validate/URL-build, not the V8 evals.
         // 3. Rebuild the route tables through the reloaded host (re-expands
         //    `paths()`, so the dynamic source now resolves the new URL).
-        let (new_routes_by_source, new_ssr_routes) =
-            build_dev_route_tables(&router, &plan, project_root, &self.inner.renderer)
-                .context("dev refresh: route-table rebuild failed")?;
+        let p3_start = tick_start.map(|_| std::time::Instant::now());
+        let (new_routes_by_source, new_ssr_routes, p3_cache_hits, p3_cache_misses) = {
+            let mut paths_cache = self.inner.paths_cache.lock().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "refresh_bundle_and_routes",
+                    "paths cache mutex poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            build_dev_route_tables_timed(
+                &router,
+                &plan,
+                project_root,
+                &self.inner.renderer,
+                &mut paths_cache,
+            )
+            .context("dev refresh: route-table rebuild failed")?
+        };
+        let p3_ms = p3_start.map(|t| t.elapsed().as_millis());
 
+        // P4 — diff + RwLock table swap + skip-key commit.
         // 4. Diff against the frozen table — see [`diff_route_tables`]
         //    for the exact semantics (issue #958: the `changed` set is
         //    the G5 narrowing gate, so it compares full entry SETS, not
         //    just counts).
+        let p4_start = tick_start.map(|_| std::time::Instant::now());
         let (changed, vanished_output_paths) = {
             let old = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
             diff_route_tables(&old.routes_by_source, &new_routes_by_source)
@@ -1864,6 +1996,7 @@ impl DevRenderSession {
             tables.routes_by_source = new_routes_by_source;
             tables.ssr_routes = new_ssr_routes;
         }
+        let p4_ms = p4_start.map(|t| t.elapsed().as_millis());
 
         // Phase B (issue #940) — commit-after-success.
         //
@@ -1874,6 +2007,30 @@ impl DevRenderSession {
         // fully (Correctness Req 1). See `commit_skip_key` for the
         // `None`-clears-the-key rationale.
         self.inner.commit_skip_key(new_skip_key);
+
+        // Print one stderr line per tick when ZFB_DEV_TIMING=1.
+        if let Some(tick_elapsed) = tick_start.map(|t| t.elapsed().as_millis()) {
+            let p0 = p0_ms.unwrap_or(0);
+            let p1 = p1_total_ms.unwrap_or(0);
+            let p1_snap = p1_snapshot_ms.unwrap_or(0);
+            let p1_asm = p1_assemble_ms.unwrap_or(0);
+            let p1_bnd = p1_bundle_ms.unwrap_or(0);
+            let p1b = p1b_ms.unwrap_or(0);
+            let p2b = p2_boot_ms.unwrap_or(0);
+            let p2s = p2_swap_ms.unwrap_or(0);
+            let p2d = p2_shutdown_ms.unwrap_or(0);
+            let p3 = p3_ms.unwrap_or(0);
+            let p4 = p4_ms.unwrap_or(0);
+            eprintln!(
+                "[zfb-timing] tick={tick_elapsed}ms \
+                 P0(router)={p0}ms \
+                 P1(bundle)={p1}ms[snap={p1_snap}ms,asm={p1_asm}ms,esbuild={p1_bnd}ms] \
+                 P1b(skip-key)={p1b}ms \
+                 P2(host)[boot={p2b}ms,swap={p2s}ms,shutdown={p2d}ms] \
+                 P3(routes)={p3}ms[cache-hits={p3_cache_hits},miss={p3_cache_misses}] \
+                 P4(diff+swap)={p4}ms"
+            );
+        }
 
         Ok(BundleRefresh::Refreshed {
             changed,
@@ -1961,25 +2118,88 @@ impl Drop for DevRenderInner {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ZFB_DEV_TIMING — per-tick phase timing (issue #991)
+// ---------------------------------------------------------------------------
+
+/// Read `ZFB_DEV_TIMING` and decide whether to emit per-tick timing lines.
+/// Truthy values: `1`, `true` (case-insensitive). Everything else — including
+/// unset, empty, and unrecognized values — is off, so the hot path has zero
+/// overhead.
+#[cfg(feature = "embed_v8")]
+fn dev_timing_enabled() -> bool {
+    std::env::var("ZFB_DEV_TIMING")
+        .ok()
+        .as_deref()
+        .map(|raw| {
+            let t = raw.trim();
+            t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
+/// Per-P1-sub-phase wall-clock durations collected inside
+/// [`assemble_and_bundle_dev`] when `ZFB_DEV_TIMING=1`. Only populated when
+/// `timing_enabled` is `true`; the caller always has `Some(...)` in that
+/// case.
+#[cfg(feature = "embed_v8")]
+struct BundleSubTiming {
+    /// `build_content_snapshot_json` — full content-collection walk.
+    snapshot_ms: u128,
+    /// `assemble_bundler_input` — BundlerInput construction incl. embedded
+    /// esbuild/node_modules tempdir extraction.
+    assemble_ms: u128,
+    /// `bundle()` — esbuild subprocess / embedded runner.
+    bundle_ms: u128,
+}
+
+/// Return value of [`assemble_and_bundle_dev`].
+///
+/// Wraps the `BundlerOutput` with an optional timing record that is `Some`
+/// when `ZFB_DEV_TIMING=1` and `None` otherwise (zero allocation on the hot
+/// path).
+#[cfg(feature = "embed_v8")]
+struct AssembledBundleResult {
+    output: BundlerOutput,
+    sub_timing: Option<BundleSubTiming>,
+}
+
 /// Assemble the dev-mode bundler input and run the bundler, returning the
-/// fresh [`BundlerOutput`] (issue #659 — extracted from `boot_dev_renderer`
-/// so the watch-ADD re-bundle reuses the EXACT same configuration the boot
-/// bundle used; any drift here would make a newly-added page render
-/// differently in dev than it did at boot). The embedded node_modules /
-/// esbuild tempdir handles live only for the synchronous `bundle()` call
-/// (which writes `bundle_path` to disk), so scoping them to this function
-/// is correct.
+/// fresh [`BundlerOutput`] wrapped in [`AssembledBundleResult`] (issue #659
+/// — extracted from `boot_dev_renderer` so the watch-ADD re-bundle reuses
+/// the EXACT same configuration the boot bundle used; any drift here would
+/// make a newly-added page render differently in dev than it did at boot).
+/// The embedded node_modules tempdir handle lives only for the
+/// synchronous `bundle()` call (which writes `bundle_path` to disk), so
+/// scoping it to this function is correct. The esbuild binary is the
+/// boot-time process-lifetime extraction passed via `pre_resolved_esbuild`
+/// (#994 item A); the per-call extraction only runs as a fallback when
+/// that is `None`.
 ///
 /// `recompute snapshot` is implicit: `build_content_snapshot_json` re-reads
 /// the content collections from disk on every call, so a re-bundle here
 /// picks up a content file created after boot.
+///
+/// `timing_enabled` — when `true`, record sub-phase wall-clock durations
+/// into the returned [`BundleSubTiming`]. When `false`, no `Instant::now()`
+/// calls are made (zero overhead on the hot path).
 #[cfg(feature = "embed_v8")]
 fn assemble_and_bundle_dev(
     project_root: &Path,
     cfg: &config::Config,
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
-) -> Result<BundlerOutput> {
+    timing_enabled: bool,
+    // Persistent dev shadow-tree session (issue #993). Both the boot
+    // bundle and every refresh pass the SAME session through this seam,
+    // so boot and refresh share one assembly path AND one shadow tree —
+    // #659 configuration parity by construction.
+    shadow_session: Option<&mut ShadowSession>,
+    // Boot-time extracted embedded esbuild binary (#994 item A) — see
+    // [`DevRebuildInputs::esbuild`]. Both boot and refresh pass the same
+    // path so every tick skips the per-call tempdir extraction.
+    pre_resolved_esbuild: Option<&Path>,
+) -> Result<AssembledBundleResult> {
     // Embed the content snapshot so a page's `getStaticProps()` (and any
     // runtime `paths()`) sees the same collection data the production
     // build does. The published `zfb/content` `getCollection(...)` reads
@@ -1993,14 +2213,25 @@ fn assemble_and_bundle_dev(
     // build stay byte-identical (returns `None` when no collections are
     // declared, matching the previous behaviour for collection-less
     // projects).
+    let snap_start = if timing_enabled {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     let content_snapshot_json =
         crate::commands::build::build_content_snapshot_json(project_root, cfg);
+    let snapshot_ms = snap_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
     // The full ~25-field BundlerInput assembly is shared with `zfb build`
     // via `commands::bundler_input::assemble_bundler_input`. The two
     // per-command differences passed here:
     //   • BundleMode::Development  (build uses Production)
     //   • CssModuleFailMode::WarnAndEmpty  (build uses HardFail)
+    let asm_start = if timing_enabled {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     let crate::commands::bundler_input::AssembledBundlerInput {
         bundler_input,
         _node_modules_handle: _embedded_nm_handle,
@@ -2013,10 +2244,32 @@ fn assemble_and_bundle_dev(
         content_snapshot_json,
         plugin_alias_entries,
         plugin_virtual_modules,
+        pre_resolved_esbuild,
     )?;
+    let assemble_ms = asm_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
-    let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
-    Ok(bundler_out)
+    let bnd_start = if timing_enabled {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
+    let bundler_out: BundlerOutput =
+        bundle_with_session(bundler_input, shadow_session).context("bundler step failed")?;
+    let bundle_ms = bnd_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
+
+    let sub_timing = if timing_enabled {
+        Some(BundleSubTiming {
+            snapshot_ms,
+            assemble_ms,
+            bundle_ms,
+        })
+    } else {
+        None
+    };
+    Ok(AssembledBundleResult {
+        output: bundler_out,
+        sub_timing,
+    })
 }
 
 /// Compute the Phase-B skip key for a single dev refresh tick (issue #940).
@@ -2134,6 +2387,34 @@ type BuiltRouteTables = (
     Vec<RouteUniverseEntry>,
 );
 
+/// `(routes_by_source, ssr_routes, paths_cache_hits, paths_cache_misses)` —
+/// the 4-tuple [`build_dev_route_tables_timed`] returns with PathsCache stats
+/// exposed for ZFB_DEV_TIMING instrumentation (issue #991).
+#[cfg(feature = "embed_v8")]
+type TimedRouteTables = (
+    HashMap<PathBuf, Vec<DevRouteEntry>>,
+    Vec<RouteUniverseEntry>,
+    u64,
+    u64,
+);
+
+/// Timed variant of [`build_dev_route_tables`]: returns the same tables plus
+/// the [`PathsCache`] hit and miss DELTAS for this call, for P3 diagnostics
+/// (issue #991). The cache persists across ticks (#994 item B) and its
+/// counters are cumulative, so the inner build reports per-call deltas.
+#[cfg(feature = "embed_v8")]
+fn build_dev_route_tables_timed(
+    router: &zfb_router::Router,
+    plan: &crate::render_pipeline::RouteUniversePlan,
+    project_root: &Path,
+    renderer: &Arc<Mutex<Option<RendererState>>>,
+    paths_cache: &mut PathsCache,
+) -> Result<TimedRouteTables> {
+    let (routes_by_source, ssr_routes, hits, misses) =
+        build_dev_route_tables_inner(router, plan, project_root, renderer, paths_cache)?;
+    Ok((routes_by_source, ssr_routes, hits, misses))
+}
+
 /// Build the dev session's source→route + SSR route tables from the router
 /// scan + the live V8 host (issue #659 — extracted from `boot_dev_renderer`
 /// so boot and the watch-ADD rebuild produce byte-identical tables). The
@@ -2146,7 +2427,26 @@ fn build_dev_route_tables(
     plan: &crate::render_pipeline::RouteUniversePlan,
     project_root: &Path,
     renderer: &Arc<Mutex<Option<RendererState>>>,
+    paths_cache: &mut PathsCache,
 ) -> Result<BuiltRouteTables> {
+    let (routes_by_source, ssr_routes, _hits, _misses) =
+        build_dev_route_tables_inner(router, plan, project_root, renderer, paths_cache)?;
+    Ok((routes_by_source, ssr_routes))
+}
+
+/// Inner implementation shared by [`build_dev_route_tables`] and
+/// [`build_dev_route_tables_timed`]. Returns the route tables plus this
+/// call's PathsCache hit/miss deltas (#991 instrumentation; the cache is
+/// caller-owned and persists across ticks per #994 item B, so the
+/// cumulative counters are differenced here).
+#[cfg(feature = "embed_v8")]
+fn build_dev_route_tables_inner(
+    router: &zfb_router::Router,
+    plan: &crate::render_pipeline::RouteUniversePlan,
+    project_root: &Path,
+    renderer: &Arc<Mutex<Option<RendererState>>>,
+    paths_cache: &mut PathsCache,
+) -> Result<TimedRouteTables> {
     let prerender_map = build_prerender_map(router.routes(), project_root, |msg| {
         crate::output::warn(msg)
     });
@@ -2235,6 +2535,14 @@ fn build_dev_route_tables(
         .filter(|d| !crate::render_pipeline::is_ssr_route(&prerender_map, &d.template))
         .cloned()
         .collect();
+    // PathsCache hit/miss DELTAS for this call — issue #991
+    // instrumentation. The cache is caller-owned and persists across
+    // ticks (#994 item B), so its cumulative counters are snapshotted
+    // here and differenced at the end to feed the ZFB_DEV_TIMING P3
+    // line.
+    let hits_before = paths_cache.hit_count();
+    let misses_before = paths_cache.miss_count();
+
     if !ssg_deferred.is_empty() {
         // Map each route template back to its source path so the resolved
         // (concrete-URL) entries — whose `source_path` is `None` and whose
@@ -2247,13 +2555,10 @@ fn build_dev_route_tables(
             .map(|d| (d.template.clone(), d.source_path.clone()))
             .collect();
 
-        let mut paths_cache = PathsCache::new();
-
         // Phase 1 — literal `paths()` arrays (no runtime needed).
         // A missing `paths()` export on an SSG route is a hard error here
         // too — consistent with `zfb build` (issue #520).
-        let static_expansion =
-            expand_dynamic_routes(&ssg_deferred, project_root, &mut paths_cache)?;
+        let static_expansion = expand_dynamic_routes(&ssg_deferred, project_root, paths_cache)?;
 
         // Phase 2 — evaluate the routes phase 1 couldn't resolve statically
         // through the running embedded V8 host. We borrow the live host out
@@ -2261,7 +2566,15 @@ fn build_dev_route_tables(
         // RendererState>>>` the SSG render callback and the SSR adapter
         // share) and dispatch via `WorkerDispatch::EmbeddedV8`, exactly like
         // `commands/build.rs::eval_deferred_paths`.
-        let runtime_expansion = {
+        //
+        // The renderer mutex is only taken when phase 1 left anything to
+        // evaluate (#994 item B): when every `paths()` resolved
+        // statically there is nothing to dispatch, so borrowing the live
+        // host would be a pointless lock (and previously made an
+        // all-literal project hard-require a started renderer here).
+        let runtime_expansion = if static_expansion.deferred.is_empty() {
+            crate::render_pipeline::DynamicExpansion::default()
+        } else {
             let mut lock = renderer.lock().unwrap_or_else(|p| {
                 tracing::warn!(
                     site = "boot_dev_renderer.paths",
@@ -2282,7 +2595,7 @@ fn build_dev_route_tables(
             eval_deferred_paths_via_worker(
                 &static_expansion.deferred,
                 &mut dispatch,
-                &mut paths_cache,
+                paths_cache,
                 None,
             )
         };
@@ -2347,7 +2660,12 @@ fn build_dev_route_tables(
         }
     }
 
-    Ok((routes_by_source, ssr_routes))
+    Ok((
+        routes_by_source,
+        ssr_routes,
+        paths_cache.hit_count() - hits_before,
+        paths_cache.miss_count() - misses_before,
+    ))
 }
 
 /// Bring up the renderer and the route map for the dev session.
@@ -2410,14 +2728,47 @@ fn boot_dev_renderer(
         v8_plugin_hooks: v8_plugin_hooks.clone(),
         plugin_alias_entries: plugin_alias_entries.clone(),
         plugin_virtual_modules: plugin_virtual_modules.clone(),
+        // #994 item A — extract the embedded esbuild binary ONCE here;
+        // the handle lives on `DevRebuildInputs` for the whole dev
+        // session, so every tick's `assemble_bundler_input` skips its
+        // per-call tempdir extraction. Skipped when `ZFB_ESBUILD_BIN`
+        // overrides the embedded binary (the assemble-side skip
+        // condition would ignore the path anyway). Extraction failure
+        // is non-fatal, matching the assemble-side handling: warn and
+        // fall back to the per-tick extraction by passing `None`.
+        esbuild: if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+            match crate::render_pipeline::embedded_binary("esbuild") {
+                Ok(pair) => Some(pair),
+                Err(e) => {
+                    crate::output::warn(format!(
+                        "could not extract embedded esbuild at dev boot ({e}); \
+                         falling back to per-tick extraction"
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        },
     };
 
+    // Persistent dev shadow-tree session (issue #993) — created once
+    // here, used for the boot bundle below, then stored on
+    // `DevRenderInner` so every refresh reuses the same shadow tree.
+    let mut shadow_session = ShadowSession::new()?;
+
+    // Boot path — timing not collected here (one-shot at startup, not a
+    // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
     let bundler_out: BundlerOutput = assemble_and_bundle_dev(
         project_root,
         cfg,
         plugin_alias_entries,
         plugin_virtual_modules,
-    )?;
+        false,
+        Some(&mut shadow_session),
+        rebuild_inputs.esbuild_path(),
+    )?
+    .output;
 
     let state = start(RendererStartInput {
         bundle_path: bundler_out.bundle_path.clone(),
@@ -2448,8 +2799,14 @@ fn boot_dev_renderer(
     // Build the route tables from the router scan + the live host (#659:
     // extracted into `build_dev_route_tables` so the watch-ADD rebuild
     // reproduces the boot tables exactly).
+    //
+    // #994 item B — the PathsCache is seeded here and stored on
+    // `DevRenderInner` below, so every refresh tick reuses the entries
+    // this boot-time build populated (boot/refresh parity: both go
+    // through the same cache).
+    let mut paths_cache = PathsCache::new();
     let (routes_by_source, ssr_routes) =
-        build_dev_route_tables(&router, &plan, project_root, &renderer)?;
+        build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
 
     // Issue #958 — seed the frontmatter gate cache so the FIRST body-only
     // edit of a pre-existing collection file can already narrow (G4 only
@@ -2469,6 +2826,8 @@ fn boot_dev_renderer(
             // No successful refresh yet — first tick always runs fully.
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(fm_hashes),
+            shadow_session: Mutex::new(Some(shadow_session)),
+            paths_cache: Mutex::new(paths_cache),
         }),
     })
 }
@@ -3080,9 +3439,12 @@ mod tests {
                 v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
                 plugin_alias_entries: Vec::new(),
                 plugin_virtual_modules: Vec::new(),
+                esbuild: None,
             },
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),
+            shadow_session: Mutex::new(None),
+            paths_cache: Mutex::new(PathsCache::new()),
         }
     }
 
@@ -3107,6 +3469,71 @@ mod tests {
     fn default_watch_roots_includes_zfb_config_json() {
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.json"));
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.ts"));
+    }
+
+    /// #994 item B — the PathsCache is caller-owned and persists across
+    /// route-table builds: a second build sharing the cache with
+    /// unchanged `paths()` JSON reports cache hits (delta counters) and
+    /// produces identical tables.
+    #[test]
+    #[cfg(feature = "embed_v8")]
+    fn build_dev_route_tables_shares_paths_cache_across_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        std::fs::create_dir_all(pages.join("blog")).unwrap();
+        std::fs::write(
+            pages.join("index.tsx"),
+            "export default function Home() { return null; }",
+        )
+        .unwrap();
+        std::fs::write(
+            pages.join("blog").join("[slug].tsx"),
+            r#"
+            export function paths() {
+                return [
+                    { params: { slug: "hello" } },
+                    { params: { slug: "world" } },
+                ];
+            }
+            export default function P() { return null; }
+            "#,
+        )
+        .unwrap();
+
+        let router = zfb_router::Router::scan(&pages).unwrap();
+        let plan = build_route_universe(router.routes());
+        // No live V8 host: the literal `paths()` resolves in phase 1, so
+        // the renderer mutex is never borrowed (see the phase-2 gate in
+        // `build_dev_route_tables_inner`).
+        let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(None));
+
+        let mut cache = PathsCache::new();
+        let (tables1, ssr1, hits1, misses1) =
+            build_dev_route_tables_timed(&router, &plan, dir.path(), &renderer, &mut cache)
+                .expect("first build");
+        assert_eq!(hits1, 0, "first build runs against a cold cache");
+        assert!(misses1 > 0, "first build must record a miss");
+        assert_eq!(
+            tables1
+                .get(&pages.join("blog").join("[slug].tsx"))
+                .map(Vec::len),
+            Some(2),
+            "literal paths() expands to 2 entries: {tables1:?}"
+        );
+
+        let (tables2, ssr2, hits2, misses2) =
+            build_dev_route_tables_timed(&router, &plan, dir.path(), &renderer, &mut cache)
+                .expect("second build");
+        assert!(
+            hits2 > 0,
+            "unchanged paths() JSON must hit the shared cache"
+        );
+        assert_eq!(misses2, 0, "second build must add no misses");
+        assert_eq!(
+            tables1, tables2,
+            "cache-sharing builds must produce identical tables"
+        );
+        assert_eq!(ssr1, ssr2);
     }
 
     fn cfg_with_collections(paths: &[&str]) -> config::Config {

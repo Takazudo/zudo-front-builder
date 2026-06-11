@@ -13,16 +13,16 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use zfb_server::livereload::ReloadEvent;
 use zfb_server::{
-    serve_with_listener, DevMiddlewareDispatcher, DevMiddlewareSet, PageCache,
-    PluginDispatchError, PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
+    serve_with_listener, DevMiddlewareDispatcher, DevMiddlewareSet, PageCache, PluginDispatchError,
+    PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
     PluginResponseEncoding, ServeOpts,
 };
 
@@ -88,7 +88,12 @@ impl DevMiddlewareDispatcher for CountingDispatcher {
 async fn boot_with_dispatcher(
     dispatcher: Arc<CountingDispatcher>,
     registrations: Vec<PluginRegistration>,
-) -> (SocketAddr, PageCache, tokio::task::JoinHandle<anyhow::Result<()>>, tempfile::TempDir) {
+) -> (
+    SocketAddr,
+    PageCache,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tempfile::TempDir,
+) {
     let tmp = tempfile::tempdir().unwrap();
     let dist_root = tmp.path().join("dist");
     let public_root = tmp.path().join("public");
@@ -97,7 +102,9 @@ async fn boot_with_dispatcher(
 
     let pages = PageCache::new();
     let (tx, _rx) = broadcast::channel::<ReloadEvent>(8);
-    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await.unwrap();
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .unwrap();
     let addr = listener.local_addr().unwrap();
 
     let plugin_set = DevMiddlewareSet {
@@ -143,13 +150,20 @@ async fn dev_middleware_handles_registered_path() {
     )
     .await;
 
-    let resp = reqwest::get(format!("http://{addr}/api/echo?x=1")).await.unwrap();
+    let resp = reqwest::get(format!("http://{addr}/api/echo?x=1"))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(
-        resp.headers().get("x-zfb-plugin").and_then(|h| h.to_str().ok()),
+        resp.headers()
+            .get("x-zfb-plugin")
+            .and_then(|h| h.to_str().ok()),
         Some("ok"),
     );
-    let ct = resp.headers().get("content-type").and_then(|h| h.to_str().ok());
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok());
     assert_eq!(ct, Some("application/json"));
     let body = resp.text().await.unwrap();
     assert!(body.contains("/api/echo?x=1"), "body: {body}");
@@ -200,7 +214,9 @@ async fn dev_middleware_unregistered_path_skips_dispatch() {
 
     // No registered prefix matches `/different` — the dispatcher must
     // never be called, and the server returns the dev-mode 404.
-    let resp = reqwest::get(format!("http://{addr}/different")).await.unwrap();
+    let resp = reqwest::get(format!("http://{addr}/different"))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 404);
     assert_eq!(dispatcher.invocations.load(Ordering::SeqCst), 0);
 
@@ -271,7 +287,11 @@ async fn dev_middleware_handles_put_and_delete() {
     .await;
 
     let client = reqwest::Client::new();
-    for method in [reqwest::Method::PUT, reqwest::Method::DELETE, reqwest::Method::PATCH] {
+    for method in [
+        reqwest::Method::PUT,
+        reqwest::Method::DELETE,
+        reqwest::Method::PATCH,
+    ] {
         let resp = client
             .request(method.clone(), format!("http://{addr}/api/echo"))
             .send()
@@ -384,7 +404,11 @@ impl DevMiddlewareDispatcher for AlwaysFailingDispatcher {
 
 async fn boot_with_failing_dispatcher(
     mode: zfb_server::ServerMode,
-) -> (SocketAddr, tokio::task::JoinHandle<anyhow::Result<()>>, tempfile::TempDir) {
+) -> (
+    SocketAddr,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tempfile::TempDir,
+) {
     let tmp = tempfile::tempdir().unwrap();
     let dist_root = tmp.path().join("dist");
     let public_root = tmp.path().join("public");
@@ -392,7 +416,9 @@ async fn boot_with_failing_dispatcher(
     std::fs::create_dir_all(&public_root).unwrap();
 
     let (tx, _rx) = broadcast::channel::<ReloadEvent>(8);
-    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await.unwrap();
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .unwrap();
     let addr = listener.local_addr().unwrap();
 
     let plugin_set = DevMiddlewareSet {
@@ -433,10 +459,11 @@ async fn boot_with_failing_dispatcher(
 /// contains the underlying error message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plugin_error_body_is_verbose_in_dev_mode() {
-    let (addr, server, _tmp) =
-        boot_with_failing_dispatcher(zfb_server::ServerMode::Dev).await;
+    let (addr, server, _tmp) = boot_with_failing_dispatcher(zfb_server::ServerMode::Dev).await;
 
-    let resp = reqwest::get(format!("http://{addr}/api/fail")).await.unwrap();
+    let resp = reqwest::get(format!("http://{addr}/api/fail"))
+        .await
+        .unwrap();
     assert_eq!(resp.status().as_u16(), 500);
     let body = resp.text().await.unwrap();
     assert!(
@@ -451,10 +478,11 @@ async fn plugin_error_body_is_verbose_in_dev_mode() {
 /// generic body — the plugin/internal detail must not leak to the client.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plugin_error_body_is_generic_in_preview_mode() {
-    let (addr, server, _tmp) =
-        boot_with_failing_dispatcher(zfb_server::ServerMode::Preview).await;
+    let (addr, server, _tmp) = boot_with_failing_dispatcher(zfb_server::ServerMode::Preview).await;
 
-    let resp = reqwest::get(format!("http://{addr}/api/fail")).await.unwrap();
+    let resp = reqwest::get(format!("http://{addr}/api/fail"))
+        .await
+        .unwrap();
     assert_eq!(resp.status().as_u16(), 500);
     let body = resp.text().await.unwrap();
     assert!(

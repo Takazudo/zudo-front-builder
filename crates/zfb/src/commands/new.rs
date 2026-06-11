@@ -192,7 +192,9 @@ fn validate_project_name(name: &str) -> anyhow::Result<()> {
     }
     let path = Path::new(name);
     if path.is_absolute() {
-        anyhow::bail!("project name '{name}' must be a relative directory name, not an absolute path");
+        anyhow::bail!(
+            "project name '{name}' must be a relative directory name, not an absolute path"
+        );
     }
     if path
         .components()
@@ -206,7 +208,11 @@ fn validate_project_name(name: &str) -> anyhow::Result<()> {
 fn available_templates() -> Vec<String> {
     TEMPLATES
         .dirs()
-        .filter_map(|d| d.path().file_name().map(|n| n.to_string_lossy().into_owned()))
+        .filter_map(|d| {
+            d.path()
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
         .collect()
 }
 
@@ -360,7 +366,15 @@ mod tests {
         assert!(validate_project_name("My_Site.v2").is_ok());
 
         // Rejected shapes — path traversal, separators, absolute paths.
-        for bad in ["", ".", "..", "../evil", "foo/bar", "foo\\bar", "/etc/passwd"] {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../evil",
+            "foo/bar",
+            "foo\\bar",
+            "/etc/passwd",
+        ] {
             assert!(
                 validate_project_name(bad).is_err(),
                 "expected '{bad}' to be rejected"
@@ -481,7 +495,10 @@ mod tests {
         let expected_version =
             option_env!("ZFB_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
         let ph = workspace_dep_placeholder();
-        assert!(ph.starts_with('='), "placeholder must be an exact pin: {ph}");
+        assert!(
+            ph.starts_with('='),
+            "placeholder must be an exact pin: {ph}"
+        );
         assert_eq!(ph, format!("={expected_version}"));
     }
 
@@ -581,12 +598,18 @@ mod tests {
 
         // Check for README.md.
         let readme = dir.get_file("node-free/README.md");
-        assert!(readme.is_some(), "node-free template must contain README.md");
+        assert!(
+            readme.is_some(),
+            "node-free template must contain README.md"
+        );
 
         // Check for at least one .tsx page (using known paths since
         // include_dir's Dir::files() is non-recursive).
         let has_tsx_page = dir.get_file("node-free/pages/index.tsx").is_some();
-        assert!(has_tsx_page, "node-free template must contain pages/index.tsx");
+        assert!(
+            has_tsx_page,
+            "node-free template must contain pages/index.tsx"
+        );
 
         // Content collections work under the embedded V8 host (the
         // snapshot is baked into the bundle, so `getCollection` resolves
@@ -677,9 +700,15 @@ mod tests {
 
         // At least one .tsx page must be present somewhere under pages/.
         let pages_dir = dest.join("pages");
-        assert!(pages_dir.exists(), "scaffolded site must have a pages/ directory");
+        assert!(
+            pages_dir.exists(),
+            "scaffolded site must have a pages/ directory"
+        );
         let has_tsx = walkdir_has_extension(&pages_dir, "tsx");
-        assert!(has_tsx, "scaffolded pages/ must contain at least one .tsx file");
+        assert!(
+            has_tsx,
+            "scaffolded pages/ must contain at least one .tsx file"
+        );
 
         // content/ ships with the template now — getCollection() resolves
         // from the in-bundle snapshot under the embedded V8 host, so the
