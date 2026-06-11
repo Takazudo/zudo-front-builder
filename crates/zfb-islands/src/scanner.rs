@@ -44,11 +44,18 @@
 //!
 //! - `export function Foo() {}` → `"Foo"`
 //! - `export class Foo {}` → `"Foo"`
-//! - `export const Foo = …` (and `let` / `var`) → `"Foo"`
-//! - `export default …` → the literal string `"default"`
-//! - `export { A, B as C }` → `"A"`, `"C"`
-//! - `export * as ns from "./mod"` → `"ns"`
+//! - `export const Foo = …` (and `let` / `var`) → `"Foo"` when the
+//!   initialiser is component-plausible (function/arrow/call/tagged
+//!   template/identifier/…); a clearly-non-component literal value is
+//!   dropped (issue #998).
+//! - `export default …` → the literal string `"default"` (a
+//!   clearly-non-component literal default is dropped, issue #998)
+//! - `export { A, B as C }` → `"A"`, `"C"` (a local re-export resolving
+//!   to a clearly-non-component binding is dropped, issue #998)
 //! - `export d from "./mod"` (rare) → `"d"`
+//!
+//! `export * as ns from "./mod"` is NOT registered: a module-namespace
+//! object is never a mountable component (issue #998).
 //!
 //! The pair `(source_path, component_name)` is the stable identity used
 //! for dedup and ordering. Re-exports without a local declaration of the
@@ -347,6 +354,21 @@ impl FsResolver {
         true
     }
 
+    /// True when `dir` has any `node_modules` path component — i.e. the
+    /// importer is itself inside an installed package's tree.
+    ///
+    /// Used to scope the regular-npm-package descent (issue #999): a bare
+    /// import made from inside a package's dist must NOT crawl into OTHER
+    /// packages (no framework dependency-graph walk), so only project-source
+    /// imports (importer outside `node_modules`) are allowed to enter a
+    /// regular npm package. Mirrors the `node_modules`-segment heuristic
+    /// [`Self::is_workspace_package`] already uses.
+    fn is_inside_node_modules(dir: &Path) -> bool {
+        dir.components().any(|comp| {
+            matches!(comp, Component::Normal(name) if name == std::ffi::OsStr::new("node_modules"))
+        })
+    }
+
     /// Split a bare specifier into `(package, subpath)` where the
     /// package portion is the name pnpm resolves under `node_modules/`
     /// (`pkg` or `@scope/pkg`) and the subpath is the rest of the
@@ -386,18 +408,35 @@ impl FsResolver {
     /// entries (`*` wildcards) are intentionally not handled here.
     ///
     /// Bare-package imports (no subpath) read `package.json` and try
-    /// `source` (the convention pnpm-workspace TypeScript packages use
-    /// for un-built sources), then `module`, then `main`. If
-    /// `package.json` is missing or doesn't point at a scannable file,
-    /// fall back to probing `src/index.<ext>` and `index.<ext>` inside
+    /// `exports["."]` first, then `source` (the convention pnpm-workspace
+    /// TypeScript packages use for un-built sources), then `module`, then
+    /// `main`. If `package.json` is missing or doesn't point at a scannable
+    /// file, fall back to probing `src/index.<ext>` and `index.<ext>` inside
     /// the package root — both common shapes for un-built workspace
     /// packages.
+    ///
+    /// **`exports` encapsulation gate** (`is_workspace = false`): Node treats
+    /// a package declaring `exports` as encapsulated — `main`/`module`/
+    /// top-level files are unreachable, and only the conditions listed in
+    /// `exports` resolve. So when a REGULAR npm package has an `exports`
+    /// field that yields no usable ESM target (e.g. a require-only CJS map),
+    /// it is inert to this ESM-only scanner: the `source`/`module`/`main`
+    /// and conventional `src/index`/`index` fallbacks are skipped, so a
+    /// stray top-level `index.js` the `exports` gate forbids is never scanned
+    /// (issue #999 require-only CJS hole). Workspace packages
+    /// (`is_workspace = true`) keep the fallback — their un-built TS source
+    /// commonly predates / omits an `exports` map.
     ///
     /// All resolved paths are clamped to live inside `pkg_dir` (after
     /// canonicalisation): a malicious `package.json` with
     /// `"source": "../../etc/passwd"` cannot punch out of the package
     /// directory.
-    fn probe_package_entry(&self, pkg_dir: &Path, subpath: &str) -> Option<PathBuf> {
+    fn probe_package_entry(
+        &self,
+        pkg_dir: &Path,
+        subpath: &str,
+        is_workspace: bool,
+    ) -> Option<PathBuf> {
         // Canonicalise once for clamp comparisons; if the package dir
         // can't be canonicalised (e.g. doesn't exist), fall back to the
         // raw path — the probe's `is_file()` checks will then fail
@@ -437,10 +476,30 @@ impl FsResolver {
             return None;
         }
 
-        // 1) package.json hints — read once, try fields in priority order.
+        // 1) package.json hints — read once, try in priority order.
         let pkg_json_path = pkg_dir.join("package.json");
         if let Ok(text) = std::fs::read_to_string(&pkg_json_path) {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                // `exports["."]` first: modern packages (e.g. a published
+                // `"type": "module"` dist with no `main`/`module`) expose
+                // their entry only through the `exports` map, and Node
+                // ignores `main` entirely once `exports` is present. This
+                // is the shape `@takazudo/zudo-doc` ships (issue #999).
+                if let Some(target) = resolve_exports_dot(&value) {
+                    let candidate = pkg_dir.join(&target);
+                    if let Some(found) = probe_dir_or_file(candidate) {
+                        return Some(found);
+                    }
+                } else if !is_workspace && value.get("exports").is_some() {
+                    // `exports` present on a REGULAR npm package but no usable
+                    // ESM target: Node treats `exports` as an encapsulation
+                    // boundary, so `main`/`module`/top-level files are
+                    // unreachable. Bail out WITHOUT the conventional probe
+                    // below, which would otherwise scan a stray top-level
+                    // `index.js` the `exports` gate forbids (issue #999
+                    // require-only CJS hole). Workspace packages fall through.
+                    return None;
+                }
                 for field in ["source", "module", "main"] {
                     if let Some(rel) = value.get(field).and_then(|v| v.as_str()) {
                         let candidate = pkg_dir.join(rel);
@@ -753,6 +812,50 @@ fn resolve_exports_subpath(pkg_json: &serde_json::Value, subpath: &str) -> Optio
     flatten_exports_entry(entry)
 }
 
+/// Resolve the top-level package entry (`import "@scope/pkg"`, no subpath)
+/// from a parsed `package.json` `exports` field. Returns the redirected
+/// on-disk relative path, if any.
+///
+/// Handles the three `exports` shapes a top-level entry can take:
+///
+/// - **Shorthand string / array** — `"exports": "./index.js"` or
+///   `["./a.js", "./b.js"]` — flattened directly (first usable string).
+/// - **Subpath map** — `{ ".": <entry>, "./sub": … }` — the `"."` entry is
+///   flattened. A subpath map with no explicit `"."` key has no top-level
+///   entry, so `None` is returned (the caller falls back to
+///   `module`/`main`).
+/// - **Dot-condition object** — `{ "import": "…", "default": "…" }` with no
+///   `"./"`-prefixed keys — the whole object IS the dot export's condition
+///   set, flattened in the usual `source → default → import` priority.
+///
+/// Conditional flattening (and the `module`/`require`/`types` conditions it
+/// intentionally skips) is shared with [`flatten_exports_entry`]; see its
+/// docs. This is the `"."` analogue of [`resolve_exports_subpath`], added
+/// for issue #999 (npm dist packages that expose their entry only through
+/// `exports`, with no `main`/`module`).
+fn resolve_exports_dot(pkg_json: &serde_json::Value) -> Option<String> {
+    let exports = pkg_json.get("exports")?;
+    match exports {
+        serde_json::Value::String(_) | serde_json::Value::Array(_) => {
+            flatten_exports_entry(exports)
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(dot) = map.get(".") {
+                flatten_exports_entry(dot)
+            } else if map.keys().any(|k| k.starts_with("./")) {
+                // A subpath map without an explicit "." entry: no
+                // top-level export. Fall back to `module`/`main`.
+                None
+            } else {
+                // No "./"-prefixed keys: the object is the dot export's
+                // condition set (e.g. `{ "import": …, "default": … }`).
+                flatten_exports_entry(exports)
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Recursively pick a target string out of an `exports` entry value.
 ///
 /// Plain strings are returned verbatim; conditional objects are
@@ -764,7 +867,18 @@ fn flatten_exports_entry(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Object(_) => {
-            for cond in ["source", "default", "import"] {
+            // Priority: `source` (un-built TS workspace source) → `module`
+            // / `default` (ESM dist) → `import` (ESM entry condition).
+            // `require`/`types`/`node` are intentionally skipped — we only
+            // scan ESM source. `default` is kept ahead of `import` to
+            // preserve the pre-#999 contract (see the
+            // `resolve_exports_subpath_prefers_*` tests).
+            // NOTE: Node resolves `exports` conditions in the order the
+            // package author writes them; this scanner deliberately imposes a
+            // fixed ESM-only priority instead — pinning `module` ahead of
+            // `default` — diverging from Node's author-controlled
+            // condition-order semantics.
+            for cond in ["source", "module", "default", "import"] {
                 if let Some(inner) = value.get(cond) {
                     if let Some(found) = flatten_exports_entry(inner) {
                         return Some(found);
@@ -857,21 +971,32 @@ impl Resolver for FsResolver {
             // work; failing the probe also means we skip them silently.
             let (pkg_name, subpath) = Self::split_bare_specifier(specifier);
             let pkg_dir = Self::locate_node_modules_pkg(importer_dir, &pkg_name)?;
-            // Only descend into bare specifiers that resolve to
-            // pnpm-workspace packages. Real installed dependencies
-            // (`preact`, `react`, `zfb-runtime`, …) live behind a
-            // symlink whose canonical target is itself inside
-            // `node_modules/.pnpm/`, so they fail this check and the
-            // scanner skips them silently — matching the pre-#122
-            // behaviour for non-workspace imports. See codex-review on
-            // PR #125: probing every bare specifier turned every
-            // `import "preact/hooks"` into a transitive scan of the
-            // installed framework on every build.
-            if !Self::is_workspace_package(&pkg_dir) {
+            // Descent policy for bare specifiers:
+            //
+            // - **pnpm-workspace packages** (a symlink at
+            //   `node_modules/<pkg>` whose canonical target lives OUTSIDE
+            //   `node_modules/`) are always entered — un-built TS source
+            //   carries `"use client"` islands.
+            // - **Regular npm packages** (the symlink resolves into
+            //   `node_modules/.pnpm/…`, or a plain installed dir) are entered
+            //   ONLY when the importer is NOT itself inside `node_modules` —
+            //   i.e. a page/component in project (or workspace-package)
+            //   source reaching a dist-shipped `"use client"` module
+            //   directly, or through the package's own relative-import
+            //   barrels.
+            //
+            // Hard invariant: a bare import made from INSIDE `node_modules`
+            // — one package's dist reaching for `preact`,
+            // `@takazudo/zfb-runtime`, another `@scope/pkg`, … — is NEVER
+            // followed. The scan never walks the transitive framework
+            // dependency graph; once inside a regular package only its own
+            // RELATIVE-import closure is traversed.
+            let is_workspace = Self::is_workspace_package(&pkg_dir);
+            if !is_workspace && Self::is_inside_node_modules(importer_dir) {
                 return None;
             }
             return self
-                .probe_package_entry(&pkg_dir, &subpath)
+                .probe_package_entry(&pkg_dir, &subpath, is_workspace)
                 .map(canonicalize);
         }
 
@@ -1650,6 +1775,80 @@ struct IslandRecord {
     marker_name: String,
 }
 
+/// Return `true` when an initialiser expression is *clearly* a
+/// non-component value that must NOT be registered as a mountable island
+/// (issue #998).
+///
+/// The rule is deliberately CONSERVATIVE — it drops only shapes that can
+/// never be a component:
+///
+/// - primitive/literal values (`'foo'`, `42`, `true`, `null`, `/re/`, `1n`)
+/// - untagged template strings (`` `foo${x}` ``)
+/// - array literals
+/// - object literals
+///
+/// Everything else is treated as component-plausible and KEPT: function
+/// expressions, arrow functions, ANY call expression (`memo(...)`,
+/// `forwardRef(...)`, `lazy(...)`, `styled(...)`, `connect(...)(...)` — no
+/// callee whitelist), tagged templates (`` styled.div`…` `` parse as
+/// `Expr::TaggedTpl`, distinct from `Expr::Tpl`), bare identifiers,
+/// conditional expressions, `as`-casts / `satisfies`, member access, and
+/// anything else. When in doubt, keep.
+///
+/// `export const SIDEBAR_STORAGE_KEY = 'zudo-doc-sidebar-visible'` — the
+/// repro from #998 — is a string literal and gets dropped here.
+fn init_is_clearly_non_component(init: &Expr) -> bool {
+    match init {
+        Expr::Lit(_) | Expr::Tpl(_) | Expr::Array(_) | Expr::Object(_) => true,
+        // Peel a redundant wrapping paren and re-test. TS casts
+        // (`x as T`, `x satisfies T`, `x!`) are intentionally NOT peeled:
+        // the spec treats them as ambiguous and keeps them.
+        Expr::Paren(p) => init_is_clearly_non_component(&p.expr),
+        _ => false,
+    }
+}
+
+/// `true` when a single `const`/`let`/`var` declarator's initialiser is a
+/// clearly-non-component value. A declarator with no initialiser
+/// (`let Foo;`) is ambiguous → kept.
+fn var_declarator_is_clearly_non_component(d: &VarDeclarator) -> bool {
+    match d.init.as_ref() {
+        Some(init) => init_is_clearly_non_component(init),
+        None => false,
+    }
+}
+
+/// Collect the names of module-local `const`/`let`/`var` bindings whose
+/// initialiser is a clearly-non-component value (see
+/// [`init_is_clearly_non_component`]).
+///
+/// Used to drop *local* named re-exports — `const KEY = 'x'; export { KEY }`
+/// — that resolve to a non-component binding (issue #998). Bindings that
+/// are functions, classes, component-shaped initialisers, OR imported from
+/// another module are absent from this set, so a re-export of such a
+/// binding stays registered (resolving cross-module re-exports is out of
+/// scope; those are kept permissively).
+fn collect_non_component_local_bindings(module: &Module) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    for item in &module.body {
+        let decl = match item {
+            ModuleItem::Stmt(Stmt::Decl(decl)) => decl,
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ed)) => &ed.decl,
+            _ => continue,
+        };
+        if let Decl::Var(v) = decl {
+            for d in &v.decls {
+                if let Pat::Ident(bi) = &d.name {
+                    if var_declarator_is_clearly_non_component(d) {
+                        out.insert(bi.id.sym.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Walk the module's exports and pair each one with its SSR-marker name.
 ///
 /// The marker name is what the SSR side will write into the
@@ -1682,12 +1881,30 @@ struct IslandRecord {
 /// When found, the literal first-argument string overrides the
 /// rule-based `marker_name` so the manifest key matches
 /// `data-zfb-island-skip-ssr="X"` rather than the wrapper's identifier.
+///
+/// ## Component filtering (issue #998)
+///
+/// Clearly-non-component exports are dropped so they never become
+/// mountable-island registry entries — a string/number/object/array
+/// literal export of a `"use client"` module (e.g.
+/// `export const SIDEBAR_STORAGE_KEY = 'zudo-doc-sidebar-visible'`) is not
+/// a component. The filter is conservative (see
+/// [`init_is_clearly_non_component`]): only literal-shaped values, untagged
+/// template strings, `export * as ns from "…"` namespace re-exports, and
+/// local re-exports resolving to such values are dropped; everything
+/// ambiguous is kept. Re-exports from another module
+/// (`export { Foo } from "./x"`) are kept permissively.
 fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
     // 1. Build a side-table of `local_ident -> renderSsrSkipPlaceholder
     //    first-arg literal` for every function/variable declaration in
     //    the module body. Used below to override marker_name on the
     //    matching exported declaration.
     let body_markers = collect_body_markers(module);
+
+    // Names of module-local bindings whose value is clearly a
+    // non-component (issue #998) so local named re-exports of them can be
+    // dropped below.
+    let non_component_locals = collect_non_component_local_bindings(module);
 
     let mut out: Vec<IslandRecord> = Vec::new();
     for item in &module.body {
@@ -1721,6 +1938,12 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                 Decl::Var(v) => {
                     for d in &v.decls {
                         if let Pat::Ident(bi) = &d.name {
+                            // Issue #998: drop clearly-non-component exports
+                            // (`export const KEY = 'x'`) so a string / number /
+                            // object literal never becomes a mountable island.
+                            if var_declarator_is_clearly_non_component(d) {
+                                continue;
+                            }
                             let name = bi.id.sym.to_string();
                             let marker_from_init = marker_from_var_initialiser(d);
                             let marker = marker_from_init
@@ -1766,6 +1989,11 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                 }
             },
             ModuleDecl::ExportDefaultExpr(ee) => {
+                // Issue #998: `export default 'foo'` / `export default { … }`
+                // — a clearly-non-component default is not a mountable island.
+                if init_is_clearly_non_component(&ee.expr) {
+                    continue;
+                }
                 // `export default <expr>` — try to recover an identifier
                 // from common shapes (`export default Foo`,
                 // `export default forwardRef(Foo)`). Otherwise fall back
@@ -1797,6 +2025,16 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                             // `n.orig` — that's what the body-marker
                             // table is keyed on.
                             let local = module_export_name(&n.orig);
+                            // Issue #998: a *local* named re-export whose
+                            // binding resolves to a clearly-non-component
+                            // value (`const KEY = 'x'; export { KEY }`) must
+                            // not be registered. Re-exports from another
+                            // module (`export { Foo } from './x'`) carry a
+                            // `src` and are kept permissively — resolving the
+                            // other module is out of scope.
+                            if named.src.is_none() && non_component_locals.contains(&local) {
+                                continue;
+                            }
                             let marker = body_markers.get(&local).cloned().unwrap_or_else(|| {
                                 // `export { Foo as default }` — the exported alias
                                 // is "default" but the SSR side uses
@@ -1821,12 +2059,11 @@ fn exported_island_records(module: &Module) -> Vec<IslandRecord> {
                                 marker_name: name,
                             });
                         }
-                        ExportSpecifier::Namespace(n) => {
-                            let name = module_export_name(&n.name);
-                            out.push(IslandRecord {
-                                component_name: name.clone(),
-                                marker_name: name,
-                            });
+                        ExportSpecifier::Namespace(_n) => {
+                            // Issue #998: `export * as ns from "…"` binds a
+                            // module-namespace object, which is never a
+                            // mountable component — drop it.
+                            continue;
                         }
                     }
                 }
@@ -2692,13 +2929,16 @@ mod tests {
         let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
         let names: Vec<String> = islands.iter().map(|i| i.component_name.clone()).collect();
         // Sorted lexicographically by component name for the same source
-        // path: Bar, Foo, Qux, RenamedBaz, default.
+        // path: Bar, Foo, RenamedBaz, default.
+        //
+        // Issue #998: `export const Qux = 1` is a number-literal export —
+        // never a component — and is now dropped from the registry rather
+        // than registered as a mountable island.
         assert_eq!(
             names,
             vec![
                 "Bar".to_string(),
                 "Foo".to_string(),
-                "Qux".to_string(),
                 "RenamedBaz".to_string(),
                 "default".to_string(),
             ]
@@ -3834,6 +4074,34 @@ mod tests {
     }
 
     #[test]
+    fn resolve_exports_subpath_prefers_module_over_default() {
+        // `module` is pinned ahead of `default` regardless of the order the
+        // author writes the conditions — here `default` is written FIRST yet
+        // the `module` target must win. This intentionally diverges from
+        // Node's author-controlled condition-order semantics (ESM-only
+        // scanner; see `flatten_exports_entry`).
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "./a": { "default": "D", "module": "M" } } }"#)
+                .unwrap();
+        assert_eq!(resolve_exports_subpath(&json, "a"), Some("M".to_string()));
+    }
+
+    #[test]
+    fn resolve_exports_dot_prefers_module_over_default() {
+        // Same `module`-over-`default` precedence through the `"."` path —
+        // `default` written first, `module` still wins.
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { ".": { "default": "D", "module": "M" } } }"#)
+                .unwrap();
+        assert_eq!(resolve_exports_dot(&json), Some("M".to_string()));
+
+        // And via the dot-condition-object shorthand (no `"./"` keys).
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "default": "D", "module": "M" } }"#).unwrap();
+        assert_eq!(resolve_exports_dot(&json), Some("M".to_string()));
+    }
+
+    #[test]
     fn resolve_exports_subpath_returns_none_when_key_missing() {
         let json: serde_json::Value =
             serde_json::from_str(r#"{ "exports": { "./other": "./other.ts" } }"#).unwrap();
@@ -3844,6 +4112,68 @@ mod tests {
     fn resolve_exports_subpath_returns_none_when_no_exports_field() {
         let json: serde_json::Value = serde_json::from_str(r#"{ "name": "foo" }"#).unwrap();
         assert_eq!(resolve_exports_subpath(&json, "anything"), None);
+    }
+
+    #[test]
+    fn resolve_exports_dot_reads_subpath_map_dot_entry() {
+        // The real `@takazudo/zudo-doc` shape: a subpath map whose "."
+        // entry is a `{ types, default }` conditional object.
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{ "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+                              "./sub": { "default": "./dist/sub/index.js" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_exports_dot(&json),
+            Some("./dist/index.js".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_exports_dot_handles_shorthand_string_and_array() {
+        let string_form: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": "./index.js" }"#).unwrap();
+        assert_eq!(
+            resolve_exports_dot(&string_form),
+            Some("./index.js".to_string())
+        );
+
+        let array_form: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": ["./index.mjs", "./index.js"] }"#).unwrap();
+        assert_eq!(
+            resolve_exports_dot(&array_form),
+            Some("./index.mjs".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_exports_dot_handles_dot_condition_object_without_subpath_keys() {
+        // `{ "import": …, "default": … }` with no "./"-prefixed keys IS the
+        // dot export's condition set — flatten it directly.
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{ "exports": { "import": "./esm/index.js", "require": "./cjs/index.cjs" } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_exports_dot(&json),
+            Some("./esm/index.js".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_exports_dot_returns_none_for_subpath_map_without_dot() {
+        // A subpath map that does not declare "." has no top-level entry —
+        // the caller falls back to `module`/`main`.
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "./sub": "./dist/sub.js" } }"#).unwrap();
+        assert_eq!(resolve_exports_dot(&json), None);
+    }
+
+    #[test]
+    fn resolve_exports_dot_returns_none_when_no_exports_field() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "name": "foo", "main": "./index.js" }"#).unwrap();
+        assert_eq!(resolve_exports_dot(&json), None);
     }
 
     /// Hostile `package.json` `"source": "../../escape.tsx"` must NOT
@@ -3965,23 +4295,28 @@ mod tests {
         assert_eq!(plain_sub, ("preact".to_string(), "hooks".to_string()));
     }
 
-    /// Headline regression test for codex-review on PR #125: a project
-    /// with both a real `node_modules/preact` (a regular installed
-    /// dependency, NOT a symlink to a workspace) AND a workspace
-    /// package linked under `node_modules/@scope/pkg` must
-    /// (a) discover the workspace package's `"use client"` islands
-    ///     via the bare-specifier probe, and
-    /// (b) NOT descend into preact's transitive imports — every
-    ///     framework import (`preact`, `preact/hooks`, `react`, …)
-    ///     stops at the resolver and ships zero islands of its own.
+    /// Headline regression test descended from codex-review on PR #125,
+    /// updated for issue #999. A project with a real `node_modules/preact`
+    /// (a regular installed dependency, NOT a workspace symlink) AND a
+    /// workspace package linked under `node_modules/<pkg>` must:
     ///
-    /// Before the fix, scan_islands probed every bare specifier, so
-    /// `import { useState } from "preact/hooks"` walked into
-    /// node_modules/preact on every build. The new check requires a
-    /// workspace symlink shape before descending.
+    /// (a) discover the workspace package's `"use client"` islands via the
+    ///     bare-specifier probe, and
+    /// (b) NOT crawl the framework's transitive *bare-dependency* graph —
+    ///     a `preact/hooks` module that pulls preact core via a bare
+    ///     `import "preact"` must stop at that bare import, so an island
+    ///     hiding in preact core never surfaces.
+    ///
+    /// #999 changed the rule: a bare import *from project source* now does
+    /// enter a regular npm package (that is how npm-dist islands get
+    /// registered), so the directly-imported `preact/hooks` module IS
+    /// scanned — but because it carries no directive it contributes no
+    /// island, and its own bare `import "preact"` (made from INSIDE
+    /// `node_modules`) is not followed. The net effect is unchanged from
+    /// the #125 guarantee: the framework's dependency graph is never walked.
     #[cfg(unix)]
     #[test]
-    fn fs_resolver_skips_real_node_modules_pkg_but_descends_into_workspace_link() {
+    fn fs_resolver_enters_pkg_from_project_source_but_never_crawls_bare_dep_graph() {
         use std::fs;
         let dir = tempfile::tempdir().expect("tempdir");
         let pages = dir.path().join("pages");
@@ -3996,8 +4331,10 @@ mod tests {
             r#"{ "name": "preact", "main": "dist/preact.js" }"#,
         )
         .unwrap();
-        // If the scanner ever descended into preact, this island
-        // would surface — the test asserts it does NOT.
+        // preact CORE carries a sneaky island. It is reachable ONLY via a
+        // bare `import "preact"` made from inside `preact/hooks` (below) —
+        // a bare import from inside node_modules, which the scanner must
+        // NOT follow. The test asserts this island never surfaces.
         fs::write(
             preact_dist.join("preact.js"),
             r#""use client";
@@ -4005,14 +4342,17 @@ mod tests {
             "#,
         )
         .unwrap();
-        // Add a `preact/hooks` subpath entry too — same shape: real
-        // directory, regular dependency. Must be skipped.
+        // The directly-imported `preact/hooks` subpath: a realistic
+        // framework module with NO directive that pulls preact core via a
+        // bare specifier. It IS scanned now (project source imports it),
+        // but contributes no island, and its bare `import "preact"` is the
+        // edge that must not be crawled.
         let preact_hooks = preact.join("hooks");
         fs::create_dir_all(&preact_hooks).unwrap();
         fs::write(
             preact_hooks.join("index.js"),
-            r#""use client";
-            export function HooksSneakIn() {}
+            r#"import { options } from "preact";
+            export function useState() {}
             "#,
         )
         .unwrap();
@@ -4051,13 +4391,155 @@ mod tests {
 
         let resolver = FsResolver::new();
         let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
-        // Only the workspace island surfaces — preact must NOT be
-        // descended into despite living on disk.
+        // Only the workspace island surfaces. `preact/hooks` is scanned
+        // (no island) but its bare `import "preact"` is not followed, so
+        // `PreactSneaksIn` in preact core never appears.
         let names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
         assert_eq!(
             names,
             vec!["WorkspaceCounter"],
-            "expected only the workspace island; preact must be skipped: {islands:?}",
+            "expected only the workspace island; preact core must not be crawled: {islands:?}",
+        );
+    }
+
+    /// #999: `exports["."]` must take precedence over the legacy `main`
+    /// field for a top-level (`import "@scope/pkg"`) regular-package entry —
+    /// Node ignores `main` once `exports` is present, and the real
+    /// `@takazudo/zudo-doc` ships only `exports`. Pin that `exports` wins
+    /// when BOTH are present, so a future reorder of the two probe blocks
+    /// is caught.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_prefers_exports_dot_over_main_for_regular_package() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // Regular npm package (a real directory under node_modules) with
+        // BOTH `exports["."]` and `main` — pointing at DIFFERENT files,
+        // each carrying a distinct island.
+        let pkg = root.join("node_modules").join("@acme").join("widgets");
+        fs::create_dir_all(pkg.join("esm")).unwrap();
+        fs::create_dir_all(pkg.join("legacy")).unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{ "name": "@acme/widgets", "type": "module",
+                "main": "./legacy/index.js",
+                "exports": { ".": { "default": "./esm/index.js" } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("esm/index.js"),
+            "\"use client\";\nexport function FromExports() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("legacy/index.js"),
+            "\"use client\";\nexport function FromMain() {}\n",
+        )
+        .unwrap();
+
+        let pages = root.join("pages");
+        fs::create_dir_all(&pages).unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            "import { FromExports } from \"@acme/widgets\";\nexport default function Home() {}\n",
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        let names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["FromExports"],
+            "exports[\".\"] must win over main: {islands:?}",
+        );
+    }
+
+    /// #999 boundary invariant, from a WORKSPACE-package importer: even
+    /// though a workspace package's source lives outside `node_modules` (so
+    /// the regular-package descent relaxation applies to its bare imports
+    /// too — see the `resolve` policy comment), the hard guarantee still
+    /// holds: a bare import made from INSIDE a regular package's dist is
+    /// never followed. So a workspace package importing a regular package
+    /// scans that package's own entry but does NOT crawl the regular
+    /// package's transitive bare-dependency graph. This is the part of the
+    /// PR #125 guarantee that survives #999 unconditionally.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_source_entering_regular_pkg_does_not_crawl_its_bare_dep_graph() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // Workspace package (symlinked into node_modules, source outside it)
+        // whose `"use client"` source imports a regular npm package.
+        let ws = root.join("workspace").join("ws-pkg");
+        let ws_src = ws.join("src");
+        fs::create_dir_all(&ws_src).unwrap();
+        make_workspace_link(&ws, &root.join("node_modules").join("ws-pkg"));
+        fs::write(
+            ws.join("package.json"),
+            r#"{ "name": "ws-pkg", "source": "src/index.tsx" }"#,
+        )
+        .unwrap();
+        fs::write(
+            ws_src.join("index.tsx"),
+            "\"use client\";\nimport { Widget } from \"@acme/widgets\";\nexport function WsIsland() {}\n",
+        )
+        .unwrap();
+
+        // Regular npm package: its entry has an island AND a bare import of
+        // a peer dependency whose own module carries a sneaky island. The
+        // entry's island IS registered (directly imported); the peer's must
+        // NOT be (reached only via a bare import from inside node_modules).
+        let widgets = root.join("node_modules").join("@acme").join("widgets");
+        fs::create_dir_all(widgets.join("dist")).unwrap();
+        fs::write(
+            widgets.join("package.json"),
+            r#"{ "name": "@acme/widgets", "type": "module",
+                "exports": { ".": { "default": "./dist/index.js" } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            widgets.join("dist/index.js"),
+            "\"use client\";\nimport { x } from \"peer-dep\";\nexport function Widget() {}\n",
+        )
+        .unwrap();
+
+        let peer = root.join("node_modules").join("peer-dep");
+        fs::create_dir_all(&peer).unwrap();
+        fs::write(
+            peer.join("package.json"),
+            r#"{ "name": "peer-dep", "type": "module", "exports": { ".": { "default": "./index.js" } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            peer.join("index.js"),
+            "\"use client\";\nexport function PeerSneaksIn() {}\n",
+        )
+        .unwrap();
+
+        let pages = root.join("pages");
+        fs::create_dir_all(&pages).unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            "import { WsIsland } from \"ws-pkg\";\nexport default function Home() {}\n",
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        let mut names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
+        names.sort_unstable();
+        // The workspace island and the directly-imported regular-package
+        // entry island both register; the peer dependency's island, reached
+        // only via a bare import from inside @acme/widgets/dist, must not.
+        assert_eq!(
+            names,
+            vec!["Widget", "WsIsland"],
+            "peer-dep reached via bare import from inside node_modules must not be crawled: {islands:?}",
         );
     }
 
