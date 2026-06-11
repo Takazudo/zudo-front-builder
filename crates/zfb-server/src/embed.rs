@@ -293,6 +293,10 @@ impl Server {
             // enforces this, but `None` keeps the contract explicit.
             css_bundle_url: None,
             host_validation,
+            // Embed callers do not use the render-on-request hook —
+            // it is Dev-only and the hook gate in `serve_page` enforces
+            // this, but `None` keeps the contract explicit.
+            render_on_request_hook: None,
         };
         let router = build_router(state);
         let router = apply_request_extension_layer(router, self.request_extensions);

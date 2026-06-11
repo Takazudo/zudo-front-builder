@@ -1036,6 +1036,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // the server disables enforcement entirely for loopback binds.
         allowed_hosts: cfg.allowed_hosts.clone(),
         bound_host: Some(host.clone()),
+        // Issue #1020: render-on-request hook wired up in a later
+        // sub-issue (the zfb-side lazy DevRenderSession adapter).
+        // Placeholder `None` until that sub-issue lands.
+        render_on_request_hook: None,
     };
 
     // 7. Bind the TCP listener first so the port-in-use error surfaces

@@ -50,6 +50,7 @@ pub mod injected_routes;
 pub mod livereload;
 pub mod middleware;
 pub mod plugin_middleware;
+pub mod render_hook;
 pub mod routes;
 pub mod ssr;
 
@@ -109,6 +110,7 @@ pub use plugin_middleware::{
     PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
     PluginResponseEncoding,
 };
+pub use render_hook::{RenderOnRequestHandle, RenderOnRequestHook};
 pub use routes::{
     build_router, content_type_for_extension, resolve_content_type, AppState, CachedPage,
     PageCache, DEV_404_BODY,
@@ -272,6 +274,24 @@ pub struct ServeOpts {
     /// URL the CLI banner prints never 403s. `None` when the caller has
     /// no user-supplied host string in scope (tests, embed).
     pub bound_host: Option<String>,
+
+    /// Optional render-on-request hook (issue #1020).
+    ///
+    /// When `Some` and the server is in [`crate::ServerMode::Dev`] mode,
+    /// `serve_page` awaits this hook for every GET/HEAD request **before**
+    /// consulting the in-memory page cache and the `html_root` disk read.
+    /// The hook is responsible for making `html_root` fresh as a side
+    /// effect; after it returns the server falls through to the existing
+    /// `PageCache → html_root → public_root` waterfall unchanged.
+    ///
+    /// `None` in Preview, Embed, and all non-Dev modes — no hook fires and
+    /// behaviour is byte-identical to the pre-hook server. `None` is also
+    /// the correct value for the embed builder path (`embed.rs`) and any
+    /// test that does not exercise the hook seam.
+    ///
+    /// See [`crate::render_hook`] for the trait contract and threading
+    /// model.
+    pub render_on_request_hook: Option<crate::render_hook::RenderOnRequestHandle>,
 }
 
 impl ServeOpts {
@@ -371,6 +391,7 @@ where
         islands_bundle_url: opts.islands_bundle_url,
         css_bundle_url: opts.css_bundle_url,
         host_validation,
+        render_on_request_hook: opts.render_on_request_hook,
     };
     let router = build_router(state);
 

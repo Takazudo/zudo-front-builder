@@ -319,6 +319,7 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
         css_bundle_url: None,
         allowed_hosts: Vec::new(),
         bound_host: None,
+        render_on_request_hook: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
@@ -560,6 +561,7 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
         css_bundle_url: None,
         allowed_hosts: Vec::new(),
         bound_host: None,
+        render_on_request_hook: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
@@ -761,6 +763,7 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
         css_bundle_url: None,
         allowed_hosts: Vec::new(),
         bound_host: None,
+        render_on_request_hook: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await

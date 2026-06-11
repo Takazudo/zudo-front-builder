@@ -83,6 +83,7 @@ impl Harness {
             css_bundle_url: None,
             allowed_hosts: Vec::new(),
             bound_host: None,
+            render_on_request_hook: None,
         };
 
         let server = tokio::spawn(async move {
@@ -485,6 +486,7 @@ async fn serve_returns_error_when_port_is_occupied() {
         css_bundle_url: None,
         allowed_hosts: Vec::new(),
         bound_host: None,
+        render_on_request_hook: None,
     };
 
     let result = serve(opts, std::future::ready(())).await;
