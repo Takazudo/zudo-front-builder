@@ -11,6 +11,8 @@
 #   3. Start zfb dev in the background on the default port (3000).
 #   4. Poll until the dev server is ready (no fixed sleeps).
 #   5. Assert HTTP 200 + expected content from the dev server.
+#   5c. Edit content/posts/hello.md in place and poll /posts/hello/ until the
+#       edit marker appears (dev hot-reload assertion, #1022).
 #   6. Kill the dev server and exit cleanly.
 
 set -eu
@@ -177,7 +179,8 @@ pass "dist/legal/index.html contains verbatim HTML body"
 # ── Step 3: Start dev server in the background ───────────────────────────────
 
 printf '==> zfb dev (background, port %d)\n' "$PORT"
-zfb dev --port "$PORT" &
+DEV_LOG=$(mktemp)
+zfb dev --port "$PORT" 2>"$DEV_LOG" &
 DEV_PID=$!
 
 # Register cleanup so the dev server is killed even if assertions below fail.
@@ -185,6 +188,7 @@ cleanup() {
     if kill -0 "$DEV_PID" 2>/dev/null; then
         kill "$DEV_PID"
     fi
+    rm -f "$DEV_LOG"
 }
 trap cleanup EXIT
 
@@ -217,6 +221,41 @@ if ! printf '%s' "$DEV_POST_RESPONSE" | grep -q "$EXPECTED_POST_TITLE"; then
     fail "dev server /posts/hello/ does not contain expected post title: $EXPECTED_POST_TITLE"
 fi
 pass "dev server served dynamic slug /posts/hello/ with expected post title"
+
+# ── Step 5c: Edit content file and assert dev server reflects the change ──────
+# Appends a unique marker to the seed post and polls /posts/hello/ until the
+# marker appears in the response body (proving dev-mode hot-reload reaches the
+# release binary's serve path). The initial curl assertions above guarantee the
+# server is fully up before we touch the file.
+#
+# Poll deadline: 60 s — well within the 6-minute job timeout. Each attempt
+# sleeps 1 s between curl calls; 60 attempts × 1 s = 60 s max.
+
+EDIT_MARKER="smoke-edit-marker-$$"
+printf '==> appending edit marker to content/posts/hello.md\n'
+printf '\n%s\n' "$EDIT_MARKER" >> "${SITE_DIR}/content/posts/hello.md"
+
+printf '==> polling http://localhost:%d/posts/hello/ for edit marker (up to 60s)\n' "$PORT"
+EDIT_DEADLINE=60
+EDIT_ELAPSED=0
+EDIT_FOUND=0
+while [ "$EDIT_ELAPSED" -lt "$EDIT_DEADLINE" ]; do
+    EDIT_RESPONSE=$(curl -fsS --max-time 5 "http://localhost:${PORT}/posts/hello/" 2>/dev/null || true)
+    if printf '%s' "$EDIT_RESPONSE" | grep -q "$EDIT_MARKER"; then
+        EDIT_FOUND=1
+        break
+    fi
+    sleep 1
+    EDIT_ELAPSED=$((EDIT_ELAPSED + 1))
+done
+
+if [ "$EDIT_FOUND" -eq 0 ]; then
+    printf '[FAIL] dev server did not reflect edit marker within %ds\n' "$EDIT_DEADLINE" >&2
+    printf '--- dev stderr (last %d lines) ---\n' "50" >&2
+    tail -n 50 "$DEV_LOG" >&2
+    exit 1
+fi
+pass "dev server reflected content edit (marker appeared after ~${EDIT_ELAPSED}s)"
 
 # cleanup trap kills dev server on exit.
 printf '==> All smoke assertions passed.\n'
