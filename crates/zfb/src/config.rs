@@ -1525,8 +1525,11 @@ async fn output_bounded(
             // forked child holds that fd until its own execve, and our
             // execve of the freshly-written file fails with ETXTBSY. The
             // window is fork-to-exec sized (microseconds) — a short bounded
-            // retry absorbs it. Spawn failed, so nothing has run: re-running
-            // the command is side-effect free.
+            // retry absorbs it. Re-running is side-effect free precisely
+            // because the discriminator guarantees it: `output()` bundles
+            // spawn+wait, but ExecutableFileBusy can only originate from the
+            // execve at spawn time — never from wait_with_output — so a
+            // matching error means the child never ran.
             Ok(Err(e))
                 if e.kind() == std::io::ErrorKind::ExecutableFileBusy
                     && etxtbsy_attempts < ETXTBSY_MAX_RETRIES =>
