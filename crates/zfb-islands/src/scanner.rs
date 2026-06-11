@@ -941,20 +941,35 @@ impl Resolver for FsResolver {
             //   carries `"use client"` islands.
             // - **Regular npm packages** (a published `@scope/pkg`
             //   consumed from npm; the symlink resolves into
-            //   `node_modules/.pnpm/…`) are entered ONLY when the import
-            //   originates from PROJECT SOURCE — i.e. the importer is not
-            //   itself inside `node_modules`. This is the #999 npm-dist
+            //   `node_modules/.pnpm/…`) are entered when the importer is
+            //   NOT itself inside `node_modules`. This is the #999 npm-dist
             //   islands path: a page/component importing a dist-shipped
             //   `"use client"` module (directly, or through the package's
             //   own barrels via relative imports) must register its
-            //   islands. A bare import made from INSIDE a package's dist
-            //   (dist → `preact`, dist → `@takazudo/zfb-runtime`, …) is
-            //   NOT followed, so the scan never crawls the framework
-            //   dependency graph — only the importing package's own
-            //   relative-import closure is walked. This preserves the
-            //   PR #125 guarantee (no transitive `node_modules` walk for
-            //   framework imports) at the package boundary while still
-            //   surfacing islands published in npm dist.
+            //   islands.
+            //
+            // The single hard invariant (the part of the PR #125 guarantee
+            // that still holds unconditionally): a bare import made from
+            // INSIDE `node_modules` — i.e. one regular package's dist
+            // reaching for `preact`, `@takazudo/zfb-runtime`, another
+            // `@scope/pkg`, … — is NEVER followed. So the scan never walks
+            // the *transitive* framework dependency graph; once inside a
+            // regular package only its own RELATIVE-import closure is
+            // traversed.
+            //
+            // What #999 DOES relax vs PR #125: a regular package's directly
+            // imported entry/subpath is now scanned (one parse, plus its
+            // relative closure), even for framework packages like `preact`.
+            // PR #125 skipped these outright. The cost is bounded — no
+            // transitive crawl — and real framework dist carries no
+            // `"use client"`, so no spurious islands are emitted; the
+            // trade is accepting those extra entry parses in exchange for
+            // surfacing islands genuinely published in npm dist. Note this
+            // relaxation also applies when the importer is a *workspace
+            // package's* source (which lives outside `node_modules`), not
+            // only top-level project source — distinguishing the two would
+            // require threading project-root provenance through the
+            // resolver, which is out of scope here.
             if !Self::is_workspace_package(&pkg_dir)
                 && Self::is_inside_node_modules(importer_dir)
             {
@@ -3936,6 +3951,68 @@ mod tests {
         assert_eq!(resolve_exports_subpath(&json, "anything"), None);
     }
 
+    #[test]
+    fn resolve_exports_dot_reads_subpath_map_dot_entry() {
+        // The real `@takazudo/zudo-doc` shape: a subpath map whose "."
+        // entry is a `{ types, default }` conditional object.
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{ "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+                              "./sub": { "default": "./dist/sub/index.js" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_exports_dot(&json),
+            Some("./dist/index.js".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_exports_dot_handles_shorthand_string_and_array() {
+        let string_form: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": "./index.js" }"#).unwrap();
+        assert_eq!(
+            resolve_exports_dot(&string_form),
+            Some("./index.js".to_string())
+        );
+
+        let array_form: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": ["./index.mjs", "./index.js"] }"#).unwrap();
+        assert_eq!(
+            resolve_exports_dot(&array_form),
+            Some("./index.mjs".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_exports_dot_handles_dot_condition_object_without_subpath_keys() {
+        // `{ "import": …, "default": … }` with no "./"-prefixed keys IS the
+        // dot export's condition set — flatten it directly.
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{ "exports": { "import": "./esm/index.js", "require": "./cjs/index.cjs" } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_exports_dot(&json),
+            Some("./esm/index.js".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_exports_dot_returns_none_for_subpath_map_without_dot() {
+        // A subpath map that does not declare "." has no top-level entry —
+        // the caller falls back to `module`/`main`.
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "./sub": "./dist/sub.js" } }"#).unwrap();
+        assert_eq!(resolve_exports_dot(&json), None);
+    }
+
+    #[test]
+    fn resolve_exports_dot_returns_none_when_no_exports_field() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{ "name": "foo", "main": "./index.js" }"#).unwrap();
+        assert_eq!(resolve_exports_dot(&json), None);
+    }
+
     /// Hostile `package.json` `"source": "../../escape.tsx"` must NOT
     /// resolve outside the package directory — the workspace probe
     /// clamps every resolved path inside `node_modules/<pkg>/`.
@@ -4159,6 +4236,147 @@ mod tests {
             names,
             vec!["WorkspaceCounter"],
             "expected only the workspace island; preact core must not be crawled: {islands:?}",
+        );
+    }
+
+    /// #999: `exports["."]` must take precedence over the legacy `main`
+    /// field for a top-level (`import "@scope/pkg"`) regular-package entry —
+    /// Node ignores `main` once `exports` is present, and the real
+    /// `@takazudo/zudo-doc` ships only `exports`. Pin that `exports` wins
+    /// when BOTH are present, so a future reorder of the two probe blocks
+    /// is caught.
+    #[cfg(unix)]
+    #[test]
+    fn fs_resolver_prefers_exports_dot_over_main_for_regular_package() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // Regular npm package (a real directory under node_modules) with
+        // BOTH `exports["."]` and `main` — pointing at DIFFERENT files,
+        // each carrying a distinct island.
+        let pkg = root.join("node_modules").join("@acme").join("widgets");
+        fs::create_dir_all(pkg.join("esm")).unwrap();
+        fs::create_dir_all(pkg.join("legacy")).unwrap();
+        fs::write(
+            pkg.join("package.json"),
+            r#"{ "name": "@acme/widgets", "type": "module",
+                "main": "./legacy/index.js",
+                "exports": { ".": { "default": "./esm/index.js" } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("esm/index.js"),
+            "\"use client\";\nexport function FromExports() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            pkg.join("legacy/index.js"),
+            "\"use client\";\nexport function FromMain() {}\n",
+        )
+        .unwrap();
+
+        let pages = root.join("pages");
+        fs::create_dir_all(&pages).unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            "import { FromExports } from \"@acme/widgets\";\nexport default function Home() {}\n",
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        let names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["FromExports"],
+            "exports[\".\"] must win over main: {islands:?}",
+        );
+    }
+
+    /// #999 boundary invariant, from a WORKSPACE-package importer: even
+    /// though a workspace package's source lives outside `node_modules` (so
+    /// the regular-package descent relaxation applies to its bare imports
+    /// too — see the `resolve` policy comment), the hard guarantee still
+    /// holds: a bare import made from INSIDE a regular package's dist is
+    /// never followed. So a workspace package importing a regular package
+    /// scans that package's own entry but does NOT crawl the regular
+    /// package's transitive bare-dependency graph. This is the part of the
+    /// PR #125 guarantee that survives #999 unconditionally.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_source_entering_regular_pkg_does_not_crawl_its_bare_dep_graph() {
+        use std::fs;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // Workspace package (symlinked into node_modules, source outside it)
+        // whose `"use client"` source imports a regular npm package.
+        let ws = root.join("workspace").join("ws-pkg");
+        let ws_src = ws.join("src");
+        fs::create_dir_all(&ws_src).unwrap();
+        make_workspace_link(&ws, &root.join("node_modules").join("ws-pkg"));
+        fs::write(
+            ws.join("package.json"),
+            r#"{ "name": "ws-pkg", "source": "src/index.tsx" }"#,
+        )
+        .unwrap();
+        fs::write(
+            ws_src.join("index.tsx"),
+            "\"use client\";\nimport { Widget } from \"@acme/widgets\";\nexport function WsIsland() {}\n",
+        )
+        .unwrap();
+
+        // Regular npm package: its entry has an island AND a bare import of
+        // a peer dependency whose own module carries a sneaky island. The
+        // entry's island IS registered (directly imported); the peer's must
+        // NOT be (reached only via a bare import from inside node_modules).
+        let widgets = root.join("node_modules").join("@acme").join("widgets");
+        fs::create_dir_all(widgets.join("dist")).unwrap();
+        fs::write(
+            widgets.join("package.json"),
+            r#"{ "name": "@acme/widgets", "type": "module",
+                "exports": { ".": { "default": "./dist/index.js" } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            widgets.join("dist/index.js"),
+            "\"use client\";\nimport { x } from \"peer-dep\";\nexport function Widget() {}\n",
+        )
+        .unwrap();
+
+        let peer = root.join("node_modules").join("peer-dep");
+        fs::create_dir_all(&peer).unwrap();
+        fs::write(
+            peer.join("package.json"),
+            r#"{ "name": "peer-dep", "type": "module", "exports": { ".": { "default": "./index.js" } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            peer.join("index.js"),
+            "\"use client\";\nexport function PeerSneaksIn() {}\n",
+        )
+        .unwrap();
+
+        let pages = root.join("pages");
+        fs::create_dir_all(&pages).unwrap();
+        fs::write(
+            pages.join("home.tsx"),
+            "import { WsIsland } from \"ws-pkg\";\nexport default function Home() {}\n",
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[pages.join("home.tsx")], &resolver).unwrap();
+        let mut names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
+        names.sort_unstable();
+        // The workspace island and the directly-imported regular-package
+        // entry island both register; the peer dependency's island, reached
+        // only via a bare import from inside @acme/widgets/dist, must not.
+        assert_eq!(
+            names,
+            vec!["Widget", "WsIsland"],
+            "peer-dep reached via bare import from inside node_modules must not be crawled: {islands:?}",
         );
     }
 
