@@ -1602,6 +1602,7 @@ export function mount(props, element, mode) {{
   }}
 }}
 export function unmount(element) {{
+  if (!__zfb_ok) return;
   const root = __zfb_roots.get(element);
   if (root) {{ root.unmount(); __zfb_roots.delete(element); }}
 }}
@@ -1958,6 +1959,11 @@ mod tests {
         assert!(
             src.contains("root.unmount()"),
             "expected root.unmount() call in React unmount: {src}"
+        );
+        // #1002: unmount must carry the same __zfb_ok gate as the Preact arm.
+        assert!(
+            src.contains("export function unmount(element) {\n  if (!__zfb_ok) return;"),
+            "expected __zfb_ok gate in React unmount: {src}"
         );
     }
 
