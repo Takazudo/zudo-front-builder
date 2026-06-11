@@ -341,6 +341,71 @@ fn default_string_literal_export_is_dropped() {
     );
 }
 
+#[test]
+fn parenthesized_literal_const_export_is_dropped() {
+    // Documented spec decision (issue #998): `init_is_clearly_non_component`
+    // peels a redundant wrapping paren (`Expr::Paren`) before classifying,
+    // so `export const K = ("str");` is still recognised as a string literal
+    // and dropped — the paren must not shield a non-component value from the
+    // filter.
+    let resolver = InMemoryResolver::new()
+        .with_file(
+            root().join("pages/home.tsx"),
+            r#"import { Widget } from "../components/paren-literal";
+            export default function Home() { return <Widget/>; }
+            "#,
+        )
+        .with_file(
+            root().join("components/paren-literal.tsx"),
+            r#""use client";
+            export const K = ("str");
+            export function Widget() { return null; }
+            "#,
+        );
+
+    assert_eq!(
+        component_names(&resolver, "components/paren-literal.tsx"),
+        vec!["Widget".to_string()],
+        "a parenthesized string-literal const must be peeled and dropped"
+    );
+}
+
+#[test]
+fn ts_cast_const_exports_are_retained_as_ambiguous() {
+    // Documented spec decision (issue #998): TS casts (`as` / `satisfies` /
+    // non-null `!`) are intentionally NOT peeled by
+    // `init_is_clearly_non_component`. A cast hides the runtime shape, so the
+    // value stays ambiguous and IS registered rather than dropped — even
+    // though the underlying expressions here are object literals, the cast
+    // wrapper keeps them in (mirrors the conservative "keep ambiguous"
+    // policy that retains `memo()` / `forwardRef()` call exports).
+    let resolver = InMemoryResolver::new()
+        .with_file(
+            root().join("pages/home.tsx"),
+            r#"import { AsCast } from "../components/ts-casts";
+            export default function Home() { return <AsCast/>; }
+            "#,
+        )
+        .with_file(
+            root().join("components/ts-casts.tsx"),
+            r#""use client";
+            export const AsCast = ({} as any);
+            export const SatisfiesCast = ({} satisfies unknown);
+            export const NonNullCast = ({})!;
+            "#,
+        );
+
+    assert_eq!(
+        component_names(&resolver, "components/ts-casts.tsx"),
+        vec![
+            "AsCast".to_string(),
+            "NonNullCast".to_string(),
+            "SatisfiesCast".to_string(),
+        ],
+        "TS cast exports must stay ambiguous and be retained (casts are not peeled)"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Generated-source runtime guard
 // ---------------------------------------------------------------------------
