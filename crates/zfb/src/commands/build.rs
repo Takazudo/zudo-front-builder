@@ -1772,6 +1772,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         content_snapshot_json,
         plugin_alias_entries,
         plugin_virtual_modules,
+        // `zfb build` keeps the per-call embedded-esbuild extraction —
+        // one extraction per build; the per-tick reuse (#994 item A) is a
+        // dev-only concern.
+        None,
     )?;
 
     // Snapshot the bundler input before consuming it so the runtime-only

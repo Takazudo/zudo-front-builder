@@ -152,6 +152,16 @@ pub(crate) struct AssembledBundlerInput {
 /// The caller supplies the pre-fetched plugin lists
 /// (`plugin_alias_entries`, `plugin_virtual_modules`) from the plugin
 /// lifecycle setup step ([`super::plugins::run_plugin_setup`]).
+///
+/// `pre_resolved_esbuild` (#994 item A) — an already-extracted embedded
+/// esbuild binary whose backing directory the CALLER keeps alive for at
+/// least as long as the returned [`AssembledBundlerInput`] is in use.
+/// `zfb dev` extracts once at boot and passes it on every tick so the
+/// per-call tempdir extraction below is skipped; `zfb build` passes
+/// `None` and keeps the per-call extraction (one extraction per build is
+/// already process-lifetime there). Ignored when an explicit
+/// `esbuild_binary` or `ZFB_ESBUILD_BIN` override is in play — the
+/// existing precedence is preserved.
 pub(crate) fn assemble_bundler_input(
     project_root: &Path,
     config: &Config,
@@ -160,6 +170,7 @@ pub(crate) fn assemble_bundler_input(
     content_snapshot_json: Option<String>,
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
+    pre_resolved_esbuild: Option<&Path>,
 ) -> Result<AssembledBundlerInput> {
     let mut bundler_input = BundlerInput::for_project(
         project_root.to_path_buf(),
@@ -384,20 +395,32 @@ pub(crate) fn assemble_bundler_input(
     // Skip when an explicit override is in play (input field or env var).
     let _esbuild_handle: Option<tempfile::TempDir>;
     if bundler_input.esbuild_binary.is_none() && std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
-        match crate::render_pipeline::embedded_binary("esbuild") {
-            Ok((handle, path)) => {
-                bundler_input.esbuild_binary = Some(path);
-                _esbuild_handle = Some(handle);
-            }
-            Err(e) => {
-                // Non-fatal: log and let the bundler's own resolver fall
-                // through to the on-disk slot, which still produces a useful
-                // error message pointing at `crates/zfb/binaries/esbuild/`.
-                crate::output::warn(format!(
-                    "could not extract embedded esbuild ({e}); \
-                     falling back to bundler resolver"
-                ));
-                _esbuild_handle = None;
+        if let Some(path) = pre_resolved_esbuild {
+            // #994 item A — the caller already extracted the embedded
+            // esbuild binary and keeps its tempdir alive beyond this
+            // input's lifetime (process-lifetime in `zfb dev`), so the
+            // per-call extraction is skipped. No handle is stored here:
+            // the lifetime contract on `AssembledBundlerInput` is
+            // satisfied by the caller's longer-lived handle.
+            bundler_input.esbuild_binary = Some(path.to_path_buf());
+            _esbuild_handle = None;
+        } else {
+            match crate::render_pipeline::embedded_binary("esbuild") {
+                Ok((handle, path)) => {
+                    bundler_input.esbuild_binary = Some(path);
+                    _esbuild_handle = Some(handle);
+                }
+                Err(e) => {
+                    // Non-fatal: log and let the bundler's own resolver fall
+                    // through to the on-disk slot, which still produces a
+                    // useful error message pointing at
+                    // `crates/zfb/binaries/esbuild/`.
+                    crate::output::warn(format!(
+                        "could not extract embedded esbuild ({e}); \
+                         falling back to bundler resolver"
+                    ));
+                    _esbuild_handle = None;
+                }
             }
         }
     } else {

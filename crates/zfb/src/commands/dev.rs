@@ -1333,6 +1333,26 @@ struct DevRebuildInputs {
     v8_plugin_hooks: zfb_render::PluginRegistryHooks,
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
+    /// Process-lifetime embedded-esbuild extraction (#994 item A): the
+    /// `(TempDir, PathBuf)` pair from one boot-time
+    /// [`crate::render_pipeline::embedded_binary`] call, threaded into
+    /// `assemble_bundler_input` on every tick so the per-tick tempdir
+    /// extraction (the bulk of the measured P1 `asm` cost) is skipped.
+    /// The TempDir handle lives as long as the dev session — i.e. it
+    /// outlives every `bundle()` call, trivially satisfying the
+    /// [`crate::commands::bundler_input::AssembledBundlerInput`]
+    /// lifetime contract. `None` when boot-time extraction failed
+    /// (non-fatal: warn + per-tick fallback) or when `ZFB_ESBUILD_BIN`
+    /// overrides the embedded binary.
+    esbuild: Option<(tempfile::TempDir, PathBuf)>,
+}
+
+#[cfg(feature = "embed_v8")]
+impl DevRebuildInputs {
+    /// Path of the boot-time extracted esbuild binary (#994 item A), if any.
+    fn esbuild_path(&self) -> Option<&Path> {
+        self.esbuild.as_ref().map(|(_, path)| path.as_path())
+    }
 }
 
 struct DevRenderInner {
@@ -1809,6 +1829,7 @@ impl DevRenderSession {
                 inputs.plugin_virtual_modules.clone(),
                 timing_enabled,
                 session_guard.as_mut(),
+                inputs.esbuild_path(),
             )
             .context("dev refresh: re-bundle failed")?
         };
@@ -2117,9 +2138,12 @@ struct AssembledBundleResult {
 /// — extracted from `boot_dev_renderer` so the watch-ADD re-bundle reuses
 /// the EXACT same configuration the boot bundle used; any drift here would
 /// make a newly-added page render differently in dev than it did at boot).
-/// The embedded node_modules / esbuild tempdir handles live only for the
+/// The embedded node_modules tempdir handle lives only for the
 /// synchronous `bundle()` call (which writes `bundle_path` to disk), so
-/// scoping them to this function is correct.
+/// scoping it to this function is correct. The esbuild binary is the
+/// boot-time process-lifetime extraction passed via `pre_resolved_esbuild`
+/// (#994 item A); the per-call extraction only runs as a fallback when
+/// that is `None`.
 ///
 /// `recompute snapshot` is implicit: `build_content_snapshot_json` re-reads
 /// the content collections from disk on every call, so a re-bundle here
@@ -2140,6 +2164,10 @@ fn assemble_and_bundle_dev(
     // so boot and refresh share one assembly path AND one shadow tree —
     // #659 configuration parity by construction.
     shadow_session: Option<&mut ShadowSession>,
+    // Boot-time extracted embedded esbuild binary (#994 item A) — see
+    // [`DevRebuildInputs::esbuild`]. Both boot and refresh pass the same
+    // path so every tick skips the per-call tempdir extraction.
+    pre_resolved_esbuild: Option<&Path>,
 ) -> Result<AssembledBundleResult> {
     // Embed the content snapshot so a page's `getStaticProps()` (and any
     // runtime `paths()`) sees the same collection data the production
@@ -2185,6 +2213,7 @@ fn assemble_and_bundle_dev(
         content_snapshot_json,
         plugin_alias_entries,
         plugin_virtual_modules,
+        pre_resolved_esbuild,
     )?;
     let assemble_ms = asm_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
@@ -2666,6 +2695,28 @@ fn boot_dev_renderer(
         v8_plugin_hooks: v8_plugin_hooks.clone(),
         plugin_alias_entries: plugin_alias_entries.clone(),
         plugin_virtual_modules: plugin_virtual_modules.clone(),
+        // #994 item A — extract the embedded esbuild binary ONCE here;
+        // the handle lives on `DevRebuildInputs` for the whole dev
+        // session, so every tick's `assemble_bundler_input` skips its
+        // per-call tempdir extraction. Skipped when `ZFB_ESBUILD_BIN`
+        // overrides the embedded binary (the assemble-side skip
+        // condition would ignore the path anyway). Extraction failure
+        // is non-fatal, matching the assemble-side handling: warn and
+        // fall back to the per-tick extraction by passing `None`.
+        esbuild: if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+            match crate::render_pipeline::embedded_binary("esbuild") {
+                Ok(pair) => Some(pair),
+                Err(e) => {
+                    crate::output::warn(format!(
+                        "could not extract embedded esbuild at dev boot ({e}); \
+                         falling back to per-tick extraction"
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        },
     };
 
     // Persistent dev shadow-tree session (issue #993) — created once
@@ -2682,6 +2733,7 @@ fn boot_dev_renderer(
         plugin_virtual_modules,
         false,
         Some(&mut shadow_session),
+        rebuild_inputs.esbuild_path(),
     )?
     .output;
 
@@ -3347,6 +3399,7 @@ mod tests {
                 v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
                 plugin_alias_entries: Vec::new(),
                 plugin_virtual_modules: Vec::new(),
+                esbuild: None,
             },
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),
