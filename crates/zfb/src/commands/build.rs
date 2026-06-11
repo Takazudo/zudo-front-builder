@@ -434,6 +434,7 @@ trait BuildRunner {
     /// - `FakeRunner` (test-only) — returns whatever bytes the test
     ///   set up so the rewrite path can be exercised without running
     ///   Tailwind / esbuild subprocesses.
+    ///
     /// Returns both the bytes-only emitter inputs (CSS / islands / client
     /// scripts) **and** the set of registered island marker names collected by
     /// the islands scanner.  The marker-name set is empty when no islands were

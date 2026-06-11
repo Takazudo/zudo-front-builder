@@ -162,6 +162,7 @@ pub(crate) struct AssembledBundlerInput {
 /// already process-lifetime there). Ignored when an explicit
 /// `esbuild_binary` or `ZFB_ESBUILD_BIN` override is in play — the
 /// existing precedence is preserved.
+#[allow(clippy::too_many_arguments)] // 8 params: #994 item A added pre_resolved_esbuild; a struct would obscure the caller-keeps-alive contract documented above
 pub(crate) fn assemble_bundler_input(
     project_root: &Path,
     config: &Config,
