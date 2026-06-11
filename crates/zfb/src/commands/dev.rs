@@ -1052,7 +1052,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
     };
 
-    output::ready_with_interfaces("http", &host, port);
+    // Announce the ACTUAL bound port, not the requested one: with
+    // `--port 0` the OS picks an ephemeral port, and printing the literal
+    // `0` makes the banner unparseable for callers that need to discover
+    // the port (e.g. the dev E2E harness, #1018). For a fixed port the
+    // two values are identical, so existing UX is unchanged.
+    let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    output::ready_with_interfaces("http", &host, bound_port);
 
     // Run the server until Ctrl+C. Pass Ctrl+C as the graceful-shutdown
     // signal so axum drains in-flight connections before exiting. The
