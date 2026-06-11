@@ -1515,15 +1515,40 @@ async fn output_bounded(
     name: &str,
 ) -> Result<std::io::Result<std::process::Output>> {
     cmd.kill_on_drop(true);
-    match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(res) => Ok(res),
-        Err(_) => bail!(
-            "config loader: {} did not exit within {}s — killed",
-            name,
-            timeout.as_secs()
-        ),
+    let mut etxtbsy_attempts = 0;
+    loop {
+        match tokio::time::timeout(timeout, cmd.output()).await {
+            // ETXTBSY ("Text file busy") spawn retry (zfb#1008): the binary
+            // being spawned may have JUST been extracted to a tempfile
+            // (render_pipeline::embedded_binary). If an unrelated thread
+            // forks while the extraction's write fd is briefly open, the
+            // forked child holds that fd until its own execve, and our
+            // execve of the freshly-written file fails with ETXTBSY. The
+            // window is fork-to-exec sized (microseconds) — a short bounded
+            // retry absorbs it. Spawn failed, so nothing has run: re-running
+            // the command is side-effect free.
+            Ok(Err(e))
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && etxtbsy_attempts < ETXTBSY_MAX_RETRIES =>
+            {
+                etxtbsy_attempts += 1;
+                tokio::time::sleep(ETXTBSY_RETRY_DELAY * etxtbsy_attempts).await;
+            }
+            Ok(res) => return Ok(res),
+            Err(_) => bail!(
+                "config loader: {} did not exit within {}s — killed",
+                name,
+                timeout.as_secs()
+            ),
+        }
     }
 }
+
+/// Bounded ETXTBSY spawn retries for [`output_bounded`] (zfb#1008). The race
+/// window is fork-to-exec sized, so a handful of linearly backed-off retries
+/// (10ms, 20ms, …) is far more than enough without delaying genuine failures.
+const ETXTBSY_MAX_RETRIES: u32 = 5;
+const ETXTBSY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// Generous backstop timeout for config-loader subprocesses. Mirrors the 300 s
 /// used by `run_capturing` in `zfb-build` (see #648/#651) — a wedge guard, not
@@ -4385,5 +4410,20 @@ mod tests {
             msg.contains("test-stub"),
             "error must name the subprocess; got: {msg}"
         );
+    }
+
+    /// Non-ETXTBSY spawn errors pass straight through the zfb#1008 retry
+    /// loop in `output_bounded` — only `ExecutableFileBusy` is retried, so
+    /// a missing binary surfaces its `NotFound` immediately as the inner
+    /// `io::Result`, preserving the callers' `io::ErrorKind` inspection
+    /// contract.
+    #[tokio::test]
+    async fn output_bounded_passes_through_non_etxtbsy_spawn_errors() {
+        let mut cmd = tokio::process::Command::new("/nonexistent/zfb-output-bounded-test-binary");
+        let result = output_bounded(&mut cmd, std::time::Duration::from_secs(5), "missing-bin")
+            .await
+            .expect("spawn failure is the inner io::Result, not the timeout Err");
+        let err = result.expect_err("spawning a nonexistent binary must fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 }
