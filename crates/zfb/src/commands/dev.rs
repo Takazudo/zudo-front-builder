@@ -1320,6 +1320,16 @@ struct DevRouteTables {
     /// server reads this list (via [`DevRenderSession::ssr_patterns`])
     /// and builds an [`zfb_server::SsrRouteSet`] from it.
     ssr_routes: Vec<RouteUniverseEntry>,
+    /// Reverse lookup: normalized request URL → SSG route entry (issue
+    /// #1019). Keyed by every candidate produced by
+    /// [`build_url_index`] so a single `RouteUniverseEntry` is
+    /// reachable via `/posts/a`, `/posts/a/`, and
+    /// `/posts/a/index.html`. SSR-only routes (`prerender = false`) are
+    /// intentionally absent — they are served by the existing SSR leg.
+    /// Rebuilt atomically with the other tables at P4 so the index is
+    /// never stale. Consumed by a later lazy-render sub-issue; dormant
+    /// in this one.
+    url_index: HashMap<String, RouteUniverseEntry>,
 }
 
 /// Boot-time inputs stashed so a watch-ADD (#659) can re-bundle the SSR
@@ -1670,6 +1680,44 @@ impl DevRenderSession {
             .collect()
     }
 
+    /// Look up the SSG [`RouteUniverseEntry`] for a request URL path
+    /// (issue #1019 — reverse URL index).
+    ///
+    /// `request_path` must be:
+    /// - Base-prefix-stripped (the server removes the prefix before
+    ///   dispatching — the index never sees it).
+    /// - May carry a query string (stripped here before lookup).
+    /// - May be percent-encoded (decoded here before lookup so
+    ///   `/posts/caf%C3%A9` resolves like `/posts/café`).
+    ///
+    /// Returns `Some(entry)` when a matching SSG route exists, `None` for
+    /// SSR-only routes, dynamic routes that were never expanded, and any
+    /// path not in the route universe. The returned entry is cloned out
+    /// under a short read lock — no lock is held by the caller.
+    // Dead until the lazy-adapter sub-issue consumes it (issue #1019).
+    #[allow(dead_code)]
+    fn lookup_by_url(&self, request_path: &str) -> Option<RouteUniverseEntry> {
+        // Strip query string (everything from the first `?`).
+        let path_only = request_path.split('?').next().unwrap_or(request_path);
+
+        // Percent-decode (consistent with how `read_from_dist` treats paths).
+        // On decode error fall back to the raw path so the lookup still
+        // proceeds rather than panicking.
+        let decoded = percent_decode_url(path_only);
+
+        // Strip a leading slash so `url_index_lookup_keys` can prepend it
+        // uniformly (the function expects the path WITHOUT a leading slash).
+        let without_leading = decoded.trim_start_matches('/');
+
+        let tables = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
+        for key in url_index_lookup_keys(without_leading) {
+            if let Some(entry) = tables.url_index.get(&key) {
+                return Some(entry.clone());
+            }
+        }
+        None
+    }
+
     /// Return all known page IDs (source paths) from the router scan.
     /// Used to seed the dependency graph so incremental rebuilds have a
     /// non-empty page set to resolve against.
@@ -1962,7 +2010,7 @@ impl DevRenderSession {
         // 3. Rebuild the route tables through the reloaded host (re-expands
         //    `paths()`, so the dynamic source now resolves the new URL).
         let p3_start = tick_start.map(|_| std::time::Instant::now());
-        let (new_routes_by_source, new_ssr_routes, p3_cache_hits, p3_cache_misses) = {
+        let (new_routes_by_source, new_ssr_routes, new_url_index, p3_cache_hits, p3_cache_misses) = {
             let mut paths_cache = self.inner.paths_cache.lock().unwrap_or_else(|p| {
                 tracing::warn!(
                     site = "refresh_bundle_and_routes",
@@ -1995,6 +2043,8 @@ impl DevRenderSession {
             let mut tables = self.inner.routes.write().unwrap_or_else(|p| p.into_inner());
             tables.routes_by_source = new_routes_by_source;
             tables.ssr_routes = new_ssr_routes;
+            // Swap the url_index atomically with the other tables (issue #1019).
+            tables.url_index = new_url_index;
         }
         let p4_ms = p4_start.map(|t| t.elapsed().as_millis());
 
@@ -2379,21 +2429,24 @@ fn compute_bundle_skip_key(
     Some(hasher.finalize().into())
 }
 
-/// `(routes_by_source, ssr_routes)` — the pair [`build_dev_route_tables`]
-/// produces and [`DevRouteTables`] stores.
+/// `(routes_by_source, ssr_routes, url_index)` — the triple
+/// [`build_dev_route_tables`] produces and [`DevRouteTables`] stores.
 #[cfg(feature = "embed_v8")]
 type BuiltRouteTables = (
     HashMap<PathBuf, Vec<DevRouteEntry>>,
     Vec<RouteUniverseEntry>,
+    HashMap<String, RouteUniverseEntry>,
 );
 
-/// `(routes_by_source, ssr_routes, paths_cache_hits, paths_cache_misses)` —
-/// the 4-tuple [`build_dev_route_tables_timed`] returns with PathsCache stats
-/// exposed for ZFB_DEV_TIMING instrumentation (issue #991).
+/// `(routes_by_source, ssr_routes, url_index, paths_cache_hits,
+/// paths_cache_misses)` — the 5-tuple [`build_dev_route_tables_timed`]
+/// returns with PathsCache stats exposed for ZFB_DEV_TIMING instrumentation
+/// (issue #991).
 #[cfg(feature = "embed_v8")]
 type TimedRouteTables = (
     HashMap<PathBuf, Vec<DevRouteEntry>>,
     Vec<RouteUniverseEntry>,
+    HashMap<String, RouteUniverseEntry>,
     u64,
     u64,
 );
@@ -2410,9 +2463,9 @@ fn build_dev_route_tables_timed(
     renderer: &Arc<Mutex<Option<RendererState>>>,
     paths_cache: &mut PathsCache,
 ) -> Result<TimedRouteTables> {
-    let (routes_by_source, ssr_routes, hits, misses) =
+    let (routes_by_source, ssr_routes, url_index, hits, misses) =
         build_dev_route_tables_inner(router, plan, project_root, renderer, paths_cache)?;
-    Ok((routes_by_source, ssr_routes, hits, misses))
+    Ok((routes_by_source, ssr_routes, url_index, hits, misses))
 }
 
 /// Build the dev session's source→route + SSR route tables from the router
@@ -2429,9 +2482,142 @@ fn build_dev_route_tables(
     renderer: &Arc<Mutex<Option<RendererState>>>,
     paths_cache: &mut PathsCache,
 ) -> Result<BuiltRouteTables> {
-    let (routes_by_source, ssr_routes, _hits, _misses) =
+    let (routes_by_source, ssr_routes, url_index, _hits, _misses) =
         build_dev_route_tables_inner(router, plan, project_root, renderer, paths_cache)?;
-    Ok((routes_by_source, ssr_routes))
+    Ok((routes_by_source, ssr_routes, url_index))
+}
+
+/// Percent-decode a URL path segment, returning a borrowed `str` when the
+/// input has no percent-encoded sequences or an owned `String` when decoding
+/// produces a different value (issue #1019).
+///
+/// Consistent with how `read_from_dist` (zfb-server) handles incoming paths:
+/// the Axum HTTP layer decodes the path before handing it to the handler, so
+/// the index must decode too before doing a lookup. On invalid UTF-8 (malformed
+/// percent-sequence) falls back to the raw input so the lookup can still
+/// proceed (graceful degradation — the entry probably won't match, which is
+/// the correct answer for a malformed URL).
+// Dead until the lazy-adapter sub-issue consumes `lookup_by_url`.
+#[allow(dead_code)]
+fn percent_decode_url(path: &str) -> std::borrow::Cow<'_, str> {
+    // Fast path: no `%` in the path means nothing to decode.
+    if !path.contains('%') {
+        return std::borrow::Cow::Borrowed(path);
+    }
+    // Decode percent-encoded sequences; keep the path as UTF-8.
+    let bytes: Vec<u8> = percent_decode_bytes(path.as_bytes());
+    match String::from_utf8(bytes) {
+        Ok(s) => std::borrow::Cow::Owned(s),
+        Err(_) => std::borrow::Cow::Borrowed(path),
+    }
+}
+
+/// Decode percent-encoded sequences in a byte slice.
+#[allow(dead_code)]
+fn percent_decode_bytes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'%' && i + 2 < input.len() {
+            if let (Some(h), Some(l)) = (from_hex_digit(input[i + 1]), from_hex_digit(input[i + 2]))
+            {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(input[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Convert an ASCII hex digit (`0`–`9`, `a`–`f`, `A`–`F`) to its numeric
+/// value; returns `None` for any other byte.
+#[allow(dead_code)]
+fn from_hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Candidate lookup keys for a single SSG route's `url_path` (issue #1019).
+///
+/// Mirrors `lookup_keys` in `crates/zfb-server/src/routes.rs:1674` so a
+/// request URL resolves to the index entry under the same normalisation rules
+/// the HTTP layer applies:
+///
+/// - Trailing slashes are stripped before candidate generation so
+///   `/posts/a` and `/posts/a/` map to the same entry.
+/// - `/posts/a` → candidates `["/posts/a", "/posts/a/index.html",
+///   "/posts/a/"]` covering both slash policies.
+/// - Root `/` and the all-slashes edge case get the root candidates
+///   `["/", "/index.html"]`.
+/// - Routes that already end with a file extension (e.g. `feed.xml`) are
+///   returned as-is — no `index.html` or slash variants.
+///
+/// Query strings and percent-encoding are NOT handled here; the caller
+/// (`DevRenderSession::lookup_by_url`) normalises the input before
+/// indexing into the table.
+fn url_index_lookup_keys(url_path: &str) -> Vec<String> {
+    let stripped = url_path.trim_end_matches('/');
+    if stripped.is_empty() {
+        // Root or all-slashes path.
+        return vec!["/".to_string(), "/index.html".to_string()];
+    }
+    // Routes with an explicit file extension (e.g. `/feed.xml`, `/sitemap.xml`)
+    // are served verbatim — no slash/index.html variants.
+    let last_segment = stripped.rsplit('/').next().unwrap_or(stripped);
+    if last_segment.contains('.') {
+        return vec![format!("/{stripped}")];
+    }
+    vec![
+        format!("/{stripped}"),
+        format!("/{stripped}/index.html"),
+        format!("/{stripped}/"),
+    ]
+}
+
+/// Build the reverse URL-lookup index for all SSG routes (issue #1019).
+///
+/// Iterates every `DevRouteEntry` in `routes_by_source` (which contains only
+/// SSG routes — SSR routes live in `ssr_routes` and are excluded by
+/// construction) and inserts each entry under all candidate keys produced by
+/// [`url_index_lookup_keys`]. When two SSG routes would claim the same
+/// normalised key (unlikely in a well-formed project but possible if two
+/// sources share an output path), the first writer wins and a warning is
+/// emitted so the user knows a route is shadowed.
+fn build_url_index(
+    routes_by_source: &HashMap<PathBuf, Vec<DevRouteEntry>>,
+) -> HashMap<String, RouteUniverseEntry> {
+    let mut index: HashMap<String, RouteUniverseEntry> = HashMap::new();
+    for entries in routes_by_source.values() {
+        for dev_entry in entries {
+            let entry = &dev_entry.entry;
+            // Strip any leading slash before normalising — `url_path` values
+            // in `RouteUniverseEntry` already start with `/`; passing them
+            // through `url_index_lookup_keys` works because that function
+            // re-adds the leading slash in its output.
+            let url_no_leading = entry.url_path.trim_start_matches('/');
+            for key in url_index_lookup_keys(url_no_leading) {
+                if let Some(existing) = index.get(&key) {
+                    if existing.url_path != entry.url_path {
+                        crate::output::warn(format!(
+                            "url_index: key {key:?} claimed by both {:?} and {:?}; \
+                             the first entry wins",
+                            existing.url_path, entry.url_path,
+                        ));
+                    }
+                } else {
+                    index.insert(key, entry.clone());
+                }
+            }
+        }
+    }
+    index
 }
 
 /// Inner implementation shared by [`build_dev_route_tables`] and
@@ -2660,9 +2846,15 @@ fn build_dev_route_tables_inner(
         }
     }
 
+    // Build the reverse URL-lookup index from all SSG entries (issue #1019).
+    // SSR-only routes are already in `ssr_routes`, not `routes_by_source`,
+    // so the index is naturally restricted to SSG routes.
+    let url_index = build_url_index(&routes_by_source);
+
     Ok((
         routes_by_source,
         ssr_routes,
+        url_index,
         paths_cache.hit_count() - hits_before,
         paths_cache.miss_count() - misses_before,
     ))
@@ -2805,7 +2997,7 @@ fn boot_dev_renderer(
     // this boot-time build populated (boot/refresh parity: both go
     // through the same cache).
     let mut paths_cache = PathsCache::new();
-    let (routes_by_source, ssr_routes) =
+    let (routes_by_source, ssr_routes, url_index) =
         build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
 
     // Issue #958 — seed the frontmatter gate cache so the FIRST body-only
@@ -2819,6 +3011,7 @@ fn boot_dev_renderer(
             routes: std::sync::RwLock::new(DevRouteTables {
                 routes_by_source,
                 ssr_routes,
+                url_index,
             }),
             renderer,
             project_root: project_root.to_path_buf(),
@@ -3427,10 +3620,12 @@ mod tests {
         routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>>,
         ssr_routes: Vec<RouteUniverseEntry>,
     ) -> DevRenderInner {
+        let url_index = build_url_index(&routes_by_source);
         DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
                 routes_by_source,
                 ssr_routes,
+                url_index,
             }),
             renderer: Arc::new(Mutex::new(None)),
             project_root,
@@ -3455,10 +3650,12 @@ mod tests {
         routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>>,
         ssr_routes: Vec<RouteUniverseEntry>,
     ) -> DevRenderInner {
+        let url_index = build_url_index(&routes_by_source);
         DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
                 routes_by_source,
                 ssr_routes,
+                url_index,
             }),
             renderer: Arc::new(Mutex::new(None)),
             project_root: PathBuf::new(),
@@ -3508,7 +3705,7 @@ mod tests {
         let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(None));
 
         let mut cache = PathsCache::new();
-        let (tables1, ssr1, hits1, misses1) =
+        let (tables1, ssr1, idx1, hits1, misses1) =
             build_dev_route_tables_timed(&router, &plan, dir.path(), &renderer, &mut cache)
                 .expect("first build");
         assert_eq!(hits1, 0, "first build runs against a cold cache");
@@ -3521,7 +3718,7 @@ mod tests {
             "literal paths() expands to 2 entries: {tables1:?}"
         );
 
-        let (tables2, ssr2, hits2, misses2) =
+        let (tables2, ssr2, idx2, hits2, misses2) =
             build_dev_route_tables_timed(&router, &plan, dir.path(), &renderer, &mut cache)
                 .expect("second build");
         assert!(
@@ -3534,6 +3731,12 @@ mod tests {
             "cache-sharing builds must produce identical tables"
         );
         assert_eq!(ssr1, ssr2);
+        // The url_index must be consistent across both builds for the same input.
+        assert_eq!(
+            idx1.keys().collect::<std::collections::BTreeSet<_>>(),
+            idx2.keys().collect::<std::collections::BTreeSet<_>>(),
+            "url_index keys must be identical across cache-sharing builds"
+        );
     }
 
     fn cfg_with_collections(paths: &[&str]) -> config::Config {
@@ -4914,5 +5117,258 @@ mod tests {
             key.is_none(),
             "an unreadable static html source must force a full refresh"
         );
+    }
+
+    // ── URL→route reverse-lookup index tests (issue #1019) ───────────────────
+
+    /// Build a minimal `DevRenderSession` with a single SSG route at
+    /// `url_path` so lookup tests don't need to reach `stub_dev_inner`
+    /// directly each time.
+    fn session_with_route(url_path: &str) -> DevRenderSession {
+        let entry = RouteUniverseEntry {
+            url_path: url_path.into(),
+            output_path: PathBuf::from("index.html"),
+            route_key: url_path.into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        routes.insert(
+            PathBuf::from("pages/index.tsx"),
+            vec![DevRouteEntry {
+                entry,
+                params: None,
+            }],
+        );
+        DevRenderSession {
+            inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+        }
+    }
+
+    /// Helper: assert `lookup_by_url` returns the expected entry `url_path`.
+    fn assert_lookup(session: &DevRenderSession, request: &str, expected_url: &str) {
+        let result = session.lookup_by_url(request);
+        assert_eq!(
+            result.as_ref().map(|e| e.url_path.as_str()),
+            Some(expected_url),
+            "lookup_by_url({request:?}) → expected {expected_url:?}, got {result:?}",
+        );
+    }
+
+    /// Helper: assert `lookup_by_url` returns `None`.
+    fn assert_no_lookup(session: &DevRenderSession, request: &str) {
+        let result = session.lookup_by_url(request);
+        assert!(
+            result.is_none(),
+            "lookup_by_url({request:?}) should be None but got {:?}",
+            result.map(|e| e.url_path),
+        );
+    }
+
+    /// Root `/` is reachable as `/` and `/index.html` (issue #1019).
+    #[test]
+    fn url_index_root_slash_and_index_html() {
+        let session = session_with_route("/");
+        assert_lookup(&session, "/", "/");
+        assert_lookup(&session, "/index.html", "/");
+    }
+
+    /// `/posts/a` and `/posts/a/` resolve to the same entry (trailing-slash
+    /// policy: both candidate forms are indexed).
+    #[test]
+    fn url_index_trailing_slash_equivalence() {
+        let session = session_with_route("/posts/a");
+        assert_lookup(&session, "/posts/a", "/posts/a");
+        assert_lookup(&session, "/posts/a/", "/posts/a");
+    }
+
+    /// `/posts/a/index.html` resolves like `/posts/a/` (index.html duality).
+    #[test]
+    fn url_index_index_html_duality() {
+        let session = session_with_route("/posts/a");
+        assert_lookup(&session, "/posts/a/index.html", "/posts/a");
+    }
+
+    /// Query strings are stripped before lookup: `/posts/a/?x=1` → `/posts/a`.
+    #[test]
+    fn url_index_query_string_ignored() {
+        let session = session_with_route("/posts/a");
+        assert_lookup(&session, "/posts/a/?x=1", "/posts/a");
+        assert_lookup(&session, "/posts/a?x=1&y=2", "/posts/a");
+    }
+
+    /// Percent-encoded paths are decoded before lookup:
+    /// `/posts/caf%C3%A9` → decoded to `/posts/café` → resolves.
+    #[test]
+    fn url_index_percent_encoding_decoded() {
+        let session = session_with_route("/posts/café");
+        assert_lookup(&session, "/posts/caf%C3%A9", "/posts/café");
+    }
+
+    /// Non-HTML routes (e.g. `feed.xml`, `sitemap.xml`) are indexed verbatim
+    /// because they have an explicit file extension — no slash/index variants.
+    #[test]
+    fn url_index_non_html_extension_routes() {
+        let entry = RouteUniverseEntry {
+            url_path: "/feed.xml".into(),
+            output_path: PathBuf::from("feed.xml"),
+            route_key: "/feed.xml".into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        routes.insert(
+            PathBuf::from("pages/feed.xml.tsx"),
+            vec![DevRouteEntry {
+                entry,
+                params: None,
+            }],
+        );
+        let session = DevRenderSession {
+            inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+        };
+        assert_lookup(&session, "/feed.xml", "/feed.xml");
+        // Trailing-slash normalisation: `/feed.xml/` → stripped → same key.
+        assert_lookup(&session, "/feed.xml/", "/feed.xml");
+        // Extension routes must NOT generate an `index.html` sub-key.
+        assert_no_lookup(&session, "/feed.xml/index.html");
+    }
+
+    /// SSR-only routes (`prerender = false`, stored in `ssr_routes`) are NOT
+    /// present in the url_index — they are served by the SSR leg.
+    #[test]
+    fn url_index_excludes_ssr_only_routes() {
+        let ssr_entry = RouteUniverseEntry {
+            url_path: "/ssr-page".into(),
+            output_path: PathBuf::new(),
+            route_key: "/ssr-page".into(),
+            static_html: false,
+            source_path: None,
+        };
+        // SSR entries go into `ssr_routes`, NOT `routes_by_source`.
+        let session = DevRenderSession {
+            inner: Arc::new(stub_dev_inner(HashMap::new(), vec![ssr_entry])),
+        };
+        assert_no_lookup(&session, "/ssr-page");
+        assert_no_lookup(&session, "/ssr-page/");
+    }
+
+    /// Unknown routes return `None`.
+    #[test]
+    fn url_index_unknown_route_returns_none() {
+        let session = session_with_route("/posts/a");
+        assert_no_lookup(&session, "/does-not-exist");
+        assert_no_lookup(&session, "/posts/b");
+    }
+
+    /// Multiple SSG routes coexist in the index independently.
+    #[test]
+    fn url_index_multiple_routes() {
+        let make_entry = |url: &str| RouteUniverseEntry {
+            url_path: url.into(),
+            output_path: PathBuf::from(format!("{}/index.html", url.trim_start_matches('/'))),
+            route_key: url.into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        routes.insert(
+            PathBuf::from("pages/about.tsx"),
+            vec![DevRouteEntry {
+                entry: make_entry("/about"),
+                params: None,
+            }],
+        );
+        routes.insert(
+            PathBuf::from("pages/blog/hello.tsx"),
+            vec![DevRouteEntry {
+                entry: make_entry("/blog/hello"),
+                params: None,
+            }],
+        );
+        let session = DevRenderSession {
+            inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+        };
+        assert_lookup(&session, "/about", "/about");
+        assert_lookup(&session, "/about/", "/about");
+        assert_lookup(&session, "/blog/hello", "/blog/hello");
+        assert_lookup(&session, "/blog/hello/index.html", "/blog/hello");
+    }
+
+    /// `url_index_lookup_keys` normalisation edge cases for the root path.
+    #[test]
+    fn url_index_lookup_keys_root_variants() {
+        // Empty string → root.
+        let keys = url_index_lookup_keys("");
+        assert!(keys.contains(&"/".to_string()));
+        assert!(keys.contains(&"/index.html".to_string()));
+        // All-slashes → root.
+        let keys2 = url_index_lookup_keys("///");
+        assert!(keys2.contains(&"/".to_string()));
+    }
+
+    /// Rebuild-swap coherence: after a table swap, lookups reflect the new
+    /// tables and not the old ones (issue #1019).
+    ///
+    /// This test drives the swap seam directly — it constructs an inner with
+    /// route A, then writes route B + a new url_index into the RwLock the same
+    /// way `refresh_bundle_and_routes` does (without needing a live V8 host),
+    /// and asserts the lookup after the swap returns B, not A.
+    #[test]
+    fn url_index_swap_coherence() {
+        // Boot: one route at /old.
+        let old_entry = RouteUniverseEntry {
+            url_path: "/old".into(),
+            output_path: PathBuf::from("old/index.html"),
+            route_key: "/old".into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut old_routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        old_routes.insert(
+            PathBuf::from("pages/old.tsx"),
+            vec![DevRouteEntry {
+                entry: old_entry,
+                params: None,
+            }],
+        );
+        let inner = Arc::new(stub_dev_inner(old_routes, Vec::new()));
+        let session = DevRenderSession {
+            inner: Arc::clone(&inner),
+        };
+
+        // Verify old state.
+        assert_lookup(&session, "/old", "/old");
+        assert_no_lookup(&session, "/new");
+
+        // Simulate P4 swap: new route at /new, old route removed.
+        let new_entry = RouteUniverseEntry {
+            url_path: "/new".into(),
+            output_path: PathBuf::from("new/index.html"),
+            route_key: "/new".into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut new_routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        new_routes.insert(
+            PathBuf::from("pages/new.tsx"),
+            vec![DevRouteEntry {
+                entry: new_entry,
+                params: None,
+            }],
+        );
+        let new_url_index = build_url_index(&new_routes);
+        {
+            let mut tables = inner.routes.write().unwrap();
+            tables.routes_by_source = new_routes;
+            tables.ssr_routes = Vec::new();
+            tables.url_index = new_url_index;
+        }
+
+        // After swap: old route gone, new route visible.
+        assert_no_lookup(&session, "/old");
+        assert_lookup(&session, "/new", "/new");
+        assert_lookup(&session, "/new/", "/new");
+        assert_lookup(&session, "/new/index.html", "/new");
     }
 }
