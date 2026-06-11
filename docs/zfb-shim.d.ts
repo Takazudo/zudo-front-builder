@@ -93,6 +93,13 @@ declare module "zfb/config" {
     plugins?: PluginConfig[];
     adapter?: string;
     /**
+     * When `false`, public/ assets are flat-copied to the dist root
+     * instead of under `<outDir>/<base>/`. Mirrors
+     * `Config::copy_public_with_base` in crates/zfb/src/config.rs
+     * (shipped in @takazudo/zfb 0.1.0-next.37; #932 / #946).
+     */
+    copyPublicWithBase?: boolean;
+    /**
      * Strip `.md` / `.mdx` from in-page `<a href>` paths and append a
      * trailing `/` so author-written `[label](other.mdx)` references
      * resolve to the rendered route URL. Mirrors Config::strip_md_ext
