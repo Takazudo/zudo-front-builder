@@ -1415,9 +1415,12 @@ function __zfb_pick(ns, exportName) {\n\
     // internals change.
     match framework {
         FrameworkKind::Preact => out.push_str(
-            "function __zfb_register(ns, exportName, markerName) {\n\
+            "function __zfb_register(ns, exportName, markerName, moduleLabel) {\n\
   const C = __zfb_pick(ns, exportName);\n\
-  if (!C) return;\n\
+  if (!(typeof C === \"function\" || (typeof C === \"object\" && C !== null && C.$$typeof))) {\n\
+    console.warn(\"[zfb] island export \" + exportName + \" from \" + moduleLabel + \" is not a component (got \" + (C === null ? \"null\" : typeof C) + \"); skipping registration.\");\n\
+    return;\n\
+  }\n\
   __zfb_manifest[markerName] = {\n\
     mount: (props, element, mode) => {\n\
       const v = h(C, props);\n\
@@ -1428,9 +1431,12 @@ function __zfb_pick(ns, exportName) {\n\
 }\n",
         ),
         FrameworkKind::React => out.push_str(
-            "function __zfb_register(ns, exportName, markerName) {\n\
+            "function __zfb_register(ns, exportName, markerName, moduleLabel) {\n\
   const C = __zfb_pick(ns, exportName);\n\
-  if (!C) return;\n\
+  if (!(typeof C === \"function\" || (typeof C === \"object\" && C !== null && C.$$typeof))) {\n\
+    console.warn(\"[zfb] island export \" + exportName + \" from \" + moduleLabel + \" is not a component (got \" + (C === null ? \"null\" : typeof C) + \"); skipping registration.\");\n\
+    return;\n\
+  }\n\
   __zfb_manifest[markerName] = {\n\
     mount: (props, element, mode) => {\n\
       const v = createElement(C, props);\n\
@@ -1468,8 +1474,12 @@ function __zfb_pick(ns, exportName) {\n\
     for (i, island) in islands.iter().enumerate() {
         let name_lit = json_string(&island.component_name);
         let marker_lit = json_string(&island.marker_name);
+        // Issue #998: pass the resolved source path as `moduleLabel` so the
+        // non-component skip warning can name which module the bad export
+        // came from.
+        let module_lit = json_string(&island.source_path.to_string_lossy());
         out.push_str(&format!(
-            "__zfb_register(__zfb_island_{i}, {name_lit}, {marker_lit});\n"
+            "__zfb_register(__zfb_island_{i}, {name_lit}, {marker_lit}, {module_lit});\n"
         ));
     }
     out.push_str("mountIslands(__zfb_manifest);\n");
@@ -1500,7 +1510,17 @@ pub fn render_island_entry_source(framework: FrameworkKind, island: &Island) -> 
 import * as Mod from {path_lit};
 import {{ h, hydrate, render }} from "preact";
 const Component = (Mod as any)[{component_lit}] ?? (Mod as any).default;
+// Issue #998: only mount component-shaped exports. A plain function is a
+// component; the compat memo()/forwardRef() helpers produce an object
+// carrying `$$typeof`. Anything else (a string/object constant that slipped
+// through as an island marker) is skipped with a loud warning rather than
+// handed to h() — which would otherwise build a DOM element from a bogus type.
+const __zfb_ok = typeof Component === "function" || (typeof Component === "object" && Component !== null && (Component as any).$$typeof);
+if (!__zfb_ok) {{
+  console.warn("[zfb] island export " + {component_lit} + " from " + {path_lit} + " is not a component (got " + (Component === null ? "null" : typeof Component) + "); skipping mount.");
+}}
 export function mount(props, element, mode) {{
+  if (!__zfb_ok) return;
   const vnode = h(Component, props);
   if (mode === "hydrate") {{
     hydrate(vnode, element);
@@ -1509,6 +1529,7 @@ export function mount(props, element, mode) {{
   }}
 }}
 export function unmount(element) {{
+  if (!__zfb_ok) return;
   render(null, element);
 }}
 export default mount;
@@ -1520,8 +1541,19 @@ import * as Mod from {path_lit};
 import {{ createElement }} from "react";
 import {{ hydrateRoot, createRoot }} from "react-dom/client";
 const Component = (Mod as any)[{component_lit}] ?? (Mod as any).default;
+// Issue #998: only mount component-shaped exports. A plain function is a
+// component; react memo()/forwardRef() produce an object carrying
+// `$$typeof`. Anything else (a string/object constant that slipped through
+// as an island marker) is skipped with a loud warning rather than handed to
+// createElement() — which would otherwise try to build a DOM element from a
+// bogus type.
+const __zfb_ok = typeof Component === "function" || (typeof Component === "object" && Component !== null && (Component as any).$$typeof);
+if (!__zfb_ok) {{
+  console.warn("[zfb] island export " + {component_lit} + " from " + {path_lit} + " is not a component (got " + (Component === null ? "null" : typeof Component) + "); skipping mount.");
+}}
 const __zfb_roots = new WeakMap();
 export function mount(props, element, mode) {{
+  if (!__zfb_ok) return;
   const vnode = createElement(Component, props);
   if (mode === "hydrate") {{
     const root = hydrateRoot(element, vnode);
@@ -2138,11 +2170,11 @@ mod tests {
             "missing mountIslands call: {src}"
         );
         assert!(
-            src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\");"),
+            src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\","),
             "expected register call for Counter: {src}"
         );
         assert!(
-            src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\");"),
+            src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\","),
             "expected register call for Modal: {src}"
         );
     }
@@ -2299,8 +2331,8 @@ mod tests {
             !src.contains("function __zfb_keyFor("),
             "issue #149: runtime introspection helper must be gone:\n{src}"
         );
-        assert!(src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\");"));
-        assert!(src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\");"));
+        assert!(src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\","));
+        assert!(src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\","));
 
         // hydrate vs render branching mirrors render_island_entry_source.
         assert!(src.contains(r#"if (mode === "hydrate") { hydrate(v, element); }"#));
@@ -2355,8 +2387,8 @@ mod tests {
         // The shared helper shape is unchanged; only the thunk bodies differ.
         assert!(src.contains("function __zfb_pick("));
         assert!(src.contains("function __zfb_register("));
-        assert!(src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\");"));
-        assert!(src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\");"));
+        assert!(src.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\","));
+        assert!(src.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\","));
 
         // React mount glue: createElement + hydrateRoot/createRoot, and an
         // unmount thunk that disposes the stored root.
@@ -2419,15 +2451,15 @@ mod tests {
         // export-side `component_name = "default"`. Static literal —
         // not derived at runtime.
         assert!(
-            src.contains("__zfb_register(__zfb_island_0, \"default\", \"SidebarToggle\");"),
+            src.contains("__zfb_register(__zfb_island_0, \"default\", \"SidebarToggle\","),
             "expected SidebarToggle marker:\n{src}"
         );
         assert!(
-            src.contains("__zfb_register(__zfb_island_1, \"default\", \"ThemeToggle\");"),
+            src.contains("__zfb_register(__zfb_island_1, \"default\", \"ThemeToggle\","),
             "expected ThemeToggle marker:\n{src}"
         );
         assert!(
-            src.contains("__zfb_register(__zfb_island_2, \"default\", \"AiChatModal\");"),
+            src.contains("__zfb_register(__zfb_island_2, \"default\", \"AiChatModal\","),
             "expected AiChatModal marker:\n{src}"
         );
 
@@ -2468,10 +2500,10 @@ mod tests {
         // round-trip lands on the wrapper component). The manifest key
         // is the SSR marker name.
         assert!(
-            src.contains("__zfb_register(__zfb_island_0, \"AiChatModalIsland\", \"AiChatModal\");")
+            src.contains("__zfb_register(__zfb_island_0, \"AiChatModalIsland\", \"AiChatModal\",")
         );
         assert!(src
-            .contains("__zfb_register(__zfb_island_1, \"ImageEnlargeIsland\", \"ImageEnlarge\");"));
+            .contains("__zfb_register(__zfb_island_1, \"ImageEnlargeIsland\", \"ImageEnlarge\","));
     }
 
     /// Regression for issue #138.
@@ -2539,9 +2571,9 @@ mod tests {
         );
         assert!(in_memory.contains(r#"import { mountIslands } from "@takazudo/zfb/runtime""#));
         assert!(in_memory.contains("mountIslands(__zfb_manifest);"));
-        assert!(in_memory.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\");"));
-        assert!(in_memory.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\");"));
-        assert!(in_memory.contains("__zfb_register(__zfb_island_2, \"Sidebar\", \"Sidebar\");"));
+        assert!(in_memory.contains("__zfb_register(__zfb_island_0, \"Counter\", \"Counter\","));
+        assert!(in_memory.contains("__zfb_register(__zfb_island_1, \"Modal\", \"Modal\","));
+        assert!(in_memory.contains("__zfb_register(__zfb_island_2, \"Sidebar\", \"Sidebar\","));
     }
 
     #[test]
