@@ -96,9 +96,8 @@ use crate::commands::resolve::{resolve_addr, resolve_host, resolve_port, resolve
 use crate::config;
 use crate::output;
 use crate::render_pipeline::{
-    build_prerender_map_cached, build_route_universe, check_runtime_installed,
-    eval_deferred_paths_via_worker, expand_dynamic_routes_cached, SourceExtractCache,
-    WorkerDispatch,
+    build_prerender_map, build_route_universe, check_runtime_installed,
+    eval_deferred_paths_via_worker, expand_dynamic_routes, WorkerDispatch,
 };
 #[cfg(feature = "embed_v8")]
 use zfb_render::paths::PathsCache;
@@ -1434,18 +1433,6 @@ struct DevRenderInner {
     /// hold time is unchanged.
     #[cfg(feature = "embed_v8")]
     paths_cache: Mutex<PathsCache>,
-
-    /// Cross-tick per-file content-hash cache (#994 item C) for the two
-    /// SWC-parse extraction passes of the route-table build: TSX
-    /// prerender frontmatter ([`build_prerender_map_cached`]) and static
-    /// `paths()` extraction. Keyed by SHA-256 of the bytes read each
-    /// tick, so any source change invalidates exactly; see
-    /// [`crate::render_pipeline::SourceExtractCache`] for the safety
-    /// notes. Seeded at boot and shared with every refresh (#659
-    /// boot/refresh parity). Locked together with `paths_cache` for the
-    /// P3 build only.
-    #[cfg(feature = "embed_v8")]
-    extract_cache: Mutex<SourceExtractCache>,
 }
 
 /// Per-source route filter for one narrowed tick (issue #958): which of a
@@ -1983,20 +1970,12 @@ impl DevRenderSession {
                 );
                 p.into_inner()
             });
-            let mut extract_cache = self.inner.extract_cache.lock().unwrap_or_else(|p| {
-                tracing::warn!(
-                    site = "refresh_bundle_and_routes",
-                    "extract cache mutex poisoned, recovered"
-                );
-                p.into_inner()
-            });
             build_dev_route_tables_timed(
                 &router,
                 &plan,
                 project_root,
                 &self.inner.renderer,
                 &mut paths_cache,
-                &mut extract_cache,
             )
             .context("dev refresh: route-table rebuild failed")?
         };
@@ -2430,16 +2409,9 @@ fn build_dev_route_tables_timed(
     project_root: &Path,
     renderer: &Arc<Mutex<Option<RendererState>>>,
     paths_cache: &mut PathsCache,
-    extract_cache: &mut SourceExtractCache,
 ) -> Result<TimedRouteTables> {
-    let (routes_by_source, ssr_routes, hits, misses) = build_dev_route_tables_inner(
-        router,
-        plan,
-        project_root,
-        renderer,
-        paths_cache,
-        extract_cache,
-    )?;
+    let (routes_by_source, ssr_routes, hits, misses) =
+        build_dev_route_tables_inner(router, plan, project_root, renderer, paths_cache)?;
     Ok((routes_by_source, ssr_routes, hits, misses))
 }
 
@@ -2456,16 +2428,9 @@ fn build_dev_route_tables(
     project_root: &Path,
     renderer: &Arc<Mutex<Option<RendererState>>>,
     paths_cache: &mut PathsCache,
-    extract_cache: &mut SourceExtractCache,
 ) -> Result<BuiltRouteTables> {
-    let (routes_by_source, ssr_routes, _hits, _misses) = build_dev_route_tables_inner(
-        router,
-        plan,
-        project_root,
-        renderer,
-        paths_cache,
-        extract_cache,
-    )?;
+    let (routes_by_source, ssr_routes, _hits, _misses) =
+        build_dev_route_tables_inner(router, plan, project_root, renderer, paths_cache)?;
     Ok((routes_by_source, ssr_routes))
 }
 
@@ -2481,18 +2446,10 @@ fn build_dev_route_tables_inner(
     project_root: &Path,
     renderer: &Arc<Mutex<Option<RendererState>>>,
     paths_cache: &mut PathsCache,
-    extract_cache: &mut SourceExtractCache,
 ) -> Result<TimedRouteTables> {
-    // #994 item C — both SWC-parse passes below (prerender frontmatter
-    // here, static `paths()` extraction in `expand_dynamic_routes_cached`)
-    // go through the per-file content-hash cache, so unchanged sources
-    // skip the parse on every tick after the first.
-    let prerender_map = build_prerender_map_cached(
-        router.routes(),
-        project_root,
-        |msg| crate::output::warn(msg),
-        Some(extract_cache),
-    );
+    let prerender_map = build_prerender_map(router.routes(), project_root, |msg| {
+        crate::output::warn(msg)
+    });
 
     // Build the source-path → entries map once. Router source paths are
     // project-relative; PageId keys on the same value (the orchestrator
@@ -2601,12 +2558,7 @@ fn build_dev_route_tables_inner(
         // Phase 1 — literal `paths()` arrays (no runtime needed).
         // A missing `paths()` export on an SSG route is a hard error here
         // too — consistent with `zfb build` (issue #520).
-        let static_expansion = expand_dynamic_routes_cached(
-            &ssg_deferred,
-            project_root,
-            paths_cache,
-            Some(extract_cache),
-        )?;
+        let static_expansion = expand_dynamic_routes(&ssg_deferred, project_root, paths_cache)?;
 
         // Phase 2 — evaluate the routes phase 1 couldn't resolve statically
         // through the running embedded V8 host. We borrow the live host out
@@ -2848,20 +2800,13 @@ fn boot_dev_renderer(
     // extracted into `build_dev_route_tables` so the watch-ADD rebuild
     // reproduces the boot tables exactly).
     //
-    // #994 items B + C — the PathsCache and the per-file extraction
-    // cache are seeded here and stored on `DevRenderInner` below, so
-    // every refresh tick reuses the entries this boot-time build
-    // populated (boot/refresh parity: both go through the same caches).
+    // #994 item B — the PathsCache is seeded here and stored on
+    // `DevRenderInner` below, so every refresh tick reuses the entries
+    // this boot-time build populated (boot/refresh parity: both go
+    // through the same cache).
     let mut paths_cache = PathsCache::new();
-    let mut extract_cache = SourceExtractCache::new();
-    let (routes_by_source, ssr_routes) = build_dev_route_tables(
-        &router,
-        &plan,
-        project_root,
-        &renderer,
-        &mut paths_cache,
-        &mut extract_cache,
-    )?;
+    let (routes_by_source, ssr_routes) =
+        build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
 
     // Issue #958 — seed the frontmatter gate cache so the FIRST body-only
     // edit of a pre-existing collection file can already narrow (G4 only
@@ -2883,7 +2828,6 @@ fn boot_dev_renderer(
             fm_hashes: Mutex::new(fm_hashes),
             shadow_session: Mutex::new(Some(shadow_session)),
             paths_cache: Mutex::new(paths_cache),
-            extract_cache: Mutex::new(extract_cache),
         }),
     })
 }
@@ -3501,7 +3445,6 @@ mod tests {
             fm_hashes: Mutex::new(HashMap::new()),
             shadow_session: Mutex::new(None),
             paths_cache: Mutex::new(PathsCache::new()),
-            extract_cache: Mutex::new(SourceExtractCache::new()),
         }
     }
 
@@ -3565,26 +3508,9 @@ mod tests {
         let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(None));
 
         let mut cache = PathsCache::new();
-        let mut extract_cache = SourceExtractCache::new();
-        let (tables1, ssr1, hits1, misses1) = build_dev_route_tables_timed(
-            &router,
-            &plan,
-            dir.path(),
-            &renderer,
-            &mut cache,
-            &mut extract_cache,
-        )
-        .expect("first build");
-        let extract_misses_after_first = extract_cache.miss_count();
-        assert_eq!(
-            extract_cache.hit_count(),
-            0,
-            "first build runs against a cold extract cache (#994 item C)"
-        );
-        assert!(
-            extract_misses_after_first > 0,
-            "first build must parse (and cache) at least one source"
-        );
+        let (tables1, ssr1, hits1, misses1) =
+            build_dev_route_tables_timed(&router, &plan, dir.path(), &renderer, &mut cache)
+                .expect("first build");
         assert_eq!(hits1, 0, "first build runs against a cold cache");
         assert!(misses1 > 0, "first build must record a miss");
         assert_eq!(
@@ -3595,29 +3521,14 @@ mod tests {
             "literal paths() expands to 2 entries: {tables1:?}"
         );
 
-        let (tables2, ssr2, hits2, misses2) = build_dev_route_tables_timed(
-            &router,
-            &plan,
-            dir.path(),
-            &renderer,
-            &mut cache,
-            &mut extract_cache,
-        )
-        .expect("second build");
+        let (tables2, ssr2, hits2, misses2) =
+            build_dev_route_tables_timed(&router, &plan, dir.path(), &renderer, &mut cache)
+                .expect("second build");
         assert!(
             hits2 > 0,
             "unchanged paths() JSON must hit the shared cache"
         );
         assert_eq!(misses2, 0, "second build must add no misses");
-        assert!(
-            extract_cache.hit_count() > 0,
-            "unchanged sources must hit the extract cache (#994 item C)"
-        );
-        assert_eq!(
-            extract_cache.miss_count(),
-            extract_misses_after_first,
-            "second build must add no extract-cache misses"
-        );
         assert_eq!(
             tables1, tables2,
             "cache-sharing builds must produce identical tables"
