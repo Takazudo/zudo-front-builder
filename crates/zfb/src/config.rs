@@ -1515,9 +1515,55 @@ async fn output_bounded(
     name: &str,
 ) -> Result<std::io::Result<std::process::Output>> {
     cmd.kill_on_drop(true);
-    let mut etxtbsy_attempts = 0;
+    output_bounded_with(
+        || {
+            let fut = cmd.output();
+            Box::pin(tokio::time::timeout(timeout, fut))
+                as std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<
+                            Output = Result<
+                                std::io::Result<std::process::Output>,
+                                tokio::time::error::Elapsed,
+                            >,
+                        >,
+                    >,
+                >
+        },
+        timeout,
+        name,
+    )
+    .await
+}
+
+/// Private generic helper that owns the ETXTBSY-classify/sleep/retry/exhaustion
+/// logic for [`output_bounded`]. The `attempt` closure produces one
+/// timeout-wrapped spawn attempt; this helper drives the retry loop.
+///
+/// Using `FnMut() -> Pin<Box<dyn Future<...>>>` rather than a plain
+/// `FnMut() -> Fut` avoids the borrow-checker friction that arises when
+/// re-borrowing `&mut Command` across loop iterations through a named type
+/// parameter (the erased box breaks the lifetime dependency).
+async fn output_bounded_with<F>(
+    mut attempt: F,
+    timeout: std::time::Duration,
+    name: &str,
+) -> Result<std::io::Result<std::process::Output>>
+where
+    F: FnMut() -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                Output = Result<
+                    std::io::Result<std::process::Output>,
+                    tokio::time::error::Elapsed,
+                >,
+            >,
+        >,
+    >,
+{
+    let mut etxtbsy_attempts = 0u32;
     loop {
-        match tokio::time::timeout(timeout, cmd.output()).await {
+        match attempt().await {
             // ETXTBSY ("Text file busy") spawn retry (zfb#1008): the binary
             // being spawned may have JUST been extracted to a tempfile
             // (render_pipeline::embedded_binary). If an unrelated thread
@@ -4428,5 +4474,120 @@ mod tests {
             .expect("spawn failure is the inner io::Result, not the timeout Err");
         let err = result.expect_err("spawning a nonexistent binary must fail");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    // --- output_bounded_with injectable-seam tests --------------------------------
+
+    /// Helper: build the `Pin<Box<dyn Future<...>>>` type alias expected by
+    /// `output_bounded_with` from a pre-resolved `io::Result<Output>`.
+    ///
+    /// `#[cfg(unix)]` because `ExitStatusExt::from_raw` is Unix-only.
+    #[cfg(unix)]
+    fn make_attempt(
+        result: std::io::Result<std::process::Output>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                Output = Result<
+                    std::io::Result<std::process::Output>,
+                    tokio::time::error::Elapsed,
+                >,
+            >,
+        >,
+    > {
+        Box::pin(std::future::ready(Ok(result)))
+    }
+
+    /// `output_bounded_with` retries `ExecutableFileBusy` errors and
+    /// succeeds on the third attempt. Virtual time (`start_paused`) keeps
+    /// the linear-backoff sleeps instant.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn output_bounded_with_retries_etxtbsy_then_succeeds() {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let success_output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: vec![],
+            stderr: vec![],
+        };
+
+        // Attempt returns ETXTBSY twice, then succeeds.
+        let attempt = move || {
+            let n = counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let result: std::io::Result<std::process::Output> = if n < 2 {
+                Err(std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy))
+            } else {
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(0),
+                    stdout: vec![],
+                    stderr: vec![],
+                })
+            };
+            make_attempt(result)
+        };
+
+        let _ = success_output; // suppress unused warning
+
+        let result = output_bounded_with(
+            attempt,
+            std::time::Duration::from_secs(300),
+            "test-retry-succeed",
+        )
+        .await
+        .expect("should succeed after retries");
+
+        assert!(result.is_ok(), "inner result should be Ok on success");
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "expected exactly 3 attempts (2 ETXTBSY + 1 success)"
+        );
+    }
+
+    /// `output_bounded_with` exhausts all ETXTBSY retries and surfaces the
+    /// `ExecutableFileBusy` error as the inner `io::Result`. Virtual time keeps
+    /// the linear-backoff sleeps instant.
+    ///
+    /// Total attempts = `ETXTBSY_MAX_RETRIES + 1` = 6:
+    /// one initial attempt plus up to 5 retries (guard: `etxtbsy_attempts < 5`).
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn output_bounded_with_exhausts_retries_and_surfaces_etxtbsy() {
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let attempt = move || {
+            counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            make_attempt(Err(std::io::Error::from(
+                std::io::ErrorKind::ExecutableFileBusy,
+            )))
+        };
+
+        let result = output_bounded_with(
+            attempt,
+            std::time::Duration::from_secs(300),
+            "test-exhaustion",
+        )
+        .await
+        .expect("exhausted retries should surface as inner Err, not outer bail");
+
+        let err = result.expect_err("should be Err after exhaustion");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::ExecutableFileBusy,
+            "exhausted error must be ExecutableFileBusy"
+        );
+        // Verify the actual loop contract: 1 initial + ETXTBSY_MAX_RETRIES retries.
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            ETXTBSY_MAX_RETRIES + 1,
+            "expected {} total attempts (1 initial + {} retries)",
+            ETXTBSY_MAX_RETRIES + 1,
+            ETXTBSY_MAX_RETRIES,
+        );
     }
 }
