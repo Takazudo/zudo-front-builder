@@ -1286,18 +1286,6 @@ pub fn bundle_with_session(
     // knob. An invalid glob is a hard, clearly-named build error.
     let bundle_exclude = BundleExcludeMatcher::new(&input.bundle_exclude)?;
 
-    // Build the shared materialisation context from the fields of `input`
-    // that are invariant across every materialise_shadow / materialise_collection
-    // call in this bundle() invocation.
-    //
-    // The effective `PipelineSpec` is the input spec with its
-    // `resolve_source_map` knob ALWAYS rewritten from the derivation
-    // above (`Some(map)` when `resolve_markdown_links` is configured,
-    // `None` otherwise) — the bundler owns that knob, so a caller-set
-    // value on `input.pipeline_spec` can never desync from the route
-    // spec (zfb#917).
-    // (constructed below, after the shadow root and writer exist)
-
     // `ZFB_DEV_TIMING=1` — per-call phase split (issue #993 Step 0):
     // `materialise` (tempdir alloc + every materialise walk + diagnostics
     // gates + css rewrite + entry/shim/tsconfig writes), `esbuild` (the
@@ -1332,6 +1320,16 @@ pub fn bundle_with_session(
     let shadow: &Path = &shadow;
     let writer = ShadowWriter::new(shadow.to_path_buf(), session, copy_mode)?;
 
+    // Build the shared materialisation context from the fields of `input`
+    // that are invariant across every materialise_shadow / materialise_collection
+    // call in this bundle invocation.
+    //
+    // The effective `PipelineSpec` is the input spec with its
+    // `resolve_source_map` knob ALWAYS rewritten from the derivation
+    // above (`Some(map)` when `resolve_markdown_links` is configured,
+    // `None` otherwise) — the bundler owns that knob, so a caller-set
+    // value on `input.pipeline_spec` can never desync from the route
+    // spec (zfb#917).
     let mat_ctx = MaterialiseCtx {
         pipeline_spec: {
             let mut spec = input.pipeline_spec.clone();
