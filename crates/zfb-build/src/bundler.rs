@@ -106,6 +106,7 @@
 //! instructing the operator to either set the env var or stage the
 //! binary in the slot.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::fs;
@@ -114,6 +115,7 @@ use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use walkdir::WalkDir;
 
@@ -861,10 +863,346 @@ fn bundler_timing_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Persistent dev shadow-tree session (issue #993).
+///
+/// A plain [`bundle`] call materialises a fresh shadow tempdir, re-writes
+/// every source file into it (~hundreds of creates/writes on a docs-sized
+/// site), and recursively deletes the whole tree at scope exit — pure
+/// filesystem churn when most bytes are unchanged between dev ticks. A
+/// `ShadowSession` keeps ONE shadow tempdir alive for the whole dev
+/// process and lets [`bundle_with_session`] skip byte-identical rewrites
+/// ("compute always, write only if changed" — spec locked by #992 on the
+/// #987 epic).
+///
+/// Safety model:
+///
+/// - **No computation is ever skipped.** Every materialise walk, MDX
+///   compile (cache-hit), `import.meta.glob` expansion, CSS-modules
+///   rewrite, diagnostics drain, and link gate runs exactly as in a fresh
+///   [`bundle`]. Glob expansion and transclude output depend on *other*
+///   files, so any stat-based computation skipping would be unsound. Only
+///   the final `fs::write` of byte-identical content is elided — the
+///   shadow tree (and therefore the bundle bytes, and therefore the #940
+///   skip key) stays byte-for-byte what a fresh build would produce.
+/// - **Stale files are pruned** before esbuild runs: every path written
+///   by the previous call but not visited by this one is deleted, so a
+///   deleted/renamed/newly-excluded source can never leave a stale module
+///   in the bundle (same wrong-output hazard family as #727).
+/// - **Dirty-reset on error** (false-invalidate, never false-reuse — the
+///   #940 spirit): `dirty` is armed on entry and cleared only on success.
+///   A session whose last call failed wipes the shadow dir and
+///   materialises from scratch, so a half-updated tree can never feed
+///   esbuild.
+///
+/// `zfb build` keeps calling [`bundle`], which passes no session — the
+/// production path is byte-for-byte unchanged.
+pub struct ShadowSession {
+    /// The persistent shadow tempdir — lives as long as the session.
+    work: tempfile::TempDir,
+    /// SHA-256 of the last-written bytes per shadow-relative path. Only
+    /// real files written through [`ShadowWriter`] are recorded; symlinks
+    /// and the always-write infra files (entry.mjs / shim / tsconfig)
+    /// are not.
+    written: HashMap<PathBuf, [u8; 32]>,
+    /// Shadow-relative paths visited by the previous call's materialise
+    /// passes — the prune baseline.
+    prev_visited: HashSet<PathBuf>,
+    /// `true` while a call is in flight or after a failed call; cleared
+    /// only when a call returns `Ok`.
+    dirty: bool,
+    /// `copy_mode` of the last call. A mode flip invalidates the whole
+    /// tree — symlink-mode and copy-mode materialise the same source
+    /// differently, so reusing across the flip would mix the two.
+    copy_mode: Option<bool>,
+}
+
+impl ShadowSession {
+    /// Allocate the persistent shadow tempdir for a dev session.
+    pub fn new() -> Result<Self> {
+        let work = tempfile::Builder::new()
+            .prefix("zfb-shadow-session-")
+            .tempdir()
+            .context("shadow session: failed to allocate persistent shadow tempdir")?;
+        Ok(Self {
+            work,
+            written: HashMap::new(),
+            prev_visited: HashSet::new(),
+            dirty: false,
+            copy_mode: None,
+        })
+    }
+
+    /// Root of the persistent shadow tree. Exposed for tests that assert
+    /// on the materialised/pruned file set.
+    pub fn shadow_root(&self) -> &Path {
+        self.work.path()
+    }
+}
+
+/// Remove every entry inside `dir` without removing `dir` itself.
+/// Symlinked children (e.g. the `node_modules` link) are removed as
+/// links, never followed into.
+fn wipe_dir_contents(dir: &Path) -> Result<()> {
+    let entries = fs::read_dir(dir).with_context(|| {
+        format!(
+            "shadow session: failed reading shadow dir {}",
+            dir.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!(
+                "shadow session: failed walking shadow dir {}",
+                dir.display()
+            )
+        })?;
+        let ft = entry.file_type().with_context(|| {
+            format!(
+                "shadow session: failed to stat shadow entry {}",
+                entry.path().display()
+            )
+        })?;
+        let result = if ft.is_dir() {
+            fs::remove_dir_all(entry.path())
+        } else {
+            // Files AND symlinks (symlink_metadata-based file_type reports
+            // a symlink-to-dir as symlink, not dir — remove_file is right).
+            fs::remove_file(entry.path())
+        };
+        result.with_context(|| {
+            format!(
+                "shadow session: failed to wipe shadow entry {}",
+                entry.path().display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Conditional-write seam threaded through [`MaterialiseCtx`] to every
+/// materialise call (issue #993).
+///
+/// In passthrough mode (`session: None` — prod builds and sessionless
+/// callers) each method performs exactly the pre-#993 filesystem
+/// operation. In session mode it skips byte-identical rewrites, records
+/// each visited shadow-relative path for the prune pass, and maintains
+/// the session's `written` hash map.
+struct ShadowWriter<'s> {
+    shadow_root: PathBuf,
+    /// `None` → passthrough. `Some` wraps the borrowed session in a
+    /// `RefCell` so the `&MaterialiseCtx` plumbing (shared refs) can
+    /// still mutate the bookkeeping — all single-threaded within one
+    /// bundle call.
+    session: Option<RefCell<&'s mut ShadowSession>>,
+    /// Shadow-relative paths visited by THIS call (session mode only).
+    visited: RefCell<HashSet<PathBuf>>,
+}
+
+impl<'s> ShadowWriter<'s> {
+    /// Build the writer; in session mode also performs the dirty /
+    /// copy-mode-flip wipe and arms the dirty flag for this call.
+    fn new(
+        shadow_root: PathBuf,
+        session: Option<&'s mut ShadowSession>,
+        copy_mode: bool,
+    ) -> Result<Self> {
+        let session = match session {
+            Some(s) => {
+                if s.dirty || s.copy_mode != Some(copy_mode) {
+                    // Previous call failed mid-flight (or the symlink/copy
+                    // materialise mode flipped): the tree may be
+                    // half-updated, so it must never feed esbuild —
+                    // rebuild it from scratch this call.
+                    wipe_dir_contents(s.work.path())?;
+                    s.written.clear();
+                    s.prev_visited.clear();
+                }
+                s.copy_mode = Some(copy_mode);
+                // Armed for the whole call; cleared by `mark_clean()` only
+                // after esbuild succeeded. An early `?` return anywhere in
+                // `bundle_with_session` leaves it set, forcing the wipe
+                // above on the next call.
+                s.dirty = true;
+                Some(RefCell::new(s))
+            }
+            None => None,
+        };
+        Ok(Self {
+            shadow_root,
+            session,
+            visited: RefCell::new(HashSet::new()),
+        })
+    }
+
+    fn rel_of(&self, to: &Path) -> std::io::Result<PathBuf> {
+        to.strip_prefix(&self.shadow_root)
+            .map(|p| p.to_path_buf())
+            .map_err(|_| {
+                std::io::Error::other(format!(
+                    "shadow writer: {} is not under shadow root {}",
+                    to.display(),
+                    self.shadow_root.display()
+                ))
+            })
+    }
+
+    /// Write `bytes` at `to`, skipping the write when the session already
+    /// wrote identical bytes there. Records the path as visited.
+    fn write_if_changed(&self, to: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.write_inner(to, bytes, true)
+    }
+
+    /// Variant for the in-place `.module.css` rewrite, which walks the
+    /// whole (possibly stale) shadow tree: it must NOT mark paths
+    /// visited — marking a stale file visited would shield it from the
+    /// prune. Legitimate `.module.css` files were already visited by
+    /// their materialise pass this call.
+    fn write_if_changed_no_visit(&self, to: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.write_inner(to, bytes, false)
+    }
+
+    fn write_inner(&self, to: &Path, bytes: &[u8], mark_visited: bool) -> std::io::Result<()> {
+        let Some(cell) = &self.session else {
+            // Passthrough — pre-#993 semantics. The remove-first protects
+            // against writing THROUGH a pre-existing symlink into the
+            // user's source tree (#553); for the plain-write sites it is
+            // a no-op ENOENT unlink (the prod shadow tempdir is fresh).
+            let _ = fs::remove_file(to);
+            return fs::write(to, bytes);
+        };
+        let rel = self.rel_of(to)?;
+        if mark_visited {
+            self.visited.borrow_mut().insert(rel.clone());
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let hash: [u8; 32] = hasher.finalize().into();
+        let mut session = cell.borrow_mut();
+        match session.written.get(&rel) {
+            // Identical bytes already on disk — the whole point: skip.
+            Some(prev) if *prev == hash => Ok(()),
+            // We wrote a (different) regular file here last time — plain
+            // overwrite is safe.
+            Some(_) => {
+                fs::write(to, bytes)?;
+                session.written.insert(rel, hash);
+                Ok(())
+            }
+            // Unknown provenance (first write at this path, or the path
+            // was last created as a symlink): remove first so we never
+            // write THROUGH a symlink (#553).
+            None => {
+                let _ = fs::remove_file(to);
+                fs::write(to, bytes)?;
+                session.written.insert(rel, hash);
+                Ok(())
+            }
+        }
+    }
+
+    /// Copy `from` to `to` through the write-if-changed logic (reads are
+    /// cheap relative to writes — the dev snapshot walk already reads
+    /// every content file each tick).
+    fn copy_if_changed(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        if self.session.is_none() {
+            let _ = fs::remove_file(to);
+            return fs::copy(from, to).map(|_| ());
+        }
+        let bytes = fs::read(from)?;
+        self.write_if_changed(to, &bytes)
+    }
+
+    /// Symlink `target` at `to`, re-creating only when the link is
+    /// missing or points elsewhere. Records the path as visited.
+    fn symlink_if_absent(&self, target: &Path, to: &Path) -> std::io::Result<()> {
+        let Some(cell) = &self.session else {
+            return symlink_or_copy(target, to);
+        };
+        let rel = self.rel_of(to)?;
+        self.visited.borrow_mut().insert(rel.clone());
+        if let Ok(existing) = fs::read_link(to) {
+            if existing == target {
+                return Ok(());
+            }
+        }
+        // (Re-)creating the link invalidates any recorded content hash:
+        // the path's provenance is now "symlink", not "bytes we wrote",
+        // so a later write_if_changed must take the remove-first branch.
+        cell.borrow_mut().written.remove(&rel);
+        symlink_or_copy(target, to)
+    }
+
+    /// Delete stale shadow files (`prev_visited − visited`) — MUST run
+    /// before esbuild so the bundle can never include a module a fresh
+    /// build would not (#727 hazard family). Also commits this call's
+    /// visited set as the next call's prune baseline.
+    fn prune_stale(&self) -> Result<()> {
+        let Some(cell) = &self.session else {
+            return Ok(());
+        };
+        let mut session = cell.borrow_mut();
+        let visited = std::mem::take(&mut *self.visited.borrow_mut());
+        let stale: Vec<PathBuf> = session.prev_visited.difference(&visited).cloned().collect();
+        for rel in stale {
+            // Never prune the node_modules link (defense in depth — the
+            // link bypasses the writer entirely, so it can never appear
+            // in `prev_visited`; keep the guard in case that changes).
+            if rel
+                .components()
+                .next()
+                .is_some_and(|c| c.as_os_str() == "node_modules")
+            {
+                continue;
+            }
+            let abs = self.shadow_root.join(&rel);
+            match fs::remove_file(&abs) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // Any other failure is a hard error: a stale file we
+                // could not remove would feed esbuild wrong input. The
+                // error propagates, dirty stays armed, and the next call
+                // wipes the tree (self-healing).
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!(
+                            "shadow session: failed pruning stale shadow file {}",
+                            abs.display()
+                        )
+                    });
+                }
+            }
+            session.written.remove(&rel);
+        }
+        session.prev_visited = visited;
+        Ok(())
+    }
+
+    /// Success epilogue — the shadow tree now exactly matches this call's
+    /// inputs, so the next call may trust `written` / `prev_visited`.
+    fn mark_clean(&self) {
+        if let Some(cell) = &self.session {
+            cell.borrow_mut().dirty = false;
+        }
+    }
+}
+
 /// Bundle the user's source tree into a single ESM file.
 ///
-/// See the module-level documentation for the full pipeline.
+/// See the module-level documentation for the full pipeline. Production
+/// path: materialises a fresh shadow tempdir per call (no session) —
+/// byte-for-byte the pre-#993 behaviour.
 pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
+    bundle_with_session(input, None)
+}
+
+/// [`bundle`] with an optional persistent dev [`ShadowSession`]
+/// (issue #993). `None` is the production path; `Some` reuses the
+/// session's shadow tree across calls, skipping byte-identical rewrites
+/// and pruning stale files. See [`ShadowSession`] for the safety model.
+pub fn bundle_with_session(
+    input: BundlerInput,
+    session: Option<&mut ShadowSession>,
+) -> Result<BundlerOutput> {
     // 1. Resolve & validate.
     let resolver = PathResolver::new(&input.project_root);
     let pages_dir = resolver.resolve(&input.pages_dir);
@@ -958,16 +1296,7 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     // `None` otherwise) — the bundler owns that knob, so a caller-set
     // value on `input.pipeline_spec` can never desync from the route
     // spec (zfb#917).
-    let mat_ctx = MaterialiseCtx {
-        pipeline_spec: {
-            let mut spec = input.pipeline_spec.clone();
-            spec.resolve_source_map = resolve_source_map;
-            spec
-        },
-        copy_mode,
-        bundle_exclude: &bundle_exclude,
-        project_root: &input.project_root,
-    };
+    // (constructed below, after the shadow root and writer exist)
 
     // `ZFB_DEV_TIMING=1` — per-call phase split (issue #993 Step 0):
     // `materialise` (tempdir alloc + every materialise walk + diagnostics
@@ -979,16 +1308,41 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     let timing_enabled = bundler_timing_enabled();
 
     // 2. Materialise the shadow tree.
+    //
+    // Sessionless (prod): a fresh tempdir per call, recursively deleted at
+    // the end (`owned_work`). Session mode (#993): reuse the session's
+    // persistent tempdir; `ShadowWriter::new` handles the dirty-wipe and
+    // arms the dirty flag.
     let materialise_start = if timing_enabled {
         Some(std::time::Instant::now())
     } else {
         None
     };
-    let work = tempfile::Builder::new()
-        .prefix("zfb-bundler-")
-        .tempdir()
-        .context("bundler: failed to allocate shadow tempdir")?;
-    let shadow = work.path();
+    let (owned_work, shadow) = match &session {
+        Some(s) => (None, s.work.path().to_path_buf()),
+        None => {
+            let work = tempfile::Builder::new()
+                .prefix("zfb-bundler-")
+                .tempdir()
+                .context("bundler: failed to allocate shadow tempdir")?;
+            let path = work.path().to_path_buf();
+            (Some(work), path)
+        }
+    };
+    let shadow: &Path = &shadow;
+    let writer = ShadowWriter::new(shadow.to_path_buf(), session, copy_mode)?;
+
+    let mat_ctx = MaterialiseCtx {
+        pipeline_spec: {
+            let mut spec = input.pipeline_spec.clone();
+            spec.resolve_source_map = resolve_source_map;
+            spec
+        },
+        copy_mode,
+        bundle_exclude: &bundle_exclude,
+        project_root: &input.project_root,
+        writer: &writer,
+    };
 
     let shadow_pages = shadow.join("pages");
     let shadow_content = shadow.join("content");
@@ -1223,13 +1577,29 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     if let Some(ref nm_dir) = input.node_modules_dir {
         let shadow_nm = shadow.join("node_modules");
         #[cfg(unix)]
-        std::os::unix::fs::symlink(nm_dir, &shadow_nm).with_context(|| {
-            format!(
-                "bundler: failed to symlink node_modules {} → {}",
-                nm_dir.display(),
-                shadow_nm.display()
-            )
-        })?;
+        {
+            // Session mode (#993) reuses the persistent shadow across
+            // calls, so the link usually already exists — re-creating it
+            // unconditionally would fail with AlreadyExists. Recreate only
+            // when missing or pointing elsewhere. (Sessionless path: the
+            // tempdir is fresh, read_link fails, behaviour is identical
+            // to the previous unconditional symlink.) The link bypasses
+            // the ShadowWriter bookkeeping entirely — the prune pass can
+            // never see it, and guards against it anyway.
+            let already_correct = fs::read_link(&shadow_nm)
+                .map(|t| &t == nm_dir)
+                .unwrap_or(false);
+            if !already_correct {
+                let _ = fs::remove_file(&shadow_nm);
+                std::os::unix::fs::symlink(nm_dir, &shadow_nm).with_context(|| {
+                    format!(
+                        "bundler: failed to symlink node_modules {} → {}",
+                        nm_dir.display(),
+                        shadow_nm.display()
+                    )
+                })?;
+            }
+        }
         #[cfg(not(unix))]
         {
             // On Windows, attempt a directory junction.
@@ -1456,8 +1826,13 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     //     `import styles from "./x.module.css"; styles.foo` resolve to
     //     the scoped class string at bundle time. See the module-level
     //     `ESBUILD_LOADER_ARGS` doc and `BundlerInput::css_module_class_maps`.
-    rewrite_css_modules_in_shadow(shadow, &input.project_root, &input.css_module_class_maps)
-        .context("bundler: failed rewriting CSS Modules in shadow tree")?;
+    rewrite_css_modules_in_shadow(
+        shadow,
+        &input.project_root,
+        &input.css_module_class_maps,
+        &writer,
+    )
+    .context("bundler: failed rewriting CSS Modules in shadow tree")?;
 
     // 2f. Project-root `mdx-components.tsx` global override map (#616).
     //     A root-level FILE is not materialised by any pass above, so copy
@@ -1468,13 +1843,18 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     //     without the convention.
     let mdx_components_import_spec: Option<String> = match input.mdx_components_file.as_ref() {
         Some(src) => Some(
-            materialise_mdx_components_file(src, shadow)
+            materialise_mdx_components_file(src, shadow, &writer)
                 .context("bundler: failed materialising mdx-components.tsx into shadow")?,
         ),
         None => None,
     };
 
     // 3. Hydration shim.
+    //
+    // Always-write infra file: written unconditionally every call (like
+    // the tsconfig and entry.mjs below), so it bypasses the #993
+    // ShadowWriter — never recorded as visited, therefore never eligible
+    // for the prune pass, which only deletes previously-visited paths.
     let shim_path = shadow.join(SHADOW_HYDRATE_FILENAME);
     fs::write(&shim_path, adapter.hydrate_shim_source()).with_context(|| {
         format!(
@@ -1553,6 +1933,17 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
         },
     )
     .context("bundler: failed writing entry.mjs")?;
+
+    // 5b. Prune stale shadow files (#993 — session mode only, no-op
+    //     otherwise). MUST run before esbuild: a deleted/renamed/newly-
+    //     excluded source's compiled artifact would otherwise stay in the
+    //     persistent tree and esbuild would bundle a module a fresh build
+    //     would not (the #727 wrong-output hazard family). Runs after ALL
+    //     materialise passes so the visited set is complete; the
+    //     `.zfb-virtual-*.mjs` NamedTempFiles are created inside
+    //     `run_esbuild` AFTER this pass and self-delete — they never
+    //     interact with the prune.
+    writer.prune_stale()?;
     let materialise_ms = materialise_start.map(|t| t.elapsed().as_millis());
 
     // 6. Resolve and run esbuild (or the mock).
@@ -1599,15 +1990,21 @@ pub fn bundle(input: BundlerInput) -> Result<BundlerOutput> {
     };
     let post_ms = post_start.map(|t| t.elapsed().as_millis());
 
+    // The whole call succeeded — the session's shadow tree exactly matches
+    // this call's inputs, so the next call may reuse it (dirty cleared).
+    writer.mark_clean();
+
     // Teardown — the shadow TempDir's recursive delete. Dropped explicitly
     // here (instead of implicitly at scope exit) so the unlink storm is
     // measurable; behavior is identical (this is already the last use).
+    // Session mode: `owned_work` is `None` (the persistent tree outlives
+    // the call), so teardown is ~0ms by construction.
     let teardown_start = if timing_enabled {
         Some(std::time::Instant::now())
     } else {
         None
     };
-    drop(work);
+    drop(owned_work);
     let teardown_ms = teardown_start.map(|t| t.elapsed().as_millis());
 
     if timing_enabled {
@@ -1759,9 +2156,18 @@ fn enumerate_extra_top_level_dirs(project_root: &Path, known_skip_list: &[&str])
 ///
 /// Returns the shadow-relative import specifier (always
 /// `./mdx-components.tsx`) that the synthetic `entry.mjs` imports.
-fn materialise_mdx_components_file(src: &Path, shadow: &Path) -> Result<String> {
+fn materialise_mdx_components_file(
+    src: &Path,
+    shadow: &Path,
+    writer: &ShadowWriter<'_>,
+) -> Result<String> {
     let dst = shadow.join(MDX_COMPONENTS_FILENAME);
-    fs::copy(src, &dst).with_context(|| {
+    // Routed through the #993 writer (NOT an always-write infra file):
+    // the override file is user-deletable, so it must take part in the
+    // visited/prune bookkeeping — a deleted mdx-components.tsx must
+    // vanish from the persistent shadow, else an explicit user import of
+    // it would resolve in dev but fail in a fresh build.
+    writer.copy_if_changed(src, &dst).with_context(|| {
         format!(
             "bundler: failed copying mdx-components file {} → {}",
             src.display(),
@@ -1821,8 +2227,10 @@ fn symlink_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
 ///
 /// Uses `follow_links(true)` so the subtree's own contents (including any
 /// nested symlinks) are dereferenced and written as real files. Infra dirs
-/// are pruned with the same predicate the top-level walks use.
-fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+/// are pruned with the same predicate the top-level walks use. Copies
+/// route through `writer` (#993) so the persistent shadow session skips
+/// byte-identical rewrites and tracks the files for the prune pass.
+fn copy_dir_recursive(src: &Path, dest: &Path, writer: &ShadowWriter<'_>) -> std::io::Result<()> {
     fs::create_dir_all(dest)?;
     for entry in WalkDir::new(src)
         .follow_links(true)
@@ -1842,8 +2250,7 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
             if let Some(parent) = to.parent() {
                 fs::create_dir_all(parent)?;
             }
-            let _ = fs::remove_file(&to);
-            fs::copy(from, &to)?;
+            writer.copy_if_changed(from, &to)?;
         }
     }
     Ok(())
@@ -1859,8 +2266,9 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
 ///
 /// Lifetime `'a` is the lifetime of the references borrowed from the
 /// [`bundle`] stack frame (i.e. `&BundlerInput` fields and the
-/// `bundle_exclude` local).
-struct MaterialiseCtx<'a> {
+/// `bundle_exclude` / `writer` locals); `'s` is the [`ShadowSession`]
+/// borrow inside the writer (invariant, so it cannot be folded into `'a`).
+struct MaterialiseCtx<'a, 's> {
     /// Effective pipeline knob set shared by all MDX compile calls —
     /// `input.pipeline_spec` with `resolve_source_map` rewritten from
     /// `input.resolve_markdown_links` (see [`bundle`]). Both walkers
@@ -1880,6 +2288,11 @@ struct MaterialiseCtx<'a> {
     /// Project root — used by `materialise_shadow` for the `bundle.exclude`
     /// relativisation step.
     project_root: &'a Path,
+    /// Conditional-write seam (#993): passthrough for prod, write-if-
+    /// changed + visited bookkeeping for the persistent dev shadow
+    /// session. Every shadow write in the materialise passes routes
+    /// through this.
+    writer: &'a ShadowWriter<'s>,
 }
 
 /// Recursively copy `src` into `dest`, transforming `.mdx` files via
@@ -1897,7 +2310,7 @@ fn materialise_shadow(
     src: &Path,
     dest: &Path,
     routes: &mut Vec<RouteEntry>,
-    ctx: &MaterialiseCtx<'_>,
+    ctx: &MaterialiseCtx<'_, '_>,
     broken_links_out: &mut Vec<(String, String)>,
     markdown_diagnostics_out: &mut Vec<MarkdownDiagnostic>,
     cross_file_links_out: &mut Vec<CrossFileLinkCandidate>,
@@ -2004,7 +2417,7 @@ fn materialise_shadow(
             // Explicitly copy the symlinked subtree as real files in that
             // mode. Low-frequency, but a hole otherwise.
             if ctx.copy_mode && entry.path_is_symlink() && from.is_dir() {
-                copy_dir_recursive(from, &to).with_context(|| {
+                copy_dir_recursive(from, &to, ctx.writer).with_context(|| {
                     format!(
                         "bundler: failed copying symlinked subdir {} -> {} under copy_mode",
                         from.display(),
@@ -2102,7 +2515,8 @@ fn materialise_shadow(
             // build-wide after ALL walks complete (gate 2c-anchor).
             cross_file_links_out.extend(pipeline.take_cross_file_link_candidates());
             file_headings_out.extend(pipeline.take_file_headings());
-            fs::write(&to, compiled.jsx_source.as_bytes())
+            ctx.writer
+                .write_if_changed(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
         } else if is_md && is_pages_dir {
             // .md page: compile via the MDX pipeline then wrap in a minimal
@@ -2175,14 +2589,16 @@ fn materialise_shadow(
                 .parent()
                 .map(|p| p.join(&body_filename))
                 .unwrap_or_else(|| PathBuf::from(&body_filename));
-            fs::write(&body_shadow_path, compiled.jsx_source.as_bytes())
+            ctx.writer
+                .write_if_changed(&body_shadow_path, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write md body to {}", body_shadow_path.display()))?;
             // Shell module at the original `.md` shadow path.
             // Prefix the body import with "./" so esbuild resolves it as a
             // relative path (bare names are interpreted as package specifiers).
             let body_import = format!("./{body_filename}");
             let shell = render_md_page_shell(&frontmatter_value, &slug_fallback, &body_import);
-            fs::write(&to, shell.as_bytes())
+            ctx.writer
+                .write_if_changed(&to, shell.as_bytes())
                 .with_context(|| format!("write md page shell to {}", to.display()))?;
         } else {
             // Non-MDX source: copy/symlink, expanding eager
@@ -2191,7 +2607,7 @@ fn materialise_shadow(
             // threaded into the glob expansion (#665's `is_excluded` seam) so
             // an excluded file is never emitted as a static import — which
             // would otherwise make esbuild error on the generated import.
-            materialise_source_file(from, &to, &is_excluded, ctx.copy_mode)?;
+            materialise_source_file(from, &to, &is_excluded, ctx.copy_mode, ctx.writer)?;
         }
 
         // Routes only collected from the pages root.
@@ -2355,6 +2771,7 @@ fn rewrite_css_modules_in_shadow(
     shadow: &Path,
     project_root: &Path,
     class_maps: &HashMap<PathBuf, HashMap<String, String>>,
+    writer: &ShadowWriter<'_>,
 ) -> Result<()> {
     // FIX #553: use `entry.path().is_file()` instead of
     // `entry.file_type().is_file()` so .module.css symlinks materialised
@@ -2396,26 +2813,26 @@ fn rewrite_css_modules_in_shadow(
         let names = class_maps.get(&original);
         let js = render_css_module_js(names);
 
-        // FIX #553 (critical): replace the symlink in the shadow before
-        // writing, so we never write THROUGH the symlink and corrupt
-        // the user's source file in the project root. Mirrors the same
-        // pattern used by symlink_or_copy (bundler.rs:1385).
+        // FIX #553 (critical): never write THROUGH the symlink (that
+        // would corrupt the user's source file in the project root).
+        // `write_if_changed*` preserves this contract in both modes:
+        // passthrough removes the entry first unconditionally; session
+        // mode removes it whenever the path's last recorded provenance
+        // is not "bytes we wrote" (a fresh symlink drops the record).
         //
-        // The error is intentionally discarded with `let _ =`, NOT
-        // `?`: when the shadow entry is a regular file (no symlink to
-        // remove) or NotFound (already gone), the subsequent
-        // `fs::write` will succeed and overwrite cleanly. A real
-        // permission or filesystem failure will surface immediately on
-        // the `fs::write` call below with a useful error context. Do
-        // not "helpfully" change this to `?` — it would convert
-        // benign NotFound cases into spurious build failures.
-        let _ = fs::remove_file(path);
-        fs::write(path, js.as_bytes()).with_context(|| {
-            format!(
-                "bundler: failed writing CSS Modules JS shim to {}",
-                path.display()
-            )
-        })?;
+        // `_no_visit` variant (#993): this walk visits the WHOLE shadow
+        // tree, including files whose source was deleted this tick —
+        // marking those visited would shield them from the prune pass.
+        // Legit `.module.css` files were already marked visited by their
+        // materialise pass.
+        writer
+            .write_if_changed_no_visit(path, js.as_bytes())
+            .with_context(|| {
+                format!(
+                    "bundler: failed writing CSS Modules JS shim to {}",
+                    path.display()
+                )
+            })?;
     }
     Ok(())
 }
@@ -2493,7 +2910,7 @@ fn materialise_collection(
     dest: &Path,
     collection_name: &str,
     imports: &mut Vec<ContentImport>,
-    ctx: &MaterialiseCtx<'_>,
+    ctx: &MaterialiseCtx<'_, '_>,
     include: Option<&[String]>,
     exclude: Option<&[String]>,
     id_strip_suffix: Option<&str>,
@@ -2574,7 +2991,7 @@ fn materialise_collection(
             // stays mirrored in the shadow (see the matching block in
             // `materialise_shadow`).
             if ctx.copy_mode && entry.path_is_symlink() && from.is_dir() {
-                copy_dir_recursive(from, &to).with_context(|| {
+                copy_dir_recursive(from, &to, ctx.writer).with_context(|| {
                     format!(
                         "bundler: failed copying symlinked subdir {} -> {} under copy_mode",
                         from.display(),
@@ -2683,7 +3100,8 @@ fn materialise_collection(
             // Drain cross-file anchor-check side channels (#980).
             cross_file_links_out.extend(pipeline.take_cross_file_link_candidates());
             file_headings_out.extend(pipeline.take_file_headings());
-            fs::write(&to, compiled.jsx_source.as_bytes())
+            ctx.writer
+                .write_if_changed(&to, compiled.jsx_source.as_bytes())
                 .with_context(|| format!("write compiled mdx to {}", to.display()))?;
 
             // Defensive skip — see [`jsx_likely_breaks_downstream_parser`].
@@ -2729,7 +3147,7 @@ fn materialise_collection(
         } else {
             // Non-MDX source in a content collection: same eager
             // `import.meta.glob(...)` expansion as the page/component pass.
-            materialise_source_file(from, &to, &|_| false, ctx.copy_mode)?;
+            materialise_source_file(from, &to, &|_| false, ctx.copy_mode, ctx.writer)?;
         }
     }
     Ok(())
@@ -3050,6 +3468,7 @@ fn materialise_source_file(
     to: &Path,
     is_excluded: &dyn Fn(&Path) -> bool,
     copy_mode: bool,
+    writer: &ShadowWriter<'_>,
 ) -> Result<()> {
     let is_js_like = matches!(
         from.extension().and_then(|s| s.to_str()),
@@ -3064,10 +3483,14 @@ fn materialise_source_file(
                 let file_dir = from.parent().unwrap_or_else(|| Path::new("."));
                 let expanded = expand_import_meta_glob(&source, file_dir, is_excluded)
                     .with_context(|| format!("expand import.meta.glob in {}", from.display()))?;
-                // Remove any pre-existing entry (e.g. a stale symlink from a
-                // prior persistent-shadow pass) before writing the real file.
-                let _ = fs::remove_file(to);
-                fs::write(to, expanded.as_bytes())
+                // The expansion is recomputed from the LIVE project tree on
+                // every call (glob output depends on *other* files), so the
+                // #993 write-if-changed skip is sound: a glob-matched file
+                // appearing/vanishing changes `expanded` and forces the
+                // write. The writer's remove-first handles a pre-existing
+                // stale symlink at `to`.
+                writer
+                    .write_if_changed(to, expanded.as_bytes())
                     .with_context(|| format!("write expanded source to {}", to.display()))?;
                 return Ok(());
             }
@@ -3077,12 +3500,12 @@ fn materialise_source_file(
         // Force a real copy so esbuild (running WITHOUT --preserve-symlinks)
         // reads this file — and any in-shadow transform it relatively imports
         // — from the shadow tree, not the canonicalised original.
-        let _ = fs::remove_file(to);
-        fs::copy(from, to)
-            .map(|_| ())
+        writer
+            .copy_if_changed(from, to)
             .with_context(|| format!("copy (copy_mode) {} -> {}", from.display(), to.display()))
     } else {
-        symlink_or_copy(from, to)
+        writer
+            .symlink_if_absent(from, to)
             .with_context(|| format!("symlink_or_copy {} -> {}", from.display(), to.display()))
     }
 }
@@ -4567,7 +4990,13 @@ mod tests {
         let mut maps = HashMap::new();
         maps.insert(project_root.join("components/card.module.css"), names);
 
-        rewrite_css_modules_in_shadow(shadow_root, project_root, &maps).unwrap();
+        rewrite_css_modules_in_shadow(
+            shadow_root,
+            project_root,
+            &maps,
+            leaked_passthrough_writer(),
+        )
+        .unwrap();
 
         let mapped = fs::read_to_string(shadow_root.join("components/card.module.css")).unwrap();
         assert!(mapped.contains("sc0_card"), "mapped module: {mapped}");
@@ -5159,7 +5588,8 @@ mod tests {
         let shadow = tempfile::tempdir().unwrap();
         let shadow_root = shadow.path();
 
-        let spec = materialise_mdx_components_file(&src, shadow_root).unwrap();
+        let spec = materialise_mdx_components_file(&src, shadow_root, leaked_passthrough_writer())
+            .unwrap();
         assert_eq!(spec, "./mdx-components.tsx");
 
         // A real copy lands in the shadow root (so esbuild resolves its
@@ -7505,13 +7935,30 @@ mod tests {
     fn default_mat_ctx<'a>(
         project_root: &'a Path,
         exclude: &'a BundleExcludeMatcher,
-    ) -> MaterialiseCtx<'a> {
+    ) -> MaterialiseCtx<'a, 'static> {
         MaterialiseCtx {
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: false,
             bundle_exclude: exclude,
             project_root,
+            writer: leaked_passthrough_writer(),
         }
+    }
+
+    /// Sessionless `ShadowWriter` for test call sites — passthrough mode
+    /// performs exactly the pre-#993 fs operations. Leaked (`Box::leak`)
+    /// so `default_mat_ctx` can hand out a `'static` borrow without
+    /// changing its many call sites; the struct is a few words, leaked
+    /// once per test call.
+    fn leaked_passthrough_writer() -> &'static ShadowWriter<'static> {
+        Box::leak(Box::new(
+            ShadowWriter::new(
+                PathBuf::from("/nonexistent-passthrough-shadow"),
+                None,
+                false,
+            )
+            .expect("passthrough writer construction is infallible"),
+        ))
     }
 
     /// Create a tempdir, write `(rel, body)` files (creating parent dirs),

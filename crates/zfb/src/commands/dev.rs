@@ -75,7 +75,7 @@ use anyhow::{Context, Result};
 use sha2::{Digest as _, Sha256};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use zfb_build::bundler::{bundle, BundleMode, BundlerOutput};
+use zfb_build::bundler::{bundle_with_session, BundleMode, BundlerOutput, ShadowSession};
 use zfb_build::renderer::{
     render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
 };
@@ -1384,6 +1384,19 @@ struct DevRenderInner {
     /// labels) — no narrowing that tick.
     #[cfg(feature = "embed_v8")]
     fm_hashes: Mutex<HashMap<PathBuf, [u8; 32]>>,
+
+    /// Persistent dev shadow-tree session (issue #993): the bundler
+    /// reuses one shadow tempdir across all ticks, skipping
+    /// byte-identical rewrites ("compute always, write only if
+    /// changed" — see [`zfb_build::bundler::ShadowSession`] for the
+    /// safety model). Created at boot ([`boot_dev_renderer`]) and used
+    /// for the boot bundle AND every refresh, so both go through the
+    /// identical assembly path + shadow tree (#659 parity by
+    /// construction). The lock is held only across the P1 bundle step
+    /// of [`DevRenderSession::refresh_bundle_and_routes`] — it never
+    /// overlaps the renderer mutex, so SSR latency is unaffected.
+    #[cfg(feature = "embed_v8")]
+    shadow_session: Mutex<Option<ShadowSession>>,
 }
 
 /// Per-source route filter for one narrowed tick (issue #958): which of a
@@ -1773,14 +1786,32 @@ impl DevRenderSession {
         //    construction incl. embedded esbuild extraction), bundle/esbuild
         //    (subprocess or embedded runner).
         let p1_snapshot_start = tick_start.map(|_| std::time::Instant::now());
-        let bundle_result = assemble_and_bundle_dev(
-            project_root,
-            &inputs.cfg,
-            inputs.plugin_alias_entries.clone(),
-            inputs.plugin_virtual_modules.clone(),
-            timing_enabled,
-        )
-        .context("dev refresh: re-bundle failed")?;
+        let bundle_result = {
+            // #993 — the persistent shadow session lock is scoped to the
+            // P1 bundle step only: it is released before the P2 renderer-
+            // mutex work below, so it can never overlap the renderer
+            // mutex (SSR latency unaffected). On a bundle error the `?`
+            // drops the guard and propagates above the swap — the
+            // previous renderer keeps serving and the session's dirty
+            // flag (set inside bundle_with_session) forces a from-scratch
+            // materialise next tick.
+            let mut session_guard = self.inner.shadow_session.lock().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "refresh_bundle_and_routes",
+                    "shadow session mutex poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            assemble_and_bundle_dev(
+                project_root,
+                &inputs.cfg,
+                inputs.plugin_alias_entries.clone(),
+                inputs.plugin_virtual_modules.clone(),
+                timing_enabled,
+                session_guard.as_mut(),
+            )
+            .context("dev refresh: re-bundle failed")?
+        };
         let p1_total_ms = p1_snapshot_start.map(|t| t.elapsed().as_millis());
         // Sub-phase split is reported by assemble_and_bundle_dev into the
         // BundleSubTiming fields when timing_enabled.
@@ -2104,6 +2135,11 @@ fn assemble_and_bundle_dev(
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
     timing_enabled: bool,
+    // Persistent dev shadow-tree session (issue #993). Both the boot
+    // bundle and every refresh pass the SAME session through this seam,
+    // so boot and refresh share one assembly path AND one shadow tree —
+    // #659 configuration parity by construction.
+    shadow_session: Option<&mut ShadowSession>,
 ) -> Result<AssembledBundleResult> {
     // Embed the content snapshot so a page's `getStaticProps()` (and any
     // runtime `paths()`) sees the same collection data the production
@@ -2157,7 +2193,8 @@ fn assemble_and_bundle_dev(
     } else {
         None
     };
-    let bundler_out: BundlerOutput = bundle(bundler_input).context("bundler step failed")?;
+    let bundler_out: BundlerOutput =
+        bundle_with_session(bundler_input, shadow_session).context("bundler step failed")?;
     let bundle_ms = bnd_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
     let sub_timing = if timing_enabled {
@@ -2631,6 +2668,11 @@ fn boot_dev_renderer(
         plugin_virtual_modules: plugin_virtual_modules.clone(),
     };
 
+    // Persistent dev shadow-tree session (issue #993) — created once
+    // here, used for the boot bundle below, then stored on
+    // `DevRenderInner` so every refresh reuses the same shadow tree.
+    let mut shadow_session = ShadowSession::new()?;
+
     // Boot path — timing not collected here (one-shot at startup, not a
     // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
     let bundler_out: BundlerOutput = assemble_and_bundle_dev(
@@ -2639,6 +2681,7 @@ fn boot_dev_renderer(
         plugin_alias_entries,
         plugin_virtual_modules,
         false,
+        Some(&mut shadow_session),
     )?
     .output;
 
@@ -2692,6 +2735,7 @@ fn boot_dev_renderer(
             // No successful refresh yet — first tick always runs fully.
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(fm_hashes),
+            shadow_session: Mutex::new(Some(shadow_session)),
         }),
     })
 }
@@ -3306,6 +3350,7 @@ mod tests {
             },
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),
+            shadow_session: Mutex::new(None),
         }
     }
 
