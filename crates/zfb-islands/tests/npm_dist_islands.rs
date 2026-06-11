@@ -290,6 +290,47 @@ fn bare_import_from_inside_a_package_is_not_followed() {
     assert_eq!(scan_component_names(&page), vec!["Widget".to_string()]);
 }
 
+/// ESM-only contract (traversal policy point 5): the scanner does not
+/// implement CJS `module.exports` analysis. A regular package that exposes
+/// only a `require` condition (no `import`/`module`/`default`) has no ESM
+/// entry to resolve, so nothing is scanned and no island is emitted — even
+/// when the would-be CJS file contains a `"use client"` directive. This
+/// keeps CJS-only dependencies silently inert rather than mis-registered.
+#[test]
+fn require_only_cjs_package_yields_no_island() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    let pkg = root.join("node_modules/@acme/legacy");
+    write(
+        &pkg.join("package.json"),
+        r#"{ "name": "@acme/legacy",
+            "exports": { ".": { "require": "./dist/index.cjs" } } }"#,
+    );
+    // A CJS file — even if it carried a directive, there is no `import`
+    // condition to route the scanner here.
+    write(
+        &pkg.join("dist/index.cjs"),
+        r#""use client";
+        function Legacy() { return null; }
+        module.exports = { Legacy };
+        "#,
+    );
+
+    let page = root.join("pages/home.tsx");
+    write(
+        &page,
+        r#"import { Legacy } from "@acme/legacy";
+        export default function Home() { return null; }
+        "#,
+    );
+
+    assert!(
+        scan_component_names(&page).is_empty(),
+        "a require-only CJS package must contribute no islands"
+    );
+}
+
 /// When a local project-source component and a package-provided component
 /// share a marker name (e.g. both named `ThemeToggle`), the scanner emits
 /// two distinct islands (keyed by `(source_path, name)`), and the manifest
