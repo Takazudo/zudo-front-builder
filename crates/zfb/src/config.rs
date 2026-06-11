@@ -1506,10 +1506,7 @@ async fn load_from_ts_file(ts_path: &Path, dir: &Path, opts: &LoadOptions) -> Re
 type AttemptFut = std::pin::Pin<
     Box<
         dyn std::future::Future<
-            Output = Result<
-                std::io::Result<std::process::Output>,
-                tokio::time::error::Elapsed,
-            >,
+            Output = Result<std::io::Result<std::process::Output>, tokio::time::error::Elapsed>,
         >,
     >,
 >;
