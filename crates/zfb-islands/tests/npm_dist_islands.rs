@@ -227,7 +227,7 @@ fn issue_999_theme_toggle_shape_via_subpath_export_is_registered() {
     );
 
     let resolver = FsResolver::new();
-    let islands = scan_islands(&[page.clone()], &resolver).expect("scan");
+    let islands = scan_islands(std::slice::from_ref(&page), &resolver).expect("scan");
     let island = islands
         .iter()
         .find(|i| i.component_name == "ThemeToggle")
@@ -335,7 +335,7 @@ fn duplicate_marker_name_across_sources_is_recorded_as_a_collision() {
     );
 
     let resolver = FsResolver::new();
-    let islands = scan_islands(&[page.clone()], &resolver).expect("scan");
+    let islands = scan_islands(std::slice::from_ref(&page), &resolver).expect("scan");
     // Two distinct source files, same marker name.
     let theme_islands: Vec<&PathBuf> = islands
         .iter()
