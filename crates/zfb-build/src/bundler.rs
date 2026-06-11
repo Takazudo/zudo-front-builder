@@ -987,6 +987,46 @@ fn wipe_dir_contents(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Canonicalize the shadow tree root so esbuild emits byte-deterministic
+/// source-path comments (issue #1006).
+///
+/// PLATFORM KNOWLEDGE (not recoverable from the code): on macOS the system
+/// temp dir (`$TMPDIR`, where every shadow tempdir is allocated) lives under
+/// `/var/folders/...`, and `/var` is a symlink to `/private/var`. esbuild
+/// canonicalizes the OUTFILE path through the OS (so it lands on
+/// `/private/var/...`) but takes the entry/source paths as given. When the
+/// shadow root is the raw `/var/...` form, the outfile and the sources sit on
+/// two different path roots (`/var` vs `/private/var`), so esbuild's
+/// outbase-relative path math has to walk all the way up to `/` and back down
+/// — embedding the full absolute tail (including the tempdir's random
+/// basename) into each `// <path>` module comment. Two independent shadow
+/// tempdirs (a persistent `ShadowSession` vs an ephemeral `bundle()` call)
+/// have DIFFERENT basenames, so those comments diverge and the bundle bytes
+/// differ — corrupting the #940 skip key, which hashes these bytes. Resolving
+/// the symlink here puts the shadow on the same `/private/var` root the
+/// outfile already resolves to, so esbuild emits clean relative comments with
+/// no tempdir name. Linux's `/tmp` is not a symlink, so this is a no-op there
+/// (which is why the divergence is macOS-only).
+///
+/// Gated to macOS: on Windows `fs::canonicalize` returns `\\?\`-prefixed
+/// verbatim paths, which would newly reach esbuild's entry/outfile args on a
+/// platform no CI runs tests on — and the underlying symlink divergence does
+/// not exist there (`%TEMP%` is not a symlink).
+#[cfg(target_os = "macos")]
+fn canonical_shadow_root(work: &Path) -> Result<PathBuf> {
+    fs::canonicalize(work).with_context(|| {
+        format!(
+            "bundler: failed to canonicalize shadow root {}",
+            work.display()
+        )
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn canonical_shadow_root(work: &Path) -> Result<PathBuf> {
+    Ok(work.to_path_buf())
+}
+
 /// Conditional-write seam threaded through [`MaterialiseCtx`] to every
 /// materialise call (issue #993).
 ///
@@ -1403,13 +1443,13 @@ pub fn bundle_with_session(
         None
     };
     let (owned_work, shadow) = match &session {
-        Some(s) => (None, s.work.path().to_path_buf()),
+        Some(s) => (None, canonical_shadow_root(s.work.path())?),
         None => {
             let work = tempfile::Builder::new()
                 .prefix("zfb-bundler-")
                 .tempdir()
                 .context("bundler: failed to allocate shadow tempdir")?;
-            let path = work.path().to_path_buf();
+            let path = canonical_shadow_root(work.path())?;
             (Some(work), path)
         }
     };
