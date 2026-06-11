@@ -3,7 +3,7 @@ name = "zfb-test-utils"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
-description = "Shared test helpers for zfb integration tests (std-only, no runtime dependencies)"
+description = "Shared test helpers for zfb integration tests"
 
 [lib]
 
@@ -21,3 +21,12 @@ description = "Shared test helpers for zfb integration tests (std-only, no runti
 # errors at compile time.
 html5ever = "0.27"
 markup5ever_rcdom = "0.3"
+
+# SSE / live-reload test helpers (promoted from
+# crates/zfb-server/tests/integration.rs, #1018). reqwest stays
+# default-features-off: the helpers only ever stream from plain-HTTP
+# 127.0.0.1 dev servers, so no TLS backend is needed.
+anyhow = { workspace = true }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+tokio = { version = "1", features = ["sync", "time"] }

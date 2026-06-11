@@ -20,6 +20,7 @@ use zfb_build::BuildOutcome;
 use zfb_graph::PageId;
 use zfb_server::livereload::{outcome_to_events, ReloadEvent};
 use zfb_server::{serve_with_listener, PageCache, ServeOpts};
+use zfb_test_utils::{next_sse_event_name, wait_for_subscribers};
 
 /// All the per-test handles we need: the bound address, the page
 /// cache (so the test can populate it), the broadcast sender (so the
@@ -319,60 +320,10 @@ async fn unknown_path_returns_404() {
     );
 }
 
-/// Wait until the broadcast channel has at least `min` live receivers,
-/// or until `dur` elapses. Returns `true` if the count was reached.
-///
-/// This eliminates the timing race between "the SSE handler hooked up
-/// its subscriber" and "the test fires a broadcast event" — without
-/// relying on a fixed `sleep` that's flaky on slow CI.
-async fn wait_for_subscribers(
-    tx: &broadcast::Sender<ReloadEvent>,
-    min: usize,
-    dur: Duration,
-) -> bool {
-    let start = std::time::Instant::now();
-    while start.elapsed() < dur {
-        if tx.receiver_count() >= min {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    tx.receiver_count() >= min
-}
-
-/// Read a `text/event-stream` body chunk-by-chunk and return the first
-/// `event:` line we observe. Times out after `dur` so a missing event
-/// fails the test fast rather than hanging the suite.
-async fn next_sse_event_name(
-    resp: reqwest::Response,
-    dur: Duration,
-) -> anyhow::Result<Option<String>> {
-    let mut stream = resp.bytes_stream();
-    let mut buf = Vec::<u8>::new();
-
-    let task = async {
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            buf.extend_from_slice(&chunk);
-            // Look for any `event: <name>\n` line in what we have so far.
-            let s = std::str::from_utf8(&buf).unwrap_or("");
-            for line in s.lines() {
-                if let Some(rest) = line.strip_prefix("event:") {
-                    let name = rest.trim().to_string();
-                    if !name.is_empty() {
-                        return Ok::<Option<String>, anyhow::Error>(Some(name));
-                    }
-                }
-            }
-        }
-        Ok(None)
-    };
-
-    match timeout(dur, task).await {
-        Ok(res) => res,
-        Err(_) => Ok(None),
-    }
-}
+// `wait_for_subscribers` + `next_sse_event_name` were promoted to
+// `zfb-test-utils` (#1018) so the `zfb dev` E2E harness
+// (`crates/zfb/tests/dev_serve_e2e.rs`) can reuse them — see the
+// `use zfb_test_utils::...` import at the top of this file.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sse_emits_page_event_on_rebuild() {

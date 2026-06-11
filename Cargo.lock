@@ -5785,6 +5785,7 @@ dependencies = [
  "zfb-build",
  "zfb-graph",
  "zfb-islands",
+ "zfb-test-utils",
  "zfb-types",
  "zfb-watcher",
 ]
@@ -5793,8 +5794,12 @@ dependencies = [
 name = "zfb-test-utils"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "futures-util",
  "html5ever",
  "markup5ever_rcdom",
+ "reqwest",
+ "tokio",
 ]
 
 [[package]]
