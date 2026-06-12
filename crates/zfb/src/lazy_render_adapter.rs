@@ -28,22 +28,35 @@
 //!    #1025 contract — the claim/render pair is serialized against P2
 //!    host swaps), render via [`zfb_build::renderer::render_one`] into
 //!    a scratch dir, read the bytes back, release the mutex.
-//! 6. Write through [`RequestWriter::request_write`] (#1024): the same
-//!    validate → byte-dedup → atomic-write → commit discipline as the
-//!    tick path, under the tick-vs-request exclusion lock.
-//! 7. [`DevRenderSession::clear_stale_claim`] — ABA-safe: a tick that
-//!    re-staled the route mid-render keeps it stale for the next
-//!    request.
+//! 6. Write through [`RequestWriter::request_write_guarded`] (#1024 /
+//!    #1027): the same validate → byte-dedup → atomic-write → commit
+//!    discipline as the tick path, under the tick-vs-request exclusion
+//!    lock — guarded by a revalidation closure
+//!    ([`DevRenderSession::claim_is_current`]) that re-checks, under
+//!    that same exclusion, that no tick touched the route in the
+//!    renderer-release → write gap. A tick completing in that gap
+//!    either eagerly re-rendered the route (fresher bytes on disk, its
+//!    stale entry evicted) or re-staled it at a bumped generation; in
+//!    both cases the closure answers `false` and the write is SKIPPED —
+//!    an unguarded write would overwrite newer HTML with bytes rendered
+//!    against the older host and then mark the route fresh (silent
+//!    stale serve until the next edit, the #1027 lazy race).
+//! 7. [`DevRenderSession::clear_stale_claim`] — only after a
+//!    non-skipped write; ABA-safe: a tick that re-staled the route
+//!    mid-render keeps it stale for the next request.
 //!
 //! ## Lock ordering (deadlock-critical)
 //!
 //! A tick's [`zfb_build::DevAssetPipeline::apply`] holds the pipeline
 //! exclusion lock for the whole tick and takes the renderer mutex
 //! inside it (render fan-out, host swap). The request path therefore
-//! must NEVER hold the renderer mutex while calling `request_write`
-//! (which takes the exclusion lock) — that inverted nesting would
-//! deadlock against any in-flight tick. The flow above releases the
-//! renderer mutex at the end of step 5, strictly before step 6.
+//! must NEVER hold the renderer mutex while calling
+//! `request_write_guarded` (which takes the exclusion lock) — that
+//! inverted nesting would deadlock against any in-flight tick. The flow
+//! above releases the renderer mutex at the end of step 5, strictly
+//! before step 6; the #1027 revalidation closure runs inside the
+//! exclusion but only reads the stale map (a leaf lock ticks also take
+//! inside their exclusion window), never the renderer mutex.
 //! Similarly the routes `RwLock` is released by `lookup_by_url` before
 //! the renderer mutex is taken (the entry is cloned out — the dev.rs
 //! `render_one` clone-out pattern).
@@ -66,9 +79,9 @@
 //!   no-op. No in-flight set in v1 (same stance as the SSR adapter's
 //!   documented "host is single-threaded anyway").
 //! - A route that vanishes in a tick AFTER the claim was captured but
-//!   BEFORE the write lands can be re-materialised on disk once; the
-//!   tick's table swap evicted its stale entry, so `clear_stale_claim`
-//!   is a no-op and the orphan is pruned by the next vanish diff.
+//!   BEFORE the write lands is NOT re-materialised: the tick's table
+//!   swap evicted its stale entry, so the #1027 revalidation fails and
+//!   the guarded write is skipped — no orphan ever reaches disk.
 //!
 //! ## Error contract
 //!
@@ -84,7 +97,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use zfb_build::pipeline::RequestWriter;
+use zfb_build::pipeline::{GuardedWriteOutcome, RequestWriter};
 use zfb_build::renderer::{render_one, RouteUniverseEntry};
 use zfb_server::{RenderOnRequestHandle, RenderOnRequestHook};
 
@@ -141,6 +154,13 @@ pub(crate) enum LazyRenderOutcome {
     /// Rendered and wrote. `written == false` means the bytes were
     /// byte-identical to the dedup cache's copy (write skipped).
     Rendered { written: bool },
+    /// Rendered, but the write was skipped (#1027 lazy race): the
+    /// guarded write's revalidation found the claim no longer current —
+    /// a tick completing in the renderer-release → write gap either
+    /// eagerly re-rendered the route (its fresher bytes survive on
+    /// disk) or re-staled it at a newer generation (the entry stays
+    /// stale; the next request re-renders). The claim is NOT cleared.
+    WriteSuperseded,
     /// The render failed; logged, file untouched, claim kept (next
     /// request retries).
     RenderFailed,
@@ -208,15 +228,20 @@ impl LazyRenderAdapter {
         };
 
         // Unified request-time write (#1024). The renderer mutex is
-        // released by now — request_write takes the pipeline exclusion
-        // lock, and holding both in inverted order would deadlock
-        // against an in-flight tick.
+        // released by now — request_write_guarded takes the pipeline
+        // exclusion lock, and holding both in inverted order would
+        // deadlock against an in-flight tick. The revalidation closure
+        // (#1027) re-checks UNDER that exclusion that the claim is
+        // still exactly current — a tick completing in the gap between
+        // the renderer-mutex release and here would otherwise have its
+        // fresher state silently overwritten by these older bytes.
         let write_started = Instant::now();
         match self
             .writer
-            .request_write(&self.html_root, &entry.output_path, bytes)
-        {
-            Ok(outcome) => {
+            .request_write_guarded(&self.html_root, &entry.output_path, bytes, || {
+                self.session.claim_is_current(&claim)
+            }) {
+            Ok(GuardedWriteOutcome::Written(outcome)) => {
                 self.session.clear_stale_claim(&claim);
                 if timing {
                     eprintln!(
@@ -233,6 +258,18 @@ impl LazyRenderAdapter {
                 LazyRenderOutcome::Rendered {
                     written: outcome.written,
                 }
+            }
+            Ok(GuardedWriteOutcome::Skipped) => {
+                // A tick superseded this render mid-gap. Do NOT clear
+                // the claim: an evicted entry needs no clear, and a
+                // re-staled one must stay stale for the next request.
+                tracing::debug!(
+                    site = "LazyRenderAdapter",
+                    url = url_path,
+                    output = %entry.output_path.display(),
+                    "lazy render superseded by a tick mid-gap; write skipped (#1027)"
+                );
+                LazyRenderOutcome::WriteSuperseded
             }
             Err(err) => {
                 output::error(format!(
@@ -401,11 +438,38 @@ mod tests {
         }
     }
 
+    /// One-shot hook slot consumed by [`gap_hooked_handler`] on its
+    /// FIRST dispatch — the deterministic seam for replaying a tick
+    /// interleaving in the renderer-release → write gap (#1027): the
+    /// stub dispatch runs strictly AFTER the authoritative claim is
+    /// captured (under the renderer mutex) and strictly BEFORE the
+    /// adapter's guarded write takes the exclusion lock, so effects run
+    /// here land in exactly the gap the revalidation closes. (The hook
+    /// runs while the test's renderer mutex is held — harmless here
+    /// since no real tick thread exists to deadlock against; only the
+    /// ordering relative to the adapter's own write matters.)
+    type GapHook = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
+
+    /// Wrap `inner` so the [`GapHook`], if armed, fires once before the
+    /// dispatch.
+    fn gap_hooked_handler(
+        inner: Arc<dyn Fn(&str) -> HttpResponseLike + Send + Sync>,
+        hook: GapHook,
+    ) -> Arc<dyn Fn(&str) -> HttpResponseLike + Send + Sync> {
+        Arc::new(move |url| {
+            if let Some(f) = hook.lock().unwrap().take() {
+                f();
+            }
+            inner(url)
+        })
+    }
+
     struct Harness {
         adapter: LazyRenderAdapter,
         session: DevRenderSession,
         hits: Arc<AtomicUsize>,
         html_root: tempfile::TempDir,
+        writer: RequestWriter,
     }
 
     /// One stub-rendered session + adapter over `routes`, with a fresh
@@ -420,7 +484,30 @@ mod tests {
         lazy_render: bool,
     ) -> Harness {
         let hits = Arc::new(AtomicUsize::new(0));
-        let state = stub_renderer_state(counting_handler(Arc::clone(&hits), resp));
+        let handler = counting_handler(Arc::clone(&hits), resp);
+        harness_from_handler(routes, handler, hits, lazy_render)
+    }
+
+    /// [`harness`] with a [`GapHook`] spliced in front of the stub
+    /// dispatch, for the #1027 gap-interleave tests.
+    fn harness_hooked(
+        routes: Vec<(PathBuf, Vec<RouteUniverseEntry>)>,
+        resp: HttpResponseLike,
+    ) -> (Harness, GapHook) {
+        let hook: GapHook = Arc::new(Mutex::new(None));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let handler =
+            gap_hooked_handler(counting_handler(Arc::clone(&hits), resp), Arc::clone(&hook));
+        (harness_from_handler(routes, handler, hits, true), hook)
+    }
+
+    fn harness_from_handler(
+        routes: Vec<(PathBuf, Vec<RouteUniverseEntry>)>,
+        handler: Arc<dyn Fn(&str) -> HttpResponseLike + Send + Sync>,
+        hits: Arc<AtomicUsize>,
+        lazy_render: bool,
+    ) -> Harness {
+        let state = stub_renderer_state(handler);
         let session = stub_session_for_adapter_tests(
             PathBuf::new(),
             routes,
@@ -429,9 +516,10 @@ mod tests {
         );
         let html_root = tempfile::tempdir().expect("html root tempdir");
         let pipeline = DevAssetPipeline::new();
+        let writer = pipeline.request_writer();
         let adapter = LazyRenderAdapter::new(
             session.clone(),
-            pipeline.request_writer(),
+            writer.clone(),
             html_root.path().to_path_buf(),
         );
         Harness {
@@ -439,6 +527,7 @@ mod tests {
             session,
             hits,
             html_root,
+            writer,
         }
     }
 
@@ -633,6 +722,136 @@ mod tests {
                 .claim_stale(Path::new("posts/a/index.html"))
                 .is_none(),
             "dedup-skipped write still clears the claim"
+        );
+    }
+
+    /// THE #1027 lazy race, eager-rewrite shape: a tick completes in
+    /// the renderer-release → write gap, eagerly re-renders the route
+    /// with fresher bytes (through the shared write path, evicting its
+    /// stale entry as `lazy_render_tick` does). The request's late
+    /// write must be SKIPPED — the tick's bytes survive on disk and in
+    /// the dedup cache, and the route serves fresh. An unguarded write
+    /// here would silently roll the route back to the older host's
+    /// bytes and mark it fresh.
+    #[tokio::test]
+    async fn tick_eager_rewrite_in_gap_supersedes_request_write() {
+        let (h, hook) = harness_hooked(
+            posts_route(),
+            html_response("<html><body>request-old</body></html>"),
+        );
+        h.session
+            .mark_routes_stale([PathBuf::from("posts/a/index.html")]);
+
+        let session = h.session.clone();
+        let writer = h.writer.clone();
+        let html_root = h.html_root.path().to_path_buf();
+        *hook.lock().unwrap() = Some(Box::new(move || {
+            // The interleaving tick: fresher bytes reach disk through
+            // the shared write path, then the eager render evicts the
+            // route's stale entry (both inside apply()'s exclusion
+            // window in production).
+            writer
+                .request_write(
+                    &html_root,
+                    Path::new("posts/a/index.html"),
+                    b"tick-fresh".to_vec(),
+                )
+                .unwrap();
+            session.clear_routes_stale(&[PathBuf::from("posts/a/index.html")]);
+        }));
+
+        assert_eq!(
+            h.adapter.render_stale_route("/posts/a"),
+            LazyRenderOutcome::WriteSuperseded
+        );
+
+        assert_eq!(h.hits.load(Ordering::SeqCst), 1, "the render did run");
+        assert_eq!(
+            std::fs::read(h.html_root.path().join("posts/a/index.html")).unwrap(),
+            b"tick-fresh",
+            "the tick's fresher bytes survive the late request write"
+        );
+        assert!(
+            h.session
+                .claim_stale(Path::new("posts/a/index.html"))
+                .is_none(),
+            "the route serves fresh — no stale entry was (re-)created"
+        );
+        // The dedup cache still holds the tick's copy: the skipped
+        // write committed nothing.
+        assert!(
+            !h.writer
+                .request_write(
+                    h.html_root.path(),
+                    Path::new("posts/a/index.html"),
+                    b"tick-fresh".to_vec(),
+                )
+                .unwrap()
+                .written,
+            "re-sending the tick's bytes must dedup — the skipped write left the cache untouched"
+        );
+    }
+
+    /// THE #1027 lazy race, re-stale shape: a tick in the gap bumps the
+    /// generation (P4 table swap) and re-stales the same route — the
+    /// request's bytes describe an older world. The write is skipped
+    /// AND the entry remains stale, so the NEXT request re-renders
+    /// against the newer host and lands its write.
+    #[tokio::test]
+    async fn tick_re_stale_in_gap_skips_write_and_keeps_entry() {
+        let (h, hook) = harness_hooked(
+            posts_route(),
+            html_response("<html><body>gap-render</body></html>"),
+        );
+        let stale_file = h.html_root.path().join("posts/a/index.html");
+        std::fs::create_dir_all(stale_file.parent().unwrap()).unwrap();
+        std::fs::write(&stale_file, "stale-but-served").unwrap();
+        h.session
+            .mark_routes_stale([PathBuf::from("posts/a/index.html")]);
+
+        let session = h.session.clone();
+        *hook.lock().unwrap() = Some(Box::new(move || {
+            // The interleaving tick: P4 swap bumps the generation, then
+            // the lazy split re-stales the route at the new generation.
+            session.bump_stale_generation();
+            session.mark_routes_stale([PathBuf::from("posts/a/index.html")]);
+        }));
+
+        assert_eq!(
+            h.adapter.render_stale_route("/posts/a"),
+            LazyRenderOutcome::WriteSuperseded
+        );
+        assert_eq!(h.hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            std::fs::read_to_string(&stale_file).unwrap(),
+            "stale-but-served",
+            "the superseded write never touched disk"
+        );
+        assert!(
+            h.session
+                .claim_stale(Path::new("posts/a/index.html"))
+                .is_some(),
+            "the entry must remain stale — the next request re-renders"
+        );
+
+        // The next request (no interference): renders against the
+        // current world, passes revalidation, writes, clears the claim.
+        assert_eq!(
+            h.adapter.render_stale_route("/posts/a"),
+            LazyRenderOutcome::Rendered { written: true }
+        );
+        assert_eq!(h.hits.load(Ordering::SeqCst), 2);
+        assert!(
+            std::fs::read_to_string(&stale_file)
+                .unwrap()
+                .contains("gap-render"),
+            "the retry's bytes reached disk"
+        );
+        assert!(
+            h.session
+                .claim_stale(Path::new("posts/a/index.html"))
+                .is_none(),
+            "the retry cleared the claim"
         );
     }
 

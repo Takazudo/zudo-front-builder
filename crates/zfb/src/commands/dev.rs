@@ -1523,6 +1523,28 @@ impl DevRenderInner {
             }
         }
     }
+
+    /// Revalidation read for the guarded request-time write (issue
+    /// #1027 lazy race): `true` iff the stale entry for the claim's
+    /// route still exists AND still records exactly the claim's
+    /// generation — i.e. no tick touched the route since the claim was
+    /// captured under the renderer mutex.
+    ///
+    /// Either kind of mid-gap tick interference flips this `false`:
+    ///
+    /// - an eager re-render EVICTED the entry ([`Self::clear_stale`]) —
+    ///   the tick's fresher bytes are on disk and must survive;
+    /// - a re-stale at a bumped generation ([`Self::note_table_swap`] +
+    ///   [`Self::mark_stale`]) — the request's bytes describe an older
+    ///   world; the entry stays stale so the next request re-renders.
+    ///
+    /// Called by the lazy render adapter from INSIDE the pipeline
+    /// exclusion lock (via `request_write_guarded`), where no tick can
+    /// be in flight — the answer cannot go stale before the write.
+    fn claim_is_current(&self, claim: &StaleClaim) -> bool {
+        let stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+        stale.entries.get(&claim.output_path) == Some(&claim.generation)
+    }
 }
 
 /// One expanded route plus its `paths()` provenance (issue #958).
@@ -1965,11 +1987,35 @@ impl DevRenderSession {
         self.inner.clear_if_current(claim)
     }
 
+    /// Forward of [`DevRenderInner::claim_is_current`] for the lazy
+    /// render adapter's guarded-write revalidation (issue #1027 lazy
+    /// race). See `claim_is_current` for the exact freshness predicate.
+    pub(crate) fn claim_is_current(&self, claim: &StaleClaim) -> bool {
+        self.inner.claim_is_current(claim)
+    }
+
     /// Test-only seam: mark routes stale so adapter tests can inject
     /// staleness state without driving a whole watcher tick.
     #[cfg(test)]
     pub(crate) fn mark_routes_stale<I: IntoIterator<Item = PathBuf>>(&self, output_paths: I) {
         self.inner.mark_stale(output_paths)
+    }
+
+    /// Test-only seam: simulate the tick-side eager-render eviction
+    /// ([`DevRenderInner::clear_stale`]) so adapter tests can replay a
+    /// tick interleaving in the renderer-release → write gap (#1027).
+    #[cfg(test)]
+    pub(crate) fn clear_routes_stale(&self, output_paths: &[PathBuf]) {
+        self.inner.clear_stale(output_paths)
+    }
+
+    /// Test-only seam: simulate the P4 table-swap generation bump
+    /// ([`DevRenderInner::note_table_swap`] with nothing vanished) so
+    /// adapter tests can replay a mid-gap re-stale at a newer
+    /// generation (#1027).
+    #[cfg(test)]
+    pub(crate) fn bump_stale_generation(&self) {
+        self.inner.note_table_swap(&[])
     }
 
     /// Return the URL patterns of every page that exports
@@ -5259,6 +5305,44 @@ mod tests {
                 );
             }
 
+            /// #1027 guarded-write revalidation predicate: a claim is
+            /// current iff its entry still exists at EXACTLY the
+            /// claimed generation. Both mid-gap interference shapes
+            /// must flip it false — eviction by a tick's eager
+            /// re-render, and a re-stale at a bumped (P4 table-swap)
+            /// generation.
+            #[test]
+            fn claim_is_current_tracks_eviction_and_generation_bump() {
+                let inner = bare_inner();
+                inner.mark_stale([out("blog/a/index.html")]);
+                let claim = inner.claim(Path::new("blog/a/index.html")).unwrap();
+                assert!(
+                    inner.claim_is_current(&claim),
+                    "an untouched claim is current"
+                );
+
+                // Mid-gap shape 1: a tick eagerly re-rendered the route
+                // and evicted its stale entry.
+                inner.clear_stale(&[out("blog/a/index.html")]);
+                assert!(
+                    !inner.claim_is_current(&claim),
+                    "an evicted entry must fail revalidation"
+                );
+
+                // Mid-gap shape 2: a tick re-staled the route after its
+                // P4 generation bump.
+                inner.note_table_swap(&[]);
+                inner.mark_stale([out("blog/a/index.html")]);
+                assert!(
+                    !inner.claim_is_current(&claim),
+                    "a re-stale at a newer generation must fail the equality check"
+                );
+
+                // A fresh claim at the new generation is current again.
+                let new_claim = inner.claim(Path::new("blog/a/index.html")).unwrap();
+                assert!(inner.claim_is_current(&new_claim));
+            }
+
             #[test]
             fn table_swap_evicts_vanished_stale_entries() {
                 let inner = bare_inner();
@@ -5451,6 +5535,83 @@ mod tests {
                         .claim(Path::new("blog/a/index.html"))
                         .is_some(),
                     "stale entries persist past the tick-buffer drain"
+                );
+            }
+
+            /// Live stub host (`Backend::Stub`) installed into the
+            /// session so a lazy tick's EAGER render can actually
+            /// succeed — `render_one` drives the stub closure exactly
+            /// like a live V8 host.
+            fn install_stub_renderer(session: &DevRenderSession, body: &'static str) {
+                use std::collections::BTreeMap;
+                use zfb_build::renderer::{start, Backend, HttpResponseLike, RendererStartInput};
+                let state = start(RendererStartInput {
+                    // Ignored by `Backend::Stub` (no bundle is loaded).
+                    bundle_path: PathBuf::from("stub-bundle.mjs"),
+                    sourcemap_path: PathBuf::from("stub-bundle.mjs.map"),
+                    backend: Backend::Stub {
+                        handler: Arc::new(move |_url| HttpResponseLike {
+                            status: 200,
+                            content_type: "text/html; charset=utf-8".into(),
+                            headers: BTreeMap::new(),
+                            body: body.as_bytes().to_vec(),
+                        }),
+                    },
+                    request_timeout: None,
+                })
+                .expect("stub renderer must start");
+                *session.inner.renderer.lock().unwrap() = Some(state);
+            }
+
+            /// #1027 tick-side pin for the lazy race: a lazy tick that
+            /// EAGERLY re-renders a route EVICTS its stale entry —
+            /// inside `apply()`'s exclusion window in production
+            /// (`lazy_render_tick` runs as the render callback) — so a
+            /// request claim captured against the OLDER world fails the
+            /// guarded-write revalidation instead of overwriting the
+            /// tick's fresher bytes.
+            #[test]
+            fn lazy_tick_eager_render_evicts_prior_stale_entry() {
+                let (tmp, cfg) = scaffold(&[("a.mdx", "title: A")]);
+                let session = lazy_session_at(&tmp, cfg, matrix_routes());
+                install_stub_renderer(&session, "<html><body>tick-fresh</body></html>");
+
+                // An earlier tick staled the route; a request claimed it.
+                session.inner.mark_stale([out("blog/a/index.html")]);
+                let _ = session.inner.take_tick_stale();
+                let claim = session.inner.claim(Path::new("blog/a/index.html")).unwrap();
+
+                // Body edit tick: blog/a is the eager set.
+                let edited = write_entry(tmp.path(), "a.mdx", "title: A", "updated body");
+                let hint = hint_for(&[edited]);
+                let dist = tmp.path().join("dist");
+                std::fs::create_dir_all(&dist).unwrap();
+                let rendered = lazy_render_tick(&session, &dist, &matrix_pages(), Some(&hint))
+                    .expect("the eager render succeeds against the stub host");
+
+                assert_eq!(
+                    rendered.len(),
+                    1,
+                    "exactly the eager own route rendered: {rendered:?}"
+                );
+                assert!(
+                    session
+                        .inner
+                        .claim(Path::new("blog/a/index.html"))
+                        .is_none(),
+                    "the eager render must evict the route's prior stale entry"
+                );
+                assert!(
+                    !session.inner.claim_is_current(&claim),
+                    "a request claim captured before the tick must now fail revalidation"
+                );
+                // The stale remainder is untouched by the eviction.
+                assert!(
+                    session
+                        .inner
+                        .claim(Path::new("blog/b/index.html"))
+                        .is_some(),
+                    "non-eager routes stay stale"
                 );
             }
 
