@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use zfb_graph::PageId;
 
 use crate::atomic::{atomic_write, validate_output_path};
-use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome, RefreshOutcome};
+use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome, RefreshOutcome, StaleProbe};
 use crate::plan::{PageSelection, RebuildPlan};
 
 // ── Internal write/dedup component ──────────────────────────────────────────
@@ -234,15 +234,41 @@ impl WriteCache {
 // ── Public pipeline ──────────────────────────────────────────────────────────
 
 /// The default `zfb dev`-mode asset pipeline.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct DevAssetPipeline {
     cache: WriteCache,
+    /// Issue #1025 (lazy dev render): optional probe draining the routes
+    /// the renderer marked stale this tick into
+    /// [`BuildOutcome::pages_stale`]. `None` (tests, production-shaped
+    /// callers) leaves the field empty.
+    stale_probe: Option<StaleProbe>,
+}
+
+impl std::fmt::Debug for DevAssetPipeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DevAssetPipeline")
+            .field("cache", &self.cache)
+            .field(
+                "stale_probe",
+                &self.stale_probe.as_ref().map(|_| "<callback>"),
+            )
+            .finish()
+    }
 }
 
 impl DevAssetPipeline {
     /// Construct a fresh pipeline with no last-bytes cache.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct a pipeline that fills [`BuildOutcome::pages_stale`]
+    /// from `probe` after every tick (issue #1025 — lazy dev render).
+    pub fn with_stale_probe(probe: StaleProbe) -> Self {
+        Self {
+            cache: WriteCache::default(),
+            stale_probe: Some(probe),
+        }
     }
 
     /// Forget the last-bytes and last-output caches. Useful when the
@@ -487,6 +513,16 @@ impl AssetPipeline for DevAssetPipeline {
             if let Some(run) = &ctx.run_client_scripts {
                 outcome.client_scripts_changed = run()?;
             }
+        }
+
+        // 5. Stale routes (issue #1025 — lazy dev render). Drain the
+        // renderer's per-tick stale buffer into the outcome. The render
+        // callback (and the reloader's route-table/stale-state updates)
+        // completed above, so by construction the staleness map already
+        // describes the new world by the time this outcome reaches
+        // `on_outcome`. Empty on every tick while the lazy switch is off.
+        if let Some(probe) = &self.stale_probe {
+            outcome.pages_stale = probe();
         }
 
         Ok(outcome)

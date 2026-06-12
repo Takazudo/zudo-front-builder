@@ -82,7 +82,7 @@ pub use pipeline::{
     CssRunner, DevAssetPipeline, DevBuildContext, EmittedAsset, IslandsBundleInfo, IslandsRunner,
     PageRenderer, ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile,
     ProductionAssetPipeline, ProductionEmitters, RefreshOutcome, RelDistPath, RenderedPage,
-    RendererReloader,
+    RendererReloader, StaleProbe,
 };
 pub use plan::{ContentNarrowing, PageSelection, RebuildPlan};
 pub use plugin_registries::{
