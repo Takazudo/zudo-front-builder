@@ -34,8 +34,13 @@
 //!
 //! ## Event mapping rules
 //!
-//! - `outcome.pages_written.len() > 0` **or** `outcome.client_scripts_changed`
+//! - `outcome.pages_written.len() > 0` **or** `outcome.pages_stale.len() > 0`
+//!   **or** `outcome.client_scripts_changed`
 //!   ⇒  emit one [`ReloadEvent::Page`] (deduplicated — at most one per tick).
+//!   `pages_stale` (issue #1027) covers the lazy dev-render default: a tick
+//!   that rendered nothing eagerly but marked routes stale must still tell
+//!   the browser to reload — the reload's GET is what triggers the
+//!   request-time re-render.
 //! - `outcome.css_changed`              ⇒  emit one [`ReloadEvent::Css`].
 //! - `outcome.islands_bundle.is_some()` ⇒  emit one
 //!   [`ReloadEvent::Islands`] per re-bundled component, carrying the
@@ -137,12 +142,18 @@ pub use zfb_build::IslandsBundleInfo;
 /// `component`; it reads only `bundleUrl` to construct the swap URL.
 pub fn outcome_to_events(outcome: &BuildOutcome) -> Vec<ReloadEvent> {
     let mut events = Vec::new();
-    // Emit a single Page event if either pages were written OR the
-    // client-scripts bundle changed. Both cases require a full browser
-    // reload: re-rendered HTML may reference new page structure, and a
-    // changed `dist/assets/client/<name>.js` file is only picked up on
-    // a full document reload (v1 has no hot-swap event for client scripts).
-    if !outcome.pages_written.is_empty() || outcome.client_scripts_changed {
+    // Emit a single Page event if pages were written, OR routes were
+    // marked stale (issue #1027 — the lazy dev-render default: nothing
+    // rendered eagerly this tick, but the browser must reload so its
+    // GET triggers the request-time re-render; #1025 pins the ordering
+    // so the stale map and route tables are committed before this
+    // outcome exists), OR the client-scripts bundle changed (a changed
+    // `dist/assets/client/<name>.js` file is only picked up on a full
+    // document reload — v1 has no hot-swap event for client scripts).
+    if !outcome.pages_written.is_empty()
+        || !outcome.pages_stale.is_empty()
+        || outcome.client_scripts_changed
+    {
         events.push(ReloadEvent::Page);
     }
     if outcome.css_changed {
@@ -337,6 +348,65 @@ mod tests {
         assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
     }
 
+    /// Issue #1027 — a fully-lazy tick writes NOTHING eagerly; it only
+    /// marks routes stale. The browser must still receive exactly one
+    /// `Page` event: the reload's GET is what triggers the request-time
+    /// re-render, so suppressing the event would leave every open tab
+    /// permanently stale under the lazy default.
+    #[test]
+    fn pages_stale_only_emits_single_page_event() {
+        let outcome = BuildOutcome {
+            pages_stale: vec![std::path::PathBuf::from("posts/b/index.html")],
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
+    }
+
+    /// Issue #1027 — a mixed lazy tick (eager own-route write + stale
+    /// remainder, the content-edit shape) must dedupe to exactly ONE
+    /// Page event, same as the written+client-scripts pin above.
+    #[test]
+    fn pages_written_and_stale_dedupe_to_single_page_event() {
+        let outcome = BuildOutcome {
+            pages_written: vec![pid("posts/a/index.html")],
+            pages_stale: vec![
+                std::path::PathBuf::from("index.html"),
+                std::path::PathBuf::from("posts/b/index.html"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
+    }
+
+    /// Issue #1027 — stale marks combine with the other event kinds the
+    /// same way written pages do: one Page, then Css.
+    #[test]
+    fn pages_stale_and_css_emits_both() {
+        let outcome = BuildOutcome {
+            pages_stale: vec![std::path::PathBuf::from("index.html")],
+            css_changed: true,
+            css_rerun: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            outcome_to_events(&outcome),
+            vec![ReloadEvent::Page, ReloadEvent::Css]
+        );
+    }
+
+    /// Issue #1027 — stale marks + client scripts still dedupe to one
+    /// Page event.
+    #[test]
+    fn pages_stale_and_client_scripts_dedupe_to_single_page_event() {
+        let outcome = BuildOutcome {
+            pages_stale: vec![std::path::PathBuf::from("index.html")],
+            client_scripts_rerun: true,
+            client_scripts_changed: true,
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
+    }
+
     #[test]
     fn islands_rerun_without_bundle_info_emits_nothing() {
         // The flags say a rerun ran but the runner populated no
@@ -453,6 +523,7 @@ mod tests {
     fn event_names_match_browser_protocol() {
         // The strings here MUST match the addEventListener calls in
         // src/livereload.js.
+        let script = include_str!("livereload.js");
         assert_eq!(ReloadEvent::Page.name(), "page");
         assert_eq!(ReloadEvent::Css.name(), "css");
         assert_eq!(
@@ -462,6 +533,37 @@ mod tests {
             }
             .name(),
             "islands"
+        );
+        for name in ["page", "css", "islands"] {
+            assert!(
+                script.contains(&format!("addEventListener(\"{name}\"")),
+                "livereload.js must subscribe to the `{name}` event"
+            );
+        }
+    }
+
+    /// Issue #1027 — the browser script must derive the SSE stream URL
+    /// from its own `<script src>` (which IS base-prefix-aware,
+    /// inject.rs `livereload_tag`) instead of hardcoding the unprefixed
+    /// `/__zfb/reload`. Pins both the derivation mechanism
+    /// (`document.currentScript`) and the unprefixed fallback literal
+    /// (kept for non-currentScript execution contexts).
+    #[test]
+    fn browser_script_derives_stream_url_from_script_src() {
+        let script = include_str!("livereload.js");
+        assert!(
+            script.contains("document.currentScript"),
+            "livereload.js must read document.currentScript to honor the \
+             dev server's base prefix"
+        );
+        assert!(
+            script.contains("/__zfb/reload"),
+            "livereload.js must keep the unprefixed fallback stream URL"
+        );
+        assert!(
+            !script.contains("new EventSource(\"/__zfb/reload\")"),
+            "the EventSource constructor must not hardcode the unprefixed \
+             stream URL — base-prefixed dev servers would never connect"
         );
     }
 

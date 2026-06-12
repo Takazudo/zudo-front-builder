@@ -2191,7 +2191,16 @@ mod tests {
 
         let body = body_string(resp).await;
         assert!(body.contains("EventSource"));
+        // The unprefixed literal survives only as the no-currentScript
+        // fallback (issue #1027): the stream URL is derived from the
+        // script tag's own src so a `base`-prefixed dev server connects
+        // to <base>/__zfb/reload instead of 404ing on the bare path.
         assert!(body.contains("/__zfb/reload"));
+        assert!(
+            body.contains("document.currentScript"),
+            "served livereload.js must derive the SSE stream URL from its \
+             own script src (base-prefix awareness)"
+        );
     }
 
     #[tokio::test]
