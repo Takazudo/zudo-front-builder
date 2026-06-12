@@ -456,11 +456,25 @@ where
     T: DeserializeOwned + garde::Validate<Context = ()>,
 {
     let mut files: Vec<PathBuf> = Vec::new();
-    collect_collection_files(dir, &mut files).map_err(|e| CollectionError::Io {
-        path: dir.to_path_buf(),
-        source: e,
+    let mut skipped_data_files: Vec<PathBuf> = Vec::new();
+    collect_collection_files(dir, &mut files, &mut skipped_data_files).map_err(|e| {
+        CollectionError::Io {
+            path: dir.to_path_buf(),
+            source: e,
+        }
     })?;
     files.sort();
+    skipped_data_files.sort();
+
+    // Warn only for data files the consumer's include/exclude globs have
+    // not already filtered out (zfb#1032) — those are the only ones being
+    // *silently* dropped, which is what the #856 warning exists for.
+    for path in warnable_data_files(dir, &skipped_data_files, filter) {
+        eprintln!(
+            "zfb warning: unsupported data-file extension in collection — file will be skipped: {}",
+            path.display()
+        );
+    }
 
     // Apply include + exclude globs against POSIX-normalised relative
     // paths. The fast-path skips the per-entry check entirely when no
@@ -689,7 +703,11 @@ fn data_type_for(schema: Option<&JsonValue>, indent: usize) -> String {
 // internals
 // -----------------------------------------------------------------------------
 
-fn collect_collection_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn collect_collection_files(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    skipped_data_files: &mut Vec<PathBuf>,
+) -> std::io::Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -714,19 +732,42 @@ fn collect_collection_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Resu
         // `WalkDir::follow_links(false)` in zfb-router::scan.
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            collect_collection_files(&path, out)?;
+            collect_collection_files(&path, out, skipped_data_files)?;
         } else if file_type.is_file() {
             if is_collection_entry(&path) {
                 out.push(path);
             } else if is_unsupported_data_file(&path) {
-                eprintln!(
-                    "zfb warning: unsupported data-file extension in collection — file will be skipped: {}",
-                    path.display()
-                );
+                // Collected instead of warned inline: the caller owns the
+                // include/exclude filter, and only data files the consumer
+                // has NOT already filtered out deserve the #856 warning
+                // (zfb#1032). See `warnable_data_files`.
+                skipped_data_files.push(path);
             }
         }
     }
     Ok(())
+}
+
+/// Filter the walker's skipped data files down to the ones that deserve
+/// the #856 "unsupported data-file extension" warning: only files the
+/// collection's `include` / `exclude` globs have NOT already filtered out
+/// (zfb#1032). A file rejected by the consumer's explicit globs is not
+/// *silently* dropped — the config already states the intent — so warning
+/// for it is pure noise. With no globs configured, [`CollectionFilter::matches`]
+/// passes everything, preserving the original warn-on-every-data-file
+/// behaviour for legacy callers.
+fn warnable_data_files<'a>(
+    dir: &Path,
+    skipped: &'a [PathBuf],
+    filter: &CollectionFilter,
+) -> Vec<&'a PathBuf> {
+    skipped
+        .iter()
+        .filter(|p| {
+            let rel = p.strip_prefix(dir).unwrap_or(p);
+            filter.matches(&path_to_posix_string(rel))
+        })
+        .collect()
 }
 
 fn is_collection_entry(path: &Path) -> bool {
@@ -1662,6 +1703,60 @@ declare module \"zfb/content\" {\n\
             "only entry.md should be returned; data files must be skipped"
         );
         assert_eq!(out[0].slug, "entry");
+    }
+
+    /// The #856 data-file warning must respect include/exclude globs
+    /// (zfb#1032): only data files the consumer's config has NOT already
+    /// filtered out are "silently dropped" and deserve the warning.
+    #[test]
+    fn warnable_data_files_respects_include_exclude_globs() {
+        let dir = Path::new("/proj/content/docs");
+        let skipped = vec![
+            PathBuf::from("/proj/content/docs/sub-p/_category_.json"),
+            PathBuf::from("/proj/content/docs/data.yaml"),
+        ];
+
+        // No filter → every data file warns (original #856 behaviour).
+        let none = CollectionFilter::none();
+        assert_eq!(warnable_data_files(dir, &skipped, &none).len(), 2);
+
+        // The issue's repro: `include: ['**/*.md', '**/*.mdx']` already
+        // states that data files are not entries — no warning, nested or
+        // top-level alike.
+        let md_only = filter(Some(&["**/*.md", "**/*.mdx"]), None, None);
+        assert!(warnable_data_files(dir, &skipped, &md_only).is_empty());
+
+        // An exclude glob silences exactly the files it matches.
+        let exc = filter(None, Some(&["**/_category_.json"]), None);
+        let warned = warnable_data_files(dir, &skipped, &exc);
+        assert_eq!(warned.len(), 1);
+        assert!(warned[0].ends_with("data.yaml"));
+
+        // An include glob that DOES cover the data file → still warns:
+        // the extension skip would drop it silently, which is exactly
+        // what #856 exists to surface.
+        let all = filter(Some(&["**/*"]), None, None);
+        assert_eq!(warnable_data_files(dir, &skipped, &all).len(), 2);
+
+        // `idStripSuffix` alone is not an include/exclude statement —
+        // warning eligibility is unaffected.
+        let strip_only = filter(None, None, Some(".en"));
+        assert_eq!(warnable_data_files(dir, &skipped, &strip_only).len(), 2);
+    }
+
+    /// End-to-end walk with an include filter and a data file present:
+    /// entries are unaffected by the zfb#1032 warning change (the fix
+    /// only alters whether the stderr warning fires).
+    #[test]
+    fn walk_with_include_still_skips_data_files() {
+        let tmp = TmpDir::new("inc-data");
+        tmp.write("entry.md", &valid_md("Entry"));
+        tmp.write("sub/_category_.json", r#"{"label": "Sub"}"#);
+        let filter = filter(Some(&["**/*.md", "**/*.mdx"]), None, None);
+        let out: Vec<Entry<TestSchema>> =
+            walk_collection_with_cache_and_filter(tmp.path(), None, None, &filter).unwrap();
+        let slugs: Vec<&str> = out.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["entry"]);
     }
 
     /// `derive_slug_for_file` (issue #958) must mirror the walker's slug
