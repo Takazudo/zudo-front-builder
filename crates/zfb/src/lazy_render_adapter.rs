@@ -8,8 +8,11 @@
 //!
 //! ## Dispatch flow (the request BLOCKS until done — pinned semantics)
 //!
-//! 1. Cheap early return when the lazy switch (#1025) is off — wiring
-//!    the hook changes nothing for today's eager default.
+//! 1. Cheap early return when the lazy switch (#1025) is off. The dev
+//!    boot wiring already skips installing the hook in that case (the
+//!    switch is boot-resolved and immutable for the session, so the
+//!    default-off serve path stays literally hook-free); this check is
+//!    defense in depth for any other construction site.
 //! 2. Hop to [`tokio::task::spawn_blocking`]: every step below takes
 //!    std mutexes (renderer mutex, stale map, pipeline exclusion), and
 //!    the renderer mutex in particular can be held for seconds by a
@@ -307,7 +310,8 @@ impl RenderOnRequestHook for LazyRenderAdapter {
     async fn render_if_stale(&self, url_path: &str) {
         // Default-off invariant (#1025): with the lazy switch off this
         // is the ONLY work the hook does — no spawn, no locks, no
-        // lookup. Wiring the hook changes nothing for eager sessions.
+        // lookup. The dev boot wiring doesn't even install the hook in
+        // that case; this guard is defense in depth.
         if !self.session.lazy_render_enabled() {
             return;
         }

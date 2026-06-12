@@ -1024,15 +1024,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // captures the session clone (whose renderer Arc is swapped in
     // place on every refresh), the pipeline's request writer, and the
     // dev HTML root — so it never needs rewiring from the refresh
-    // seams. While the lazy switch (#1025) is off the hook early-returns
-    // before doing any work, keeping today's serve path byte-identical.
-    let render_on_request_hook = dev_session.as_ref().map(|session| {
-        crate::lazy_render_adapter::make_render_on_request_handle(
-            session.clone(),
-            request_writer.clone(),
-            dev_html_root.clone(),
-        )
-    });
+    // seams. Installed ONLY when the lazy switch (#1025) is on — the
+    // switch is resolved once at boot and immutable for the session, so
+    // gating the install keeps the default-off serve path literally
+    // hook-free (no per-GET handle snapshot/spawn; review finding on
+    // #1026). The adapter's own early-return stays as defense in depth.
+    let render_on_request_hook = dev_session
+        .as_ref()
+        .filter(|session| session.lazy_render_enabled())
+        .map(|session| {
+            crate::lazy_render_adapter::make_render_on_request_handle(
+                session.clone(),
+                request_writer.clone(),
+                dev_html_root.clone(),
+            )
+        });
 
     let opts = ServeOpts {
         project_root,
@@ -1071,8 +1077,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         allowed_hosts: cfg.allowed_hosts.clone(),
         bound_host: Some(host.clone()),
         // Issue #1020 seam / #1026 impl: the lazy render adapter built
-        // above. `None` only when the renderer is disabled (no session
-        // to render through).
+        // above. `None` when the renderer is disabled (no session to
+        // render through) or the lazy switch (#1025) is off — the
+        // default — which keeps serve_page's hook leg entirely inert.
         render_on_request_hook,
     };
 
