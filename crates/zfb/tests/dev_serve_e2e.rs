@@ -259,6 +259,14 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]
         .env("ZFB_ESBUILD_BIN", esbuild)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
+    // Strip any inherited lazy-render switches (codex review, #1027):
+    // a shell/CI environment that exports ZFB_DEV_EAGER=1 would flip
+    // the lazy-default session eager, and an inherited
+    // ZFB_LAZY_DEV_RENDER=1 would override the escape-hatch session's
+    // ZFB_DEV_EAGER (the precise override wins by design). Each test
+    // must control the mode exclusively through `extra_env`.
+    cmd.env_remove("ZFB_DEV_EAGER")
+        .env_remove("ZFB_LAZY_DEV_RENDER");
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
