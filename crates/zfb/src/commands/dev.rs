@@ -1365,6 +1365,20 @@ struct StaleClaim {
 }
 
 impl DevRenderInner {
+    /// Lazy-mode boot exception (issue #1025, review finding): returns
+    /// `true` exactly once — for the session's first render-callback
+    /// invocation, i.e. the eager initial build at dev boot — then
+    /// `false` for every later tick. See the [`Self::boot_render_done`]
+    /// field docs for why the boot render stays eager even with the
+    /// lazy switch ON. If the boot build rendered zero pages (empty
+    /// graph), the latch is instead consumed by the first watcher tick,
+    /// which then renders eagerly once — the safe direction.
+    fn take_boot_render_pending(&self) -> bool {
+        !self
+            .boot_render_done
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Mark `output_paths` stale at the current generation and queue
     /// them for this tick's [`zfb_build::BuildOutcome::pages_stale`]
     /// signal. Re-marking an already-stale route bumps its recorded
@@ -1645,6 +1659,16 @@ struct DevRenderInner {
     /// routes ticks through [`lazy_render_tick`]'s eager-vs-stale
     /// split.
     lazy_render: bool,
+
+    /// One-shot boot latch for lazy mode (issue #1025, review): `false`
+    /// until the FIRST render-callback invocation of the session — the
+    /// eager initial build (zfb#642/#644) — which must render fully
+    /// eagerly even with the lazy switch ON. The request-time
+    /// stale-route adapter lands in a later sub-issue, so a lazy boot
+    /// would leave `.zfb-build/dev-pages/` empty and 404 every route.
+    /// Consumed via [`Self::take_boot_render_pending`]; only read on
+    /// the lazy branch.
+    boot_render_done: std::sync::atomic::AtomicBool,
 }
 
 /// Per-source route filter for one narrowed tick (issue #958): which of a
@@ -3231,6 +3255,8 @@ fn boot_dev_renderer(
             paths_cache: Mutex::new(paths_cache),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render: lazy_dev_render_enabled(),
+            // The next render-callback invocation is the boot build.
+            boot_render_done: std::sync::atomic::AtomicBool::new(false),
         }),
     })
 }
@@ -3720,9 +3746,13 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
     Arc::new(move |pages: &[PageId], narrowing| {
         // Issue #1025 — lazy dev render. Switch ON routes the tick
         // through the eager-vs-stale split; OFF (today's default) falls
-        // through to the fully-eager fan-out below, untouched.
+        // through to the fully-eager fan-out below, untouched. The
+        // session's FIRST invocation — the eager initial build at boot —
+        // stays on the eager path even when the switch is ON: the
+        // request-time stale-render adapter doesn't exist yet, so a
+        // lazy boot would 404 every route (review finding on #1025).
         #[cfg(feature = "embed_v8")]
-        if session.inner.lazy_render {
+        if session.inner.lazy_render && !session.inner.take_boot_render_pending() {
             return lazy_render_tick(&session, &dist_dir, pages, narrowing);
         }
         // Issue #958 — one narrowing decision per tick; per-page filters
@@ -4068,6 +4098,8 @@ mod tests {
             paths_cache: Mutex::new(PathsCache::new()),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render: false,
+            // Stubs model a session mid-flight: boot already rendered.
+            boot_render_done: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -4089,6 +4121,8 @@ mod tests {
             project_root: PathBuf::new(),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render: false,
+            // Stubs model a session mid-flight: boot already rendered.
+            boot_render_done: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -5274,6 +5308,44 @@ mod tests {
                         out("index.html"),
                         out("tags/rust/index.html"),
                     ],
+                );
+            }
+
+            /// Boot exception (review finding on #1025): even with the
+            /// switch ON, the session's FIRST render-callback
+            /// invocation — the eager initial build — takes the eager
+            /// path and stales nothing; lazy behaviour starts with the
+            /// next tick. (The request-time stale-render adapter lands
+            /// in a later sub-issue, so a lazy boot would 404 every
+            /// route.)
+            #[test]
+            fn lazy_boot_invocation_stays_eager_then_goes_lazy() {
+                let (tmp, cfg) = scaffold(&[]);
+                let session = lazy_session_at(&tmp, cfg, matrix_routes());
+                // Rewind the stub's mid-flight default: boot pending.
+                session
+                    .inner
+                    .boot_render_done
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                let cb = make_render_callback(session.clone(), tmp.path().to_path_buf());
+                let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
+
+                // Boot invocation: eager path (render error swallowed
+                // by the per-page tolerance) — nothing goes stale.
+                let first = cb(&pages, None).expect("boot tick succeeds");
+                assert!(first.is_empty());
+                assert!(
+                    session.inner.claim(Path::new("index.html")).is_none(),
+                    "the boot render must not mark routes stale"
+                );
+                assert!(session.inner.take_tick_stale().is_empty());
+
+                // Next tick: the lazy split is active.
+                let second = cb(&pages, None).expect("watcher tick succeeds");
+                assert!(second.is_empty());
+                assert!(
+                    session.inner.claim(Path::new("index.html")).is_some(),
+                    "post-boot ticks must go through the lazy split"
                 );
             }
 
