@@ -1,0 +1,23 @@
+---
+title: v0.1.0-next.41
+sidebar_position: 1041
+---
+
+# v0.1.0-next.41
+
+Released: 2026-06-12
+
+## Features
+
+- URL-space fallback in `resolveMarkdownLinks`: dir-style hrefs written from non-index pages now resolve against the page's URL directory when the file-space lookup misses (#1030, ccf0381).
+- The content pipeline gained a per-file source-file setter, and the page's `url_dir` joined the MDX emit cache key so the fallback is cache-correct (#1030, fb8a176).
+- Build walk loops pass the source file path through to resolve-links, wiring the fallback end-to-end (#1030, 9152f58).
+
+## Bug Fixes
+
+- The data-file skip warning (e.g. for `_category_.json`) now respects the collection's `include`/`exclude` globs — files the globs already filter out no longer emit the warning (#1032, b02f814).
+
+## Other Changes
+
+- The URL-space fallback is pinned by a bundler-level end-to-end test and documented (#1030, 3087ae8).
+- docs: noted that the `_category_.json` skip warning is silenced by glob filtering (#1032, b2e6214).
