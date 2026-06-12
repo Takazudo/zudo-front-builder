@@ -1026,9 +1026,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // dev HTML root — so it never needs rewiring from the refresh
     // seams. Installed ONLY when the lazy switch (#1025) is on — the
     // switch is resolved once at boot and immutable for the session, so
-    // gating the install keeps the default-off serve path literally
-    // hook-free (no per-GET handle snapshot/spawn; review finding on
-    // #1026). The adapter's own early-return stays as defense in depth.
+    // gating the install keeps the eager (`ZFB_DEV_EAGER=1`) serve path
+    // literally hook-free (no per-GET handle snapshot/spawn; review
+    // finding on #1026). The adapter's own early-return stays as
+    // defense in depth.
     let render_on_request_hook = dev_session
         .as_ref()
         .filter(|session| session.lazy_render_enabled())
@@ -1078,8 +1079,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         bound_host: Some(host.clone()),
         // Issue #1020 seam / #1026 impl: the lazy render adapter built
         // above. `None` when the renderer is disabled (no session to
-        // render through) or the lazy switch (#1025) is off — the
-        // default — which keeps serve_page's hook leg entirely inert.
+        // render through) or the lazy switch (#1025) is off (the
+        // `ZFB_DEV_EAGER=1` hatch) — which keeps serve_page's hook leg
+        // entirely inert.
         render_on_request_hook,
     };
 
@@ -1330,32 +1332,51 @@ pub(crate) struct DevRenderSession {
 
 /// Compile-time default for the lazy dev-render switch (issue #1025).
 ///
-/// `false` = today's fully-eager dev behaviour (zero change). The
-/// wave-5 activation sub-issue flips this single line to `true`; until
-/// then `ZFB_LAZY_DEV_RENDER=1` opts a session in for testing.
-const LAZY_DEV_RENDER_DEFAULT: bool = false;
+/// `true` since the wave-5 activation flip (issue #1027): watcher ticks
+/// mark affected routes stale and re-render them on first request
+/// instead of fan-out rendering eagerly. `ZFB_DEV_EAGER=1` restores the
+/// fully-eager behaviour; `ZFB_LAZY_DEV_RENDER=0|1` remains the precise
+/// per-session override (see [`resolve_lazy_dev_render`]).
+const LAZY_DEV_RENDER_DEFAULT: bool = true;
 
-/// Resolve the lazy dev-render switch once at boot (issue #1025).
+/// Resolve the lazy dev-render switch once at boot (issues #1025/#1027).
 ///
-/// `ZFB_LAZY_DEV_RENDER=1|true` forces ON, `0|false` forces OFF; unset
-/// or unrecognized values fall back to [`LAZY_DEV_RENDER_DEFAULT`]. Read
-/// a single time in [`boot_dev_renderer`] and stored on
+/// Read a single time in [`boot_dev_renderer`] and stored on
 /// [`DevRenderInner::lazy_render`] — the tick path never re-reads the
-/// environment.
+/// environment. Precedence is implemented by [`resolve_lazy_dev_render`].
 fn lazy_dev_render_enabled() -> bool {
-    match std::env::var("ZFB_LAZY_DEV_RENDER") {
-        Ok(raw) => {
-            let t = raw.trim();
-            if t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true") {
-                true
-            } else if t.eq_ignore_ascii_case("0") || t.eq_ignore_ascii_case("false") {
-                false
-            } else {
-                LAZY_DEV_RENDER_DEFAULT
-            }
+    resolve_lazy_dev_render(
+        std::env::var("ZFB_LAZY_DEV_RENDER").ok().as_deref(),
+        std::env::var("ZFB_DEV_EAGER").ok().as_deref(),
+    )
+}
+
+/// Pure precedence rule for the lazy dev-render switch (issue #1027):
+///
+/// 1. `ZFB_LAZY_DEV_RENDER=1|true` forces ON, `0|false` forces OFF —
+///    the precise override wins over everything when set to a
+///    recognized value.
+/// 2. Otherwise `ZFB_DEV_EAGER=1|true` forces OFF — the documented
+///    user-facing escape hatch, equivalent to `ZFB_LAZY_DEV_RENDER=0`.
+/// 3. Otherwise (both unset / unrecognized values) fall back to
+///    [`LAZY_DEV_RENDER_DEFAULT`].
+fn resolve_lazy_dev_render(lazy_var: Option<&str>, eager_var: Option<&str>) -> bool {
+    if let Some(raw) = lazy_var {
+        let t = raw.trim();
+        if t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true") {
+            return true;
         }
-        Err(_) => LAZY_DEV_RENDER_DEFAULT,
+        if t.eq_ignore_ascii_case("0") || t.eq_ignore_ascii_case("false") {
+            return false;
+        }
     }
+    if let Some(raw) = eager_var {
+        let t = raw.trim();
+        if t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true") {
+            return false;
+        }
+    }
+    LAZY_DEV_RENDER_DEFAULT
 }
 
 /// Per-route staleness state for lazy dev rendering (issue #1025).
@@ -1560,8 +1581,9 @@ struct DevRouteTables {
     /// `/posts/a/index.html`. SSR-only routes (`prerender = false`) are
     /// intentionally absent — they are served by the existing SSR leg.
     /// Rebuilt atomically with the other tables at P4 so the index is
-    /// never stale. Consumed by a later lazy-render sub-issue; dormant
-    /// in this one.
+    /// never stale. Consumed by the lazy render adapter
+    /// ([`crate::lazy_render_adapter`]) on every request-time
+    /// stale-route render.
     url_index: HashMap<String, RouteUniverseEntry>,
 }
 
@@ -1684,10 +1706,10 @@ struct DevRenderInner {
     stale: Mutex<StaleRoutes>,
 
     /// Lazy dev render switch (issue #1025), resolved once at boot via
-    /// [`lazy_dev_render_enabled`]. `false` (today's default) keeps the
-    /// render callback fully eager — zero behaviour change; `true`
-    /// routes ticks through [`lazy_render_tick`]'s eager-vs-stale
-    /// split.
+    /// [`lazy_dev_render_enabled`]. `true` (the default since the #1027
+    /// activation flip) routes ticks through [`lazy_render_tick`]'s
+    /// eager-vs-stale split; `false` (the `ZFB_DEV_EAGER=1` escape
+    /// hatch) keeps the render callback fully eager.
     lazy_render: bool,
 
     /// One-shot boot latch for lazy mode (issue #1025, review): `false`
@@ -3806,8 +3828,9 @@ fn lazy_render_tick(
 /// [`DevAssetPipeline`].
 fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRenderer {
     Arc::new(move |pages: &[PageId], narrowing| {
-        // Issue #1025 — lazy dev render. Switch ON routes the tick
-        // through the eager-vs-stale split; OFF (today's default) falls
+        // Issue #1025 — lazy dev render. Switch ON (the default since
+        // the #1027 activation flip) routes the tick through the
+        // eager-vs-stale split; OFF (the `ZFB_DEV_EAGER=1` hatch) falls
         // through to the fully-eager fan-out below, untouched. The
         // session's FIRST invocation — the eager initial build at boot —
         // stays on the eager path even when the switch is ON: the
@@ -5136,18 +5159,47 @@ mod tests {
 
             // ── claim / clear_if_current protocol ────────────────────
 
-            /// The activation default must stay OFF this wave — the
-            /// wave-5 sub-issue flips this single constant.
-            // The constant IS the subject under test: this pin makes a
-            // premature default flip fail loudly in review.
+            /// The wave-5 activation flip (issue #1027): lazy dev
+            /// rendering is the default. Reverting the constant to
+            /// `false` must fail loudly in review.
+            // The constant IS the subject under test.
             #[allow(clippy::assertions_on_constants)]
             #[test]
-            fn lazy_dev_render_default_is_off() {
+            fn lazy_dev_render_default_is_on() {
                 assert!(
-                    !LAZY_DEV_RENDER_DEFAULT,
-                    "the lazy dev-render switch must default OFF until the \
-                     activation sub-issue flips it"
+                    LAZY_DEV_RENDER_DEFAULT,
+                    "the lazy dev-render switch defaults ON since the \
+                     #1027 activation flip"
                 );
+            }
+
+            /// Issue #1027 — env precedence for the boot-resolved switch:
+            /// `ZFB_LAZY_DEV_RENDER` (precise override) beats
+            /// `ZFB_DEV_EAGER` (user-facing escape hatch) beats the
+            /// compile-time default. Pure-function tests so no
+            /// process-global env mutation races other tests.
+            #[test]
+            fn lazy_switch_env_precedence() {
+                // Default: lazy ON.
+                assert!(resolve_lazy_dev_render(None, None));
+                // The escape hatch turns it off.
+                assert!(!resolve_lazy_dev_render(None, Some("1")));
+                assert!(!resolve_lazy_dev_render(None, Some("true")));
+                // Unrecognized escape-hatch values are ignored (0 does
+                // NOT mean "force lazy"; it just falls through).
+                assert!(resolve_lazy_dev_render(None, Some("0")));
+                assert!(resolve_lazy_dev_render(None, Some("yes")));
+                // The precise override wins in both directions...
+                assert!(!resolve_lazy_dev_render(Some("0"), None));
+                assert!(!resolve_lazy_dev_render(Some("false"), None));
+                assert!(resolve_lazy_dev_render(Some("1"), None));
+                // ...including over a conflicting escape hatch.
+                assert!(resolve_lazy_dev_render(Some("1"), Some("1")));
+                assert!(!resolve_lazy_dev_render(Some("0"), Some("1")));
+                // An unrecognized precise-override value defers to the
+                // escape hatch, then the default.
+                assert!(!resolve_lazy_dev_render(Some("banana"), Some("1")));
+                assert!(resolve_lazy_dev_render(Some("banana"), None));
             }
 
             #[test]

@@ -308,10 +308,11 @@ fn format_lazy_render_timing(
 #[async_trait]
 impl RenderOnRequestHook for LazyRenderAdapter {
     async fn render_if_stale(&self, url_path: &str) {
-        // Default-off invariant (#1025): with the lazy switch off this
-        // is the ONLY work the hook does — no spawn, no locks, no
-        // lookup. The dev boot wiring doesn't even install the hook in
-        // that case; this guard is defense in depth.
+        // Switch-off invariant (#1025): with the lazy switch off (the
+        // ZFB_DEV_EAGER=1 escape hatch) this is the ONLY work the hook
+        // does — no spawn, no locks, no lookup. The dev boot wiring
+        // doesn't even install the hook in that case; this guard is
+        // defense in depth.
         if !self.session.lazy_render_enabled() {
             return;
         }
@@ -551,10 +552,11 @@ mod tests {
         );
     }
 
-    /// Default-off invariant (#1025): with the lazy switch off the hook
-    /// early-returns before any lookup/claim/render — wiring it at boot
-    /// changes nothing for today's eager sessions, even for a route
-    /// that somehow carries a stale mark.
+    /// Switch-off invariant (#1025): with the lazy switch off (the
+    /// `ZFB_DEV_EAGER=1` escape hatch) the hook early-returns before
+    /// any lookup/claim/render — wiring it at boot changes nothing for
+    /// eager sessions, even for a route that somehow carries a stale
+    /// mark.
     #[tokio::test]
     async fn switch_off_short_circuits_before_any_work() {
         let h = harness_with(posts_route(), html_response("<html/>"), false);

@@ -633,9 +633,10 @@ pub struct BuildOutcome {
     /// dev render). Populated by [`DevAssetPipeline`] from its
     /// [`StaleProbe`], when one was supplied at construction.
     ///
-    /// Always empty while the lazy-render switch is off (today's
-    /// default); the activation sub-issue turns a non-empty list into
-    /// the dev server's SSE reload gate, so a tick that rendered
+    /// Empty when the lazy-render switch is off (the `ZFB_DEV_EAGER=1`
+    /// escape hatch). Since the #1027 activation flip a non-empty list
+    /// is part of the dev server's SSE reload gate
+    /// (`zfb_server::outcome_to_events`), so a tick that rendered
     /// nothing eagerly still tells the browser to reload — the stale
     /// route then re-renders on request.
     pub pages_stale: Vec<PathBuf>,
