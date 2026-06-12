@@ -2614,12 +2614,12 @@ fn materialise_shadow(
             // counter) before each new MDX file so cross-document state
             // cannot leak and alter content_hash (zfb#187).
             pipeline.reset_per_entry();
-            // Update per-file source_dir for ResolveLinksPlugin so
-            // relative links like `./other.mdx` resolve correctly.
+            // Update per-file source context for ResolveLinksPlugin so
+            // relative links like `./other.mdx` resolve correctly (the
+            // file path also arms the zfb#1030 URL-space fallback for
+            // non-index pages).
             if ctx.pipeline_spec.resolve_source_map.is_some() {
-                if let Some(parent) = from.parent() {
-                    pipeline.set_resolve_links_source_dir(parent.to_path_buf());
-                }
+                pipeline.set_resolve_links_source_file(from.to_path_buf());
             }
             let raw =
                 fs::read_to_string(from).with_context(|| format!("read mdx {}", from.display()))?;
@@ -2664,9 +2664,7 @@ fn materialise_shadow(
             // bundles and the router serves.
             pipeline.reset_per_entry();
             if ctx.pipeline_spec.resolve_source_map.is_some() {
-                if let Some(parent) = from.parent() {
-                    pipeline.set_resolve_links_source_dir(parent.to_path_buf());
-                }
+                pipeline.set_resolve_links_source_file(from.to_path_buf());
             }
             let raw = fs::read_to_string(from)
                 .with_context(|| format!("read md page {}", from.display()))?;
@@ -3174,11 +3172,11 @@ fn materialise_collection(
             // Reset per-document state (e.g. HeadingLinksPlugin's slug
             // counter) before each new MDX file (zfb#187).
             pipeline.reset_per_entry();
-            // Update per-file source_dir for ResolveLinksPlugin.
+            // Update per-file source context for ResolveLinksPlugin
+            // (file path => zfb#1030 URL-space fallback armed for
+            // non-index pages).
             if ctx.pipeline_spec.resolve_source_map.is_some() {
-                if let Some(parent) = from.parent() {
-                    pipeline.set_resolve_links_source_dir(parent.to_path_buf());
-                }
+                pipeline.set_resolve_links_source_file(from.to_path_buf());
             }
             let raw =
                 fs::read_to_string(from).with_context(|| format!("read mdx {}", from.display()))?;
