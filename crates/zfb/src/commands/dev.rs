@@ -381,6 +381,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
         None => DevAssetPipeline::new(),
     };
+    // Issue #1026 — clone the request-time write handle out BEFORE the
+    // pipeline is moved into the orchestrator below. The lazy render
+    // adapter writes stale-route renders through it so request writes
+    // share the tick path's validate → dedup → atomic-write → commit
+    // discipline and its tick-vs-request exclusion (#1024).
+    let request_writer = pipeline.request_writer();
     let extra_watch_paths = resolve_extra_watch_paths(&cfg.extra_watch_paths);
     // Configured collection roots classify as Content ahead of the
     // standard root-segment walk — without this, a collection under
@@ -1013,6 +1019,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // Arc and can update it on each tick (making added/removed
     // `prerender = false` routes visible without a restart).
 
+    // Issue #1026 — render-on-request hook (the zfb-side impl of the
+    // #1020 seam). ONE persistent handle built at boot: the adapter
+    // captures the session clone (whose renderer Arc is swapped in
+    // place on every refresh), the pipeline's request writer, and the
+    // dev HTML root — so it never needs rewiring from the refresh
+    // seams. While the lazy switch (#1025) is off the hook early-returns
+    // before doing any work, keeping today's serve path byte-identical.
+    let render_on_request_hook = dev_session.as_ref().map(|session| {
+        crate::lazy_render_adapter::make_render_on_request_handle(
+            session.clone(),
+            request_writer.clone(),
+            dev_html_root.clone(),
+        )
+    });
+
     let opts = ServeOpts {
         project_root,
         dist_root,
@@ -1049,10 +1070,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // the server disables enforcement entirely for loopback binds.
         allowed_hosts: cfg.allowed_hosts.clone(),
         bound_host: Some(host.clone()),
-        // Issue #1020: render-on-request hook wired up in a later
-        // sub-issue (the zfb-side lazy DevRenderSession adapter).
-        // Placeholder `None` until that sub-issue lands.
-        render_on_request_hook: None,
+        // Issue #1020 seam / #1026 impl: the lazy render adapter built
+        // above. `None` only when the renderer is disabled (no session
+        // to render through).
+        render_on_request_hook,
     };
 
     // 7. Bind the TCP listener first so the port-in-use error surfaces
@@ -1289,8 +1310,14 @@ fn refresh_dev_island_chunks(
 /// Long-lived dev-session state that owns the renderer subprocess and
 /// the route table. Cloned by the [`PageRenderer`] callback so each
 /// orchestrator tick can map page ids → URLs.
+///
+/// `pub(crate)` (issue #1026): the lazy render adapter
+/// ([`crate::lazy_render_adapter`]) holds a clone as its persistent
+/// handle into the session — the inner `Arc<DevRenderInner>` survives
+/// every bundle refresh (the renderer state is swapped in place), so
+/// the adapter never needs rewiring.
 #[derive(Clone)]
-struct DevRenderSession {
+pub(crate) struct DevRenderSession {
     inner: Arc<DevRenderInner>,
 }
 
@@ -1357,7 +1384,7 @@ struct StaleRoutes {
 /// generation) keeps it stale — the clear only applies when no newer
 /// staling happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct StaleClaim {
+pub(crate) struct StaleClaim {
     /// The claimed route's relative output path.
     output_path: PathBuf,
     /// The stale entry's recorded generation at claim time.
@@ -1446,8 +1473,6 @@ impl DevRenderInner {
     /// takes — so the claim/render pair is serialized against host
     /// swaps and the rendered bytes always come from a host at least as
     /// new as the claimed generation.
-    // Dead until the lazy-adapter sub-issue consumes it (issue #1025).
-    #[allow(dead_code)]
     fn claim(&self, output_path: &Path) -> Option<StaleClaim> {
         let stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
         stale.entries.get(output_path).map(|generation| StaleClaim {
@@ -1462,8 +1487,6 @@ impl DevRenderInner {
     /// generation. A route re-staled at a higher generation mid-render
     /// stays stale (ABA safety), so the next request re-renders it
     /// against the newer world.
-    // Dead until the lazy-adapter sub-issue consumes it (issue #1025).
-    #[allow(dead_code)]
     fn clear_if_current(&self, claim: &StaleClaim) {
         let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(recorded) = stale.entries.get(&claim.output_path) {
@@ -1878,8 +1901,46 @@ impl DevRenderSession {
     /// adapter can dispatch requests through the same renderer state
     /// that drives build-time SSG (#367). Cheap — the underlying
     /// renderer is wrapped in an `Arc<Mutex<...>>` already.
-    fn renderer_handle(&self) -> Arc<Mutex<Option<RendererState>>> {
+    ///
+    /// `pub(crate)` (issue #1026): the lazy render adapter renders
+    /// stale routes through the same handle.
+    pub(crate) fn renderer_handle(&self) -> Arc<Mutex<Option<RendererState>>> {
         Arc::clone(&self.inner.renderer)
+    }
+
+    /// The boot-resolved lazy dev-render switch (issue #1025/#1026).
+    /// Read by the request-time adapter as its cheap "do nothing"
+    /// early-return — when `false`, the session behaves byte-identically
+    /// to the fully-eager world.
+    pub(crate) fn lazy_render_enabled(&self) -> bool {
+        self.inner.lazy_render
+    }
+
+    /// Project root for [`zfb_build::renderer::render_one`]'s
+    /// static-HTML source reads (issue #1026 — request-time renders use
+    /// the same render path as the tick fan-out).
+    pub(crate) fn project_root(&self) -> &Path {
+        &self.inner.project_root
+    }
+
+    /// Forward of [`DevRenderInner::claim`] for the lazy render adapter
+    /// (issue #1026). See `claim` for the ABA token contract and the
+    /// "capture under the renderer mutex" calling discipline.
+    pub(crate) fn claim_stale(&self, output_path: &Path) -> Option<StaleClaim> {
+        self.inner.claim(output_path)
+    }
+
+    /// Forward of [`DevRenderInner::clear_if_current`] for the lazy
+    /// render adapter (issue #1026).
+    pub(crate) fn clear_stale_claim(&self, claim: &StaleClaim) {
+        self.inner.clear_if_current(claim)
+    }
+
+    /// Test-only seam: mark routes stale so adapter tests can inject
+    /// staleness state without driving a whole watcher tick.
+    #[cfg(test)]
+    pub(crate) fn mark_routes_stale<I: IntoIterator<Item = PathBuf>>(&self, output_paths: I) {
+        self.inner.mark_stale(output_paths)
     }
 
     /// Return the URL patterns of every page that exports
@@ -1920,9 +1981,7 @@ impl DevRenderSession {
     /// SSR-only routes, dynamic routes that were never expanded, and any
     /// path not in the route universe. The returned entry is cloned out
     /// under a short read lock — no lock is held by the caller.
-    // Dead until the lazy-adapter sub-issue consumes it (issue #1019).
-    #[allow(dead_code)]
-    fn lookup_by_url(&self, request_path: &str) -> Option<RouteUniverseEntry> {
+    pub(crate) fn lookup_by_url(&self, request_path: &str) -> Option<RouteUniverseEntry> {
         // Strip query string (everything from the first `?`).
         let path_only = request_path.split('?').next().unwrap_or(request_path);
 
@@ -2409,7 +2468,7 @@ impl Drop for DevRenderInner {
 /// unset, empty, and unrecognized values — is off, so the hot path has zero
 /// overhead.
 #[cfg(feature = "embed_v8")]
-fn dev_timing_enabled() -> bool {
+pub(crate) fn dev_timing_enabled() -> bool {
     std::env::var("ZFB_DEV_TIMING")
         .ok()
         .as_deref()
@@ -2729,8 +2788,6 @@ fn build_dev_route_tables(
 /// percent-sequence) falls back to the raw input so the lookup can still
 /// proceed (graceful degradation — the entry probably won't match, which is
 /// the correct answer for a malformed URL).
-// Dead until the lazy-adapter sub-issue consumes `lookup_by_url`.
-#[allow(dead_code)]
 fn percent_decode_url(path: &str) -> std::borrow::Cow<'_, str> {
     // Fast path: no `%` in the path means nothing to decode.
     if !path.contains('%') {
@@ -2745,7 +2802,6 @@ fn percent_decode_url(path: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Decode percent-encoded sequences in a byte slice.
-#[allow(dead_code)]
 fn percent_decode_bytes(input: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(input.len());
     let mut i = 0;
@@ -2766,7 +2822,6 @@ fn percent_decode_bytes(input: &[u8]) -> Vec<u8> {
 
 /// Convert an ASCII hex digit (`0`–`9`, `a`–`f`, `A`–`F`) to its numeric
 /// value; returns `None` for any other byte.
-#[allow(dead_code)]
 fn from_hex_digit(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -4028,6 +4083,64 @@ fn colon_template_to_bracket(template: &str) -> String {
 
 const DEFAULT_DEV_HOST: &str = "localhost";
 const DEFAULT_DEV_PORT: u16 = 3000;
+
+/// Test-only stub session factory for the lazy render adapter's
+/// direct-invocation tests (issue #1026) — builds a [`DevRenderSession`]
+/// over caller-supplied route entries and renderer state, with the
+/// reverse URL index derived exactly like boot does
+/// ([`build_url_index`]), so `lookup_by_url` behaves identically to a
+/// real session. Lives outside `mod tests` because the adapter's test
+/// module (a sibling module of `commands`) needs to call it.
+#[cfg(all(test, feature = "embed_v8"))]
+pub(crate) fn stub_session_for_adapter_tests(
+    project_root: PathBuf,
+    routes: Vec<(PathBuf, Vec<RouteUniverseEntry>)>,
+    renderer: Arc<Mutex<Option<RendererState>>>,
+    lazy_render: bool,
+) -> DevRenderSession {
+    let routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>> = routes
+        .into_iter()
+        .map(|(source, entries)| {
+            (
+                source,
+                entries
+                    .into_iter()
+                    .map(|entry| DevRouteEntry {
+                        entry,
+                        params: None,
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let url_index = build_url_index(&routes_by_source);
+    DevRenderSession {
+        inner: Arc::new(DevRenderInner {
+            routes: std::sync::RwLock::new(DevRouteTables {
+                routes_by_source,
+                ssr_routes: Vec::new(),
+                url_index,
+            }),
+            renderer,
+            project_root,
+            rebuild_inputs: DevRebuildInputs {
+                cfg: config::Config::default(),
+                v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
+                plugin_alias_entries: Vec::new(),
+                plugin_virtual_modules: Vec::new(),
+                esbuild: None,
+            },
+            last_successful_skip_key: Mutex::new(None),
+            fm_hashes: Mutex::new(HashMap::new()),
+            shadow_session: Mutex::new(None),
+            paths_cache: Mutex::new(PathsCache::new()),
+            stale: Mutex::new(StaleRoutes::default()),
+            lazy_render,
+            // Stubs model a session mid-flight: boot already rendered.
+            boot_render_done: std::sync::atomic::AtomicBool::new(true),
+        }),
+    }
+}
 
 #[cfg(test)]
 mod tests {
