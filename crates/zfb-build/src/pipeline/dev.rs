@@ -355,7 +355,15 @@ impl DevAssetPipeline {
     /// Forget the last-bytes and last-output caches. Useful when the
     /// dist root is wiped from outside the orchestrator and the caller
     /// wants the next rebuild to re-emit every page.
+    ///
+    /// Takes the tick-vs-request exclusion lock: a reset interleaving
+    /// with a tick's write loop would clear some pages' dedup entries
+    /// mid-tick (re-emitting only a suffix of the tick's pages on the
+    /// next rebuild) and could slip inside the deferred-prune window.
     pub fn reset_cache(&self) {
+        let _exclusion = self
+            .shared
+            .lock_exclusion("WriteShared.exclusion (reset_cache)");
         self.shared.cache.clear();
     }
 
