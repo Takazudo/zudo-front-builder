@@ -23,6 +23,18 @@
 //! dot segments probe their index candidates only (`../` →
 //! `../index.mdx`, `../index.md`). A bare `/` is left alone.
 //!
+//! When every file-space candidate misses for a **relative** dir-style
+//! href and the source file is a **non-index** page, the probe retries
+//! in URL space (zfb#1030): with pretty URLs, `section/article.mdx`
+//! renders at `/docs/section/article/` — one directory deeper than its
+//! source file — so an author writing `../other-article/` against the
+//! rendered URL is off by one level in file space. The fallback
+//! resolves the href against the page's route directory expressed in
+//! file-space coordinates (`{dir}/{stem}`) and probes the same four
+//! candidates from the normalized result. File space always wins: a
+//! href that resolves there never reaches the fallback, so only
+//! otherwise-broken links change behavior.
+//!
 //! Resolved URLs always end with `/` (they come directly from the
 //! source map), which is shape-compatible with the trailing-slash mode
 //! of [`crate::plugins::StripMdExtensionPlugin`] (Sub 6 convergence).
@@ -70,6 +82,12 @@ pub struct BrokenLinkDiagnostic {
 #[derive(Debug, Clone)]
 pub struct ResolveLinksPlugin {
     options: ResolveMarkdownLinksOptions,
+    /// The source page's route directory in file-space coordinates
+    /// (`{dir}/{stem}` for a non-index file), used by the URL-space
+    /// fallback for dir-style hrefs (zfb#1030). `None` for index files
+    /// (their route directory IS the file directory, already covered by
+    /// `source_dir`) and when only [`Self::set_source_dir`] was called.
+    url_space_dir: Option<PathBuf>,
     /// Broken links accumulated since the last [`take_broken_links`] call.
     broken_links: Vec<BrokenLinkDiagnostic>,
 }
@@ -80,6 +98,7 @@ impl ResolveLinksPlugin {
     pub fn new(options: ResolveMarkdownLinksOptions) -> Self {
         Self {
             options,
+            url_space_dir: None,
             broken_links: Vec::new(),
         }
     }
@@ -95,8 +114,31 @@ impl ResolveLinksPlugin {
     /// Update the per-file source directory used to resolve relative link
     /// targets (e.g. `./other.mdx`). Call once per MDX file before the
     /// pipeline's mdast visitors run.
+    ///
+    /// Clears any URL-space fallback state from a previous
+    /// [`Self::set_source_file`] call — the dir alone cannot say whether
+    /// the file is an index page, so the fallback stays off rather than
+    /// leak the previous file's route directory.
     pub fn set_source_dir(&mut self, dir: PathBuf) {
         self.options.source_dir = Some(dir);
+        self.url_space_dir = None;
+    }
+
+    /// Update the per-file source context from the source **file** path.
+    ///
+    /// Sets `source_dir` to the file's parent (same as
+    /// [`Self::set_source_dir`]) and, for non-index files, arms the
+    /// URL-space fallback (zfb#1030) with the page's route directory in
+    /// file-space coordinates: `{parent}/{stem}`. Index files render at
+    /// their directory's URL, so their fallback base would equal
+    /// `source_dir` — nothing extra to probe, fallback stays off.
+    pub fn set_source_file(&mut self, file: PathBuf) {
+        let parent = file.parent().map(Path::to_path_buf);
+        self.url_space_dir = match (&parent, file.file_stem().and_then(|s| s.to_str())) {
+            (Some(dir), Some(stem)) if stem != "index" => Some(dir.join(stem)),
+            _ => None,
+        };
+        self.options.source_dir = parent;
     }
 
     /// Current per-file source directory (`None` until
@@ -104,6 +146,15 @@ impl ResolveLinksPlugin {
     /// keying surface (`Pipeline::cache_key_context`, zfb#939).
     pub(crate) fn source_dir(&self) -> Option<&Path> {
         self.options.source_dir.as_deref()
+    }
+
+    /// Current URL-space fallback base (`None` unless
+    /// [`Self::set_source_file`] armed it for a non-index file). Read by
+    /// the compile-cache keying surface (`Pipeline::cache_key_context`,
+    /// zfb#939) — two files in the same dir (index vs non-index) resolve
+    /// dir-style hrefs differently, so the cache key must see this.
+    pub(crate) fn url_space_dir(&self) -> Option<&Path> {
+        self.url_space_dir.as_deref()
     }
 
     /// Number of diagnostics currently buffered (i.e. accumulated and
@@ -192,6 +243,12 @@ impl ResolveLinksPlugin {
                     return Ok(Some(result));
                 }
             }
+            // Every file-space candidate missed — retry in URL space
+            // (zfb#1030). Only otherwise-broken links reach this point,
+            // so currently-resolving hrefs keep their #1004 behavior.
+            if let Some(result) = self.lookup_url_space(name, suffix) {
+                return Ok(Some(result));
+            }
             return Ok(None);
         }
 
@@ -213,6 +270,41 @@ impl ResolveLinksPlugin {
         // No candidate matched — leave extensionless links unchanged (they
         // might be intentional cross-origin or non-doc references).
         Ok(None)
+    }
+
+    /// URL-space fallback probe for relative dir-style hrefs (zfb#1030).
+    ///
+    /// Armed only for non-index source files (see [`Self::set_source_file`]):
+    /// resolves `name` against the page's route directory expressed in
+    /// file-space coordinates and probes the same four candidate shapes as
+    /// the file-space dir-style branch. Normalizing FIRST resolves dot
+    /// segments, so all four candidates apply uniformly — `../` from
+    /// `section/article.mdx` probes `section.mdx` … `section/index.md`,
+    /// the two file shapes a route directory can map back to.
+    fn lookup_url_space(&self, name: &str, suffix: &str) -> Option<String> {
+        // Site-absolute hrefs don't resolve relative to the page URL, so
+        // URL space adds nothing over the direct lookup already tried.
+        if name.starts_with('/') {
+            return None;
+        }
+        let url_dir = self.url_space_dir.as_deref()?;
+        let base = normalize_join(url_dir, name);
+        // A href that climbed past the filesystem root leaves nothing to
+        // probe (and would generate degenerate `.mdx` / `/index.mdx`
+        // candidates).
+        base.file_name()?;
+        let candidates = [
+            append_extension(&base, ".mdx"),
+            append_extension(&base, ".md"),
+            base.join("index.mdx"),
+            base.join("index.md"),
+        ];
+        for candidate in candidates {
+            if let Some(target) = self.options.source_map.get(&candidate) {
+                return Some(format!("{target}{suffix}"));
+            }
+        }
+        None
     }
 
     /// Try the given `path_str` against the source map directly, then
@@ -285,6 +377,16 @@ fn extensionless_candidates(name: &str) -> [String; 4] {
         format!("{name}/index.mdx"),
         format!("{name}/index.md"),
     ]
+}
+
+/// Append `ext` to `path`'s final component verbatim.
+/// `Path::set_extension` would replace a dotted slug's tail
+/// (`v1.0` → `v1.mdx`); slugs may legitimately contain dots, so the
+/// candidate must be built by appending.
+fn append_extension(path: &Path, ext: &str) -> PathBuf {
+    let mut s = path.as_os_str().to_os_string();
+    s.push(ext);
+    PathBuf::from(s)
 }
 
 fn split_suffix(url: &str) -> (&str, &str) {
@@ -799,5 +901,211 @@ mod tests {
         let mut root = root_with_link("./image.png");
         plugin.visit(&mut root);
         assert_eq!(link_url(&root), "./image.png");
+    }
+
+    // ---------- URL-space fallback for non-index pages (zfb#1030) ----------
+
+    /// Plugin armed for the issue's repro shape: source file
+    /// `/site/docs/section/article.mdx` rendering at
+    /// `/docs/section/article/`.
+    fn plugin_for_non_index_page(map: HashMap<PathBuf, String>) -> ResolveLinksPlugin {
+        let mut plugin = ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
+            source_map: map,
+            source_dir: None,
+        });
+        plugin.set_source_file(PathBuf::from("/site/docs/section/article.mdx"));
+        plugin
+    }
+
+    #[test]
+    fn url_space_fallback_resolves_sibling_from_non_index_page() {
+        // The zfb#1030 repro: `../other-article/` written against the
+        // rendered URL `/docs/section/article/` names the sibling
+        // `section/other-article.mdx`. File space resolves it one level
+        // too high (`/site/docs/other-article.*` — absent), so the
+        // URL-space fallback must find the sibling.
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/section/other-article.mdx"),
+            "/docs/section/other-article/".to_string(),
+        );
+        let mut plugin = plugin_for_non_index_page(map);
+        let mut root = root_with_link("../other-article/");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "/docs/section/other-article/");
+        assert!(plugin.take_broken_links().is_empty());
+    }
+
+    #[test]
+    fn url_space_fallback_preserves_query_and_fragment() {
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/section/other-article.mdx"),
+            "/docs/section/other-article/".to_string(),
+        );
+        let mut plugin = plugin_for_non_index_page(map);
+        let mut root = root_with_link("../other-article/?x=1#h");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "/docs/section/other-article/?x=1#h");
+    }
+
+    #[test]
+    fn file_space_hit_wins_over_url_space_fallback() {
+        // Precedence pin: when BOTH interpretations resolve, file space
+        // wins (#1004 behavior is unchanged — the fallback only fires on
+        // otherwise-broken links). `../target/` from
+        // `section/article.mdx` is `/site/docs/target` in file space and
+        // `/site/docs/section/target` in URL space.
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/target.mdx"),
+            "/docs/target-file-space/".to_string(),
+        );
+        map.insert(
+            PathBuf::from("/site/docs/section/target.mdx"),
+            "/docs/section/target-url-space/".to_string(),
+        );
+        let mut plugin = plugin_for_non_index_page(map);
+        let mut root = root_with_link("../target/");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "/docs/target-file-space/");
+    }
+
+    #[test]
+    fn index_page_gets_no_url_space_fallback() {
+        // For `section/index.mdx` the route directory IS the file
+        // directory — set_source_file must not arm the fallback, and the
+        // miss stays a miss.
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/section/other-article.mdx"),
+            "/docs/section/other-article/".to_string(),
+        );
+        let mut plugin = ResolveLinksPlugin::new(ResolveMarkdownLinksOptions {
+            source_map: map,
+            source_dir: None,
+        });
+        plugin.set_source_file(PathBuf::from("/site/docs/section/index.mdx"));
+        // In URL space from `/docs/section/`, `../other-article/` would
+        // name `/docs/other-article/` — NOT the sibling. The file-space
+        // interpretation (already correct for index pages) misses, and no
+        // fallback may kick in.
+        let mut root = root_with_link("../other-article/");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "../other-article/");
+    }
+
+    #[test]
+    fn url_space_fallback_dot_slash_resolves_the_page_itself() {
+        // `./` from URL `/docs/section/article/` names the page itself,
+        // whose file-space shape is `section/article.mdx`. No
+        // `section/index.*` exists in the map, so file space misses first
+        // (precedence intact) and the fallback resolves.
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/section/article.mdx"),
+            "/docs/section/article/".to_string(),
+        );
+        let mut plugin = plugin_for_non_index_page(map);
+        let mut root = root_with_link("./");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "/docs/section/article/");
+    }
+
+    #[test]
+    fn url_space_fallback_parent_slash_resolves_section_page() {
+        // `../` from URL `/docs/section/article/` names `/docs/section/`,
+        // which maps back to `section.mdx` OR `section/index.mdx`. File
+        // space probes `/site/docs/index.*` (absent here), then the
+        // fallback probes both section shapes.
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/section/index.mdx"),
+            "/docs/section/".to_string(),
+        );
+        let mut plugin = plugin_for_non_index_page(map);
+        let mut root = root_with_link("../");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "/docs/section/");
+    }
+
+    #[test]
+    fn url_space_fallback_resolves_child_route() {
+        // `child/` from URL `/docs/section/article/` names the child
+        // route `/docs/section/article/child/`. File space reads it as a
+        // sibling (`section/child.*` — absent), the fallback as
+        // `section/article/child.*`.
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/section/article/child.mdx"),
+            "/docs/section/article/child/".to_string(),
+        );
+        let mut plugin = plugin_for_non_index_page(map);
+        let mut root = root_with_link("child/");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "/docs/section/article/child/");
+    }
+
+    #[test]
+    fn url_space_fallback_skips_site_absolute_hrefs() {
+        // A leading `/` is site-absolute — it never resolves relative to
+        // the page URL, so the fallback must not reinterpret it under the
+        // route directory.
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/section/article/missing.mdx"),
+            "/docs/section/article/missing/".to_string(),
+        );
+        let mut plugin = plugin_for_non_index_page(map);
+        let mut root = root_with_link("/missing/");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "/missing/");
+    }
+
+    #[test]
+    fn url_space_fallback_resolves_dotted_slug() {
+        // `../v1.0/` — append_extension must not eat the dotted slug the
+        // way `Path::set_extension` would (`v1.0` → `v1.mdx`).
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/section/v1.0.mdx"),
+            "/docs/section/v1.0/".to_string(),
+        );
+        let mut plugin = plugin_for_non_index_page(map);
+        let mut root = root_with_link("../v1.0/");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "/docs/section/v1.0/");
+    }
+
+    #[test]
+    fn set_source_dir_disarms_url_space_fallback() {
+        // State hygiene: a dir-only update (legacy path) must clear the
+        // fallback armed by a previous file — otherwise the next file
+        // resolves against the PREVIOUS page's route directory.
+        let mut map = HashMap::new();
+        map.insert(
+            PathBuf::from("/site/docs/section/other-article.mdx"),
+            "/docs/section/other-article/".to_string(),
+        );
+        let mut plugin = plugin_for_non_index_page(map);
+        plugin.set_source_dir(PathBuf::from("/site/docs/section"));
+        let mut root = root_with_link("../other-article/");
+        plugin.visit(&mut root);
+        assert_eq!(link_url(&root), "../other-article/");
+    }
+
+    #[test]
+    fn url_space_fallback_climb_past_root_left_alone() {
+        // A href that climbs past the filesystem root normalizes to a
+        // base with no file name — nothing to probe, no panic, no rewrite.
+        let mut plugin = plugin_for_non_index_page(HashMap::new());
+        let mut root = root_with_link("../../../../../../../../x/");
+        plugin.visit(&mut root);
+        // Pops land at root then push `x` — file_name is Some("x"), probe
+        // misses. The degenerate full-climb case:
+        let mut root2 = root_with_link("../../../../../../../../");
+        plugin.visit(&mut root2);
+        assert_eq!(link_url(&root2), "../../../../../../../../");
+        assert_eq!(link_url(&root), "../../../../../../../../x/");
     }
 }

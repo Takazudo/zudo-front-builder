@@ -389,6 +389,89 @@ fn resolve_links_dir_relative_link_rewrites_to_route_url() {
     );
 }
 
+/// Fixture for the URL-space fallback repro (zfb#1030):
+///
+/// - `content/docs/section/article.mdx` — a NON-index page linking
+///   `[sibling](../other-article/)` — written against its rendered URL
+///   `/docs/section/article/`, one directory deeper than the file.
+/// - `content/docs/section/other-article.mdx` — the sibling target.
+fn write_url_space_fixture_project(root: &std::path::Path) {
+    for d in ["pages", "content/docs/section", "components", "layouts"] {
+        fs::create_dir_all(root.join(d)).unwrap();
+    }
+    fs::write(
+        root.join("layouts/default.tsx"),
+        "export default function DefaultLayout({ children }) { return children; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/index.mdx"),
+        "---\ntitle: Home\n---\n\nWelcome.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("content/docs/section/other-article.mdx"),
+        "---\ntitle: Other Article\n---\n\nTarget body.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("content/docs/section/article.mdx"),
+        "---\ntitle: Article\n---\n\n[sibling](../other-article/)\n",
+    )
+    .unwrap();
+}
+
+/// (g) zfb#1030 — a URL-space directory link (`../other-article/`) from a
+///     NON-index page must resolve to the sibling page's route URL via the
+///     URL-space fallback, and must NOT count as a broken link.
+///
+/// Same `linkValidation` + `failOnBroken` arming as the #1004 test (f):
+/// pre-fix, the file-space probe resolves `../other-article/` one
+/// directory too high, the href passes through verbatim, linkValidation's
+/// on-disk existence check fails, and the build errors — the 164-warning
+/// zcss shape from the issue. Post-fix the fallback reads the href
+/// against the page's route directory and rewrites it, so a successful
+/// bundle proves the diagnostic is gone end-to-end.
+#[test]
+fn resolve_links_url_space_link_from_non_index_page_rewrites_to_route_url() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_url_space_fixture_project(&root);
+
+    let mut input = make_input_with_resolve(&root, &esbuild, "dist-g", OnBrokenLinks::Error);
+    input.pipeline_spec = zfb_content::PipelineSpec {
+        features: Some(zfb_content::MarkdownFeaturesConfig {
+            link_validation: Some(zfb_content::LinkValidationConfig {
+                fail_on_broken: Some(true),
+            }),
+            ..Default::default()
+        }),
+        build_context_roots: Some((root.clone(), root.join("public"))),
+        ..zfb_content::PipelineSpec::default()
+    };
+    let out = bundle(input)
+        .expect("bundle must succeed — URL-space dir link resolves via the #1030 fallback");
+
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    assert!(
+        body.contains("/docs/section/other-article/"),
+        "URL-space dir link must be rewritten to /docs/section/other-article/. \
+         Bundle excerpt: {}",
+        &body[..body.len().min(800)]
+    );
+    assert!(
+        !body.contains("\"../other-article/\""),
+        "the raw URL-space href must not survive as a verbatim string \
+         literal in the bundle. Bundle excerpt: {}",
+        &body[..body.len().min(800)]
+    );
+}
+
 /// (e) zfb#939 — error mode must STILL fail when every MDX compile is a
 ///     process-global cache hit.
 ///

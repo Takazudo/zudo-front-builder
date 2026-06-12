@@ -512,3 +512,60 @@ fn resolve_links_unset_source_dir_does_not_alias_a_set_one() {
     assert!(resolved.jsx_source.contains("/docs/other/"));
     assert!(with_dir.take_broken_links().is_empty());
 }
+
+#[test]
+fn resolve_links_index_and_non_index_in_same_dir_do_not_alias() {
+    // zfb#1030: the URL-space fallback makes `section/index.mdx` and
+    // `section/article.mdx` resolve the SAME body differently — the
+    // dir-style `../other-article/` href misses in file space from both,
+    // but only the non-index page falls back to its route directory.
+    // Identical bodies + identical source_dir must therefore still key
+    // separately, or the index page would inherit the article's
+    // fallback-resolved URL (and vice versa).
+    let cache = MdxModuleCache::new();
+    let src = "[link](../other-article/)\n";
+    let map: &[(&str, &str)] = &[(
+        "/content/docs/section/other-article.mdx",
+        "/docs/section/other-article/",
+    )];
+
+    let mut as_article = resolve_links_pipeline(map);
+    as_article.set_resolve_links_source_file(PathBuf::from("/content/docs/section/article.mdx"));
+    let from_article = compile_mdx_to_jsx_module_cached(
+        src,
+        &PathBuf::from("/content/docs/section/article.mdx"),
+        Some(&cache),
+        Some(&mut as_article),
+    )
+    .unwrap();
+    assert!(
+        from_article
+            .jsx_source
+            .contains("/docs/section/other-article/"),
+        "non-index page must fallback-resolve the URL-space href; got: {}",
+        from_article.jsx_source
+    );
+    assert_eq!(cache.len(), 1);
+
+    let mut as_index = resolve_links_pipeline(map);
+    as_index.set_resolve_links_source_file(PathBuf::from("/content/docs/section/index.mdx"));
+    let from_index = compile_mdx_to_jsx_module_cached(
+        src,
+        &PathBuf::from("/content/docs/section/index.mdx"),
+        Some(&cache),
+        Some(&mut as_index),
+    )
+    .unwrap();
+    assert_eq!(
+        cache.len(),
+        2,
+        "index vs non-index file in one dir must compile into separate entries"
+    );
+    assert!(
+        !from_index
+            .jsx_source
+            .contains("/docs/section/other-article/"),
+        "index page must NOT inherit the article's fallback resolution; got: {}",
+        from_index.jsx_source
+    );
+}

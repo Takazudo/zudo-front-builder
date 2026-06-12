@@ -305,7 +305,12 @@ export type ZfbConfig = {
    * HTML when `foo.mdx` becomes `foo/index.html`. Extensionless
    * (`./other`) and directory-style (`other/`) targets resolve too,
    * probing `{name}.mdx`, `{name}.md`, `{name}/index.mdx`,
-   * `{name}/index.md` in that order.
+   * `{name}/index.md` in that order. Relative targets resolve from the
+   * source file's directory; for a directory-style link written from a
+   * non-index page against its rendered URL — which sits one directory
+   * deeper, e.g. `../sibling/` from `section/article.mdx` — a URL-space
+   * fallback retries the probe from the page's route directory when
+   * every file-space candidate misses.
    *
    * Two ways to specify the source dirs:
    *
