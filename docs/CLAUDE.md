@@ -53,7 +53,7 @@ docs/
 - Optional: `description`, `sidebar_position` (number), `sidebar_label`, `category`, `tags`
 - Sidebar order is driven by `sidebar_position`
 - Sidebar category label comes from the `index.mdx` frontmatter in each directory, or from a `_category_.json` file when there is no `index.mdx`
-- `_category_.json` files are NOT disposable: the zfb content-collection loader skips them as data files (emitting a benign build warning), but the docs app's nav layer (`loadCategoryMeta` via `resolveNavSource`) still reads them for category `label`, `position`, `description`, `sortOrder`, and `noPage`. Deleting them can regress sidebar/category nav (e.g. `api`, `architecture`, generated Claude sections).
+- `_category_.json` files are NOT disposable: the zfb content-collection loader skips them as data files (emitting a benign build warning — silenced when the collection's `include`/`exclude` globs already filter the file out, see zfb#1032), but the docs app's nav layer (`loadCategoryMeta` via `resolveNavSource`) still reads them for category `label`, `position`, `description`, `sortOrder`, and `noPage`. Deleting them can regress sidebar/category nav (e.g. `api`, `architecture`, generated Claude sections).
 
 ### Links
 
