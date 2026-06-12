@@ -8,11 +8,12 @@
 //!
 //! ## Dispatch flow (the request BLOCKS until done — pinned semantics)
 //!
-//! 1. Cheap early return when the lazy switch (#1025) is off. The dev
-//!    boot wiring already skips installing the hook in that case (the
-//!    switch is boot-resolved and immutable for the session, so the
-//!    default-off serve path stays literally hook-free); this check is
-//!    defense in depth for any other construction site.
+//! 1. Cheap early return when the lazy switch (#1025) is off (the
+//!    `ZFB_DEV_EAGER=1` escape hatch, #1027). The dev boot wiring
+//!    already skips installing the hook in that case (the switch is
+//!    boot-resolved and immutable for the session, so the eager serve
+//!    path stays literally hook-free); this check is defense in depth
+//!    for any other construction site.
 //! 2. Hop to [`tokio::task::spawn_blocking`]: every step below takes
 //!    std mutexes (renderer mutex, stale map, pipeline exclusion), and
 //!    the renderer mutex in particular can be held for seconds by a
