@@ -16,6 +16,12 @@
 //!   bookkeeping.
 //! - Request-time writes never feed `BuildOutcome::pages_written` (no
 //!   SSE) and run the same `validate_output_path` boundary check.
+//! - The guarded variant (`request_write_guarded`, issue #1027 lazy
+//!   race) runs its revalidation closure strictly under the exclusion
+//!   lock and strictly before any other work; a `false` answer skips
+//!   the write wholesale (no disk, no dedup commit), so a tick that
+//!   superseded the request in the renderer-release → write gap keeps
+//!   its fresher bytes authoritative.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -24,7 +30,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use tempfile::tempdir;
-use zfb_build::pipeline::RequestWriter;
+use zfb_build::pipeline::{GuardedWriteOutcome, RequestWriteOutcome, RequestWriter};
 use zfb_build::{
     AssetPipeline, BuildContext, DevAssetPipeline, PageSelection, RebuildPlan, RefreshOutcome,
     RelDistPath, RenderedPage,
@@ -354,6 +360,202 @@ fn request_write_never_interleaves_with_a_tick_prune_window() {
     // evicted dedup entry means the write actually ran.
     assert!(write_out.written);
     assert_eq!(std::fs::read(&target_abs).unwrap(), b"<p>request</p>");
+}
+
+/// #1027 guarded write — the revalidation verdict decides everything:
+/// `true` runs the exact `request_write` sequence (write, then dedup
+/// no-op on identical bytes); `false` skips wholesale — disk content
+/// AND the dedup cache stay exactly as the last passing write left
+/// them.
+#[test]
+fn guarded_write_passes_and_skips_by_revalidation_verdict() {
+    let dir = tempdir().unwrap();
+    let dist = dir.path().to_path_buf();
+    let pipeline = DevAssetPipeline::new();
+    let target = Path::new("lazy/index.html");
+
+    // Passing revalidation behaves like request_write...
+    assert_eq!(
+        pipeline
+            .request_write_guarded(&dist, target, b"<p>v1</p>".to_vec(), || true)
+            .unwrap(),
+        GuardedWriteOutcome::Written(RequestWriteOutcome { written: true }),
+    );
+    // ...byte-dedup included.
+    assert_eq!(
+        pipeline
+            .request_write_guarded(&dist, target, b"<p>v1</p>".to_vec(), || true)
+            .unwrap(),
+        GuardedWriteOutcome::Written(RequestWriteOutcome { written: false }),
+    );
+
+    // Failing revalidation skips the write wholesale: new bytes never
+    // reach disk...
+    assert_eq!(
+        pipeline
+            .request_write_guarded(&dist, target, b"<p>superseded</p>".to_vec(), || false)
+            .unwrap(),
+        GuardedWriteOutcome::Skipped,
+    );
+    assert_eq!(std::fs::read(dist.join(target)).unwrap(), b"<p>v1</p>");
+    // ...and the dedup cache was not poisoned by the skipped bytes:
+    // re-sending v1 still dedups, and the skipped bytes still count as
+    // a change.
+    assert!(
+        !pipeline
+            .request_write(&dist, target, b"<p>v1</p>".to_vec())
+            .unwrap()
+            .written,
+        "the cache must still hold the last PASSING write's bytes",
+    );
+    assert!(
+        pipeline
+            .request_write(&dist, target, b"<p>superseded</p>".to_vec())
+            .unwrap()
+            .written,
+        "skipped bytes must not have been committed to the dedup cache",
+    );
+}
+
+/// #1027: the revalidation closure short-circuits BEFORE the
+/// `validate_output_path` boundary check — a failing guard skips ALL
+/// work, so even a path that would be rejected returns `Skipped`
+/// rather than an error, while a passing guard still hits the
+/// validation wall.
+#[test]
+fn guarded_write_revalidates_before_path_validation() {
+    let dir = tempdir().unwrap();
+    let pipeline = DevAssetPipeline::new();
+
+    assert_eq!(
+        pipeline
+            .request_write_guarded(
+                dir.path(),
+                Path::new("../escape.html"),
+                b"x".to_vec(),
+                || { false }
+            )
+            .unwrap(),
+        GuardedWriteOutcome::Skipped,
+        "a failing guard must short-circuit before validation",
+    );
+    assert!(
+        pipeline
+            .request_write_guarded(
+                dir.path(),
+                Path::new("../escape.html"),
+                b"x".to_vec(),
+                || { true }
+            )
+            .is_err(),
+        "a passing guard still runs the write-boundary validation",
+    );
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        0,
+        "neither call may touch dist",
+    );
+}
+
+/// THE #1027 lazy race at this layer: a tick is in flight while the
+/// request's guarded write fires. The revalidation must NOT run until
+/// the tick completes (it answers under the exclusion lock, never
+/// against mid-tick state); composed with a claim re-check that the
+/// tick invalidates, the late write is skipped and the tick's fresher
+/// bytes survive on disk and in the dedup cache.
+#[test]
+fn guarded_revalidation_runs_only_after_in_flight_tick_completes() {
+    let dir = tempdir().unwrap();
+    let dist = dir.path().to_path_buf();
+    let pipeline = Arc::new(DevAssetPipeline::new());
+    let writer: RequestWriter = pipeline.request_writer();
+    let target_abs = dist.join("racy/index.html");
+
+    // The route exists from an earlier lazy write (the "older world"
+    // bytes the request just re-rendered).
+    pipeline
+        .request_write(&dist, Path::new("racy/index.html"), b"<p>old</p>".to_vec())
+        .unwrap();
+
+    // The tick parks inside its render callback (inside the exclusion
+    // window), then eagerly re-renders the same route with fresher
+    // bytes.
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+    let (gate_tx, gate_rx) = mpsc::channel::<()>();
+    let entered_tx = Mutex::new(entered_tx);
+    let gate_rx = Mutex::new(gate_rx);
+    let rendered = vec![rp("/p/racy.tsx", "racy/index.html", "<p>tick</p>")];
+    let ctx = BuildContext {
+        dist_root: dist.clone(),
+        render_pages: Arc::new(move |_, _| {
+            entered_tx.lock().unwrap().send(()).unwrap();
+            gate_rx.lock().unwrap().recv().unwrap();
+            Ok(rendered.clone())
+        }),
+        run_css: None,
+        run_islands: None,
+        run_client_scripts: None,
+        reload_renderer: None,
+    };
+
+    let tick_pipeline = pipeline.clone();
+    let tick = std::thread::spawn(move || {
+        tick_pipeline
+            .apply(&plan_for(&["/p/racy.tsx"]), &ctx)
+            .unwrap()
+    });
+    entered_rx.recv().unwrap();
+
+    // Fire the request's guarded write: bytes from the older world,
+    // and a revalidation that records when it runs and answers "the
+    // claim is gone" (as the eager re-render's eviction would make it).
+    let revalidated = Arc::new(AtomicBool::new(false));
+    let revalidated_w = revalidated.clone();
+    let dist_w = dist.clone();
+    let writer_thread = std::thread::spawn(move || {
+        writer
+            .request_write_guarded(
+                &dist_w,
+                Path::new("racy/index.html"),
+                b"<p>request-old</p>".to_vec(),
+                move || {
+                    revalidated_w.store(true, Ordering::SeqCst);
+                    false
+                },
+            )
+            .unwrap()
+    });
+
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(
+        !revalidated.load(Ordering::SeqCst),
+        "revalidation must not run while a tick holds the exclusion — \
+         it would answer against mid-tick state",
+    );
+
+    gate_tx.send(()).unwrap();
+    tick.join().unwrap();
+    let outcome = writer_thread.join().unwrap();
+    assert!(revalidated.load(Ordering::SeqCst));
+    assert_eq!(
+        outcome,
+        GuardedWriteOutcome::Skipped,
+        "the superseded request write must be skipped",
+    );
+    assert_eq!(
+        std::fs::read(&target_abs).unwrap(),
+        b"<p>tick</p>",
+        "the tick's fresher bytes survive the late request write",
+    );
+    // Dedup coherence: the cache holds the tick's copy, not the
+    // skipped request bytes.
+    assert!(
+        !pipeline
+            .request_write(&dist, Path::new("racy/index.html"), b"<p>tick</p>".to_vec())
+            .unwrap()
+            .written,
+        "the dedup cache must hold the tick's bytes after the skip",
+    );
 }
 
 /// ALL-LAZY PRUNE (#1024): a route-structure tick whose renderer

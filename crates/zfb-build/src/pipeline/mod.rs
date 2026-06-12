@@ -74,7 +74,7 @@ pub mod dev;
 pub mod orchestrator;
 pub mod prod;
 
-pub use dev::{DevAssetPipeline, RequestWriteOutcome, RequestWriter};
+pub use dev::{DevAssetPipeline, GuardedWriteOutcome, RequestWriteOutcome, RequestWriter};
 pub use orchestrator::{
     apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitterPayload,
     ProdAssetEmitterInputs, ProdRenderedFile,

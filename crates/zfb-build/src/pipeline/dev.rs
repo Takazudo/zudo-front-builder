@@ -46,6 +46,20 @@ struct WritePageOutcome {
     stale_path: Option<PathBuf>,
 }
 
+/// Result of a guarded request-time write
+/// ([`DevAssetPipeline::request_write_guarded`] /
+/// [`RequestWriter::request_write_guarded`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardedWriteOutcome {
+    /// Revalidation passed under the exclusion lock; the normal
+    /// validate → byte-dedup → atomic-write → commit sequence ran.
+    Written(RequestWriteOutcome),
+    /// Revalidation failed — the write was skipped wholesale: no path
+    /// validation, no dedup commit, disk untouched. Whatever the
+    /// interleaving tick wrote stays authoritative.
+    Skipped,
+}
+
 /// Result of a request-time write ([`DevAssetPipeline::request_write`] /
 /// [`RequestWriter::request_write`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,7 +340,44 @@ impl WriteShared {
         bytes: Vec<u8>,
     ) -> Result<RequestWriteOutcome> {
         let _exclusion = self.lock_exclusion("WriteShared.exclusion (request_write)");
+        self.validate_and_write(dist_root, output_path, bytes)
+    }
 
+    /// Guarded request-time write (issue #1027 lazy race): exclusion →
+    /// `revalidate()` → (only if it passed) the same validate → dedup →
+    /// write → commit sequence as [`Self::request_write`].
+    ///
+    /// The revalidation closure runs strictly UNDER the exclusion lock
+    /// and strictly BEFORE any other work, so a `false` answer skips the
+    /// write wholesale — see [`RequestWriter::request_write_guarded`]
+    /// for why that ordering is load-bearing.
+    fn request_write_guarded(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+        revalidate: impl FnOnce() -> bool,
+    ) -> Result<GuardedWriteOutcome> {
+        let _exclusion = self.lock_exclusion("WriteShared.exclusion (request_write_guarded)");
+        if !revalidate() {
+            return Ok(GuardedWriteOutcome::Skipped);
+        }
+        Ok(GuardedWriteOutcome::Written(self.validate_and_write(
+            dist_root,
+            output_path,
+            bytes,
+        )?))
+    }
+
+    /// The exclusion-agnostic core shared by [`Self::request_write`] and
+    /// [`Self::request_write_guarded`]. Callers MUST hold the exclusion
+    /// lock.
+    fn validate_and_write(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+    ) -> Result<RequestWriteOutcome> {
         // Same write-boundary validation as the tick path: reject any
         // output path that escapes dist_root via `..`, absolute roots,
         // or a planted symlink.
@@ -429,6 +480,19 @@ impl DevAssetPipeline {
         self.shared.request_write(dist_root, output_path, bytes)
     }
 
+    /// See [`RequestWriter::request_write_guarded`] — the same guarded
+    /// write through the pipeline handle.
+    pub fn request_write_guarded(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+        revalidate: impl FnOnce() -> bool,
+    ) -> Result<GuardedWriteOutcome> {
+        self.shared
+            .request_write_guarded(dist_root, output_path, bytes, revalidate)
+    }
+
     /// A cheap clonable handle onto this pipeline's write state, for
     /// callers that need to perform [`Self::request_write`]s after the
     /// pipeline itself has been moved into the
@@ -462,6 +526,43 @@ impl RequestWriter {
         bytes: Vec<u8>,
     ) -> Result<RequestWriteOutcome> {
         self.shared.request_write(dist_root, output_path, bytes)
+    }
+
+    /// [`Self::request_write`] with a freshness recheck under the
+    /// exclusion lock (issue #1027 lazy race).
+    ///
+    /// The request-time lazy render releases the renderer mutex after
+    /// rendering and only THEN takes this pipeline's exclusion lock. A
+    /// watcher tick completing in that gap can eagerly re-render and
+    /// write the SAME route with fresher bytes (evicting its stale
+    /// entry), or re-stale it at a newer generation. An unguarded
+    /// `request_write` would then overwrite the newer HTML with bytes
+    /// rendered against the older host — a silent stale serve until the
+    /// next edit.
+    ///
+    /// `revalidate` closes that gap: it runs strictly under the
+    /// exclusion lock (so no tick is in flight while it answers) and
+    /// strictly before any validation or disk work. Callers pass a
+    /// closure re-checking that their claim on the route is still
+    /// exactly current; on `false` the write is skipped wholesale and
+    /// [`GuardedWriteOutcome::Skipped`] is returned — the interleaving
+    /// tick's bytes stay authoritative on disk and in the dedup cache.
+    ///
+    /// Lock ordering: identical to `request_write` — the exclusion lock
+    /// only. `revalidate` may take leaf locks of its own (e.g. the dev
+    /// session's stale map, which ticks also take INSIDE their
+    /// exclusion window) but must never acquire the renderer mutex
+    /// (that would invert against a tick's exclusion → renderer
+    /// nesting).
+    pub fn request_write_guarded(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+        revalidate: impl FnOnce() -> bool,
+    ) -> Result<GuardedWriteOutcome> {
+        self.shared
+            .request_write_guarded(dist_root, output_path, bytes, revalidate)
     }
 }
 
