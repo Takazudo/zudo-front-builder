@@ -539,7 +539,9 @@ fn resolve_links_index_and_non_index_in_same_dir_do_not_alias() {
     )
     .unwrap();
     assert!(
-        from_article.jsx_source.contains("/docs/section/other-article/"),
+        from_article
+            .jsx_source
+            .contains("/docs/section/other-article/"),
         "non-index page must fallback-resolve the URL-space href; got: {}",
         from_article.jsx_source
     );
@@ -560,7 +562,9 @@ fn resolve_links_index_and_non_index_in_same_dir_do_not_alias() {
         "index vs non-index file in one dir must compile into separate entries"
     );
     assert!(
-        !from_index.jsx_source.contains("/docs/section/other-article/"),
+        !from_index
+            .jsx_source
+            .contains("/docs/section/other-article/"),
         "index page must NOT inherit the article's fallback resolution; got: {}",
         from_index.jsx_source
     );
