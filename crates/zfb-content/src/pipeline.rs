@@ -848,9 +848,30 @@ impl Pipeline {
     /// `./other.mdx` links are resolved against the correct directory.
     /// No-op when [`add_resolve_links`](Pipeline::add_resolve_links)
     /// was not called.
+    ///
+    /// Disarms the URL-space fallback a previous
+    /// [`Pipeline::set_resolve_links_source_file`] call may have armed —
+    /// prefer that setter, which derives the directory AND the fallback
+    /// state from one input (zfb#1030).
     pub fn set_resolve_links_source_dir(&mut self, dir: std::path::PathBuf) {
         if let Some(p) = self.resolve_links.as_mut() {
             p.set_source_dir(dir);
+        }
+    }
+
+    /// Update the wired [`ResolveLinksPlugin`]'s per-file context from
+    /// the source **file** path (zfb#1030).
+    ///
+    /// Like [`Pipeline::set_resolve_links_source_dir`] (the directory
+    /// becomes the file's parent), but additionally arms the URL-space
+    /// fallback for non-index files so dir-style hrefs written against
+    /// the rendered URL (`../other-article/` from `section/article.mdx`)
+    /// resolve when the file-space probe misses. Call once per MDX file,
+    /// before `apply_mdast_visitors`. No-op when
+    /// [`add_resolve_links`](Pipeline::add_resolve_links) was not called.
+    pub fn set_resolve_links_source_file(&mut self, file: std::path::PathBuf) {
+        if let Some(p) = self.resolve_links.as_mut() {
+            p.set_source_file(file);
         }
     }
 
@@ -907,27 +928,35 @@ impl Pipeline {
     ///
     /// [`Pipeline::config_fingerprint`] covers construction-time config
     /// only; this surfaces the per-FILE pipeline state that also shapes
-    /// the emitted JSX — today exactly the wired `ResolveLinksPlugin`'s
-    /// `source_dir` (set between compiles via
-    /// [`Pipeline::set_resolve_links_source_dir`]; it changes how
-    /// relative `./other.mdx` links resolve). `None` when no per-file
-    /// state is in play, keeping the cache key byte-identical to the
-    /// pre-#939 two-part shape for every other pipeline.
+    /// the emitted JSX — the wired `ResolveLinksPlugin`'s `source_dir`
+    /// plus its URL-space fallback base (both set between compiles via
+    /// [`Pipeline::set_resolve_links_source_file`] /
+    /// [`Pipeline::set_resolve_links_source_dir`]; they change how
+    /// relative link targets resolve). `None` when no per-file state is
+    /// in play, keeping the cache key byte-identical to the pre-#939
+    /// two-part shape for every other pipeline.
     ///
-    /// The dir is normalised with the same lexical helper as the
+    /// Both paths are normalised with the same lexical helper as the
     /// source-map digest in [`Pipeline::add_resolve_links`]: spellings
     /// the runtime lookup treats as one dir (`Path` equality) key
     /// identically, while dirs whose lookups can differ never collide.
-    /// An unset dir maps to a distinct `none` token —
-    /// `source_dir = None` only performs absolute lookups, which is
-    /// observably different from any set dir (the empty path included).
+    /// An unset value maps to a distinct `none` token — `source_dir =
+    /// None` only performs absolute lookups, and an unarmed fallback
+    /// (index file, or dir-only setter) resolves dir-style hrefs
+    /// differently from any armed base (zfb#1030: `section/index.mdx`
+    /// and `section/article.mdx` share a `source_dir` but must never
+    /// alias a cache entry).
     pub(crate) fn cache_key_context(&self) -> Option<String> {
-        self.resolve_links.as_ref().map(|p| match p.source_dir() {
-            Some(dir) => format!(
-                "resolve_links_source_dir=some:{}",
-                normalize_path_lexically(dir)
-            ),
-            None => "resolve_links_source_dir=none".to_string(),
+        self.resolve_links.as_ref().map(|p| {
+            let dir = match p.source_dir() {
+                Some(dir) => format!("some:{}", normalize_path_lexically(dir)),
+                None => "none".to_string(),
+            };
+            let url_dir = match p.url_space_dir() {
+                Some(dir) => format!("some:{}", normalize_path_lexically(dir)),
+                None => "none".to_string(),
+            };
+            format!("resolve_links_source_dir={dir};url_dir={url_dir}")
         })
     }
 
@@ -3079,6 +3108,44 @@ mod tests {
             p.cache_key_context().expect("wired => context"),
             canonical,
             "a `..` spelling can look up differently — it must key separately"
+        );
+    }
+
+    // 18b. zfb#1030: the URL-space fallback base joins the per-call
+    // context. `section/index.mdx` and `section/article.mdx` share a
+    // source_dir but resolve dir-style hrefs differently — their cache
+    // keys must never alias.
+    #[test]
+    fn cache_key_context_keys_the_url_space_fallback_base() {
+        let mut p = Pipeline::with_defaults();
+        p.add_resolve_links(std::collections::HashMap::new());
+
+        p.set_resolve_links_source_file(std::path::PathBuf::from("/x/section/index.mdx"));
+        let index = p.cache_key_context().expect("wired => context");
+
+        p.set_resolve_links_source_file(std::path::PathBuf::from("/x/section/article.mdx"));
+        let article = p.cache_key_context().expect("wired => context");
+        assert_ne!(
+            index, article,
+            "index vs non-index file in the same dir must key separately"
+        );
+
+        p.set_resolve_links_source_file(std::path::PathBuf::from("/x/section/other.mdx"));
+        assert_ne!(
+            p.cache_key_context().expect("wired => context"),
+            article,
+            "two non-index files in the same dir must key separately"
+        );
+
+        // The dir-only setter disarms the fallback — its context must
+        // match the index file's (same dir, no fallback base), proving
+        // legacy callers key like the unarmed state rather than leaking
+        // the previous file's base.
+        p.set_resolve_links_source_dir(std::path::PathBuf::from("/x/section"));
+        assert_eq!(
+            p.cache_key_context().expect("wired => context"),
+            index,
+            "dir-only setter must key as the unarmed-fallback state"
         );
     }
 }
