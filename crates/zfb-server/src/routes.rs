@@ -463,6 +463,20 @@ pub struct AppState {
     /// branches); [`serve_page`] consults it for the Origin check on
     /// non-GET requests reaching plugin/embed/SSR dispatch.
     pub host_validation: crate::host_validation::HostValidation,
+
+    /// Optional render-on-request hook (issue #1020).
+    ///
+    /// When `Some` and `mode == ServerMode::Dev`, `serve_page` awaits
+    /// this hook on every GET/HEAD request **before** the in-memory page
+    /// cache lookup. The hook's job is to ensure `html_root` is fresh;
+    /// after it returns the normal `PageCache → html_root → public_root`
+    /// waterfall continues unchanged.
+    ///
+    /// `None` disables the hook (Preview/Embed/tests without a hook); all
+    /// existing legs are byte-identical. Snapshotted under a short read
+    /// lock and released before the `await` — same discipline as
+    /// `ssr_routes`.
+    pub render_on_request_hook: Option<crate::render_hook::RenderOnRequestHandle>,
 }
 
 /// Build the axum router for the dev server.
@@ -908,6 +922,54 @@ async fn serve_page(
     // not silently get treated as a page lookup.
     if !is_get_like {
         return method_not_allowed_get_head();
+    }
+
+    // Issue #1020 — render-on-request hook. Dev + GET/HEAD only (gated
+    // above). The hook makes `html_root` fresh as a side effect; after
+    // it returns the request falls through to the existing PageCache →
+    // html_root → public_root waterfall unchanged.
+    //
+    // Threading discipline mirrors the SSR leg (routes.rs:867-874):
+    // snapshot the inner `Arc` under a short read lock, release the lock
+    // before `await`ing so a concurrent session reload is never blocked
+    // by an in-flight render.
+    //
+    // Error containment: the hook is spawned as a separate task so that
+    // a panic in the hook is caught by tokio and surfaced as a `JoinError`
+    // rather than unwinding the request handler. The handler logs the
+    // error and falls through to the existing disk/cache legs — the
+    // contract is best-effort: the hook either makes the disk fresh or
+    // does not, and the server serves whatever is there.
+    if matches!(state.mode, crate::ServerMode::Dev) {
+        if let Some(handle) = state.render_on_request_hook.as_ref() {
+            let hook_snapshot: Option<std::sync::Arc<dyn crate::render_hook::RenderOnRequestHook>> =
+                handle.read().unwrap_or_else(|p| p.into_inner()).clone();
+            if let Some(hook) = hook_snapshot {
+                // Use the prefix-stripped path so the hook sees the same
+                // URL shape the production adapter delivers (`/blog/hello`,
+                // not `/<base>/blog/hello`).
+                let url_path = strip_prefix_from_full_uri(uri, state.base_prefix.as_deref())
+                    .map(|s| {
+                        // strip_prefix_from_full_uri returns path-and-query;
+                        // drop the query string for the hook.
+                        s.split_once('?').map(|(p, _)| p.to_string()).unwrap_or(s)
+                    })
+                    .unwrap_or_else(|| format!("/{trimmed}"));
+                // Spawn so a panic in the hook doesn't unwind this handler
+                // task — the JoinError is caught and logged; we fall through
+                // to the existing legs either way.
+                let join = tokio::spawn(async move {
+                    hook.render_if_stale(&url_path).await;
+                });
+                if let Err(e) = join.await {
+                    tracing::warn!(
+                        url_path = %trimmed,
+                        error = %e,
+                        "render-on-request hook failed (continuing with fallback legs)",
+                    );
+                }
+            }
+        }
     }
 
     let candidates = lookup_keys(trimmed);
@@ -1877,6 +1939,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         }
     }
 
@@ -1899,6 +1962,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         }
     }
 
@@ -1977,6 +2041,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         };
         // Cache miss — the fallback must read from html_root.
         let router = test_router(state);
@@ -2126,7 +2191,16 @@ mod tests {
 
         let body = body_string(resp).await;
         assert!(body.contains("EventSource"));
+        // The unprefixed literal survives only as the no-currentScript
+        // fallback (issue #1027): the stream URL is derived from the
+        // script tag's own src so a `base`-prefixed dev server connects
+        // to <base>/__zfb/reload instead of 404ing on the bare path.
         assert!(body.contains("/__zfb/reload"));
+        assert!(
+            body.contains("document.currentScript"),
+            "served livereload.js must derive the SSE stream URL from its \
+             own script src (base-prefix awareness)"
+        );
     }
 
     #[tokio::test]
@@ -2392,6 +2466,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         };
         // HTML must include <head></head> so inject_prod_head_assets has an anchor.
         state
@@ -2455,6 +2530,7 @@ mod tests {
             islands_bundle_url: Some(make_islands_bundle_url("/assets/islands.js")),
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         };
         state
             .pages
@@ -2499,6 +2575,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         };
         state
             .pages
@@ -2594,6 +2671,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         }
     }
 
@@ -3429,6 +3507,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         };
         let router = build_router(state);
 
@@ -3485,6 +3564,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         };
         let router = build_router(state);
 
@@ -3543,6 +3623,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         };
         let router = build_router(state);
 
@@ -3595,6 +3676,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         };
         let router = build_router(state);
 
@@ -3642,6 +3724,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         };
         let router = build_router(state);
 
@@ -3693,6 +3776,7 @@ mod tests {
             islands_bundle_url: None,
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
         };
         let router = build_router(state);
 

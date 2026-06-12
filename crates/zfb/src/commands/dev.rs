@@ -367,7 +367,26 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     }
 
     let graph_for_save = Arc::clone(&graph);
-    let pipeline = DevAssetPipeline::new();
+    // Issue #1025 — wire the stale probe so each tick's BuildOutcome
+    // reports the routes the lazy render callback marked stale
+    // (`pages_stale`). Always wired when a render session exists; the
+    // probe drains an empty buffer on every tick while the lazy switch
+    // is off, so behaviour is unchanged today.
+    let pipeline = match dev_session.as_ref() {
+        Some(session) => {
+            let probe_session = session.clone();
+            DevAssetPipeline::with_stale_probe(Arc::new(move || {
+                probe_session.inner.take_tick_stale()
+            }))
+        }
+        None => DevAssetPipeline::new(),
+    };
+    // Issue #1026 — clone the request-time write handle out BEFORE the
+    // pipeline is moved into the orchestrator below. The lazy render
+    // adapter writes stale-route renders through it so request writes
+    // share the tick path's validate → dedup → atomic-write → commit
+    // discipline and its tick-vs-request exclusion (#1024).
+    let request_writer = pipeline.request_writer();
     let extra_watch_paths = resolve_extra_watch_paths(&cfg.extra_watch_paths);
     // Configured collection roots classify as Content ahead of the
     // standard root-segment walk — without this, a collection under
@@ -1000,6 +1019,28 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // Arc and can update it on each tick (making added/removed
     // `prerender = false` routes visible without a restart).
 
+    // Issue #1026 — render-on-request hook (the zfb-side impl of the
+    // #1020 seam). ONE persistent handle built at boot: the adapter
+    // captures the session clone (whose renderer Arc is swapped in
+    // place on every refresh), the pipeline's request writer, and the
+    // dev HTML root — so it never needs rewiring from the refresh
+    // seams. Installed ONLY when the lazy switch (#1025) is on — the
+    // switch is resolved once at boot and immutable for the session, so
+    // gating the install keeps the eager (`ZFB_DEV_EAGER=1`) serve path
+    // literally hook-free (no per-GET handle snapshot/spawn; review
+    // finding on #1026). The adapter's own early-return stays as
+    // defense in depth.
+    let render_on_request_hook = dev_session
+        .as_ref()
+        .filter(|session| session.lazy_render_enabled())
+        .map(|session| {
+            crate::lazy_render_adapter::make_render_on_request_handle(
+                session.clone(),
+                request_writer.clone(),
+                dev_html_root.clone(),
+            )
+        });
+
     let opts = ServeOpts {
         project_root,
         dist_root,
@@ -1036,6 +1077,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // the server disables enforcement entirely for loopback binds.
         allowed_hosts: cfg.allowed_hosts.clone(),
         bound_host: Some(host.clone()),
+        // Issue #1020 seam / #1026 impl: the lazy render adapter built
+        // above. `None` when the renderer is disabled (no session to
+        // render through) or the lazy switch (#1025) is off (the
+        // `ZFB_DEV_EAGER=1` hatch) — which keeps serve_page's hook leg
+        // entirely inert.
+        render_on_request_hook,
     };
 
     // 7. Bind the TCP listener first so the port-in-use error surfaces
@@ -1052,7 +1099,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
     };
 
-    output::ready_with_interfaces("http", &host, port);
+    // Announce the ACTUAL bound port, not the requested one: with
+    // `--port 0` the OS picks an ephemeral port, and printing the literal
+    // `0` makes the banner unparseable for callers that need to discover
+    // the port (e.g. the dev E2E harness, #1018). For a fixed port the
+    // two values are identical, so existing UX is unchanged.
+    let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    output::ready_with_interfaces("http", &host, bound_port);
 
     // Run the server until Ctrl+C. Pass Ctrl+C as the graceful-shutdown
     // signal so axum drains in-flight connections before exiting. The
@@ -1266,9 +1319,232 @@ fn refresh_dev_island_chunks(
 /// Long-lived dev-session state that owns the renderer subprocess and
 /// the route table. Cloned by the [`PageRenderer`] callback so each
 /// orchestrator tick can map page ids → URLs.
+///
+/// `pub(crate)` (issue #1026): the lazy render adapter
+/// ([`crate::lazy_render_adapter`]) holds a clone as its persistent
+/// handle into the session — the inner `Arc<DevRenderInner>` survives
+/// every bundle refresh (the renderer state is swapped in place), so
+/// the adapter never needs rewiring.
 #[derive(Clone)]
-struct DevRenderSession {
+pub(crate) struct DevRenderSession {
     inner: Arc<DevRenderInner>,
+}
+
+/// Compile-time default for the lazy dev-render switch (issue #1025).
+///
+/// `true` since the wave-5 activation flip (issue #1027): watcher ticks
+/// mark affected routes stale and re-render them on first request
+/// instead of fan-out rendering eagerly. `ZFB_DEV_EAGER=1` restores the
+/// fully-eager behaviour; `ZFB_LAZY_DEV_RENDER=0|1` remains the precise
+/// per-session override (see [`resolve_lazy_dev_render`]).
+const LAZY_DEV_RENDER_DEFAULT: bool = true;
+
+/// Resolve the lazy dev-render switch once at boot (issues #1025/#1027).
+///
+/// Read a single time in [`boot_dev_renderer`] and stored on
+/// [`DevRenderInner::lazy_render`] — the tick path never re-reads the
+/// environment. Precedence is implemented by [`resolve_lazy_dev_render`].
+fn lazy_dev_render_enabled() -> bool {
+    resolve_lazy_dev_render(
+        std::env::var("ZFB_LAZY_DEV_RENDER").ok().as_deref(),
+        std::env::var("ZFB_DEV_EAGER").ok().as_deref(),
+    )
+}
+
+/// Pure precedence rule for the lazy dev-render switch (issue #1027):
+///
+/// 1. `ZFB_LAZY_DEV_RENDER=1|true` forces ON, `0|false` forces OFF —
+///    the precise override wins over everything when set to a
+///    recognized value.
+/// 2. Otherwise `ZFB_DEV_EAGER=1|true` forces OFF — the documented
+///    user-facing escape hatch, equivalent to `ZFB_LAZY_DEV_RENDER=0`.
+/// 3. Otherwise (both unset / unrecognized values) fall back to
+///    [`LAZY_DEV_RENDER_DEFAULT`].
+fn resolve_lazy_dev_render(lazy_var: Option<&str>, eager_var: Option<&str>) -> bool {
+    if let Some(raw) = lazy_var {
+        let t = raw.trim();
+        if t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true") {
+            return true;
+        }
+        if t.eq_ignore_ascii_case("0") || t.eq_ignore_ascii_case("false") {
+            return false;
+        }
+    }
+    if let Some(raw) = eager_var {
+        let t = raw.trim();
+        if t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true") {
+            return false;
+        }
+    }
+    LAZY_DEV_RENDER_DEFAULT
+}
+
+/// Per-route staleness state for lazy dev rendering (issue #1025).
+///
+/// Keyed by **relative output path** (under the dev HTML root) — the
+/// same key the pipeline's write bookkeeping and the synthetic
+/// output-path `PageId`s use, and the value `lookup_by_url` resolves a
+/// request to. One mutex guards all three fields so a mark / claim /
+/// swap observes a consistent snapshot.
+#[derive(Debug, Default)]
+struct StaleRoutes {
+    /// Monotonic tick generation. Incremented at the P4 route-table
+    /// swap in [`DevRenderSession::refresh_bundle_and_routes`] — i.e.
+    /// exactly when the route universe moves. Phase-B-skipped ticks
+    /// (#956) never reach P4 and leave it untouched.
+    generation: u64,
+    /// Stale output path → the generation that (most recently) staled
+    /// it. An entry means "the on-disk/cached HTML for this route may
+    /// not reflect the current source tree; re-render before serving".
+    entries: HashMap<PathBuf, u64>,
+    /// Output paths marked stale by the CURRENT tick's render callback,
+    /// drained once per tick into [`zfb_build::BuildOutcome::pages_stale`]
+    /// via the pipeline's stale probe.
+    tick_stale: Vec<PathBuf>,
+}
+
+/// ABA-safe token for one request-time stale-route render (issue #1025).
+///
+/// Returned by [`DevRenderInner::claim`]; passed back to
+/// [`DevRenderInner::clear_if_current`] after the claimed route was
+/// re-rendered. Carries the generation recorded for the entry at claim
+/// time, so a tick that re-stales the route mid-render (at a higher
+/// generation) keeps it stale — the clear only applies when no newer
+/// staling happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StaleClaim {
+    /// The claimed route's relative output path.
+    output_path: PathBuf,
+    /// The stale entry's recorded generation at claim time.
+    generation: u64,
+}
+
+impl DevRenderInner {
+    /// Lazy-mode boot exception (issue #1025, review finding): returns
+    /// `true` exactly once — for the session's first render-callback
+    /// invocation, i.e. the eager initial build at dev boot — then
+    /// `false` for every later tick. See the [`Self::boot_render_done`]
+    /// field docs for why the boot render stays eager even with the
+    /// lazy switch ON. If the boot build rendered zero pages (empty
+    /// graph), the latch is instead consumed by the first watcher tick,
+    /// which then renders eagerly once — the safe direction.
+    fn take_boot_render_pending(&self) -> bool {
+        !self
+            .boot_render_done
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Mark `output_paths` stale at the current generation and queue
+    /// them for this tick's [`zfb_build::BuildOutcome::pages_stale`]
+    /// signal. Re-marking an already-stale route bumps its recorded
+    /// generation, which is what defeats the claim/clear ABA race.
+    fn mark_stale<I: IntoIterator<Item = PathBuf>>(&self, output_paths: I) {
+        let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+        let generation = stale.generation;
+        for path in output_paths {
+            stale.entries.insert(path.clone(), generation);
+            stale.tick_stale.push(path);
+        }
+    }
+
+    /// Drop the stale entries for routes that were just rendered
+    /// eagerly — fresh output supersedes any earlier staling. (Within a
+    /// tick the eager set and the stale remainder are disjoint, so this
+    /// can never erase a mark from the same tick.)
+    fn clear_stale(&self, output_paths: &[PathBuf]) {
+        let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+        for path in output_paths {
+            stale.entries.remove(path);
+        }
+    }
+
+    /// P4 hook (issue #1025): the route tables just swapped — advance
+    /// the tick generation and evict entries whose output routes
+    /// vanished from the live route set (#804: a vanished route must
+    /// not linger as a stale entry, or a later claim would try to
+    /// render a route that no longer resolves). Also drops the vanished
+    /// paths from the current tick buffer so they are never announced
+    /// as stale.
+    fn note_table_swap(&self, vanished: &[PathBuf]) {
+        let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+        stale.generation += 1;
+        if !vanished.is_empty() {
+            let vanished: HashSet<&PathBuf> = vanished.iter().collect();
+            stale.entries.retain(|path, _| !vanished.contains(path));
+            stale.tick_stale.retain(|path| !vanished.contains(path));
+        }
+    }
+
+    /// Drain the routes marked stale by the current tick (consumed by
+    /// the dev pipeline's stale probe — see
+    /// [`zfb_build::DevAssetPipeline::with_stale_probe`]). Sorted for a
+    /// deterministic [`zfb_build::BuildOutcome::pages_stale`].
+    fn take_tick_stale(&self) -> Vec<PathBuf> {
+        let mut drained = {
+            let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+            std::mem::take(&mut stale.tick_stale)
+        };
+        drained.sort();
+        drained.dedup();
+        drained
+    }
+
+    /// Claim a stale route for a request-time render (issue #1025).
+    ///
+    /// `Some(claim)` when `output_path` is currently stale, `None` when
+    /// it is fresh (serve the cached/on-disk HTML as-is). The returned
+    /// claim records the entry's generation for the ABA check in
+    /// [`Self::clear_if_current`].
+    ///
+    /// Calling discipline (wave-4 adapter): capture the claim while
+    /// holding the renderer mutex — the same lock the P2 host swap
+    /// takes — so the claim/render pair is serialized against host
+    /// swaps and the rendered bytes always come from a host at least as
+    /// new as the claimed generation.
+    fn claim(&self, output_path: &Path) -> Option<StaleClaim> {
+        let stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+        stale.entries.get(output_path).map(|generation| StaleClaim {
+            output_path: output_path.to_path_buf(),
+            generation: *generation,
+        })
+    }
+
+    /// Clear a claimed stale entry after a successful request-time
+    /// render — but ONLY if no later tick re-staled the route: the
+    /// entry is removed iff `claim.generation >=` the recorded
+    /// generation. A route re-staled at a higher generation mid-render
+    /// stays stale (ABA safety), so the next request re-renders it
+    /// against the newer world.
+    fn clear_if_current(&self, claim: &StaleClaim) {
+        let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(recorded) = stale.entries.get(&claim.output_path) {
+            if claim.generation >= *recorded {
+                stale.entries.remove(&claim.output_path);
+            }
+        }
+    }
+
+    /// Revalidation read for the guarded request-time write (issue
+    /// #1027 lazy race): `true` iff the stale entry for the claim's
+    /// route still exists AND still records exactly the claim's
+    /// generation — i.e. no tick touched the route since the claim was
+    /// captured under the renderer mutex.
+    ///
+    /// Either kind of mid-gap tick interference flips this `false`:
+    ///
+    /// - an eager re-render EVICTED the entry ([`Self::clear_stale`]) —
+    ///   the tick's fresher bytes are on disk and must survive;
+    /// - a re-stale at a bumped generation ([`Self::note_table_swap`] +
+    ///   [`Self::mark_stale`]) — the request's bytes describe an older
+    ///   world; the entry stays stale so the next request re-renders.
+    ///
+    /// Called by the lazy render adapter from INSIDE the pipeline
+    /// exclusion lock (via `request_write_guarded`), where no tick can
+    /// be in flight — the answer cannot go stale before the write.
+    fn claim_is_current(&self, claim: &StaleClaim) -> bool {
+        let stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+        stale.entries.get(&claim.output_path) == Some(&claim.generation)
+    }
 }
 
 /// One expanded route plus its `paths()` provenance (issue #958).
@@ -1320,6 +1596,17 @@ struct DevRouteTables {
     /// server reads this list (via [`DevRenderSession::ssr_patterns`])
     /// and builds an [`zfb_server::SsrRouteSet`] from it.
     ssr_routes: Vec<RouteUniverseEntry>,
+    /// Reverse lookup: normalized request URL → SSG route entry (issue
+    /// #1019). Keyed by every candidate produced by
+    /// [`build_url_index`] so a single `RouteUniverseEntry` is
+    /// reachable via `/posts/a`, `/posts/a/`, and
+    /// `/posts/a/index.html`. SSR-only routes (`prerender = false`) are
+    /// intentionally absent — they are served by the existing SSR leg.
+    /// Rebuilt atomically with the other tables at P4 so the index is
+    /// never stale. Consumed by the lazy render adapter
+    /// ([`crate::lazy_render_adapter`]) on every request-time
+    /// stale-route render.
+    url_index: HashMap<String, RouteUniverseEntry>,
 }
 
 /// Boot-time inputs stashed so a watch-ADD (#659) can re-bundle the SSR
@@ -1433,6 +1720,29 @@ struct DevRenderInner {
     /// hold time is unchanged.
     #[cfg(feature = "embed_v8")]
     paths_cache: Mutex<PathsCache>,
+
+    /// Lazy dev render (issue #1025): per-route staleness map + tick
+    /// generation. See [`StaleRoutes`]. Present on both V8 paths — the
+    /// state machine itself has no V8 dependency; only the callback
+    /// split that feeds it is `embed_v8`-gated.
+    stale: Mutex<StaleRoutes>,
+
+    /// Lazy dev render switch (issue #1025), resolved once at boot via
+    /// [`lazy_dev_render_enabled`]. `true` (the default since the #1027
+    /// activation flip) routes ticks through [`lazy_render_tick`]'s
+    /// eager-vs-stale split; `false` (the `ZFB_DEV_EAGER=1` escape
+    /// hatch) keeps the render callback fully eager.
+    lazy_render: bool,
+
+    /// One-shot boot latch for lazy mode (issue #1025, review): `false`
+    /// until the FIRST render-callback invocation of the session — the
+    /// eager initial build (zfb#642/#644) — which must render fully
+    /// eagerly even with the lazy switch ON. The request-time
+    /// stale-route adapter lands in a later sub-issue, so a lazy boot
+    /// would leave `.zfb-build/dev-pages/` empty and 404 every route.
+    /// Consumed via [`Self::take_boot_render_pending`]; only read on
+    /// the lazy branch.
+    boot_render_done: std::sync::atomic::AtomicBool,
 }
 
 /// Per-source route filter for one narrowed tick (issue #958): which of a
@@ -1642,8 +1952,70 @@ impl DevRenderSession {
     /// adapter can dispatch requests through the same renderer state
     /// that drives build-time SSG (#367). Cheap — the underlying
     /// renderer is wrapped in an `Arc<Mutex<...>>` already.
-    fn renderer_handle(&self) -> Arc<Mutex<Option<RendererState>>> {
+    ///
+    /// `pub(crate)` (issue #1026): the lazy render adapter renders
+    /// stale routes through the same handle.
+    pub(crate) fn renderer_handle(&self) -> Arc<Mutex<Option<RendererState>>> {
         Arc::clone(&self.inner.renderer)
+    }
+
+    /// The boot-resolved lazy dev-render switch (issue #1025/#1026).
+    /// Read by the request-time adapter as its cheap "do nothing"
+    /// early-return — when `false`, the session behaves byte-identically
+    /// to the fully-eager world.
+    pub(crate) fn lazy_render_enabled(&self) -> bool {
+        self.inner.lazy_render
+    }
+
+    /// Project root for [`zfb_build::renderer::render_one`]'s
+    /// static-HTML source reads (issue #1026 — request-time renders use
+    /// the same render path as the tick fan-out).
+    pub(crate) fn project_root(&self) -> &Path {
+        &self.inner.project_root
+    }
+
+    /// Forward of [`DevRenderInner::claim`] for the lazy render adapter
+    /// (issue #1026). See `claim` for the ABA token contract and the
+    /// "capture under the renderer mutex" calling discipline.
+    pub(crate) fn claim_stale(&self, output_path: &Path) -> Option<StaleClaim> {
+        self.inner.claim(output_path)
+    }
+
+    /// Forward of [`DevRenderInner::clear_if_current`] for the lazy
+    /// render adapter (issue #1026).
+    pub(crate) fn clear_stale_claim(&self, claim: &StaleClaim) {
+        self.inner.clear_if_current(claim)
+    }
+
+    /// Forward of [`DevRenderInner::claim_is_current`] for the lazy
+    /// render adapter's guarded-write revalidation (issue #1027 lazy
+    /// race). See `claim_is_current` for the exact freshness predicate.
+    pub(crate) fn claim_is_current(&self, claim: &StaleClaim) -> bool {
+        self.inner.claim_is_current(claim)
+    }
+
+    /// Test-only seam: mark routes stale so adapter tests can inject
+    /// staleness state without driving a whole watcher tick.
+    #[cfg(test)]
+    pub(crate) fn mark_routes_stale<I: IntoIterator<Item = PathBuf>>(&self, output_paths: I) {
+        self.inner.mark_stale(output_paths)
+    }
+
+    /// Test-only seam: simulate the tick-side eager-render eviction
+    /// ([`DevRenderInner::clear_stale`]) so adapter tests can replay a
+    /// tick interleaving in the renderer-release → write gap (#1027).
+    #[cfg(test)]
+    pub(crate) fn clear_routes_stale(&self, output_paths: &[PathBuf]) {
+        self.inner.clear_stale(output_paths)
+    }
+
+    /// Test-only seam: simulate the P4 table-swap generation bump
+    /// ([`DevRenderInner::note_table_swap`] with nothing vanished) so
+    /// adapter tests can replay a mid-gap re-stale at a newer
+    /// generation (#1027).
+    #[cfg(test)]
+    pub(crate) fn bump_stale_generation(&self) {
+        self.inner.note_table_swap(&[])
     }
 
     /// Return the URL patterns of every page that exports
@@ -1668,6 +2040,42 @@ impl DevRenderSession {
             .iter()
             .map(|e| colon_template_to_bracket(&e.route_key))
             .collect()
+    }
+
+    /// Look up the SSG [`RouteUniverseEntry`] for a request URL path
+    /// (issue #1019 — reverse URL index).
+    ///
+    /// `request_path` must be:
+    /// - Base-prefix-stripped (the server removes the prefix before
+    ///   dispatching — the index never sees it).
+    /// - May carry a query string (stripped here before lookup).
+    /// - May be percent-encoded (decoded here before lookup so
+    ///   `/posts/caf%C3%A9` resolves like `/posts/café`).
+    ///
+    /// Returns `Some(entry)` when a matching SSG route exists, `None` for
+    /// SSR-only routes, dynamic routes that were never expanded, and any
+    /// path not in the route universe. The returned entry is cloned out
+    /// under a short read lock — no lock is held by the caller.
+    pub(crate) fn lookup_by_url(&self, request_path: &str) -> Option<RouteUniverseEntry> {
+        // Strip query string (everything from the first `?`).
+        let path_only = request_path.split('?').next().unwrap_or(request_path);
+
+        // Percent-decode (consistent with how `read_from_dist` treats paths).
+        // On decode error fall back to the raw path so the lookup still
+        // proceeds rather than panicking.
+        let decoded = percent_decode_url(path_only);
+
+        // Strip a leading slash so `url_index_lookup_keys` can prepend it
+        // uniformly (the function expects the path WITHOUT a leading slash).
+        let without_leading = decoded.trim_start_matches('/');
+
+        let tables = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
+        for key in url_index_lookup_keys(without_leading) {
+            if let Some(entry) = tables.url_index.get(&key) {
+                return Some(entry.clone());
+            }
+        }
+        None
     }
 
     /// Return all known page IDs (source paths) from the router scan.
@@ -1962,7 +2370,7 @@ impl DevRenderSession {
         // 3. Rebuild the route tables through the reloaded host (re-expands
         //    `paths()`, so the dynamic source now resolves the new URL).
         let p3_start = tick_start.map(|_| std::time::Instant::now());
-        let (new_routes_by_source, new_ssr_routes, p3_cache_hits, p3_cache_misses) = {
+        let (new_routes_by_source, new_ssr_routes, new_url_index, p3_cache_hits, p3_cache_misses) = {
             let mut paths_cache = self.inner.paths_cache.lock().unwrap_or_else(|p| {
                 tracing::warn!(
                     site = "refresh_bundle_and_routes",
@@ -1995,7 +2403,15 @@ impl DevRenderSession {
             let mut tables = self.inner.routes.write().unwrap_or_else(|p| p.into_inner());
             tables.routes_by_source = new_routes_by_source;
             tables.ssr_routes = new_ssr_routes;
+            // Swap the url_index atomically with the other tables (issue #1019).
+            tables.url_index = new_url_index;
         }
+        // Issue #1025 — the route tables just moved: advance the stale
+        // tick generation and evict stale entries whose output routes
+        // vanished from the live route set (#804). Runs on EVERY full
+        // refresh — including all-lazy ticks with zero eager renders —
+        // and never on a Phase-B skip (early return above, #956).
+        self.inner.note_table_swap(&vanished_output_paths);
         let p4_ms = p4_start.map(|t| t.elapsed().as_millis());
 
         // Phase B (issue #940) — commit-after-success.
@@ -2127,7 +2543,7 @@ impl Drop for DevRenderInner {
 /// unset, empty, and unrecognized values — is off, so the hot path has zero
 /// overhead.
 #[cfg(feature = "embed_v8")]
-fn dev_timing_enabled() -> bool {
+pub(crate) fn dev_timing_enabled() -> bool {
     std::env::var("ZFB_DEV_TIMING")
         .ok()
         .as_deref()
@@ -2379,21 +2795,24 @@ fn compute_bundle_skip_key(
     Some(hasher.finalize().into())
 }
 
-/// `(routes_by_source, ssr_routes)` — the pair [`build_dev_route_tables`]
-/// produces and [`DevRouteTables`] stores.
+/// `(routes_by_source, ssr_routes, url_index)` — the triple
+/// [`build_dev_route_tables`] produces and [`DevRouteTables`] stores.
 #[cfg(feature = "embed_v8")]
 type BuiltRouteTables = (
     HashMap<PathBuf, Vec<DevRouteEntry>>,
     Vec<RouteUniverseEntry>,
+    HashMap<String, RouteUniverseEntry>,
 );
 
-/// `(routes_by_source, ssr_routes, paths_cache_hits, paths_cache_misses)` —
-/// the 4-tuple [`build_dev_route_tables_timed`] returns with PathsCache stats
-/// exposed for ZFB_DEV_TIMING instrumentation (issue #991).
+/// `(routes_by_source, ssr_routes, url_index, paths_cache_hits,
+/// paths_cache_misses)` — the 5-tuple [`build_dev_route_tables_timed`]
+/// returns with PathsCache stats exposed for ZFB_DEV_TIMING instrumentation
+/// (issue #991).
 #[cfg(feature = "embed_v8")]
 type TimedRouteTables = (
     HashMap<PathBuf, Vec<DevRouteEntry>>,
     Vec<RouteUniverseEntry>,
+    HashMap<String, RouteUniverseEntry>,
     u64,
     u64,
 );
@@ -2410,9 +2829,9 @@ fn build_dev_route_tables_timed(
     renderer: &Arc<Mutex<Option<RendererState>>>,
     paths_cache: &mut PathsCache,
 ) -> Result<TimedRouteTables> {
-    let (routes_by_source, ssr_routes, hits, misses) =
+    let (routes_by_source, ssr_routes, url_index, hits, misses) =
         build_dev_route_tables_inner(router, plan, project_root, renderer, paths_cache)?;
-    Ok((routes_by_source, ssr_routes, hits, misses))
+    Ok((routes_by_source, ssr_routes, url_index, hits, misses))
 }
 
 /// Build the dev session's source→route + SSR route tables from the router
@@ -2429,9 +2848,138 @@ fn build_dev_route_tables(
     renderer: &Arc<Mutex<Option<RendererState>>>,
     paths_cache: &mut PathsCache,
 ) -> Result<BuiltRouteTables> {
-    let (routes_by_source, ssr_routes, _hits, _misses) =
+    let (routes_by_source, ssr_routes, url_index, _hits, _misses) =
         build_dev_route_tables_inner(router, plan, project_root, renderer, paths_cache)?;
-    Ok((routes_by_source, ssr_routes))
+    Ok((routes_by_source, ssr_routes, url_index))
+}
+
+/// Percent-decode a URL path segment, returning a borrowed `str` when the
+/// input has no percent-encoded sequences or an owned `String` when decoding
+/// produces a different value (issue #1019).
+///
+/// Consistent with how `read_from_dist` (zfb-server) handles incoming paths:
+/// the Axum HTTP layer decodes the path before handing it to the handler, so
+/// the index must decode too before doing a lookup. On invalid UTF-8 (malformed
+/// percent-sequence) falls back to the raw input so the lookup can still
+/// proceed (graceful degradation — the entry probably won't match, which is
+/// the correct answer for a malformed URL).
+fn percent_decode_url(path: &str) -> std::borrow::Cow<'_, str> {
+    // Fast path: no `%` in the path means nothing to decode.
+    if !path.contains('%') {
+        return std::borrow::Cow::Borrowed(path);
+    }
+    // Decode percent-encoded sequences; keep the path as UTF-8.
+    let bytes: Vec<u8> = percent_decode_bytes(path.as_bytes());
+    match String::from_utf8(bytes) {
+        Ok(s) => std::borrow::Cow::Owned(s),
+        Err(_) => std::borrow::Cow::Borrowed(path),
+    }
+}
+
+/// Decode percent-encoded sequences in a byte slice.
+fn percent_decode_bytes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'%' && i + 2 < input.len() {
+            if let (Some(h), Some(l)) = (from_hex_digit(input[i + 1]), from_hex_digit(input[i + 2]))
+            {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(input[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Convert an ASCII hex digit (`0`–`9`, `a`–`f`, `A`–`F`) to its numeric
+/// value; returns `None` for any other byte.
+fn from_hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Candidate lookup keys for a single SSG route's `url_path` (issue #1019).
+///
+/// Mirrors `lookup_keys` in `crates/zfb-server/src/routes.rs:1674` so a
+/// request URL resolves to the index entry under the same normalisation rules
+/// the HTTP layer applies:
+///
+/// - Trailing slashes are stripped before candidate generation so
+///   `/posts/a` and `/posts/a/` map to the same entry.
+/// - `/posts/a` → candidates `["/posts/a", "/posts/a/index.html",
+///   "/posts/a/"]` covering both slash policies.
+/// - Root `/` and the all-slashes edge case get the root candidates
+///   `["/", "/index.html"]`.
+/// - Routes that already end with a file extension (e.g. `feed.xml`) are
+///   returned as-is — no `index.html` or slash variants.
+///
+/// Query strings and percent-encoding are NOT handled here; the caller
+/// (`DevRenderSession::lookup_by_url`) normalises the input before
+/// indexing into the table.
+fn url_index_lookup_keys(url_path: &str) -> Vec<String> {
+    let stripped = url_path.trim_end_matches('/');
+    if stripped.is_empty() {
+        // Root or all-slashes path.
+        return vec!["/".to_string(), "/index.html".to_string()];
+    }
+    // Routes with an explicit file extension (e.g. `/feed.xml`, `/sitemap.xml`)
+    // are served verbatim — no slash/index.html variants.
+    let last_segment = stripped.rsplit('/').next().unwrap_or(stripped);
+    if last_segment.contains('.') {
+        return vec![format!("/{stripped}")];
+    }
+    vec![
+        format!("/{stripped}"),
+        format!("/{stripped}/index.html"),
+        format!("/{stripped}/"),
+    ]
+}
+
+/// Build the reverse URL-lookup index for all SSG routes (issue #1019).
+///
+/// Iterates every `DevRouteEntry` in `routes_by_source` (which contains only
+/// SSG routes — SSR routes live in `ssr_routes` and are excluded by
+/// construction) and inserts each entry under all candidate keys produced by
+/// [`url_index_lookup_keys`]. When two SSG routes would claim the same
+/// normalised key (unlikely in a well-formed project but possible if two
+/// sources share an output path), the first writer wins and a warning is
+/// emitted so the user knows a route is shadowed.
+fn build_url_index(
+    routes_by_source: &HashMap<PathBuf, Vec<DevRouteEntry>>,
+) -> HashMap<String, RouteUniverseEntry> {
+    let mut index: HashMap<String, RouteUniverseEntry> = HashMap::new();
+    for entries in routes_by_source.values() {
+        for dev_entry in entries {
+            let entry = &dev_entry.entry;
+            // Strip any leading slash before normalising — `url_path` values
+            // in `RouteUniverseEntry` already start with `/`; passing them
+            // through `url_index_lookup_keys` works because that function
+            // re-adds the leading slash in its output.
+            let url_no_leading = entry.url_path.trim_start_matches('/');
+            for key in url_index_lookup_keys(url_no_leading) {
+                if let Some(existing) = index.get(&key) {
+                    if existing.url_path != entry.url_path {
+                        crate::output::warn(format!(
+                            "url_index: key {key:?} claimed by both {:?} and {:?}; \
+                             the first entry wins",
+                            existing.url_path, entry.url_path,
+                        ));
+                    }
+                } else {
+                    index.insert(key, entry.clone());
+                }
+            }
+        }
+    }
+    index
 }
 
 /// Inner implementation shared by [`build_dev_route_tables`] and
@@ -2660,9 +3208,15 @@ fn build_dev_route_tables_inner(
         }
     }
 
+    // Build the reverse URL-lookup index from all SSG entries (issue #1019).
+    // SSR-only routes are already in `ssr_routes`, not `routes_by_source`,
+    // so the index is naturally restricted to SSG routes.
+    let url_index = build_url_index(&routes_by_source);
+
     Ok((
         routes_by_source,
         ssr_routes,
+        url_index,
         paths_cache.hit_count() - hits_before,
         paths_cache.miss_count() - misses_before,
     ))
@@ -2805,7 +3359,7 @@ fn boot_dev_renderer(
     // this boot-time build populated (boot/refresh parity: both go
     // through the same cache).
     let mut paths_cache = PathsCache::new();
-    let (routes_by_source, ssr_routes) =
+    let (routes_by_source, ssr_routes, url_index) =
         build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
 
     // Issue #958 — seed the frontmatter gate cache so the FIRST body-only
@@ -2819,6 +3373,7 @@ fn boot_dev_renderer(
             routes: std::sync::RwLock::new(DevRouteTables {
                 routes_by_source,
                 ssr_routes,
+                url_index,
             }),
             renderer,
             project_root: project_root.to_path_buf(),
@@ -2828,6 +3383,10 @@ fn boot_dev_renderer(
             fm_hashes: Mutex::new(fm_hashes),
             shadow_session: Mutex::new(Some(shadow_session)),
             paths_cache: Mutex::new(paths_cache),
+            stale: Mutex::new(StaleRoutes::default()),
+            lazy_render: lazy_dev_render_enabled(),
+            // The next render-callback invocation is the boot build.
+            boot_render_done: std::sync::atomic::AtomicBool::new(false),
         }),
     })
 }
@@ -2949,8 +3508,6 @@ fn compute_tick_narrowing(
     session: &DevRenderSession,
     hint: Option<&zfb_build::ContentNarrowing>,
 ) -> TickNarrowing {
-    use std::collections::BTreeSet;
-
     let Some(hint) = hint else {
         return TickNarrowing::Off;
     };
@@ -2959,8 +3516,74 @@ fn compute_tick_narrowing(
     }
     let inner = &session.inner;
 
+    let TickCandidates {
+        candidates,
+        gate_tripped,
+    } = derive_tick_candidates(inner, hint, true);
+    if gate_tripped || candidates.is_empty() {
+        return TickNarrowing::Off;
+    }
+
+    // Steps 4+5 — per-source selection against the POST-refresh route
+    // tables (the reloader ran before the render callback, so params are
+    // fresh). Only narrowed sources enter the map; everything else — the
+    // always-rendered set — renders in full by absence.
+    let tables = inner.routes.read().unwrap_or_else(|p| p.into_inner());
+    let per_source = match_candidate_routes(&tables, &candidates);
+    if per_source.is_empty() {
+        return TickNarrowing::Off;
+    }
+    tracing::debug!(
+        narrowed_sources = per_source.len(),
+        "content-edit narrowing active for tick (issue #958)"
+    );
+    TickNarrowing::PerSource(
+        per_source
+            .into_iter()
+            .map(|(source, matched)| (source, RouteFilter::Only(matched)))
+            .collect(),
+    )
+}
+
+/// Result of [`derive_tick_candidates`] — the tick's slug candidate set
+/// plus whether any of the #958 whole-tick gates tripped while deriving
+/// it.
+#[cfg(feature = "embed_v8")]
+struct TickCandidates {
+    /// Union of slug candidates across the changed files that passed
+    /// their per-file gates.
+    candidates: std::collections::BTreeSet<String>,
+    /// True when any gate tripped: bad collection glob, G2 (file outside
+    /// every collection), G3 (read/parse error), or G4 (missing/changed
+    /// frontmatter). The #958 eager-narrowing caller treats a trip as
+    /// "no narrowing this tick"; the #1025 lazy caller ignores it (a
+    /// non-eager route is stale, never under-rendered).
+    gate_tripped: bool,
+}
+
+/// Per-tick slug-candidate derivation shared by the #958 narrowing gate
+/// ([`compute_tick_narrowing`]) and the #1025 lazy eager set
+/// ([`compute_lazy_eager_sets`]). Spec §4 steps 1–3.
+///
+/// `frontmatter_gate_skips_candidates` selects the G4 semantics: `true`
+/// (#958) suppresses a frontmatter-changed file's candidates — its
+/// cross-page props force the full fan-out; `false` (#1025 lazy mode)
+/// still collects them — frontmatter edits eager-render the entry's own
+/// routes, and the cross-page fallout is covered by staling the
+/// remainder. The gate HASH is stored in both modes (store-then-compare)
+/// so the bookkeeping stays warm for whichever mode the next tick runs
+/// in.
+#[cfg(feature = "embed_v8")]
+fn derive_tick_candidates(
+    inner: &DevRenderInner,
+    hint: &zfb_build::ContentNarrowing,
+    frontmatter_gate_skips_candidates: bool,
+) -> TickCandidates {
+    use std::collections::BTreeSet;
+
     // Compile each collection's (root, filter) pair once for the tick. A
-    // bad glob means membership cannot be evaluated reliably — fall back.
+    // bad glob means membership cannot be evaluated reliably — trip the
+    // gate and yield no candidates.
     let mut compiled: Vec<(PathBuf, zfb_content::collection::CollectionFilter)> =
         Vec::with_capacity(inner.rebuild_inputs.cfg.collections.len());
     for collection in &inner.rebuild_inputs.cfg.collections {
@@ -2977,103 +3600,117 @@ fn compute_tick_narrowing(
             )),
             Err(err) => {
                 tracing::warn!(
-                    site = "compute_tick_narrowing",
+                    site = "derive_tick_candidates",
                     error = %err,
-                    "collection filter failed to compile; narrowing disabled for tick"
+                    "collection filter failed to compile; no slug candidates this tick"
                 );
-                return TickNarrowing::Off;
+                return TickCandidates {
+                    candidates: BTreeSet::new(),
+                    gate_tripped: true,
+                };
             }
         }
     }
 
-    let mut off = false;
+    let mut gate_tripped = false;
     let mut candidates: BTreeSet<String> = BTreeSet::new();
-    {
-        let mut fm_hashes = inner.fm_hashes.lock().unwrap_or_else(|p| p.into_inner());
-        for file in &hint.changed_content {
-            // Step 1 — collection resolution. A file may belong to
-            // multiple collections; candidates are unioned. Zero
-            // memberships ⇒ G2 (whole tick falls back), but keep
-            // processing the other files so their gate hashes update.
-            let slugs: Vec<String> = compiled
-                .iter()
-                .filter_map(|(root, filter)| {
-                    zfb_content::collection::derive_slug_for_file(root, file, filter)
-                })
-                .collect();
-            if slugs.is_empty() {
-                off = true; // G2
+    let mut fm_hashes = inner.fm_hashes.lock().unwrap_or_else(|p| p.into_inner());
+    for file in &hint.changed_content {
+        // Step 1 — collection resolution. A file may belong to
+        // multiple collections; candidates are unioned. Zero
+        // memberships ⇒ G2 (whole tick falls back), but keep
+        // processing the other files so their gate hashes update.
+        let slugs: Vec<String> = compiled
+            .iter()
+            .filter_map(|(root, filter)| {
+                zfb_content::collection::derive_slug_for_file(root, file, filter)
+            })
+            .collect();
+        if slugs.is_empty() {
+            gate_tripped = true; // G2
+            continue;
+        }
+
+        // Step 2 — frontmatter gate (G3/G4).
+        let fm_value = match std::fs::read_to_string(file)
+            .map_err(anyhow::Error::from)
+            .and_then(|source| {
+                zfb_content::frontmatter::extract(file, &source)
+                    .map(|uf| uf.value)
+                    .map_err(anyhow::Error::from)
+            }) {
+            Ok(value) => value,
+            Err(_) => {
+                // G3 — and the stored hash no longer describes the
+                // file: drop it so the edit that FIXES the parse
+                // error re-seeds via the G4 miss path.
+                gate_tripped = true;
+                fm_hashes.remove(file);
                 continue;
             }
-
-            // Step 2 — frontmatter gate (G3/G4).
-            let fm_value = match std::fs::read_to_string(file)
-                .map_err(anyhow::Error::from)
-                .and_then(|source| {
-                    zfb_content::frontmatter::extract(file, &source)
-                        .map(|uf| uf.value)
-                        .map_err(anyhow::Error::from)
-                }) {
-                Ok(value) => value,
-                Err(_) => {
-                    // G3 — and the stored hash no longer describes the
-                    // file: drop it so the edit that FIXES the parse
-                    // error re-seeds via the G4 miss path.
-                    off = true;
-                    fm_hashes.remove(file);
-                    continue;
-                }
-            };
-            let hash: [u8; 32] = match serde_json::to_string(&fm_value) {
-                Ok(json) => {
-                    let mut hasher = Sha256::new();
-                    hasher.update(json.as_bytes());
-                    hasher.finalize().into()
-                }
-                Err(_) => {
-                    off = true;
-                    fm_hashes.remove(file);
-                    continue;
-                }
-            };
-            // Store-then-compare: the new hash must land even when the
-            // gate trips (G4), so the NEXT body-only edit narrows.
-            let prev = fm_hashes.insert(file.clone(), hash);
-            if prev != Some(hash) {
-                off = true; // G4 — missing or changed frontmatter.
+        };
+        let hash: [u8; 32] = match serde_json::to_string(&fm_value) {
+            Ok(json) => {
+                let mut hasher = Sha256::new();
+                hasher.update(json.as_bytes());
+                hasher.finalize().into()
+            }
+            Err(_) => {
+                gate_tripped = true;
+                fm_hashes.remove(file);
                 continue;
             }
-
-            // Step 3 — slug candidate set.
-            for slug in slugs {
-                if slug == "index" {
-                    candidates.insert(String::new());
-                }
-                if let Some(stripped) = slug.strip_suffix("/index") {
-                    candidates.insert(stripped.to_string());
-                }
-                candidates.insert(slug);
-            }
-            // Frontmatter `slug:` override candidate (Docusaurus-style):
-            // verbatim AND with one leading `/` stripped.
-            if let Some(fm_slug) = fm_value.get("slug").and_then(|v| v.as_str()) {
-                if let Some(stripped) = fm_slug.strip_prefix('/') {
-                    candidates.insert(stripped.to_string());
-                }
-                candidates.insert(fm_slug.to_string());
+        };
+        // Store-then-compare: the new hash must land even when the
+        // gate trips (G4), so the NEXT body-only edit narrows.
+        let prev = fm_hashes.insert(file.clone(), hash);
+        if prev != Some(hash) {
+            gate_tripped = true; // G4 — missing or changed frontmatter.
+            if frontmatter_gate_skips_candidates {
+                continue;
             }
         }
-    }
-    if off || candidates.is_empty() {
-        return TickNarrowing::Off;
-    }
 
-    // Steps 4+5 — per-source selection against the POST-refresh route
-    // tables (the reloader ran before the render callback, so params are
-    // fresh). Only narrowed sources enter the map; everything else — the
-    // always-rendered set — renders in full by absence.
-    let tables = inner.routes.read().unwrap_or_else(|p| p.into_inner());
-    let mut per_source: HashMap<PathBuf, RouteFilter> = HashMap::new();
+        // Step 3 — slug candidate set.
+        for slug in slugs {
+            if slug == "index" {
+                candidates.insert(String::new());
+            }
+            if let Some(stripped) = slug.strip_suffix("/index") {
+                candidates.insert(stripped.to_string());
+            }
+            candidates.insert(slug);
+        }
+        // Frontmatter `slug:` override candidate (Docusaurus-style):
+        // verbatim AND with one leading `/` stripped.
+        if let Some(fm_slug) = fm_value.get("slug").and_then(|v| v.as_str()) {
+            if let Some(stripped) = fm_slug.strip_prefix('/') {
+                candidates.insert(stripped.to_string());
+            }
+            candidates.insert(fm_slug.to_string());
+        }
+    }
+    TickCandidates {
+        candidates,
+        gate_tripped,
+    }
+}
+
+/// Per-source candidate matching shared by the #958 narrowing gate and
+/// the #1025 lazy eager set (spec §4 steps 4+5): map each dynamic
+/// source to the output paths whose `paths()` params match a candidate.
+/// Fallbacks are expressed by ABSENCE from the returned map:
+///
+/// - S1: any entry lacks params provenance (static routes; zip-length
+///   mismatch at table build time),
+/// - S2: zero entries matched the candidate set (aggregate dynamic
+///   consumers — tags/pagination — whose params are not slug-shaped).
+#[cfg(feature = "embed_v8")]
+fn match_candidate_routes(
+    tables: &DevRouteTables,
+    candidates: &std::collections::BTreeSet<String>,
+) -> HashMap<PathBuf, HashSet<PathBuf>> {
+    let mut per_source: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
     for (source, entries) in &tables.routes_by_source {
         if entries.iter().any(|de| de.params.is_none()) {
             continue; // S1
@@ -3083,29 +3720,172 @@ fn compute_tick_narrowing(
             .filter(|de| {
                 de.params
                     .as_ref()
-                    .is_some_and(|p| params_match(p, &candidates))
+                    .is_some_and(|p| params_match(p, candidates))
             })
             .map(|de| de.entry.output_path.clone())
             .collect();
         if matched.is_empty() {
             continue; // S2
         }
-        per_source.insert(source.clone(), RouteFilter::Only(matched));
+        per_source.insert(source.clone(), matched);
     }
-    if per_source.is_empty() {
-        return TickNarrowing::Off;
+    per_source
+}
+
+/// Compute the lazy tick's EAGER set (issue #1025): for a content-edit
+/// tick, the edited entries' own routes — the same candidate machinery
+/// the #958 narrowing gate uses, with two lazy-mode differences:
+///
+/// - G4 is NOT a fallback: a frontmatter edit still eager-renders the
+///   edited entry's own routes. The cross-page fallout frontmatter can
+///   have (sidebar titles, prev/next labels) is covered by staling the
+///   remainder of the fan-out instead of eagerly re-rendering it.
+/// - The remaining gates degrade to "fewer eager routes" instead of a
+///   full fan-out — "not eager" is safe in lazy mode because every
+///   non-eager selected route is marked stale and re-renders on
+///   request, never silently under-rendered.
+///
+/// Returns source → eager output-path set. An empty map (no hint —
+/// `.tsx`/G5/G6/data/discovery ticks —, no candidates, bad globs, or
+/// S1/S2-only sources) means a fully-lazy tick: every selected route is
+/// marked stale and nothing renders eagerly.
+#[cfg(feature = "embed_v8")]
+fn compute_lazy_eager_sets(
+    session: &DevRenderSession,
+    hint: Option<&zfb_build::ContentNarrowing>,
+) -> HashMap<PathBuf, HashSet<PathBuf>> {
+    let Some(hint) = hint else {
+        return HashMap::new();
+    };
+    if hint.changed_content.is_empty() {
+        return HashMap::new();
     }
-    tracing::debug!(
-        narrowed_sources = per_source.len(),
-        "content-edit narrowing active for tick (issue #958)"
-    );
-    TickNarrowing::PerSource(per_source)
+    let inner = &session.inner;
+    let TickCandidates { candidates, .. } = derive_tick_candidates(inner, hint, false);
+    if candidates.is_empty() {
+        return HashMap::new();
+    }
+    let tables = inner.routes.read().unwrap_or_else(|p| p.into_inner());
+    match_candidate_routes(&tables, &candidates)
+}
+
+/// Lazy dev render tick (issue #1025): the switch-ON replacement for
+/// the fully-eager fan-out in [`make_render_callback`].
+///
+/// Eager-vs-stale split per tick class:
+///
+/// - Content edit with slug-derivable own routes (body OR frontmatter
+///   edit): eager = the edited entries' own routes
+///   ([`compute_lazy_eager_sets`]); stale = the remainder of the
+///   selected fan-out — explicitly including S2 aggregate-heavy sources
+///   (tag indexes, paginated lists) and S1 statics.
+/// - Everything else (component/page `.tsx`, G5/G6 route-structure,
+///   data edits, `renderer_fresh` discovery ticks — the hint is `None`
+///   for all of these): eager = nothing; ALL selected routes are marked
+///   stale.
+///
+/// A source unknown to the renderer contributes nothing (same no-op as
+/// the eager path). An eager render FAILURE re-marks the eager set
+/// stale so the request-time path retries against the live host, and is
+/// logged without killing the watcher (same per-page tolerance as the
+/// eager path).
+///
+/// ORDERING: the stale-state commit happens strictly BEFORE this
+/// function returns. The return value flows through the pipeline's
+/// write loop into the tick's `BuildOutcome`, so by the time the
+/// outcome reaches `on_outcome` (the future SSE Page event) the
+/// staleness map and the route tables (swapped by the reloader earlier
+/// in the tick) already describe the new world — a reloading browser
+/// can always resolve the stale route.
+#[cfg(feature = "embed_v8")]
+fn lazy_render_tick(
+    session: &DevRenderSession,
+    dist_dir: &Path,
+    pages: &[PageId],
+    narrowing: Option<&zfb_build::ContentNarrowing>,
+) -> Result<Vec<RenderedPage>> {
+    let eager_sets = compute_lazy_eager_sets(session, narrowing);
+
+    let mut out: Vec<RenderedPage> = Vec::new();
+    let mut stale: HashSet<PathBuf> = HashSet::new();
+    let mut rendered_paths: Vec<PathBuf> = Vec::new();
+
+    for page in pages {
+        // Snapshot this source's output paths under a short read lock
+        // (mirrors `render_one`'s clone-then-release discipline).
+        let outputs: Vec<PathBuf> = {
+            let tables = session
+                .inner
+                .routes
+                .read()
+                .unwrap_or_else(|p| p.into_inner());
+            match tables.routes_by_source.get(page.path()) {
+                Some(entries) => entries
+                    .iter()
+                    .map(|de| de.entry.output_path.clone())
+                    .collect(),
+                None => continue, // unknown to the renderer — no-op
+            }
+        };
+        let eager = eager_sets.get(page.path());
+        stale.extend(
+            outputs
+                .iter()
+                .filter(|o| !eager.is_some_and(|set| set.contains(*o)))
+                .cloned(),
+        );
+
+        let Some(eager) = eager else {
+            continue; // fully-lazy source — nothing renders eagerly
+        };
+        let filter = RouteFilter::Only(eager.clone());
+        match session.render_one(page, dist_dir, &filter) {
+            Ok(rendered) => {
+                rendered_paths.extend(
+                    rendered
+                        .iter()
+                        .map(|r| r.output_path.as_path().to_path_buf()),
+                );
+                out.extend(rendered);
+            }
+            Err(err) => {
+                // The eager routes did NOT reach disk — mark them stale
+                // so the request-time path retries, and keep the
+                // watcher alive (same tolerance as the eager callback).
+                stale.extend(eager.iter().cloned());
+                output::error(format!(
+                    "renderer error for {}: {err:#}",
+                    page.path().display()
+                ));
+            }
+        }
+    }
+
+    // Commit the stale state BEFORE returning (see ORDERING above). The
+    // eager-rendered routes are cleared last — fresh output supersedes
+    // any staling from earlier ticks; the two sets are disjoint within
+    // this tick.
+    session.inner.mark_stale(stale);
+    session.inner.clear_stale(&rendered_paths);
+    Ok(out)
 }
 
 /// Build the [`PageRenderer`] callback that the orchestrator hands to
 /// [`DevAssetPipeline`].
 fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRenderer {
     Arc::new(move |pages: &[PageId], narrowing| {
+        // Issue #1025 — lazy dev render. Switch ON (the default since
+        // the #1027 activation flip) routes the tick through the
+        // eager-vs-stale split; OFF (the `ZFB_DEV_EAGER=1` hatch) falls
+        // through to the fully-eager fan-out below, untouched. The
+        // session's FIRST invocation — the eager initial build at boot —
+        // stays on the eager path even when the switch is ON: the
+        // request-time stale-render adapter doesn't exist yet, so a
+        // lazy boot would 404 every route (review finding on #1025).
+        #[cfg(feature = "embed_v8")]
+        if session.inner.lazy_render && !session.inner.take_boot_render_pending() {
+            return lazy_render_tick(&session, &dist_dir, pages, narrowing);
+        }
         // Issue #958 — one narrowing decision per tick; per-page filters
         // fall out of the per-source map. The V8-off path has no
         // collection configs to match against, so it never narrows.
@@ -3380,6 +4160,64 @@ fn colon_template_to_bracket(template: &str) -> String {
 const DEFAULT_DEV_HOST: &str = "localhost";
 const DEFAULT_DEV_PORT: u16 = 3000;
 
+/// Test-only stub session factory for the lazy render adapter's
+/// direct-invocation tests (issue #1026) — builds a [`DevRenderSession`]
+/// over caller-supplied route entries and renderer state, with the
+/// reverse URL index derived exactly like boot does
+/// ([`build_url_index`]), so `lookup_by_url` behaves identically to a
+/// real session. Lives outside `mod tests` because the adapter's test
+/// module (a sibling module of `commands`) needs to call it.
+#[cfg(all(test, feature = "embed_v8"))]
+pub(crate) fn stub_session_for_adapter_tests(
+    project_root: PathBuf,
+    routes: Vec<(PathBuf, Vec<RouteUniverseEntry>)>,
+    renderer: Arc<Mutex<Option<RendererState>>>,
+    lazy_render: bool,
+) -> DevRenderSession {
+    let routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>> = routes
+        .into_iter()
+        .map(|(source, entries)| {
+            (
+                source,
+                entries
+                    .into_iter()
+                    .map(|entry| DevRouteEntry {
+                        entry,
+                        params: None,
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let url_index = build_url_index(&routes_by_source);
+    DevRenderSession {
+        inner: Arc::new(DevRenderInner {
+            routes: std::sync::RwLock::new(DevRouteTables {
+                routes_by_source,
+                ssr_routes: Vec::new(),
+                url_index,
+            }),
+            renderer,
+            project_root,
+            rebuild_inputs: DevRebuildInputs {
+                cfg: config::Config::default(),
+                v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
+                plugin_alias_entries: Vec::new(),
+                plugin_virtual_modules: Vec::new(),
+                esbuild: None,
+            },
+            last_successful_skip_key: Mutex::new(None),
+            fm_hashes: Mutex::new(HashMap::new()),
+            shadow_session: Mutex::new(None),
+            paths_cache: Mutex::new(PathsCache::new()),
+            stale: Mutex::new(StaleRoutes::default()),
+            lazy_render,
+            // Stubs model a session mid-flight: boot already rendered.
+            boot_render_done: std::sync::atomic::AtomicBool::new(true),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3427,10 +4265,12 @@ mod tests {
         routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>>,
         ssr_routes: Vec<RouteUniverseEntry>,
     ) -> DevRenderInner {
+        let url_index = build_url_index(&routes_by_source);
         DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
                 routes_by_source,
                 ssr_routes,
+                url_index,
             }),
             renderer: Arc::new(Mutex::new(None)),
             project_root,
@@ -3445,6 +4285,10 @@ mod tests {
             fm_hashes: Mutex::new(HashMap::new()),
             shadow_session: Mutex::new(None),
             paths_cache: Mutex::new(PathsCache::new()),
+            stale: Mutex::new(StaleRoutes::default()),
+            lazy_render: false,
+            // Stubs model a session mid-flight: boot already rendered.
+            boot_render_done: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -3455,13 +4299,19 @@ mod tests {
         routes_by_source: HashMap<PathBuf, Vec<DevRouteEntry>>,
         ssr_routes: Vec<RouteUniverseEntry>,
     ) -> DevRenderInner {
+        let url_index = build_url_index(&routes_by_source);
         DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
                 routes_by_source,
                 ssr_routes,
+                url_index,
             }),
             renderer: Arc::new(Mutex::new(None)),
             project_root: PathBuf::new(),
+            stale: Mutex::new(StaleRoutes::default()),
+            lazy_render: false,
+            // Stubs model a session mid-flight: boot already rendered.
+            boot_render_done: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -3508,7 +4358,7 @@ mod tests {
         let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(None));
 
         let mut cache = PathsCache::new();
-        let (tables1, ssr1, hits1, misses1) =
+        let (tables1, ssr1, idx1, hits1, misses1) =
             build_dev_route_tables_timed(&router, &plan, dir.path(), &renderer, &mut cache)
                 .expect("first build");
         assert_eq!(hits1, 0, "first build runs against a cold cache");
@@ -3521,7 +4371,7 @@ mod tests {
             "literal paths() expands to 2 entries: {tables1:?}"
         );
 
-        let (tables2, ssr2, hits2, misses2) =
+        let (tables2, ssr2, idx2, hits2, misses2) =
             build_dev_route_tables_timed(&router, &plan, dir.path(), &renderer, &mut cache)
                 .expect("second build");
         assert!(
@@ -3534,6 +4384,12 @@ mod tests {
             "cache-sharing builds must produce identical tables"
         );
         assert_eq!(ssr1, ssr2);
+        // The url_index must be consistent across both builds for the same input.
+        assert_eq!(
+            idx1.keys().collect::<std::collections::BTreeSet<_>>(),
+            idx2.keys().collect::<std::collections::BTreeSet<_>>(),
+            "url_index keys must be identical across cache-sharing builds"
+        );
     }
 
     fn cfg_with_collections(paths: &[&str]) -> config::Config {
@@ -4313,6 +5169,555 @@ mod tests {
                 "a file outside every collection must fall back to full fan-out (G2)"
             );
         }
+
+        /// Staleness model seam tests (issue #1025): the claim/clear
+        /// protocol on [`StaleRoutes`] and the lazy eager-vs-stale split
+        /// (`compute_lazy_eager_sets` + `lazy_render_tick`), driven
+        /// against real collection files exactly like the narrowing
+        /// tests above. The orchestrator-layer tick-class matrix lives
+        /// in `crates/zfb-build/tests/integration_lazy_staleness.rs`.
+        mod stale_model {
+            use super::*;
+
+            /// [`session_at`] with the lazy-render switch forced ON.
+            fn lazy_session_at(
+                tmp: &tempfile::TempDir,
+                cfg: config::Config,
+                routes: HashMap<PathBuf, Vec<DevRouteEntry>>,
+            ) -> DevRenderSession {
+                let seeded = seed_frontmatter_hashes(tmp.path(), &cfg);
+                let mut inner =
+                    stub_dev_inner_at(tmp.path().to_path_buf(), cfg, routes, Vec::new());
+                *inner.fm_hashes.lock().unwrap() = seeded;
+                inner.lazy_render = true;
+                DevRenderSession {
+                    inner: Arc::new(inner),
+                }
+            }
+
+            fn bare_inner() -> DevRenderInner {
+                stub_dev_inner(HashMap::new(), Vec::new())
+            }
+
+            fn out(p: &str) -> PathBuf {
+                PathBuf::from(p)
+            }
+
+            // ── claim / clear_if_current protocol ────────────────────
+
+            /// The wave-5 activation flip (issue #1027): lazy dev
+            /// rendering is the default. Reverting the constant to
+            /// `false` must fail loudly in review.
+            // The constant IS the subject under test.
+            #[allow(clippy::assertions_on_constants)]
+            #[test]
+            fn lazy_dev_render_default_is_on() {
+                assert!(
+                    LAZY_DEV_RENDER_DEFAULT,
+                    "the lazy dev-render switch defaults ON since the \
+                     #1027 activation flip"
+                );
+            }
+
+            /// Issue #1027 — env precedence for the boot-resolved switch:
+            /// `ZFB_LAZY_DEV_RENDER` (precise override) beats
+            /// `ZFB_DEV_EAGER` (user-facing escape hatch) beats the
+            /// compile-time default. Pure-function tests so no
+            /// process-global env mutation races other tests.
+            #[test]
+            fn lazy_switch_env_precedence() {
+                // Default: lazy ON.
+                assert!(resolve_lazy_dev_render(None, None));
+                // The escape hatch turns it off.
+                assert!(!resolve_lazy_dev_render(None, Some("1")));
+                assert!(!resolve_lazy_dev_render(None, Some("true")));
+                // Unrecognized escape-hatch values are ignored (0 does
+                // NOT mean "force lazy"; it just falls through).
+                assert!(resolve_lazy_dev_render(None, Some("0")));
+                assert!(resolve_lazy_dev_render(None, Some("yes")));
+                // The precise override wins in both directions...
+                assert!(!resolve_lazy_dev_render(Some("0"), None));
+                assert!(!resolve_lazy_dev_render(Some("false"), None));
+                assert!(resolve_lazy_dev_render(Some("1"), None));
+                // ...including over a conflicting escape hatch.
+                assert!(resolve_lazy_dev_render(Some("1"), Some("1")));
+                assert!(!resolve_lazy_dev_render(Some("0"), Some("1")));
+                // An unrecognized precise-override value defers to the
+                // escape hatch, then the default.
+                assert!(!resolve_lazy_dev_render(Some("banana"), Some("1")));
+                assert!(resolve_lazy_dev_render(Some("banana"), None));
+            }
+
+            #[test]
+            fn claim_returns_token_for_stale_route_and_none_for_fresh() {
+                let inner = bare_inner();
+                inner.mark_stale([out("blog/a/index.html")]);
+
+                let claim = inner
+                    .claim(Path::new("blog/a/index.html"))
+                    .expect("stale route must be claimable");
+                assert_eq!(claim.output_path, out("blog/a/index.html"));
+                assert_eq!(claim.generation, 0, "boot generation is 0");
+
+                assert!(
+                    inner.claim(Path::new("blog/b/index.html")).is_none(),
+                    "a route that was never staled must not claim"
+                );
+            }
+
+            #[test]
+            fn clear_if_current_clears_unsuperseded_claim() {
+                let inner = bare_inner();
+                inner.mark_stale([out("blog/a/index.html")]);
+                let claim = inner.claim(Path::new("blog/a/index.html")).unwrap();
+
+                inner.clear_if_current(&claim);
+                assert!(
+                    inner.claim(Path::new("blog/a/index.html")).is_none(),
+                    "an unsuperseded claim must clear the stale entry"
+                );
+            }
+
+            /// THE ABA case (issue #1025 pinned design): claim at
+            /// generation N, tick swap bumps to N+1 and re-stales the
+            /// route — `clear_if_current` with the stale N-claim must
+            /// NOT clear; the route stays stale for the next request.
+            #[test]
+            fn aba_re_staled_route_survives_clear_of_older_claim() {
+                let inner = bare_inner();
+                inner.mark_stale([out("blog/a/index.html")]);
+                let old_claim = inner.claim(Path::new("blog/a/index.html")).unwrap();
+                assert_eq!(old_claim.generation, 0);
+
+                // A new tick: P4 table swap bumps the generation, then
+                // the tick's render callback re-stales the same route.
+                inner.note_table_swap(&[]);
+                inner.mark_stale([out("blog/a/index.html")]);
+
+                inner.clear_if_current(&old_claim);
+
+                let still = inner
+                    .claim(Path::new("blog/a/index.html"))
+                    .expect("route re-staled at a newer generation must survive the old clear");
+                assert_eq!(
+                    still.generation, 1,
+                    "the surviving entry is the re-staled one"
+                );
+            }
+
+            /// #1027 guarded-write revalidation predicate: a claim is
+            /// current iff its entry still exists at EXACTLY the
+            /// claimed generation. Both mid-gap interference shapes
+            /// must flip it false — eviction by a tick's eager
+            /// re-render, and a re-stale at a bumped (P4 table-swap)
+            /// generation.
+            #[test]
+            fn claim_is_current_tracks_eviction_and_generation_bump() {
+                let inner = bare_inner();
+                inner.mark_stale([out("blog/a/index.html")]);
+                let claim = inner.claim(Path::new("blog/a/index.html")).unwrap();
+                assert!(
+                    inner.claim_is_current(&claim),
+                    "an untouched claim is current"
+                );
+
+                // Mid-gap shape 1: a tick eagerly re-rendered the route
+                // and evicted its stale entry.
+                inner.clear_stale(&[out("blog/a/index.html")]);
+                assert!(
+                    !inner.claim_is_current(&claim),
+                    "an evicted entry must fail revalidation"
+                );
+
+                // Mid-gap shape 2: a tick re-staled the route after its
+                // P4 generation bump.
+                inner.note_table_swap(&[]);
+                inner.mark_stale([out("blog/a/index.html")]);
+                assert!(
+                    !inner.claim_is_current(&claim),
+                    "a re-stale at a newer generation must fail the equality check"
+                );
+
+                // A fresh claim at the new generation is current again.
+                let new_claim = inner.claim(Path::new("blog/a/index.html")).unwrap();
+                assert!(inner.claim_is_current(&new_claim));
+            }
+
+            #[test]
+            fn table_swap_evicts_vanished_stale_entries() {
+                let inner = bare_inner();
+                inner.mark_stale([out("gone/index.html"), out("kept/index.html")]);
+
+                inner.note_table_swap(&[out("gone/index.html")]);
+
+                assert!(
+                    inner.claim(Path::new("gone/index.html")).is_none(),
+                    "a vanished route must be evicted from the stale set (#804)"
+                );
+                assert!(
+                    inner.claim(Path::new("kept/index.html")).is_some(),
+                    "unrelated stale entries must survive the swap"
+                );
+            }
+
+            #[test]
+            fn take_tick_stale_drains_once_sorted() {
+                let inner = bare_inner();
+                inner.mark_stale([out("b.html"), out("a.html"), out("b.html")]);
+
+                assert_eq!(
+                    inner.take_tick_stale(),
+                    vec![out("a.html"), out("b.html")],
+                    "tick buffer drains sorted + deduped"
+                );
+                assert!(
+                    inner.take_tick_stale().is_empty(),
+                    "second drain in the same tick must be empty"
+                );
+                assert!(
+                    inner.claim(Path::new("a.html")).is_some(),
+                    "draining the tick buffer must not clear the stale entries"
+                );
+            }
+
+            #[test]
+            fn clear_stale_drops_rendered_routes() {
+                let inner = bare_inner();
+                inner.mark_stale([out("a.html"), out("b.html")]);
+
+                inner.clear_stale(&[out("a.html")]);
+
+                assert!(inner.claim(Path::new("a.html")).is_none());
+                assert!(inner.claim(Path::new("b.html")).is_some());
+            }
+
+            /// Vanished routes are also dropped from the CURRENT tick's
+            /// stale buffer so `pages_stale` never announces a route
+            /// that no longer resolves.
+            #[test]
+            fn table_swap_drops_vanished_from_tick_buffer() {
+                let inner = bare_inner();
+                inner.mark_stale([out("gone.html"), out("kept.html")]);
+
+                inner.note_table_swap(&[out("gone.html")]);
+
+                assert_eq!(inner.take_tick_stale(), vec![out("kept.html")]);
+            }
+
+            // ── lazy eager-vs-stale split ────────────────────────────
+
+            /// Routes for the canonical three-source matrix: a slug
+            /// blog source (own routes), an S2 tag-index aggregate
+            /// (params not slug-shaped), and an S1 static index.
+            fn matrix_routes() -> HashMap<PathBuf, Vec<DevRouteEntry>> {
+                let mut routes = HashMap::new();
+                routes.insert(
+                    PathBuf::from("pages/blog/[slug].tsx"),
+                    vec![
+                        with_params(
+                            route_entry("/blog/a", "blog/a/index.html", "/blog/:slug"),
+                            scalar_params(&[("slug", "a")]),
+                        ),
+                        with_params(
+                            route_entry("/blog/b", "blog/b/index.html", "/blog/:slug"),
+                            scalar_params(&[("slug", "b")]),
+                        ),
+                    ],
+                );
+                routes.insert(
+                    PathBuf::from("pages/tags/[tag].tsx"),
+                    vec![with_params(
+                        route_entry("/tags/rust", "tags/rust/index.html", "/tags/:tag"),
+                        scalar_params(&[("tag", "rust")]),
+                    )],
+                );
+                routes.insert(
+                    PathBuf::from("pages/index.tsx"),
+                    no_params(vec![route_entry("/", "index.html", "/")]),
+                );
+                routes
+            }
+
+            fn matrix_pages() -> Vec<PageId> {
+                vec![
+                    PageId::new(PathBuf::from("pages/blog/[slug].tsx")),
+                    PageId::new(PathBuf::from("pages/tags/[tag].tsx")),
+                    PageId::new(PathBuf::from("pages/index.tsx")),
+                ]
+            }
+
+            /// Body edit: eager = the edited entry's own routes only;
+            /// the S2 aggregate and the S1 static are NOT eager (they
+            /// become the stale remainder).
+            #[test]
+            fn lazy_eager_sets_body_edit_selects_own_routes_only() {
+                let (tmp, cfg) = scaffold(&[("a.mdx", "title: A")]);
+                let session = lazy_session_at(&tmp, cfg, matrix_routes());
+
+                let edited = write_entry(tmp.path(), "a.mdx", "title: A", "updated body");
+                let eager = compute_lazy_eager_sets(&session, Some(&hint_for(&[edited])));
+
+                assert_eq!(
+                    eager.get(Path::new("pages/blog/[slug].tsx")),
+                    Some(&HashSet::from([out("blog/a/index.html")])),
+                    "the edited entry's own route is the eager set"
+                );
+                assert!(
+                    !eager.contains_key(Path::new("pages/tags/[tag].tsx")),
+                    "S2 aggregate sources must not be eager"
+                );
+                assert!(
+                    !eager.contains_key(Path::new("pages/index.tsx")),
+                    "S1 static sources must not be eager"
+                );
+            }
+
+            /// THE G4 divergence from #958: a FRONTMATTER edit still
+            /// eager-renders the edited entry's own routes in lazy mode
+            /// (the cross-page fallout is staled, not eagerly
+            /// re-rendered) — while the eager-narrowing gate of the
+            /// switch-OFF path keeps returning Off for the same tick.
+            #[test]
+            fn lazy_eager_sets_frontmatter_edit_still_selects_own_routes() {
+                let (tmp, cfg) = scaffold(&[("a.mdx", "title: A")]);
+                let session = lazy_session_at(&tmp, cfg, matrix_routes());
+
+                let edited = write_entry(tmp.path(), "a.mdx", "title: A (renamed)", "body");
+                let eager = compute_lazy_eager_sets(
+                    &session,
+                    Some(&hint_for(std::slice::from_ref(&edited))),
+                );
+
+                assert_eq!(
+                    eager.get(Path::new("pages/blog/[slug].tsx")),
+                    Some(&HashSet::from([out("blog/a/index.html")])),
+                    "a frontmatter edit must still yield the entry's own routes (no G4 fallback in lazy mode)"
+                );
+            }
+
+            /// No hint (`.tsx`, G5/G6, data, discovery ticks) ⇒ no
+            /// eager routes at all.
+            #[test]
+            fn lazy_eager_sets_empty_without_hint() {
+                let (tmp, cfg) = scaffold(&[("a.mdx", "title: A")]);
+                let session = lazy_session_at(&tmp, cfg, matrix_routes());
+
+                assert!(compute_lazy_eager_sets(&session, None).is_empty());
+            }
+
+            /// `.tsx`-style tick (hint = None): every selected route is
+            /// marked stale, nothing renders, unknown sources are
+            /// no-ops.
+            #[test]
+            fn lazy_tick_without_hint_marks_all_selected_stale() {
+                let (tmp, cfg) = scaffold(&[("a.mdx", "title: A")]);
+                let session = lazy_session_at(&tmp, cfg, matrix_routes());
+
+                let mut pages = matrix_pages();
+                pages.push(PageId::new(PathBuf::from("pages/unknown.tsx")));
+                let rendered =
+                    lazy_render_tick(&session, tmp.path(), &pages, None).expect("tick succeeds");
+
+                assert!(rendered.is_empty(), "an all-lazy tick renders nothing");
+                assert_eq!(
+                    session.inner.take_tick_stale(),
+                    vec![
+                        out("blog/a/index.html"),
+                        out("blog/b/index.html"),
+                        out("index.html"),
+                        out("tags/rust/index.html"),
+                    ],
+                    "every selected route (and only those) is staled"
+                );
+                assert!(
+                    session
+                        .inner
+                        .claim(Path::new("blog/a/index.html"))
+                        .is_some(),
+                    "stale entries persist past the tick-buffer drain"
+                );
+            }
+
+            /// Live stub host (`Backend::Stub`) installed into the
+            /// session so a lazy tick's EAGER render can actually
+            /// succeed — `render_one` drives the stub closure exactly
+            /// like a live V8 host.
+            fn install_stub_renderer(session: &DevRenderSession, body: &'static str) {
+                use std::collections::BTreeMap;
+                use zfb_build::renderer::{start, Backend, HttpResponseLike, RendererStartInput};
+                let state = start(RendererStartInput {
+                    // Ignored by `Backend::Stub` (no bundle is loaded).
+                    bundle_path: PathBuf::from("stub-bundle.mjs"),
+                    sourcemap_path: PathBuf::from("stub-bundle.mjs.map"),
+                    backend: Backend::Stub {
+                        handler: Arc::new(move |_url| HttpResponseLike {
+                            status: 200,
+                            content_type: "text/html; charset=utf-8".into(),
+                            headers: BTreeMap::new(),
+                            body: body.as_bytes().to_vec(),
+                        }),
+                    },
+                    request_timeout: None,
+                })
+                .expect("stub renderer must start");
+                *session.inner.renderer.lock().unwrap() = Some(state);
+            }
+
+            /// #1027 tick-side pin for the lazy race: a lazy tick that
+            /// EAGERLY re-renders a route EVICTS its stale entry —
+            /// inside `apply()`'s exclusion window in production
+            /// (`lazy_render_tick` runs as the render callback) — so a
+            /// request claim captured against the OLDER world fails the
+            /// guarded-write revalidation instead of overwriting the
+            /// tick's fresher bytes.
+            #[test]
+            fn lazy_tick_eager_render_evicts_prior_stale_entry() {
+                let (tmp, cfg) = scaffold(&[("a.mdx", "title: A")]);
+                let session = lazy_session_at(&tmp, cfg, matrix_routes());
+                install_stub_renderer(&session, "<html><body>tick-fresh</body></html>");
+
+                // An earlier tick staled the route; a request claimed it.
+                session.inner.mark_stale([out("blog/a/index.html")]);
+                let _ = session.inner.take_tick_stale();
+                let claim = session.inner.claim(Path::new("blog/a/index.html")).unwrap();
+
+                // Body edit tick: blog/a is the eager set.
+                let edited = write_entry(tmp.path(), "a.mdx", "title: A", "updated body");
+                let hint = hint_for(&[edited]);
+                let dist = tmp.path().join("dist");
+                std::fs::create_dir_all(&dist).unwrap();
+                let rendered = lazy_render_tick(&session, &dist, &matrix_pages(), Some(&hint))
+                    .expect("the eager render succeeds against the stub host");
+
+                assert_eq!(
+                    rendered.len(),
+                    1,
+                    "exactly the eager own route rendered: {rendered:?}"
+                );
+                assert!(
+                    session
+                        .inner
+                        .claim(Path::new("blog/a/index.html"))
+                        .is_none(),
+                    "the eager render must evict the route's prior stale entry"
+                );
+                assert!(
+                    !session.inner.claim_is_current(&claim),
+                    "a request claim captured before the tick must now fail revalidation"
+                );
+                // The stale remainder is untouched by the eviction.
+                assert!(
+                    session
+                        .inner
+                        .claim(Path::new("blog/b/index.html"))
+                        .is_some(),
+                    "non-eager routes stay stale"
+                );
+            }
+
+            /// Body edit through the full lazy tick: the S2 aggregate
+            /// and the S1 static are marked stale (NOT rendered); the
+            /// own route is attempted eagerly — and because this stub
+            /// session has no live renderer, the failed eager render
+            /// re-stales it so the request path can retry.
+            #[test]
+            fn lazy_tick_body_edit_stales_remainder_and_failed_eager() {
+                let (tmp, cfg) = scaffold(&[("a.mdx", "title: A")]);
+                let session = lazy_session_at(&tmp, cfg, matrix_routes());
+
+                let edited = write_entry(tmp.path(), "a.mdx", "title: A", "updated body");
+                let hint = hint_for(&[edited]);
+                let rendered = lazy_render_tick(&session, tmp.path(), &matrix_pages(), Some(&hint))
+                    .expect("a failed eager render keeps the watcher alive");
+
+                assert!(rendered.is_empty(), "no live renderer in this stub");
+                assert_eq!(
+                    session.inner.take_tick_stale(),
+                    vec![
+                        // own route: re-staled by the failed eager render
+                        out("blog/a/index.html"),
+                        // remainder: sibling + S1 static + S2 aggregate
+                        out("blog/b/index.html"),
+                        out("index.html"),
+                        out("tags/rust/index.html"),
+                    ],
+                );
+            }
+
+            /// Boot exception (review finding on #1025): even with the
+            /// switch ON, the session's FIRST render-callback
+            /// invocation — the eager initial build — takes the eager
+            /// path and stales nothing; lazy behaviour starts with the
+            /// next tick. (The request-time stale-render adapter lands
+            /// in a later sub-issue, so a lazy boot would 404 every
+            /// route.)
+            #[test]
+            fn lazy_boot_invocation_stays_eager_then_goes_lazy() {
+                let (tmp, cfg) = scaffold(&[]);
+                let session = lazy_session_at(&tmp, cfg, matrix_routes());
+                // Rewind the stub's mid-flight default: boot pending.
+                session
+                    .inner
+                    .boot_render_done
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                let cb = make_render_callback(session.clone(), tmp.path().to_path_buf());
+                let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
+
+                // Boot invocation: eager path (render error swallowed
+                // by the per-page tolerance) — nothing goes stale.
+                let first = cb(&pages, None).expect("boot tick succeeds");
+                assert!(first.is_empty());
+                assert!(
+                    session.inner.claim(Path::new("index.html")).is_none(),
+                    "the boot render must not mark routes stale"
+                );
+                assert!(session.inner.take_tick_stale().is_empty());
+
+                // Next tick: the lazy split is active.
+                let second = cb(&pages, None).expect("watcher tick succeeds");
+                assert!(second.is_empty());
+                assert!(
+                    session.inner.claim(Path::new("index.html")).is_some(),
+                    "post-boot ticks must go through the lazy split"
+                );
+            }
+
+            /// The switch itself: lazy ON routes the render callback
+            /// through the stale-marking split; lazy OFF (default)
+            /// leaves the stale set untouched on an identical tick.
+            #[test]
+            fn render_callback_respects_lazy_switch() {
+                // ON: the static route is marked stale instead of rendered.
+                let (tmp_on, cfg_on) = scaffold(&[]);
+                let session_on = lazy_session_at(&tmp_on, cfg_on, matrix_routes());
+                let cb_on = make_render_callback(session_on.clone(), tmp_on.path().to_path_buf());
+                let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
+                let out_on = cb_on(&pages, None).expect("lazy tick succeeds");
+                assert!(out_on.is_empty());
+                assert!(
+                    session_on.inner.claim(Path::new("index.html")).is_some(),
+                    "switch ON must mark the selected route stale"
+                );
+
+                // OFF: same tick shape goes down the eager path and the
+                // stale set stays empty (render errors are swallowed by
+                // the existing per-page tolerance).
+                let (tmp_off, cfg_off) = scaffold(&[]);
+                let session_off = session_at(&tmp_off, cfg_off, matrix_routes());
+                let cb_off =
+                    make_render_callback(session_off.clone(), tmp_off.path().to_path_buf());
+                let out_off = cb_off(&pages, None).expect("eager tick tolerates render errors");
+                assert!(out_off.is_empty());
+                assert!(
+                    session_off.inner.claim(Path::new("index.html")).is_none(),
+                    "switch OFF must never touch the stale set"
+                );
+                assert!(
+                    session_off.inner.take_tick_stale().is_empty(),
+                    "switch OFF must never announce stale routes"
+                );
+            }
+        }
     }
 
     /// Deep-review regression (PR #376): `Route::template()` emits
@@ -4914,5 +6319,258 @@ mod tests {
             key.is_none(),
             "an unreadable static html source must force a full refresh"
         );
+    }
+
+    // ── URL→route reverse-lookup index tests (issue #1019) ───────────────────
+
+    /// Build a minimal `DevRenderSession` with a single SSG route at
+    /// `url_path` so lookup tests don't need to reach `stub_dev_inner`
+    /// directly each time.
+    fn session_with_route(url_path: &str) -> DevRenderSession {
+        let entry = RouteUniverseEntry {
+            url_path: url_path.into(),
+            output_path: PathBuf::from("index.html"),
+            route_key: url_path.into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        routes.insert(
+            PathBuf::from("pages/index.tsx"),
+            vec![DevRouteEntry {
+                entry,
+                params: None,
+            }],
+        );
+        DevRenderSession {
+            inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+        }
+    }
+
+    /// Helper: assert `lookup_by_url` returns the expected entry `url_path`.
+    fn assert_lookup(session: &DevRenderSession, request: &str, expected_url: &str) {
+        let result = session.lookup_by_url(request);
+        assert_eq!(
+            result.as_ref().map(|e| e.url_path.as_str()),
+            Some(expected_url),
+            "lookup_by_url({request:?}) → expected {expected_url:?}, got {result:?}",
+        );
+    }
+
+    /// Helper: assert `lookup_by_url` returns `None`.
+    fn assert_no_lookup(session: &DevRenderSession, request: &str) {
+        let result = session.lookup_by_url(request);
+        assert!(
+            result.is_none(),
+            "lookup_by_url({request:?}) should be None but got {:?}",
+            result.map(|e| e.url_path),
+        );
+    }
+
+    /// Root `/` is reachable as `/` and `/index.html` (issue #1019).
+    #[test]
+    fn url_index_root_slash_and_index_html() {
+        let session = session_with_route("/");
+        assert_lookup(&session, "/", "/");
+        assert_lookup(&session, "/index.html", "/");
+    }
+
+    /// `/posts/a` and `/posts/a/` resolve to the same entry (trailing-slash
+    /// policy: both candidate forms are indexed).
+    #[test]
+    fn url_index_trailing_slash_equivalence() {
+        let session = session_with_route("/posts/a");
+        assert_lookup(&session, "/posts/a", "/posts/a");
+        assert_lookup(&session, "/posts/a/", "/posts/a");
+    }
+
+    /// `/posts/a/index.html` resolves like `/posts/a/` (index.html duality).
+    #[test]
+    fn url_index_index_html_duality() {
+        let session = session_with_route("/posts/a");
+        assert_lookup(&session, "/posts/a/index.html", "/posts/a");
+    }
+
+    /// Query strings are stripped before lookup: `/posts/a/?x=1` → `/posts/a`.
+    #[test]
+    fn url_index_query_string_ignored() {
+        let session = session_with_route("/posts/a");
+        assert_lookup(&session, "/posts/a/?x=1", "/posts/a");
+        assert_lookup(&session, "/posts/a?x=1&y=2", "/posts/a");
+    }
+
+    /// Percent-encoded paths are decoded before lookup:
+    /// `/posts/caf%C3%A9` → decoded to `/posts/café` → resolves.
+    #[test]
+    fn url_index_percent_encoding_decoded() {
+        let session = session_with_route("/posts/café");
+        assert_lookup(&session, "/posts/caf%C3%A9", "/posts/café");
+    }
+
+    /// Non-HTML routes (e.g. `feed.xml`, `sitemap.xml`) are indexed verbatim
+    /// because they have an explicit file extension — no slash/index variants.
+    #[test]
+    fn url_index_non_html_extension_routes() {
+        let entry = RouteUniverseEntry {
+            url_path: "/feed.xml".into(),
+            output_path: PathBuf::from("feed.xml"),
+            route_key: "/feed.xml".into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        routes.insert(
+            PathBuf::from("pages/feed.xml.tsx"),
+            vec![DevRouteEntry {
+                entry,
+                params: None,
+            }],
+        );
+        let session = DevRenderSession {
+            inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+        };
+        assert_lookup(&session, "/feed.xml", "/feed.xml");
+        // Trailing-slash normalisation: `/feed.xml/` → stripped → same key.
+        assert_lookup(&session, "/feed.xml/", "/feed.xml");
+        // Extension routes must NOT generate an `index.html` sub-key.
+        assert_no_lookup(&session, "/feed.xml/index.html");
+    }
+
+    /// SSR-only routes (`prerender = false`, stored in `ssr_routes`) are NOT
+    /// present in the url_index — they are served by the SSR leg.
+    #[test]
+    fn url_index_excludes_ssr_only_routes() {
+        let ssr_entry = RouteUniverseEntry {
+            url_path: "/ssr-page".into(),
+            output_path: PathBuf::new(),
+            route_key: "/ssr-page".into(),
+            static_html: false,
+            source_path: None,
+        };
+        // SSR entries go into `ssr_routes`, NOT `routes_by_source`.
+        let session = DevRenderSession {
+            inner: Arc::new(stub_dev_inner(HashMap::new(), vec![ssr_entry])),
+        };
+        assert_no_lookup(&session, "/ssr-page");
+        assert_no_lookup(&session, "/ssr-page/");
+    }
+
+    /// Unknown routes return `None`.
+    #[test]
+    fn url_index_unknown_route_returns_none() {
+        let session = session_with_route("/posts/a");
+        assert_no_lookup(&session, "/does-not-exist");
+        assert_no_lookup(&session, "/posts/b");
+    }
+
+    /// Multiple SSG routes coexist in the index independently.
+    #[test]
+    fn url_index_multiple_routes() {
+        let make_entry = |url: &str| RouteUniverseEntry {
+            url_path: url.into(),
+            output_path: PathBuf::from(format!("{}/index.html", url.trim_start_matches('/'))),
+            route_key: url.into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        routes.insert(
+            PathBuf::from("pages/about.tsx"),
+            vec![DevRouteEntry {
+                entry: make_entry("/about"),
+                params: None,
+            }],
+        );
+        routes.insert(
+            PathBuf::from("pages/blog/hello.tsx"),
+            vec![DevRouteEntry {
+                entry: make_entry("/blog/hello"),
+                params: None,
+            }],
+        );
+        let session = DevRenderSession {
+            inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+        };
+        assert_lookup(&session, "/about", "/about");
+        assert_lookup(&session, "/about/", "/about");
+        assert_lookup(&session, "/blog/hello", "/blog/hello");
+        assert_lookup(&session, "/blog/hello/index.html", "/blog/hello");
+    }
+
+    /// `url_index_lookup_keys` normalisation edge cases for the root path.
+    #[test]
+    fn url_index_lookup_keys_root_variants() {
+        // Empty string → root.
+        let keys = url_index_lookup_keys("");
+        assert!(keys.contains(&"/".to_string()));
+        assert!(keys.contains(&"/index.html".to_string()));
+        // All-slashes → root.
+        let keys2 = url_index_lookup_keys("///");
+        assert!(keys2.contains(&"/".to_string()));
+    }
+
+    /// Rebuild-swap coherence: after a table swap, lookups reflect the new
+    /// tables and not the old ones (issue #1019).
+    ///
+    /// This test drives the swap seam directly — it constructs an inner with
+    /// route A, then writes route B + a new url_index into the RwLock the same
+    /// way `refresh_bundle_and_routes` does (without needing a live V8 host),
+    /// and asserts the lookup after the swap returns B, not A.
+    #[test]
+    fn url_index_swap_coherence() {
+        // Boot: one route at /old.
+        let old_entry = RouteUniverseEntry {
+            url_path: "/old".into(),
+            output_path: PathBuf::from("old/index.html"),
+            route_key: "/old".into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut old_routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        old_routes.insert(
+            PathBuf::from("pages/old.tsx"),
+            vec![DevRouteEntry {
+                entry: old_entry,
+                params: None,
+            }],
+        );
+        let inner = Arc::new(stub_dev_inner(old_routes, Vec::new()));
+        let session = DevRenderSession {
+            inner: Arc::clone(&inner),
+        };
+
+        // Verify old state.
+        assert_lookup(&session, "/old", "/old");
+        assert_no_lookup(&session, "/new");
+
+        // Simulate P4 swap: new route at /new, old route removed.
+        let new_entry = RouteUniverseEntry {
+            url_path: "/new".into(),
+            output_path: PathBuf::from("new/index.html"),
+            route_key: "/new".into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut new_routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        new_routes.insert(
+            PathBuf::from("pages/new.tsx"),
+            vec![DevRouteEntry {
+                entry: new_entry,
+                params: None,
+            }],
+        );
+        let new_url_index = build_url_index(&new_routes);
+        {
+            let mut tables = inner.routes.write().unwrap();
+            tables.routes_by_source = new_routes;
+            tables.ssr_routes = Vec::new();
+            tables.url_index = new_url_index;
+        }
+
+        // After swap: old route gone, new route visible.
+        assert_no_lookup(&session, "/old");
+        assert_lookup(&session, "/new", "/new");
+        assert_lookup(&session, "/new/", "/new");
+        assert_lookup(&session, "/new/index.html", "/new");
     }
 }

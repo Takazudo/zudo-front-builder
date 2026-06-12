@@ -144,6 +144,7 @@ async fn gap1_ssr_and_gap2_watcher_work_together() {
         css_bundle_url: None,
         allowed_hosts: Vec::new(),
         bound_host: None,
+        render_on_request_hook: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await

@@ -1,6 +1,7 @@
 // zfb-server live-reload client.
 //
-// Subscribes to the SSE stream at /__zfb/reload and reacts to three
+// Subscribes to the SSE stream at <base>/__zfb/reload (the prefix is
+// derived from this script's own src at load time) and reacts to three
 // event types:
 //
 //   - "page":    full document reload (location.reload()).
@@ -17,7 +18,22 @@
   if (typeof window === "undefined" || typeof EventSource === "undefined") {
     return;
   }
-  var src = new EventSource("/__zfb/reload");
+  // Derive the stream URL from this script's own src. The injected
+  // <script src> IS base-prefix-aware (inject.rs livereload_tag emits
+  // <base>/__zfb/livereload.js), so swapping the filename keeps the SSE
+  // endpoint under the same mount prefix. Hardcoding "/__zfb/reload"
+  // here would 404 against a dev server configured with `base` — the
+  // unprefixed literal below remains only as a no-prefix fallback for
+  // contexts where document.currentScript is unavailable.
+  var streamUrl = "/__zfb/reload";
+  var cs = document.currentScript;
+  if (cs && cs.src) {
+    var m = cs.src.match(/^(.*)\/__zfb\/livereload\.js(\?.*)?$/);
+    if (m) {
+      streamUrl = m[1] + "/__zfb/reload";
+    }
+  }
+  var src = new EventSource(streamUrl);
   src.addEventListener("page", function () {
     window.location.reload();
   });

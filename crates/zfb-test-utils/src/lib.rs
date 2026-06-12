@@ -1,5 +1,7 @@
 mod html_normalize;
+mod sse;
 pub use html_normalize::normalize_html;
+pub use sse::{next_sse_event_name, wait_for_subscribers};
 
 use std::path::{Path, PathBuf};
 

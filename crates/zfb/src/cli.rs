@@ -57,7 +57,21 @@ pub struct NewArgs {
 /// so the command body can layer "CLI > config > built-in default" cleanly.
 /// Adding a clap default would erase the distinction between "user passed
 /// --port 8080" and "user accepted the default 3000".
+///
+/// The `after_help` block documents the lazy dev-render environment
+/// switches (issue #1027): the dev server defaults to lazy rendering
+/// (changed routes are marked stale and re-rendered on first request);
+/// `ZFB_DEV_EAGER=1` is the user-facing escape hatch back to fully
+/// eager per-tick rendering, and `ZFB_LAZY_DEV_RENDER=0|1` is the
+/// precise override that wins over `ZFB_DEV_EAGER` when both are set.
 #[derive(Debug, Args)]
+#[command(after_help = "Environment variables:
+  ZFB_DEV_EAGER=1          Disable lazy dev rendering: re-render every affected
+                           route eagerly on each file change (escape hatch
+                           restoring the pre-lazy behaviour).
+  ZFB_LAZY_DEV_RENDER=0|1  Precise override of the lazy dev-render switch
+                           (1|true forces lazy, 0|false forces eager). Takes
+                           precedence over ZFB_DEV_EAGER when both are set.")]
 pub struct DevArgs {
     /// Port to bind the dev server to. Falls back to `port` from
     /// `zfb.config.json`, then to `3000`.
@@ -188,6 +202,31 @@ mod tests {
         assert_eq!(
             preview_host(&["zfb", "preview", "--host", "10.0.0.1"]),
             Some("10.0.0.1".into())
+        );
+    }
+
+    /// Issue #1027 — `zfb dev --help` documents the lazy-render env
+    /// switches: the `ZFB_DEV_EAGER=1` escape hatch and the
+    /// `ZFB_LAZY_DEV_RENDER` precise override (with its precedence).
+    #[test]
+    fn dev_help_documents_lazy_render_env_switches() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let dev = cmd
+            .find_subcommand_mut("dev")
+            .expect("dev subcommand exists");
+        let help = dev.render_long_help().to_string();
+        assert!(
+            help.contains("ZFB_DEV_EAGER=1"),
+            "dev help must document the ZFB_DEV_EAGER escape hatch:\n{help}"
+        );
+        assert!(
+            help.contains("ZFB_LAZY_DEV_RENDER"),
+            "dev help must document the ZFB_LAZY_DEV_RENDER override:\n{help}"
+        );
+        assert!(
+            help.contains("precedence over ZFB_DEV_EAGER"),
+            "dev help must state the precedence rule:\n{help}"
         );
     }
 }

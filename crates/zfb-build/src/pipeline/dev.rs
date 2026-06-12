@@ -18,53 +18,245 @@
 //!   [`super::prod::ProductionAssetPipeline`]).
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use zfb_graph::PageId;
 
 use crate::atomic::{atomic_write, validate_output_path};
-use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome, RefreshOutcome};
+use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome, RefreshOutcome, StaleProbe};
 use crate::plan::{PageSelection, RebuildPlan};
 
-/// The default `zfb dev`-mode asset pipeline.
+// ── Internal write/dedup component ──────────────────────────────────────────
+
+/// Result of a single [`WriteCache::write_page`] call.
+///
+/// Returned to the tick loop so it can update `BuildOutcome` and
+/// populate `live_dests` / `prune_candidates` without reaching into the
+/// cache internals.
+struct WritePageOutcome {
+    /// `true` when the page's bytes differed from the cached copy and
+    /// `atomic_write` was called successfully.
+    written: bool,
+    /// The stale output-path for this page (from a previous tick that
+    /// mapped the same page id to a different destination), if any.
+    /// The caller collects these and runs the deferred-prune step after
+    /// the write loop completes.
+    stale_path: Option<PathBuf>,
+}
+
+/// Result of a guarded request-time write
+/// ([`DevAssetPipeline::request_write_guarded`] /
+/// [`RequestWriter::request_write_guarded`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardedWriteOutcome {
+    /// Revalidation passed under the exclusion lock; the normal
+    /// validate → byte-dedup → atomic-write → commit sequence ran.
+    Written(RequestWriteOutcome),
+    /// Revalidation failed — the write was skipped wholesale: no path
+    /// validation, no dedup commit, disk untouched. Whatever the
+    /// interleaving tick wrote stays authoritative.
+    Skipped,
+}
+
+/// Result of a request-time write ([`DevAssetPipeline::request_write`] /
+/// [`RequestWriter::request_write`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestWriteOutcome {
+    /// `true` when the bytes differed from the dedup cache's copy and the
+    /// file was (re-)written via `atomic_write`; `false` when the write
+    /// was skipped as byte-identical.
+    ///
+    /// Informational only (logging). Request-time writes never feed
+    /// [`super::BuildOutcome::pages_written`] and never emit SSE reload
+    /// events — the browser that triggered the request is about to
+    /// receive these very bytes as its response.
+    pub written: bool,
+}
+
+/// Shared dedup/bookkeeping component that owns the per-tick-persistent
+/// write state for [`DevAssetPipeline`].
+///
+/// Invariants enforced here (also validated by the existing regression
+/// tests #727, #804, #956, #958):
+///
+/// - `last_bytes` is updated **only after** a successful `atomic_write`.
+///   A transient I/O failure must not poison the cache — an identical
+///   retry on the next tick must re-write.
+/// - `last_output_path` is committed **only after** the write succeeds
+///   (same reason). A failed write leaves the old path mapping intact so
+///   the stale artifact remains prunable on the next tick.
 #[derive(Debug, Default)]
-pub struct DevAssetPipeline {
+struct WriteCache {
     // Last-known bytes per output path, used to skip writes when the
     // renderer is deterministic and re-emits the same HTML. Wrapped in
-    // a Mutex so &self.apply() can mutate it; the lock is held for the
-    // duration of one tick which is fine for dev.
+    // a Mutex so &self methods can mutate it; the lock is held briefly
+    // (check then commit), not across the atomic_write I/O.
     last_bytes: Mutex<HashMap<PathBuf, Vec<u8>>>,
 
     // Last-known absolute output path per page id. Used to detect
     // stale-output transitions: when a page's `output_path` changes
     // between builds (typically because its frontmatter `extension`
     // flipped — e.g. `xml` → `rss`), the previous artifact is
-    // deleted so dist/ doesn't accumulate orphaned files. Without
-    // this the dev server would happily serve the stale `sitemap.xml`
-    // alongside the new `sitemap.rss`.
+    // deleted so dist/ doesn't accumulate orphaned files.
     //
     // Stored as the absolute joined path (`<dist_root>/<output_path>`)
     // so the prune step doesn't need access to the dist root.
     last_output_path: Mutex<HashMap<PageId, PathBuf>>,
 }
 
-impl DevAssetPipeline {
-    /// Construct a fresh pipeline with no last-bytes cache.
-    pub fn new() -> Self {
-        Self::default()
+impl WriteCache {
+    /// Core write sequence for a single rendered page:
+    /// dedup vs `last_bytes` → `atomic_write` (if changed) →
+    /// commit `last_bytes` and `last_output_path` strictly after the
+    /// write succeeds.
+    ///
+    /// `dest` must already be validated (via `validate_output_path`)
+    /// by the caller.  The returned [`WritePageOutcome`] carries the
+    /// `written` flag and any stale path the caller should queue for
+    /// deferred pruning.
+    fn write_page(
+        &self,
+        page: &PageId,
+        dest: &PathBuf,
+        new_bytes: Vec<u8>,
+    ) -> Result<WritePageOutcome> {
+        // Collect any stale-output prune candidate for this page.
+        // The actual delete is deferred to after the write loop so we
+        // can cross-check against live_dests first (issue #727).
+        // We still defer updating `last_output_path` until the write
+        // succeeds: a transient write failure aborts the tick (via `?`)
+        // before the deferred prune runs, so the previous path mapping
+        // is preserved for the next tick.
+        let stale_path = {
+            let last_out = self.last_output_path.lock().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "WriteCache.last_output_path",
+                    "mutex poisoned, recovering"
+                );
+                p.into_inner()
+            });
+            last_out.get(page).and_then(|prev| {
+                if prev != dest {
+                    Some(prev.clone())
+                } else {
+                    None
+                }
+            })
+        };
+
+        let changed = self.write_bytes(dest, new_bytes)?;
+
+        // Only after a successful write do we record the new output
+        // path. If the write above failed we abort the tick and the
+        // previous mapping is preserved, so the stale file remains
+        // prunable on the next rebuild.
+        self.last_output_path
+            .lock()
+            .unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "WriteCache.last_output_path (commit)",
+                    "mutex poisoned, recovering"
+                );
+                p.into_inner()
+            })
+            .insert(page.clone(), dest.clone());
+
+        Ok(WritePageOutcome {
+            written: changed,
+            stale_path,
+        })
     }
 
-    /// Forget the last-bytes and last-output caches. Useful when the
-    /// dist root is wiped from outside the orchestrator and the caller
-    /// wants the next rebuild to re-emit every page.
-    pub fn reset_cache(&self) {
+    /// Byte-dedup → `atomic_write` → commit `last_bytes`, for one dest.
+    ///
+    /// The shared core of the tick path ([`Self::write_page`]) and the
+    /// request path ([`DevAssetPipeline::request_write`]), so both
+    /// observe the identical dedup + commit-after-success discipline.
+    /// Returns `true` when the bytes differed from the cached copy and
+    /// the write ran.
+    ///
+    /// `dest` must already be validated (via `validate_output_path`).
+    fn write_bytes(&self, dest: &PathBuf, new_bytes: Vec<u8>) -> Result<bool> {
+        let changed = {
+            let cache = self.last_bytes.lock().unwrap_or_else(|p| {
+                tracing::warn!(site = "WriteCache.last_bytes", "mutex poisoned, recovering");
+                p.into_inner()
+            });
+            !matches!(cache.get(dest), Some(prev) if prev == &new_bytes)
+        };
+
+        // After a prune the new path is by definition different from
+        // anything we've written before, so we always (re-)emit.
+        // `changed` already flips true via the cache miss above. We
+        // still want to write before we delete the previous artifact.
+
+        if changed {
+            // Pass the raw bytes through — `atomic_write` is the
+            // canonical write helper. Going through
+            // `from_utf8(...).unwrap_or("")` previously turned any
+            // encoding hiccup into a silent blank file.
+            atomic_write(dest, &new_bytes)?;
+            // Only after the write succeeds do we record the new bytes
+            // in the dedup cache. If we updated the cache before the
+            // write a transient I/O failure would poison it: the next
+            // tick's identical bytes would be deemed "unchanged" and the
+            // file would silently never make it to disk.
+            self.last_bytes
+                .lock()
+                .unwrap_or_else(|p| {
+                    tracing::warn!(
+                        site = "WriteCache.last_bytes (commit)",
+                        "mutex poisoned, recovering"
+                    );
+                    p.into_inner()
+                })
+                .insert(dest.clone(), new_bytes);
+        }
+
+        Ok(changed)
+    }
+
+    /// Evict `path` from both caches (last_bytes and last_output_path).
+    ///
+    /// Called during the deferred-prune step after a path has been
+    /// confirmed not live (not in `live_dests`) and `fs::remove_file`
+    /// has been attempted. Eviction ensures the path is never revisited
+    /// as a prune candidate on the next tick.
+    fn evict_path(&self, path: &PathBuf) {
         self.last_bytes
             .lock()
             .unwrap_or_else(|p| {
                 tracing::warn!(
-                    site = "DevAssetPipeline.last_bytes",
+                    site = "WriteCache.last_bytes (evict)",
+                    "mutex poisoned, recovering"
+                );
+                p.into_inner()
+            })
+            .remove(path);
+
+        self.last_output_path
+            .lock()
+            .unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "WriteCache.last_output_path (evict)",
+                    "mutex poisoned, recovering"
+                );
+                p.into_inner()
+            })
+            .retain(|_, v| v != path);
+    }
+
+    /// Clear both caches. Useful when the dist root is wiped from
+    /// outside the orchestrator and the caller wants the next rebuild
+    /// to re-emit every page.
+    fn clear(&self) {
+        self.last_bytes
+            .lock()
+            .unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "WriteCache.last_bytes (clear)",
                     "mutex poisoned, recovered"
                 );
                 p.into_inner()
@@ -74,7 +266,7 @@ impl DevAssetPipeline {
             .lock()
             .unwrap_or_else(|p| {
                 tracing::warn!(
-                    site = "DevAssetPipeline.last_output_path",
+                    site = "WriteCache.last_output_path (clear)",
                     "mutex poisoned, recovered"
                 );
                 p.into_inner()
@@ -83,8 +275,305 @@ impl DevAssetPipeline {
     }
 }
 
+// ── Shared write state + tick-vs-request exclusion ──────────────────────────
+
+/// The write state shared between the tick path and the request path:
+/// the [`WriteCache`] plus the pipeline-wide exclusion lock.
+///
+/// ## Exclusion discipline (issues #727 / #804 / #1024)
+///
+/// One mutex, held **exclusively** by both sides:
+///
+/// - [`DevAssetPipeline::apply`] holds it for the **whole tick** —
+///   renderer reload, render fan-out, write loop, and the deferred-prune
+///   window included.
+/// - A request-time write ([`DevAssetPipeline::request_write`] /
+///   [`RequestWriter::request_write`]) holds it for one
+///   validate → dedup → atomic-write → commit sequence.
+///
+/// So a request-time write completes entirely before or entirely after
+/// an `apply()`; it is never partially interleaved. Why this is
+/// load-bearing:
+///
+/// - **#727 (deferred prune + `live_dests`):** the per-tick `live_dests`
+///   set is only coherent inside one `apply()`. A request-time write
+///   landing inside the tick's prune window could write a path the tick
+///   is about to prune — the fresh artifact would be deleted right after
+///   the write (write-after-prune orphan) — or re-materialise a path the
+///   tick has already declared vanished.
+/// - **#804 (vanish eviction):** when a route vanishes, the tick deletes
+///   the file AND evicts its `last_bytes` entry as one logical step. A
+///   write slipping between the delete and the evict would commit cache
+///   bytes for a file the evict then forgets — the next identical write
+///   would be wrongly deduped against a file that is gone from disk.
+/// - **request-vs-request:** two concurrent writes to the same dest
+///   could commit `last_bytes` in the opposite order of their on-disk
+///   renames, leaving the dedup cache claiming bytes that are not what
+///   is on disk.
+///
+/// Lock ordering: `exclusion` is always the outermost lock; the
+/// `WriteCache` mutexes are leaf-level and never held across a call that
+/// takes `exclusion`, so no inversion is possible.
+#[derive(Debug, Default)]
+struct WriteShared {
+    cache: WriteCache,
+    exclusion: Mutex<()>,
+}
+
+impl WriteShared {
+    /// Acquire the tick-vs-request exclusion lock (poison-recovering, in
+    /// line with the `WriteCache` mutexes — a panicked tick must not
+    /// wedge the dev server's request path forever).
+    fn lock_exclusion(&self, site: &'static str) -> std::sync::MutexGuard<'_, ()> {
+        self.exclusion.lock().unwrap_or_else(|p| {
+            tracing::warn!(site, "exclusion mutex poisoned, recovering");
+            p.into_inner()
+        })
+    }
+
+    /// Request-time write sequence: exclusion → `validate_output_path`
+    /// → byte-dedup → `atomic_write` → commit `last_bytes`.
+    fn request_write(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+    ) -> Result<RequestWriteOutcome> {
+        let _exclusion = self.lock_exclusion("WriteShared.exclusion (request_write)");
+        self.validate_and_write(dist_root, output_path, bytes)
+    }
+
+    /// Guarded request-time write (issue #1027 lazy race): exclusion →
+    /// `revalidate()` → (only if it passed) the same validate → dedup →
+    /// write → commit sequence as [`Self::request_write`].
+    ///
+    /// The revalidation closure runs strictly UNDER the exclusion lock
+    /// and strictly BEFORE any other work, so a `false` answer skips the
+    /// write wholesale — see [`RequestWriter::request_write_guarded`]
+    /// for why that ordering is load-bearing.
+    fn request_write_guarded(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+        revalidate: impl FnOnce() -> bool,
+    ) -> Result<GuardedWriteOutcome> {
+        let _exclusion = self.lock_exclusion("WriteShared.exclusion (request_write_guarded)");
+        if !revalidate() {
+            return Ok(GuardedWriteOutcome::Skipped);
+        }
+        Ok(GuardedWriteOutcome::Written(self.validate_and_write(
+            dist_root,
+            output_path,
+            bytes,
+        )?))
+    }
+
+    /// The exclusion-agnostic core shared by [`Self::request_write`] and
+    /// [`Self::request_write_guarded`]. Callers MUST hold the exclusion
+    /// lock.
+    fn validate_and_write(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+    ) -> Result<RequestWriteOutcome> {
+        // Same write-boundary validation as the tick path: reject any
+        // output path that escapes dist_root via `..`, absolute roots,
+        // or a planted symlink.
+        let dest = validate_output_path(dist_root, output_path)
+            .with_context(|| format!("while request-writing {}", output_path.display()))?;
+
+        let written = self.cache.write_bytes(&dest, bytes)?;
+        Ok(RequestWriteOutcome { written })
+    }
+}
+
+// ── Public pipeline ──────────────────────────────────────────────────────────
+
+/// The default `zfb dev`-mode asset pipeline.
+#[derive(Default)]
+pub struct DevAssetPipeline {
+    shared: Arc<WriteShared>,
+    /// Issue #1025 (lazy dev render): optional probe draining the routes
+    /// the renderer marked stale this tick into
+    /// [`BuildOutcome::pages_stale`]. `None` (tests, production-shaped
+    /// callers) leaves the field empty.
+    stale_probe: Option<StaleProbe>,
+}
+
+impl std::fmt::Debug for DevAssetPipeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DevAssetPipeline")
+            .field("shared", &self.shared)
+            .field(
+                "stale_probe",
+                &self.stale_probe.as_ref().map(|_| "<callback>"),
+            )
+            .finish()
+    }
+}
+
+impl DevAssetPipeline {
+    /// Construct a fresh pipeline with no last-bytes cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Construct a pipeline that fills [`BuildOutcome::pages_stale`]
+    /// from `probe` after every tick (issue #1025 — lazy dev render).
+    pub fn with_stale_probe(probe: StaleProbe) -> Self {
+        Self {
+            shared: Arc::default(),
+            stale_probe: Some(probe),
+        }
+    }
+
+    /// Forget the last-bytes and last-output caches. Useful when the
+    /// dist root is wiped from outside the orchestrator and the caller
+    /// wants the next rebuild to re-emit every page.
+    ///
+    /// Takes the tick-vs-request exclusion lock: a reset interleaving
+    /// with a tick's write loop would clear some pages' dedup entries
+    /// mid-tick (re-emitting only a suffix of the tick's pages on the
+    /// next rebuild) and could slip inside the deferred-prune window.
+    pub fn reset_cache(&self) {
+        let _exclusion = self
+            .shared
+            .lock_exclusion("WriteShared.exclusion (reset_cache)");
+        self.shared.cache.clear();
+    }
+
+    /// Write `bytes` to `<dist_root>/<output_path>` at **request time**
+    /// (i.e. from the dev server's HTTP path, outside any watcher tick),
+    /// with the same validate → byte-dedup → atomic-write → commit
+    /// discipline the tick's write loop uses.
+    ///
+    /// Returns [`RequestWriteOutcome::written`] = `true` when the bytes
+    /// differed from the dedup cache and the file was written. The flag
+    /// is informational only — request-time writes never feed
+    /// [`super::BuildOutcome::pages_written`] and never emit SSE reload
+    /// events.
+    ///
+    /// ## Exclusion vs `apply()`
+    ///
+    /// This call takes the pipeline-wide exclusion lock and therefore
+    /// **blocks while a tick is in flight**: it completes entirely
+    /// before or entirely after an [`AssetPipeline::apply`], never
+    /// inside a tick's deferred-prune window. See [`WriteShared`] for
+    /// why interleaving would corrupt the #727 prune coherence and the
+    /// #804 vanish-eviction step.
+    ///
+    /// ## Dedup coherence
+    ///
+    /// The dedup cache is shared with the tick path: a tick whose
+    /// renderer re-emits exactly the bytes a request wrote skips the
+    /// write (no spurious rewrite), and a request re-sending the bytes a
+    /// tick wrote is skipped likewise. After a prune evicts a path, the
+    /// next write to it always runs (cache miss by construction).
+    pub fn request_write(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+    ) -> Result<RequestWriteOutcome> {
+        self.shared.request_write(dist_root, output_path, bytes)
+    }
+
+    /// See [`RequestWriter::request_write_guarded`] — the same guarded
+    /// write through the pipeline handle.
+    pub fn request_write_guarded(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+        revalidate: impl FnOnce() -> bool,
+    ) -> Result<GuardedWriteOutcome> {
+        self.shared
+            .request_write_guarded(dist_root, output_path, bytes, revalidate)
+    }
+
+    /// A cheap clonable handle onto this pipeline's write state, for
+    /// callers that need to perform [`Self::request_write`]s after the
+    /// pipeline itself has been moved into the
+    /// [`crate::BuildOrchestrator`] (which takes it by value). Clone the
+    /// handle out first, then hand the pipeline over.
+    pub fn request_writer(&self) -> RequestWriter {
+        RequestWriter {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+}
+
+/// Clonable, `Send + Sync` handle for request-time writes against a
+/// [`DevAssetPipeline`]'s shared write state.
+///
+/// Obtained via [`DevAssetPipeline::request_writer`]. All clones share
+/// the same dedup cache and the same tick-vs-request exclusion lock as
+/// the pipeline they came from (see [`DevAssetPipeline::request_write`]
+/// for the full contract).
+#[derive(Debug, Clone)]
+pub struct RequestWriter {
+    shared: Arc<WriteShared>,
+}
+
+impl RequestWriter {
+    /// See [`DevAssetPipeline::request_write`].
+    pub fn request_write(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+    ) -> Result<RequestWriteOutcome> {
+        self.shared.request_write(dist_root, output_path, bytes)
+    }
+
+    /// [`Self::request_write`] with a freshness recheck under the
+    /// exclusion lock (issue #1027 lazy race).
+    ///
+    /// The request-time lazy render releases the renderer mutex after
+    /// rendering and only THEN takes this pipeline's exclusion lock. A
+    /// watcher tick completing in that gap can eagerly re-render and
+    /// write the SAME route with fresher bytes (evicting its stale
+    /// entry), or re-stale it at a newer generation. An unguarded
+    /// `request_write` would then overwrite the newer HTML with bytes
+    /// rendered against the older host — a silent stale serve until the
+    /// next edit.
+    ///
+    /// `revalidate` closes that gap: it runs strictly under the
+    /// exclusion lock (so no tick is in flight while it answers) and
+    /// strictly before any validation or disk work. Callers pass a
+    /// closure re-checking that their claim on the route is still
+    /// exactly current; on `false` the write is skipped wholesale and
+    /// [`GuardedWriteOutcome::Skipped`] is returned — the interleaving
+    /// tick's bytes stay authoritative on disk and in the dedup cache.
+    ///
+    /// Lock ordering: identical to `request_write` — the exclusion lock
+    /// only. `revalidate` may take leaf locks of its own (e.g. the dev
+    /// session's stale map, which ticks also take INSIDE their
+    /// exclusion window) but must never acquire the renderer mutex
+    /// (that would invert against a tick's exclusion → renderer
+    /// nesting).
+    pub fn request_write_guarded(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+        revalidate: impl FnOnce() -> bool,
+    ) -> Result<GuardedWriteOutcome> {
+        self.shared
+            .request_write_guarded(dist_root, output_path, bytes, revalidate)
+    }
+}
+
 impl AssetPipeline for DevAssetPipeline {
     fn apply(&self, plan: &RebuildPlan, ctx: &BuildContext) -> Result<BuildOutcome> {
+        // Tick-vs-request exclusion (#727 / #804 / #1024): hold the
+        // pipeline-wide lock for the WHOLE tick so no request-time write
+        // can interleave with the render fan-out or the deferred-prune
+        // window. See [`WriteShared`] for the discipline.
+        let _exclusion = self.shared.lock_exclusion("WriteShared.exclusion (apply)");
+
         let mut outcome = BuildOutcome::default();
 
         // 1. Pages.
@@ -128,26 +617,7 @@ impl AssetPipeline for DevAssetPipeline {
                     outcome.pages_pruned.extend(vanished.iter().cloned());
                     for prev in &vanished {
                         let _ = std::fs::remove_file(prev);
-                        self.last_bytes
-                            .lock()
-                            .unwrap_or_else(|p| {
-                                tracing::warn!(
-                                    site = "DevAssetPipeline.last_bytes (ssr-only-prune)",
-                                    "mutex poisoned, recovering"
-                                );
-                                p.into_inner()
-                            })
-                            .remove(prev);
-                        {
-                            let mut last_out = self.last_output_path.lock().unwrap_or_else(|p| {
-                                tracing::warn!(
-                                    site = "DevAssetPipeline.last_output_path (ssr-only-prune)",
-                                    "mutex poisoned, recovering"
-                                );
-                                p.into_inner()
-                            });
-                            last_out.retain(|_, v| v != prev);
-                        }
+                        self.shared.cache.evict_path(prev);
                     }
                 }
             }
@@ -257,82 +727,13 @@ impl AssetPipeline for DevAssetPipeline {
                 // their path from a sibling's deferred prune.
                 live_dests.insert(dest.clone());
 
-                // Collect any stale-output prune candidate for this
-                // page. The actual delete is deferred to after the loop
-                // so we can cross-check against live_dests first.
-                // We still defer updating `last_output_path` until the
-                // write succeeds: a transient write failure aborts the
-                // tick (via `?`) before the deferred prune runs, so the
-                // previous path mapping is preserved for the next tick.
-                {
-                    let last_out = self.last_output_path.lock().unwrap_or_else(|p| {
-                        tracing::warn!(
-                            site = "DevAssetPipeline.last_output_path",
-                            "mutex poisoned, recovering"
-                        );
-                        p.into_inner()
-                    });
-                    if let Some(prev) = last_out.get(&r.page) {
-                        if prev != &dest {
-                            prune_candidates.push(prev.clone());
-                        }
-                    }
+                let wo = self.shared.cache.write_page(&r.page, &dest, new_bytes)?;
+                if let Some(stale) = wo.stale_path {
+                    prune_candidates.push(stale);
                 }
-
-                let changed = {
-                    let cache = self.last_bytes.lock().unwrap_or_else(|p| {
-                        tracing::warn!(
-                            site = "DevAssetPipeline.last_bytes",
-                            "mutex poisoned, recovering"
-                        );
-                        p.into_inner()
-                    });
-                    !matches!(cache.get(&dest), Some(prev) if prev == &new_bytes)
-                };
-
-                // After a prune the new path is by definition different
-                // from anything we've written before, so we always
-                // (re-)emit. `changed` already flips true via the
-                // cache miss above. We still want to write before we
-                // delete the previous artifact below.
-
-                if changed {
-                    // Pass the raw bytes through — `atomic_write` is
-                    // the canonical write helper. Going through
-                    // `from_utf8(...).unwrap_or("")` previously turned
-                    // any encoding hiccup into a silent blank file.
-                    atomic_write(&dest, &new_bytes)?;
-                    // Only after the write succeeds do we record the
-                    // new bytes in the dedup cache. If we updated the
-                    // cache before the write a transient I/O failure
-                    // would poison it: the next tick's identical bytes
-                    // would be deemed "unchanged" and the file would
-                    // silently never make it to disk.
-                    let mut cache = self.last_bytes.lock().unwrap_or_else(|p| {
-                        tracing::warn!(
-                            site = "DevAssetPipeline.last_bytes (commit)",
-                            "mutex poisoned, recovering"
-                        );
-                        p.into_inner()
-                    });
-                    cache.insert(dest.clone(), new_bytes.clone());
+                if wo.written {
                     outcome.pages_written.push(r.page.clone());
                 }
-
-                // Only after a successful write do we record the new
-                // output path. If the write above failed we abort the
-                // tick and the previous mapping is preserved, so the
-                // stale file remains prunable on the next rebuild.
-                self.last_output_path
-                    .lock()
-                    .unwrap_or_else(|p| {
-                        tracing::warn!(
-                            site = "DevAssetPipeline.last_output_path (commit)",
-                            "mutex poisoned, recovering"
-                        );
-                        p.into_inner()
-                    })
-                    .insert(r.page.clone(), dest.clone());
             }
 
             // Deferred prune: remove candidates that are no longer live.
@@ -351,29 +752,7 @@ impl AssetPipeline for DevAssetPipeline {
                     continue; // another page now owns this path — skip
                 }
                 let _ = std::fs::remove_file(&prev);
-                self.last_bytes
-                    .lock()
-                    .unwrap_or_else(|p| {
-                        tracing::warn!(
-                            site = "DevAssetPipeline.last_bytes (prune)",
-                            "mutex poisoned, recovering"
-                        );
-                        p.into_inner()
-                    })
-                    .remove(&prev);
-                // Also evict the stale path from the last_output_path
-                // cache so the pipeline doesn't attempt to prune it again
-                // on the next tick.
-                {
-                    let mut last_out = self.last_output_path.lock().unwrap_or_else(|p| {
-                        tracing::warn!(
-                            site = "DevAssetPipeline.last_output_path (route-prune)",
-                            "mutex poisoned, recovering"
-                        );
-                        p.into_inner()
-                    });
-                    last_out.retain(|_, v| v != &prev);
-                }
+                self.shared.cache.evict_path(&prev);
                 outcome.pages_pruned.push(prev);
             }
         }
@@ -391,26 +770,7 @@ impl AssetPipeline for DevAssetPipeline {
         if (pages.is_empty() || renderer_refresh_skipped) && !plan.prune_paths.is_empty() {
             for prev in &plan.prune_paths {
                 let _ = std::fs::remove_file(prev);
-                self.last_bytes
-                    .lock()
-                    .unwrap_or_else(|p| {
-                        tracing::warn!(
-                            site = "DevAssetPipeline.last_bytes (plan-prune)",
-                            "mutex poisoned, recovering"
-                        );
-                        p.into_inner()
-                    })
-                    .remove(prev);
-                {
-                    let mut last_out = self.last_output_path.lock().unwrap_or_else(|p| {
-                        tracing::warn!(
-                            site = "DevAssetPipeline.last_output_path (plan-prune)",
-                            "mutex poisoned, recovering"
-                        );
-                        p.into_inner()
-                    });
-                    last_out.retain(|_, v| v != prev);
-                }
+                self.shared.cache.evict_path(prev);
                 outcome.pages_pruned.push(prev.clone());
             }
         }
@@ -446,6 +806,16 @@ impl AssetPipeline for DevAssetPipeline {
             if let Some(run) = &ctx.run_client_scripts {
                 outcome.client_scripts_changed = run()?;
             }
+        }
+
+        // 5. Stale routes (issue #1025 — lazy dev render). Drain the
+        // renderer's per-tick stale buffer into the outcome. The render
+        // callback (and the reloader's route-table/stale-state updates)
+        // completed above, so by construction the staleness map already
+        // describes the new world by the time this outcome reaches
+        // `on_outcome`. Empty on every tick while the lazy switch is off.
+        if let Some(probe) = &self.stale_probe {
+            outcome.pages_stale = probe();
         }
 
         Ok(outcome)

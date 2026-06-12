@@ -53,6 +53,28 @@ is inside an islands root (e.g. `components/`), the plan's `rerun_islands` flag 
 set. If a CSS source changed, `rerun_css` is set. Then the
 `DevAssetPipeline::apply()` method runs, in this order:
 
+<Note title="Lazy dev rendering (the default)">
+
+By default, the "pages re-rendered" step below is **lazy**: a tick eagerly
+re-renders only the edited content entry's own routes and marks every other
+affected route **stale**. A stale route re-renders through the live V8 host on
+its **first request** (GET or HEAD) — the request blocks until the fresh bytes
+are written, so the response is never stale. The initial render at `zfb dev`
+boot always stays eager, so every route exists on disk from the start.
+
+Two environment switches control this:
+
+- `ZFB_DEV_EAGER=1` — escape hatch: restore fully eager rendering (every
+  affected route re-renders on every tick, the pre-lazy behaviour).
+- `ZFB_LAZY_DEV_RENDER=0|1` — precise override (`1`/`true` forces lazy,
+  `0`/`false` forces eager). Takes precedence over `ZFB_DEV_EAGER` when both
+  are set.
+
+Both are read once at boot; changing them requires a dev-server restart. They
+are also documented in `zfb dev --help`.
+
+</Note>
+
 1. **Pages re-rendered.** Before the renderer is called, `BuildContext::reload_renderer`
    fires for EDIT ticks (i.e. `ChangeKind::Modified` — what VS Code and most editors
    emit). It re-bundles with a fresh content snapshot from disk, starts a new embedded
@@ -85,7 +107,7 @@ set. If a CSS source changed, `rerun_css` is set. Then the
 
 | Outcome trigger | Event | Browser behaviour |
 |---|---|---|
-| `pages_written.len() > 0` | `Page` | Full `location.reload()` |
+| `pages_written` non-empty **or** `pages_stale` non-empty | `Page` | Full `location.reload()` |
 | `css_changed` | `Css` | Hot-swap every `<link rel="stylesheet">` — appends `?v=<timestamp>` to bust the browser cache without reloading the document |
 | `islands_bundle.is_some()` | `Islands { component, bundle_url }` | Dynamic `import()` of the new bundle URL (with a cache-busting `?v=<timestamp>`). The newly-imported module runs its hydration, which by default re-mounts **every** `[data-zfb-island]` element on the current page — no document reload |
 

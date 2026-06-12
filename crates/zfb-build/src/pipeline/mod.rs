@@ -74,7 +74,7 @@ pub mod dev;
 pub mod orchestrator;
 pub mod prod;
 
-pub use dev::DevAssetPipeline;
+pub use dev::{DevAssetPipeline, GuardedWriteOutcome, RequestWriteOutcome, RequestWriter};
 pub use orchestrator::{
     apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitterPayload,
     ProdAssetEmitterInputs, ProdRenderedFile,
@@ -358,6 +358,19 @@ pub enum RefreshOutcome {
     },
 }
 
+/// Function the dev pipeline calls after the render fan-out to collect
+/// the routes the renderer marked STALE this tick instead of rendering
+/// (issue #1025 — lazy dev render).
+///
+/// Returns the **relative output paths** (under the dist root) staled by
+/// the tick, draining the producer's per-tick buffer — calling it twice
+/// for one tick yields the list once, then an empty `Vec`. The dev
+/// command wires this to its render session; while the lazy-render
+/// switch is off the renderer never marks anything stale and the probe
+/// always returns empty, so [`BuildOutcome::pages_stale`] stays empty
+/// and behaviour is unchanged.
+pub type StaleProbe = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync + 'static>;
+
 /// Function the dev pipeline calls before re-rendering pages, when
 /// the SSR worker bundle on disk may have changed (a `.tsx` page edit,
 /// layout edit, or exported-handler change).
@@ -614,6 +627,19 @@ pub struct BuildOutcome {
     /// [`DevAssetPipeline`]. Lets the bin crate log the URLs it just
     /// shipped without re-reading dist.
     pub hashed_asset_urls: Vec<(AssetKind, String)>,
+
+    /// Relative output paths (under the dist root) the renderer marked
+    /// STALE this tick instead of rendering eagerly (issue #1025 — lazy
+    /// dev render). Populated by [`DevAssetPipeline`] from its
+    /// [`StaleProbe`], when one was supplied at construction.
+    ///
+    /// Empty when the lazy-render switch is off (the `ZFB_DEV_EAGER=1`
+    /// escape hatch). Since the #1027 activation flip a non-empty list
+    /// is part of the dev server's SSE reload gate
+    /// (`zfb_server::outcome_to_events`), so a tick that rendered
+    /// nothing eagerly still tells the browser to reload — the stale
+    /// route then re-renders on request.
+    pub pages_stale: Vec<PathBuf>,
 }
 
 /// The contract every asset pipeline implementation must satisfy.
