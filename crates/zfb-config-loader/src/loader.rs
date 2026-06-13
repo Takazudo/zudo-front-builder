@@ -344,9 +344,9 @@ fn resolve_plugins_from_value(raw_value: &serde_json::Value, dir: &Path) -> Resu
 /// Returns `Ok(Some(url))` for relative (`./`, `../`) or absolute (`/`)
 /// paths, checking that the file actually exists. Returns `Ok(None)` for
 /// bare specifiers — the caller resolves them via
-/// [`resolve_node_bare_specifier`] (both JSON and TS paths share the same
-/// resolver since #418). Returns `Err` when a relative/absolute path does
-/// not exist on disk.
+/// [`crate::node_resolve::resolve_node_bare_specifier`] (both JSON and TS
+/// paths share the same resolver since #418). Returns `Err` when a
+/// relative/absolute path does not exist on disk.
 pub fn resolve_plugin_path_to_file_url(name: &str, dir: &Path) -> Result<Option<String>> {
     let is_relative = name.starts_with("./") || name.starts_with("../");
     let is_absolute = name.starts_with('/');

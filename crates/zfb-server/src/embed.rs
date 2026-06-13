@@ -698,9 +698,17 @@ fn load_embed_config(
 /// the caller is already inside a tokio runtime (a bare `Runtime::block_on`
 /// from within a runtime would panic). The project root passed to the
 /// evaluator is the config file's parent directory.
+///
+/// The config path is canonicalised to an absolute path first. The loader
+/// runs esbuild with `current_dir(project_root)` and passes `ts_path` as the
+/// entry, so a relative `config_path` (e.g. `"site/zfb.config.ts"`, or a bare
+/// `"zfb.config.ts"` whose `parent()` is the empty path) would otherwise make
+/// esbuild `chdir` to the wrong place or double-join the directory segment.
 fn load_embed_config_from_ts(config_path: &Path) -> anyhow::Result<EmbedConfig> {
-    let ts_path = config_path.to_path_buf();
-    let project_root = config_path
+    let ts_path = config_path
+        .canonicalize()
+        .with_context(|| format!("could not resolve {}", config_path.display()))?;
+    let project_root = ts_path
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
