@@ -39,7 +39,7 @@
 //! coalescing inside the orchestrator; if the watcher decides "this is
 //! one logical save", we treat it as one.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -81,6 +81,37 @@ use crate::policy::{classify_change_with_content_roots, GranularityPolicy, PathC
 pub type DiscoveryHook =
     std::sync::Arc<dyn Fn(&[PathBuf]) -> Result<DiscoveryOutcome> + Send + Sync + 'static>;
 
+/// Opt-in external-change narrowing hook (issue #1038).
+///
+/// Consulted from [`BuildOrchestrator::plan_for_changes`] for every
+/// change classified as [`PathClass::External`] — i.e. an out-of-root
+/// file delivered through the `extraWatchPaths` channel. The orchestrator
+/// has no dependency-graph edges for out-of-root paths, so by default an
+/// external change conservatively triggers `PageSelection::All` (see the
+/// `External` arm). This hook lets an *informed* consumer — one that
+/// knows which external path backs which page (e.g. skill file
+/// `foo.mdx` → page `/skills/foo`) — narrow that to a specific subset:
+///
+/// - `Some(pages)` → re-render exactly those pages (folded into
+///   [`PageSelection::Specific`]). An empty `Some(vec![])` narrows to "no
+///   pages" — the consumer asserts this external change affects nothing
+///   page-renderable.
+/// - `None` → the consumer cannot map this path; fall back to the
+///   conservative `PageSelection::All` rebuild (the unchanged default).
+///
+/// When no hook is configured ([`OrchestratorConfig::external_invalidation`]
+/// is `None`) every external change keeps the `PageSelection::All` default
+/// — there is no behavior change for existing consumers. The hook only
+/// ever narrows; it cannot suppress the SSR host reload, which still fires
+/// for every external change regardless of the hook's verdict.
+///
+/// Mirrors the [`DiscoveryHook`] pattern, but is a *pure* path→pages query
+/// with no side effects — so it lives in [`OrchestratorConfig`] and is
+/// consulted inside the plan fold rather than threaded through the tick
+/// entry points.
+pub type ExternalInvalidationHook =
+    std::sync::Arc<dyn Fn(&Path) -> Option<Vec<PageId>> + Send + Sync + 'static>;
+
 /// What a [`DiscoveryHook`] invocation did for this tick.
 #[derive(Debug, Clone, Default)]
 pub struct DiscoveryOutcome {
@@ -112,7 +143,11 @@ pub struct DiscoveryOutcome {
 }
 
 /// Construction-time configuration for [`BuildOrchestrator`].
-#[derive(Debug, Clone)]
+///
+/// `Debug` is hand-written rather than derived because
+/// [`external_invalidation`](Self::external_invalidation) holds a boxed
+/// closure ([`ExternalInvalidationHook`]) which is not `Debug`.
+#[derive(Clone)]
 pub struct OrchestratorConfig {
     /// Project root (handed to [`zfb_watcher::Watcher::start`]).
     pub project_root: PathBuf,
@@ -133,6 +168,12 @@ pub struct OrchestratorConfig {
     /// coverage and conservatively trigger broader rebuilds — that is
     /// the documented contract for the public `extraWatchPaths`
     /// config field.
+    ///
+    /// That conservative `PageSelection::All` rebuild remains the
+    /// **default**. An informed consumer who knows which external path
+    /// backs which page can opt in to narrowing via
+    /// [`external_invalidation`](Self::external_invalidation) — the
+    /// documented escape hatch (issue #1038).
     pub extra_watch_paths: Vec<PathBuf>,
 
     /// Granularity policy. Defaults to [`GranularityPolicy::default`].
@@ -141,11 +182,39 @@ pub struct OrchestratorConfig {
     /// Optional override for the watcher debounce window. `None` =
     /// `zfb_watcher::DEFAULT_DEBOUNCE` (50ms).
     pub debounce: Option<Duration>,
+
+    /// Opt-in external-change narrowing hook (issue #1038).
+    ///
+    /// `None` (the default) keeps the conservative contract: every
+    /// `extraWatchPaths` change triggers a full `PageSelection::All`
+    /// rebuild. `Some(hook)` lets an informed consumer narrow an external
+    /// change to the specific pages it backs — see
+    /// [`ExternalInvalidationHook`] for the `Some`/`None` semantics. The
+    /// hook only ever narrows the page set; the SSR host reload still
+    /// fires for every external change.
+    pub external_invalidation: Option<ExternalInvalidationHook>,
+}
+
+impl std::fmt::Debug for OrchestratorConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrchestratorConfig")
+            .field("project_root", &self.project_root)
+            .field("watch_roots", &self.watch_roots)
+            .field("extra_watch_paths", &self.extra_watch_paths)
+            .field("policy", &self.policy)
+            .field("debounce", &self.debounce)
+            .field(
+                "external_invalidation",
+                &self.external_invalidation.as_ref().map(|_| "<hook>"),
+            )
+            .finish()
+    }
 }
 
 impl OrchestratorConfig {
     /// Convenience: build a config from `(project_root, watch_roots)`
-    /// with the default policy and debounce, and no extra watch paths.
+    /// with the default policy and debounce, no extra watch paths, and
+    /// no external-invalidation hook.
     pub fn new(project_root: impl Into<PathBuf>, watch_roots: Vec<PathBuf>) -> Self {
         Self {
             project_root: project_root.into(),
@@ -153,6 +222,7 @@ impl OrchestratorConfig {
             extra_watch_paths: Vec::new(),
             policy: GranularityPolicy::default(),
             debounce: None,
+            external_invalidation: None,
         }
     }
 
@@ -172,6 +242,14 @@ impl OrchestratorConfig {
     /// expected to be absolute and already canonicalised by the caller.
     pub fn with_extra_watch_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.extra_watch_paths = paths;
+        self
+    }
+
+    /// Set the opt-in external-change narrowing hook (chainable, issue
+    /// #1038). See [`ExternalInvalidationHook`]. Without this, external
+    /// changes keep the conservative `PageSelection::All` default.
+    pub fn with_external_invalidation(mut self, hook: ExternalInvalidationHook) -> Self {
+        self.external_invalidation = Some(hook);
         self
     }
 }
@@ -326,11 +404,26 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // `extraWatchPaths` channel (issue #368). The user
                     // opted in to watching that path; the graph has no
                     // edges for it so consulting `dirty_pages` is a
-                    // no-op. Trigger a conservative `PageSelection::All`
-                    // rebuild so edits to e.g. `logo.png` or
-                    // `schema.graphql` under an extra watch root
-                    // actually re-render. Deep-review fix (PR #376).
-                    plan.mark_pages(PageSelection::All);
+                    // no-op. The conservative default is a
+                    // `PageSelection::All` rebuild so edits to e.g.
+                    // `logo.png` or `schema.graphql` under an extra watch
+                    // root actually re-render. Deep-review fix (PR #376).
+                    //
+                    // Opt-in narrowing (issue #1038): if the consumer
+                    // configured an `external_invalidation` hook and it
+                    // maps this path to a specific page set, narrow to
+                    // that subset instead of rebuilding everything. A
+                    // `None` verdict (or no hook) keeps the conservative
+                    // `All`. Either way the SSR host reload still fires —
+                    // the hook narrows the page set, never the reload.
+                    let selection = self
+                        .config
+                        .external_invalidation
+                        .as_ref()
+                        .and_then(|hook| hook(&path))
+                        .map(|pages| PageSelection::Specific(pages.into_iter().collect()))
+                        .unwrap_or(PageSelection::All);
+                    plan.mark_pages(selection);
                     plan.mark_ssr_reload_needed();
                 }
             }
@@ -965,6 +1058,103 @@ mod tests {
         let orch = make_orch(CountingPipeline::default());
         let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/Makefile")]);
         assert!(plan.pages.is_all());
+    }
+
+    // ── Opt-in external-change narrowing hook (issue #1038) ─────────────
+
+    /// Build an orchestrator whose config carries the given
+    /// `external_invalidation` hook.
+    fn make_orch_with_external_hook<P: AssetPipeline>(
+        pipeline: P,
+        hook: ExternalInvalidationHook,
+    ) -> BuildOrchestrator<P> {
+        BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            )
+            .with_external_invalidation(hook),
+            make_graph(),
+            pipeline,
+        )
+    }
+
+    /// When the hook maps an external path to a specific page set, the
+    /// plan narrows to exactly that subset instead of the conservative
+    /// `PageSelection::All`. The SSR host reload still fires.
+    #[test]
+    fn external_hook_some_narrows_to_specific_pages() {
+        let hook: ExternalInvalidationHook =
+            Arc::new(|_path: &Path| Some(vec![pid("/proj/pages/a.tsx")]));
+        let orch = make_orch_with_external_hook(CountingPipeline::default(), hook);
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/assets/logo.png")]);
+        match &plan.pages {
+            PageSelection::Specific(s) => {
+                assert_eq!(*s, BTreeSet::from([pid("/proj/pages/a.tsx")]));
+            }
+            other => unreachable!("expected PageSelection::Specific, got {other:?}"),
+        }
+        // Narrowing must NOT suppress the SSR reload — only the page set
+        // is narrowed, the host reload always fires for an external change.
+        assert!(plan.ssr_reload_needed);
+    }
+
+    /// An empty `Some(vec![])` verdict narrows to "no pages" — the
+    /// consumer asserts this external change is not page-renderable. The
+    /// SSR reload still fires (it is never gated by the hook).
+    #[test]
+    fn external_hook_some_empty_narrows_to_no_pages() {
+        let hook: ExternalInvalidationHook = Arc::new(|_path: &Path| Some(vec![]));
+        let orch = make_orch_with_external_hook(CountingPipeline::default(), hook);
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/assets/logo.png")]);
+        assert!(plan.pages.is_empty());
+        assert!(!plan.pages.is_all());
+        assert!(plan.ssr_reload_needed);
+    }
+
+    /// When the hook returns `None` (cannot map this path), the plan
+    /// falls back to the conservative `PageSelection::All` default.
+    #[test]
+    fn external_hook_none_falls_back_to_full_rebuild() {
+        let hook: ExternalInvalidationHook = Arc::new(|_path: &Path| None);
+        let orch = make_orch_with_external_hook(CountingPipeline::default(), hook);
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/assets/logo.png")]);
+        assert!(
+            plan.pages.is_all(),
+            "a None hook verdict must keep the conservative All default; got {:?}",
+            plan.pages,
+        );
+        assert!(plan.ssr_reload_needed);
+    }
+
+    /// The hook receives the actual changed path so it can map it. Two
+    /// different external paths can narrow to different page subsets.
+    #[test]
+    fn external_hook_receives_changed_path() {
+        let hook: ExternalInvalidationHook = Arc::new(|path: &Path| {
+            if path.ends_with("a.skill") {
+                Some(vec![pid("/proj/pages/a.tsx")])
+            } else {
+                Some(vec![pid("/proj/pages/b.tsx")])
+            }
+        });
+        let orch = make_orch_with_external_hook(CountingPipeline::default(), hook);
+
+        let plan_a = orch.plan_for_changes(vec![PathBuf::from("/srv/skills/a.skill")]);
+        match &plan_a.pages {
+            PageSelection::Specific(s) => {
+                assert_eq!(*s, BTreeSet::from([pid("/proj/pages/a.tsx")]));
+            }
+            other => unreachable!("expected Specific, got {other:?}"),
+        }
+
+        let plan_b = orch.plan_for_changes(vec![PathBuf::from("/srv/skills/b.skill")]);
+        match &plan_b.pages {
+            PageSelection::Specific(s) => {
+                assert_eq!(*s, BTreeSet::from([pid("/proj/pages/b.tsx")]));
+            }
+            other => unreachable!("expected Specific, got {other:?}"),
+        }
     }
 
     // ── Content-narrowing hint production (issue #958, §3) ──────────────
