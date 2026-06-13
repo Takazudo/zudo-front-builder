@@ -9,7 +9,9 @@
 //!   [`mode`](ServerBuilder::mode), [`bind`](ServerBuilder::bind),
 //!   [`with_request_extension`](ServerBuilder::with_request_extension),
 //!   [`with_ssr_handler`](ServerBuilder::with_ssr_handler),
-//!   [`build`](ServerBuilder::build).
+//!   [`build`](ServerBuilder::build). The optional
+//!   [`with_page_cache`](ServerBuilder::with_page_cache) escape hatch
+//!   (live-content seam) is budget-excluded — see below.
 //! - [`Server`] terminals: [`serve`](Server::serve) (async, run-to-
 //!   completion) and [`serve_in_thread`](Server::serve_in_thread)
 //!   (spawn on a dedicated OS thread, return a handle non-blockingly).
@@ -21,11 +23,14 @@
 //!
 //! Per the research at `research/346-embed-as-library-api.md` §3.2 the
 //! combined method count on `Server` + `ServerBuilder` must stay
-//! ≤ 10. This module ships 9 — `Server::builder`, `Server::serve`,
-//! `Server::serve_in_thread`, plus six builder methods
-//! (`config_path`, `mode`, `bind`, `with_request_extension`,
-//! `with_ssr_handler`, `build`). `ServerHandle`'s methods are
-//! deliberately on a different type and are excluded from the budget.
+//! ≤ 10. This module ships 9 counting toward the budget —
+//! `Server::builder`, `Server::serve`, `Server::serve_in_thread`, plus
+//! six builder methods (`config_path`, `mode`, `bind`,
+//! `with_request_extension`, `with_ssr_handler`, `build`).
+//! `ServerHandle`'s methods are deliberately on a different type and
+//! are excluded from the budget. `with_page_cache` is the live-content
+//! escape hatch and is likewise budget-excluded by design (§3.2:
+//! "optional, not counted toward the ≤ 10 method budget").
 //!
 //! ## Threading: `serve_in_thread`
 //!
@@ -331,6 +336,7 @@ pub struct ServerBuilder {
     config_path: Option<PathBuf>,
     request_extensions: Vec<RequestExtensionInjector>,
     handlers: Vec<EmbedHandler>,
+    page_cache: Option<PageCache>,
 }
 
 impl ServerBuilder {
@@ -341,6 +347,7 @@ impl ServerBuilder {
             config_path: None,
             request_extensions: Vec::new(),
             handlers: Vec::new(),
+            page_cache: None,
         }
     }
 
@@ -349,11 +356,14 @@ impl ServerBuilder {
     /// `trailingSlash`. The config file's parent directory becomes the
     /// server's `project_root`.
     ///
-    /// Currently `.json` is supported directly; `.ts` returns a clear
-    /// error pointing the caller at the `zfb` CLI for TS-config
-    /// support (the in-process V8 + esbuild evaluator lives in the bin
-    /// crate and is not yet hoisted into a shareable place). This
-    /// restriction will be lifted in a follow-up.
+    /// Both `.json` and `.ts` are supported. A `.ts` config is evaluated
+    /// the same way the `zfb` CLI does it (issue #1037) — via the
+    /// in-process V8 + esbuild evaluator on default builds, or the `node`
+    /// subprocess on slim builds — through the shared `zfb-config-loader`
+    /// crate. The evaluation is async; [`build`](Self::build) drives it to
+    /// completion on a dedicated thread so the synchronous builder API is
+    /// preserved (and works whether or not the caller is inside a tokio
+    /// runtime).
     pub fn config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.config_path = Some(path.as_ref().to_path_buf());
         self
@@ -453,6 +463,26 @@ impl ServerBuilder {
         self
     }
 
+    /// Supply a [`PageCache`] the server should serve from instead of
+    /// the empty one [`build`](Self::build) allocates by default.
+    ///
+    /// The page cache is `Clone` (it wraps an `Arc<RwLock<…>>`), so an
+    /// embedder can keep a handle of its own, hand a clone here, and
+    /// then drive the server's content at runtime by calling
+    /// [`PageCache::insert`] / [`PageCache::replace_all`] /
+    /// [`PageCache::remove`] from a file-watcher callback or a rebuild
+    /// loop — the running server reads the same shared map. This is the
+    /// builder-level entry point for the live-content scenarios that
+    /// otherwise require dropping to [`crate::serve_with_listener`] with
+    /// a hand-built [`crate::ServeOpts`].
+    ///
+    /// Calling this more than once keeps the last cache. When never
+    /// called, [`build`](Self::build) allocates a fresh empty cache.
+    pub fn with_page_cache(mut self, cache: PageCache) -> Self {
+        self.page_cache = Some(cache);
+        self
+    }
+
     /// Finalise the builder into a [`Server`]. Reads
     /// [`config_path`](Self::config_path) if set.
     ///
@@ -460,9 +490,10 @@ impl ServerBuilder {
     ///
     /// - `config_path` was not called (no way to resolve `dist_root`
     ///   / `public_root`),
-    /// - `config_path` is set but the file does not exist or fails to
-    ///   parse (JSON only in this milestone; `.ts` is not yet loadable
-    ///   from this crate).
+    /// - `config_path` is set but the file does not exist, has an
+    ///   unsupported extension, or fails to parse / evaluate (both
+    ///   `.json` and `.ts` are supported — see
+    ///   [`config_path`](Self::config_path)).
     pub fn build(self) -> anyhow::Result<Server> {
         let config_path = self.config_path.ok_or_else(|| {
             anyhow!(
@@ -475,7 +506,7 @@ impl ServerBuilder {
             load_embed_config(&config_path)?;
 
         let bind = self.bind.unwrap_or(DEFAULT_BIND);
-        let pages = PageCache::new();
+        let pages = self.page_cache.unwrap_or_default();
         let (broadcast, _rx) = tokio::sync::broadcast::channel::<ReloadEvent>(64);
 
         let embed_handlers = if self.handlers.is_empty() {
@@ -582,16 +613,16 @@ impl ServerHandle {
     }
 }
 
-// --- config_path JSON loader -------------------------------------------------
+// --- config_path loader -------------------------------------------------
 //
 // Loads just the four fields the embedded server cares about from the
-// project's `zfb.config.json`. The embed API's `config_path` only supports
-// JSON in this milestone; TS config evaluation (via the in-process V8 +
-// esbuild pipeline) lives in the `zfb` bin crate and is not yet hoisted
-// into a shareable place. The error message surfaces the missing TS
-// support clearly so callers know where to look.
+// project's `zfb.config.{json,ts}`. JSON is read + parsed directly; TS is
+// evaluated via the shared `zfb-config-loader` crate (issue #1037) — the
+// same esbuild + V8 / node evaluator the `zfb` CLI uses — so an embedder can
+// point the builder at an existing `zfb.config.ts` without maintaining a
+// parallel hand-synced `zfb.config.json`.
 
-/// Minimal mirror of the embed-relevant subset of `zfb.config.json`.
+/// Minimal mirror of the embed-relevant subset of `zfb.config.{json,ts}`.
 /// Field names match the canonical TS shape (`#[serde(rename_all =
 /// "camelCase")]`) so callers can author one config file that works
 /// for both `zfb dev` and the embed API.
@@ -639,27 +670,23 @@ fn load_embed_config(
         .and_then(|e| e.to_str())
         .unwrap_or("");
 
-    if ext == "ts" {
-        return Err(anyhow!(
-            "ServerBuilder::config_path: `.ts` configs are not yet \
-             loadable from `zfb-server`'s embed API in this milestone. \
-             Convert to `zfb.config.json`, or use the `zfb` CLI which \
-             ships the in-process V8 + esbuild TS loader. (Sub-task 3.1a / #370.)"
-        ));
-    }
-    if ext != "json" {
-        return Err(anyhow!(
-            "ServerBuilder::config_path: unsupported extension `{}` on {}. \
-             Expected `.json` (or `.ts`, which is not yet supported here).",
-            ext,
-            config_path.display()
-        ));
-    }
-
-    let text = std::fs::read_to_string(config_path)
-        .with_context(|| format!("could not read {}", config_path.display()))?;
-    let cfg: EmbedConfig = serde_json::from_str(&text)
-        .with_context(|| format!("could not parse {} as JSON", config_path.display()))?;
+    let cfg: EmbedConfig = match ext {
+        "json" => {
+            let text = std::fs::read_to_string(config_path)
+                .with_context(|| format!("could not read {}", config_path.display()))?;
+            serde_json::from_str(&text)
+                .with_context(|| format!("could not parse {} as JSON", config_path.display()))?
+        }
+        "ts" => load_embed_config_from_ts(config_path)?,
+        other => {
+            return Err(anyhow!(
+                "ServerBuilder::config_path: unsupported extension `{}` on {}. \
+                 Expected `.json` or `.ts`.",
+                other,
+                config_path.display()
+            ));
+        }
+    };
 
     let project_root = config_path
         .parent()
@@ -687,6 +714,63 @@ fn load_embed_config(
     ))
 }
 
+/// Evaluate a `zfb.config.ts` via the shared `zfb-config-loader` crate and
+/// deserialise its `default` export into the embed-relevant [`EmbedConfig`]
+/// subset (issue #1037).
+///
+/// The evaluator is async (it spawns esbuild and, on slim builds, `node`),
+/// but [`ServerBuilder::build`] is synchronous. We run the load on a
+/// dedicated OS thread that owns a `current_thread` tokio runtime — the same
+/// pattern [`Server::serve_in_thread`] uses — so this works whether or not
+/// the caller is already inside a tokio runtime (a bare `Runtime::block_on`
+/// from within a runtime would panic). The project root passed to the
+/// evaluator is the config file's parent directory.
+///
+/// The config path is canonicalised to an absolute path first. The loader
+/// runs esbuild with `current_dir(project_root)` and passes `ts_path` as the
+/// entry, so a relative `config_path` (e.g. `"site/zfb.config.ts"`, or a bare
+/// `"zfb.config.ts"` whose `parent()` is the empty path) would otherwise make
+/// esbuild `chdir` to the wrong place or double-join the directory segment.
+fn load_embed_config_from_ts(config_path: &Path) -> anyhow::Result<EmbedConfig> {
+    let ts_path = config_path
+        .canonicalize()
+        .with_context(|| format!("could not resolve {}", config_path.display()))?;
+    let project_root = ts_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let loaded = thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("failed to build tokio runtime for TS config evaluation")?;
+                rt.block_on(zfb_config_loader::load_from_ts_file(
+                    &ts_path,
+                    &project_root,
+                    // The embed builder consumes only the 4 scalar
+                    // `EmbedConfig` fields and never loads plugins. Skip
+                    // plugin resolution so a packaged app whose
+                    // `zfb.config.ts` lists CLI-only plugins (absent from the
+                    // embed deployment) still loads — matching the `.json`
+                    // embed path, which ignores plugins entirely (issue #1037).
+                    &zfb_config_loader::LoadOptions {
+                        resolve_plugins: false,
+                        ..Default::default()
+                    },
+                ))
+            })
+            .join()
+            .map_err(|_| anyhow!("TS config evaluation thread panicked"))?
+    })
+    .with_context(|| format!("evaluating {}", config_path.display()))?;
+
+    serde_json::from_value(loaded.config)
+        .with_context(|| format!("could not parse {} as a zfb config", config_path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,18 +791,38 @@ mod tests {
         assert!(msg.contains("file not found"), "got: {msg}");
     }
 
+    /// `.ts` configs are no longer rejected at the extension check (issue
+    /// #1037 hoisted the TS evaluator into `zfb-config-loader`). The
+    /// extension branch now routes to evaluation rather than returning the
+    /// old "not yet loadable from `zfb-server`'s embed API" hard error.
+    ///
+    /// This test does NOT assert a successful load: actually evaluating the
+    /// `.ts` needs esbuild (default builds also need the in-process V8
+    /// isolate), neither of which is staged in this crate's unit-test env —
+    /// `zfb-server` ships no `EMBEDDED_VENDOR` snapshot, by design. The
+    /// successful-evaluation path is covered by `zfb`'s `config.rs` V8 tests
+    /// (run in CI with `embed_v8`). Here we only prove the hard-error branch
+    /// is gone: whatever error surfaces (esbuild-missing in CI, or success on
+    /// a machine with `ZFB_ESBUILD_BIN` set) must NOT be the old milestone
+    /// rejection or the unsupported-extension message.
     #[test]
-    fn config_path_ts_returns_clear_unsupported_error() {
+    fn config_path_ts_no_longer_hard_errors_as_unsupported() {
         let tmp = tempfile::tempdir().unwrap();
         let ts_path = tmp.path().join("zfb.config.ts");
         std::fs::write(&ts_path, "export default {}\n").unwrap();
-        let err = ServerBuilder::new()
-            .config_path(&ts_path)
-            .build()
-            .err()
-            .expect("expected error");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("not yet loadable"), "got: {msg}");
+        let result = ServerBuilder::new().config_path(&ts_path).build();
+        if let Err(err) = result {
+            let msg = format!("{err:#}");
+            assert!(
+                !msg.contains("not yet loadable"),
+                "`.ts` must no longer hard-error as a milestone gap; got: {msg}"
+            );
+            assert!(
+                !msg.contains("unsupported extension"),
+                "`.ts` must be a recognised extension; got: {msg}"
+            );
+        }
+        // Ok(_) (esbuild + evaluator available locally) is also a pass.
     }
 
     #[test]
@@ -749,6 +853,39 @@ mod tests {
         let err = Server::builder().build().err().expect("expected error");
         let msg = format!("{err:#}");
         assert!(msg.contains("missing project source"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn with_page_cache_supplies_caller_cache_to_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let json_path = tmp.path().join("zfb.config.json");
+        std::fs::write(&json_path, r#"{}"#).unwrap();
+
+        // A cache the caller pre-seeds and keeps a handle to.
+        let cache = PageCache::new();
+        cache.insert("/live", "<h1>live</h1>").await;
+
+        let server = Server::builder()
+            .config_path(&json_path)
+            .with_page_cache(cache.clone())
+            .build()
+            .unwrap();
+
+        // The server must serve from the supplied cache, not a fresh
+        // empty one — the pre-seeded entry is visible on the server's
+        // `pages`, and a later write through the caller's handle is too.
+        assert!(server.pages.get("/live").await.is_some());
+        cache.insert("/runtime", "<h1>runtime</h1>").await;
+        assert!(server.pages.get("/runtime").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn build_without_page_cache_allocates_empty_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let json_path = tmp.path().join("zfb.config.json");
+        std::fs::write(&json_path, r#"{}"#).unwrap();
+        let server = Server::builder().config_path(&json_path).build().unwrap();
+        assert!(server.pages.get("/live").await.is_none());
     }
 
     #[test]

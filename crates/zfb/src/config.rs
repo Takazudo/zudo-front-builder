@@ -35,8 +35,12 @@
 //!
 //! **Slim-build fallback** (`--no-default-features` / no `embed_v8`): the
 //! in-process evaluator is compiled out; TS config evaluation falls back to
-//! the `node` subprocess path (`load_ts_via_subprocess`). This path requires
-//! `node` in `PATH` and surfaces a clean error when it is absent.
+//! the `node` subprocess path. This path requires `node` in `PATH` and
+//! surfaces a clean error when it is absent.
+//!
+//! The TS evaluator itself (esbuild bundle + V8 / node) lives in the shared
+//! leaf crate [`zfb_config_loader`] (issue #1037); this module wraps it,
+//! deserialising the evaluated value into the strongly-typed [`Config`].
 //!
 //! All produced configs pass [`validate`] before they are returned so
 //! callers don't have to think about it.
@@ -49,14 +53,11 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 
 // OsString is used by LoadOptions::node_binary (always compiled in).
 use std::ffi::OsString;
-// tokio::process::Command is used on both paths:
-//   - default (embed_v8): esbuild spawn in load_ts_via_inprocess_v8
-//   - slim (no embed_v8): esbuild + node spawns in load_ts_via_subprocess
-use tokio::process::Command;
 
 // Canonical default slot path — defined once in zfb-build, imported here so
-// tests can reference it without repeating the string literal. Only the
-// no-embed_v8 test items use it, so the import is gated the same way.
+// the slim-build node-not-found test can reference it without repeating the
+// string literal. Only the no-embed_v8 test item uses it, so the import is
+// gated the same way.
 #[cfg(all(test, not(feature = "embed_v8")))]
 use zfb_build::DEFAULT_ESBUILD_SLOT;
 
@@ -1290,22 +1291,14 @@ fn default_true() -> bool {
 }
 
 // --- loader ----------------------------------------------------------------
-
-/// JS payload run by `node` to dynamic-import the bundled config and emit
-/// the default export as JSON on stdout. Embedded into the binary so we
-/// don't have to ship a sidecar file at runtime.
-///
-/// Slim-build-only: staged into a tempdir and evaluated by the `node`
-/// subprocess in [`load_ts_via_subprocess`]. Default (embed_v8) builds
-/// evaluate the bundle in-process and do not need this file.
-#[cfg(not(feature = "embed_v8"))]
-const CONFIG_LOADER_MJS: &str = include_str!("../js/config-loader.mjs");
-
-/// Stub for the `zfb/config` (and `@takazudo/zfb/config`) import that user
-/// TS configs reach for. We alias both the unscoped bare form (`zfb/config`)
-/// and the full npm-package form (`@takazudo/zfb/config`) to this stub at
-/// esbuild time so either spelling works without installing the npm package.
-const CONFIG_STUB_MJS: &str = include_str!("../js/zfb-config-stub.mjs");
+//
+// The esbuild + V8 / node TS evaluator was hoisted out of this bin crate into
+// the leaf crate `zfb-config-loader` (issue #1037) so `zfb-server` can call it
+// too without a dependency cycle (`zfb` depends on `zfb-server`, not the
+// reverse). This crate now wraps that loader: it injects the embedded-esbuild
+// extraction getter (which needs the `EMBEDDED_VENDOR` snapshot that lives in
+// `crate::render_pipeline`), then deserialises the evaluated value into the
+// strongly-typed [`Config`] defined above.
 
 /// Knobs that tweak loader behaviour. Public so build/dev/preview can
 /// thread an explicit esbuild override through if they ever need to;
@@ -1313,7 +1306,8 @@ const CONFIG_STUB_MJS: &str = include_str!("../js/zfb-config-stub.mjs");
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
     /// Override the esbuild binary path. `None` falls back to
-    /// `ZFB_ESBUILD_BIN`, then `zfb_build::DEFAULT_ESBUILD_SLOT`.
+    /// `ZFB_ESBUILD_BIN`, then the embedded esbuild snapshot, then
+    /// `zfb_build::DEFAULT_ESBUILD_SLOT`.
     pub esbuild_binary: Option<PathBuf>,
     /// Override the `node` binary. `None` uses `node` from `PATH`.
     pub node_binary: Option<OsString>,
@@ -1323,6 +1317,27 @@ pub struct LoadOptions {
     /// leaves this `None`.
     #[doc(hidden)]
     pub test_default_export_json: Option<String>,
+}
+
+impl LoadOptions {
+    /// Build the [`zfb_config_loader::LoadOptions`] for a real load, wiring in
+    /// the embedded-esbuild extraction getter backed by this crate's
+    /// `EMBEDDED_VENDOR` snapshot. A `cargo install`-ed `zfb` binary has no
+    /// `crates/zfb/binaries/` workspace dir, so this getter is what lets the
+    /// config loader find esbuild without the env var or workspace slot.
+    fn to_loader_options(&self) -> zfb_config_loader::LoadOptions {
+        zfb_config_loader::LoadOptions {
+            esbuild_binary: self.esbuild_binary.clone(),
+            node_binary: self.node_binary.clone(),
+            embedded_esbuild_getter: Some(Box::new(|| {
+                crate::render_pipeline::embedded_binary("esbuild").ok()
+            })),
+            // The CLI loads and runs plugins — always resolve them. Only the
+            // embed API (zfb-server) opts out via `resolve_plugins: false`.
+            resolve_plugins: true,
+            test_default_export_json: self.test_default_export_json.clone(),
+        }
+    }
 }
 
 /// Load and validate a config from `dir`.
@@ -1402,11 +1417,14 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
 ///   hard error pointing at the path the user wrote so the failure is
 ///   self-explanatory.
 /// - Bare specifiers (`@scope/pkg`, `pkg-name`) are resolved via
-///   [`crate::node_resolve::resolve_node_bare_specifier`] using
-///   `oxc_resolver`, which honours conditional exports and parent-directory
-///   walk — the same algorithm Node uses for `import.meta.resolve`. A
-///   package that cannot be found (not yet installed) is a hard error with
-///   a recovery hint rather than a silent skip (issue #211).
+///   [`zfb_config_loader::resolve_node_bare_specifier`] using `oxc_resolver`,
+///   which honours conditional exports and parent-directory walk — the same
+///   algorithm Node uses for `import.meta.resolve`. A package that cannot be
+///   found (not yet installed) is a hard error with a recovery hint rather
+///   than a silent skip (issue #211).
+///
+/// Both the path and bare-specifier resolvers are shared with the TS-load
+/// path via `zfb-config-loader` (issue #1037 / #418).
 ///
 /// Fail-fast: the first unresolvable plugin aborts the whole load — surfacing
 /// every broken entry at once would just delay the same fix (`pnpm install`
@@ -1414,7 +1432,7 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
 fn resolve_json_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
     for entry in cfg.plugins.iter_mut() {
         let name = entry.name.as_str();
-        match resolve_plugin_path_to_file_url(name, dir)? {
+        match zfb_config_loader::resolve_plugin_path_to_file_url(name, dir)? {
             Some(url) => {
                 entry.resolved_module = Some(url);
             }
@@ -1422,7 +1440,7 @@ fn resolve_json_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
                 // Bare specifier — resolve via oxc_resolver (issue #211 fix).
                 // Hard error if the package is not installed so the user gets
                 // a clear signal rather than silent plugin-drop.
-                let file_url = crate::node_resolve::resolve_node_bare_specifier(name, dir)
+                let file_url = zfb_config_loader::resolve_node_bare_specifier(name, dir)
                     .with_context(|| {
                         format!(
                             "plugin {:?}: package not found in node_modules \
@@ -1437,517 +1455,52 @@ fn resolve_json_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a single plugin `name` to a `file://` URL string for the
-/// relative/absolute-path case.
-///
-/// Returns `Ok(Some(url))` for relative (`./`, `../`) or absolute (`/`)
-/// paths, checking that the file actually exists. Returns `Ok(None)` for
-/// bare specifiers — the caller resolves them via
-/// `crate::node_resolve::resolve_node_bare_specifier` (both JSON and TS
-/// paths share the same resolver since #418). Returns `Err` when a
-/// relative/absolute path does not exist on disk.
-fn resolve_plugin_path_to_file_url(name: &str, dir: &Path) -> Result<Option<String>> {
-    let is_relative = name.starts_with("./") || name.starts_with("../");
-    let is_absolute = name.starts_with('/');
-    if is_relative || is_absolute {
-        let raw_path = if is_relative {
-            dir.join(name)
-        } else {
-            PathBuf::from(name)
-        };
-        let canonical = raw_path.canonicalize().with_context(|| {
-            format!(
-                "plugin {:?}: cannot resolve plugin file at {} \
-                 (does the file exist?)",
-                name,
-                raw_path.display()
-            )
-        })?;
-        let url = url::Url::from_file_path(&canonical).map_err(|()| {
-            anyhow!(
-                "plugin {:?}: failed to convert {} to a file:// URL",
-                name,
-                canonical.display()
-            )
-        })?;
-        Ok(Some(url.into()))
-    } else {
-        // Bare specifier — caller handles.
-        Ok(None)
-    }
-}
-
-/// Load a single `zfb.config.ts` file: bundle it with esbuild, evaluate
-/// it (via embedded V8 on default features, via node on slim builds),
-/// parse the JSON envelope (`{ config, plugins }`) the loader emits, and
-/// merge the resolved plugin module specifiers back onto
-/// `Config.plugins[].resolved_module`.
+/// Load a single `zfb.config.ts` file via the shared
+/// [`zfb_config_loader`] crate (issue #1037 hoisted the esbuild + V8 / node
+/// evaluator out of this bin crate so `zfb-server` can call it too without a
+/// dependency cycle), then deserialise the evaluated `default` export into a
+/// strongly-typed [`Config`] and merge the resolved plugin module specifiers
+/// back onto `Config.plugins[].resolved_module`.
 async fn load_from_ts_file(ts_path: &Path, dir: &Path, opts: &LoadOptions) -> Result<Config> {
-    let json = if let Some(canned) = opts.test_default_export_json.as_deref() {
-        canned.to_string()
-    } else {
-        #[cfg(feature = "embed_v8")]
-        {
-            load_ts_via_inprocess_v8(ts_path, dir, opts).await?
-        }
-        #[cfg(not(feature = "embed_v8"))]
-        {
-            load_ts_via_subprocess(ts_path, dir, opts).await?
-        }
-    };
-    parse_loader_envelope(&json, ts_path)
+    let loaded =
+        zfb_config_loader::load_from_ts_file(ts_path, dir, &opts.to_loader_options()).await?;
+    parse_loaded_config(loaded, ts_path)
 }
 
-/// Boxed future returned by an attempt closure passed to [`output_bounded_with`].
-///
-/// The erased `Pin<Box<dyn Future<...>>>` seam avoids the borrow-checker
-/// friction that arises when `FnMut() -> Fut` (with a named `Fut` type
-/// parameter) re-borrows `&mut Command` across loop iterations.
-type AttemptFut = std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-            Output = Result<std::io::Result<std::process::Output>, tokio::time::error::Elapsed>,
-        >,
-    >,
->;
-
-/// Spawn `cmd` and wait for output, bounded by `timeout`.
-///
-/// `Command::output()` reads stdout/stderr pipes to EOF, so any grandchild
-/// that inherits the pipe write-end (e.g. a detached node process) holds the
-/// call forever at low CPU — the same unbounded-output() hang class fixed for
-/// the post-dist vectors in #648 / #651. This helper bounds the wait and kills
-/// the child (via `.kill_on_drop(true)`) when the deadline is exceeded.
-///
-/// The inner `io::Result<Output>` is returned unwrapped so callers can
-/// inspect `io::ErrorKind` (e.g. `NotFound`) on their own code-path; only the
-/// timeout itself becomes the outer `Err`.
-async fn output_bounded(
-    cmd: &mut Command,
-    timeout: std::time::Duration,
-    name: &str,
-) -> Result<std::io::Result<std::process::Output>> {
-    cmd.kill_on_drop(true);
-    output_bounded_with(
-        || Box::pin(tokio::time::timeout(timeout, cmd.output())) as AttemptFut,
-        timeout,
-        name,
-    )
-    .await
-}
-
-/// Private generic helper that owns the ETXTBSY-classify/sleep/retry/exhaustion
-/// logic for [`output_bounded`]. The `attempt` closure produces one
-/// timeout-wrapped spawn attempt; this helper drives the retry loop.
-async fn output_bounded_with<F>(
-    mut attempt: F,
-    timeout: std::time::Duration,
-    name: &str,
-) -> Result<std::io::Result<std::process::Output>>
-where
-    F: FnMut() -> AttemptFut,
-{
-    let mut etxtbsy_attempts = 0u32;
-    loop {
-        match attempt().await {
-            // ETXTBSY ("Text file busy") spawn retry (zfb#1008): the binary
-            // being spawned may have JUST been extracted to a tempfile
-            // (render_pipeline::embedded_binary). If an unrelated thread
-            // forks while the extraction's write fd is briefly open, the
-            // forked child holds that fd until its own execve, and our
-            // execve of the freshly-written file fails with ETXTBSY. The
-            // window is fork-to-exec sized (microseconds) — a short bounded
-            // retry absorbs it. Re-running is side-effect free precisely
-            // because the discriminator guarantees it: `output()` bundles
-            // spawn+wait, but ExecutableFileBusy can only originate from the
-            // execve at spawn time — never from wait_with_output — so a
-            // matching error means the child never ran.
-            Ok(Err(e))
-                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
-                    && etxtbsy_attempts < ETXTBSY_MAX_RETRIES =>
-            {
-                etxtbsy_attempts += 1;
-                tokio::time::sleep(ETXTBSY_RETRY_DELAY * etxtbsy_attempts).await;
-            }
-            Ok(res) => return Ok(res),
-            Err(_) => bail!(
-                "config loader: {} did not exit within {}s — killed",
-                name,
-                timeout.as_secs()
-            ),
-        }
-    }
-}
-
-/// Bounded ETXTBSY spawn retries for [`output_bounded`] (zfb#1008). The race
-/// window is fork-to-exec sized, so a handful of linearly backed-off retries
-/// (10ms, 20ms, …) is far more than enough without delaying genuine failures.
-const ETXTBSY_MAX_RETRIES: u32 = 5;
-const ETXTBSY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
-
-/// Generous backstop timeout for config-loader subprocesses. Mirrors the 300 s
-/// used by `run_capturing` in `zfb-build` (see #648/#651) — a wedge guard, not
-/// a performance bound.
-const CONFIG_SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-
-/// Bundle `ts_path` with esbuild (`--platform=neutral`) and evaluate it
-/// in-process using the embedded V8 isolate. Returns the same
-/// `{ config, plugins: [...resolved-specifiers...] }` envelope JSON that
-/// `load_ts_via_subprocess` returned so `parse_loader_envelope` is
-/// unchanged.
-///
-/// `--platform=neutral` means any `node:*` import becomes a bundle-time
-/// error from esbuild (not a silent external + runtime crash). This is the
-/// explicit data-config contract: `zfb.config.ts` must be self-contained.
-#[cfg(feature = "embed_v8")]
-async fn load_ts_via_inprocess_v8(
+/// Deserialise the evaluated config value into [`Config`] and apply the
+/// resolved plugin module specifiers (one `file://` URL per `plugins[]`
+/// entry, in declaration order).
+fn parse_loaded_config(
+    loaded: zfb_config_loader::LoadedTsConfig,
     ts_path: &Path,
-    dir: &Path,
-    opts: &LoadOptions,
-) -> Result<String> {
-    use zfb_render::ThreadedConfigEvaluator;
+) -> Result<Config> {
+    let zfb_config_loader::LoadedTsConfig {
+        config: value,
+        resolved_plugins: resolved,
+    } = loaded;
 
-    let (_esbuild_embed_guard, esbuild) = resolve_esbuild_binary_with_handle(opts)?;
-
-    let tmp = tempfile::Builder::new()
-        .prefix("zfb-config-")
-        .tempdir()
-        .context("config loader: failed to allocate temp directory")?;
-    let stub_path = tmp.path().join("zfb-config-stub.mjs");
-    let bundle_path = tmp.path().join("zfb-config-bundle.mjs");
-    tokio::fs::write(&stub_path, CONFIG_STUB_MJS)
-        .await
-        .context("config loader: failed to stage zfb-config-stub.mjs")?;
-    // CONFIG_LOADER_MJS is NOT staged here — V8 evaluates the bundle
-    // directly; Sub 5 (#420) will gate the constant itself.
-
-    // Bundle with --platform=neutral so node:* imports are bundle-time
-    // errors rather than silent externals that explode inside V8.
-    // data-config contract: zfb.config.ts must not import Node builtins.
-    let alias_arg = format!("--alias:zfb/config={}", stub_path.display());
-    let alias_scoped_arg = format!("--alias:@takazudo/zfb/config={}", stub_path.display());
-    let outfile_arg = format!("--outfile={}", bundle_path.display());
-    let mut cmd = Command::new(&esbuild);
-    cmd.current_dir(dir);
-    cmd.arg("--bundle");
-    cmd.arg("--format=esm");
-    cmd.arg("--platform=neutral");
-    cmd.arg("--target=esnext");
-    cmd.arg("--log-level=warning");
-    cmd.arg(&alias_arg);
-    cmd.arg(&alias_scoped_arg);
-    cmd.arg(&outfile_arg);
-    cmd.arg(ts_path);
-
-    // Bounded wait — guards against the unbounded-output() hang class (#648/#651).
-    let esbuild_out = output_bounded(&mut cmd, CONFIG_SUBPROCESS_TIMEOUT, "esbuild (neutral)")
-        .await?
-        .with_context(|| {
-            format!(
-                "config loader: failed to spawn esbuild at {}",
-                esbuild.display()
-            )
-        })?;
-    if !esbuild_out.status.success() {
-        let stderr = String::from_utf8_lossy(&esbuild_out.stderr);
-        bail!(
-            "config loader: esbuild failed to bundle {} ({}): {}",
-            ts_path.display(),
-            esbuild_out.status,
-            stderr.trim()
-        );
-    }
-
-    // Read the bundle off disk, then hand off to V8.
-    let bundle_src = tokio::fs::read_to_string(&bundle_path)
-        .await
-        .with_context(|| {
-            format!(
-                "config loader: failed to read esbuild output at {}",
-                bundle_path.display()
-            )
-        })?;
-
-    // Evaluate in a dedicated OS thread so V8 startup doesn't pin a
-    // tokio worker (V8 boot can take hundreds of ms).
-    let raw_value =
-        tokio::task::spawn_blocking(move || ThreadedConfigEvaluator::eval_bundle(&bundle_src))
-            .await
-            .map_err(|e| anyhow!("config eval join error: {e}"))?
-            .map_err(|e| anyhow!("embedded V8 evaluator failed: {e}"))?;
-
-    // raw_value is the user's `default` export as a serde_json::Value.
-    // We need to walk the plugins[] array and resolve each entry's `name`
-    // to a file:// URL, then assemble the envelope parse_loader_envelope
-    // expects: { config: <raw_value>, plugins: [<resolved-url>, ...] }
-
-    // Extract the plugins array from the raw value — resolve each name.
-    let plugins_arr = raw_value
-        .get("plugins")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let mut resolved_plugins: Vec<String> = Vec::with_capacity(plugins_arr.len());
-    for plugin_val in &plugins_arr {
-        let name = plugin_val
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("config loader: plugin entry missing string 'name' field"))?;
-
-        // relative/absolute path → file:// URL; bare specifier → node_resolve.
-        let url = if let Some(file_url) = resolve_plugin_path_to_file_url(name, dir)? {
-            file_url
-        } else {
-            // Bare specifier — resolve via oxc_resolver (in-process).
-            crate::node_resolve::resolve_node_bare_specifier(name, dir)
-                .with_context(|| format!("config loader: resolving plugin {:?}", name))?
-        };
-        resolved_plugins.push(url);
-    }
-
-    // Assemble the envelope parse_loader_envelope expects.
-    let envelope = serde_json::json!({
-        "config": raw_value,
-        "plugins": resolved_plugins,
-    });
-    serde_json::to_string(&envelope).context("config loader: failed to serialise V8 eval envelope")
-}
-
-/// Internal envelope shape produced by the TS config evaluator.
-///
-/// On the default (embed_v8) path the in-process evaluator serialises
-/// `{"config": <user-default-export>, "plugins": [<resolved-module-specifier>,
-/// …]}` to a Rust `String` before returning.  On the slim-build path
-/// `crates/zfb/js/config-loader.mjs` writes the same shape to stdout.
-/// Older callers that supply `test_default_export_json` can still pass
-/// either the envelope shape or a bare config object — the bare-config
-/// branch is kept for backwards-test-compat.
-#[derive(Debug, Deserialize)]
-struct LoaderEnvelope {
-    config: Config,
-    #[serde(default)]
-    plugins: Vec<String>,
-}
-
-fn parse_loader_envelope(json: &str, ts_path: &Path) -> Result<Config> {
-    // Try the envelope shape first.
-    if let Ok(envelope) = serde_json::from_str::<LoaderEnvelope>(json) {
-        let LoaderEnvelope {
-            mut config,
-            plugins: resolved,
-        } = envelope;
-        if !resolved.is_empty() && resolved.len() != config.plugins.len() {
-            bail!(
-                "{}: plugin resolution count mismatch (config has {} plugins, loader resolved {}); \
-                 this indicates a bug in the TS config evaluator",
-                ts_path.display(),
-                config.plugins.len(),
-                resolved.len()
-            );
-        }
-        for (entry, resolved_specifier) in config.plugins.iter_mut().zip(resolved) {
-            entry.resolved_module = Some(resolved_specifier);
-        }
-        return Ok(config);
-    }
-    // Backwards-compat: tests that pre-date Sub 3 supply the bare config
-    // JSON directly via `test_default_export_json`. Accept that shape so
-    // the existing test suite keeps working.
-    let cfg: Config = serde_json::from_str(json).map_err(|e| {
+    let mut config: Config = serde_json::from_value(value.clone()).map_err(|e| {
         anyhow!(
-            "{}: failed to parse the default export as zfb config JSON \
-             (line {}, column {}): {}\n--- received ---\n{}",
+            "{}: failed to parse the default export as zfb config JSON: {}\n--- received ---\n{}",
             ts_path.display(),
-            e.line(),
-            e.column(),
             e,
-            json
+            value
         )
     })?;
-    Ok(cfg)
-}
 
-/// Resolve the esbuild binary path using the shared resolver from
-/// `zfb_build`, which covers the full four-tier lookup order documented on
-/// [`resolve_esbuild_binary_with_handle`].
-///
-/// Returns the resolved path. Most callers should use
-/// [`resolve_esbuild_binary_with_handle`] instead — the embedded tier
-/// returns a [`tempfile::TempDir`] that must be kept alive for the
-/// lifetime of the spawned subprocess. This thin wrapper drops the
-/// handle eagerly and is therefore only safe when the caller is sure the
-/// path it gets back will not be the embedded one (e.g. in tests where
-/// `ZFB_ESBUILD_BIN` is set, or when `crates/zfb/binaries/esbuild/esbuild`
-/// is known to exist).
-#[allow(dead_code)]
-fn resolve_esbuild_binary(opts: &LoadOptions) -> Result<PathBuf> {
-    let (_handle, path) = resolve_esbuild_binary_with_handle(opts)?;
-    Ok(path)
-}
-
-/// Resolve the esbuild binary path, delegating to the shared resolver in
-/// `zfb_build`. Lookup order (superset — see
-/// [`zfb_build::resolve_esbuild_binary_with_env`] for the canonical
-/// documentation):
-///
-/// 1. `LoadOptions::esbuild_binary` explicit override
-/// 2. `ZFB_ESBUILD_BIN` environment variable
-/// 3. Embedded extraction from the `EMBEDDED_VENDOR` snapshot (sub #212 —
-///    the consumer-friendly path: works on a machine that has no
-///    `crates/zfb/binaries/` workspace dir)
-/// 4. The staged slot under `crates/zfb/binaries/esbuild/` (in-workspace
-///    dev fallback)
-///
-/// The caller MUST hold the returned `TempDir` handle alive for as long as
-/// the returned `PathBuf` is referenced by a running subprocess — dropping
-/// the handle removes the tempdir and the binary along with it.
-fn resolve_esbuild_binary_with_handle(
-    opts: &LoadOptions,
-) -> Result<(Option<tempfile::TempDir>, PathBuf)> {
-    // Delegate to the single shared resolver in zfb-build.  The embedded
-    // extraction tier (tier 3) is passed as a closure so zfb-build's resolver
-    // can slot it in between the env tier (2) and the workspace slot tier (4)
-    // without depending on the EMBEDDED_VENDOR snapshot that lives only in this
-    // crate.  A failed extraction (Err) is treated as a miss — the resolver
-    // falls through to the workspace slot tier, which is the expected path
-    // during in-workspace development where no vendor snapshot was staged.
-    zfb_build::resolve_esbuild_binary_with_env(
-        opts.esbuild_binary.as_deref(),
-        |name| std::env::var_os(name),
-        Some(|| crate::render_pipeline::embedded_binary("esbuild").ok()),
-        None,
-    )
-}
-
-/// Run esbuild + node to compile `ts_path` to ESM and pull the default
-/// export back as JSON.
-///
-/// Slim-build fallback: available only when `embed_v8` is disabled so the
-/// node subprocess path is preserved for the slim-build audience.
-#[cfg(not(feature = "embed_v8"))]
-async fn load_ts_via_subprocess(ts_path: &Path, dir: &Path, opts: &LoadOptions) -> Result<String> {
-    // The TempDir handle (when the embedded extraction tier is taken) must
-    // outlive every subprocess spawn below — esbuild and node both reference
-    // the extracted binary path. Drop only happens at function return.
-    let (_esbuild_embed_guard, esbuild) = resolve_esbuild_binary_with_handle(opts)?;
-
-    // Stage the embedded helper scripts and esbuild output into a
-    // tempdir that vanishes at the end of this function.
-    let tmp = tempfile::Builder::new()
-        .prefix("zfb-config-")
-        .tempdir()
-        .context("config loader: failed to allocate temp directory")?;
-    let stub_path = tmp.path().join("zfb-config-stub.mjs");
-    let loader_path = tmp.path().join("config-loader.mjs");
-    let bundle_path = tmp.path().join("zfb-config-bundle.mjs");
-    tokio::fs::write(&stub_path, CONFIG_STUB_MJS)
-        .await
-        .context("config loader: failed to stage zfb-config-stub.mjs")?;
-    tokio::fs::write(&loader_path, CONFIG_LOADER_MJS)
-        .await
-        .context("config loader: failed to stage config-loader.mjs")?;
-
-    // 1. Bundle the user's TS file. Run with `dir` as cwd so any
-    //    relative imports the user wrote (e.g. `./constants`) resolve
-    //    against the project root.
-    //
-    // Alias both the bare `zfb/config` form (the documented convention in
-    // the zfb docs) and the full npm-package form `@takazudo/zfb/config`
-    // (what users naturally write when they know the package is published
-    // as `@takazudo/zfb`). Both spellings must work; the scoped form is
-    // the convention used in real zfb projects (e.g. the standalone demo).
-    let alias_arg = format!("--alias:zfb/config={}", stub_path.display());
-    let alias_scoped_arg = format!("--alias:@takazudo/zfb/config={}", stub_path.display());
-    let outfile_arg = format!("--outfile={}", bundle_path.display());
-    let mut cmd = Command::new(&esbuild);
-    cmd.current_dir(dir);
-    cmd.arg("--bundle");
-    cmd.arg("--format=esm");
-    cmd.arg("--platform=node");
-    cmd.arg("--target=esnext");
-    cmd.arg("--log-level=warning");
-    cmd.arg(&alias_arg);
-    cmd.arg(&alias_scoped_arg);
-    cmd.arg(&outfile_arg);
-    cmd.arg(ts_path);
-
-    // Bounded wait — guards against the unbounded-output() hang class (#648/#651).
-    let esbuild_out = output_bounded(&mut cmd, CONFIG_SUBPROCESS_TIMEOUT, "esbuild (node)")
-        .await?
-        .with_context(|| {
-            format!(
-                "config loader: failed to spawn esbuild at {}",
-                esbuild.display()
-            )
-        })?;
-    if !esbuild_out.status.success() {
-        let stderr = String::from_utf8_lossy(&esbuild_out.stderr);
+    if !resolved.is_empty() && resolved.len() != config.plugins.len() {
         bail!(
-            "config loader: esbuild failed to bundle {} ({}): {}",
+            "{}: plugin resolution count mismatch (config has {} plugins, loader resolved {}); \
+             this indicates a bug in the TS config evaluator",
             ts_path.display(),
-            esbuild_out.status,
-            stderr.trim()
+            config.plugins.len(),
+            resolved.len()
         );
     }
-
-    // 2. Run node against the loader script to print JSON of the default
-    //    export. Same cwd so any runtime resolution that escapes the
-    //    bundle (it shouldn't) still anchors at the project root.
-    let node_bin: OsString = opts
-        .node_binary
-        .clone()
-        .unwrap_or_else(|| OsString::from("node"));
-    let mut node_cmd = Command::new(&node_bin);
-    node_cmd.current_dir(dir);
-    node_cmd.arg(&loader_path);
-    node_cmd.arg(&bundle_path);
-    // Project root — the loader uses this for path-relative plugin
-    // resolution and for bare-specifier `node_modules` lookup.
-    node_cmd.arg(dir);
-
-    // Bounded wait — guards against the unbounded-output() hang class (#648/#651).
-    let node_out = match output_bounded(&mut node_cmd, CONFIG_SUBPROCESS_TIMEOUT, "node").await? {
-        Ok(o) => o,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!(
-                "config loader: `{}` was not found in PATH. zfb requires \
-                 Node.js to load `zfb.config.ts` (and to run esbuild / prettier). \
-                 Install Node.js — https://nodejs.org/ \
-                 — or point zfb at a node binary by setting the `ZFB_NODE_BIN` \
-                 env var on a future zfb release.",
-                node_bin.to_string_lossy()
-            );
-        }
-        Err(e) => {
-            return Err(anyhow::Error::new(e).context(format!(
-                "config loader: failed to spawn `{}`",
-                node_bin.to_string_lossy()
-            )));
-        }
-    };
-    if !node_out.status.success() {
-        let stderr = String::from_utf8_lossy(&node_out.stderr);
-        bail!(
-            "config loader: node failed evaluating {} ({}): {}",
-            ts_path.display(),
-            node_out.status,
-            stderr.trim()
-        );
+    for (entry, resolved_specifier) in config.plugins.iter_mut().zip(resolved) {
+        entry.resolved_module = Some(resolved_specifier);
     }
-
-    let stdout = String::from_utf8(node_out.stdout).map_err(|e| {
-        // Echo the lossy form so the operator can see what node actually
-        // emitted — much more useful than a bare "not valid UTF-8".
-        let bytes = e.as_bytes();
-        anyhow!(
-            "config loader: node stdout for {} was not valid UTF-8 ({} bytes): {}",
-            ts_path.display(),
-            bytes.len(),
-            String::from_utf8_lossy(bytes)
-        )
-    })?;
-    Ok(stdout)
+    Ok(config)
 }
 
 /// Validate a loaded [`Config`] against the project root `dir`.
@@ -3165,6 +2718,10 @@ mod tests {
     /// build time). The returned path must exist and the function must
     /// hand back a TempDir handle so the caller can keep the extracted
     /// binary alive for the lifetime of the spawned subprocess.
+    ///
+    /// Exercises the `zfb`-side integration: `LoadOptions::to_loader_options`
+    /// wires the `EMBEDDED_VENDOR`-backed getter into the shared resolver in
+    /// `zfb-config-loader` (issue #1037).
     #[test]
     fn resolve_esbuild_binary_picks_embedded_path_without_env_or_explicit() {
         // Defensive: if a parent process has set ZFB_ESBUILD_BIN, this
@@ -3180,8 +2737,8 @@ mod tests {
             );
             return;
         }
-        let opts = LoadOptions::default();
-        let (handle, path) = resolve_esbuild_binary_with_handle(&opts)
+        let loader_opts = LoadOptions::default().to_loader_options();
+        let (handle, path) = zfb_config_loader::resolve_esbuild_binary_with_handle(&loader_opts)
             .expect("embedded extraction should succeed for esbuild");
         assert!(
             path.exists(),
@@ -4405,156 +3962,5 @@ mod tests {
         let def = into_directive_def("my-block", &spec);
         assert_eq!(def.kind, DirectiveKind::Container);
         assert!(def.title_from_label); // default true
-    }
-
-    // --- output_bounded tests ---------------------------------------------------
-
-    /// Verify that `output_bounded` returns a named timeout error promptly when
-    /// the spawned child keeps stdout open (via a backgrounded grandchild), which
-    /// would hang `Command::output()` indefinitely.
-    ///
-    /// Mirrors the intent of `run_capturing_returns_promptly_when_grandchild_holds_pipe_open`
-    /// in `crates/zfb-build/src/adapter.rs` (#648 / #651), adapted to the async path.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn output_bounded_returns_timeout_error_when_grandchild_holds_pipe_open() {
-        let mut cmd = tokio::process::Command::new("sh");
-        // `sleep 30 &` backgrounds a grandchild that inherits the pipe
-        // write-end; without the timeout this would block for 30 s.
-        cmd.arg("-c").arg("sleep 30 & exit 0");
-
-        // Short timeout so the test itself is fast.
-        let timeout = std::time::Duration::from_secs(2);
-
-        // Outer watchdog: if output_bounded itself hangs (regression), the
-        // test times out in 10 s and fails RED rather than hanging CI.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            output_bounded(&mut cmd, timeout, "test-stub"),
-        )
-        .await
-        .expect("output_bounded did not return within 10 s — pipe-EOF hang regression");
-
-        let err = result.expect_err("output_bounded should have returned a timeout error");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("did not exit within"),
-            "error must name the timeout; got: {msg}"
-        );
-        assert!(
-            msg.contains("test-stub"),
-            "error must name the subprocess; got: {msg}"
-        );
-    }
-
-    /// Non-ETXTBSY spawn errors pass straight through the zfb#1008 retry
-    /// loop in `output_bounded` — only `ExecutableFileBusy` is retried, so
-    /// a missing binary surfaces its `NotFound` immediately as the inner
-    /// `io::Result`, preserving the callers' `io::ErrorKind` inspection
-    /// contract.
-    #[tokio::test]
-    async fn output_bounded_passes_through_non_etxtbsy_spawn_errors() {
-        let mut cmd = tokio::process::Command::new("/nonexistent/zfb-output-bounded-test-binary");
-        let result = output_bounded(&mut cmd, std::time::Duration::from_secs(5), "missing-bin")
-            .await
-            .expect("spawn failure is the inner io::Result, not the timeout Err");
-        let err = result.expect_err("spawning a nonexistent binary must fail");
-        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
-    }
-
-    // --- output_bounded_with injectable-seam tests --------------------------------
-
-    /// Helper: build the `Pin<Box<dyn Future<...>>>` type alias expected by
-    /// `output_bounded_with` from a pre-resolved `io::Result<Output>`.
-    ///
-    /// `#[cfg(unix)]` because `ExitStatusExt::from_raw` is Unix-only.
-    #[cfg(unix)]
-    fn make_attempt(result: std::io::Result<std::process::Output>) -> AttemptFut {
-        Box::pin(std::future::ready(Ok(result)))
-    }
-
-    /// `output_bounded_with` retries `ExecutableFileBusy` errors and
-    /// succeeds on the third attempt. Virtual time (`start_paused`) keeps
-    /// the linear-backoff sleeps instant.
-    #[cfg(unix)]
-    #[tokio::test(start_paused = true)]
-    async fn output_bounded_with_retries_etxtbsy_then_succeeds() {
-        use std::os::unix::process::ExitStatusExt as _;
-
-        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let counter_clone = counter.clone();
-
-        // Attempt returns ETXTBSY twice, then succeeds.
-        let attempt = move || {
-            let n = counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let result: std::io::Result<std::process::Output> = if n < 2 {
-                Err(std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy))
-            } else {
-                Ok(std::process::Output {
-                    status: std::process::ExitStatus::from_raw(0),
-                    stdout: vec![],
-                    stderr: vec![],
-                })
-            };
-            make_attempt(result)
-        };
-
-        let result = output_bounded_with(
-            attempt,
-            std::time::Duration::from_secs(300),
-            "test-retry-succeed",
-        )
-        .await
-        .expect("should succeed after retries");
-
-        assert!(result.is_ok(), "inner result should be Ok on success");
-        assert_eq!(
-            counter.load(std::sync::atomic::Ordering::SeqCst),
-            3,
-            "expected exactly 3 attempts (2 ETXTBSY + 1 success)"
-        );
-    }
-
-    /// `output_bounded_with` exhausts all ETXTBSY retries and surfaces the
-    /// `ExecutableFileBusy` error as the inner `io::Result`. Virtual time keeps
-    /// the linear-backoff sleeps instant.
-    ///
-    /// Total attempts = `ETXTBSY_MAX_RETRIES + 1` = 6:
-    /// one initial attempt plus up to 5 retries (guard: `etxtbsy_attempts < 5`).
-    #[cfg(unix)]
-    #[tokio::test(start_paused = true)]
-    async fn output_bounded_with_exhausts_retries_and_surfaces_etxtbsy() {
-        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let counter_clone = counter.clone();
-
-        let attempt = move || {
-            counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            make_attempt(Err(std::io::Error::from(
-                std::io::ErrorKind::ExecutableFileBusy,
-            )))
-        };
-
-        let result = output_bounded_with(
-            attempt,
-            std::time::Duration::from_secs(300),
-            "test-exhaustion",
-        )
-        .await
-        .expect("exhausted retries should surface as inner Err, not outer bail");
-
-        let err = result.expect_err("should be Err after exhaustion");
-        assert_eq!(
-            err.kind(),
-            std::io::ErrorKind::ExecutableFileBusy,
-            "exhausted error must be ExecutableFileBusy"
-        );
-        // Verify the actual loop contract: 1 initial + ETXTBSY_MAX_RETRIES retries.
-        assert_eq!(
-            counter.load(std::sync::atomic::Ordering::SeqCst),
-            ETXTBSY_MAX_RETRIES + 1,
-            "expected {} total attempts (1 initial + {} retries)",
-            ETXTBSY_MAX_RETRIES + 1,
-            ETXTBSY_MAX_RETRIES,
-        );
     }
 }

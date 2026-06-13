@@ -75,7 +75,10 @@ pub use head_inject::{
     css_link_tag, inject_prod_head_assets, island_module_script_tag, needs_html5_doctype,
     ProdHeadAssets, HTML5_DOCTYPE_PREFIX,
 };
-pub use orchestrator::{BuildOrchestrator, DiscoveryHook, DiscoveryOutcome, OrchestratorConfig};
+pub use orchestrator::{
+    BuildOrchestrator, DiscoveryHook, DiscoveryOutcome, ExternalInvalidationHook,
+    OrchestratorConfig,
+};
 pub use pipeline::{
     apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitter, AssetEmitterPayload,
     AssetKind, AssetPipeline, BuildContext, BuildMode, BuildOutcome, ClientScriptsRunner,

@@ -5545,7 +5545,6 @@ dependencies = [
  "local-ip-address",
  "lol_html",
  "owo-colors",
- "oxc_resolver",
  "reqwest",
  "serde",
  "serde_json",
@@ -5558,6 +5557,7 @@ dependencies = [
  "url",
  "walkdir",
  "zfb-build",
+ "zfb-config-loader",
  "zfb-content",
  "zfb-css",
  "zfb-diagnostics",
@@ -5605,6 +5605,21 @@ dependencies = [
  "zfb-test-utils",
  "zfb-types",
  "zfb-watcher",
+]
+
+[[package]]
+name = "zfb-config-loader"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "oxc_resolver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
+ "zfb-build",
+ "zfb-render",
 ]
 
 [[package]]
@@ -5783,6 +5798,7 @@ dependencies = [
  "tower-service",
  "tracing",
  "zfb-build",
+ "zfb-config-loader",
  "zfb-graph",
  "zfb-islands",
  "zfb-test-utils",

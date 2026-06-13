@@ -1,9 +1,9 @@
 //! Node ESM bare-specifier resolver backed by `oxc_resolver`.
 //!
 //! Replaces the `createRequire(...).resolve(name)` / `import.meta.resolve`
-//! logic in `crates/zfb/js/config-loader.mjs:53-78` with a pure-Rust
-//! implementation that honours conditional exports, scoped packages, and
-//! parent-directory walk — the full Node module-resolution algorithm.
+//! logic in `js/config-loader.mjs:53-78` with a pure-Rust implementation that
+//! honours conditional exports, scoped packages, and parent-directory walk —
+//! the full Node module-resolution algorithm.
 //!
 //! # Why `oxc_resolver`
 //!
@@ -13,8 +13,10 @@
 //! `oxc_resolver` (from the Oxc project, used by Rspack) handles the full
 //! Node ESM exports algorithm correctly — issue #416 / epic #414.
 //!
-//! The helper lives in `crates/zfb` (V8-free) and is consumed only by
-//! `zfb::config`. It is NOT part of `crates/zfb-render`.
+//! The helper lives in `crates/zfb-config-loader` (V8-free) and is consumed
+//! by this crate's TS-config loader as well as `zfb::config`'s JSON-path
+//! plugin resolver (via the crate's re-export). It is NOT part of
+//! `crates/zfb-render`.
 
 use std::path::Path;
 

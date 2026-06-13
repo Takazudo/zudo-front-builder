@@ -11,7 +11,7 @@
 //
 // Usage:
 //
-//     node config-loader.mjs <bundle-path> <project-root>
+//     node config-loader.mjs <bundle-path> <project-root> [--no-resolve-plugins]
 //
 // Behaviour:
 //
@@ -25,6 +25,10 @@
 //      - `/` — treated as an absolute filesystem path verbatim.
 //      - everything else — resolved as a Node bare-specifier via
 //        `import.meta.resolve(name, projectRootDirURL)`.
+//    When `--no-resolve-plugins` is passed, this step is skipped entirely
+//    and the emitted `plugins` array is empty — embed callers read only
+//    the scalar config fields and a missing plugin package must not fail
+//    the load (mirrors `LoadOptions::resolve_plugins = false`).
 // 4. Writes a JSON envelope `{ "config": <default>, "plugins": [...] }`
 //    to stdout (single line, no trailing newline). The Rust caller
 //    pipes this into `serde_json::from_str` against an envelope type
@@ -42,6 +46,7 @@ const { argv, exit, stdout, stderr } = process;
 
 const bundlePath = argv[2];
 const projectRoot = argv[3];
+const resolvePlugins = !argv.slice(4).includes("--no-resolve-plugins");
 if (!bundlePath || !projectRoot) {
   stderr.write("[zfb-config-loader] missing bundle-path or project-root argument\n");
   exit(2);
@@ -102,12 +107,14 @@ try {
   // names (names need not be unique on the loader side — uniqueness is
   // a build-time concern on the Rust side if we ever want to enforce it).
   const inputPlugins = Array.isArray(cfg.plugins) ? cfg.plugins : [];
-  const resolvedPlugins = inputPlugins.map((p, i) => {
-    if (p === null || typeof p !== "object") {
-      throw new Error(`plugins[${i}] must be an object with a "name" field (got ${typeof p})`);
-    }
-    return resolvePluginName(p.name);
-  });
+  const resolvedPlugins = resolvePlugins
+    ? inputPlugins.map((p, i) => {
+        if (p === null || typeof p !== "object") {
+          throw new Error(`plugins[${i}] must be an object with a "name" field (got ${typeof p})`);
+        }
+        return resolvePluginName(p.name);
+      })
+    : [];
 
   // JSON serialization drops `undefined` and any function values. The
   // Rust `Config` schema is plain data only, so this is the right shape.
