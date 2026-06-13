@@ -51,8 +51,7 @@ const CONFIG_STUB_MJS: &str = include_str!("../js/zfb-config-stub.mjs");
 pub type EmbeddedEsbuildGetter = Box<dyn Fn() -> Option<(tempfile::TempDir, PathBuf)>>;
 
 /// Knobs that tweak loader behaviour. `Default` is the production path with
-/// no overrides.
-#[derive(Default)]
+/// no overrides (plugins ARE resolved — the CLI / `zfb` bin relies on it).
 pub struct LoadOptions {
     /// Override the esbuild binary path. `None` falls back to
     /// `ZFB_ESBUILD_BIN`, then the embedded getter (if any), then
@@ -63,12 +62,38 @@ pub struct LoadOptions {
     /// Optional embedded-esbuild extraction tier (see
     /// [`EmbeddedEsbuildGetter`]). `None` skips the tier.
     pub embedded_esbuild_getter: Option<EmbeddedEsbuildGetter>,
+    /// Resolve each `config.plugins[]` entry to a `file://` URL before
+    /// returning. Defaults to `true` — the CLI / `zfb` bin path needs the
+    /// resolved specifiers to load plugins, and must not change.
+    ///
+    /// Set to `false` for consumers that only read the scalar config fields
+    /// and never load plugins (e.g. `zfb-server`'s embed API): a packaged
+    /// app shipping a `zfb.config.ts` that lists CLI-only plugins whose
+    /// package is absent from the deployment would otherwise FAIL at plugin
+    /// resolution, even though the equivalent `.json` embed path ignores
+    /// those entries and succeeds. When `false`, resolution is skipped
+    /// entirely and `resolved_plugins` comes back empty.
+    pub resolve_plugins: bool,
     /// Test-only escape hatch: when `Some`, skip the esbuild + node
     /// subprocesses entirely and treat this string as the JSON form
     /// of the loader envelope (or a bare `default` export object) from
     /// the user's `zfb.config.ts`. Production code leaves this `None`.
     #[doc(hidden)]
     pub test_default_export_json: Option<String>,
+}
+
+impl Default for LoadOptions {
+    fn default() -> Self {
+        Self {
+            esbuild_binary: None,
+            node_binary: None,
+            embedded_esbuild_getter: None,
+            // Production / CLI default: resolve plugins. Embed callers
+            // opt out explicitly with `resolve_plugins: false`.
+            resolve_plugins: true,
+            test_default_export_json: None,
+        }
+    }
 }
 
 /// The result of evaluating a `zfb.config.ts`: the user's `default` export
@@ -296,8 +321,13 @@ async fn load_ts_via_inprocess_v8(
 
     // raw_value is the user's `default` export as a serde_json::Value.
     // Walk the plugins[] array and resolve each entry's `name` to a
-    // file:// URL.
-    let resolved_plugins = resolve_plugins_from_value(&raw_value, dir)?;
+    // file:// URL — unless the caller opted out (embed API: it only reads
+    // the scalar fields and a missing plugin package must not fail the load).
+    let resolved_plugins = if opts.resolve_plugins {
+        resolve_plugins_from_value(&raw_value, dir)?
+    } else {
+        Vec::new()
+    };
 
     Ok(LoadedTsConfig {
         config: raw_value,
@@ -547,6 +577,13 @@ async fn load_ts_via_subprocess(ts_path: &Path, dir: &Path, opts: &LoadOptions) 
     // Project root — the loader uses this for path-relative plugin
     // resolution and for bare-specifier `node_modules` lookup.
     node_cmd.arg(dir);
+    // Opt out of plugin resolution for callers that only read the scalar
+    // fields (embed API): a CLI-only plugin whose package is absent from
+    // the deployment must not fail the load. The loader emits an empty
+    // `plugins` array when this flag is present.
+    if !opts.resolve_plugins {
+        node_cmd.arg("--no-resolve-plugins");
+    }
 
     // Bounded wait — guards against the unbounded-output() hang class (#648/#651).
     let node_out = match output_bounded(&mut node_cmd, CONFIG_SUBPROCESS_TIMEOUT, "node").await? {
@@ -675,6 +712,110 @@ mod tests {
             loaded.config.get("port").and_then(|v| v.as_u64()),
             Some(9999)
         );
+    }
+
+    /// `LoadOptions::default()` MUST resolve plugins — the CLI / `zfb` bin
+    /// path relies on it and must not change. Guards against accidentally
+    /// flipping the default when the embed opt-out was added (issue #1037).
+    #[test]
+    fn load_options_default_resolves_plugins() {
+        assert!(
+            LoadOptions::default().resolve_plugins,
+            "default must keep resolving plugins for the CLI path"
+        );
+    }
+
+    /// Slim-build (`--no-default-features`) regression for the embed opt-out
+    /// (issue #1037): drive the staged `config-loader.mjs` with node directly
+    /// — no esbuild, no V8 — against a config that lists a bare plugin that
+    /// cannot resolve. Without the flag the loader FAILS at resolution; with
+    /// `--no-resolve-plugins` it succeeds and emits an empty `plugins` array,
+    /// which is exactly the embed path's behaviour. The 4 scalar config
+    /// fields survive in the envelope either way.
+    #[cfg(not(feature = "embed_v8"))]
+    #[tokio::test]
+    async fn no_resolve_plugins_flag_skips_unresolvable_plugin() {
+        if Command::new("node")
+            .arg("--version")
+            .output()
+            .await
+            .is_err()
+        {
+            eprintln!("skipping: node not available on PATH");
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let loader_path = tmp.path().join("config-loader.mjs");
+        tokio::fs::write(&loader_path, CONFIG_LOADER_MJS)
+            .await
+            .unwrap();
+        // A pre-bundled ESM module standing in for esbuild's output: a config
+        // whose `plugins[]` names a bare specifier with no `node_modules`
+        // entry anywhere under the (empty) project root — unresolvable.
+        let bundle_path = tmp.path().join("bundle.mjs");
+        tokio::fs::write(
+            &bundle_path,
+            "export default { outDir: \"out\", publicDir: \"pub\", base: \"/app\", \
+             trailingSlash: true, plugins: [{ name: \"@absent/zfb-plugin-ghost\" }] };\n",
+        )
+        .await
+        .unwrap();
+
+        let run = |extra: Option<&'static str>| {
+            let loader_path = loader_path.clone();
+            let bundle_path = bundle_path.clone();
+            let project_root = tmp.path().to_path_buf();
+            async move {
+                let mut cmd = Command::new("node");
+                cmd.arg(&loader_path).arg(&bundle_path).arg(&project_root);
+                if let Some(flag) = extra {
+                    cmd.arg(flag);
+                }
+                cmd.output().await.expect("spawn node")
+            }
+        };
+
+        // Without the flag: bare-specifier resolution fails the load.
+        let without = run(None).await;
+        assert!(
+            !without.status.success(),
+            "an unresolvable plugin must fail when resolution is on; stdout: {}",
+            String::from_utf8_lossy(&without.stdout)
+        );
+
+        // With the flag: load succeeds, plugins resolved to empty, scalars kept.
+        let with = run(Some("--no-resolve-plugins")).await;
+        assert!(
+            with.status.success(),
+            "--no-resolve-plugins must skip resolution and succeed; stderr: {}",
+            String::from_utf8_lossy(&with.stderr)
+        );
+        let json = String::from_utf8(with.stdout).unwrap();
+        let loaded = parse_loader_envelope(&json, &bundle_path).expect("envelope parses");
+        assert!(
+            loaded.resolved_plugins.is_empty(),
+            "resolved_plugins must be empty when resolution is skipped"
+        );
+        let cfg: EmbedTestScalars =
+            serde_json::from_value(loaded.config).expect("scalar fields deserialise");
+        assert_eq!(cfg.out_dir.as_deref(), Some("out"));
+        assert_eq!(cfg.public_dir.as_deref(), Some("pub"));
+        assert_eq!(cfg.base.as_deref(), Some("/app"));
+        assert_eq!(cfg.trailing_slash, Some(true));
+    }
+
+    /// Mirrors `zfb-server`'s `EmbedConfig` scalar subset (camelCase) so the
+    /// test can prove the embed-relevant fields survive a plugins-skipped
+    /// load without depending on the `zfb-server` crate.
+    #[cfg(not(feature = "embed_v8"))]
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EmbedTestScalars {
+        out_dir: Option<String>,
+        public_dir: Option<String>,
+        base: Option<String>,
+        trailing_slash: Option<bool>,
     }
 
     #[test]

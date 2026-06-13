@@ -1332,6 +1332,9 @@ impl LoadOptions {
             embedded_esbuild_getter: Some(Box::new(|| {
                 crate::render_pipeline::embedded_binary("esbuild").ok()
             })),
+            // The CLI loads and runs plugins — always resolve them. Only the
+            // embed API (zfb-server) opts out via `resolve_plugins: false`.
+            resolve_plugins: true,
             test_default_export_json: self.test_default_export_json.clone(),
         }
     }
