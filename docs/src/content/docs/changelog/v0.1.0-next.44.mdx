@@ -1,0 +1,29 @@
+---
+title: v0.1.0-next.44
+sidebar_position: 1044
+---
+
+# v0.1.0-next.44
+
+Released: 2026-06-14
+
+## Features
+
+- feat(zfb-server): add ServerBuilder::with_page_cache for live content (1ec449d)
+- feat(zfb-build): add opt-in ExternalInvalidationHook to narrow extraWatchPaths rebuilds (a90e5ad)
+
+## Bug Fixes
+
+- fix(zfb-build): apply external-invalidation hook to all out-of-root paths, off the graph lock (2f491ff)
+- fix(embed): canonicalize relative .ts config_path before evaluation (c895585)
+- fix(zfb-build): restore CSS/islands rebuild flags on external-narrowing override (46b2de7)
+- fix(zfb-config-loader): add resolve_plugins toggle so embed loads tolerate absent plugins (da6ef00)
+- fix(zfb-build): convert plan_for_changes loop to while-let (clippy::while_let_loop) (d2314b6)
+
+## Other Changes
+
+- refactor(config): hoist TS config evaluator into zfb-config-loader leaf crate (88f8d8c)
+- docs(embed): document the live-content / file-watch escape hatch (c5a0bc4)
+- docs(embed): steer embedders to zfb.config.json + ZFB_ESBUILD_BIN for .ts (5660c4c)
+- docs(zfb-server): fix stale ServerMode::Embed comment (e382ce9)
+- test(zfb-build): clarify slot-path substring assertion (c3cd39f)
