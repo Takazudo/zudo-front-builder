@@ -32,6 +32,16 @@
 //! escape hatch and is likewise budget-excluded by design (§3.2:
 //! "optional, not counted toward the ≤ 10 method budget").
 //!
+//! NOTE (issue #1040): a `ServerBuilder::esbuild_binary()` override is
+//! intentionally NOT provided. Evaluating a `.ts` config on a default
+//! (V8) build needs an esbuild binary, but `ZFB_ESBUILD_BIN` already
+//! overrides esbuild discovery (resolution tier 2 in `zfb-build`) and a
+//! `zfb.config.json` embed config needs no esbuild at all. Adding a
+//! builder method would spend the single remaining budget slot
+//! re-exposing an env var that already works. Add one only if a real
+//! out-of-repo embedder must use `.ts` AND genuinely cannot set the
+//! env var.
+//!
 //! ## Threading: `serve_in_thread`
 //!
 //! [`serve_in_thread`](Server::serve_in_thread) mirrors the pattern in

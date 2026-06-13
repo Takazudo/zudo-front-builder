@@ -57,6 +57,21 @@ Key choices the builder commits to:
 
 The async terminal `Server::serve(self, shutdown).await` is also available for hosts that already drive their own tokio runtime.
 
+### Config format: prefer `zfb.config.json`
+
+`config_path` accepts both `zfb.config.json` and `zfb.config.ts`. For an embedded server, **`zfb.config.json` is the recommended format** — it is read directly with no build step (every example in this guide uses it).
+
+`zfb.config.ts` is also supported, but evaluating a TypeScript config first bundles it with **esbuild**, and an embedded `zfb-server` does not ship its own esbuild binary (unlike the `zfb` CLI). So an out-of-repo embedder pointing `config_path` at a `.ts` file must either:
+
+- ship or generate a `zfb.config.json` instead — needs no esbuild at all, the simplest path; or
+- set the `ZFB_ESBUILD_BIN` environment variable to a usable esbuild CLI binary before calling `build()`.
+
+<Note>
+
+If a `.ts` config fails with an "esbuild binary not found" error, this is the cause — switch to `zfb.config.json` or set `ZFB_ESBUILD_BIN`.
+
+</Note>
+
 ## Request-extension injection
 
 `ServerBuilder::with_request_extension::<T>(value)` registers a per-process value to be cloned into every incoming request's `http::Extensions` map. The handler reads it via `req.extensions().get::<T>()`:
