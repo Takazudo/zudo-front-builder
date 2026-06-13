@@ -29,7 +29,9 @@
     "format:ts": "prettier --write \"**/*.{js,mjs,cjs,ts,tsx,json,yml,yaml}\"",
     "format:check:ts": "prettier --check \"**/*.{js,mjs,cjs,ts,tsx,json,yml,yaml}\"",
     "format:mdx": "pnpm dlx @takazudo/mdx-formatter --write '**/*.{md,mdx}'",
-    "format:check:mdx": "pnpm dlx @takazudo/mdx-formatter --check '**/*.{md,mdx}'"
+    "format:check:mdx": "pnpm dlx @takazudo/mdx-formatter --check '**/*.{md,mdx}'",
+    "//// === VALIDATION ===": "",
+    "b4push": "bash scripts/run-b4push.sh"
   },
   "devDependencies": {
     "lefthook": "^2.1.6",
