@@ -84,13 +84,13 @@ pub type DiscoveryHook =
 /// Opt-in external-change narrowing hook (issue #1038).
 ///
 /// Consulted from [`BuildOrchestrator::plan_for_changes`] for every
-/// change classified as [`PathClass::External`] — i.e. an out-of-root
-/// file delivered through the `extraWatchPaths` channel. The orchestrator
-/// has no dependency-graph edges for out-of-root paths, so by default an
-/// external change conservatively triggers `PageSelection::All` (see the
-/// `External` arm). This hook lets an *informed* consumer — one that
-/// knows which external path backs which page (e.g. skill file
-/// `foo.mdx` → page `/skills/foo`) — narrow that to a specific subset:
+/// **out-of-root** change — a path that does not live under
+/// `project_root`, which is exactly the `extraWatchPaths` channel. The
+/// orchestrator has no dependency-graph edges for out-of-root paths, so by
+/// default such a change conservatively triggers `PageSelection::All`.
+/// This hook lets an *informed* consumer — one that knows which external
+/// path backs which page (e.g. skill file `foo.mdx` → page `/skills/foo`)
+/// — narrow that to a specific subset:
 ///
 /// - `Some(pages)` → re-render exactly those pages (folded into
 ///   [`PageSelection::Specific`]). An empty `Some(vec![])` narrows to "no
@@ -99,6 +99,11 @@ pub type DiscoveryHook =
 /// - `None` → the consumer cannot map this path; fall back to the
 ///   conservative `PageSelection::All` rebuild (the unchanged default).
 ///
+/// Keyed on **out-of-root**, not on [`PathClass::External`]: a watched
+/// external file with a whitelisted extension (e.g. `foo.mdx`) classifies
+/// as [`PathClass::Content`], never reaching the `External` arm — yet it
+/// is the issue's primary use case, so it must be narrowable too.
+///
 /// When no hook is configured ([`OrchestratorConfig::external_invalidation`]
 /// is `None`) every external change keeps the `PageSelection::All` default
 /// — there is no behavior change for existing consumers. The hook only
@@ -106,9 +111,10 @@ pub type DiscoveryHook =
 /// for every external change regardless of the hook's verdict.
 ///
 /// Mirrors the [`DiscoveryHook`] pattern, but is a *pure* path→pages query
-/// with no side effects — so it lives in [`OrchestratorConfig`] and is
-/// consulted inside the plan fold rather than threaded through the tick
-/// entry points.
+/// with no side effects — so it lives in [`OrchestratorConfig`]. It is
+/// invoked in a pre-pass **before** the graph mutex is locked, so a hook
+/// that captures the same `Arc<Mutex<DependencyGraph>>` (to derive or
+/// validate page ids) cannot deadlock the dev loop.
 pub type ExternalInvalidationHook =
     std::sync::Arc<dyn Fn(&Path) -> Option<Vec<PageId>> + Send + Sync + 'static>;
 
@@ -302,6 +308,47 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         P2: Into<PathBuf>,
     {
         let mut plan = RebuildPlan::empty();
+
+        // Materialise the change set so we can run the external-invalidation
+        // hook in a pre-pass (no lock held) before the graph-locked fold.
+        let paths: Vec<PathBuf> = changes.into_iter().map(Into::into).collect();
+
+        // Opt-in external-change narrowing pre-pass (issue #1038).
+        //
+        // Consult the consumer's `external_invalidation` hook for every
+        // OUT-OF-ROOT change — i.e. a path that does not live under
+        // `project_root`, which is exactly the `extraWatchPaths` channel.
+        // Keying on out-of-root rather than on `PathClass::External`
+        // matters: a watched external file with a whitelisted extension
+        // (e.g. a skill `foo.mdx`) classifies as `Content`/`Module`/…,
+        // never reaching the `External` arm — yet it is the issue's
+        // primary `foo.mdx → /skills/foo` use case. Intercepting here
+        // makes those narrowable too.
+        //
+        // CRITICAL: the hook is invoked here, BEFORE the graph mutex is
+        // locked below. A consumer hook commonly captures the same
+        // `Arc<Mutex<DependencyGraph>>` handed to `BuildOrchestrator::new`
+        // (to derive or validate page ids); calling it under the graph
+        // lock would deadlock the dev loop. Mirrors why `DiscoveryHook`
+        // runs outside `plan_for_changes`.
+        //
+        // Only `Some(pages)` verdicts are recorded. `None` (or no hook)
+        // leaves the path absent from the map so the locked fold below
+        // applies the unchanged conservative default (`External` → `All`,
+        // or the whitelisted-extension class arm's own `All` fallback).
+        let external_overrides: std::collections::HashMap<&PathBuf, PageSelection> =
+            match self.config.external_invalidation.as_ref() {
+                Some(hook) => paths
+                    .iter()
+                    .filter(|p| p.strip_prefix(&self.config.project_root).is_err())
+                    .filter_map(|p| {
+                        hook(p)
+                            .map(|pages| (p, PageSelection::Specific(pages.into_iter().collect())))
+                    })
+                    .collect(),
+                None => std::collections::HashMap::new(),
+            };
+
         // Recover from poisoning rather than crashing the long-running
         // dev loop: a panicked previous holder leaves the mutex
         // poisoned, but the graph data itself is still consistent for
@@ -315,13 +362,29 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             p.into_inner()
         });
 
-        let mut changes_iter = changes.into_iter();
+        let mut changes_iter = paths.iter();
         loop {
-            let Some(change) = changes_iter.next() else {
+            let Some(path) = changes_iter.next() else {
                 break;
             };
-            let path: PathBuf = change.into();
+            let path: PathBuf = path.clone();
             plan.record_trigger(path.clone());
+
+            // External-narrowing override (issue #1038): a configured hook
+            // mapped this out-of-root path to a specific page set in the
+            // pre-pass above. Apply it and skip the graph-classified arms
+            // entirely — the verdict supersedes the conservative default
+            // for this path. The SSR host reload still fires (the hook
+            // narrows the page set, never the reload), matching the
+            // unchanged `External` contract.
+            if let Some(selection) = external_overrides.get(&path) {
+                plan.mark_pages(selection.clone());
+                plan.mark_ssr_reload_needed();
+                if self.config.policy.is_client_script_candidate(&path) {
+                    plan.mark_client_scripts();
+                }
+                continue;
+            }
 
             let class = classify_change_with_content_roots(
                 &path,
@@ -346,7 +409,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     full.triggers = std::mem::take(&mut plan.triggers);
                     let _ = path;
                     for remaining in changes_iter {
-                        full.triggers.push(remaining.into());
+                        full.triggers.push(remaining.clone());
                     }
                     return full;
                 }
@@ -404,26 +467,18 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     // `extraWatchPaths` channel (issue #368). The user
                     // opted in to watching that path; the graph has no
                     // edges for it so consulting `dirty_pages` is a
-                    // no-op. The conservative default is a
-                    // `PageSelection::All` rebuild so edits to e.g.
-                    // `logo.png` or `schema.graphql` under an extra watch
-                    // root actually re-render. Deep-review fix (PR #376).
+                    // no-op. Trigger a conservative `PageSelection::All`
+                    // rebuild so edits to e.g. `logo.png` or
+                    // `schema.graphql` under an extra watch root
+                    // actually re-render. Deep-review fix (PR #376).
                     //
-                    // Opt-in narrowing (issue #1038): if the consumer
-                    // configured an `external_invalidation` hook and it
-                    // maps this path to a specific page set, narrow to
-                    // that subset instead of rebuilding everything. A
-                    // `None` verdict (or no hook) keeps the conservative
-                    // `All`. Either way the SSR host reload still fires —
-                    // the hook narrows the page set, never the reload.
-                    let selection = self
-                        .config
-                        .external_invalidation
-                        .as_ref()
-                        .and_then(|hook| hook(&path))
-                        .map(|pages| PageSelection::Specific(pages.into_iter().collect()))
-                        .unwrap_or(PageSelection::All);
-                    plan.mark_pages(selection);
+                    // Opt-in narrowing (issue #1038) is applied EARLIER —
+                    // see the `external_overrides` interception at the top
+                    // of the loop, which catches every out-of-root path
+                    // (not only the non-whitelisted-extension ones that
+                    // reach this arm), so a whitelisted external file like
+                    // `skills/foo.mdx` is also narrowable.
+                    plan.mark_pages(PageSelection::All);
                     plan.mark_ssr_reload_needed();
                 }
             }
@@ -1125,6 +1180,39 @@ mod tests {
             plan.pages,
         );
         assert!(plan.ssr_reload_needed);
+    }
+
+    /// Codex-review finding (issue #1038): an out-of-root file with a
+    /// WHITELISTED extension (e.g. a skill `foo.mdx`) classifies as
+    /// `Content`, never reaching the `External` arm — yet it is the
+    /// issue's primary `foo.mdx → /skills/foo` use case. The hook keys on
+    /// out-of-root, not on `PathClass::External`, so it must narrow this
+    /// too rather than falling back to the `Content`-arm `All`.
+    #[test]
+    fn external_hook_narrows_out_of_root_whitelisted_extension() {
+        let hook: ExternalInvalidationHook =
+            Arc::new(|_path: &Path| Some(vec![pid("/proj/pages/a.tsx")]));
+        let orch = make_orch_with_external_hook(CountingPipeline::default(), hook);
+        // `.mdx` is whitelisted → would classify as Content, not External.
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/skills/foo.mdx")]);
+        match &plan.pages {
+            PageSelection::Specific(s) => {
+                assert_eq!(*s, BTreeSet::from([pid("/proj/pages/a.tsx")]));
+            }
+            other => unreachable!("expected PageSelection::Specific, got {other:?}"),
+        }
+        assert!(plan.ssr_reload_needed);
+    }
+
+    /// Default (no hook) for an out-of-root whitelisted-extension file
+    /// stays conservative: the graph has no edges for it, so the `Content`
+    /// arm's empty-dirty fallback yields `PageSelection::All`. Guards that
+    /// the new pre-pass does not change the no-hook contract.
+    #[test]
+    fn out_of_root_whitelisted_extension_without_hook_is_full_rebuild() {
+        let orch = make_orch(CountingPipeline::default());
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/skills/foo.mdx")]);
+        assert!(plan.pages.is_all());
     }
 
     /// The hook receives the actual changed path so it can map it. Two
