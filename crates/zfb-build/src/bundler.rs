@@ -5012,10 +5012,11 @@ where
     if !slot.exists() {
         return Err(anyhow!(
             "bundler: esbuild binary not found at default slot {}. \
-             Either set ZFB_ESBUILD_BIN to a usable esbuild CLI, or stage \
-             the binary at the slot path. The release-engineering epic \
-             that downloads it has not landed yet (see \
-             crates/zfb/binaries/esbuild/README.md).",
+             Evaluating a `zfb.config.ts` needs an esbuild CLI binary: set \
+             ZFB_ESBUILD_BIN to one (or, in a workspace checkout, stage the \
+             binary at that slot path). If you are embedding zfb-server as a \
+             library, prefer shipping a `zfb.config.json` instead — the JSON \
+             config path needs no esbuild at all.",
             slot.display(),
         ));
     }
@@ -6687,8 +6688,10 @@ mod tests {
     fn missing_esbuild_binary_returns_actionable_error() {
         // When neither an explicit override nor the env var nor the
         // default slot is present, the bundler must error with a
-        // pointer to BOTH escape hatches (`ZFB_ESBUILD_BIN` and the
-        // release-tarball slot). This keeps operators unstuck.
+        // pointer to every escape hatch: `ZFB_ESBUILD_BIN`, the
+        // release-tarball slot, AND (for out-of-repo embedders) the
+        // `zfb.config.json` path that needs no esbuild (#1040). This
+        // keeps both workspace operators and library embedders unstuck.
         //
         // Drive the env path via an injected getter and the slot path
         // via `slot_override` so the test does not mutate `std::env`
@@ -6707,7 +6710,11 @@ mod tests {
         let msg = format!("{err}");
 
         assert!(msg.contains("ZFB_ESBUILD_BIN"), "msg: {msg}");
+        // This substring comes from the interpolated slot path
+        // (`slot.display()` = the `DEFAULT_ESBUILD_SLOT`-shaped path), not
+        // the error prose — the prose no longer names the workspace slot.
         assert!(msg.contains("crates/zfb/binaries/esbuild"), "msg: {msg}");
+        assert!(msg.contains("zfb.config.json"), "msg: {msg}");
     }
 
     #[test]
