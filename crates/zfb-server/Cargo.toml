@@ -20,10 +20,15 @@ description = "zfb dev server: axum + SSE live-reload + CSS hot-swap"
 # place that decides V8 inclusion via its own `embed_v8` feature.
 [features]
 default = []
-embed_v8 = ["zfb-build/embed_v8"]
+embed_v8 = ["zfb-build/embed_v8", "zfb-config-loader/embed_v8"]
 
 [dependencies]
 zfb-build = { path = "../zfb-build", default-features = false }
+# TS-config evaluator hoisted into a leaf crate (issue #1037) so the embed
+# API's `config_path(...ts)` can resolve TS configs the same way the `zfb`
+# CLI does, without a dependency cycle. `default-features = false` for the V8
+# gate — the `embed_v8` feature above propagates the toggle into one place.
+zfb-config-loader = { path = "../zfb-config-loader", default-features = false }
 zfb-islands = { path = "../zfb-islands" }
 # Issue #229: shared `base` → mount-prefix normalisation lives in
 # zfb-types (the lowest-dep leaf) so the build-time link rewriter

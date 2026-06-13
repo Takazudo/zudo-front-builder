@@ -1,0 +1,48 @@
+[package]
+name = "zfb-config-loader"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb TS-config evaluator: bundle zfb.config.ts with esbuild and evaluate it (in-process V8 on default builds, node subprocess on slim builds)."
+publish = false
+
+[lib]
+
+# Feature-propagation seam for the V8 gate (issue #371, sub-task 4.1a).
+#
+# This crate hoists the `zfb.config.ts` evaluator out of the `zfb` bin
+# crate (issue #1037) so BOTH `zfb` and `zfb-server` can call it without a
+# circular dependency (`zfb` depends on `zfb-server`, not the reverse).
+#
+# `embed_v8` (default-on) pulls in the in-process V8 isolate via
+# `zfb-render`'s own `embed_v8` feature. With `--no-default-features` the
+# evaluator falls back to the `node` subprocess path. `default-features =
+# false` on `zfb-render` keeps the toggle decided in exactly one place per
+# consumer (mirrors `zfb-server` / `zfb-build`).
+[features]
+default = ["embed_v8"]
+embed_v8 = ["zfb-render/embed_v8"]
+
+[dependencies]
+# Shared esbuild binary resolver (resolve_esbuild_binary_with_env) and the
+# DEFAULT_ESBUILD_SLOT constant. `default-features = false` for the V8 gate —
+# this crate's `embed_v8` is the single place V8 inclusion is decided here.
+zfb-build = { path = "../zfb-build", default-features = false }
+# In-process V8 config evaluator (ThreadedConfigEvaluator), behind embed_v8.
+zfb-render = { path = "../zfb-render", default-features = false }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { version = "1", features = ["macros", "fs", "process", "time", "rt"] }
+# Node ESM bare-specifier resolver — replaces createRequire().resolve /
+# import.meta.resolve in config-loader.mjs (issue #416 / epic #414).
+oxc_resolver = "11.19.1"
+# Plugin path → file:// URL conversion (relative/absolute plugin entries).
+url = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# `test-util` enables `start_paused` on `#[tokio::test]` for virtual-time
+# ETXTBSY backoff tests (moved from zfb#1014 alongside the loader).
+tokio = { version = "1", features = ["macros", "fs", "process", "time", "rt", "rt-multi-thread", "test-util"] }

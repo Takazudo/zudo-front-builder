@@ -135,9 +135,10 @@ export type BundleConfig = {
  * One plugin entry in `zfb.config.ts`.
  *
  * `name` MUST be a module reference that Node's resolver can locate from
- * the project root. The zfb config loader (`crates/zfb/js/config-loader.mjs`)
- * resolves it to an absolute module specifier and the build / dev plugin
- * host loads it via dynamic `import()`:
+ * the project root. The zfb config loader
+ * (`crates/zfb-config-loader/js/config-loader.mjs`) resolves it to an
+ * absolute module specifier and the build / dev plugin host loads it via
+ * dynamic `import()`:
  *
  * - `"./plugins/my-plugin.mjs"` / `"../shared/plugin.mjs"` —
  *   path-relative to the project root (the dir containing `zfb.config.ts`).
