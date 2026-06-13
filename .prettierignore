@@ -5,6 +5,11 @@ dist/
 .pnpm-store/
 pnpm-lock.yaml
 docs/dist/
+# Gitignored local artifacts. Prettier does not read .gitignore, so without
+# these `pnpm format:check` (and `pnpm b4push`) false-fails on a dev tree where
+# these dirs exist, even though CI — a fresh checkout — never sees them.
+.playwright-cli/
+__inbox/
 # Snapshot fixture for the .d.ts emitter — must match the emitter's
 # byte-exact output, so prettier (which would re-flow the inline
 # interfaces) is not allowed to touch it.
