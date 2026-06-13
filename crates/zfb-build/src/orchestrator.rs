@@ -363,10 +363,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         });
 
         let mut changes_iter = paths.iter();
-        loop {
-            let Some(path) = changes_iter.next() else {
-                break;
-            };
+        while let Some(path) = changes_iter.next() {
             let path: PathBuf = path.clone();
             plan.record_trigger(path.clone());
 
