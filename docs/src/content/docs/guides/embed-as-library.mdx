@@ -153,11 +153,98 @@ handle.join()??;
 
 `shutdown()` sends the graceful-shutdown signal once; subsequent calls are no-ops. `join()` is single-shot — only one caller can wait for the thread.
 
+## Live content / file-watch
+
+Everything above describes a **static-dist** server: `build()` reads your `zfb.config.json`, and the route table falls through to the files in `dist/`. That is the right shape for a packaged app whose content is fixed at build time.
+
+If instead the host needs to push content into the server at runtime — a `PageCache` written from a file-watcher callback, a livereload signal after each rebuild — there are two levels to reach for, depending on how much control you need.
+
+### Level 1: seed a `PageCache` through the builder
+
+`ServerBuilder::with_page_cache(cache)` hands the server a [`PageCache`](https://docs.rs/zfb-server) you own instead of the empty one `build()` allocates by default. `PageCache` is `Clone` (internally an `Arc<RwLock<…>>`), so you keep a handle, give a clone to the builder, and then write into the *same* shared map at runtime — the running server sees every insert:
+
+```rust
+use zfb_server::{Server, ServerMode, PageCache};
+
+let cache = PageCache::new();
+cache.insert("/", "<h1>initial</h1>").await; // seed before serving
+
+let server = Server::builder()
+    .config_path("./zfb.config.json")
+    .mode(ServerMode::Embed)
+    .with_page_cache(cache.clone())
+    .build()?;
+
+let handle = server.serve_in_thread()?;
+
+// later — from your own file-watcher callback or rebuild loop:
+cache.insert("/blog/foo", rebuilt_html).await;   // add or replace one URL
+cache.remove(["/blog/stale"]).await;             // drop a vanished route
+```
+
+Cache keys are the leading-slash URL path the browser asks for (`/`, `/blog/foo`, `/sitemap.xml`). The page-cache layer sits above the on-disk `dist/` fallback in the precedence list above, so a cache hit shadows the static file at the same URL while a miss still falls through to disk. `PageCache` also exposes `insert_with_content_type`, `insert_bytes_with_content_type` (binary bodies), and `replace_all` (atomic full swap) for non-HTML and bulk-rebuild cases.
+
+This is enough when all you need is dynamic page bytes. What it does **not** give you is a livereload channel — `ServerMode::Embed` does not inject the live-reload script or mount the `/__zfb/reload` SSE endpoint, and the builder owns the `broadcast` sender internally.
+
+### Level 2: drop to `ServeOpts` + `serve_with_listener`
+
+When you need more than a page cache — a live livereload `broadcast` channel, request-time SSR routes (`SsrRoutesHandle`), plugin dev-middleware — the builder is deliberately not the entry point. Construct a [`ServeOpts`](https://docs.rs/zfb-server) yourself and call the lower-level `serve_with_listener(opts, listener, shutdown)` (or `serve(opts, shutdown)`, which binds the listener for you). Both are public and stable — they are the same entry points `zfb dev` itself uses.
+
+`ServeOpts` is a plain struct you fill in directly. The fields relevant to live content are:
+
+- **`pages: PageCache`** — same shared cache as Level 1; write into it from your watcher.
+- **`broadcast: ReloadTx`** — the live-reload sender. `ReloadTx` is `tokio::sync::broadcast::Sender<ReloadEvent>`. After each rebuild, send a `ReloadEvent` into it and connected clients receiving the SSE stream reload. (You build the channel with `tokio::sync::broadcast::channel::<ReloadEvent>(capacity)` and keep the `Sender`; the `mode` you pick decides whether the SSE endpoint is mounted.)
+- **`ssr_routes: Option<SsrRoutesHandle>`** — request-time JS SSR for `prerender = false` pages, swappable mid-session.
+- **`mode: ServerMode`** — pick `ServerMode::Dev` if you want the livereload script injection and `/__zfb/reload` SSE endpoint mounted; `Embed`/`Preview` keep those off.
+
+```rust
+use zfb_server::{serve_with_listener, ServeOpts, ServerMode, PageCache, ReloadEvent};
+use tokio::net::TcpListener;
+
+let pages = PageCache::new();
+let (broadcast, _rx) = tokio::sync::broadcast::channel::<ReloadEvent>(64);
+
+let opts = ServeOpts {
+    project_root: project_root.clone(),
+    dist_root: dist_root.clone(),
+    html_root: dist_root.clone(), // embed/preview callers alias dist_root
+    public_root,
+    addr: "127.0.0.1:0".parse()?,
+    pages: pages.clone(),
+    broadcast: broadcast.clone(),
+    mode: ServerMode::Dev, // Dev mounts the livereload SSE endpoint
+    plugins: None,
+    injected_routes: None,
+    ssr_routes: None,
+    base: None,
+    trailing_slash: false,
+    islands_bundle_url: None,
+    css_bundle_url: None,
+    allowed_hosts: Vec::new(),
+    bound_host: None,
+    render_on_request_hook: None,
+};
+
+let listener = TcpListener::bind(opts.addr).await?;
+// from your watcher: pages.insert(url, html).await;  then  broadcast.send(reload_event);
+serve_with_listener(opts, listener, std::future::pending()).await?;
+```
+
+All paths in `ServeOpts` must be absolute, and you resolve them yourself (the builder's `config_path` loader does this for you, which is one reason to prefer Level 1 when it suffices). This is the lowest public layer — exactly what the `zfb dev` bin crate threads its file-watcher and rebuild orchestrator into.
+
+<Note title="Full MDX watch-rebuild">
+
+Seeding the cache covers serving dynamic *bytes*, but it does not run zfb's MDX compile / island bundling pipeline for you — that lives in the `zfb` bin crate. If you need a user to edit Markdown locally and see a fully re-rendered preview, the [Desktop Deployment](./desktop-deployment.mdx#the-harder-case-rebuild-content-inside-the-app) "harder case" note covers spawning `zfb dev` as a sidecar (Mode B) for that full pipeline.
+
+</Note>
+
 ## Method budget
 
-The whole embed surface is intentionally small. The `Server` and `ServerBuilder` types combined expose nine methods: `Server::builder`, `Server::serve`, `Server::serve_in_thread`, plus six builder methods (`config_path`, `mode`, `bind`, `with_request_extension`, `with_ssr_handler`, `build`). `ServerHandle::addr`, `ServerHandle::shutdown`, and `ServerHandle::join` are deliberately on a separate type and are excluded from the budget.
+The whole embed surface is intentionally small. The `Server` and `ServerBuilder` types combined expose nine methods that count toward the budget: `Server::builder`, `Server::serve`, `Server::serve_in_thread`, plus six builder methods (`config_path`, `mode`, `bind`, `with_request_extension`, `with_ssr_handler`, `build`). `ServerHandle::addr`, `ServerHandle::shutdown`, and `ServerHandle::join` are deliberately on a separate type and are excluded from the budget.
 
-If a future feature needs to exceed ten total, the right move is a follow-up issue that re-shapes the seam — not a tenth method tacked on.
+`with_page_cache` (above) is the live-content escape hatch and is likewise excluded from the count by design — it is the builder-level parallel to dropping to `ServeOpts`, not part of the core static-dist surface.
+
+If a future feature needs to exceed the budget, the right move is a follow-up issue that re-shapes the seam — not another method tacked on.
 
 ## Example crate
 

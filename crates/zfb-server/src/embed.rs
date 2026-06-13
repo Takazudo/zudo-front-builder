@@ -9,7 +9,9 @@
 //!   [`mode`](ServerBuilder::mode), [`bind`](ServerBuilder::bind),
 //!   [`with_request_extension`](ServerBuilder::with_request_extension),
 //!   [`with_ssr_handler`](ServerBuilder::with_ssr_handler),
-//!   [`build`](ServerBuilder::build).
+//!   [`build`](ServerBuilder::build). The optional
+//!   [`with_page_cache`](ServerBuilder::with_page_cache) escape hatch
+//!   (live-content seam) is budget-excluded — see below.
 //! - [`Server`] terminals: [`serve`](Server::serve) (async, run-to-
 //!   completion) and [`serve_in_thread`](Server::serve_in_thread)
 //!   (spawn on a dedicated OS thread, return a handle non-blockingly).
@@ -21,11 +23,14 @@
 //!
 //! Per the research at `research/346-embed-as-library-api.md` §3.2 the
 //! combined method count on `Server` + `ServerBuilder` must stay
-//! ≤ 10. This module ships 9 — `Server::builder`, `Server::serve`,
-//! `Server::serve_in_thread`, plus six builder methods
-//! (`config_path`, `mode`, `bind`, `with_request_extension`,
-//! `with_ssr_handler`, `build`). `ServerHandle`'s methods are
-//! deliberately on a different type and are excluded from the budget.
+//! ≤ 10. This module ships 9 counting toward the budget —
+//! `Server::builder`, `Server::serve`, `Server::serve_in_thread`, plus
+//! six builder methods (`config_path`, `mode`, `bind`,
+//! `with_request_extension`, `with_ssr_handler`, `build`).
+//! `ServerHandle`'s methods are deliberately on a different type and
+//! are excluded from the budget. `with_page_cache` is the live-content
+//! escape hatch and is likewise budget-excluded by design (§3.2:
+//! "optional, not counted toward the ≤ 10 method budget").
 //!
 //! ## Threading: `serve_in_thread`
 //!
@@ -331,6 +336,7 @@ pub struct ServerBuilder {
     config_path: Option<PathBuf>,
     request_extensions: Vec<RequestExtensionInjector>,
     handlers: Vec<EmbedHandler>,
+    page_cache: Option<PageCache>,
 }
 
 impl ServerBuilder {
@@ -341,6 +347,7 @@ impl ServerBuilder {
             config_path: None,
             request_extensions: Vec::new(),
             handlers: Vec::new(),
+            page_cache: None,
         }
     }
 
@@ -456,6 +463,26 @@ impl ServerBuilder {
         self
     }
 
+    /// Supply a [`PageCache`] the server should serve from instead of
+    /// the empty one [`build`](Self::build) allocates by default.
+    ///
+    /// The page cache is `Clone` (it wraps an `Arc<RwLock<…>>`), so an
+    /// embedder can keep a handle of its own, hand a clone here, and
+    /// then drive the server's content at runtime by calling
+    /// [`PageCache::insert`] / [`PageCache::replace_all`] /
+    /// [`PageCache::remove`] from a file-watcher callback or a rebuild
+    /// loop — the running server reads the same shared map. This is the
+    /// builder-level entry point for the live-content scenarios that
+    /// otherwise require dropping to [`crate::serve_with_listener`] with
+    /// a hand-built [`crate::ServeOpts`].
+    ///
+    /// Calling this more than once keeps the last cache. When never
+    /// called, [`build`](Self::build) allocates a fresh empty cache.
+    pub fn with_page_cache(mut self, cache: PageCache) -> Self {
+        self.page_cache = Some(cache);
+        self
+    }
+
     /// Finalise the builder into a [`Server`]. Reads
     /// [`config_path`](Self::config_path) if set.
     ///
@@ -479,7 +506,7 @@ impl ServerBuilder {
             load_embed_config(&config_path)?;
 
         let bind = self.bind.unwrap_or(DEFAULT_BIND);
-        let pages = PageCache::new();
+        let pages = self.page_cache.unwrap_or_default();
         let (broadcast, _rx) = tokio::sync::broadcast::channel::<ReloadEvent>(64);
 
         let embed_handlers = if self.handlers.is_empty() {
@@ -817,6 +844,39 @@ mod tests {
         let err = Server::builder().build().err().expect("expected error");
         let msg = format!("{err:#}");
         assert!(msg.contains("missing project source"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn with_page_cache_supplies_caller_cache_to_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let json_path = tmp.path().join("zfb.config.json");
+        std::fs::write(&json_path, r#"{}"#).unwrap();
+
+        // A cache the caller pre-seeds and keeps a handle to.
+        let cache = PageCache::new();
+        cache.insert("/live", "<h1>live</h1>").await;
+
+        let server = Server::builder()
+            .config_path(&json_path)
+            .with_page_cache(cache.clone())
+            .build()
+            .unwrap();
+
+        // The server must serve from the supplied cache, not a fresh
+        // empty one — the pre-seeded entry is visible on the server's
+        // `pages`, and a later write through the caller's handle is too.
+        assert!(server.pages.get("/live").await.is_some());
+        cache.insert("/runtime", "<h1>runtime</h1>").await;
+        assert!(server.pages.get("/runtime").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn build_without_page_cache_allocates_empty_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let json_path = tmp.path().join("zfb.config.json");
+        std::fs::write(&json_path, r#"{}"#).unwrap();
+        let server = Server::builder().config_path(&json_path).build().unwrap();
+        assert!(server.pages.get("/live").await.is_none());
     }
 
     #[test]
