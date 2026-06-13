@@ -35,11 +35,17 @@ embed_v8 = [
     "zfb-render/embed_v8",
     "zfb-build/embed_v8",
     "zfb-server/embed_v8",
+    "zfb-config-loader/embed_v8",
 ]
 
 [dependencies]
 zfb-diagnostics = { path = "../zfb-diagnostics" }
 zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
+# TS-config evaluator, hoisted out of this crate (issue #1037) into a leaf
+# crate so `zfb-server` can call it too without a dependency cycle. This crate
+# re-exports / wraps it in `config.rs`. `default-features = false` for the V8
+# gate (issue #371) — the `embed_v8` feature above propagates the toggle.
+zfb-config-loader = { path = "../zfb-config-loader", default-features = false }
 anyhow = { workspace = true }
 # Sub 3 / #108: dyn-compat async trait used by the plugin-host →
 # zfb-server dispatcher adapter in `commands::plugins`.
@@ -110,13 +116,6 @@ zfb-watcher = { path = "../zfb-watcher" }
 # already used as a build-dependency (binary verification in build.rs) and by
 # zfb-graph for its ManifestDigest; adding it here avoids pulling a new crate.
 sha2 = "0.10"
-# Node ESM bare-specifier resolver — replaces `createRequire().resolve` /
-# `import.meta.resolve` in config-loader.mjs with a pure-Rust helper
-# (issue #416 / epic #414).  Handles conditional exports, scoped packages,
-# and parent-directory walk correctly — the form real `@takazudo/zfb-*`
-# packages use.  Pulls ~4 transitive crates (rustc-hash, dashmap, etc.)
-# that are small and not otherwise in the graph.
-oxc_resolver = "11.19.1"
 # IP-enumeration for the dev ready-banner (#487/#499): when the user binds to
 # an unspecified address (0.0.0.0), we list non-loopback IPv4 interfaces so
 # the banner shows actual reachable URLs instead of the literal `0.0.0.0`.
