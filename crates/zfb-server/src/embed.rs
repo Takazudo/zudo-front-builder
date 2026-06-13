@@ -98,8 +98,9 @@ pub enum ServerMode {
     /// migration off its bespoke router).
     Preview,
     /// Embed mode. Same shape as `Preview` but signals "running inside
-    /// a host application" — reserved for follow-up wiring of
-    /// per-request Tauri context, SSR handlers, etc.
+    /// a host application". Per-request context and SSR handlers are
+    /// wired via [`ServerBuilder::with_request_extension`] and
+    /// [`ServerBuilder::with_ssr_handler`].
     Embed,
 }
 
