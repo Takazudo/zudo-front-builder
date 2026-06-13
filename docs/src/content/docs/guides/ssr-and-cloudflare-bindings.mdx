@@ -283,10 +283,123 @@ database_id = "<preview-uuid>"
 
 ## Local development
 
-`wrangler pages dev dist/` runs the built `_worker.js` locally with a
-**local** D1 database (a SQLite file under `.wrangler/`). Apply your
-migrations to it with `wrangler d1 migrations apply webshop --local`
-before the first run.
+<Tip title="A working end-to-end example">
+
+The [`zfb-example-webshop`](https://github.com/Takazudo/zfb-example-webshop)
+demo is this exact recipe, wired up and running: its `dev:cf` package.json
+script and its README "Local development" section are the same two-process
+loop described below. Clone it if you want to see the whole thing assembled
+rather than copy the snippets piecemeal. (That demo ships no client JS — that
+is the shop's own design choice, not a zfb limitation; zfb supports
+`.client.*` client scripts via `clientScript()` when you do want browser JS.)
+
+</Tip>
+
+There are two ways to run the app locally, and they answer different questions:
+
+- **`zfb dev`** — fast page-authoring loop. It runs the SSR **render code** for
+  `prerender = false` routes through the embedded V8 isolate (see
+  [dev-prod parity for `prerender = false`](#dev-prod-parity-for-prerender-false)
+  above), but it exposes **no Worker bindings**: calling
+  `getCloudflareContext<Env>()` from an SSR route under `zfb dev` yields no
+  `env`, so any route that reads `env.DB` (or any other binding) cannot work
+  here. Use this for layout, styling, and routing iteration on routes that do
+  **not** touch bindings.
+- **`wrangler pages dev dist/`** — binding-realistic loop. Runs the built
+  `_worker.js` against a **local** D1 database (a SQLite file under
+  `.wrangler/`), serves your real `compatibility_flags`, and surfaces real
+  binding bugs. Use this whenever you're working on an SSR route that reads
+  `env`.
+
+The rest of this section covers the binding-realistic loop.
+
+### One-time setup
+
+Apply your D1 migrations to the local SQLite database (idempotent — safe to
+re-run):
+
+```sh
+wrangler d1 migrations apply webshop --local
+```
+
+The `webshop` argument matches `database_name` in your `wrangler.toml`. This
+creates `.wrangler/state/v3/d1/...` if it doesn't exist.
+
+### The edit-refresh loop
+
+Run two processes side-by-side: `wrangler pages dev dist/` (which auto-reloads
+when `dist/` changes) and a watcher that re-runs `zfb build` whenever you edit a
+source file. The cleanest way is `concurrently` + `chokidar-cli` from your
+`devDependencies`:
+
+```sh
+pnpm add -D concurrently chokidar-cli
+```
+
+Then add a `dev:cf` script to your `package.json` (adjust the watch globs to
+match your project layout):
+
+```json
+{
+  "scripts": {
+    "dev:cf:setup": "wrangler d1 migrations apply webshop --local && pnpm build",
+    "dev:cf": "pnpm dev:cf:setup && concurrently --names 'wrangler,watch' --kill-others 'wrangler pages dev dist/ --port 8788' \"chokidar 'pages/**/*.tsx' 'components/**/*.tsx' 'layouts/**/*.tsx' 'lib/**/*.ts' 'styles/**/*.css' --command 'pnpm build' --initial false --debounce 200\""
+  }
+}
+```
+
+Then:
+
+```sh
+pnpm dev:cf
+```
+
+Edit a TSX or CSS source file and the browser reflects the change in roughly
+1–2 seconds: the watcher debounces for 200 ms, `pnpm build` re-emits `dist/`,
+and `wrangler pages dev` notices the `_zfb_inner.mjs` content change and reloads
+the worker automatically. Ctrl-C kills both processes cleanly.
+
+<Warning title="Do NOT run `pnpm dev` and `pnpm dev:cf` at the same time">
+
+`zfb dev`'s `predev` step (`rm -rf dist .zfb .zfb-build`) wipes the `dist/`
+directory that `wrangler pages dev` is actively serving. The wrangler process
+can enter a degraded state where subsequent rebuilds no longer trigger reloads.
+Pick one loop at a time. If you accidentally ran both, stop everything, re-run
+`pnpm build`, and restart `pnpm dev:cf`.
+
+</Warning>
+
+### Troubleshooting
+
+**`Address already in use` on port 8788.** Another `wrangler pages dev` is still
+running. Either kill it (`lsof -ti TCP:8788 | xargs kill`) or pass `--port 8789`
+to the wrangler invocation.
+
+**The page renders but `env.DB` is undefined.** You're missing
+`compatibility_flags = ["nodejs_compat"]` in `wrangler.toml`. See the
+**"compatibility_flags = ['nodejs_compat'] is mandatory"** warning earlier on
+this page — that flag is a hard prerequisite for the adapter to thread `env`
+into your SSR routes, not an optional opt-in.
+
+**The browser shows stale content after an edit.** Usually the previous
+`pnpm build` failed. Check the `[watch]` stream in the `concurrently` output for
+a build error. The wrangler reload only fires when `dist/` actually updates.
+
+**My cart / D1 data disappeared.** The local SQLite DB lives under
+`.wrangler/state/v3/d1/...` and **persists across rebuilds**. It resets if you
+delete `.wrangler/`, switch to a different working directory, or change
+`database_name` in `wrangler.toml`. Re-run
+`wrangler d1 migrations apply webshop --local` after any of those to get a fresh
+schema.
+
+<Tip title="Why two processes, not one">
+
+`zfb build` is fast enough (sub-second on small projects) that running it on
+every save through a userland watcher is indistinguishable from a built-in
+`--watch` mode. The two-process recipe also keeps wrangler's worker-reload
+behaviour as a black box we don't have to re-implement.
+
+</Tip>
 
 [als]: https://nodejs.org/api/async_context.html
 [d1]: https://developers.cloudflare.com/d1/
