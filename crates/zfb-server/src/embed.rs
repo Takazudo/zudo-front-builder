@@ -750,7 +750,16 @@ fn load_embed_config_from_ts(config_path: &Path) -> anyhow::Result<EmbedConfig> 
                 rt.block_on(zfb_config_loader::load_from_ts_file(
                     &ts_path,
                     &project_root,
-                    &zfb_config_loader::LoadOptions::default(),
+                    // The embed builder consumes only the 4 scalar
+                    // `EmbedConfig` fields and never loads plugins. Skip
+                    // plugin resolution so a packaged app whose
+                    // `zfb.config.ts` lists CLI-only plugins (absent from the
+                    // embed deployment) still loads — matching the `.json`
+                    // embed path, which ignores plugins entirely (issue #1037).
+                    &zfb_config_loader::LoadOptions {
+                        resolve_plugins: false,
+                        ..Default::default()
+                    },
                 ))
             })
             .join()
