@@ -317,14 +317,24 @@ TSX または CSS ソースファイルを編集すると、おおよそ 1〜2 �
 ### トラブルシューティング
 
 **ポート 8788 で `Address already in use`。** 別の `wrangler pages dev` がまだ動いて
-います。`lsof -ti TCP:8788 | xargs kill` で終了させるか、wrangler の呼び出しに
-`--port 8789` を渡してください。
+います。`lsof -ti TCP:8788 -sTCP:LISTEN | xargs kill` で終了させるか、wrangler の
+呼び出しに `--port 8789` を渡してください。`-sTCP:LISTEN` フィルタが重要です。素の
+`lsof -ti TCP:8788` は接続中のブラウザ／クライアントの PID も返すため、これがないと
+`xargs kill` が無関係なアプリを巻き添えにする可能性があります。
 
-**ページは表示されるが `env.DB` が undefined。** `wrangler.toml` に
-`compatibility_flags = ["nodejs_compat"]` がありません。このページの前にある
-**"compatibility_flags = ['nodejs_compat'] は必須"** の警告を参照してください。この
-フラグはアダプターが `env` を SSR ルートに引き渡すための必須条件であり、任意のオプト
-インではありません。
+**Worker が `node:async_hooks` を名指しするエラーで起動に失敗する。** `wrangler.toml`
+に `compatibility_flags = ["nodejs_compat"]` がありません。アダプターは
+`node:async_hooks` をトップレベルでインポートするため、このフラグがないと Worker は
+そもそも起動しません。バインディングが欠けた状態でページを配信するのではなく、起動
+自体に失敗します。このページの前にある **"compatibility_flags = ['nodejs_compat'] は
+必須"** の警告を参照してください。このフラグはアダプターが `env` を SSR ルートに
+引き渡すための必須条件であり、任意のオプトインではありません。
+
+**ページは表示されるが `env.DB` が undefined。** Worker は起動しています（つまり
+`nodejs_compat` は設定済みです）が、D1 バインディングがそこに届いていません。
+`wrangler.toml` のバインディング名（`binding = "DB"`）が `env` で読むプロパティと
+一致していること、そしてそのバインディングを宣言する `wrangler.toml` のあるディレクトリ
+から `wrangler pages dev dist/` を起動したことを確認してください。
 
 **編集後もブラウザに古いコンテンツが表示される。** 通常、直前の `pnpm build` が失敗して
 います。`concurrently` の出力内の `[watch]` ストリームでビルドエラーを確認してください。

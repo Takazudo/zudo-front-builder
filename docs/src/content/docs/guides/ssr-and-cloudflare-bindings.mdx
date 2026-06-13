@@ -372,14 +372,24 @@ Pick one loop at a time. If you accidentally ran both, stop everything, re-run
 ### Troubleshooting
 
 **`Address already in use` on port 8788.** Another `wrangler pages dev` is still
-running. Either kill it (`lsof -ti TCP:8788 | xargs kill`) or pass `--port 8789`
-to the wrangler invocation.
+running. Either kill it (`lsof -ti TCP:8788 -sTCP:LISTEN | xargs kill`) or pass
+`--port 8789` to the wrangler invocation. The `-sTCP:LISTEN` filter is important:
+a bare `lsof -ti TCP:8788` also returns any connected browser/client PIDs, so
+without it `xargs kill` can take down unrelated apps.
 
-**The page renders but `env.DB` is undefined.** You're missing
-`compatibility_flags = ["nodejs_compat"]` in `wrangler.toml`. See the
+**The Worker fails to boot with an error naming `node:async_hooks`.** You're
+missing `compatibility_flags = ["nodejs_compat"]` in `wrangler.toml`. The adapter
+imports `node:async_hooks` at the top level, so without the flag the Worker never
+starts — it does **not** boot and serve a page with a missing binding. See the
 **"compatibility_flags = ['nodejs_compat'] is mandatory"** warning earlier on
 this page — that flag is a hard prerequisite for the adapter to thread `env`
 into your SSR routes, not an optional opt-in.
+
+**The page renders but `env.DB` is undefined.** The Worker booted (so
+`nodejs_compat` is set), but the D1 binding isn't reaching it. Check that the
+binding name in `wrangler.toml` (`binding = "DB"`) matches the property you read
+on `env`, and that you launched `wrangler pages dev dist/` from the directory
+whose `wrangler.toml` declares the binding.
 
 **The browser shows stale content after an edit.** Usually the previous
 `pnpm build` failed. Check the `[watch]` stream in the `concurrently` output for
