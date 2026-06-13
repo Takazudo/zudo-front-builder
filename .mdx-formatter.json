@@ -9,9 +9,7 @@
     ".pnpm-store/**",
     "__inbox/**",
     "**/.playwright-cli/**",
-    "docs/src/content/docs/claude/**",
-    "docs/src/content/docs/claude-md/**",
-    "docs/src/content/docs/claude-skills/**"
+    "docs/src/content/docs/claude*/**"
   ],
   "addEmptyLinesInBlockJsx": {
     "blockComponents": [
