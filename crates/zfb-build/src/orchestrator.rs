@@ -372,14 +372,38 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
 
             // External-narrowing override (issue #1038): a configured hook
             // mapped this out-of-root path to a specific page set in the
-            // pre-pass above. Apply it and skip the graph-classified arms
-            // entirely — the verdict supersedes the conservative default
-            // for this path. The SSR host reload still fires (the hook
-            // narrows the page set, never the reload), matching the
-            // unchanged `External` contract.
+            // pre-pass above. Apply that page-set verdict and skip the
+            // graph-classified arms' OWN page selection — the verdict
+            // supersedes the conservative default for this path. The SSR
+            // host reload still fires (the hook narrows the page set, never
+            // the reload), matching the unchanged `External` contract.
+            //
+            // The asset-rebuild flags, however, are NOT the hook's to
+            // narrow: a hook narrowing an external CSS file or an islands
+            // module still needs the corresponding asset rebuild, or the
+            // consumer is left with a stale CSS / islands bundle. So we
+            // classify the path and additively re-apply the SAME
+            // asset-flag side effects (`rerun_css` / `rerun_islands` /
+            // client-scripts) the matching class arm would have set — but
+            // none of its page-selection side effects.
             if let Some(selection) = external_overrides.get(&path) {
                 plan.mark_pages(selection.clone());
                 plan.mark_ssr_reload_needed();
+
+                let class = classify_change_with_content_roots(
+                    &path,
+                    &self.config.project_root,
+                    &self.config.policy.content_roots,
+                    |p| graph.is_global(p),
+                );
+                if class == PathClass::Style {
+                    plan.mark_css();
+                }
+                if matches!(class, PathClass::Module)
+                    && self.config.policy.is_islands_candidate(&path)
+                {
+                    plan.mark_islands();
+                }
                 if self.config.policy.is_client_script_candidate(&path) {
                     plan.mark_client_scripts();
                 }
@@ -1213,6 +1237,54 @@ mod tests {
         let orch = make_orch(CountingPipeline::default());
         let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/skills/foo.mdx")]);
         assert!(plan.pages.is_all());
+    }
+
+    /// Codex-review regression (issue #1038): narrowing the page set for an
+    /// out-of-root CSS file must NOT suppress the CSS rerun. The hook's
+    /// verdict narrows only the page selection; the `rerun_css` asset flag
+    /// that the `Style` class arm would have set must still fire, or the
+    /// consumer ends up with a stale stylesheet in `dist/assets/`.
+    #[test]
+    fn external_hook_narrowing_css_still_reruns_css() {
+        let hook: ExternalInvalidationHook =
+            Arc::new(|_path: &Path| Some(vec![pid("/proj/pages/a.tsx")]));
+        let orch = make_orch_with_external_hook(CountingPipeline::default(), hook);
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/styles/theme.css")]);
+        match &plan.pages {
+            PageSelection::Specific(s) => {
+                assert_eq!(*s, BTreeSet::from([pid("/proj/pages/a.tsx")]));
+            }
+            other => unreachable!("expected PageSelection::Specific, got {other:?}"),
+        }
+        assert!(
+            plan.rerun_css,
+            "narrowing an external CSS path must still rerun the CSS pipeline"
+        );
+        assert!(plan.ssr_reload_needed);
+    }
+
+    /// Codex-review regression (issue #1038): narrowing the page set for an
+    /// out-of-root islands module must NOT suppress the islands re-bundle.
+    /// The `.tsx` under a `components` segment classifies as a `Module` and
+    /// is an islands candidate, so the `rerun_islands` flag the Module arm
+    /// would have set must still fire alongside the narrowed page set.
+    #[test]
+    fn external_hook_narrowing_islands_module_still_reruns_islands() {
+        let hook: ExternalInvalidationHook =
+            Arc::new(|_path: &Path| Some(vec![pid("/proj/pages/a.tsx")]));
+        let orch = make_orch_with_external_hook(CountingPipeline::default(), hook);
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/components/Widget.tsx")]);
+        match &plan.pages {
+            PageSelection::Specific(s) => {
+                assert_eq!(*s, BTreeSet::from([pid("/proj/pages/a.tsx")]));
+            }
+            other => unreachable!("expected PageSelection::Specific, got {other:?}"),
+        }
+        assert!(
+            plan.rerun_islands,
+            "narrowing an external islands module must still rerun the islands bundle"
+        );
+        assert!(plan.ssr_reload_needed);
     }
 
     /// The hook receives the actual changed path so it can map it. Two
