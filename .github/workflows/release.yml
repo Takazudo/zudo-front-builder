@@ -708,90 +708,36 @@ jobs:
           fi
 
       # ── Publish ───────────────────────────────────────────────────────────
-      # Platform packages (zfb-darwin-*, zfb-linux-*, zfb-win32-*) MUST be
-      # published via `npm publish` (not pnpm). pnpm pack — which pnpm
-      # publish calls internally — normalises all file modes to 0644,
-      # stripping the executable bit from the zfb binary. npm pack/publish
-      # preserves the source file mode set by the chmod +x steps above.
-      # See issue #447 / #441 for root cause analysis.
+      # The publish loop lives in scripts/publish-npm-packages.sh (shared by both
+      # the normal and mixed-provenance steps below). It is IDEMPOTENT (skips any
+      # <name>@<version> already on the registry) and TOLERANT of npm's double-PUT
+      # race (a lost-ACK retry that 403s "cannot publish over the previously
+      # published versions"), so a partial publish can be safely re-run and a
+      # transient network blip can't abort the release mid-way. See the script
+      # header and the v0.1.0-next.42 incident for the full rationale.
       #
-      # Non-platform packages (@takazudo/zfb, @takazudo/zfb-runtime,
-      # @takazudo/zfb-adapter-cloudflare, create-zfb) continue to use
-      # `pnpm -r publish` so workspace:* peer-dep rewrites are applied.
+      # Platform packages (zfb-darwin-*, zfb-linux-*, zfb-win32-*) are still
+      # published via `npm publish` (not pnpm): pnpm pack normalises file modes to
+      # 0644, stripping the binary's 0755 exec bit; npm preserves it (#447 / #441).
+      # Non-platform packages use `pnpm publish` so workspace:* deps are rewritten.
+      # DIST_TAG and ALSO_LATEST are inherited from $GITHUB_ENV (set above).
 
       # Normal path: every package published with OIDC-attested --provenance.
       - name: Publish to npm
         if: ${{ inputs.dry_run != true && needs.detect-mac-local.outputs.mac_local_present != 'true' }}
         shell: bash
-        run: |
-          # Platform packages: use npm publish to preserve the executable bit.
-          for dir in \
-            packages/zfb-darwin-arm64 \
-            packages/zfb-darwin-x64 \
-            packages/zfb-linux-arm64-gnu \
-            packages/zfb-linux-x64-gnu \
-            packages/zfb-win32-x64-msvc; do
-            ( cd "$dir" && npm publish --tag "$DIST_TAG" --access public --provenance )
-          done
-          # Non-platform packages: use pnpm publish for workspace:* rewriting.
-          pnpm -r \
-            --filter '!@takazudo/zfb-darwin-arm64' \
-            --filter '!@takazudo/zfb-darwin-x64' \
-            --filter '!@takazudo/zfb-linux-arm64-gnu' \
-            --filter '!@takazudo/zfb-linux-x64-gnu' \
-            --filter '!@takazudo/zfb-win32-x64-msvc' \
-            publish --tag "$DIST_TAG" --no-git-checks --access public --provenance
-
-          # ── Prerelease dual-tag: advance `latest` while still in prerelease phase ──
-          # ALSO_LATEST=1 is set by "Check if latest should also advance" when the
-          # current registry `latest` is empty or itself a prerelease.  Runs AFTER
-          # all packages are published so a partial publish never clobbers `latest`.
-          # Each `npm dist-tag add` is retried with backoff; persistent failures are
-          # surfaced loudly with the manual remediation command.  See #481.
-          if [[ "$ALSO_LATEST" == "1" ]]; then
-            ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
-            bash scripts/advance-latest-dist-tag.sh "$ZFB_SEMVER"
-          fi
+        run: bash scripts/publish-npm-packages.sh all-provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # Mixed-provenance path: the macOS-x64 binary was built locally (outside this
-      # GHA job) so it cannot carry OIDC provenance. Publish that one package
-      # WITHOUT --provenance and every other package WITH --provenance (option B).
-      # See RELEASE_DAY_CHECKLIST.md.
+      # GHA job) so it cannot carry OIDC provenance. The `mac-local` mode publishes
+      # zfb-darwin-x64 WITHOUT --provenance and every other package WITH it
+      # (option B). See RELEASE_DAY_CHECKLIST.md and the script header.
       - name: Publish to npm (mixed provenance — local macOS-x64)
         if: ${{ inputs.dry_run != true && needs.detect-mac-local.outputs.mac_local_present == 'true' }}
         shell: bash
-        run: |
-          # Platform packages: use npm publish to preserve the executable bit.
-          # darwin-x64 was built locally (no GHA provenance) — omit --provenance.
-          ( cd packages/zfb-darwin-x64 && npm publish --tag "$DIST_TAG" --access public )
-          for dir in \
-            packages/zfb-darwin-arm64 \
-            packages/zfb-linux-arm64-gnu \
-            packages/zfb-linux-x64-gnu \
-            packages/zfb-win32-x64-msvc; do
-            ( cd "$dir" && npm publish --tag "$DIST_TAG" --access public --provenance )
-          done
-          # Non-platform packages: use pnpm publish for workspace:* rewriting.
-          pnpm -r \
-            --filter '!@takazudo/zfb-darwin-arm64' \
-            --filter '!@takazudo/zfb-darwin-x64' \
-            --filter '!@takazudo/zfb-linux-arm64-gnu' \
-            --filter '!@takazudo/zfb-linux-x64-gnu' \
-            --filter '!@takazudo/zfb-win32-x64-msvc' \
-            publish --tag "$DIST_TAG" --no-git-checks --access public --provenance
-
-          # ── Prerelease dual-tag: advance `latest` while still in prerelease phase ──
-          # ALSO_LATEST=1 is set by "Check if latest should also advance" when the
-          # current registry `latest` is empty or itself a prerelease.  Runs AFTER
-          # all packages are published so a partial publish never clobbers `latest`.
-          # Each `npm dist-tag add` is retried with backoff; persistent failures are
-          # surfaced loudly with the manual remediation command.  See #481.
-          if [[ "$ALSO_LATEST" == "1" ]]; then
-            ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
-            bash scripts/advance-latest-dist-tag.sh "$ZFB_SEMVER"
-          fi
+        run: bash scripts/publish-npm-packages.sh mac-local
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
