@@ -6,7 +6,10 @@
     "docs/dist/**",
     "docs/.zfb/**",
     "docs/.zfb-build/**",
-    ".pnpm-store/**"
+    ".pnpm-store/**",
+    "__inbox/**",
+    "**/.playwright-cli/**",
+    "docs/src/content/docs/claude*/**"
   ],
   "addEmptyLinesInBlockJsx": {
     "blockComponents": [
