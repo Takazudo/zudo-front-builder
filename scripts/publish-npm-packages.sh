@@ -33,10 +33,11 @@
 #
 # Non-platform packages (@takazudo/zfb, @takazudo/zfb-runtime,
 # @takazudo/zfb-adapter-cloudflare, create-zfb) are published with
-# `pnpm --filter <name> publish` so pnpm rewrites their `workspace:*` deps to
-# concrete versions at pack time. Published one-at-a-time (not a bulk
-# `pnpm -r publish`) so the idempotent/tolerant wrapper applies per package and a
-# mid-list conflict cannot abort the rest.
+# `pnpm -r --filter <name> publish` so pnpm rewrites their `workspace:*` deps to
+# concrete versions at pack time. Published one package per call (a recursive
+# publish scoped to a single --filter) rather than one bulk `pnpm -r publish`
+# over the whole set, so the idempotent/tolerant wrapper applies per package and
+# a mid-list conflict cannot abort the rest.
 #
 # Usage:
 #   scripts/publish-npm-packages.sh <all-provenance|mac-local>
@@ -209,10 +210,12 @@ publish_nonplatform_packages() {
     if should_skip_publish "$name" "$version"; then
       continue
     fi
-    # --fail-if-no-match: a derived name that matches no workspace package is a
-    # loud failure, never a silent no-op.
+    # `pnpm -r --filter "$name"` scopes a recursive publish to exactly this one
+    # package (verified: packs only "$name", and -r keeps the filter semantics
+    # explicit and version-robust). --fail-if-no-match makes a name that matches
+    # no workspace package a loud failure, never a silent no-op.
     _run_and_classify "$name" "$version" \
-      pnpm --filter "$name" --fail-if-no-match publish \
+      pnpm -r --filter "$name" --fail-if-no-match publish \
       --tag "$DIST_TAG" --no-git-checks --access public --provenance
   done
 }
