@@ -6710,6 +6710,9 @@ mod tests {
         let msg = format!("{err}");
 
         assert!(msg.contains("ZFB_ESBUILD_BIN"), "msg: {msg}");
+        // This substring comes from the interpolated slot path
+        // (`slot.display()` = the `DEFAULT_ESBUILD_SLOT`-shaped path), not
+        // the error prose — the prose no longer names the workspace slot.
         assert!(msg.contains("crates/zfb/binaries/esbuild"), "msg: {msg}");
         assert!(msg.contains("zfb.config.json"), "msg: {msg}");
     }
