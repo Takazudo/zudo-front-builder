@@ -1,0 +1,132 @@
+---
+title: ディレクティブ
+description: :::name / ::name / :name のディレクティブ構文を独自の JSX コンポーネントにマッピングして登録する。デフォルトでは何も登録されていない — 語彙はあなたが用意する。
+tier: Opt-in
+---
+
+`directives` 機能は、`zfb.config.ts` からコアの [ディレクティブレジストリ](./directives-registry.mdx) に登録を行います。CommonMark Directives 構文 — コンテナ（`:::name`）、リーフ（`::name`）、テキスト（`:name`） — を、コンパイル済み MDX の JSX コンポーネント呼び出しにマッピングします。
+
+**デフォルトでは、ディレクティブ名は一つも登録されていません。** 語彙はあなたが選び、zfb が JSX を出力します。
+
+## 有効化
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    features: {
+      directives: {
+        note: "Note",
+        tip: "Tip",
+        warning: "Warning",
+      },
+    },
+  },
+});
+```
+
+値は「ディレクティブ名 → コンポーネント」のマップです。各エントリは短縮形の文字列でも、完全形の `DirectiveSpec` オブジェクト（後述）でも構いません。
+
+## 短縮形 — コンポーネント名のみ
+
+最も単純なエントリは、ディレクティブ名をコンポーネント識別子の文字列にマッピングするものです。このディレクティブは `titleFromLabel: true` の **コンテナ** として登録され、角括弧で囲んだ `[label]` が、出力される JSX 要素の `title="…"` 属性になります。
+
+```ts title="zfb.config.ts"
+export default defineConfig({
+  markdown: {
+    features: {
+      directives: {
+        callout: "Callout",
+      },
+    },
+  },
+});
+```
+
+著者が次のように書くと:
+
+```md
+:::callout[Heads up]
+
+Body text.
+
+:::
+```
+
+パイプラインは次を出力します:
+
+```tsx
+<Callout title="Heads up">
+  <p>Body text.</p>
+</Callout>
+```
+
+## 完全形 — `DirectiveSpec` オブジェクト
+
+完全形を使うと、ディレクティブの形状（`container`、`leaf`、`text`）と、角括弧のラベルを `title` 属性にするかどうかを制御できます。
+
+```ts title="zfb.config.ts"
+export default defineConfig({
+  markdown: {
+    features: {
+      directives: {
+        // container (default kind), titleFromLabel on
+        note: "Note",
+
+        // leaf directive — self-closing, no body
+        youtube: {
+          component: "Youtube",
+          kind: "leaf",
+          titleFromLabel: true,
+        },
+
+        // text (inline) directive
+        kbd: {
+          component: "Kbd",
+          kind: "text",
+          titleFromLabel: false,
+        },
+      },
+    },
+  },
+});
+```
+
+`DirectiveSpec` のフィールド:
+
+| フィールド | 型 | 必須 | デフォルト |
+|---|---|---|---|
+| `component` | `string` | Yes | — |
+| `kind` | `"container" \| "leaf" \| "text"` | No | `"container"` |
+| `titleFromLabel` | `boolean` | No | `true` |
+
+## ディレクティブの形状
+
+- **コンテナ** — `:::name[label]` … `:::` は、複数段落の本文を JSX コンポーネントで包みます。コールアウト形式のブロックで最もよく使われます。
+- **リーフ** — `::name[label]{attrs}` は、子要素を持たない自己終結型のコンポーネントを生成します。埋め込み（動画、コードプレイグラウンドなど）に使われます。
+- **テキスト** — `:name[label]{attrs}` は、本文中に混在させるインラインコンポーネントです。
+
+## 空行の要件
+
+各フェンス行（`:::name` と閉じる `:::`）は、Markdown パーサーがそれらを別々の段落として扱えるよう、前後のコンテンツと **必ず** 空行で区切る必要があります。空行がないと、その内容はディレクティブとして認識されず、ビルド時に警告診断が出力されます。
+
+## ディレクティブの登録はコンポーネントを提供しない
+
+`directives` はフレームワーク非依存で、JSX コンポーネントは一切同梱しません。ディレクティブを登録しても、コンパイル済み MDX に `<ComponentName>` を出力するようパイプラインに指示するだけです。次の作業が必要です:
+
+1. コンポーネント自体を自分で作成する。
+2. それをプロジェクトの [MDX コンポーネントマップ](../concepts/mdx-components.mdx) に追加する。
+3. 自前の CSS でスタイリングする。
+
+## 大文字小文字とそのままの出力
+
+あなたが指定するコンポーネント識別子（`"Note"`、`"Kbd"`、`"Youtube"`）はそのまま出力されます。自動の PascalCase 化も検証も行われません。`note: "Note"` は `<Note>` を出力し、`note: "my-note"` は `<my-note>`（DOM 要素であり、おそらく意図したものではない）を出力します。
+
+ディレクティブ名のキーは、ディレクティブ文法 `[A-Za-z_][A-Za-z0-9_-]*` に従います。このパターンに一致しないキーは、ソース中のどの `:::name` にも決してマッチしません。
+
+## 関連項目
+
+- [ディレクティブレジストリ](./directives-registry.mdx) — その下層にあるコアのプリミティブ（常時有効で、パースを担当する）。
+- [レシピ: Admonitions](/ja/docs/recipes/admonitions/) — `note`、`tip`、`info`、`warning`、`danger`、`caution`、`details` を最小限のコンポーネントスタブと CSS とともに登録する実例。
+- [カスタムディレクティブ](../concepts/custom-directives.mdx) — Rust パイプライン API 経由でディレクティブを登録する。

@@ -1,0 +1,100 @@
+---
+title: コードブロックのエンリッチメント
+description: フェンス付きコードブロックに diff マーカーと行単位のハイライトを追加する。
+tier: Opt-in
+---
+
+`codeEnrichment` 機能は、コードブロックに対する 2 つのインタラクティブな拡張を追加します:
+
+1. **diff マーカー** — `// [!code ++]`／`// [!code --]` コメントで、追加・削除された行を注釈する。
+2. **行ハイライト** — フェンスの情報文字列に `{1,3-5}` のような範囲を追加して、特定の行をハイライトする。
+
+どちらの挙動も、syntect ハイライターの後に hast フェーズのビジターとして実行され、それが出力する
+行単位の `<span class="line">` 構造を操作します。参照: [rehype-pretty-code](https://rehype-pretty-code.netlify.app/)。
+
+## 有効化
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      codeEnrichment: {},
+    },
+  },
+});
+```
+
+`diffMarkers` と `lineHighlight` はどちらも、機能を有効化すると **デフォルトでオン** になります。
+いずれかを個別に無効化するには:
+
+```ts
+codeEnrichment: {
+  diffMarkers: false,   // disable diff-marker processing
+  lineHighlight: true,
+},
+```
+
+## diff マーカー
+
+行末のコメントとして `// [!code ++]` または `// [!code --]` を追加します。
+マーカーコメントは表示出力からは取り除かれます。対応する
+`<span class="line">` には `data-line-diff="added"` または `data-line-diff="removed"` が付与されます。
+
+````md
+```js
+const unchanged = 1;
+const removed = 2; // [!code --]
+const added = 3; // [!code ++]
+```
+````
+
+これらのデータ属性を CSS で使って、diff をスタイリングします:
+
+```css
+span.line[data-line-diff="added"]   { background: rgba(0, 255, 0, 0.1); }
+span.line[data-line-diff="removed"] { background: rgba(255, 0, 0, 0.1); }
+```
+
+サポートされるコメントスタイル: `//`（JS/TS/Rust）、`#`（Python/Ruby/Shell）、`--`（SQL/Lua）。
+
+## 行ハイライト
+
+フェンスの情報文字列で、言語識別子の後に波括弧で囲んだ範囲を追加します。
+一致した行の `<span class="line">` には `data-line-highlight="true"` が付与されます。
+
+````md
+```js {1,3-5}
+const a = 1;
+const b = 2;
+const c = 3;
+const d = 4;
+const e = 5;
+const f = 6;
+```
+````
+
+1、3、4、5 行目に `data-line-highlight="true"` が付きます。CSS でスタイリングします:
+
+```css
+span.line[data-line-highlight="true"] { background: rgba(255, 255, 0, 0.1); }
+```
+
+範囲の構文がサポートするもの:
+
+- 単一の番号: `{3}`
+- 範囲: `{3-5}`（両端を含む）
+- 組み合わせ: `{1,3-5,8}`
+
+## 両方を組み合わせる
+
+diff マーカーと行ハイライトは各行で独立して動作するため、同じ行に両方を適用できます:
+
+````md
+```js {2}
+const x = 1; // [!code ++]
+const y = 2;
+```
+````
+
+1 行目は `data-line-diff="added"`（diff マーカー）を受け取ります。2 行目は `data-line-highlight="true"`（ハイライト範囲）を受け取ります。
