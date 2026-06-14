@@ -360,20 +360,48 @@ fn merge_kind(existing: Option<ChangeKind>, incoming: ChangeKind) -> ChangeKind 
 ///   deletion would be lost and `tick_with_kinds` would skip its prune path.
 /// - Otherwise pass the kind through unchanged.
 ///
-/// `try_exists().unwrap_or(false)` is the conservative default in both
-/// directions: an I/O error is treated as "absent", which biases toward
-/// emitting `Removed` — the change we can least afford to drop.
+/// The existence probe is authoritative only for a **definitive** answer.
+/// A transient `Err` from `try_exists()` — e.g. `EIO`/`ENFILE` while an
+/// arm64 macOS host is under heavy IO load (issue #1058) — proves nothing
+/// about the file's state, so it must not be allowed to rewrite a write
+/// event into a deletion. The reconciliation is split into the pure
+/// [`reconcile_emit_kind`] so that transient-error branch is unit-testable
+/// without provoking real filesystem IO errors.
 fn resolve_emit_kind(path: &Path, kind: ChangeKind) -> ChangeKind {
-    let exists = path.try_exists().unwrap_or(false);
+    reconcile_emit_kind(kind, path.try_exists())
+}
+
+/// Pure existence-reconciliation step (see [`resolve_emit_kind`]). `exists`
+/// is the raw `try_exists()` outcome: `Ok(true)` present, `Ok(false)`
+/// genuinely absent, `Err` an IO error that tells us nothing.
+///
+/// - Incoming `Removed`: keep biasing to `Removed` on `Err` — we can least
+///   afford to *drop* a delete, so an unknown state still surfaces as a
+///   deletion (unchanged from the original behaviour). A definitive
+///   `Ok(true)` means the file was restored → upgrade to `Modified` (#823).
+/// - Incoming `Created`/`Modified`: a definitive `Ok(false)` still emits
+///   `Removed` (a backend can deliver a trailing `Modify` for an
+///   already-deleted path; without this the prune path is skipped). But on
+///   a transient `Err`, PASS THE KIND THROUGH rather than downgrading to
+///   `Removed` (issue #1058): the event source already told us the file was
+///   written, and a phantom deletion would route a live content edit to the
+///   prune regime and skip its eager re-render.
+fn reconcile_emit_kind(kind: ChangeKind, exists: std::io::Result<bool>) -> ChangeKind {
     match (kind, exists) {
+        // Removed boundary — a definitive on-disk answer is authoritative.
         // Accepted trade-off: a bare-Remove from a git-restore of a
         // brand-new route upgrades to Modified (never Created), so the
         // orchestrator's watch-ADD discovery hook does not fire for that
         // restored route on this tick.
-        (ChangeKind::Removed, true) => ChangeKind::Modified,
-        (ChangeKind::Removed, false) => ChangeKind::Removed,
-        (_, true) => kind,
-        (_, false) => ChangeKind::Removed,
+        (ChangeKind::Removed, Ok(true)) => ChangeKind::Modified,
+        (ChangeKind::Removed, Ok(false)) => ChangeKind::Removed,
+        (ChangeKind::Removed, Err(_)) => ChangeKind::Removed,
+        // Non-removed (Created/Modified): definitive "absent" → the file
+        // really is gone, emit Removed so the prune path runs.
+        (other, Ok(true)) => other,
+        (_, Ok(false)) => ChangeKind::Removed,
+        // Transient stat miss on a write/create event → do NOT downgrade.
+        (other, Err(_)) => other,
     }
 }
 
@@ -699,6 +727,71 @@ mod tests {
             resolve_emit_kind(&file, ChangeKind::Created),
             ChangeKind::Removed,
             "Created for a missing path is a genuine deletion",
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Transient stat-miss reconciliation (`reconcile_emit_kind`) — issue #1058.
+    // Under heavy IO load on arm64 macOS, `try_exists()` can return an `Err`
+    // (transient EIO/ENFILE) for a file that was just written. That unknown
+    // state must NOT downgrade a live write event to a phantom deletion, or the
+    // edit is routed to the prune regime and never eagerly re-rendered.
+    // ---------------------------------------------------------------------------
+
+    fn transient_err() -> std::io::Result<bool> {
+        Err(std::io::Error::other("transient stat miss"))
+    }
+
+    #[test]
+    fn reconcile_emit_kind_write_event_with_io_error_passes_through() {
+        assert_eq!(
+            reconcile_emit_kind(ChangeKind::Modified, transient_err()),
+            ChangeKind::Modified,
+            "a transient stat miss must not turn a Modified into a deletion (#1058)",
+        );
+        assert_eq!(
+            reconcile_emit_kind(ChangeKind::Created, transient_err()),
+            ChangeKind::Created,
+            "a transient stat miss must not turn a Created into a deletion (#1058)",
+        );
+    }
+
+    #[test]
+    fn reconcile_emit_kind_removed_with_io_error_stays_removed() {
+        // A delete is the change we can least afford to drop, so an unknown
+        // state for an incoming Removed still surfaces as Removed.
+        assert_eq!(
+            reconcile_emit_kind(ChangeKind::Removed, transient_err()),
+            ChangeKind::Removed,
+        );
+    }
+
+    #[test]
+    fn reconcile_emit_kind_definitive_answers_match_legacy_matrix() {
+        // Every definitive (Ok) answer preserves the pre-#1058 behaviour.
+        assert_eq!(
+            reconcile_emit_kind(ChangeKind::Removed, Ok(true)),
+            ChangeKind::Modified,
+        );
+        assert_eq!(
+            reconcile_emit_kind(ChangeKind::Removed, Ok(false)),
+            ChangeKind::Removed,
+        );
+        assert_eq!(
+            reconcile_emit_kind(ChangeKind::Modified, Ok(true)),
+            ChangeKind::Modified
+        );
+        assert_eq!(
+            reconcile_emit_kind(ChangeKind::Created, Ok(true)),
+            ChangeKind::Created
+        );
+        assert_eq!(
+            reconcile_emit_kind(ChangeKind::Modified, Ok(false)),
+            ChangeKind::Removed
+        );
+        assert_eq!(
+            reconcile_emit_kind(ChangeKind::Created, Ok(false)),
+            ChangeKind::Removed
         );
     }
 

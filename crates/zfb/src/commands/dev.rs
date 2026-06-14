@@ -4013,8 +4013,16 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
         // Issue #958 — one narrowing decision per tick; per-page filters
         // fall out of the per-source map. The V8-off path has no
         // collection configs to match against, so it never narrows.
+        //
+        // Issue #1058 — the hint is now populated permissively (mixed /
+        // Created ticks carry the edited content for the lazy eager basis),
+        // so the EAGER fan-out narrowing must gate on the strict
+        // `fan_out_safe` flag: a co-changed module can affect every page, so
+        // a non-fan-out-safe tick falls back to the full fan-out exactly as
+        // before. (The lazy path above intentionally consumes the hint
+        // regardless of `fan_out_safe`.)
         #[cfg(feature = "embed_v8")]
-        let tick_narrowing = compute_tick_narrowing(&session, narrowing);
+        let tick_narrowing = compute_tick_narrowing(&session, narrowing.filter(|n| n.fan_out_safe));
         #[cfg(not(feature = "embed_v8"))]
         let tick_narrowing = {
             let _ = narrowing;
@@ -4841,6 +4849,11 @@ mod tests {
         fn hint_for(paths: &[PathBuf]) -> zfb_build::ContentNarrowing {
             zfb_build::ContentNarrowing {
                 changed_content: paths.to_vec(),
+                // These unit tests exercise `compute_tick_narrowing` /
+                // `compute_lazy_eager_sets` directly; neither reads
+                // `fan_out_safe` (the eager-path gate lives in
+                // `make_render_callback`). Value is immaterial here.
+                fan_out_safe: true,
             }
         }
 

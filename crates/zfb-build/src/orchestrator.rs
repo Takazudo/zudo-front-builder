@@ -52,6 +52,21 @@ use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
 use crate::policy::{classify_change_with_content_roots, GranularityPolicy, PathClass};
 
+/// `ZFB_DEV_TIMING` gate for the per-tick kind/narrowing trace (issue #1058).
+/// Same env var and truthy parser as `bundler_timing_enabled` and
+/// `crates/zfb/src/commands/dev.rs::dev_timing_enabled`, so one flag turns on
+/// the whole timing story. Unset/empty/unrecognized → off (zero hot-path cost).
+fn dev_timing_enabled() -> bool {
+    std::env::var("ZFB_DEV_TIMING")
+        .ok()
+        .as_deref()
+        .map(|raw| {
+            let t = raw.trim();
+            t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
 /// Live watch-ADD discovery hook (issue #659).
 ///
 /// Invoked from [`BuildOrchestrator::tick_with_kinds`] /
@@ -600,6 +615,45 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         ctx: &BuildContext,
         discover: Option<&DiscoveryHook>,
     ) -> Result<Option<BuildOutcome>> {
+        // Issue #1058 — normalize a spurious `Created` for an already-known
+        // content source back to `Modified`. On a loaded arm64 macOS host,
+        // FSEvents coalescing can deliver an in-place edit of an EXISTING
+        // file as `Created` (see `zfb_watcher::merge_kind` rule 2). Left as
+        // `Created` the change routes through the discovery regime (watch-ADD)
+        // instead of the in-place-edit regime, so the lazy path never
+        // eager-renders the edited entry's own route — the dropped eager
+        // render this issue tracks. A path the graph already knows as a
+        // content dependency (`consumers_of` is non-empty) cannot be
+        // genuinely new, so the `Created` flag is an artifact; a truly new
+        // file has no reverse edge yet and stays `Created` for discovery.
+        let changes: Vec<(PathBuf, ChangeKind)> = {
+            let graph = self.graph.lock().unwrap_or_else(|p| {
+                warn!(
+                    site = "tick_with_kinds::created_normalize",
+                    "graph mutex poisoned, recovering"
+                );
+                p.into_inner()
+            });
+            changes
+                .into_iter()
+                .map(|(path, kind)| {
+                    let spurious_created = kind == ChangeKind::Created
+                        && graph.consumers_of(&path).is_some_and(|c| !c.is_empty())
+                        && classify_change_with_content_roots(
+                            &path,
+                            &self.config.project_root,
+                            &self.config.policy.content_roots,
+                            |p| graph.is_global(p),
+                        ) == PathClass::Content;
+                    if spurious_created {
+                        (path, ChangeKind::Modified)
+                    } else {
+                        (path, kind)
+                    }
+                })
+                .collect()
+        };
+
         // Removal: drop graph edges for deleted files before planning and
         // collect the former consumers so they can be added to the plan.
         //
@@ -756,30 +810,21 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             plan.add_prune_paths(discovered.vanished_output_paths);
         }
 
-        // Content-narrowing hint (issue #958). Produced iff this tick
-        // consists EXCLUSIVELY of in-place edits (`ChangeKind::Modified`)
-        // to content-collection files (`PathClass::Content`) and the
-        // assembled plan selects at least one page. Everything else —
-        // mixed ticks, Created (discovery regime), Removed (prune
-        // regime), Global, External, Data — never narrows (fallback G1).
-        // The classifier runs with the same config `plan_for_changes`
-        // uses, so the hint can never disagree with the plan fold.
-        // Purely advisory: the dev pipeline narrows each dynamic source's
-        // render fan-out to the changed entries' routes, with mandatory
-        // full-fan-out fallbacks downstream.
-        let modified_only_content = !changes.is_empty()
-            && changes
+        // Content-narrowing hint (issues #958 / #1058). Classify each
+        // change once (content vs not) under a single graph lock; the
+        // classifier runs with the same config `plan_for_changes` uses, so
+        // the hint can never disagree with the plan fold.
+        let content_flags: Vec<bool> = {
+            let graph = self.graph.lock().unwrap_or_else(|p| {
+                warn!(
+                    site = "tick_with_kinds::content_narrowing",
+                    "graph mutex poisoned, recovering"
+                );
+                p.into_inner()
+            });
+            changes
                 .iter()
-                .all(|(_, kind)| *kind == ChangeKind::Modified)
-            && {
-                let graph = self.graph.lock().unwrap_or_else(|p| {
-                    warn!(
-                        site = "tick_with_kinds::content_narrowing",
-                        "graph mutex poisoned, recovering"
-                    );
-                    p.into_inner()
-                });
-                changes.iter().all(|(path, _)| {
+                .map(|(path, _)| {
                     classify_change_with_content_roots(
                         path,
                         &self.config.project_root,
@@ -787,11 +832,72 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                         |p| graph.is_global(p),
                     ) == PathClass::Content
                 })
-            };
-        if modified_only_content && !plan.pages.is_empty() {
+                .collect()
+        };
+
+        // Strict #958 gate (`fan_out_safe`): the tick consists EXCLUSIVELY
+        // of in-place `Modified` edits to content files. The eager fan-out
+        // narrowing requires this — a mixed tick (Created/Removed/Global/
+        // module change) can affect every page, so narrowing it would
+        // under-render (fallback G1).
+        let modified_only_content = !changes.is_empty()
+            && changes
+                .iter()
+                .zip(&content_flags)
+                .all(|((_, kind), is_content)| *kind == ChangeKind::Modified && *is_content);
+
+        // Permissive lazy eager basis (issue #1058): content files edited as
+        // `Modified` OR `Created`. `Created` is included because under
+        // FSEvents coalescing on a loaded arm64 macOS host an in-place edit
+        // of an EXISTING file can arrive as `Created` (see
+        // `zfb_watcher::merge_kind` rule 2), which would otherwise defeat
+        // the all-`Modified` gate and drop the eager render. Brand-new files
+        // are also `Created`+content but carry no routes yet, so the
+        // downstream route-table match renders nothing eager for them
+        // (discovery owns new routes). `Removed` content is excluded (prune
+        // regime).
+        let edited_content: Vec<PathBuf> = changes
+            .iter()
+            .zip(&content_flags)
+            .filter(|((_, kind), is_content)| {
+                **is_content && matches!(kind, ChangeKind::Modified | ChangeKind::Created)
+            })
+            .map(|((path, _), _)| path.clone())
+            .collect();
+
+        if !edited_content.is_empty() && !plan.pages.is_empty() {
             plan.content_narrowing = Some(crate::plan::ContentNarrowing {
-                changed_content: changes.iter().map(|(p, _)| p.clone()).collect(),
+                changed_content: edited_content,
+                fan_out_safe: modified_only_content,
             });
+        }
+
+        // `ZFB_DEV_TIMING=1` — surface the per-tick change kinds and the
+        // resulting narrowing decision (issue #1058, extending the #1028
+        // tick-class instrumentation). On a loaded arm64 macOS host an
+        // in-place content edit can arrive as `Created` (FSEvents coalescing,
+        // see `zfb_watcher::merge_kind` rule 2), which fails the all-`Modified`
+        // `modified_only_content` gate → no narrowing → the lazy path marks the
+        // route stale instead of eager-rendering it (the dropped eager render
+        // #1058 is about). A `narrowing=false` line whose kinds include a
+        // `Created` for an already-known content file is the smoking gun.
+        // Behind the existing flag so the hot path keeps zero overhead.
+        if dev_timing_enabled() {
+            let kinds: Vec<String> = changes
+                .iter()
+                .map(|(p, k)| {
+                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                    format!("{name}:{k:?}")
+                })
+                .collect();
+            eprintln!(
+                "[zfb-timing] tick(): kinds=[{}] eager_hint={} fan_out_safe={}",
+                kinds.join(", "),
+                plan.content_narrowing.is_some(),
+                plan.content_narrowing
+                    .as_ref()
+                    .is_some_and(|n| n.fan_out_safe)
+            );
         }
 
         if plan.is_noop() {
@@ -1330,9 +1436,10 @@ mod tests {
     }
 
     /// A tick made exclusively of Modified content files produces the
-    /// narrowing hint, carrying the changed paths verbatim.
+    /// narrowing hint, carrying the changed paths verbatim, and is
+    /// `fan_out_safe` (the eager path may narrow the fan-out).
     #[test]
-    fn modified_only_content_tick_produces_hint() {
+    fn modified_only_content_tick_produces_fan_out_safe_hint() {
         use zfb_watcher::ChangeKind;
         let pipeline = CountingPipeline::default();
         let applies = pipeline.applies.clone();
@@ -1353,15 +1460,19 @@ mod tests {
             plans[0].content_narrowing,
             Some(crate::plan::ContentNarrowing {
                 changed_content: vec![changed],
+                fan_out_safe: true,
             }),
-            "a Modified-only Content tick must carry the narrowing hint"
+            "a Modified-only Content tick must carry the fan-out-safe narrowing hint"
         );
     }
 
-    /// §3: a tick mixing a content edit with a module edit must NOT
-    /// produce the hint — module changes can affect every page's output.
+    /// §3 / #1058: a tick mixing a content edit with a module edit must NOT
+    /// be `fan_out_safe` — module changes can affect every page's output, so
+    /// the eager path must run the full fan-out (G1). It still carries the
+    /// edited CONTENT file for the lazy eager basis (the module is excluded),
+    /// so a body edit's own route can eager-render even in a mixed tick.
     #[test]
-    fn mixed_tick_with_module_trigger_produces_no_hint() {
+    fn mixed_tick_with_module_trigger_is_not_fan_out_safe() {
         use zfb_watcher::ChangeKind;
         let pipeline = CountingPipeline::default();
         let applies = pipeline.applies.clone();
@@ -1384,46 +1495,128 @@ mod tests {
         let plans = applies.lock().unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!(
-            plans[0].content_narrowing, None,
-            "a mixed content+module tick must not narrow (G1)"
+            plans[0].content_narrowing,
+            Some(crate::plan::ContentNarrowing {
+                // Only the content file — the module is not content-class.
+                changed_content: vec![PathBuf::from("/proj/content/post.md")],
+                fan_out_safe: false,
+            }),
+            "a mixed content+module tick must not be fan-out-safe (G1), but still \
+             carries the edited content for the lazy eager basis (#1058)"
         );
     }
 
-    /// §3: Created and Removed ticks never produce the hint — they run
-    /// the discovery / prune regimes, not the in-place-edit fast path.
+    /// #1058: a `Created` for an already-KNOWN content source (the graph
+    /// has consumers — here `post.md` feeds `c.tsx`) is a spurious FSEvents
+    /// coalescing artifact for an in-place edit, so it is normalized to
+    /// `Modified` at the top of the tick. The tick is then a pure in-place
+    /// content edit → `fan_out_safe`, exactly as a real `Modified` would be.
     #[test]
-    fn created_or_removed_tick_produces_no_hint() {
+    fn spurious_created_on_known_content_normalizes_to_modified() {
         use zfb_watcher::ChangeKind;
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
 
-        for kind in [ChangeKind::Created, ChangeKind::Removed] {
-            let pipeline = CountingPipeline::default();
-            let applies = pipeline.applies.clone();
-            let orch = make_orch(pipeline);
-            let dist = tempfile::tempdir().unwrap();
+        let post = PathBuf::from("/proj/content/post.md"); // known: consumers c.tsx
+        orch.tick_with_kinds(
+            vec![(post.clone(), ChangeKind::Created)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
 
-            orch.tick_with_kinds(
-                vec![
-                    (PathBuf::from("/proj/content/post.md"), kind),
-                    // A Modified sibling keeps the tick non-noop even for
-                    // the Removed case (post.md's consumer is re-planned),
-                    // and proves one non-Modified change poisons the hint.
-                    (
-                        PathBuf::from("/proj/content/other.md"),
-                        ChangeKind::Modified,
-                    ),
-                ],
-                &noop_ctx(dist.path()),
-                None,
-            )
-            .unwrap();
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].content_narrowing,
+            Some(crate::plan::ContentNarrowing {
+                changed_content: vec![post],
+                fan_out_safe: true,
+            }),
+            "a Created for a known content source is normalized to a fan-out-safe edit (#1058)"
+        );
+    }
 
-            let plans = applies.lock().unwrap();
-            assert_eq!(plans.len(), 1, "tick must apply for kind {kind:?}");
-            assert_eq!(
-                plans[0].content_narrowing, None,
-                "a tick containing a {kind:?} change must not narrow (G1)"
-            );
-        }
+    /// #1058: a `Created` for a GENUINELY-NEW content file (`other.md` — no
+    /// reverse edge in the graph) is NOT normalized — it stays `Created` for
+    /// the discovery regime, so it poisons the strict gate (`!fan_out_safe`).
+    /// It is still carried in the lazy eager basis (harmless: it has no
+    /// routes yet, so the downstream route-table match renders nothing eager
+    /// for it).
+    #[test]
+    fn unknown_created_file_is_not_fan_out_safe() {
+        use zfb_watcher::ChangeKind;
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
+
+        let new_file = PathBuf::from("/proj/content/other.md"); // unknown / new
+        let known = PathBuf::from("/proj/content/post.md"); // known: consumers c.tsx
+        orch.tick_with_kinds(
+            vec![
+                (new_file.clone(), ChangeKind::Created),
+                (known.clone(), ChangeKind::Modified),
+            ],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        let narrowing = plans[0]
+            .content_narrowing
+            .as_ref()
+            .expect("tick carries the lazy eager basis");
+        assert!(
+            !narrowing.fan_out_safe,
+            "a genuinely-new Created file poisons the strict gate (G1)"
+        );
+        assert!(narrowing.changed_content.contains(&new_file));
+        assert!(narrowing.changed_content.contains(&known));
+    }
+
+    /// #1058: a `Removed` content file is excluded from the lazy eager basis
+    /// (it runs the prune regime, not an eager render) and poisons the strict
+    /// gate. The Modified sibling still carries the basis.
+    #[test]
+    fn removed_content_excluded_from_lazy_basis() {
+        use zfb_watcher::ChangeKind;
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
+
+        let removed = PathBuf::from("/proj/content/other.md");
+        let edited = PathBuf::from("/proj/content/post.md"); // known: consumers c.tsx
+        orch.tick_with_kinds(
+            vec![
+                (edited.clone(), ChangeKind::Modified),
+                (removed.clone(), ChangeKind::Removed),
+            ],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        let narrowing = plans[0]
+            .content_narrowing
+            .as_ref()
+            .expect("tick carries the lazy eager basis");
+        assert!(
+            !narrowing.fan_out_safe,
+            "a Removed change poisons the strict gate (G1)"
+        );
+        assert!(narrowing.changed_content.contains(&edited));
+        assert!(
+            !narrowing.changed_content.contains(&removed),
+            "a Removed content file is excluded from the lazy eager basis"
+        );
     }
 
     /// Regression for zfb#642 / #644 — `zfb dev` 404'd every route on a
