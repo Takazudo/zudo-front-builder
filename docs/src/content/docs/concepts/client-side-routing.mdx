@@ -54,7 +54,7 @@ The `fallback` prop controls what happens in browsers that do not support `docum
 Call `navigate()` from client-side code (inside an island or an event handler) to trigger a soft navigation:
 
 ```tsx
-import { navigate } from "@takazudo/zfb-runtime/client-router/router";
+import { navigate } from "@takazudo/zfb-runtime/client-router";
 
 // Push a new history entry (default)
 await navigate("/about");
@@ -74,7 +74,7 @@ type Options = {
 };
 ```
 
-- **`history: "push"`** (or `"auto"`, the default) — creates a new browser history entry.
+- **`history: "auto"`** (the default when the option is omitted) — creates a new browser history entry via `pushState`. Passing `"push"` explicitly does the same.
 - **`history: "replace"`** — calls `history.replaceState` so no back-button entry is created.
 
 `navigate()` is a no-op during SSR and emits a console warning if called on the server.
@@ -187,7 +187,7 @@ event.direction       // "forward" | "back"
 event.navigationType  // "push" | "replace" | "traverse"
 event.sourceElement   // Element | undefined — the <a> or <form> that triggered navigation
 event.info            // any  — value passed to navigate() options.info
-event.newDocument     // Document  — populated after fetch (writable)
+event.newDocument     // Document  — starts as the current page; overwritten with the fetched document after event.loader() resolves (writable)
 event.signal          // AbortSignal — aborted if a newer navigation supersedes this one
 event.formData        // FormData | undefined — set for POST form submissions
 event.loader          // () => Promise<void> — call to execute the default fetch; replace to use a custom loader
@@ -253,7 +253,7 @@ The router exposes two helpers:
 import {
   supportsViewTransitions,
   transitionEnabledOnThisPage,
-} from "@takazudo/zfb-runtime/client-router/router";
+} from "@takazudo/zfb-runtime/client-router";
 
 // true if the browser has document.startViewTransition
 console.log(supportsViewTransitions);
