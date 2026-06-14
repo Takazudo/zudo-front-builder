@@ -1,0 +1,301 @@
+---
+title: Client-Side Routing & View Transitions
+description: "Turn zfb into an SPA with soft-swap navigation, View Transition animations, and link prefetching."
+sidebar_position: 9
+category: Concepts
+---
+
+zfb pages are static HTML by default. **`<ClientRouter />`** opts them into SPA-style navigation: clicking a same-origin link fetches the next page in the background, swaps only the `<body>` (and the changed `<head>` nodes), and plays a View Transition animation — without a full browser reload.
+
+## Mounting `<ClientRouter />`
+
+Import from `@takazudo/zfb-runtime` and place the component once inside your page `<head>`:
+
+```tsx
+import { ClientRouter } from "@takazudo/zfb-runtime";
+
+export default function Layout({ children }) {
+  return (
+    <html>
+      <head>
+        <meta charset="UTF-8" />
+        <ClientRouter fallback="animate" />
+      </head>
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+Importing `<ClientRouter />` registers the click and form-submit intercepts as a module-level side effect. The registration is idempotent — multiple mounts on the same page (or HMR re-runs) are safe.
+
+### Props
+
+| Prop | Type | Default | Description |
+|---|---|---|---|
+| `fallback` | `"none" \| "animate" \| "swap"` | `"animate"` | Behaviour when the browser does not support native View Transitions. |
+| `prefetchAll` | `boolean` | `false` | When `true`, every same-origin link is opted into the `"hover"` prefetch strategy automatically. |
+
+### Fallback modes
+
+The `fallback` prop controls what happens in browsers that do not support `document.startViewTransition` (Firefox and older Safari at the time of writing):
+
+- **`"animate"`** — simulates the transition using CSS animations. zfb sets `data-zfb-transition-fallback="old"` on `<html>` before the swap and `"new"` after. Target these with CSS to replicate the fade/slide you defined for native View Transitions.
+- **`"swap"`** — immediately swaps head and body with no animation.
+- **`"none"`** — skips the router entirely; same-origin links fall back to full-page browser navigation.
+
+```tsx
+{/* No animation, not even a simulated one */}
+<ClientRouter fallback="none" />
+```
+
+## Programmatic navigation with `navigate()`
+
+Call `navigate()` from client-side code (inside an island or an event handler) to trigger a soft navigation:
+
+```tsx
+import { navigate } from "@takazudo/zfb-runtime/client-router/router";
+
+// Push a new history entry (default)
+await navigate("/about");
+
+// Replace the current history entry instead of pushing
+await navigate("/search?q=zfb", { history: "replace" });
+```
+
+`navigate()` accepts an optional `Options` object:
+
+```ts
+type Options = {
+  history?: "auto" | "push" | "replace";
+  info?: any;    // passed to before-preparation event as event.info
+  state?: any;   // merged into the new history.state entry
+  formData?: FormData;
+};
+```
+
+- **`history: "push"`** (or `"auto"`, the default) — creates a new browser history entry.
+- **`history: "replace"`** — calls `history.replaceState` so no back-button entry is created.
+
+`navigate()` is a no-op during SSR and emits a console warning if called on the server.
+
+### `data-zfb-history` on links
+
+You can opt individual `<a>` tags into `replaceState` without JavaScript:
+
+```html
+<a href="/terms" data-zfb-history="replace">Terms</a>
+```
+
+### Opting a link out of the router
+
+Add `data-zfb-reload` to any `<a>` or `<form>` to force a full browser reload for that navigation:
+
+```html
+<a href="/admin" data-zfb-reload>Admin (full reload)</a>
+```
+
+## Prefetch strategies
+
+The router can warm up the browser cache before the user clicks a link. Each link is opted in via the `data-zfb-prefetch` attribute.
+
+### Per-link attribute
+
+```html
+<!-- Prefetch when the link enters the viewport -->
+<a href="/docs/api" data-zfb-prefetch="viewport">API docs</a>
+
+<!-- Prefetch on pointer hover (default when prefetchAll is true) -->
+<a href="/blog" data-zfb-prefetch="hover">Blog</a>
+
+<!-- Prefetch on touchstart / mousedown (just before the click) -->
+<a href="/pricing" data-zfb-prefetch="tap">Pricing</a>
+
+<!-- Prefetch immediately after DOMContentLoaded (idle callback) -->
+<a href="/contact" data-zfb-prefetch="load">Contact</a>
+
+<!-- Opt this link out even when prefetchAll is true -->
+<a href="/heavy-page" data-zfb-prefetch="false">Heavy page</a>
+```
+
+### Available strategies
+
+| Strategy | Trigger |
+|---|---|
+| `"hover"` | `pointerenter` (with idle-callback delay; cancelled on `pointerleave`) |
+| `"viewport"` | `IntersectionObserver` — fires when the link scrolls into view |
+| `"tap"` | `touchstart` / `mousedown` — fires just before the click event |
+| `"load"` | `requestIdleCallback` after `DOMContentLoaded` |
+
+The prefetch module uses `<link rel="prefetch">` where supported and falls back to `fetch()` with `priority: "low"`. Prefetches are deduplicated per URL; slow connections (Save-Data header, 2G/slow-2G) are skipped unless the caller passes `ignoreSlowConnection: true`.
+
+### `prefetchAll`
+
+Setting `prefetchAll` on `<ClientRouter />` opts every same-origin link that does not carry `data-zfb-prefetch="false"` into the `"hover"` strategy:
+
+```tsx
+<ClientRouter prefetchAll />
+```
+
+This is equivalent to adding `data-zfb-prefetch="hover"` to every link on every page.
+
+### Disabling prefetch site-wide
+
+Set `prefetch.disabled` in `zfb.config.ts` to suppress the prefetch wiring for the entire site:
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  prefetch: { disabled: true },
+});
+```
+
+When this flag is set, the bundler emits a `<meta name="zfb-prefetch-disabled" content="true">` tag on every page and the prefetch module becomes a no-op at runtime. See [defineConfig](../api/define-config.mdx) for the full config reference.
+
+## Navigation lifecycle events
+
+The router dispatches six custom events on `document` during each navigation. Listen with `document.addEventListener`:
+
+```ts
+document.addEventListener("zfb:before-preparation", (e) => {
+  // e is a TransitionBeforePreparationEvent
+  console.log("navigating from", e.from.href, "to", e.to.href);
+});
+```
+
+### Event reference
+
+| Event name | Cancellable | When it fires |
+|---|---|---|
+| `zfb:before-preparation` | Yes | Before the next page is fetched. Cancel to abort the navigation and fall back to a full browser load. |
+| `zfb:after-preparation` | No | After the next page has been fetched and parsed into `event.newDocument`. |
+| `zfb:before-swap` | No | Just before `<head>` and `<body>` are swapped. |
+| `zfb:after-swap` | No | Immediately after the DOM swap; the new body is live but scripts have not yet re-executed. |
+| `zfb:page-load` | No | After new-page scripts have re-executed and islands have been re-mounted. Equivalent to `DOMContentLoaded` for the incoming page. |
+| `zfb:navigation-aborted` | No | The navigation was cancelled (e.g. `e.preventDefault()` on `zfb:before-preparation`, or an in-flight navigation was superseded by a newer one). |
+
+### `zfb:before-preparation` event properties
+
+`TransitionBeforePreparationEvent` extends `Event` with:
+
+```ts
+event.from            // URL  — current page URL
+event.to              // URL  — destination URL (writable)
+event.direction       // "forward" | "back"
+event.navigationType  // "push" | "replace" | "traverse"
+event.sourceElement   // Element | undefined — the <a> or <form> that triggered navigation
+event.info            // any  — value passed to navigate() options.info
+event.newDocument     // Document  — populated after fetch (writable)
+event.signal          // AbortSignal — aborted if a newer navigation supersedes this one
+event.formData        // FormData | undefined — set for POST form submissions
+event.loader          // () => Promise<void> — call to execute the default fetch; replace to use a custom loader
+```
+
+Call `event.preventDefault()` to stop the navigation; the router will then trigger a full browser load to the destination.
+
+### `zfb:before-swap` event properties
+
+`TransitionBeforeSwapEvent` extends the same base and additionally exposes:
+
+```ts
+event.viewTransition  // ViewTransition — the active View Transition object
+event.swap            // () => void — call to execute the default head/body swap; replace to implement a custom swap
+```
+
+### Example: run code after every SPA navigation
+
+```ts
+document.addEventListener("zfb:page-load", () => {
+  // Re-initialise analytics, syntax highlighters, etc.
+  initHighlighter();
+});
+```
+
+### Example: intercept and redirect a navigation
+
+```ts
+document.addEventListener("zfb:before-preparation", (e) => {
+  if (e.to.pathname.startsWith("/beta/")) {
+    e.to = new URL(e.to.href.replace("/beta/", "/stable/"));
+  }
+});
+```
+
+## View Transitions
+
+When the browser supports `document.startViewTransition` (Chrome 111+, Edge 111+), the router wraps every swap in a native View Transition. The transition plays the browser's default cross-fade unless you add CSS `view-transition-name` declarations.
+
+### CSS opt-in
+
+Name the elements you want to animate independently:
+
+```css
+/* Shared element transition — the header animates from its old position to its new one */
+header {
+  view-transition-name: site-header;
+}
+
+/* Page content fades/slides as a named region */
+main {
+  view-transition-name: page-content;
+}
+```
+
+Standard `::view-transition-old` and `::view-transition-new` pseudo-elements are available for custom animation keyframes.
+
+### Feature detection
+
+The router exposes two helpers:
+
+```ts
+import {
+  supportsViewTransitions,
+  transitionEnabledOnThisPage,
+} from "@takazudo/zfb-runtime/client-router/router";
+
+// true if the browser has document.startViewTransition
+console.log(supportsViewTransitions);
+
+// true if the current page has <ClientRouter /> mounted
+console.log(transitionEnabledOnThisPage());
+```
+
+When `supportsViewTransitions` is `false`, the `fallback` prop controls the degraded experience (see [Fallback modes](#fallback-modes)).
+
+### Persisting elements across navigations
+
+Add `data-zfb-transition-persist="<id>"` to an element you want to keep alive across soft navigations instead of discarding and re-creating it. Both the old and new body must carry the attribute with the same `id`:
+
+```html
+<!-- Keeps this video player alive across page navigations -->
+<video data-zfb-transition-persist="promo-video" src="/intro.mp4" autoplay />
+```
+
+The router lifts persisted elements to `<html>` before the body swap (using the zero-detachment `moveBefore()` API on Chrome 133+ or a fallback `appendChild`) and reattaches them to their matching target in the new body. This is the mechanism Astro uses to keep `<canvas>` and `<video>` alive without losing WebGL context or playback state.
+
+## `<ViewTransitions />` — deprecated
+
+`@takazudo/zfb-runtime` also exports `<ViewTransitions />`. **This component is a typed no-op** kept for backward compatibility only; it renders nothing and registers nothing.
+
+```tsx
+// Old code — compiles but does nothing
+import { ViewTransitions } from "@takazudo/zfb-runtime";
+<ViewTransitions />
+
+// Use this instead
+import { ClientRouter } from "@takazudo/zfb-runtime";
+<ClientRouter fallback="animate" />
+```
+
+Cross-document (MPA) View Transitions — where clicking a link triggers a native browser animation without any JavaScript router — are enabled via the CSS `@view-transition` at-rule on both pages, not via any component:
+
+```css
+/* global.css — applies to every page */
+@view-transition {
+  navigation: auto;
+}
+```
+
+See [MDN: @view-transition](https://developer.mozilla.org/en-US/docs/Web/CSS/@view-transition) for browser support and animation customisation options.
