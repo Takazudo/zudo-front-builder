@@ -109,7 +109,7 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
 compatibility_flags = ["nodejs_compat"]
 ```
 
-このフラグがないと、Worker は `node:async_hooks` を欠落モジュールとして示すエラーとともに起動に失敗します。より深い仕組みについては [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx#the-getcloudflarecontext-trick) を参照してください。
+このフラグがないと、Worker は `node:async_hooks` を欠落モジュールとして示すエラーとともに起動に失敗します。より深い仕組みについては [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx#getcloudflarecontext-のトリック) を参照してください。
 
 </Warning>
 
@@ -228,7 +228,132 @@ database_id = "<preview-uuid>"
 
 ## ローカル開発
 
-`wrangler pages dev dist/` は、ビルドされた `_worker.js` を**ローカル**の D1 データベース（`.wrangler/` 下の SQLite ファイル）とともにローカルで動かします。最初の実行前に、`wrangler d1 migrations apply webshop --local` でマイグレーションを適用してください。
+<Tip title="動作するエンドツーエンドの実例">
+
+[`zfb-example-webshop`](https://github.com/Takazudo/zfb-example-webshop)
+のデモは、まさにこのレシピを配線して動かしたものです。その `dev:cf` の
+package.json スクリプトと README の「ローカル開発」セクションは、以下で説明する
+2 プロセスのループそのものです。スニペットを断片的にコピーするより全体が組み上がった
+状態を見たい場合は、これをクローンしてください。（このデモはクライアント JS を一切
+出力しませんが、それはショップ自身の設計上の選択であって zfb の制限ではありません。
+ブラウザ JS が必要な場合、zfb は `clientScript()` 経由の `.client.*` クライアント
+スクリプトをサポートしています。）
+
+</Tip>
+
+アプリをローカルで動かす方法は 2 つあり、それぞれ異なる問いに答えます:
+
+- **`zfb dev`** — 高速なページ作成ループ。`prerender = false` のルートの SSR
+  **レンダリングコード**を埋め込みの V8 アイソレートを通して動かします（上記の
+  [`prerender = false` の dev と本番の同等性](#prerender-false-の-dev-と本番の同等性)
+  を参照）。ただし **Worker バインディングは一切公開しません**。`zfb dev` 下の SSR
+  ルートで `getCloudflareContext<Env>()` を呼び出しても `env` は得られないため、
+  `env.DB`（または他のバインディング）を読むルートはここでは動作しません。
+  バインディングに**触れない**ルートのレイアウト、スタイリング、ルーティングの反復作業に
+  使ってください。
+- **`wrangler pages dev dist/`** — バインディングをリアルに再現するループ。ビルドされた
+  `_worker.js` を**ローカル**の D1 データベース（`.wrangler/` 下の SQLite ファイル）に
+  対して動かし、実際の `compatibility_flags` を反映し、本物のバインディングのバグを
+  表面化します。`env` を読む SSR ルートの作業をするときはこちらを使ってください。
+
+このセクションの残りはバインディングをリアルに再現するループについて説明します。
+
+### 初回セットアップ
+
+ローカルの SQLite データベースに D1 マイグレーションを適用します（冪等 — 再実行しても
+安全です）:
+
+```sh
+wrangler d1 migrations apply webshop --local
+```
+
+`webshop` 引数は `wrangler.toml` の `database_name` と対応しています。存在しない場合は
+`.wrangler/state/v3/d1/...` が作成されます。
+
+### 編集→反映のループ
+
+2 つのプロセスを並べて動かします: `wrangler pages dev dist/`（`dist/` が変更されると
+自動リロード）と、ソースファイルを編集するたびに `zfb build` を再実行するウォッチャー
+です。最もきれいな方法は `devDependencies` の `concurrently` + `chokidar-cli` を使う
+ことです:
+
+```sh
+pnpm add -D concurrently chokidar-cli
+```
+
+次に `dev:cf` スクリプトを `package.json` に追加します（ウォッチのグロブはプロジェクトの
+レイアウトに合わせて調整してください）:
+
+```json
+{
+  "scripts": {
+    "dev:cf:setup": "wrangler d1 migrations apply webshop --local && pnpm build",
+    "dev:cf": "pnpm dev:cf:setup && concurrently --names 'wrangler,watch' --kill-others 'wrangler pages dev dist/ --port 8788' \"chokidar 'pages/**/*.tsx' 'components/**/*.tsx' 'layouts/**/*.tsx' 'lib/**/*.ts' 'styles/**/*.css' --command 'pnpm build' --initial false --debounce 200\""
+  }
+}
+```
+
+次を実行します:
+
+```sh
+pnpm dev:cf
+```
+
+TSX または CSS ソースファイルを編集すると、おおよそ 1〜2 秒でブラウザに変更が反映されます。
+ウォッチャーが 200 ms デバウンスし、`pnpm build` が `dist/` を再出力し、
+`wrangler pages dev` が `_zfb_inner.mjs` の内容の変更に気づいて Worker を自動リロード
+します。Ctrl-C で両プロセスがきれいに終了します。
+
+<Warning title="`pnpm dev` と `pnpm dev:cf` を同時に実行しないこと">
+
+`zfb dev` の `predev` ステップ（`rm -rf dist .zfb .zfb-build`）は、`wrangler pages dev`
+が現在配信中の `dist/` ディレクトリを消去します。wrangler プロセスは、その後のリビルドが
+リロードをトリガーしなくなる劣化状態に入る可能性があります。一度に一つのループを選んで
+ください。誤って両方を実行してしまった場合は、すべてを停止し、`pnpm build` を再実行して
+から `pnpm dev:cf` を再起動してください。
+
+</Warning>
+
+### トラブルシューティング
+
+**ポート 8788 で `Address already in use`。** 別の `wrangler pages dev` がまだ動いて
+います。`lsof -ti TCP:8788 -sTCP:LISTEN | xargs kill` で終了させるか、wrangler の
+呼び出しに `--port 8789` を渡してください。`-sTCP:LISTEN` フィルタが重要です。素の
+`lsof -ti TCP:8788` は接続中のブラウザ／クライアントの PID も返すため、これがないと
+`xargs kill` が無関係なアプリを巻き添えにする可能性があります。
+
+**Worker が `node:async_hooks` を名指しするエラーで起動に失敗する。** `wrangler.toml`
+に `compatibility_flags = ["nodejs_compat"]` がありません。アダプターは
+`node:async_hooks` をトップレベルでインポートするため、このフラグがないと Worker は
+そもそも起動しません。バインディングが欠けた状態でページを配信するのではなく、起動
+自体に失敗します。このページの前にある **"compatibility_flags = ['nodejs_compat'] は
+必須"** の警告を参照してください。このフラグはアダプターが `env` を SSR ルートに
+引き渡すための必須条件であり、任意のオプトインではありません。
+
+**ページは表示されるが `env.DB` が undefined。** Worker は起動しています（つまり
+`nodejs_compat` は設定済みです）が、D1 バインディングがそこに届いていません。
+`wrangler.toml` のバインディング名（`binding = "DB"`）が `env` で読むプロパティと
+一致していること、そしてそのバインディングを宣言する `wrangler.toml` のあるディレクトリ
+から `wrangler pages dev dist/` を起動したことを確認してください。
+
+**編集後もブラウザに古いコンテンツが表示される。** 通常、直前の `pnpm build` が失敗して
+います。`concurrently` の出力内の `[watch]` ストリームでビルドエラーを確認してください。
+wrangler のリロードは `dist/` が実際に更新されたときにのみ発火します。
+
+**カート / D1 データが消えた。** ローカルの SQLite DB は `.wrangler/state/v3/d1/...` 下に
+存在し、**リビルドをまたいで永続します**。`.wrangler/` を削除した場合、別の作業
+ディレクトリに切り替えた場合、または `wrangler.toml` の `database_name` を変更した場合に
+リセットされます。それらの後に `wrangler d1 migrations apply webshop --local` を再実行
+して新鮮なスキーマを取得してください。
+
+<Tip title="なぜ 1 つではなく 2 つのプロセスなのか">
+
+`zfb build` は（小さなプロジェクトではサブ秒で）十分に高速なため、ユーザーランドの
+ウォッチャーを通じて保存のたびに実行することは、組み込みの `--watch` モードと区別が
+つきません。2 プロセスのレシピは、wrangler の Worker リロードの動作を、再実装不要な
+ブラックボックスとして保持します。
+
+</Tip>
 
 [als]: https://nodejs.org/api/async_context.html
 [d1]: https://developers.cloudflare.com/d1/
