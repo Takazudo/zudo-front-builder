@@ -169,7 +169,9 @@ zfb check --skip-tsc
 ```
 
 <Tip>
+
 `zfb check` is the recommended way to validate content collections in CI. Wire it after `zfb build` to catch frontmatter violations that the build silently ignores.
+
 </Tip>
 
 ## Environment variables
@@ -183,5 +185,7 @@ The following environment variables affect `zfb` globally (not specific to one s
 | `ZFB_PLUGIN_HOOK_TIMEOUT` | `120` (seconds) | Maximum time (in seconds) any single plugin hook reply is awaited before the plugin host is force-killed and the build fails. Precedence: `pluginHookTimeoutSecs` in config > this env var > 120s built-in default. |
 
 <Note>
+
 `ZFB_PLUGIN_HOOK_TIMEOUT` can also be set via `pluginHookTimeoutSecs` in [defineConfig](./define-config.mdx). The config field takes precedence over the environment variable.
+
 </Note>
