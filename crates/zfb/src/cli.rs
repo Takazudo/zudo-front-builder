@@ -64,6 +64,9 @@ pub struct NewArgs {
 /// `ZFB_DEV_EAGER=1` is the user-facing escape hatch back to fully
 /// eager per-tick rendering, and `ZFB_LAZY_DEV_RENDER=0|1` is the
 /// precise override that wins over `ZFB_DEV_EAGER` when both are set.
+/// `ZFB_DEV_BOOT_LAZY=1` (issue #1057) additionally defers the BOOT
+/// render: a valid prebuilt `dist/` is served immediately and each route
+/// re-renders on its first request.
 #[derive(Debug, Args)]
 #[command(after_help = "Environment variables:
   ZFB_DEV_EAGER=1          Disable lazy dev rendering: re-render every affected
@@ -71,7 +74,12 @@ pub struct NewArgs {
                            restoring the pre-lazy behaviour).
   ZFB_LAZY_DEV_RENDER=0|1  Precise override of the lazy dev-render switch
                            (1|true forces lazy, 0|false forces eager). Takes
-                           precedence over ZFB_DEV_EAGER when both are set.")]
+                           precedence over ZFB_DEV_EAGER when both are set.
+  ZFB_DEV_BOOT_LAZY=1      Opt-in fast boot: when a valid prebuilt `dist/` is
+                           present, serve it immediately and defer per-route
+                           rendering to the first request, instead of rendering
+                           every route at boot. Requires lazy rendering (no-op
+                           when ZFB_DEV_EAGER is set). Off by default.")]
 pub struct DevArgs {
     /// Port to bind the dev server to. Falls back to `port` from
     /// `zfb.config.json`, then to `3000`.
@@ -227,6 +235,21 @@ mod tests {
         assert!(
             help.contains("precedence over ZFB_DEV_EAGER"),
             "dev help must state the precedence rule:\n{help}"
+        );
+    }
+
+    /// Issue #1057 — `zfb dev --help` documents the opt-in boot-lazy switch.
+    #[test]
+    fn dev_help_documents_boot_lazy_env_switch() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let dev = cmd
+            .find_subcommand_mut("dev")
+            .expect("dev subcommand exists");
+        let help = dev.render_long_help().to_string();
+        assert!(
+            help.contains("ZFB_DEV_BOOT_LAZY=1"),
+            "dev help must document the ZFB_DEV_BOOT_LAZY opt-in switch:\n{help}"
         );
     }
 }

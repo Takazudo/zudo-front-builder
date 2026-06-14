@@ -924,51 +924,75 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         reload_renderer,
     };
 
-    // 3b. Eager initial render (zfb#642 / #644).
+    // 3b. Boot render — eager by default (zfb#642 / #644), opt-in lazy (#1057).
     //
-    // `BuildOrchestrator::run` is purely watcher-driven — it renders a
-    // page only after a file-change event. Nothing else populates the
-    // dev page cache: the in-memory `PageCache` starts empty and the dev
-    // server's only HTML source is the on-disk `read_from_dist` fallback
-    // pointed at `dev_html_root` (issue #534). So without an eager render
-    // here, a fresh `zfb dev` leaves `.zfb-build/dev-pages/` empty and
-    // 404s EVERY route until the user happens to edit a file. (Before
-    // #534 the fallback read `dist/`, which a prior `pnpm build` had
-    // populated, masking the gap.)
-    //
-    // Run the initial full render NOW — synchronously, before the watcher
-    // loop is spawned and before `output::ready` announces the server —
-    // so `dev-pages/` is populated before the server can serve a single
-    // request. Mirrors the eager CSS / islands boot bundles above. Going
-    // through the orchestrator/pipeline (not the raw render callback) also
-    // primes `DevAssetPipeline.last_bytes` so the first real edit dedups
-    // correctly. A render error here is fatal: the user would otherwise
-    // stare at a wall of 404s with no clue why.
-    match orchestrator.initial_build(&ctx) {
-        Ok(Some(outcome)) => {
-            let expected_routes = dev_session.as_ref().map(|s| s.route_count()).unwrap_or(0);
-            // Surface the previously-silent zero-page failure (zfb#642):
-            // the renderer knows about routes, yet produced no HTML. Every
-            // route would 404. Make it visible on stderr instead.
-            if expected_routes > 0 && outcome.pages_rendered == 0 {
+    // Opt-in boot-lazy mode (issue #1057): with `ZFB_DEV_BOOT_LAZY=1` AND a
+    // valid prebuilt `dist/` present, SKIP the synchronous eager boot render
+    // entirely — mark every route stale and let the dev server serve the
+    // prebuilt `dist/` immediately (via the `read_from_dist` cold fallback,
+    // which already points at `dist_root`), while the request-time
+    // render-on-request hook (#1026) re-renders each route on its first GET.
+    // Turns a large content set's multi-second blocking boot into a
+    // near-instant serve. Requires lazy rendering (the hook only exists
+    // then), enforced by `boot_lazy_enabled`; without a servable `dist/` we
+    // fall through to the eager render so the server never serves 404s.
+    let boot_lazy = dev_session
+        .as_ref()
+        .map(|s| boot_lazy_enabled(s.lazy_render_enabled()))
+        .unwrap_or(false)
+        && dist_is_servable_seed(&dist_root);
+
+    if boot_lazy {
+        if let Some(session) = dev_session.as_ref() {
+            // Consume the one-shot boot-render-pending flag (the eager boot
+            // render that would have consumed it is being skipped) so the
+            // FIRST watcher edit takes the normal lazy path, not the
+            // boot-eager one.
+            let _ = session.inner.take_boot_render_pending();
+            let n = session.mark_all_routes_stale();
+            output::info(format!(
+                "dev: boot-lazy — serving prebuilt dist/ for {n} route(s); each \
+                 re-renders on first request (ZFB_DEV_BOOT_LAZY=1)"
+            ));
+        }
+    } else {
+        // Eager initial render (zfb#642 / #644).
+        //
+        // `BuildOrchestrator::run` is purely watcher-driven — it renders a
+        // page only after a file-change event. Without this eager render a
+        // fresh `zfb dev` leaves `.zfb-build/dev-pages/` empty and 404s EVERY
+        // route until the user edits a file. Run the initial full render NOW
+        // — synchronously, before the watcher loop and before `output::ready`
+        // — so the dev cache is populated before the server serves a request.
+        // Going through the orchestrator/pipeline (not the raw render
+        // callback) also primes `DevAssetPipeline.last_bytes` so the first
+        // real edit dedups correctly.
+        match orchestrator.initial_build(&ctx) {
+            Ok(Some(outcome)) => {
+                let expected_routes = dev_session.as_ref().map(|s| s.route_count()).unwrap_or(0);
+                // Surface the previously-silent zero-page failure (zfb#642):
+                // the renderer knows about routes, yet produced no HTML. Every
+                // route would 404. Make it visible on stderr instead.
+                if expected_routes > 0 && outcome.pages_rendered == 0 {
+                    output::error(format!(
+                        "dev initial render produced 0 pages for {expected_routes} known route(s) — \
+                         every route will 404. This usually means the renderer failed silently; \
+                         check the bundler / runtime output above."
+                    ));
+                }
+            }
+            Ok(None) => {
+                // No pages in the graph at all (renderer disabled or a
+                // project with zero SSG routes). The dev server still boots so
+                // the user can poke at it / fix the project; SSR-only routes
+                // still work via the request-time path.
+            }
+            Err(err) => {
                 output::error(format!(
-                    "dev initial render produced 0 pages for {expected_routes} known route(s) — \
-                     every route will 404. This usually means the renderer failed silently; \
-                     check the bundler / runtime output above."
+                    "dev initial render failed — every route will 404 until the next \
+                     successful rebuild: {err:#}"
                 ));
             }
-        }
-        Ok(None) => {
-            // No pages in the graph at all (renderer disabled or a
-            // project with zero SSG routes). The dev server still boots so
-            // the user can poke at it / fix the project; SSR-only routes
-            // still work via the request-time path.
-        }
-        Err(err) => {
-            output::error(format!(
-                "dev initial render failed — every route will 404 until the next \
-                 successful rebuild: {err:#}"
-            ));
         }
     }
 
@@ -1377,6 +1401,87 @@ fn resolve_lazy_dev_render(lazy_var: Option<&str>, eager_var: Option<&str>) -> b
         }
     }
     LAZY_DEV_RENDER_DEFAULT
+}
+
+/// Compile-time default for the opt-in boot-lazy switch (issue #1057). OFF —
+/// the default `zfb dev` boot semantics ("every route exists on disk before
+/// the server is ready") are preserved exactly.
+const BOOT_LAZY_DEFAULT: bool = false;
+
+/// Resolve the opt-in boot-lazy switch once at boot (issue #1057).
+///
+/// `lazy_render_on` is the resolved lazy dev-render switch. Boot-lazy REUSES
+/// the request-time render-on-request hook (#1026), which is only installed
+/// when lazy rendering is on — so boot-lazy is force-disabled when lazy
+/// rendering is off (otherwise the prebuilt `dist/` would be served forever
+/// with no re-render). When enabled, the caller additionally requires a
+/// valid prebuilt `dist/` to seed from (see [`dist_is_servable_seed`]);
+/// absent that, it falls back to the eager boot render.
+fn boot_lazy_enabled(lazy_render_on: bool) -> bool {
+    boot_lazy_decision(
+        lazy_render_on,
+        std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
+    )
+}
+
+/// Pure boot-lazy decision (issue #1057): on only when lazy rendering is on
+/// AND `ZFB_DEV_BOOT_LAZY` is truthy. Split from [`boot_lazy_enabled`] so the
+/// "requires lazy" rule is unit-testable without process-global env mutation.
+fn boot_lazy_decision(lazy_render_on: bool, boot_lazy_var: Option<&str>) -> bool {
+    lazy_render_on && resolve_boot_lazy(boot_lazy_var)
+}
+
+/// Pure precedence rule for the boot-lazy switch (issue #1057):
+/// `ZFB_DEV_BOOT_LAZY=1|true` enables it; everything else (unset / `0` /
+/// unrecognized) falls back to [`BOOT_LAZY_DEFAULT`] (off).
+fn resolve_boot_lazy(var: Option<&str>) -> bool {
+    match var {
+        Some(raw) => {
+            let t = raw.trim();
+            t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
+        }
+        None => BOOT_LAZY_DEFAULT,
+    }
+}
+
+/// Freshness gate for boot-lazy (issue #1057): is `dist_root` a prebuilt
+/// site we can safely serve immediately as the cold seed?
+///
+/// Minimal, conservative check: the directory exists and contains at least
+/// one `index.html` (the shape every built route writes). When this is
+/// false — no prior `pnpm build`, or an empty/partial `dist/` — boot-lazy is
+/// declined and the eager boot render runs instead, so the server never
+/// comes up serving 404s. Content staleness is NOT gated here: boot-lazy
+/// marks every route stale, so the first request to each route re-renders it
+/// fresh through the live host; the prebuilt bytes are only the
+/// before-first-request seed.
+fn dist_is_servable_seed(dist_root: &Path) -> bool {
+    fn has_index_html(dir: &Path, depth: usize) -> bool {
+        // Bounded walk: a built site writes `index.html` at the root and/or
+        // one per route dir. Cap recursion so a pathological tree can't stall
+        // boot.
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        let mut subdirs: Vec<PathBuf> = Vec::new();
+        for entry in rd.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => {
+                    if path.file_name().and_then(|n| n.to_str()) == Some("index.html") {
+                        return true;
+                    }
+                }
+                Ok(ft) if ft.is_dir() => subdirs.push(path),
+                _ => {}
+            }
+        }
+        subdirs.iter().any(|d| has_index_html(d, depth + 1))
+    }
+    dist_root.is_dir() && has_index_html(dist_root, 0)
 }
 
 /// Per-route staleness state for lazy dev rendering (issue #1025).
@@ -2103,6 +2208,25 @@ impl DevRenderSession {
             .unwrap_or_else(|p| p.into_inner())
             .routes_by_source
             .len()
+    }
+
+    /// Mark EVERY known SSG route stale (issue #1057 boot-lazy). Used in
+    /// place of the eager initial render: the dev server serves the prebuilt
+    /// `dist/` for each route via the `read_from_dist` cold-cache fallback,
+    /// and the request-time render-on-request hook (#1026) re-renders each
+    /// route on its first GET/HEAD. Returns the number of routes marked.
+    fn mark_all_routes_stale(&self) -> usize {
+        let outputs: Vec<PathBuf> = {
+            let tables = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
+            tables
+                .routes_by_source
+                .values()
+                .flat_map(|entries| entries.iter().map(|de| de.entry.output_path.clone()))
+                .collect()
+        };
+        let n = outputs.len();
+        self.inner.mark_stale(outputs);
+        n
     }
 
     /// Tear down the underlying [`RendererState`] cleanly. Safe to call
@@ -5246,6 +5370,73 @@ mod tests {
                 // escape hatch, then the default.
                 assert!(!resolve_lazy_dev_render(Some("banana"), Some("1")));
                 assert!(resolve_lazy_dev_render(Some("banana"), None));
+            }
+
+            /// Issue #1057 — boot-lazy switch resolution: truthy only for
+            /// `1`/`true` (case/whitespace-insensitive); everything else
+            /// (unset, `0`, unrecognized) is off.
+            #[test]
+            fn boot_lazy_switch_resolution() {
+                assert!(!resolve_boot_lazy(None));
+                assert!(!resolve_boot_lazy(Some("0")));
+                assert!(!resolve_boot_lazy(Some("false")));
+                assert!(!resolve_boot_lazy(Some("banana")));
+                assert!(resolve_boot_lazy(Some("1")));
+                assert!(resolve_boot_lazy(Some("true")));
+                assert!(resolve_boot_lazy(Some(" TRUE ")));
+            }
+
+            /// Issue #1057 — boot-lazy REQUIRES lazy rendering (it reuses the
+            /// request-time render-on-request hook, installed only when lazy
+            /// is on). With lazy off the mode is force-disabled even when the
+            /// env asks for it.
+            #[test]
+            fn boot_lazy_requires_lazy_rendering() {
+                // lazy on + env on => on.
+                assert!(boot_lazy_decision(true, Some("1")));
+                // lazy OFF + env on => OFF (the key invariant).
+                assert!(!boot_lazy_decision(false, Some("1")));
+                assert!(!boot_lazy_decision(false, Some("true")));
+                // lazy on but env off/unset => off.
+                assert!(!boot_lazy_decision(true, None));
+                assert!(!boot_lazy_decision(true, Some("0")));
+            }
+
+            /// Issue #1057 — the freshness gate accepts a `dist/` only when it
+            /// contains at least one `index.html` (root or nested), and
+            /// declines an absent / empty / html-less directory so boot-lazy
+            /// never comes up serving 404s.
+            #[test]
+            fn dist_servable_seed_gate() {
+                use std::fs;
+                let tmp = tempfile::tempdir().expect("tempdir");
+                let root = tmp.path();
+
+                // Absent dir => not servable.
+                assert!(!dist_is_servable_seed(&root.join("does-not-exist")));
+
+                // Empty dir => not servable.
+                let empty = root.join("empty");
+                fs::create_dir_all(&empty).unwrap();
+                assert!(!dist_is_servable_seed(&empty));
+
+                // Dir with non-html files only => not servable.
+                let noindex = root.join("noindex");
+                fs::create_dir_all(&noindex).unwrap();
+                fs::write(noindex.join("styles.css"), b"body{}").unwrap();
+                assert!(!dist_is_servable_seed(&noindex));
+
+                // Root index.html => servable.
+                let rooted = root.join("rooted");
+                fs::create_dir_all(&rooted).unwrap();
+                fs::write(rooted.join("index.html"), b"<html></html>").unwrap();
+                assert!(dist_is_servable_seed(&rooted));
+
+                // Nested index.html (route dir) only => servable.
+                let nested = root.join("nested");
+                fs::create_dir_all(nested.join("posts/a")).unwrap();
+                fs::write(nested.join("posts/a/index.html"), b"<html></html>").unwrap();
+                assert!(dist_is_servable_seed(&nested));
             }
 
             #[test]
