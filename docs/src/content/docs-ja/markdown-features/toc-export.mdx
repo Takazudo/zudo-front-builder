@@ -1,0 +1,121 @@
+---
+title: TOC エクスポート
+description: ページの目次を構造化された JSON としてエクスポートし、サイドバーやフローティング TOC コンポーネントで利用する。
+tier: Opt-in
+---
+
+`tocExport` 機能は、ドキュメントの見出しをたどり、処理した各ファイルの先頭に MDX の名前付きエクスポートを注入します:
+
+```ts
+export const toc: TocEntry[];
+```
+
+フレームワークは `entry.toc` を消費して、描画済みの HTML をスクレイピングすることなくサイドバーやフローティング TOC コンポーネントを描画します — [Fumadocs](https://fumadocs.vercel.app/) や同様のドキュメントフレームワークが使うのと同じパターンです。
+
+## 有効化
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      tocExport: {},         // defaults: maxDepth 3 (h2 + h3)
+    },
+  },
+});
+```
+
+エクスポートを h2 のみに制限するには:
+
+```ts
+tocExport: { maxDepth: 2 },
+```
+
+## 出力の形
+
+エクスポートされる配列の各エントリは、次のフィールドを持ちます:
+
+```ts
+type TocEntry = {
+  depth: number;        // absolute heading depth: 2–6
+  id: string;           // slug assigned by HeadingLinksPlugin
+  text: string;         // plain-text heading content (hash-link stripped)
+  children: TocEntry[]; // nested sub-headings within maxDepth
+};
+```
+
+### 例
+
+次の Markdown ソースに対して:
+
+```md
+## Introduction
+
+### Background
+
+## Conclusion
+```
+
+プラグインは（ドキュメント HTML の前に）次を注入します:
+
+```ts
+export const toc = [
+  {
+    "depth": 2,
+    "id": "introduction",
+    "text": "Introduction",
+    "children": [
+      { "depth": 3, "id": "background", "text": "Background", "children": [] }
+    ]
+  },
+  { "depth": 2, "id": "conclusion", "text": "Conclusion", "children": [] }
+];
+```
+
+## オプション
+
+| オプション | デフォルト | 説明 |
+|--------|---------|-------------|
+| `maxDepth` | `3` | 含める見出しの最大深さ（絶対値、2〜6）。`2` → h2 のみ。`3` → h2 + h3。`4` → h2〜h4。以下同様。 |
+
+<Note>
+
+`tocExport` の `maxDepth` は **絶対** 深さです（2 = h2、3 = h3、…）。これは、h2 を起点として *そこからの* レベル数を数える `headingMarkerToc.maxDepth` とは異なります。この 2 つの機能は意図的に異なるセマンティクスを採用しています — 各機能のオプションリファレンスを参照してください。
+
+</Note>
+
+## `headingMarkerToc` との関係
+
+`tocExport` と `headingMarkerToc` は **独立した** 機能です — どちらか一方、両方、あるいはどちらも有効化しないことが可能です。互いに干渉しません:
+
+- `headingMarkerToc` は、指定したアンカー見出しの後に `<ul>/<li>` のリストをドキュメント本文へ挿入する。
+- `tocExport` は、フレームワークのサイドバー／TOC コンポーネントで消費するための構造化された `export const toc = [...]` を出力する。
+
+本文への挿入と、サイドバー向けのデータエクスポートを同時に行いたい場合は、両方を有効化してください。
+
+## TSX ページで `toc` を消費する
+
+`tocExport` を有効化したら、フレームワークのページラッパーで生成されたエクスポートをインポートします:
+
+```tsx
+import { toc } from "./my-page.mdx";
+
+export default function Page() {
+  return (
+    <>
+      <aside>
+        <TocComponent entries={toc} />
+      </aside>
+      <main>
+        <MyContent />
+      </main>
+    </>
+  );
+}
+```
+
+## ビジターの順序
+
+`TocExportPlugin` は、hast フェーズで `HeadingLinksPlugin` の **後に** 実行されます。これにより、各 `<h2>`〜`<h6>` に付与される `id` 属性は、最終的で重複排除済みのスラッグになります。エクスポートされる `toc` 配列内の `id` の値は、描画される HTML 内のものと正確に一致します — ずれは生じません。
+
+エクスポートノード（`JsxRaw`）は、`export` 文がモジュールのトップレベルに現れるという ESM の規約に合わせて、ドキュメントルートの **先頭** に挿入されます。

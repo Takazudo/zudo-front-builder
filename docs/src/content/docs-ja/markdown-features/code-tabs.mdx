@@ -1,0 +1,139 @@
+---
+title: コードタブ
+description: :::code-group ディレクティブで関連するコードブロックをタブストリップにまとめる。
+tier: Opt-in
+---
+
+`codeTabs` 機能は、`:::code-group` コンテナを `<CodeGroup>` JSX 要素に変換します。
+コンテナ内のコードブロックがタブパネルになります。タブのラベルは各フェンスの `title="…"`
+メタから取られ、それがなければ言語 ID に、さらにどちらも設定されていなければ `"tab"` に
+フォールバックします。
+
+## 有効化
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      codeTabs: true,
+    },
+  },
+});
+```
+
+## 使い方
+
+2 つ以上のフェンス付きコードブロックを `:::code-group` コンテナで包みます。
+開始フェンスで `title="…"` を使うと、各タブに人間が読めるラベルを付けられます。
+
+~~~md
+:::code-group
+
+```ts title="index.ts"
+export const greeting = "hello";
+```
+
+```js title="index.js"
+export const greeting = "hello";
+```
+
+```py title="index.py"
+greeting = "hello"
+```
+
+:::
+~~~
+
+## 出力の形
+
+このディレクティブは `<CodeGroup>` JSX 要素を出力します。タブのラベルは `tabs` プロパティに
+JS 配列式として渡されます。各コードブロックは `data-lang` 属性を持つ `<pre>` の子要素になります。
+
+```html
+<CodeGroup tabs={["index.ts","index.js","index.py"]}>
+  <pre data-lang="ts">export const greeting = "hello";</pre>
+  <pre data-lang="js">export const greeting = "hello";</pre>
+  <pre data-lang="py">greeting = "hello"</pre>
+</CodeGroup>
+```
+
+フレームワークは組み込みの `<CodeGroup>` コンポーネントを同梱していません — 自分の
+プロジェクトで用意し、zfb のコンポーネントマップに登録します。最小限の Preact の例を
+次に示します:
+
+```tsx title="src/components/CodeGroup.tsx"
+import { useState } from "preact/hooks";
+
+interface Props {
+  tabs: string[];
+  children: preact.ComponentChildren[];
+}
+
+export function CodeGroup({ tabs, children }: Props) {
+  const [active, setActive] = useState(0);
+  return (
+    <div class="code-group">
+      <div class="code-group-tabs" role="tablist">
+        {tabs.map((label, i) => (
+          <button
+            key={label}
+            role="tab"
+            aria-selected={i === active}
+            onClick={() => setActive(i)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div class="code-group-panels">
+        {children.map((panel, i) => (
+          <div key={i} hidden={i !== active}>
+            {panel}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+## タブラベルのフォールバック
+
+コードブロックに `title=` メタがない場合は、言語 ID がタブのラベルとして使われます。
+どちらも利用できない場合、ラベルは文字列リテラル `"tab"` にフォールバックします。
+
+~~~md
+:::code-group
+
+```ts
+// Tab label → "ts"
+const x = 1;
+```
+
+```
+// Tab label → "tab" (no lang, no title)
+plain text
+```
+
+:::
+~~~
+
+## 型付きの属性スキーマ
+
+`code-group` ディレクティブは、その型付きスキーマで `name` 属性を宣言しています
+（`AttrType::String`、任意）。この属性は、ページ遷移をまたいでアクティブなタブを
+保持するなどの利用側での用途のために予約されています。現在のリリースでは、
+描画される出力には影響しません。
+
+## エッジケース
+
+- **空のコンテナ** — フェンス付きコードブロックを含まない `:::code-group` は、
+  ツリー内で変更されずに残されます。パイプラインはこれを未知のディレクティブとして
+  扱い、プレーンな段落テキストとして出力します。
+- **コード以外の子要素** — タブパネルになるのはフェンス付きコードブロックだけです。
+  コンテナ内のそれ以外のブロックコンテンツ（段落、リストなど）は、
+  何も告げずに破棄されます。
+- **入れ子のコンテナ** — 内側の `:::` が外側のグループを閉じます。`:::code-group`
+  を別の `:::code-group` の中に入れ子にすることはサポートされておらず、
+  空の内側グループが生成されます。
