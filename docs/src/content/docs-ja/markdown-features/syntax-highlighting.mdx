@@ -1,0 +1,40 @@
+---
+title: シンタックスハイライト
+description: syntect によるサーバーサイドのシンタックスハイライト。常時有効でテーマは設定可能。
+tier: Core
+sidebar_position: 56
+---
+
+`SyntectPlugin` は、ビルド時にサーバーサイドのシンタックスハイライトを実行します。
+常に有効です。Markdown 内のすべてのフェンス付きコードブロックは、
+[syntect](https://github.com/trishume/syntect) — Sublime Text 互換の文法を使う
+Rust ライブラリ — によってハイライトされ、色注釈付きの HTML が出力に焼き込まれます。
+ハイライトのために JavaScript がブラウザへ送られることはありません。
+
+## テーマの設定
+
+デフォルトのテーマは `"base16-ocean.dark"` です。`zfb.config.ts` で変更します:
+
+```ts title="zfb.config.ts"
+export default {
+  codeHighlight: {
+    theme: "Solarized (light)",
+  },
+};
+```
+
+カスタムの `.tmTheme` ファイルや、補助的なクライアントサイドのパターンについては、
+以下の専用ガイドで解説しています。
+
+## 詳細なドキュメント
+
+テーマ名、カスタム `.tmTheme` の読み込み、クライアントサイドの補助的なハイライト、
+ビルド後のカスタム文法パターンについては、
+[シンタックスハイライト](../guides/syntax-highlighting.mdx)を参照してください。
+
+## 順序に関する注意
+
+`SyntectPlugin` は hast フェーズで、`CodeTitlePlugin`、`MermaidPlugin`、その他
+すべてのコードブロックビジターの後、**最後に**実行されます。各 `<pre><code>`
+要素を生の HTML フラグメントに置き換えるため、構造化された `<pre>` を読み取る
+必要があるプラグインは、これより前に実行されなければなりません。

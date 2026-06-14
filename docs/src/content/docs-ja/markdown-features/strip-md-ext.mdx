@@ -1,0 +1,43 @@
+---
+title: .md 拡張子の除去
+description: ビルド時に内部リンクの href から .md または .mdx の接尾辞を取り除く。
+tier: Core
+sidebar_position: 55
+---
+
+`StripMdExtensionPlugin` は、内部リンクの `href` 値から `.md` または `.mdx` の
+接尾辞を取り除きます。これにより、`[page](./other.md)` のように記述したリンクは
+`/docs/other` のようなクリーンな出力 URL を生成します。
+
+## 何をするか
+
+hast フェーズで、プラグインはすべての `<a>` 要素をたどります。`href` が
+`.md` または `.mdx` で終わる各リンクに対して:
+
+1. 拡張子を取り除く。
+2. パスの残りの部分、クエリ文字列、フラグメントはそのまま残す。
+
+プラグインが手を加えるのは相対パスとルート相対パスのみです — 絶対 URL
+（`https://…`）やリンク以外の要素は変更されません。
+
+## 設定
+
+ソースマップが利用可能なときは常に有効で、設定キーはありません。プラグインは
+`ResolveLinksPlugin` の後に実行されるため、すでに解決済みのパスを参照します。
+
+## 例
+
+```md
+See [setup](./installation.mdx) for details.
+```
+
+次を生成します:
+
+```html
+<a href="./installation">See setup for details.</a>
+```
+
+## 関連項目
+
+- [リンク解決](./resolve-links.mdx) — このプラグインの前に実行され、
+  参照先のパスを正規化する。
