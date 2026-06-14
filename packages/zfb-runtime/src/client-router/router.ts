@@ -24,7 +24,8 @@
 //   - `inBrowser` evaluates to `typeof document !== "undefined"` rather than relying
 //     on the SSR flag, because the runtime package serves both server- and client-side
 //     code; same observable behavior in browser and on SSR.
-//   - `announce()` is a TODO stub (W3C3 owns the route announcer).
+//   - `announce()` was a TODO stub at W1B port time; W3C3 implemented it and #1063 gave
+//     its 60ms timer explicit lifecycle ownership — see the route-announcer block below.
 //
 // W3C2 additions (this file):
 //   - `navigate()` public entry.
@@ -33,9 +34,10 @@
 //     from `history.state`, registers popstate / load / scrollend listeners, and
 //     marks already-executed scripts with `dataset["zfbExec"] = ""`).
 //
-// W3C1 deferred to W3C3:
-//   - `announce()` route-announcer implementation.
-//   - Click + form intercept.
+// W3C1 items deferred to — and since implemented in — W3C3:
+//   - `announce()` route-announcer implementation (see the route-announcer block below;
+//     timer lifecycle ownership hardened in #1063).
+//   - Click + form intercept (see `handleClick` / `handleSubmit` / `init()` below).
 
 import {
   doPreparation,
@@ -94,31 +96,51 @@ let mostRecentTransition: Transition | undefined;
 // This variable tells us where we came from
 let originalLocation: URL;
 
-// Route announcer — ported from Astro's announce(). Creates (or reuses) a single
-// shared aria-live <div> per navigation, so screen readers announce the new page title.
+// Route announcer — ported from Astro's announce(). Each navigation appends a fresh
+// aria-live <div> (after removing any prior announcer, so exactly one ever exists) and
+// writes the new page title into it 60ms later, so screen readers announce the new page.
+//
+// zfb deviation from Astro / design decision for #1063 (timer lifecycle ownership):
+//   - The 60ms timer id is stored and cleared when a newer navigation supersedes a
+//     still-pending announcement, so a superseded page's title is never written to a
+//     now-detached announcer. (Astro leaves the timer fire-and-forget.)
+//   - The previous announcer is removed before a new one is appended, so they never
+//     accumulate. We deliberately do NOT *reuse* one element across navigations (which
+//     #1063 floated): a reused live region is detached and re-inserted into the a11y
+//     tree on every body swap, and a repeated title would be a no-op text write — both
+//     make re-announcement unreliable across screen readers. Creating a fresh empty
+//     element and writing text 60ms later is Astro's proven, reliable announce trigger.
+//
 // The 60ms delay is Astro's magic number: screen readers need to see the element change
 // and may miss it if it happens too quickly.
+let announceTimer: number | undefined;
+
 const announce = () => {
-  let div = document.createElement("div");
+  // A newer navigation supersedes any still-pending announcement: cancel the old
+  // timer so it can't write a now-stale title after this navigation's swap.
+  if (announceTimer !== undefined) window.clearTimeout(announceTimer);
+
+  // Keep exactly one announcer: drop any leftover from a prior navigation that the
+  // body swap did not already detach.
+  document.querySelector(".zfb-route-announcer")?.remove();
+  const div = document.createElement("div");
   div.setAttribute("aria-live", "assertive");
   div.setAttribute("aria-atomic", "true");
   div.className = "zfb-route-announcer";
   document.body.append(div);
-  setTimeout(
-    () => {
-      // This fire-and-forget timer can outlive its document context — a test
-      // env teardown (vitest/happy-dom) or a real page unload removes `document`
-      // (and `location`) before the 60ms elapses. `typeof` is safe even when the
-      // global is gone, so bail out instead of throwing an unhandled
-      // ReferenceError (#1061); the announcement is moot once the page is gone.
-      // Both globals the callback dereferences are checked, not just `document`.
-      if (typeof document === "undefined" || typeof location === "undefined") return;
-      let title = document.title || document.querySelector("h1")?.textContent || location.pathname;
-      div.textContent = title;
-    },
-    // Screen readers need to see the element change; 60ms is Astro's empirically chosen delay.
-    60,
-  );
+
+  announceTimer = window.setTimeout(() => {
+    announceTimer = undefined;
+    // This timer can outlive its document context — a test-env teardown
+    // (vitest/happy-dom) or a real page unload removes `document` (and
+    // `location`) before the 60ms elapses. `typeof` is safe even when the
+    // global is gone, so bail out instead of throwing an unhandled
+    // ReferenceError (#1061); the announcement is moot once the page is gone.
+    // Both globals the callback dereferences are checked, not just `document`.
+    if (typeof document === "undefined" || typeof location === "undefined") return;
+    const title = document.title || document.querySelector("h1")?.textContent || location.pathname;
+    div.textContent = title;
+  }, 60);
 };
 
 const PERSIST_ATTR = "data-zfb-transition-persist";
@@ -742,6 +764,17 @@ if (inBrowser) {
       // Keep track of state between intervals
       let intervalId: number | undefined, lastY: number, lastX: number, lastIndex: State["index"];
       const scrollInterval = () => {
+        // The interval can outlive its document context — a test-env teardown or a
+        // real page unload removes window/history before the 50ms tick. `typeof`
+        // never throws even when the global is gone: stop the interval and bail
+        // rather than dereferencing a torn-down global (the #1061 bug class; #1063).
+        // In a real browser these globals always exist, so this path is test-env
+        // only. clearInterval may itself be mid-teardown, so guard the call too.
+        if (typeof window === "undefined" || typeof history === "undefined") {
+          if (typeof clearInterval === "function") clearInterval(intervalId);
+          intervalId = undefined;
+          return;
+        }
         // Check the index to see if a popstate event was fired
         if (lastIndex !== history.state?.index) {
           clearInterval(intervalId);
