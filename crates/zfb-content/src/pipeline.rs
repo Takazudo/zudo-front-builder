@@ -1686,18 +1686,26 @@ impl Pipeline {
         if let Some(dir) = themes_dir {
             highlighter.load_themes_from_dir(dir)?;
         }
-        // Build-start validation for dual mode: a misspelled or unloaded
-        // `themeLight`/`themeDark` must surface the documented `UnknownTheme`
-        // error here rather than silently rendering unhighlighted blocks —
-        // the per-block `highlight_lines_dual` call's `Err` is swallowed by
-        // `SyntectPlugin` (mirroring the single-theme path), so the only place
-        // a dual name can be rejected loudly is at construction, after any
-        // `themesDir` themes are loaded. (config.rs only validates that the
-        // pair is *present*; theme-name existence depends on `themesDir`,
-        // which is not known until here.)
-        if let Some((light, dark)) = dual {
+        // Build-start validation (dual #1067, single #1070): a misspelled or
+        // unloaded theme name — the single `theme`, or either of the dual
+        // `themeLight`/`themeDark` — must surface the documented `UnknownTheme`
+        // error here rather than silently rendering unhighlighted blocks. Both
+        // the single `highlight_lines` and the dual `highlight_lines_dual`
+        // per-block calls swallow their `Err` inside `SyntectPlugin`, so the
+        // only place a bad name can be rejected loudly is at construction,
+        // after any `themesDir` themes are loaded. This enforces the
+        // `CodeHighlightConfig` doc promise — "unknown theme names are rejected
+        // with a clear error rather than silently falling back" — for BOTH
+        // modes. (config.rs only validates name *presence* / dual-pair
+        // completeness; theme-name existence depends on `themesDir`, which is
+        // not known until here.)
+        let required_themes: Vec<&str> = match dual {
+            Some((light, dark)) => vec![light, dark],
+            None => theme.into_iter().collect(),
+        };
+        if !required_themes.is_empty() {
             let names = highlighter.theme_names();
-            for name in [light, dark] {
+            for name in required_themes {
                 if !names.iter().any(|n| n == name) {
                     return Err(crate::syntect_highlight::HighlightError::UnknownTheme(
                         name.to_string(),

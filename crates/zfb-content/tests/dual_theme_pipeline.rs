@@ -143,6 +143,56 @@ fn pipeline_spec_dual_unknown_theme_errors() {
     );
 }
 
+// ── Single-theme build-start validation (#1070) ──────────────────────────────
+
+/// Build-start validation for the SINGLE-theme path (#1070): a misspelled or
+/// unloaded `theme` name must surface `HighlightError::UnknownTheme` at pipeline
+/// CONSTRUCTION — same guarantee the dual path already gives (#1067). The
+/// per-block `highlight_lines` error is swallowed by `SyntectPlugin::rewrite_single`
+/// (it would silently leave the block unhighlighted), so construction is the only
+/// place a bad single name can be rejected loudly — honouring the documented
+/// `CodeHighlightConfig` build-start error promise for the single path too.
+#[test]
+fn single_unknown_theme_name_errors_at_construction() {
+    use zfb_content::syntect_highlight::HighlightError;
+
+    // `Pipeline` is not `Debug`, so match on the Result instead of `expect_err`.
+    let err = match Pipeline::with_defaults_and_full_config(
+        Some("NoSuchSingleTheme"),
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        None,
+    ) {
+        Ok(_) => panic!("unknown single theme must error at construction"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, HighlightError::UnknownTheme(n) if n == "NoSuchSingleTheme"),
+        "expected UnknownTheme(NoSuchSingleTheme), got: {err:?}"
+    );
+}
+
+/// The same single-name validation must fire through `PipelineSpec::build_pipeline`
+/// — the path the bundler and snapshot walker actually use.
+#[test]
+fn pipeline_spec_single_unknown_theme_errors() {
+    let spec = PipelineSpec {
+        code_highlight_theme: Some("NoSuchSingleTheme".to_string()),
+        ..PipelineSpec::default()
+    };
+    let err = match spec.build_pipeline() {
+        Ok(_) => panic!("unknown single theme must fail build_pipeline"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("NoSuchSingleTheme"),
+        "build_pipeline error must name the unknown theme: {msg}"
+    );
+}
+
 /// The `<span class="line">` wrapper structure must be identical to the
 /// single-theme path — each line is a mutable Element.
 #[test]
