@@ -24,7 +24,8 @@
 //   - `inBrowser` evaluates to `typeof document !== "undefined"` rather than relying
 //     on the SSR flag, because the runtime package serves both server- and client-side
 //     code; same observable behavior in browser and on SSR.
-//   - `announce()` is a TODO stub (W3C3 owns the route announcer).
+//   - `announce()` was a TODO stub at W1B port time; W3C3 implemented it and #1063 gave
+//     its 60ms timer explicit lifecycle ownership — see the route-announcer block below.
 //
 // W3C2 additions (this file):
 //   - `navigate()` public entry.
@@ -33,9 +34,10 @@
 //     from `history.state`, registers popstate / load / scrollend listeners, and
 //     marks already-executed scripts with `dataset["zfbExec"] = ""`).
 //
-// W3C1 deferred to W3C3:
-//   - `announce()` route-announcer implementation.
-//   - Click + form intercept.
+// W3C1 items deferred to — and since implemented in — W3C3:
+//   - `announce()` route-announcer implementation (see the route-announcer block below;
+//     timer lifecycle ownership hardened in #1063).
+//   - Click + form intercept (see `handleClick` / `handleSubmit` / `init()` below).
 
 import {
   doPreparation,
