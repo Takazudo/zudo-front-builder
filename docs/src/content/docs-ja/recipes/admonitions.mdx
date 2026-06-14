@@ -1,0 +1,191 @@
+---
+title: "レシピ: Admonitions"
+description: 汎用ディレクティブ機能を使って note・tip・info・warning・danger・caution・details ディレクティブを登録し、最小限のコンポーネントスタブと CSS フックを用意します。
+sidebar_position: 3
+category: Recipes
+---
+
+<Info title="このページで扱うこと">
+
+汎用の [`directives`](/docs/markdown-features/directives)（英語）オプトイン機能を使って、admonition の語彙（`note`、`tip`、`info`、`warning`、`danger`、`caution`）と折りたたみ可能な `details` ディレクティブを登録する方法です。最小限のコンポーネントスタブと CSS パターンも含みます。[zudo-doc](https://github.com/zudolab/zudo-doc) が、完全に作り込まれたリファレンス実装です。
+
+</Info>
+
+## 背景
+
+zfb は **エンジン** です。Core プリミティブとして [ディレクティブレジストリ](/docs/markdown-features/directives-registry)（英語）を提供し、それを設定から埋めるための [`directives`](/docs/markdown-features/directives)（英語）オプトイン機能を提供します。エンジンはデフォルトで名前付きディレクティブを **一切** 同梱していません。admonition の語彙（`:::note`、`:::tip` など）はユーザーランドのポリシー判断であり、このレシピはその実装方法の一例を示します。
+
+`:::details`（折りたたみ可能なセクション）は構造的には admonition に似ていますが、意味的には異なるため、別途登録して独自のコンポーネントを与えます。
+
+## 1. ディレクティブを登録する
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    features: {
+      directives: {
+        // Admonition group — all containers with titleFromLabel on (the default)
+        note:    "Note",
+        tip:     "Tip",
+        info:    "Info",
+        warning: "Warning",
+        danger:  "Danger",
+        caution: "Caution",
+
+        // Collapsible section — separate from the admonitions
+        details: {
+          component: "Details",
+          kind: "container",
+          titleFromLabel: true,
+        },
+      },
+    },
+  },
+});
+```
+
+これにより、コンテンツの執筆者は次のように書けるようになります。
+
+```md
+:::note[Optional title]
+
+Note body text.
+
+:::
+
+:::tip
+
+Tip body text (no title).
+
+:::
+
+:::details[Click to expand]
+
+Hidden content that the reader reveals on demand.
+
+:::
+```
+
+パイプラインは `<Note title="Optional title">`、`<Tip>`、`<Details title="Click to expand">` などを出力します。これらの識別子をスコープ内で利用できるようにするのはあなたの責任です。詳しくは [MDX コンポーネント](../concepts/mdx-components.mdx) を参照してください。
+
+## 2. コンポーネントスタブ
+
+これらは始めるための最小限のスタブです。あなたのデザインシステムのトークン、アイコン、ARIA ロールで拡張してください。
+
+```tsx title="components/admonitions.tsx"
+type AdmonitionProps = {
+  title?: string;
+  children: React.ReactNode;
+};
+
+function admonition(kind: string) {
+  return function Admonition({ title, children }: AdmonitionProps) {
+    return (
+      <div class={`admonition admonition-${kind}`} data-kind={kind}>
+        {title && <p class="admonition-title">{title}</p>}
+        <div class="admonition-body">{children}</div>
+      </div>
+    );
+  };
+}
+
+export const Note    = admonition("note");
+export const Tip     = admonition("tip");
+export const Info    = admonition("info");
+export const Warning = admonition("warning");
+export const Danger  = admonition("danger");
+export const Caution = admonition("caution");
+```
+
+```tsx title="components/details.tsx"
+type DetailsProps = {
+  title?: string;
+  children: React.ReactNode;
+};
+
+export function Details({ title, children }: DetailsProps) {
+  return (
+    <details class="directive-details">
+      {title && <summary>{title}</summary>}
+      <div class="directive-details-body">{children}</div>
+    </details>
+  );
+}
+```
+
+## 3. MDX に登録する
+
+これらのコンポーネントを [MDX コンポーネントマップ](../concepts/mdx-components.mdx) に追加して、すべてのページレンダリングでスコープ内に入るようにします。
+
+```tsx title="mdx-components.tsx"
+import { defaultComponents } from "zfb";
+import { Note, Tip, Info, Warning, Danger, Caution } from "./components/admonitions";
+import { Details } from "./components/details";
+
+export default {
+  ...defaultComponents,
+  Note,
+  Tip,
+  Info,
+  Warning,
+  Danger,
+  Caution,
+  Details,
+};
+```
+
+## 4. CSS フックのパターン
+
+各 admonition ラッパーに付く `data-kind` 属性により、種類ごとに別々のクラスを用意しなくても、すべてのバリアントに対する単一の CSS フックが得られます。
+
+```css
+.admonition {
+  border-left: 4px solid var(--admonition-color, #888);
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+  background: color-mix(in srgb, var(--admonition-color, #888) 8%, transparent);
+}
+
+.admonition-title {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.admonition[data-kind="note"]    { --admonition-color: #4a90d9; }
+.admonition[data-kind="tip"]     { --admonition-color: #27ae60; }
+.admonition[data-kind="info"]    { --admonition-color: #5b8dee; }
+.admonition[data-kind="warning"] { --admonition-color: #e67e22; }
+.admonition[data-kind="danger"]  { --admonition-color: #e74c3c; }
+.admonition[data-kind="caution"] { --admonition-color: #f39c12; }
+
+/* Details (collapsible) — separate from admonitions */
+.directive-details {
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  margin: 1rem 0;
+}
+
+.directive-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.25rem 0;
+}
+
+.directive-details-body {
+  padding-top: 0.5rem;
+}
+```
+
+## リファレンス実装
+
+[zudo-doc](https://github.com/zudolab/zudo-doc) は、完全に作り込まれた admonition システムを同梱しています。型付きの ARIA ロール、アイコン SVG、ダークモードのトークン、そしてキーボードとアニメーションをサポートする `Details` コンポーネントです。本番運用に耐えるベースラインとして、そのソースを参照してください。
+
+## 関連項目
+
+- [`directives` 機能リファレンス](/docs/markdown-features/directives)（英語） — このレシピが使うオプトイン機能です。
+- [ディレクティブレジストリ](/docs/markdown-features/directives-registry)（英語） — その下にある Core プリミティブです。
+- [MDX コンポーネント](../concepts/mdx-components.mdx) — コンポーネントをグローバルにスコープへ入れる方法です。
+- [カスタムディレクティブ](../concepts/custom-directives.mdx) — フレームワーク作者向けに、Rust API でディレクティブを登録します。
