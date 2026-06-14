@@ -1,0 +1,100 @@
+---
+title: Markdown 機能
+description: zfb の Markdown パイプラインが提供するすべての機能 — コア（常時有効）とオプトイン（zfb.config.ts で有効化）。
+sidebar_position: 0
+---
+
+zfb の Markdown パイプラインは階層構造になっています。**コア**機能の一群は
+すべてのコンテンツコレクションに対して無条件で動作し、見出しアンカー、
+サーバーサイドのシンタックスハイライト、CJK フレンドリーな強調などを提供します。
+その上に、**オプトイン**機能のカタログがあり、`zfb.config.ts` の
+`markdown.features.*` で一つずつ有効化できます。
+
+このページは全体の地図です。各機能には、使用例・設定キー・順序に関する
+注意点をまとめた専用ページがあります。
+
+## 依存グラフ
+
+```
+zfb-content          — コア機能はここにある。常にコンパイルされる
+  └─ zfb-md-extras   — オプトイン機能。コンパイルはされるが実行時にゲートされる
+       └─ zfb-md-ast — 共有 AST 型（MdastNode、HastNode、ビジター）
+```
+
+`zfb-md-ast` クレートは `MdastVisitor` および `HastVisitor` トレイトと
+共有ノード型を定義します。コアとオプトインの両方の機能がこれらの
+トレイトを実装します。
+
+## ティアの規約
+
+- **コア** — すべてのビルドで有効。設定キーはなし。`zfb-content` に存在する。
+- **オプトイン** — デフォルトでは無効。`zfb.config.ts` の
+  `markdown.features.*` で有効化する。`zfb-md-extras` に存在する。
+
+各機能ページでは、タイトル付近に `Core` または `Opt-in` のバッジが表示されます。
+
+## オプトイン機能を有効化する
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    features: {
+      mermaid: true,
+      directives: {
+        note: "Note",
+        tip: "Tip",
+      },
+    },
+  },
+});
+```
+
+`true`（デフォルトを使用）または設定オブジェクト（特定のオプションを上書き）を
+渡します。キーを省略するとその機能はオフになり、余分なバイトは一切出力されません。
+
+## コア機能
+
+これらの常時有効なプラグインは、`zfb-content` のデフォルトパイプラインの
+一部として同梱されています。
+
+- [CJK フレンドリーな強調](./cjk-friendly.mdx) — CJK の表意文字やかなに隣接する太字／斜体を再トークン化する。
+- [見出しリンク](./heading-links.mdx) — すべての見出しにスラッグ化した `id` 属性と自己参照アンカーリンクを付与する。
+- [コードブロックのタイトル](./code-title.mdx) — `title="…"` からフェンス付きコードブロックの上にファイル名ラベルを描画する。
+- [外部リンク](./external-links.mdx) — 外部リンクに `target` と `rel` 属性を付与する（設定可能）。
+- [リンク解決](./resolve-links.mdx) — コンテンツのソースマップを使って内部リンクの参照先を書き換える。
+- [.md 拡張子の除去](./strip-md-ext.mdx) — 内部リンクの href から `.md`／`.mdx` の接尾辞を取り除く。
+- [シンタックスハイライト](./syntax-highlighting.mdx) — syntect によるサーバーサイドハイライト。常時有効でテーマは設定可能。
+- [ディレクティブレジストリ](./directives-registry.mdx) — `:::name`／`::name`／`:name` のディレクティブ構文を JSX コンポーネントへマッピングする。
+
+## オプトイン機能
+
+それぞれ `markdown.features.*` で有効化します。すべて `zfb-md-extras` に存在します。
+
+- [ディレクティブ](./directives.mdx) — `:::name`／`::name`／`:name` のディレクティブ構文を独自の JSX コンポーネントにマッピングして登録する（デフォルトはゼロ。語彙はあなたが用意する）。
+- [Mermaid ダイアグラム](./mermaid.mdx) — フェンス付きコードブロックから Mermaid のフローチャートを描画する。
+- [見出しマーカー TOC](./heading-marker-toc.mdx) — 指定した見出しの後に目次を自動挿入する。
+- [GitHub アラート](./github-alerts.mdx) — `> [!NOTE]`／`> [!WARNING]` の引用ブロックをスタイル付きコンポーネントとして描画する。
+- [読了時間](./reading-time.mdx) — 推定読了時間を計算してフロントマターに注入する。
+- [GitHub オートリンク](./github-autolinks.mdx) — GitHub の issue／PR／コミット参照（`#123`、`org/repo#456`、`abc1234`）を自動的にリンクする。
+- [コードブロックのエンリッチメント](./code-enrichment.mdx) — フェンス付きコードブロックに diff マーカーと行単位のハイライトを追加する。
+- [コードタブ](./code-tabs.mdx) — 連続するフェンス付きコードブロックをタブ切り替え式にまとめる。
+- [ルビ注釈](./ruby.mdx) — `{これは}^{これ}`（キャレット、推奨）または `{漢字|かんじ}`（パイプ、レガシーエイリアス）構文を HTML の `<ruby>` 要素として描画する。
+- [TOC エクスポート](./toc-export.mdx) — 構造化された見出しツリーをコンパイル済みの JSX モジュールにエクスポートし、フレームワーク側で描画できるようにする。
+- [画像サイズ](./image-dimensions.mdx) — 実際のファイルから `<img>` 要素に `width` と `height` 属性を注入する。
+- [リンク検証](./link-validation.mdx) — デフォルトでは壊れた内部リンクを警告する。`failOnBroken: true` でビルドエラーにする。
+- [トランスクルージョン](./transclude.mdx) — `:::include` ディレクティブを使って別ファイルの内容をインライン展開する。
+
+## 関連項目
+
+- [設計思想](/ja/docs/concepts/design-philosophy/) — レシピをオプトイン機能へ
+  昇格させるための「3 つの利用者」のしきい値。
+- [Markdown パイプラインを拡張する](/ja/docs/guides/extending-the-markdown-pipeline/)
+  — Rust ビジターを書いてエンジンに組み込む。
+- [カスタムディレクティブ](/ja/docs/concepts/custom-directives/) — Rust を書かずに
+  新しいディレクティブ名を登録する。
+- [レシピ: 拡大可能な画像](/ja/docs/recipes/enlargeable-images/) — 削除された
+  `imageEnlarge` 組み込み機能の代替を、`img` コンポーネントの上書きで
+  ユーザーランドで実現する。
+- [レシピ: Admonitions](/ja/docs/recipes/admonitions/) — `:::note`、`:::tip` などを最小限のコンポーネントスタブと CSS フックとともに `directives` で登録する。

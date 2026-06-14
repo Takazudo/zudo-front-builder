@@ -1,0 +1,67 @@
+---
+title: 見出しマーカー TOC
+description: 指定した見出しの後に目次を自動挿入する。
+tier: Opt-in
+---
+
+`headingMarkerToc` 機能は、設定したアンカー文字列（デフォルト `"TOC"`）にテキストが一致する最初の見出しの直後に、ネストした `<ul>/<li>` の目次を挿入します。
+
+## 有効化
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      headingMarkerToc: {
+        heading: "TOC",   // デフォルト — 挿入のトリガーとなる見出しテキスト
+        maxDepth: 2,      // デフォルト — 1 = h2 のみ、2 = h2+h3、…、最大 5
+      },
+    },
+  },
+});
+```
+
+`true` を渡すとすべてのデフォルトを使用します:
+
+```ts
+headingMarkerToc: true,
+```
+
+## 使い方
+
+設定したアンカーテキストを持つ見出しを Markdown ファイルに配置します:
+
+```md
+## TOC
+
+## Introduction
+
+### Background
+
+## Conclusion
+```
+
+プラグインは `## TOC` 見出しの後に、`maxDepth` のレベル内にある後続の見出しすべてへのリンクを含む `<ul>` リストを挿入します:
+
+```html
+<ul>
+  <li><a href="#introduction">Introduction</a>
+    <ul>
+      <li><a href="#background">Background</a></li>
+    </ul>
+  </li>
+  <li><a href="#conclusion">Conclusion</a></li>
+</ul>
+```
+
+## オプション
+
+| オプション | デフォルト | 説明 |
+|--------|---------|-------------|
+| `heading` | `"TOC"` | TOC 挿入のトリガーとなる見出しテキスト。前後の空白を除去したうえで、大文字小文字を区別せずにマッチします。 |
+| `maxDepth` | `2` | `<h2>` を起点として含める見出しのレベル数。`1` → h2 のみ、`2` → h2+h3、`3` → h2〜h4、最大 `5`（h2〜h6）。 |
+
+## ビジターの順序
+
+`TocPlugin` は hast フェーズで `HeadingLinksPlugin` の **後に** 実行されるため、TOC のリンクを構築する時点で、各見出しにはすでに `id` 属性（重複排除済みのスラッグ）が設定されています。TOC 内の各 `<a href="#id">` は、最終的で重複排除済みのスラッグと一致します。

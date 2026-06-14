@@ -1,0 +1,82 @@
+---
+title: 画像サイズ
+description: ローカルの img 要素に対して width／height 属性を自動検出して注入し、Cumulative Layout Shift を解消する。
+tier: Opt-in
+---
+
+`imageDimensions` 機能は、ビルド時に画像ファイルのヘッダーを読み取り、ローカルファイルを参照する `<img>` 要素に `width` と `height` 属性を注入します。これらの属性を与えることで、ブラウザは画像の読み込み前に正しい領域を確保でき、Cumulative Layout Shift（CLS）を解消できます。
+
+参考: [`rehype-img-size`](https://www.npmjs.com/package/rehype-img-size)。
+
+## 有効化
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      imageDimensions: {},
+    },
+  },
+});
+```
+
+## 動作
+
+各 `<img>` 要素に対して、プラグインは次のように処理します:
+
+1. すでに `width` または `height` 属性を持つ要素はスキップする。
+2. `data:` URL は無条件でスキップする。`skipRemote` が `true`（デフォルト）のとき、`http://`、`https://`、プロトコル相対（`//`）の URL もスキップする。
+3. `src` を絶対パスに解決する（後述の **ソース解決** を参照）。
+4. 画像ファイルのヘッダーのみを読み取り（完全なデコードは行わない）、`width="W" height="H"` を注入する。
+5. ファイルが見つからない、または認識可能な画像形式でない場合は、ビルド警告を出力して要素を変更しないままにする。
+
+対応フォーマット: **PNG、JPEG、GIF、WebP、AVIF**。
+
+## ソース解決
+
+プラグインは `BuildContext` を使って `src` の値をファイルシステムに対して解決します:
+
+- **絶対パス**（例: `/img/hero.png`）は、プロジェクトの `public` ディレクトリを基準に解決される。
+- **相対パス**（例: `./assets/hero.png`、`assets/hero.png`）は、Markdown ソースファイルのディレクトリを基準に解決される。
+- **リモート URL と `data:` URL** は黙ってスキップされる。
+
+## オプション
+
+- `skipRemote`（デフォルト `true`） — `true` のとき、`http://`、`https://`、プロトコル相対（`//`）の画像ソースはスキップされます。リモート画像のサイズを調べるにはビルド時のネットワークアクセスが必要になるため、`false` に設定するのは特殊な構成の場合のみにしてください。`data:` URL はこの設定に関わらず常にスキップされます。
+
+```ts
+imageDimensions: { skipRemote: false },
+```
+
+## 例
+
+`public/images/hero.png` に 400×300 の PNG があり、次の Markdown があるとします:
+
+```md
+![Hero image](/images/hero.png)
+```
+
+プラグインは次を生成します:
+
+```html
+<img src="/images/hero.png" alt="Hero image" width="400" height="300">
+```
+
+明示的なサイズを持つ `<img>` は変更されません:
+
+```md
+<img src="/images/hero.png" width="200" height="150" />
+```
+
+## キャッシュ
+
+プラグインは `(path, mtime) → (width, height)` をメモリにキャッシュします。同一ビルド内で同じファイルへの 2 回目の `<img>` 参照は、ファイルヘッダーを再読み込みせずにキャッシュにヒットします。
+
+## 順序
+
+`ImageDimensionsPlugin` は hast フェーズで `SyntectPlugin` の前に実行されます。ドキュメント内で見つかった `<img>` 要素に `width` と `height` を注入します。
+
+## 要件
+
+この機能は wave-6 の `BuildContext` シームを利用します。サイズを注入するには、パイプラインを `Pipeline::run_with_context`（または `Pipeline::apply_hast_visitors_with_context`）経由で起動する必要があります。機能が組み込まれていても、（コンテキストなしの）`run` が呼び出された場合、プラグインは何もしません。

@@ -4,42 +4,107 @@ description: zfb は syntect によるサーバーサイドのシンタックス
 sidebar_position: 4
 ---
 
-<Info title="翻訳予定">
+zfb は [syntect](https://github.com/trishume/syntect) による **サーバーサイドのシンタックスハイライト** を搭載しています。syntect は `crates/zfb-content` の内部でビルド時に動作する Rust ライブラリです。パイプラインがフェンス付きコードブロックに遭遇すると、`SyntectPlugin` が言語タグを調べ、設定されたテーマでソースをハイライトし、`<pre><code>` 要素を出力に焼き込まれた `<pre class="syntect-…"><code>…</code></pre>` の HTML 断片に置き換えます。ハイライトのために JavaScript がブラウザへ送られることはありません。
 
-このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
-英語版: [Syntax Highlighting](./syntax-highlighting.mdx)
+## 組み込みの挙動
 
-</Info>
+| 項目 | 値 |
+|---|---|
+| エンジン | `syntect`（Sublime Text 互換の文法） |
+| 実行 | ビルド時（`crates/zfb-content` の hast ビジターフェーズ） |
+| 出力 | `class` 属性付きのインライン HTML — ランタイム JS はゼロ |
+| 未知の言語 | テーマ適用のフォールバック: `<pre class="syntect-…">` でラップされ、コードは保持される |
+| `mermaid` ブロック | スキップ — 代わりに `MermaidPlugin` にルーティングされる |
 
-## 概要
+## テーマのカスタマイズ（組み込みテーマ）
 
-zfb は [syntect](https://github.com/trishume/syntect) を使ったビルド時シンタックスハイライトを搭載しています。コードブロックは HTML に変換されてバンドルに埋め込まれるため、ブラウザへの JS は不要です。
-
-## カスタムテーマ（.tmTheme）の使い方
-
-`themesDir` に `.tmTheme` ファイルを格納したディレクトリを指定することで、Dracula などの任意のテーマを利用できます。
+配色を変更するもっとも単純な方法は、`zfb.config.ts` で syntect に同梱されたテーマのひとつを選ぶことです。
 
 ```ts
 // zfb.config.ts
 export default {
   codeHighlight: {
-    themesDir: "./themes",   // プロジェクトルートからの相対パス
-    theme: "Dracula",        // .tmTheme ファイル内の name キーの値
+    theme: "Solarized (light)",
   },
 };
 ```
 
-ディレクトリ構成:
+組み込みテーマ名: `"base16-ocean.dark"`（デフォルト）、`"base16-ocean.light"`、`"InspiredGitHub"`、`"Solarized (dark)"`、`"Solarized (light)"`。
+
+これらは Shiki のテーマ名では **ありません**。`"dracula"` のような名前を `themesDir` 経由で読み込まずに使うと、ビルド時に `unknown theme` エラーが発生します。
+
+## カスタム .tmTheme ファイルの使い方
+
+syntect は Sublime Text の `.tmTheme` 形式と互換性があります。任意の `.tmTheme` ファイル（Dracula、One Dark、Catppuccin、…）をディレクトリに置き、`codeHighlight.themesDir` をそこに向けることで読み込めます。
+
+```ts
+// zfb.config.ts
+export default {
+  codeHighlight: {
+    themesDir: "./themes",   // relative to the project root
+    theme: "Dracula",        // the `name` declared inside the .tmTheme file
+  },
+};
+```
+
+**ディレクトリ構成:**
 
 ```
 my-project/
 ├── themes/
-│   └── dracula.tmTheme
+│   └── dracula.tmTheme      ← drop your .tmTheme files here
 ├── pages/
 ├── content/
 └── zfb.config.ts
 ```
 
-`themesDir` が存在しない場合や `.tmTheme` のパースに失敗した場合は、ビルド開始時に（ページの描画前に）ファイルパスを含むエラーメッセージが表示されます。
+`.tmTheme` のファイル名は重要ではありません — `theme` に渡す名前は、plist 内の `name` キーの `<string>` 値と一致しなければなりません。Dracula の場合、宣言されている名前は `"Dracula"` です。
 
-英語の最新ドキュメントは [Syntax Highlighting](./syntax-highlighting.mdx) を参照してください。
+**Dracula のダウンロード:** 公式の Dracula `.tmTheme` は [https://draculatheme.com/sublime](https://draculatheme.com/sublime) から、または [Dracula GitHub リポジトリ](https://github.com/dracula/sublime/blob/master/Dracula.tmTheme) から直接入手できます。
+
+**エラー報告:** `themesDir` が存在しないディレクトリを指している場合や、いずれかの `.tmTheme` ファイルが不正な形式の場合、zfb はビルド開始時（ページの描画前）に、ファイルパスとパースエラーを含む明確なエラーを表示します。
+
+## 補足パターン 1 — クライアントサイドの追加ハイライト
+
+インタラクティブなテーマ切り替えやユーザーごとの設定が必要な場合は、サーバーで描画された出力の上に、クライアントサイドのハイライターを [クライアントアイランド](../concepts/islands.mdx) として重ねます。
+
+```tsx
+"use client";
+
+import { useEffect, useRef } from "preact/hooks";
+import Prism from "prismjs";
+import "prismjs/components/prism-typescript";
+
+export default function PrismRoot({ children }) {
+  const ref = useRef(null);
+  useEffect(() => { Prism.highlightAllUnder(ref.current); }, []);
+  return <div ref={ref}>{children}</div>;
+}
+```
+
+記事の本文を `<PrismRoot>` でラップすると、アイランドが事前描画済みのブロックをその場で再ハイライトします。これはメディアクエリやユーザー設定に依存するテーマに有用ですが、JavaScript が追加され、ハイドレーション後に短い再描画が発生します。
+
+## 補足パターン 2 — カスタム文法のためのポストビルドスクリプト
+
+`syntect` は Sublime Text 互換の文法を使います。syntect が同梱していない文法（社内 DSL やニッチな言語）が必要な場合は、`zfb build` の後に特定のブロックを置き換えるポストビルドの Node スクリプトを実行できます。
+
+```ts
+// post-build/highlight-custom.ts — runs after `zfb build`
+import { glob } from "glob";
+import { readFile, writeFile } from "node:fs/promises";
+import { codeToHtml } from "shiki";
+
+for (const file of await glob("dist/**/*.html")) {
+  const html = await readFile(file, "utf8");
+  const next = await highlightCustomBlocks(html, codeToHtml);
+  if (next !== html) await writeFile(file, next);
+}
+```
+
+これは syntect の同梱セットに存在しない文法の場合にのみ意味があります。標準的な言語（Rust、TypeScript、Python、Go など）はすべて、組み込みのパイプラインが追加の手順なしで処理します。
+
+## 関連項目
+
+- [Markdown パイプラインの拡張](./extending-the-markdown-pipeline.mdx) — `SyntectPlugin` が hast フェーズのパイプラインにどう組み込まれるか、それをどう差し替え・拡張するか。
+- [カスタムディレクティブ](../concepts/custom-directives.mdx) — `mermaid` ブロックは syntect ではなくこの経路を使います。
+- `crates/zfb-content/src/plugins/syntect_plugin.rs` — プラグインのソース。

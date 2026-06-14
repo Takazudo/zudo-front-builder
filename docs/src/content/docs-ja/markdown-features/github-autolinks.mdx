@@ -1,0 +1,74 @@
+---
+title: GitHub オートリンク
+description: "Markdown テキスト中の素の #123、user/repo#456、コミット SHA 参照を、設定した GitHub リポジトリを指すハイパーリンクに書き換える。"
+tier: Opt-in
+---
+
+`githubAutolinks` 機能は、プレーンテキスト中の素の issue・プルリクエスト・コミット SHA の参照を、設定した GitHub リポジトリを指す `<a>` ハイパーリンクに書き換えます。これは、GitHub が README ファイルや issue でネイティブに描画するオートリンクの挙動を再現したものです。
+
+## 有効化
+
+`repo` フィールドは必須です。これがない場合、機能は黙って無効になります。
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      githubAutolinks: {
+        repo: "owner/repo",
+      },
+    },
+  },
+});
+```
+
+## 認識されるパターン
+
+| パターン | 例 | 出力 URL |
+|---------|---------|------------|
+| 素の issue／PR | `#123` | `https://github.com/{repo}/issues/123` |
+| クロスリポジトリの issue／PR | `user/repo#456` | `https://github.com/user/repo/issues/456` |
+| コミット SHA（7〜40 桁の 16 進文字） | `abc1234` | `https://github.com/{repo}/commit/abc1234` |
+
+### 素の issue 参照
+
+```md
+See #123 for the fix.
+```
+
+次のように描画されます: `See <a href="https://github.com/owner/repo/issues/123">#123</a> for the fix.`
+
+### クロスリポジトリ参照
+
+```md
+Backported from other/project#7.
+```
+
+設定された repo ではなく、インラインの owner/repo を使って描画されます。
+
+### コミット SHA
+
+単語境界に囲まれた 7〜40 文字の小文字 16 進文字列は、コミット SHA として扱われます。
+
+```md
+Fixed in abc1234.
+```
+
+## 除外
+
+コードスパンやフェンス付きコードブロックの中の参照は **決して書き換えられません**:
+
+````md
+Use `#123` as a literal reference — no link produced.
+
+```
+#123 and abc1234 are not linked in code blocks.
+```
+````
+
+## 補足
+
+- **クロスリポジトリ参照** は、設定された `repo` ではなく、常にテキストに埋め込まれた owner/repo を使います。
+- **SHA の曖昧性解消**: 7〜40 文字がすべて 10 進数字の連続である場合は、SHA ではなく単なる数値として扱われます。16 進が混在している場合（例: `abc1234`）はリンクされます。
+- **既存のリンク** は二重にラップされません — `<a>` 要素の中のテキストは変更されないままになります。

@@ -1,0 +1,46 @@
+---
+title: コードブロックのタイトル
+description: title= メタ属性から、フェンス付きコードブロックの上にファイル名やラベルを表示する。
+tier: Core
+sidebar_position: 52
+---
+
+`CodeTitlePlugin` は常に有効です。フェンス付きコードブロックの情報文字列から
+`title="…"` トークンを読み取り、ブロックの直上に `<div class="code-title">`
+ラベルを描画します。
+
+## 使い方
+
+フェンスの言語タグの後に `title="…"` を追加します:
+
+````md
+```ts title="zfb.config.ts"
+export default defineConfig({
+  markdown: { cjkFriendly: true },
+});
+```
+````
+
+描画される出力:
+
+```html
+<div class="code-title">zfb.config.ts</div>
+<pre class="syntect-…"><code>…</code></pre>
+```
+
+## 設定
+
+常に有効で、設定キーはありません。
+
+## 順序に関する注意
+
+`CodeTitlePlugin` は hast フェーズで `SyntectPlugin` の**前に**実行されます。
+`SyntectPlugin` は `<pre>` 要素全体を生の HTML フラグメントに置き換えるため、
+それが起きると `title="…"` を保持する `data-meta` 属性は構造化された AST として
+到達できなくなります。`CodeTitlePlugin` を先に実行することで、syntect が
+メタ情報を消去する前にそれを読み取れるようにしています。
+
+## 関連項目
+
+- [シンタックスハイライト](./syntax-highlighting.mdx) — このプラグインの後に
+  実行される syntect プラグイン。

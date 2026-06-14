@@ -1,0 +1,48 @@
+---
+title: CJK フレンドリーな強調
+description: CJK の表意文字やかなに隣接する太字・斜体マーカーが正しく解釈されるようにする。
+tier: Core
+sidebar_position: 50
+---
+
+`CjkFriendlyPlugin` は常に有効です。パース済みの Markdown AST を後処理し、CJK コンテンツに対して強調のフランキング規則を再トークン化します。
+
+## なぜこれが必要か
+
+CommonMark の強調フランキング規則は、CJK の表意文字やかなを
+「非空白かつ非句読点」として扱います。これにより、CJK テキストに隣接する `**` —
+たとえば `**テスト。**テスト` — は基本パーサーでは右フランキングとみなされず、
+`<strong>` ではなくそのままのアスタリスクとして描画されてしまいます。
+
+`CjkFriendlyPlugin` はパース済みの Markdown AST を後処理し、これらのケースを
+再トークン化します。その結果は、日本語・中国語・韓国語のコンテンツサイトにおける
+直感的な期待と一致します。
+
+## 挙動
+
+**デフォルト:** 常に有効。設定キーは不要です。
+
+**オプトアウト**（まれ）: 厳密な CommonMark 出力が必要で、かつコンテンツに
+CJK の強調が含まれない場合に限り、`zfb.config.ts` で `cjkFriendly: false` を
+設定します:
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    cjkFriendly: false,
+  },
+});
+```
+
+## スコープ
+
+このプラグインは、CJK 文字に隣接する `**bold**` と `_italic_` を処理します。
+GFM の打ち消し線（`~~foo~~`）にはこのトグルは不要です — markdown-rs の GFM
+トークナイザーが `~~` のデリミタ連続を独立して処理するため、両方のモードで
+CJK の境界においても打ち消し線は正しく機能します。
+
+## 関連項目
+
+- [Markdown のカスタマイズ](../guides/customizing-markdown.mdx) — パイプライン全体の概要。

@@ -1,0 +1,284 @@
+---
+title: "レシピ: Enlargeable Images"
+description: かつての組み込み機能 image-enlarge の挙動を、MDX コンポーネントのオーバーライド API を使ってユーザーランドで再現します。
+sidebar_position: 2
+category: Recipes
+---
+
+<Info title="このページで扱うこと">
+
+削除された組み込み機能 `imageEnlarge` を、ユーザーランドの `EnlargeableImg` コンポーネントを [MDX オーバーライド API](../concepts/mdx-components.mdx) 経由で接続することで置き換える方法です。完全にサーバーサイドで動くバリアント（ページごとに JavaScript を送信しない）と、アイランドバリアント（`<Island>` によるクライアントサイドのインタラクティブ性）の両方を示します。
+
+</Info>
+
+## 背景
+
+v0.1.0-next.12 までは、zfb にブロックレベルの画像をズームボタン付きの `<figure class="zd-enlargeable">` でラップする組み込みの Markdown 機能 `imageEnlarge` が含まれていました。この機能は v0.1.0-next.17 で削除されました。ユーザーランドのコードからは利用できないパイプライン内部に依存しており、きれいな設定面を持たなかったためです。
+
+同じ挙動は、`components` マップの `img` キーを使って、完全にユーザーランドで実現できるようになりました。このレシピでその方法を示します。
+
+## オーバーライドが画像の props を受け取る仕組み
+
+MDX が Markdown の画像をコンパイルすると、
+
+```md
+![A sunset over the ocean](/images/sunset.jpg "A warm evening")
+```
+
+次の props を付けて `<img>` をレンダリングします。これらは HTML 要素が受け付けるのと同じ属性です。
+
+- `src` — 画像のソース URL
+- `alt` — 代替テキスト
+- `title` — title 属性（URL の後ろに引用符付きの文字列がある場合、そこから取得）
+
+あなたの `img` オーバーライドはこれらすべてを props として受け取ります。これが `no-enlarge` オプトアウトが依拠する重要なポイントです。
+
+## `no-enlarge` オプトアウト
+
+かつてのパイプラインは、特定の画像のラップをスキップするためにビルド時のセンチネルを使っていました。ユーザーランドでの等価物は、**コンポーネントが読み取る prop** です。Markdown のソースで `title="no-enlarge"` を設定し、コンポーネント側でそれをチェックします。
+
+執筆者はこう書きます。
+
+```md
+![A diagram](/images/diagram.png "no-enlarge")
+```
+
+コンポーネントはこう読み取ります。
+
+```tsx
+if (props.title === "no-enlarge") {
+  // render a plain <img> without the enlargeable wrapper
+}
+```
+
+## バリアント A — サーバーサイドのみ（アイランドなし）
+
+これはよりシンプルなバリアントです。`EnlargeableImg` はサーバーコンポーネントで、ディスクロージャー風のズームボタンを持つ `<figure>` をレンダリングし、すべてのインタラクティブ性はレイアウト内の小さなグローバルクリックスクリプトに委ねます。ページごとに JavaScript を送信せず、クリックスクリプトはレイアウトレベルで一度だけ置かれるインライン `<script>` です。
+
+### コンポーネント
+
+```tsx title="components/enlargeable-img.tsx"
+type Props = {
+  src?: string;
+  alt?: string;
+  title?: string;
+  [key: string]: unknown;
+};
+
+export default function EnlargeableImg({ src, alt, title, ...rest }: Props) {
+  // opt-out: title="no-enlarge" → plain <img>, no wrapper
+  if (title === "no-enlarge") {
+    return <img src={src} alt={alt} {...rest} />;
+  }
+
+  return (
+    <figure class="zd-enlargeable" data-enlarged="false">
+      <img src={src} alt={alt} title={title} {...rest} />
+      <button
+        type="button"
+        class="zd-enlarge-btn"
+        aria-label="Enlarge image"
+      >
+        {/* zoom-in SVG icon */}
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          <line x1="11" y1="8" x2="11" y2="14" />
+          <line x1="8" y1="11" x2="14" y2="11" />
+        </svg>
+      </button>
+    </figure>
+  );
+}
+```
+
+### グローバルクリックスクリプト
+
+これをレイアウトに一度だけ追加します。イベント委譲を使っているため、ページ上に画像がいくつあっても、ページ全体に対してリスナーは 1 つだけです。
+
+```tsx title="layouts/default.tsx (excerpt)"
+// Inside your <head> or at the end of <body>:
+<script
+  dangerouslySetInnerHTML={{
+    __html: `
+      document.addEventListener("click", (e) => {
+        const btn = e.target.closest(".zd-enlarge-btn");
+        if (!btn) return;
+        const fig = btn.closest(".zd-enlargeable");
+        if (!fig) return;
+        const enlarged = fig.dataset.enlarged === "true";
+        fig.dataset.enlarged = enlarged ? "false" : "true";
+      });
+    `,
+  }}
+/>
+```
+
+### CSS（最小限）
+
+```css
+.zd-enlargeable {
+  position: relative;
+  display: inline-block;
+  margin: 0;
+}
+
+.zd-enlargeable img {
+  display: block;
+  transition: transform 0.2s ease;
+}
+
+.zd-enlargeable[data-enlarged="true"] img {
+  transform: scale(1.5);
+  z-index: 10;
+  position: relative;
+}
+
+.zd-enlarge-btn {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  background: rgba(0, 0, 0, 0.5);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 0.25rem;
+  cursor: pointer;
+  line-height: 0;
+}
+```
+
+### オーバーライドのマウント
+
+ルートごとのマウント。
+
+```tsx title="pages/blog/[slug].tsx"
+import { defaultComponents } from "zfb";
+import EnlargeableImg from "../../components/enlargeable-img";
+
+export default function PostPage({ post }) {
+  return (
+    <article>
+      <post.Content
+        components={{ ...defaultComponents, img: EnlargeableImg }}
+      />
+    </article>
+  );
+}
+```
+
+`mdx-components.tsx` によるグローバルマウント（zfb v0.1.0-next.16 以降）。
+
+```tsx title="mdx-components.tsx"
+import { defaultComponents } from "zfb";
+import EnlargeableImg from "./components/enlargeable-img";
+
+// Default export: merged with defaultComponents before every Content render.
+export default {
+  ...defaultComponents,
+  img: EnlargeableImg,
+};
+```
+
+プロジェクトルートに `mdx-components.tsx` が存在すると、zfb はビルド時にそれを自動的に `globalThis.__zfb.mdxComponents` へインストールします。すべての `entry.Content` レンダリングは、それを `defaultComponents` の上、かつ呼び出しごとの `components` prop の下にマージするため、すべてのルートで `img: EnlargeableImg` を渡す必要はありません。
+
+## バリアント B — インタラクティブなアイランド
+
+より豊かなクライアントサイドの挙動が必要なとき、たとえばフォーカスをトラップし、キーボードナビゲーションをサポートし、オーバーレイをレンダリングする本物のライトボックスが必要なときは、このバリアントを使います。コンポーネントは `<Island>` をラップし、その子アイランドは `src` と `alt` をシリアライズ可能な props として受け取ります。
+
+<Info title="ラッパーが必要な理由">
+
+`components` マップはサーバーレンダリング時に適用されます。もし `"use client"` を `EnlargeableImg` に直接付けて `components={{ img: EnlargeableImg }}` でマウントしようとすると、zfb は SSR 中にそれを呼び出してしまいます。関数は `data-props` に JSON シリアライズできないため、ハイドレーション境界を `components` マップだけで越えることはできません。解決策は、JSON セーフな props だけを持つ子（`ImageLightbox`）を内包する `<Island>` をレンダリングする **サーバーラッパー**（`EnlargeableImg`）です。
+
+</Info>
+
+### アイランド（クライアントコンポーネント）
+
+```tsx title="components/image-lightbox.tsx"
+"use client";
+
+import { useState } from "preact/hooks";
+
+type Props = {
+  src: string;
+  alt: string;
+};
+
+export default function ImageLightbox({ src, alt }: Props) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <figure class="zd-enlargeable">
+        <img src={src} alt={alt} onClick={() => setOpen(true)} style="cursor:zoom-in" />
+        <button
+          type="button"
+          class="zd-enlarge-btn"
+          aria-label="Enlarge image"
+          onClick={() => setOpen(true)}
+        >
+          {/* zoom-in icon — same SVG as Variant A */}
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="11" cy="11" r="8" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            <line x1="11" y1="8" x2="11" y2="14" />
+            <line x1="8" y1="11" x2="14" y2="11" />
+          </svg>
+        </button>
+      </figure>
+      {open && (
+        <dialog
+          open
+          class="zd-lightbox"
+          onClick={() => setOpen(false)}
+          aria-modal="true"
+          aria-label={alt}
+        >
+          <img src={src} alt={alt} />
+        </dialog>
+      )}
+    </>
+  );
+}
+```
+
+### サーバーラッパー
+
+```tsx title="components/enlargeable-img.tsx (island variant)"
+import { Island } from "zfb";
+import ImageLightbox from "./image-lightbox";
+
+type Props = {
+  src?: string;
+  alt?: string;
+  title?: string;
+  [key: string]: unknown;
+};
+
+export default function EnlargeableImg({ src, alt, title }: Props) {
+  // opt-out: title="no-enlarge" → plain <img>, no island overhead
+  if (title === "no-enlarge") {
+    return <img src={src} alt={alt} title={title} />;
+  }
+
+  // Island serializes the child's own non-children props as data-props.
+  // `src` and `alt` are plain strings — they survive JSON serialization
+  // and arrive at the hydrated ImageLightbox intact.
+  return (
+    <Island when="load">
+      <ImageLightbox src={src ?? ""} alt={alt ?? ""} />
+    </Island>
+  );
+}
+```
+
+バリアント A とまったく同じようにマウントします。ルートごと、または `mdx-components.tsx` 経由のどちらでもかまいません。
+
+## 1 つの暗黙的な制約
+
+かつての組み込みは Markdown の AST 上で動作し、**ブロックレベルの画像**（`<img>` だけを含む独立した段落）と、インライン画像（文中の画像）を区別できました。`img` オーバーライドは、ブロックかインラインかにかかわらず、**すべて** の画像で発火します。MDX がコンポーネントを呼び出す時点で、その区別は失われているためです。インライン画像をスキップしたい場合は、それらの画像で執筆者が `title="no-enlarge"` を使ってください。`no-enlarge` オプトアウトがサポートされる仕組みであり、ブロックレベルの検出はユーザーランドから再現できません。
+
+## 関連項目
+
+- [MDX コンポーネント](../concepts/mdx-components.mdx) — `components` prop、`defaultComponents`、そして `mdx-components.tsx` のグローバル規約です。
+- [アイランド](../concepts/islands.mdx) — `<Island>` ラッパー、ハイドレーション戦略、そして `"use client"` ディレクティブです。

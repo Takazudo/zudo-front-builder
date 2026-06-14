@@ -1,19 +1,146 @@
 ---
 title: フロントマター
-description: MD/MDX の YAML と TSX の export const literal、統一された JSON 表現
+description: .md、.mdx、.tsx をまたぐ統一されたフロントマター契約 — マークダウン側は YAML、TSX 側は静的な export リテラル、Rust 側では 1 つの JSON 形状になる。
 sidebar_position: 0.5
 category: Concepts
 ---
 
-<Info title="翻訳予定">
+<Info title="このページの内容">
 
-このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
-英語版: [Frontmatter](./frontmatter.mdx)
+zfb が `.md`、`.mdx`、`.tsx` のソースからフロントマターをどう抽出するか、TSX エクスポートに課されるリテラル限定の制約、そして TSX ページの出力拡張子を決めるためにエンジンが使う優先順位ルールを解説します。
 
 </Info>
 
-## 概要
+zfb の最初のエンジンプリミティブは、**統一されたフロントマター契約**です。マークダウン、MDX、TSX のページはすべてフロントマターを宣言します。ディスク上の構文はソースの種類ごとに異なります — マークダウンは YAML、TSX は JS のオブジェクトリテラル — が、`zfb-content::extract_frontmatter` を通った後は、同じ `serde_json::Value` 形状に収束します。スキーマ検証やコンシューマーが拡張子で分岐することはありません。
 
-MD/MDX ファイルの YAML フロントマターと、TSX ページの `export const` リテラルを、統一された JSON 表現として扱う zfb のフロントマター契約について解説します。
+## `.md` と `.mdx` の YAML
 
-英語の最新ドキュメントは [Frontmatter](./frontmatter.mdx) を参照してください。
+マークダウンソースは、ファイル先頭の標準的なフェンス付き YAML ブロックを使います。
+
+```md
+---
+title: Hello zfb
+description: A short post.
+date: 2026-04-27
+tags: [intro, hello]
+draft: false
+---
+
+The body of the post starts here.
+```
+
+このブロックは一度だけパースされ、JSON に変換され、下流のあらゆる場所でエントリの `data` フィールドとして公開されます — `getCollection("blog")[i].data`、ページレンダラー、スキーマ検証、すべてが同じオブジェクトを見ます。
+
+## TSX: `export const frontmatter`
+
+TSX ページは、トップレベルの `export const frontmatter` リテラルを通してフロントマターを宣言します。
+
+```tsx
+// pages/about.tsx
+export const frontmatter = {
+  title: "About",
+  description: "Who we are.",
+  draft: false,
+  openGraph: { image: "/og/about.png" },
+};
+
+export default function AboutPage() {
+  return <h2>About</h2>;
+}
+```
+
+TSX エクストラクタは **AST のみ**で動作します。SWC でファイルをパースし、リテラルを走査します — モジュールを評価することは決してありません。これによりフロントマターの抽出は安価で副作用がないものに保たれますが、その代わり、書くリテラルは静的に解決可能でなければなりません。
+
+### リテラル限定の契約
+
+`frontmatter` オブジェクトリテラルの内部で許可されるもの:
+
+- 文字列、数値（単項の `+` / `-` 符号付き）、真偽値、`null`、
+- ネストしたオブジェクトリテラル、
+- 配列リテラル（穴あきは不可）、
+- 置換を**含まない**テンプレート文字列（`` `hello world` `` は可、`` `hi ${x}` `` は不可）。
+
+拒否されるもの:
+
+- 識別子（`title: SOME_CONST`）、
+- 関数呼び出し（`title: makeTitle()`）、
+- メンバーアクセス（`title: site.title`）、
+- スプレッド（`...defaults`）、
+- 計算されたキー、
+- 正規表現。
+
+拒否は問題のあるソース位置を指し示すため、エンジンはどの行がルールを破ったかを正確に表示できます。
+
+<Warning title="フロントマター内に import は書けない">
+
+フロントマターの値をページ間で共有したくなったなら、それはその値がページのフロントマターリテラルではなく、設定やレイアウトに属するというサインです。リテラル限定の制約は意図的なものです。フロントマターを計算可能にすると、ルーターがそのページをどう扱うか判断する前に、エンジンがモジュールを評価せざるを得なくなってしまいます。
+
+</Warning>
+
+## 統一された JSON 形状
+
+抽出後、両方の分岐は Rust 側で同じ形状を生成します。
+
+```rust
+pub struct UnifiedFrontmatter {
+    pub value: serde_json::Value,         // the parsed frontmatter
+    pub body: Option<String>,             // markdown body (None for .tsx)
+    pub body_offset: Option<usize>,       // byte offset (None for .tsx)
+    pub extension: Option<String>,        // TSX-only sibling export
+    pub content_type: Option<String>,     // TSX-only sibling export
+}
+```
+
+上の YAML の例では、`value` は次のようにデシリアライズされます。
+
+```json
+{
+  "title": "Hello zfb",
+  "description": "A short post.",
+  "date": "2026-04-27",
+  "tags": ["intro", "hello"],
+  "draft": false
+}
+```
+
+TSX の例でも、結果の `value` は同じ形状になります — あなたのリテラルが `serde_json::Value` に変換されたもので、`extension` と `content_type` は対応する兄弟エクスポートも宣言した場合にのみ設定されます。
+
+## 出力拡張子の優先順位（TSX のみ）
+
+`.tsx` ページは HTML 以外の出力を生成できます。出力拡張子は 2 つのしくみで決まり、固定された優先順位があります。
+
+1. `export const extension = "..."` — `frontmatter` の隣に置く兄弟リテラル。存在すれば**勝ち**ます。
+2. ファイル名規約 — ソースパスの末尾から 2 番目の `.` 区切りセグメント。`pages/sitemap.xml.tsx` → `xml`、`pages/feed.rss.tsx` → `rss`、`pages/about.tsx` → 規約のヒントなし。
+3. デフォルト — `html`。
+
+```tsx
+// pages/sitemap.xml.tsx
+// Filename hint says "xml". No frontmatter override → output is
+// /sitemap.xml. Content-Type: application/xml.
+export const frontmatter = { title: "Sitemap" };
+
+export default function Sitemap() {
+  return /* the XML body */;
+}
+```
+
+```tsx
+// pages/raw.html.tsx
+// Filename hint says "html", but the frontmatter override wins: the
+// page emits /raw.txt instead.
+export const frontmatter = { title: "Raw text" };
+export const extension = "txt";
+
+export default function Raw() {
+  return "plain text body";
+}
+```
+
+ファイル名規約の完全な扱い、およびビルド間で拡張子が変わったときに何が起こるかについては、[HTML 以外のページ](./non-html-pages.mdx)を参照してください。
+
+## 契約が定義されている場所
+
+- `crates/zfb-content/src/frontmatter.rs` — 統一エクストラクタのエントリポイント。
+- `crates/zfb-content/src/tsx_frontmatter.rs` — TSX 側の静的ウォーカー（エラーはファイル + 行:桁を指し示します）。
+- `crates/zfb-router/src/route.rs` — 出力拡張子の優先順位のうち、ファイル名規約の側。
+- `crates/zfb-render/src/meta.rs` — `derive_output_extension` / `derive_content_type` が最終的なファイル名にルールを適用します。

@@ -1,0 +1,191 @@
+---
+title: CLI Reference
+description: Complete reference for the zfb command-line interface — subcommands, flags, and environment variables.
+sidebar_position: 6
+---
+
+## Overview
+
+The `zfb` binary exposes five subcommands for the full development lifecycle:
+
+```
+zfb new    — scaffold a new project from a template
+zfb dev    — local development server with live reload
+zfb build  — production build
+zfb preview — serve a previously built site
+zfb check  — typecheck and validate content-collection schemas
+```
+
+Run `zfb --help` or `zfb <subcommand> --help` to see the generated help text directly.
+
+## `zfb new`
+
+Scaffold a new project from a built-in template.
+
+```sh
+zfb new <name> [--template <template>]
+```
+
+### Arguments
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `name` | positional | yes | Name of the new project. Used as the destination directory. |
+| `--template` | string | no | Template to scaffold from. Default: `basic-blog`. |
+
+### Templates
+
+v0 ships a single template: `basic-blog`, baked into the binary at compile time from `crates/zfb/templates/basic-blog/`.
+
+### Example
+
+```sh
+zfb new my-site
+zfb new my-site --template basic-blog
+```
+
+## `zfb dev`
+
+Start the local development server with live reload.
+
+```sh
+zfb dev [--port <port>] [--host [<host>]]
+```
+
+### Flags
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--port` | u16 | `3000`* | Port to bind the dev server to. |
+| `--host` | string | `localhost`* | Host interface to bind to. Bare `--host` (no value) is a shortcut for `0.0.0.0`. |
+
+\* Falls back through: CLI flag → `port`/`host` in `zfb.config.json` → built-in default.
+
+### Lazy rendering
+
+The dev server defaults to **lazy rendering**: changed routes are marked stale and re-rendered on the first request rather than immediately on every file change. This keeps the inner loop fast for large sites.
+
+To restore the pre-lazy behavior and re-render every affected route eagerly on each file change, set `ZFB_DEV_EAGER=1`.
+
+### Environment variables
+
+| Variable | Values | Description |
+|---|---|---|
+| `ZFB_DEV_EAGER` | `1` | Disable lazy dev rendering. Re-renders every affected route eagerly on each file change. |
+| `ZFB_LAZY_DEV_RENDER` | `0` or `1` | Precise override of the lazy dev-render switch. `1` forces lazy; `0` forces eager. Takes precedence over `ZFB_DEV_EAGER` when both are set. |
+
+### Example
+
+```sh
+# Default — binds localhost:3000
+zfb dev
+
+# Custom port
+zfb dev --port 8080
+
+# Expose to the LAN (0.0.0.0)
+zfb dev --host
+
+# Explicit host
+zfb dev --host 192.168.1.10 --port 4321
+```
+
+## `zfb build`
+
+Build the project for production. Emits static HTML (and, when an adapter is configured, a server entry) to the output directory.
+
+```sh
+zfb build [--outdir <dir>]
+```
+
+### Flags
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--outdir` | path | `dist` | Output directory for the production build. |
+
+### Example
+
+```sh
+zfb build
+zfb build --outdir public
+```
+
+## `zfb preview`
+
+Serve a previously built site locally. Run `zfb build` first.
+
+```sh
+zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
+```
+
+### Flags
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--port` | u16 | `4321`* | Port to bind the preview server to. |
+| `--host` | string | `localhost`* | Host interface to bind to. Bare `--host` (no value) is a shortcut for `0.0.0.0`. |
+| `--outdir` | path | `dist` | Directory to serve the built artifacts from. |
+
+\* Falls back through: CLI flag → `port`/`host` in `zfb.config.json` → built-in default.
+
+### Example
+
+```sh
+zfb build && zfb preview
+zfb preview --port 8080
+zfb preview --host --outdir public
+```
+
+## `zfb check`
+
+Typecheck the project and validate content-collection frontmatter against their schemas.
+
+```sh
+zfb check [--skip-tsc]
+```
+
+This command runs two checks:
+
+1. **TypeScript** — invokes `tsc --noEmit` as a subprocess. Catches type errors in `zfb.config.ts`, collection schemas, and `src/`.
+2. **Collection schema validation** — validates every collection entry's frontmatter against the JSON Schema declared in each collection's `schema` field in `zfb.config.json`/`zfb.config.ts`. The build itself does not validate frontmatter, so this is the enforcement gate.
+
+Either failure mode exits with a non-zero code.
+
+### Flags
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--skip-tsc` | bool | `false` | Skip the `tsc --noEmit` subprocess. Schema validation still runs. Useful when TypeScript is not installed or for schema-only CI lanes. |
+
+### Example
+
+```sh
+# Full check — tsc + schema validation
+zfb check
+
+# Schema-only (skip tsc)
+zfb check --skip-tsc
+```
+
+<Tip>
+
+`zfb check` is the recommended way to validate content collections in CI. Wire it after `zfb build` to catch frontmatter violations that the build silently ignores.
+
+</Tip>
+
+## Environment variables
+
+The following environment variables affect `zfb` globally (not specific to one subcommand):
+
+| Variable | Default | Description |
+|---|---|---|
+| `ZFB_DEV_EAGER` | unset | Set to `1` to disable lazy dev rendering in `zfb dev`. Re-renders every affected route eagerly on each file change. |
+| `ZFB_LAZY_DEV_RENDER` | unset | Set to `0` or `1` for precise control over the lazy dev-render switch. Takes precedence over `ZFB_DEV_EAGER` when both are set. |
+| `ZFB_PLUGIN_HOOK_TIMEOUT` | `120` (seconds) | Maximum time (in seconds) any single plugin hook reply is awaited before the plugin host is force-killed and the build fails. Precedence: `pluginHookTimeoutSecs` in config > this env var > 120s built-in default. |
+
+<Note>
+
+`ZFB_PLUGIN_HOOK_TIMEOUT` can also be set via `pluginHookTimeoutSecs` in [defineConfig](./define-config.mdx). The config field takes precedence over the environment variable.
+
+</Note>

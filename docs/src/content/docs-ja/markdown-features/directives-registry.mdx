@@ -1,0 +1,67 @@
+---
+title: ディレクティブレジストリ
+description: ":::name / ::name / :name のディレクティブ構文を JSX コンポーネントへマッピングするコアのプリミティブ。"
+tier: Core
+sidebar_position: 57
+---
+
+`DirectiveRegistry` は、CommonMark Directives 構文 — コンテナ（`:::name`）、
+リーフ（`::name[label]`）、テキスト（`:name[label]`） — を、コンパイル済み
+出力の JSX コンポーネント呼び出しにマッピングするコアのプリミティブです。
+
+これは常に有効です。次の 2 つの方法で利用できます:
+
+- **設定から** — オプトインの [`directives`](./directives.mdx)
+  機能を使って、Rust を書かずにディレクティブ名を登録する。
+- **Rust から** — `DirectiveRegistry` を直接構築してパイプラインに挿入する。
+  [カスタムディレクティブ](../concepts/custom-directives.mdx) を参照。
+
+## ディレクティブの形状
+
+レジストリは 3 つのディレクティブ形状を扱います:
+
+- **コンテナ** — `:::name[label]` … `:::` は、複数段落の本文を
+  JSX コンポーネントで包む。
+- **リーフ** — `::name[label]{attrs}` は、子要素を持たない
+  自己終結型のコンポーネントを生成する。
+- **テキスト** — `:name[label]{attrs}` はインラインコンポーネント。
+
+## デフォルトはゼロ
+
+レジストリには、**事前登録されたディレクティブ名は一つもありません**。使用する
+すべての `:::name` は明示的に登録する必要があります — `zfb.config.ts` の
+[`directives`](./directives.mdx) 機能を介すか、Rust でレジストリを
+構築するかのいずれかです。認識されないディレクティブ名は警告診断を出力し、
+その元の段落を変更せずに残します。
+
+## 型付きの属性スキーマ（#584 より）
+
+レジストリは、登録された各ディレクティブに対して型付きの属性スキーマを
+受け付けます。未知の属性はビルド時の **警告** を出力します（属性自体は
+変更されずにそのまま通過します）。型強制の失敗（例えば `Boolean` 属性に
+非ブール値を渡した場合）は、解決不能な **エラー** を出力します。スキーマは
+`register` 呼び出しと並べて宣言します:
+
+```rust
+registry.register(
+    DirectiveDef::text("badge", "Badge")
+        .with_attrs(vec![
+            AttrSchema { name: "tone".into(), ty: AttrType::String, default: None, required: false },
+        ]),
+);
+```
+
+## カスタムディレクティブ
+
+ディレクティブを追加で登録したり組み込みを上書きしたりするには、
+[カスタムディレクティブ](../concepts/custom-directives.mdx) を参照してください。
+これは Rust を書く必要のない、著者向けの手段です。
+
+## 関連項目
+
+- [`directives` 機能](./directives.mdx) — `zfb.config.ts` から
+  レジストリに登録を行うオプトインの設定機能。
+- [カスタムディレクティブ](../concepts/custom-directives.mdx) — Rust API 経由で
+  新しい `:::name`／`::name`／`:name` のディレクティブ名を登録する。
+- [Markdown パイプラインを拡張する](../guides/extending-the-markdown-pipeline.mdx)
+  — エンジン側の拡張面。

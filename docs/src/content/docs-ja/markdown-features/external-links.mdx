@@ -1,0 +1,55 @@
+---
+title: 外部リンク
+description: 外部リンクに target と rel 属性を自動的に付与する。
+tier: Core
+sidebar_position: 53
+---
+
+`ExternalLinksPlugin` は、リンク先がサイト外部であるリンクに `target` と
+`rel` 属性を付与します。設定されている場合は常に有効です。
+
+## 有効化
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    externalLinks: {
+      target: "_blank",
+      rel: ["noopener", "noreferrer"],
+    },
+  },
+});
+```
+
+`externalLinks` キーを省略すると、描画される出力はこの機能の導入前の挙動と
+バイト単位で一致します — 余分な属性は一切出力されません。
+
+## 何が外部とみなされるか
+
+リンク先が絶対的な `http:` または `https:` URL であり、そのオリジンが
+サイトのオリジン（トップレベルの `site` 設定オプションで決まり、設定された時点で
+有効になる）と異なる場合、そのリンクは外部とみなされます。`site` が未設定の場合は、
+あらゆる絶対 HTTP/HTTPS URL が外部として扱われます。
+
+`mailto:`、`tel:`、その他の非 HTTP(S) スキームは常に変更されません。
+相対パス（`/internal/`、`./page.mdx`、`#anchor`）は常に内部リンクです。
+
+## 既存の rel とのマージ
+
+`<a>` 要素がすでに `rel` 属性を持っている場合、設定したトークンが
+マージされます（大文字小文字を区別せずに重複排除されます）。既存のトークンが
+先に並ぶため、著者の意図が保持されます。
+
+<Note>
+
+同一オリジンの判定は `site` 設定オプションに依存します。`site` が設定されるまで、
+あらゆる絶対 HTTP/HTTPS URL は外部として扱われます。
+
+</Note>
+
+## 関連項目
+
+- [リンク解決](./resolve-links.mdx) — 内部リンクの参照先を正規化する、
+  対となるコアプラグイン。

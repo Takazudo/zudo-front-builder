@@ -1,0 +1,62 @@
+---
+title: GitHub アラート
+description: GitHub スタイルのアラート引用ブロック（> [!NOTE]、> [!WARNING] など）をスタイル付きコンポーネントとして描画する。
+tier: Opt-in
+---
+
+`githubAlerts` 機能は、GitHub スタイルのアラート引用ブロックを JSX コンポーネントに書き換えます。
+これは、GitHub が README ファイルや issue コメントでネイティブに描画するのと同じ構文です。
+
+## 有効化
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    features: {
+      githubAlerts: true,
+    },
+  },
+});
+```
+
+## 使い方
+
+引用ブロックに `> [!TYPE]` の接頭辞を付けます。タイプは大文字小文字を区別しません。
+
+```md
+> [!NOTE]
+> Useful information that users should know.
+
+> [!TIP]
+> Helpful advice for doing things better or more easily.
+
+> [!IMPORTANT]
+> Key information users need to know to achieve their goal.
+
+> [!WARNING]
+> Urgent info that needs immediate user attention to avoid problems.
+
+> [!CAUTION]
+> Advises about risks or negative outcomes of certain actions.
+```
+
+## 対応するタイプ
+
+| 接頭辞        | コンポーネント |
+|---------------|----------------|
+| `[!NOTE]`     | `<Note>`       |
+| `[!TIP]`      | `<Tip>`        |
+| `[!IMPORTANT]`| `<Important>`  |
+| `[!WARNING]`  | `<Warning>`    |
+| `[!CAUTION]`  | `<Caution>`    |
+
+## 補足
+
+- **インラインタイトルは不可。** サポートされる構文は `[!TYPE]` 接頭辞のみです。
+  `[!NOTE] My Title` のような末尾のラベルは、（アラートではなく）通常の引用ブロックとして扱われます。
+- アラート内の**複数の段落**に対応しています — 本文コンテンツはすべて
+  JSX 要素の中に配置されます。
+- **`directives` と共存します。** 両方の機能を同時に有効化できます。
+  GitHub スタイルのアラートは directives パスが実行される前に変換されるため、
+  2 つの構文は完全に独立しています。

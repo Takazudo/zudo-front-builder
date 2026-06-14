@@ -1,0 +1,107 @@
+---
+title: 見出しリンク
+description: すべての見出しにスラッグベースの id 属性とアンカーリンクを自動的に付与する。
+tier: Core
+sidebar_position: 51
+---
+
+`HeadingLinksPlugin` は常に有効です。すべての `<h2>`〜`<h6>` をスラッグ化し、
+読者が任意のセクションへのディープリンクをコピーできるよう、自己参照の
+アンカーリンクを注入します。
+
+## 挙動
+
+各見出しに対して、プラグインは次を行います:
+
+1. 見出しテキストから GitHub-slugger 互換のスラッグを計算する。
+2. 同一ドキュメント内で繰り返されるスラッグを、カウンターを付加することで
+   重複排除する（`overview`、`overview-1`、`overview-2`、…）。
+3. `<h*>` 要素に `id` 属性を設定する。
+4. 見出しの **最後の子** として、空の `<a href="#slug" class="hash-link" aria-label="…">`
+   を付加する。見出しテキストは包まれずに残ります。表示される `#` のグリフは
+   CSS の `::after` で描画されるため、アンカー本体は空のままになり、見出しテキストの
+   抽出（例: TOC 用）がクリーンに保たれます。
+
+## 例
+
+```md
+## Introduction
+
+## Introduction
+```
+
+次を生成します:
+
+```html
+<h2 id="introduction">Introduction<a href="#introduction" class="hash-link" aria-label="Direct link to Introduction"></a></h2>
+<h2 id="introduction-1">Introduction<a href="#introduction-1" class="hash-link" aria-label="Direct link to Introduction"></a></h2>
+```
+
+## 設定
+
+プラグイン自体は常にオンです。**ID 戦略** は
+`markdown.features.headingIds` で設定可能です:
+
+```ts
+// zfb.config.ts
+export default {
+  markdown: {
+    features: {
+      headingIds: { strategy: "hierarchical" },
+    },
+  },
+};
+```
+
+### `strategy: "flat"`（デフォルト）
+
+上で説明した挙動です。`h2`〜`h6` で共有される 1 つの重複排除カウンターを伴う
+GitHub-slugger のスラッグです。`headingIds` を完全に省略すると、この方式が保たれます。
+
+### `strategy: "hierarchical"`
+
+各見出しの ID には、その祖先のチェーンが `-` で連結されて接頭辞として付きます:
+
+```md
+## Foo
+
+### Moo
+
+#### Mew
+```
+
+（フラットな `foo`、`moo`、`mew` の代わりに）`id="foo"`、`id="foo-moo"`、
+`id="foo-moo-mew"` を生成します。見出し内のハッシュリンクアンカー、
+`headings` エクスポート、[TOC エクスポート](./toc-export.mdx)、
+[リンク検証](./link-validation.mdx) はすべて、
+同じ ID に従います。
+
+詳細:
+
+- 完全なパスが重複した場合も、重複排除カウンターが付きます（`a-b`、`a-b-1`）。
+- 重複排除された親は、その **最終的な** ID を子に提供します: 2 番目の `## Foo` は
+  `foo-1` になるため、その `### Bar` は `foo-1-bar` になります。
+- 階層的なアンカーは見出しのアウトラインから再構築でき、URL が長くなる代償と
+  引き換えに、フラットなスラッグよりはるかに衝突しにくくなります。
+
+<Warning>
+
+戦略を切り替えることは **アンカーを壊します**: 入れ子の見出しへの既存の
+ディープリンク（`#moo`）は、ID が `#foo-moo` になると解決されなくなります。
+
+</Warning>
+
+## 順序に関する注意
+
+`HeadingLinksPlugin` は、hast フェーズで **最初に** 実行されます。安定した
+見出しの `id` 値に依存するプラグイン — `TocPlugin`（オプトインの
+[見出しマーカー TOC](./heading-marker-toc.mdx)）や
+`TocExportPlugin`（オプトインの [TOC エクスポート](./toc-export.mdx)）など — は、
+その後に実行される必要があります。
+
+## 関連項目
+
+- [見出しマーカー TOC](./heading-marker-toc.mdx) — このプラグインが生成する
+  `id` 属性を読み取る、オプトインの TOC 挿入機能。
+- [TOC エクスポート](./toc-export.mdx) — オプトインの構造化された
+  TOC データエクスポート。
