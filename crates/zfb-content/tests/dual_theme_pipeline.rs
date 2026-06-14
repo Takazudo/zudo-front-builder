@@ -77,6 +77,72 @@ fn dual_pipeline_emits_shiki_vars_and_dual_class() {
     );
 }
 
+/// Build-start validation (codex review, #1067): an unknown `themeLight` or
+/// `themeDark` name must surface `HighlightError::UnknownTheme` at pipeline
+/// CONSTRUCTION, not silently render unhighlighted blocks. The per-block
+/// `highlight_lines_dual` error is swallowed by `SyntectPlugin` (mirroring
+/// the single path), so construction is the only place a bad dual name can
+/// be rejected loudly — honouring the documented build-start error.
+#[test]
+fn dual_unknown_theme_name_errors_at_construction() {
+    use zfb_content::syntect_highlight::HighlightError;
+
+    // `Pipeline` is not `Debug`, so match on the Result instead of `expect_err`.
+    let light_err = match Pipeline::with_defaults_and_full_config_dual(
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        None,
+        "NoSuchLightTheme",
+        "base16-ocean.dark",
+    ) {
+        Ok(_) => panic!("unknown themeLight must error at construction"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&light_err, HighlightError::UnknownTheme(n) if n == "NoSuchLightTheme"),
+        "expected UnknownTheme(NoSuchLightTheme), got: {light_err:?}"
+    );
+
+    let dark_err = match Pipeline::with_defaults_and_full_config_dual(
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        None,
+        "base16-ocean.light",
+        "NoSuchDarkTheme",
+    ) {
+        Ok(_) => panic!("unknown themeDark must error at construction"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&dark_err, HighlightError::UnknownTheme(n) if n == "NoSuchDarkTheme"),
+        "expected UnknownTheme(NoSuchDarkTheme), got: {dark_err:?}"
+    );
+}
+
+/// The same dual-name validation must fire through `PipelineSpec::build_pipeline`
+/// — the path the bundler and snapshot walker actually use.
+#[test]
+fn pipeline_spec_dual_unknown_theme_errors() {
+    let spec = PipelineSpec {
+        code_highlight_theme_light: Some("base16-ocean.light".to_string()),
+        code_highlight_theme_dark: Some("NoSuchDarkTheme".to_string()),
+        ..PipelineSpec::default()
+    };
+    let err = match spec.build_pipeline() {
+        Ok(_) => panic!("unknown dual theme must fail build_pipeline"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("NoSuchDarkTheme"),
+        "build_pipeline error must name the unknown theme: {msg}"
+    );
+}
+
 /// The `<span class="line">` wrapper structure must be identical to the
 /// single-theme path — each line is a mutable Element.
 #[test]

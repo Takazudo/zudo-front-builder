@@ -1686,6 +1686,25 @@ impl Pipeline {
         if let Some(dir) = themes_dir {
             highlighter.load_themes_from_dir(dir)?;
         }
+        // Build-start validation for dual mode: a misspelled or unloaded
+        // `themeLight`/`themeDark` must surface the documented `UnknownTheme`
+        // error here rather than silently rendering unhighlighted blocks —
+        // the per-block `highlight_lines_dual` call's `Err` is swallowed by
+        // `SyntectPlugin` (mirroring the single-theme path), so the only place
+        // a dual name can be rejected loudly is at construction, after any
+        // `themesDir` themes are loaded. (config.rs only validates that the
+        // pair is *present*; theme-name existence depends on `themesDir`,
+        // which is not known until here.)
+        if let Some((light, dark)) = dual {
+            let names = highlighter.theme_names();
+            for name in [light, dark] {
+                if !names.iter().any(|n| n == name) {
+                    return Err(crate::syntect_highlight::HighlightError::UnknownTheme(
+                        name.to_string(),
+                    ));
+                }
+            }
+        }
         let highlighter = Arc::new(highlighter);
         let mut p = Self::with_resolved_gfm_constructs(resolved);
         // mdast phase — CjkFriendlyPlugin honours the cjk_friendly toggle.
