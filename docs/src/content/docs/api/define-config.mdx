@@ -47,7 +47,11 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
 
 The following keys are accepted by the Rust config loader and ignored by the TypeScript type (they apply only when `zfb` runs as a Rust binary, not the JS dev tooling):
 
-- `codeHighlight` — syntect syntax-highlight theme options. See the syntax-highlighting guide.
+- `codeHighlight` — syntect syntax-highlight theme options. See the [syntax-highlighting guide](../guides/syntax-highlighting.mdx). Fields:
+  - `theme?: string` — single-theme mode. A syntect built-in or user-loaded theme name (e.g. `"InspiredGitHub"`, `"Solarized (dark)"`); defaults to `"base16-ocean.dark"`. Tokens get an inline `color:`. Mutually exclusive with `themeLight` / `themeDark`. These are **syntect** theme names, not Shiki names like `"dracula"`.
+  - `themesDir?: string` — directory of `.tmTheme` files, relative to the project root. Each file becomes available by its declared `name` to `theme`, `themeLight`, or `themeDark`. Applies to **both** single- and dual-theme mode. Must be relative and must not escape the root via `..`; a missing directory errors at build start.
+  - `themeLight?: string` — light-mode syntect theme name for dual-theme highlighting. Must be set **together with** `themeDark` — setting only one is a build error. Mutually exclusive with `theme`. When the pair is set, each block is highlighted twice and tokens carry `--shiki-light` / `--shiki-dark` custom properties instead of an inline `color:`, the `<pre>` gets `class="syntect-dual"` plus `--shiki-light-bg` / `--shiki-dark-bg`, and the consumer resolves the active colour with a `light-dark()` CSS rule.
+  - `themeDark?: string` — dark-mode syntect theme name for dual-theme highlighting. Must be set **together with** `themeLight`; mutually exclusive with `theme`. See `themeLight` for the full dual-mode contract.
 - `pluginHookTimeoutSecs` — timeout (seconds) for plugin hook invocations.
 
 ## Watching paths outside the project root

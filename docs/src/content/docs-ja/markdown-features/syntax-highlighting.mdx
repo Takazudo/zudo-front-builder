@@ -26,6 +26,29 @@ export default {
 カスタムの `.tmTheme` ファイルや、補助的なクライアントサイドのパターンについては、
 以下の専用ガイドで解説しています。
 
+## ライト / ダークのデュアルテーマ
+
+`theme` を 1 つ指定する代わりに、`themeLight` と `themeDark` の両方を設定すると、
+各ブロックを 2 回ハイライトし、トークンごとの色を CSS カスタムプロパティとして
+出力します。これにより、描画後にページのライト / ダークモードに応じてアクティブな
+色が選ばれます。JavaScript は不要です。
+
+```ts title="zfb.config.ts"
+export default {
+  codeHighlight: {
+    themeLight: "InspiredGitHub",
+    themeDark: "base16-ocean.dark",
+  },
+};
+```
+
+`themeLight` と `themeDark` は**必ずセットで**指定する必要があり、`theme` とは
+排他です。`<pre>` には `class="syntect-dual"` が付与され、利用側は 1 つの
+`light-dark()` CSS ルールで色を解決します。これらは Shiki ではなく syntect の
+テーマ名です。出力される markup と CSS ルールについては、
+[専用ガイド](../guides/syntax-highlighting.mdx#ライト--ダークのデュアルテーマ)
+を参照してください。
+
 ## 詳細なドキュメント
 
 テーマ名、カスタム `.tmTheme` の読み込み、クライアントサイドの補助的なハイライト、
