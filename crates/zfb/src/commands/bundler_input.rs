@@ -53,14 +53,29 @@ pub(crate) fn pipeline_spec_from_config(
     zfb_content::PipelineSpec {
         // `codeHighlight.theme` — named syntect theme for fenced code
         // blocks instead of the default `base16-ocean.dark`.
+        // Mutually exclusive with the dual pair below; validation in
+        // config.rs guarantees at most one mode is set.
         code_highlight_theme: config.code_highlight.as_ref().and_then(|c| c.theme.clone()),
         // `codeHighlight.themesDir` — resolved to an absolute path HERE so
-        // both surfaces load the same `.tmTheme` files.
+        // both surfaces load the same `.tmTheme` files. Applies to both
+        // single-theme and dual-theme mode.
         code_highlight_themes_dir: config
             .code_highlight
             .as_ref()
             .and_then(|c| c.themes_dir.as_ref())
             .map(|td| project_root.join(td)),
+        // `codeHighlight.themeLight` / `codeHighlight.themeDark` — the
+        // dual-theme pair that emits CSS custom properties (`--shiki-light`
+        // / `--shiki-dark`) instead of inline `color:`. Active iff BOTH
+        // are Some. Mutually exclusive with `code_highlight_theme`.
+        code_highlight_theme_light: config
+            .code_highlight
+            .as_ref()
+            .and_then(|c| c.theme_light.clone()),
+        code_highlight_theme_dark: config
+            .code_highlight
+            .as_ref()
+            .and_then(|c| c.theme_dark.clone()),
         // Opt-in `stripMdExt` flag (zfb#127 / #129).
         strip_md_ext: config.strip_md_ext,
         // Derivation-owned — see the doc comment above.
