@@ -13,19 +13,36 @@ use std::path::PathBuf;
 
 use zfb_graph::{DirtySet, PageId};
 
-/// Hint that this tick was caused exclusively by in-place edits
-/// (`ChangeKind::Modified`) to content-collection files
-/// (`PathClass::Content`). Carries the changed paths so the dev render
-/// callback can narrow each dynamic source's fan-out to the routes
-/// derived from these entries (issue #958). `None` = no narrowing
-/// (render every selected page fully — today's behaviour). Purely
+/// The tick's directly-edited content-collection files
+/// (`PathClass::Content`), carried so the dev render callback can act on
+/// the changed entries' own routes. Two consumers, two strictness levels:
+///
+/// - The #958 **eager** fan-out narrowing requires the STRICT gate
+///   (`fan_out_safe`): narrow each dynamic source's fan-out to the routes
+///   derived from these entries ONLY when the whole tick was in-place
+///   `Modified` content edits — a co-changed module/component can affect
+///   every page, so narrowing a mixed tick would under-render.
+/// - The #1025 **lazy** eager-set derivation does NOT require it: it only
+///   ADDS eager renders for the edited entries' own routes and leaves the
+///   rest stale (never under-rendered), so it consumes `changed_content`
+///   even when `fan_out_safe` is `false`.
+///
+/// `None` = nothing was directly content-edited this tick. Purely
 /// advisory: must not affect `is_noop()`/merge logic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentNarrowing {
-    /// Paths of the Modified content files exactly as the watcher
-    /// delivered them (absolute; same representation recorded in
-    /// [`RebuildPlan::triggers`]).
+    /// Paths of the edited content files exactly as the watcher delivered
+    /// them (absolute; same representation recorded in
+    /// [`RebuildPlan::triggers`]). Populated permissively for the lazy
+    /// eager basis (issue #1058): a file edited as `Modified` OR `Created`
+    /// (an in-place edit of an existing file can arrive as `Created` under
+    /// FSEvents coalescing). Genuinely-new files carry no routes yet, so
+    /// the downstream route-table match renders nothing eager for them.
     pub changed_content: Vec<PathBuf>,
+    /// `true` only when the ENTIRE tick was in-place `Modified` content
+    /// edits — the strict #958 gate. The eager fan-out narrowing keys on
+    /// this; the lazy eager-set derivation ignores it (issue #1058).
+    pub fan_out_safe: bool,
 }
 
 /// What the orchestrator wants the asset pipeline to do for the next
@@ -246,6 +263,7 @@ mod tests {
         let mut plan = RebuildPlan::empty();
         plan.content_narrowing = Some(ContentNarrowing {
             changed_content: vec![PathBuf::from("/proj/content/post.md")],
+            fan_out_safe: true,
         });
         assert!(plan.is_noop());
     }

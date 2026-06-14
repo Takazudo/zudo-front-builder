@@ -638,15 +638,27 @@ impl AssetPipeline for DevAssetPipeline {
         // already makes. CSS, islands, and plan prune paths still run.
         let mut renderer_refresh_skipped = false;
 
-        // Content-narrowing hint for the render callback (issue #958).
-        // Defensive G6: the hint must never coexist with a discovery-
-        // refreshed renderer (`renderer_fresh`) — the discovery regime
-        // implies created files, which the orchestrator never produces a
-        // hint for, but if both ever appear together the safe direction
-        // is full fan-out.
-        let mut narrowing: Option<&crate::ContentNarrowing> = plan.content_narrowing.as_ref();
+        // Content-narrowing hint for the render callback (issues #958 /
+        // #1058). G5/G6 historically dropped the hint to `None` because,
+        // under the old contract, a hint meant "narrow the eager fan-out" —
+        // unsafe when discovery refreshed the renderer (G6) or the route
+        // structure moved (G5), since narrowing could orphan a brand-new
+        // URL. The hint now ALSO carries the lazy eager basis (the edited
+        // entries' own routes), which is ALWAYS safe: it only ADDS eager
+        // renders for known routes and never restricts the fan-out. So
+        // instead of dropping the hint, clear only its `fan_out_safe` flag —
+        // the eager path falls back to the full fan-out (it gates on
+        // `fan_out_safe`) while the lazy path still eager-renders the edited
+        // entry's own route even when a co-changed Created file refreshed the
+        // renderer this tick (the #1058 mixed-tick failure).
+        //
+        // G6: a discovery-refreshed renderer (`renderer_fresh`) implies a
+        // created file in this tick → the fan-out is no longer safe to narrow.
+        let mut narrowing: Option<crate::ContentNarrowing> = plan.content_narrowing.clone();
         if plan.renderer_fresh {
-            narrowing = None;
+            if let Some(n) = narrowing.as_mut() {
+                n.fan_out_safe = false;
+            }
         }
 
         if !pages.is_empty() {
@@ -681,11 +693,15 @@ impl AssetPipeline for DevAssetPipeline {
                             // post-edit one — but if the refresh reports
                             // that any source's route-entry set changed
                             // (or any output path vanished), the route
-                            // structure moved this tick and narrowing
-                            // could orphan a brand-new URL. Render the
-                            // full selected set instead.
+                            // structure moved this tick and narrowing the
+                            // eager FAN-OUT could orphan a brand-new URL.
+                            // Clear `fan_out_safe` so the eager path renders
+                            // the full selected set, while the lazy eager
+                            // basis (own-route renders only) survives (#1058).
                             if !vanished.is_empty() || !changed_sources.is_empty() {
-                                narrowing = None;
+                                if let Some(n) = narrowing.as_mut() {
+                                    n.fan_out_safe = false;
+                                }
                             }
                             route_vanished.extend(vanished);
                         }
@@ -700,7 +716,7 @@ impl AssetPipeline for DevAssetPipeline {
         // stale-output candidates nor the live-dests bookkeeping run — an
         // unrendered URL can never be mistaken for a vanished one.
         if !pages.is_empty() && !renderer_refresh_skipped {
-            let rendered = (ctx.render_pages)(&pages, narrowing)?;
+            let rendered = (ctx.render_pages)(&pages, narrowing.as_ref())?;
             outcome.pages_rendered = rendered.len();
 
             // Collect prune candidates and the live dest set during the
@@ -1518,6 +1534,7 @@ mod tests {
         let mut plan = single_page_plan();
         plan.content_narrowing = Some(crate::ContentNarrowing {
             changed_content: vec![PathBuf::from("/proj/content/post.md")],
+            fan_out_safe: true,
         });
         plan
     }
@@ -1544,16 +1561,28 @@ mod tests {
             seen[0],
             Some(crate::ContentNarrowing {
                 changed_content: vec![PathBuf::from("/proj/content/post.md")],
+                fan_out_safe: true,
             }),
             "the hint must be forwarded when the route table did not move"
         );
     }
 
-    /// Fallback G5 (issue #958): a refresh that reports changed source
-    /// route sets disables narrowing for the tick — the render callback
-    /// must see `None`.
+    /// Helper: the narrowed hint with `fan_out_safe` cleared — what G5/G6
+    /// now forward (the eager fan-out is disabled, the lazy eager basis
+    /// survives). See issue #1058.
+    fn hint_with_fan_out_cleared() -> Option<crate::ContentNarrowing> {
+        Some(crate::ContentNarrowing {
+            changed_content: vec![PathBuf::from("/proj/content/post.md")],
+            fan_out_safe: false,
+        })
+    }
+
+    /// Fallback G5 (issues #958 / #1058): a refresh that reports changed
+    /// source route sets clears `fan_out_safe` (the eager path renders the
+    /// full fan-out) but PRESERVES the hint so the lazy path still
+    /// eager-renders the edited entry's own route.
     #[test]
-    fn refresh_changed_sources_disable_narrowing() {
+    fn refresh_changed_sources_clears_fan_out_safe() {
         let dir = tempdir().unwrap();
         let pipeline = DevAssetPipeline::new();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1569,15 +1598,16 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert_eq!(
-            seen[0], None,
-            "non-empty changed_sources must force full fan-out (G5)"
+            seen[0],
+            hint_with_fan_out_cleared(),
+            "non-empty changed_sources clears fan_out_safe but keeps the lazy basis (G5)"
         );
     }
 
     /// Fallback G5, vanished arm: globally-vanished routes also mean the
-    /// route structure moved — no narrowing this tick.
+    /// route structure moved — clear `fan_out_safe`, keep the lazy basis.
     #[test]
-    fn refresh_vanished_routes_disable_narrowing() {
+    fn refresh_vanished_routes_clears_fan_out_safe() {
         let dir = tempdir().unwrap();
         let pipeline = DevAssetPipeline::new();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1593,15 +1623,18 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert_eq!(
-            seen[0], None,
-            "non-empty vanished must force full fan-out (G5)"
+            seen[0],
+            hint_with_fan_out_cleared(),
+            "non-empty vanished clears fan_out_safe but keeps the lazy basis (G5)"
         );
     }
 
-    /// Fallback G6 (defensive): a hint must never survive on a
-    /// renderer-fresh tick (discovery regime) — the callback sees `None`.
+    /// Fallback G6 (issues #958 / #1058): a renderer-fresh tick (discovery
+    /// regime) clears `fan_out_safe` — the eager path renders the full
+    /// fan-out — but the lazy eager basis survives so a co-changed in-place
+    /// content edit still eager-renders its own route.
     #[test]
-    fn renderer_fresh_tick_drops_narrowing_hint() {
+    fn renderer_fresh_tick_clears_fan_out_safe() {
         let dir = tempdir().unwrap();
         let pipeline = DevAssetPipeline::new();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1619,8 +1652,9 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert_eq!(
-            seen[0], None,
-            "renderer_fresh must drop the narrowing hint (G6)"
+            seen[0],
+            hint_with_fan_out_cleared(),
+            "renderer_fresh clears fan_out_safe but keeps the lazy basis (G6)"
         );
     }
 
