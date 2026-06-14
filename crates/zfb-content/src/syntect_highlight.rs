@@ -359,9 +359,17 @@ impl Highlighter {
             for ((light_style, text), (dark_style, _)) in
                 light_regions.iter().zip(dark_regions.iter())
             {
+                // Spec (#1066): a dual span carries ONLY `--shiki-light` /
+                // `--shiki-dark` color vars — the sole difference vs the single
+                // path is those vars replacing `color:`. Syntect font styles
+                // (bold/italic/underline) are intentionally NOT emitted here:
+                // the two themes could disagree on style and there is no dual
+                // custom-property convention for it in this primitive. Wiring
+                // font styles is out of scope for this engine sub-issue.
+                //
                 // Escape with the SAME escaper syntect uses for text nodes so the
-                // only difference vs the single path is `--shiki-*` replacing
-                // `color:`. (Verified equal to syntect's `Escape` in tests.)
+                // escaped output is byte-identical to the single path's token
+                // text. (Verified equal to syntect's `Escape` in tests.)
                 let escaped = escape_html(text);
                 line_html.push_str("<span style=\"--shiki-light:");
                 line_html.push_str(&color_to_hex(light_style.foreground));
