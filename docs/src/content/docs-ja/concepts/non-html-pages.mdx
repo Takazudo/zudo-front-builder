@@ -5,15 +5,165 @@ sidebar_position: 5.5
 category: Concepts
 ---
 
-<Info title="翻訳予定">
+<Info title="このページの内容">
 
-このページは英語版のスタブです。完全な翻訳は別の PR で行われます。
-英語版: [Non-HTML Pages](./non-html-pages.mdx)
+TSX ページが HTML 以外の出力（XML サイトマップ、RSS フィード、`llms.txt`、JSON マニフェスト）をどう生成できるかを解説します。ファイル名規約、フロントマターによる上書き、両者の優先順位ルール、ページごとの `Content-Type` メタデータ、そして拡張子が変わったときにエンジンが古い出力をどう扱うかを取り上げます。
 
 </Info>
 
-## 概要
+zfb のページモデルは HTML 専用ではありません。ページを描画するのと同じ TSX ファイル形式で、`.xml`、`.rss`、`.txt`、`.json`、あるいは文字列化できる任意のものを生成できます。エンジンは出力拡張子を選び、開発サーバー向けに `Content-Type` を設定し、HTML ページとまったく同じように `dist/` 配下にファイルを書き出します — 変わるのは拡張子だけです。
 
-`sitemap.xml.tsx` のようなファイル名規約と `frontmatter.extension` を使って、HTML 以外の出力（XML、テキストなど）を生成するしくみについて解説します。
+これは 6 つのエンジンプリミティブのひとつです — 全リストは [エンジンとフレームワーク](./engine-vs-framework.mdx) を参照してください。サイトマップやフィードの生成、`llms.txt`、ビルド時に描画される JSON API エンドポイント — これらはすべてこのプリミティブの上に乗っています。
 
-英語の最新ドキュメントは [Non-HTML Pages](./non-html-pages.mdx) を参照してください。
+## 拡張子を宣言する 2 つの方法
+
+### ファイル名規約
+
+もっとも単純な方法です。ページファイルの名前のうち、ステムの末尾から 2 番目の `.` 区切りセグメントとして、目的の拡張子を埋め込みます。
+
+```text
+pages/sitemap.xml.tsx   → /sitemap.xml
+pages/feed.rss.tsx      → /feed.rss
+pages/llms.txt.tsx      → /llms.txt
+pages/about.tsx         → /about/index.html
+```
+
+`.tsx` の直前の最後のセグメントが出力拡張子になり、それより前のドットはページ名の一部です。`pages/api.v2.json.tsx` は `/api.v2.json` になります。`pages/about.tsx` は規約のヒントがないため、デフォルトで `.html` になります。
+
+### フロントマターによる上書き
+
+ファイル名が固定されていて、別の出力にしたい場合もあります。ページのフロントマターの隣に兄弟の `extension` リテラルを追加します。
+
+```tsx
+// pages/raw.tsx
+export const frontmatter = { title: "Raw" };
+export const extension = "txt";
+
+export default function Raw() {
+  return "plain text body";
+}
+```
+
+出力: `/raw.txt`。
+
+`frontmatter` と `extension` はどちらも、モジュールを評価せずに SWC によって静的に抽出されます — リテラル限定の契約については [フロントマター](./frontmatter.mdx) を参照してください。
+
+## 優先順位
+
+両方のしくみが当てはまるときのルールは次のとおりです。
+
+> **フロントマターの `extension` &gt; ファイル名規約 &gt; `html` デフォルト**
+
+```text
+pages/page.html.tsx                     → .html (filename hint)
+pages/page.html.tsx + extension="txt"   → .txt  (frontmatter override wins)
+pages/about.tsx                         → .html (default)
+pages/about.tsx + extension="json"      → .json (frontmatter override)
+```
+
+このルールは `zfb-content::tsx_frontmatter`（`extension` リテラルを抽出）と `zfb-router::route::Route`（ファイル名規約をパース）が共同で適用します。小さなヘルパー `zfb_render::meta::derive_output_extension(frontmatter, route)` が、呼び出し側で優先順位を適用します。
+
+## `Content-Type` メタデータ
+
+すべての出力拡張子はデフォルトの `Content-Type` を持ち、それが開発サーバーまで受け渡されて、レスポンスヘッダーを正しく設定できるようになっています。
+
+| 拡張子 | デフォルトの `Content-Type` |
+| --------- | ---------------------- |
+| `html`, `htm` | `text/html; charset=utf-8` |
+| `xml` | `application/xml` |
+| `rss` | `application/rss+xml` |
+| `atom` | `application/atom+xml` |
+| `json` | `application/json` |
+| `txt` | `text/plain; charset=utf-8` |
+| `css` | `text/css; charset=utf-8` |
+| `js`, `mjs`, `cjs` | `application/javascript; charset=utf-8` |
+| `svg` | `image/svg+xml` |
+| それ以外 | `text/html; charset=utf-8`（寛容なフォールバック — `contentType` を明示的に設定してください） |
+
+ページごとに `export const contentType = "..."` で上書きできます。
+
+```tsx
+// pages/feed.xml.tsx
+export const frontmatter = { title: "Feed" };
+export const contentType = "application/rss+xml";
+
+export default function Feed() {
+  return /* the RSS body */;
+}
+```
+
+上書きはテーブルに勝ち、テーブルは未知の拡張子のフォールバックに勝ちます。静的ファイルホスト（Cloudflare Pages、Netlify、S3）は、代わりにファイル拡張子からレスポンスの `Content-Type` を導出します — エンジン内の `contentType` は純粋に開発サーバーの利便性のためのものです。
+
+## ビルドをまたいだ古い出力のクリーンアップ
+
+出力拡張子はビルド間で変わることがあります。今日の `pages/raw.tsx` は `/raw.html` をビルドし、明日 `export const extension = "txt"` を追加すると `/raw.txt` をビルドします。拡張子が変わると、エンジンはそのルートの前回ビルドの出力を削除するため、`dist/` に古いファイルが溜まることはありません（新しい `/raw.txt` の横に `/raw.html` が取り残される、ということが起きません）。
+
+このクリーンアップはビルドオーケストレーターのアトミックな書き込みフェーズの一部として実行されます — [ビルドパイプライン](./build-pipeline.mdx) を参照してください — そして、出力ファイル名ではなくルートの安定した識別子（ソースパス）をキーにしているため、リネームでも古いファイルが漏れ出すことはありません。
+
+## 例: コンテンツコレクションから XML サイトマップを生成する
+
+```tsx
+// pages/sitemap.xml.tsx
+import { getCollection } from "zfb/content";
+
+export const frontmatter = { title: "Sitemap" };
+
+const SITE = "https://example.com";
+
+export default function Sitemap() {
+  const posts = getCollection("blog");
+  const urls = posts.map((p) => `${SITE}/blog/${p.slug}`);
+
+  const body =
+    `<?xml version="1.0" encoding="UTF-8"?>` +
+    `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">` +
+    urls
+      .map(
+        (loc) =>
+          `<url><loc>${loc}</loc></url>`,
+      )
+      .join("") +
+    `</urlset>`;
+
+  return body;
+}
+```
+
+ファイル名規約が `xml` を選びます。エンジンは `dist/sitemap.xml` を書き出し、開発サーバー向けに `application/xml` のタグを付けます。HTML もレイアウトもクロムもなく — ページは文字列を返し、エンジンはそれを本文として扱います。
+
+## 例: `llms.txt`
+
+```tsx
+// pages/llms.txt.tsx
+import { getCollection } from "zfb/content";
+
+export const frontmatter = { title: "llms.txt" };
+
+export default function LlmsTxt() {
+  const posts = getCollection("blog");
+  const lines = [
+    "# My Site",
+    "",
+    "## Posts",
+    "",
+    ...posts.map((p) => `- [${p.data.title}](/blog/${p.slug})`),
+  ];
+  return lines.join("\n");
+}
+```
+
+ファイル名規約が `txt` を選びます。出力は `dist/llms.txt` で、`text/plain; charset=utf-8` で配信されます。
+
+## エンジンが行わないこと
+
+- **HTML 以外の出力のために JSX を自動で文字列エンコードする。** ページは本文を文字列として（あるいはレンダラーがシリアライズする JSX 値として）返します。エンジンは「JSX を XML として描画する」ことを試みません — 欲しいバイト列を生成して返してください。
+- **サイトマップ / フィード / `llms.txt` を代わりに生成する。** それはフレームワークの関心事です。エンジンは土台（ファイル出力 + コレクション + `paths()`）を提供し、規約を組み立てるのはあなたのフレームワークやプロジェクトです。
+
+## 関連項目
+
+- [フロントマター](./frontmatter.mdx) — `extension` と `contentType` エクスポートのリテラル限定の契約。
+- [ルーティング](./routing.mdx) — 静的ルートの側面。ファイル名規約のテーブルを含みます。
+- [ビルドパイプライン](./build-pipeline.mdx) — ビルドシーケンスのどこで古い出力のクリーンアップが実行されるか。
+- [エンジンとフレームワーク](./engine-vs-framework.mdx) — なぜ HTML 以外の出力がエンジンプリミティブ（フレームワークのアドオンではなく）なのか。
+</content>
+</invoke>
