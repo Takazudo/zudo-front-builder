@@ -504,24 +504,69 @@ export type OutputMode = "static" | "hybrid" | "auto";
  * Unknown theme names are rejected at build start with a clear error
  * rather than silently falling back.
  *
+ * **Single-theme mode** (the default): set `theme` to a syntect theme name,
+ * or omit it to use the default (`"base16-ocean.dark"`). Tokens are colored
+ * with inline `color:`.
+ *
+ * **Dual-theme mode**: set both `themeLight` and `themeDark`. Tokens are
+ * colored with CSS custom properties (`--shiki-light` / `--shiki-dark`),
+ * and the consumer applies a `light-dark()` rule to pick the active color.
+ * The `<pre>` element carries `class="syntect-dual"` and
+ * `--shiki-light-bg` / `--shiki-dark-bg` in its `style` attribute.
+ *
+ * `theme` and the dual pair are mutually exclusive. Setting only one of
+ * `themeLight` / `themeDark` is an error.
+ *
+ * All theme names are **SYNTECT** built-in or user-loaded names (e.g.
+ * `"base16-ocean.light"`, `"base16-ocean.dark"`, `"InspiredGitHub"`,
+ * `"Solarized (dark)"`), NOT Shiki names like `"dracula"`.
+ *
  * Mirrors `CodeHighlightConfig` in crates/zfb/src/config.rs.
  */
 export type CodeHighlightConfig = {
   /**
    * Syntect built-in or user-loaded theme name. When absent the
    * pipeline defaults to `"base16-ocean.dark"`.
+   *
+   * Mutually exclusive with {@link themeLight} / {@link themeDark}.
+   * Must be a SYNTECT theme name (e.g. `"InspiredGitHub"`), NOT a Shiki name.
    */
   theme?: string;
   /**
    * Path to a directory of `.tmTheme` files, relative to the project
    * root. Every `.tmTheme` file in the directory is loaded and becomes
-   * available by its declared `name` via {@link theme}. When absent
-   * only syntect's bundled themes are available.
+   * available by its declared `name` via {@link theme}, {@link themeLight},
+   * or {@link themeDark}. When absent only syntect's bundled themes are
+   * available.
    *
    * The path must be relative and must not escape the project root via
    * `..`. A missing directory is reported as an error at build start.
+   *
+   * Applies to both single-theme and dual-theme mode.
    */
   themesDir?: string;
+  /**
+   * Light-mode syntect theme name for dual-theme highlighting.
+   *
+   * Must be set together with {@link themeDark} — setting only one of
+   * the two is a build error. When both are set, tokens are colored with
+   * CSS custom properties (`--shiki-light` / `--shiki-dark`) instead of
+   * inline `color:`. Mutually exclusive with {@link theme}.
+   *
+   * Must be a SYNTECT theme name (e.g. `"base16-ocean.light"`),
+   * NOT a Shiki name like `"dracula"`.
+   */
+  themeLight?: string;
+  /**
+   * Dark-mode syntect theme name for dual-theme highlighting.
+   *
+   * Must be set together with {@link themeLight} — setting only one of
+   * the two is a build error. Mutually exclusive with {@link theme}.
+   *
+   * Must be a SYNTECT theme name (e.g. `"base16-ocean.dark"`),
+   * NOT a Shiki name like `"dracula"`.
+   */
+  themeDark?: string;
 };
 
 /**
