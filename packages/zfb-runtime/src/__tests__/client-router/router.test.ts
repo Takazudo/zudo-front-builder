@@ -558,3 +558,83 @@ describe("island lifecycle ordering during navigate()", () => {
     expect(unmountIdx).toBeLessThan(mountIdx);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Route announcer — timer lifecycle ownership (#1063)
+// ---------------------------------------------------------------------------
+//
+// Covers the announce() changes from #1063: exactly one announcer element
+// (fresh per navigation, never reused or accumulated) and a cancellable 60ms
+// timer that a superseding navigation clears.
+//
+// NOT covered here (documented blind spot): the scroll-position polling
+// setInterval guard (router.ts, the `else` branch when `onscrollend` is
+// absent). Per #1063's own investigation, happy-dom reports
+// `"onscrollend" in window === false` (so the router takes the setInterval
+// branch) but `window.scrollTo()` dispatches no `scroll` event, and the
+// interval is only ever started from inside the `scroll` listener — so the
+// interval never starts in this environment and cannot be driven through the
+// public API. Its teardown guard is defensive-only (a real browser always has
+// the globals it reads). Re-announce *reliability* of the aria-live region is
+// likewise a screen-reader behavior happy-dom cannot observe (Level 5/6).
+describe("route announcer — timer lifecycle (#1063)", () => {
+  // Flush pending microtasks WITHOUT advancing real time, so announce() (which
+  // runs in the post-swap `updateCallbackDone.finally` continuation) has run but
+  // its 60ms timer is still pending. Avoids setTimeout so it doesn't perturb the
+  // timer spies below.
+  const flushMicrotasks = async () => {
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo) => {
+        const slug = String(url).split("/").pop() || "page";
+        return htmlResponse(pageHtml(`Title-${slug}`, `content-${slug}`));
+      }),
+    );
+  });
+
+  it("appends exactly one announcer, fresh per navigation (no reuse, no accumulation)", async () => {
+    await navigate("/ann-a");
+    await flushMicrotasks();
+    const first = document.querySelector(".zfb-route-announcer");
+    expect(first).not.toBeNull();
+    // The aria-live contract the announcer is created with.
+    expect(first?.getAttribute("aria-live")).toBe("assertive");
+    expect(first?.getAttribute("aria-atomic")).toBe("true");
+
+    await navigate("/ann-b");
+    await flushMicrotasks();
+    const announcers = document.querySelectorAll(".zfb-route-announcer");
+    // Exactly one announcer ever exists ...
+    expect(announcers).toHaveLength(1);
+    // ... and it is a FRESH element, not the prior instance reused. A reused
+    // live region re-entering the a11y tree is an unreliable SR trigger (#1063).
+    expect(announcers[0]).not.toBe(first);
+  });
+
+  it("cancels the prior pending announce timer when a newer navigation supersedes it", async () => {
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
+    try {
+      await navigate("/sup-a");
+      await flushMicrotasks();
+      // announce() schedules the only 60ms setTimeout in the navigation pipeline.
+      const idx = setTimeoutSpy.mock.calls.findIndex((c) => c[1] === 60);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const firstTimerId = setTimeoutSpy.mock.results[idx]!.value;
+
+      await navigate("/sup-b");
+      await flushMicrotasks();
+
+      // The second navigation's announce() must clear the first's still-pending
+      // 60ms timer before scheduling its own — the supersede guarantee.
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(firstTimerId);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+    }
+  });
+});
