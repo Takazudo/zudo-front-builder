@@ -70,14 +70,42 @@ pub struct PipelineSpec {
     /// `None` keeps the built-in default theme (`base16-ocean.dark`).
     /// Custom themes are loaded via [`Self::code_highlight_themes_dir`].
     /// Mirrors `codeHighlight.theme` in `zfb.config.ts`.
+    ///
+    /// Mutually exclusive with [`Self::code_highlight_theme_light`] /
+    /// [`Self::code_highlight_theme_dark`] — set only one mode per build.
+    /// These are SYNTECT theme names (e.g. `"InspiredGitHub"`,
+    /// `"Solarized (dark)"`), NOT Shiki names like `"dracula"`.
     pub code_highlight_theme: Option<String>,
     /// Optional absolute path to a directory of `.tmTheme` files, loaded
     /// before the syntect plugin is constructed so custom themes become
-    /// addressable by name in [`Self::code_highlight_theme`]. `None`
-    /// keeps syntect's bundled themes only. Mirrors
+    /// addressable by name in [`Self::code_highlight_theme`] (or the dual
+    /// pair). `None` keeps syntect's bundled themes only. Mirrors
     /// `codeHighlight.themesDir` in `zfb.config.ts` (resolved to an
     /// absolute path by the command layer before being stored here).
+    ///
+    /// Applies to both single-theme and dual-theme mode.
     pub code_highlight_themes_dir: Option<PathBuf>,
+    /// Light-mode syntect theme name for dual-theme highlighting.
+    ///
+    /// Active iff BOTH `code_highlight_theme_light` AND
+    /// `code_highlight_theme_dark` are `Some`. When the dual pair is
+    /// active, every fenced code block is highlighted twice and per-token
+    /// colors are emitted as CSS custom properties (`--shiki-light` /
+    /// `--shiki-dark`) instead of inline `color:`. The `<pre>` element
+    /// carries `class="syntect-dual"` and `--shiki-*-bg` vars in its
+    /// `style` attribute.
+    ///
+    /// Mutually exclusive with [`Self::code_highlight_theme`].
+    /// Must be a SYNTECT theme name (e.g. `"base16-ocean.light"`),
+    /// NOT a Shiki name like `"dracula"`.
+    /// Mirrors `codeHighlight.themeLight` in `zfb.config.ts`.
+    pub code_highlight_theme_light: Option<String>,
+    /// Dark-mode syntect theme name for dual-theme highlighting.
+    ///
+    /// See [`Self::code_highlight_theme_light`] for the full dual-mode
+    /// contract. Must be a SYNTECT theme name (e.g. `"base16-ocean.dark"`),
+    /// NOT a Shiki name. Mirrors `codeHighlight.themeDark` in `zfb.config.ts`.
+    pub code_highlight_theme_dark: Option<String>,
     /// When `true`, append [`Pipeline::add_strip_md_ext`] so internal
     /// `[link](other.md)` style hrefs are rewritten to `other/`. Mirrors
     /// the opt-in `stripMdExt` flag in `zfb.config.ts` (zfb#127 / #129).
@@ -155,6 +183,8 @@ impl Default for PipelineSpec {
         Self {
             code_highlight_theme: None,
             code_highlight_themes_dir: None,
+            code_highlight_theme_light: None,
+            code_highlight_theme_dark: None,
             strip_md_ext: false,
             resolve_source_map: None,
             gfm_constructs: ResolvedGfmConstructs::default(),
@@ -197,6 +227,8 @@ impl PipelineSpec {
         let Self {
             code_highlight_theme,
             code_highlight_themes_dir,
+            code_highlight_theme_light,
+            code_highlight_theme_dark,
             strip_md_ext,
             resolve_source_map,
             gfm_constructs,
@@ -208,17 +240,38 @@ impl PipelineSpec {
             build_context_roots,
         } = self;
 
-        // Single feature-aware entry point. `features = None` is an empty
-        // feature set: the former-Core framework features are off (the
+        // Dual mode is active iff BOTH light and dark are Some.
+        let dual_pair = match (
+            code_highlight_theme_light.as_deref(),
+            code_highlight_theme_dark.as_deref(),
+        ) {
+            (Some(light), Some(dark)) => Some((light, dark)),
+            _ => None,
+        };
+
+        // Single or dual feature-aware entry point. `features = None` is an
+        // empty feature set: the former-Core framework features are off (the
         // post-epic opt-in default, #583 / #586).
-        let mut pipeline = Pipeline::with_defaults_and_full_config(
-            code_highlight_theme.as_deref(),
-            *gfm_constructs,
-            code_highlight_themes_dir.as_deref(),
-            *cjk_friendly,
-            *hard_breaks,
-            features.as_ref(),
-        )
+        let mut pipeline = if let Some((light, dark)) = dual_pair {
+            Pipeline::with_defaults_and_full_config_dual(
+                *gfm_constructs,
+                code_highlight_themes_dir.as_deref(),
+                *cjk_friendly,
+                *hard_breaks,
+                features.as_ref(),
+                light,
+                dark,
+            )
+        } else {
+            Pipeline::with_defaults_and_full_config(
+                code_highlight_theme.as_deref(),
+                *gfm_constructs,
+                code_highlight_themes_dir.as_deref(),
+                *cjk_friendly,
+                *hard_breaks,
+                features.as_ref(),
+            )
+        }
         .map_err(|cause| PipelineSpecError {
             // `Err` only occurs when `themes_dir` is `Some` (theme-file
             // load), so the `unwrap_or_default()` empty-string branch is

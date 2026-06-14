@@ -6,11 +6,13 @@
 //!
 //! 1. Skips `mermaid` blocks — those are handled by
 //!    [`crate::plugins::MermaidPlugin`].
-//! 2. Calls `highlighter.highlight_lines(code, Some(lang), None)`.
+//! 2. Calls `highlighter.highlight_lines(code, Some(lang), None)` (single
+//!    mode) or `highlighter.highlight_lines_dual(...)` (dual mode).
 //! 3. Replaces the entire `<pre>` [`HastNode`] with a structured HAST
 //!    tree of the form:
 //!    ```text
-//!    Element<pre class="syntect-{slug}">
+//!    Element<pre class="syntect-{slug}">          (single mode)
+//!    Element<pre class="syntect-dual" style="…">  (dual mode)
 //!      Element<code>
 //!        Element<span class="line">  Raw(line_1_html)  </span>
 //!        Element<span class="line">  Raw(line_2_html)  </span>
@@ -34,28 +36,86 @@ use std::sync::Arc;
 use crate::pipeline::{HastNode, HastVisitor};
 use crate::syntect_highlight::Highlighter;
 
+/// Internal mode selector for [`SyntectPlugin`].
+///
+/// `Single` uses the existing single-theme path (inline `color:`).
+/// `Dual` calls `highlight_lines_dual` and emits `--shiki-light` /
+/// `--shiki-dark` custom properties instead of inline color.
+#[derive(Clone)]
+enum SyntectMode {
+    /// Single theme — forwards to `highlight_lines` with the optional
+    /// theme name override. `None` falls back to the highlighter default.
+    Single(Option<String>),
+    /// Dual light + dark theme — forwards to `highlight_lines_dual` and
+    /// emits `<pre class="syntect-dual" style="--shiki-light-bg:…;--shiki-dark-bg:…">`.
+    ///
+    /// Theme names are SYNTECT names (e.g. `"base16-ocean.light"`,
+    /// `"base16-ocean.dark"`), NOT Shiki names like `"dracula"`.
+    Dual {
+        /// Light-mode syntect theme name (e.g. `"base16-ocean.light"`).
+        light: String,
+        /// Dark-mode syntect theme name (e.g. `"base16-ocean.dark"`).
+        dark: String,
+    },
+}
+
 /// Visitor that swaps fenced code blocks for syntect HTML.
 #[derive(Clone)]
 pub struct SyntectPlugin {
     highlighter: Arc<Highlighter>,
-    theme: Option<String>,
+    mode: SyntectMode,
 }
 
 impl SyntectPlugin {
-    /// Construct with a shared highlighter.
+    /// Construct with a shared highlighter in single-theme mode.
+    ///
+    /// The theme defaults to the highlighter's configured default
+    /// (`base16-ocean.dark`). Use [`SyntectPlugin::with_theme`] to
+    /// override it, or [`SyntectPlugin::with_dual_themes`] for dual mode.
     #[must_use]
     pub fn new(highlighter: Arc<Highlighter>) -> Self {
         Self {
             highlighter,
-            theme: None,
+            mode: SyntectMode::Single(None),
         }
     }
 
     /// Override the theme passed to the highlighter (defaults to the
     /// highlighter's configured default).
+    ///
+    /// The name must be a SYNTECT built-in or user-loaded theme name
+    /// (e.g. `"InspiredGitHub"`, `"Solarized (dark)"`), NOT a Shiki
+    /// name like `"dracula"`.
     #[must_use]
     pub fn with_theme(mut self, theme: impl Into<String>) -> Self {
-        self.theme = Some(theme.into());
+        self.mode = SyntectMode::Single(Some(theme.into()));
+        self
+    }
+
+    /// Switch to dual light + dark theme mode.
+    ///
+    /// In dual mode every fenced code block is highlighted twice — once
+    /// with `theme_light` and once with `theme_dark` — and the per-token
+    /// colors are emitted as CSS custom properties (`--shiki-light` /
+    /// `--shiki-dark`) instead of inline `color:`. The `<pre>` element
+    /// gets `class="syntect-dual"` and carries `--shiki-light-bg` /
+    /// `--shiki-dark-bg` as inline `style` variables (omitted when the
+    /// theme has no background). The consumer resolves the active color
+    /// with a `light-dark()` CSS rule.
+    ///
+    /// Both names must be SYNTECT built-in or user-loaded theme names
+    /// (e.g. `"base16-ocean.light"`, `"base16-ocean.dark"`), NOT Shiki
+    /// names like `"dracula"`.
+    #[must_use]
+    pub fn with_dual_themes(
+        mut self,
+        theme_light: impl Into<String>,
+        theme_dark: impl Into<String>,
+    ) -> Self {
+        self.mode = SyntectMode::Dual {
+            light: theme_light.into(),
+            dark: theme_dark.into(),
+        };
         self
     }
 }
@@ -64,7 +124,7 @@ impl HastVisitor for SyntectPlugin {
     fn visit(&mut self, node: &mut HastNode) {
         match node {
             HastNode::Root { children } | HastNode::Element { children, .. } => {
-                rewrite_children(children, &self.highlighter, self.theme.as_deref());
+                rewrite_children(children, &self.highlighter, &self.mode);
                 for c in children {
                     self.visit(c);
                 }
@@ -74,54 +134,142 @@ impl HastVisitor for SyntectPlugin {
     }
 }
 
-fn rewrite_children(children: &mut [HastNode], highlighter: &Highlighter, theme: Option<&str>) {
+fn rewrite_children(children: &mut [HastNode], highlighter: &Highlighter, mode: &SyntectMode) {
     for child in children.iter_mut() {
         if let Some((lang, meta, code)) = lang_and_code(child) {
             if lang == "mermaid" {
                 continue;
             }
-            if let Ok(result) = highlighter.highlight_lines(&code, Some(&lang), theme) {
-                // Build structured HAST: <pre class="syntect-{slug}"><code>
-                //   <span class="line">Raw(line_html)</span>…
-                // </code></pre>
-                // The per-line Raw keeps token-span HTML verbatim; the
-                // <span class="line"> Element wrapper exposes each line to
-                // downstream visitors (wave-5 code-enrichment).
-                let line_spans: Vec<HastNode> = result
-                    .lines
-                    .into_iter()
-                    .map(|line_html| HastNode::Element {
-                        tag: "span".to_string(),
-                        attrs: vec![("class".to_string(), "line".to_string())],
-                        children: vec![HastNode::Raw(line_html)],
-                        void: false,
-                    })
-                    .collect();
-                // Preserve `data-meta` on the new <code> element so downstream
-                // hast visitors (e.g. wave-5 CodeEnrichmentPlugin) can read the
-                // fence info-string (e.g. `{1,3-5}` for line highlighting).
-                let mut code_attrs: Vec<(String, String)> = Vec::new();
-                if let Some(m) = meta {
-                    code_attrs.push(("data-meta".to_string(), m));
+            match mode {
+                SyntectMode::Single(theme) => {
+                    rewrite_single(child, highlighter, theme.as_deref(), &lang, meta, &code);
                 }
-                let code_el = HastNode::Element {
-                    tag: "code".to_string(),
-                    attrs: code_attrs,
-                    children: line_spans,
-                    void: false,
-                };
-                *child = HastNode::Element {
-                    tag: "pre".to_string(),
-                    attrs: vec![(
-                        "class".to_string(),
-                        format!("syntect-{}", result.theme_slug),
-                    )],
-                    children: vec![code_el],
-                    void: false,
-                };
+                SyntectMode::Dual { light, dark } => {
+                    rewrite_dual(child, highlighter, light, dark, &lang, meta, &code);
+                }
             }
         }
     }
+}
+
+/// Rewrite `child` using the single-theme path. Mirrors the pre-dual logic.
+fn rewrite_single(
+    child: &mut HastNode,
+    highlighter: &Highlighter,
+    theme: Option<&str>,
+    lang: &str,
+    meta: Option<String>,
+    code: &str,
+) {
+    if let Ok(result) = highlighter.highlight_lines(code, Some(lang), theme) {
+        // Build structured HAST: <pre class="syntect-{slug}"><code>
+        //   <span class="line">Raw(line_html)</span>…
+        // </code></pre>
+        // The per-line Raw keeps token-span HTML verbatim; the
+        // <span class="line"> Element wrapper exposes each line to
+        // downstream visitors (wave-5 code-enrichment).
+        let line_spans = build_line_spans(result.lines);
+        // Preserve `data-meta` on the new <code> element so downstream
+        // hast visitors (e.g. wave-5 CodeEnrichmentPlugin) can read the
+        // fence info-string (e.g. `{1,3-5}` for line highlighting).
+        let code_el = build_code_el(line_spans, meta);
+        *child = HastNode::Element {
+            tag: "pre".to_string(),
+            attrs: vec![(
+                "class".to_string(),
+                format!("syntect-{}", result.theme_slug),
+            )],
+            children: vec![code_el],
+            void: false,
+        };
+    }
+}
+
+/// Rewrite `child` using the dual light/dark theme path.
+///
+/// Calls `highlight_lines_dual` and emits:
+/// ```html
+/// <pre class="syntect-dual" style="--shiki-light-bg:#…;--shiki-dark-bg:#…">
+///   <code>
+///     <span class="line">Raw(dual_line_html)</span>…
+///   </code>
+/// </pre>
+/// ```
+///
+/// Per-token spans carry `--shiki-light:#…;--shiki-dark:#…` custom
+/// properties (NO inline `color:`). The `--shiki-*-bg` vars are emitted
+/// only when the corresponding theme provides a background color; if
+/// BOTH themes lack a background the `style` attribute is omitted
+/// entirely.
+fn rewrite_dual(
+    child: &mut HastNode,
+    highlighter: &Highlighter,
+    theme_light: &str,
+    theme_dark: &str,
+    lang: &str,
+    meta: Option<String>,
+    code: &str,
+) {
+    if let Ok(result) = highlighter.highlight_lines_dual(code, Some(lang), theme_light, theme_dark)
+    {
+        let line_spans = build_line_spans(result.lines);
+        let code_el = build_code_el(line_spans, meta);
+
+        // Build the style attribute carrying the --shiki-*-bg variables.
+        // Omit a given *-bg var when its Option is None (colour-only theme);
+        // omit the style attr entirely when both are None.
+        let mut style_parts: Vec<String> = Vec::new();
+        if let Some(light_bg) = &result.light_bg {
+            style_parts.push(format!("--shiki-light-bg:{light_bg}"));
+        }
+        if let Some(dark_bg) = &result.dark_bg {
+            style_parts.push(format!("--shiki-dark-bg:{dark_bg}"));
+        }
+
+        let mut attrs: Vec<(String, String)> =
+            vec![("class".to_string(), "syntect-dual".to_string())];
+        if !style_parts.is_empty() {
+            attrs.push(("style".to_string(), style_parts.join(";")));
+        }
+
+        *child = HastNode::Element {
+            tag: "pre".to_string(),
+            attrs,
+            children: vec![code_el],
+            void: false,
+        };
+    }
+}
+
+/// Build a `<code>` element wrapping the given line spans.
+///
+/// Preserves `data-meta` when the fence carried a meta string so
+/// downstream hast visitors (e.g. wave-5 `CodeEnrichmentPlugin`) can
+/// read the fence info-string (e.g. `{1,3-5}` for line highlighting).
+fn build_code_el(line_spans: Vec<HastNode>, meta: Option<String>) -> HastNode {
+    let mut code_attrs: Vec<(String, String)> = Vec::new();
+    if let Some(m) = meta {
+        code_attrs.push(("data-meta".to_string(), m));
+    }
+    HastNode::Element {
+        tag: "code".to_string(),
+        attrs: code_attrs,
+        children: line_spans,
+        void: false,
+    }
+}
+
+/// Wrap each per-line HTML fragment in `<span class="line">Raw(…)</span>`.
+fn build_line_spans(lines: Vec<String>) -> Vec<HastNode> {
+    lines
+        .into_iter()
+        .map(|line_html| HastNode::Element {
+            tag: "span".to_string(),
+            attrs: vec![("class".to_string(), "line".to_string())],
+            children: vec![HastNode::Raw(line_html)],
+            void: false,
+        })
+        .collect()
 }
 
 /// If `node` is `<pre><code data-lang="…">TEXT</code></pre>`, return
@@ -307,6 +455,131 @@ mod tests {
             "expected themed wrapper for unknown lang: {html}"
         );
         assert!(html.contains("hello"), "code content missing: {html}");
+    }
+
+    // ── Dual-theme mode (with_dual_themes) ────────────────────────────────
+
+    /// Acceptance: dual mode emits `<pre class="syntect-dual">` with
+    /// `--shiki-light-bg`/`--shiki-dark-bg` in the `style` attribute, and
+    /// per-token spans carry `--shiki-light`/`--shiki-dark` with NO inline
+    /// `color:`.
+    #[test]
+    fn dual_mode_emits_syntect_dual_class_and_bg_vars() {
+        let h = Arc::new(Highlighter::new());
+        let mut plugin =
+            SyntectPlugin::new(h).with_dual_themes("base16-ocean.light", "base16-ocean.dark");
+        let mut tree = HastNode::Root {
+            children: vec![pre_code(Some("rust"), "fn main() {}\n")],
+        };
+        plugin.visit(&mut tree);
+
+        let HastNode::Root { children } = &tree else {
+            unreachable!("expected Root")
+        };
+        let HastNode::Element {
+            tag,
+            attrs,
+            children: pre_children,
+            ..
+        } = &children[0]
+        else {
+            panic!("expected Element<pre>, got {:?}", children[0])
+        };
+        assert_eq!(tag, "pre");
+        // class must be "syntect-dual"
+        assert!(
+            attrs
+                .iter()
+                .any(|(k, v)| k == "class" && v == "syntect-dual"),
+            "pre must have class=\"syntect-dual\": {attrs:?}"
+        );
+        // style must carry both --shiki-light-bg and --shiki-dark-bg
+        let style = attrs
+            .iter()
+            .find(|(k, _)| k == "style")
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("");
+        assert!(
+            style.contains("--shiki-light-bg:"),
+            "style must contain --shiki-light-bg: {style}"
+        );
+        assert!(
+            style.contains("--shiki-dark-bg:"),
+            "style must contain --shiki-dark-bg: {style}"
+        );
+
+        // Serialize the whole tree and check token properties.
+        use crate::serializer::serialize;
+        let html = serialize(&children[0]);
+        assert!(
+            html.contains("--shiki-light:#"),
+            "must contain --shiki-light: {html}"
+        );
+        assert!(
+            html.contains("--shiki-dark:#"),
+            "must contain --shiki-dark: {html}"
+        );
+        // The whole point: no inline `color:` in dual mode.
+        assert!(
+            !html.contains("color:#"),
+            "dual mode must NOT emit inline color: {html}"
+        );
+
+        // <code> must still be present, with <span class="line"> children.
+        let code_el = pre_children.first().expect("pre must have <code>");
+        let HastNode::Element {
+            tag: code_tag,
+            children: code_children,
+            ..
+        } = code_el
+        else {
+            panic!("expected Element<code>");
+        };
+        assert_eq!(code_tag, "code");
+        assert!(
+            !code_children.is_empty(),
+            "code must have line span children"
+        );
+    }
+
+    /// Byte-identity: single mode must still emit inline `color:` and
+    /// NO `--shiki-*` vars (the pre-dual output is unchanged).
+    #[test]
+    fn single_mode_still_emits_inline_color_not_shiki_vars() {
+        let h = Arc::new(Highlighter::new());
+        let mut plugin = SyntectPlugin::new(h);
+        let mut tree = HastNode::Root {
+            children: vec![pre_code(Some("rust"), "fn main() {}\n")],
+        };
+        plugin.visit(&mut tree);
+
+        let HastNode::Root { children } = &tree else {
+            unreachable!("expected Root")
+        };
+        use crate::serializer::serialize;
+        let html = serialize(&children[0]);
+        assert!(
+            html.contains("color:#"),
+            "single mode must still emit inline color: {html}"
+        );
+        assert!(
+            !html.contains("--shiki-"),
+            "single mode must NOT emit --shiki- vars: {html}"
+        );
+    }
+
+    /// Dual mode mermaid blocks are skipped (same as single mode).
+    #[test]
+    fn dual_mode_skips_mermaid_block() {
+        let h = Arc::new(Highlighter::new());
+        let mut plugin =
+            SyntectPlugin::new(h).with_dual_themes("base16-ocean.light", "base16-ocean.dark");
+        let mut tree = HastNode::Root {
+            children: vec![pre_code(Some("mermaid"), "graph TD;")],
+        };
+        let original = tree.clone();
+        plugin.visit(&mut tree);
+        assert_eq!(tree, original, "dual mode must also skip mermaid blocks");
     }
 
     /// New acceptance criterion (issue #571): a 3-line `<pre>` produces

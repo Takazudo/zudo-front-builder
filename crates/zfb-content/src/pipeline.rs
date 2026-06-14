@@ -1591,6 +1591,15 @@ impl Pipeline {
     /// [`Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir`] (and
     /// `zfb::config::resolve_hard_breaks`). Returns `Err` only when
     /// `themes_dir` is `Some` and a `.tmTheme` file fails to load.
+    ///
+    /// `dual` — when `Some((light, dark))`, constructs [`SyntectPlugin`] in
+    /// dual-theme mode via [`SyntectPlugin::with_dual_themes`] and overrides
+    /// `theme`. Both names must be SYNTECT theme names (e.g.
+    /// `"base16-ocean.light"`, `"base16-ocean.dark"`), NOT Shiki names like
+    /// `"dracula"`. When `None`, the single-theme path is used (with the
+    /// `theme` param as usual). The fingerprint encodes the mode explicitly
+    /// (`code_highlight=single(theme=…)` vs `code_highlight=dual(light=…,dark=…)`)
+    /// so single/dual configs can never alias a compile-cache entry.
     pub fn with_defaults_and_full_config(
         theme: Option<&str>,
         resolved: ResolvedGfmConstructs,
@@ -1598,6 +1607,55 @@ impl Pipeline {
         cjk_friendly: bool,
         hard_breaks: bool,
         features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
+    ) -> Result<Self, crate::syntect_highlight::HighlightError> {
+        Self::with_defaults_and_full_config_inner(
+            theme,
+            resolved,
+            themes_dir,
+            cjk_friendly,
+            hard_breaks,
+            features,
+            None,
+        )
+    }
+
+    /// Like [`Pipeline::with_defaults_and_full_config`] but with an explicit
+    /// dual-theme pair.
+    ///
+    /// When `dual` is `Some((light, dark))`, the `SyntectPlugin` is constructed
+    /// in dual-theme mode (CSS custom properties `--shiki-light`/`--shiki-dark`
+    /// instead of inline `color:`). The `theme` parameter is ignored in this case.
+    ///
+    /// Both theme names must be SYNTECT names — NOT Shiki names like `"dracula"`.
+    pub fn with_defaults_and_full_config_dual(
+        resolved: ResolvedGfmConstructs,
+        themes_dir: Option<&Path>,
+        cjk_friendly: bool,
+        hard_breaks: bool,
+        features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
+        theme_light: &str,
+        theme_dark: &str,
+    ) -> Result<Self, crate::syntect_highlight::HighlightError> {
+        Self::with_defaults_and_full_config_inner(
+            None,
+            resolved,
+            themes_dir,
+            cjk_friendly,
+            hard_breaks,
+            features,
+            Some((theme_light, theme_dark)),
+        )
+    }
+
+    /// Internal shared builder for both single and dual full-config constructors.
+    fn with_defaults_and_full_config_inner(
+        theme: Option<&str>,
+        resolved: ResolvedGfmConstructs,
+        themes_dir: Option<&Path>,
+        cjk_friendly: bool,
+        hard_breaks: bool,
+        features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
+        dual: Option<(&str, &str)>,
     ) -> Result<Self, crate::syntect_highlight::HighlightError> {
         // `markdown.features` absent → empty feature set (post-epic opt-in
         // default, #583 / #586): the former-Core framework features
@@ -1627,6 +1685,25 @@ impl Pipeline {
         let mut highlighter = Highlighter::new();
         if let Some(dir) = themes_dir {
             highlighter.load_themes_from_dir(dir)?;
+        }
+        // Build-start validation for dual mode: a misspelled or unloaded
+        // `themeLight`/`themeDark` must surface the documented `UnknownTheme`
+        // error here rather than silently rendering unhighlighted blocks —
+        // the per-block `highlight_lines_dual` call's `Err` is swallowed by
+        // `SyntectPlugin` (mirroring the single-theme path), so the only place
+        // a dual name can be rejected loudly is at construction, after any
+        // `themesDir` themes are loaded. (config.rs only validates that the
+        // pair is *present*; theme-name existence depends on `themesDir`,
+        // which is not known until here.)
+        if let Some((light, dark)) = dual {
+            let names = highlighter.theme_names();
+            for name in [light, dark] {
+                if !names.iter().any(|n| n == name) {
+                    return Err(crate::syntect_highlight::HighlightError::UnknownTheme(
+                        name.to_string(),
+                    ));
+                }
+            }
         }
         let highlighter = Arc::new(highlighter);
         let mut p = Self::with_resolved_gfm_constructs(resolved);
@@ -1679,7 +1756,13 @@ impl Pipeline {
         register_features_config_derived(&mut p, features, read_recorder.as_ref());
         // SyntectPlugin MUST be added AFTER register_features so pre-syntect
         // extras visitors (mermaid, …) run first.
-        let syntect = if let Some(t) = theme {
+        //
+        // Dual mode: when `dual` is `Some((light, dark))` the plugin is
+        // constructed via `with_dual_themes`; the `theme` param is ignored.
+        // Single mode: mirrors the pre-dual logic.
+        let syntect = if let Some((light, dark)) = dual {
+            SyntectPlugin::new(highlighter).with_dual_themes(light, dark)
+        } else if let Some(t) = theme {
             SyntectPlugin::new(highlighter).with_theme(t)
         } else {
             SyntectPlugin::new(highlighter)
@@ -1704,12 +1787,26 @@ impl Pipeline {
         // reads as a `DependencyManifest` with every entry and re-probes
         // them before honouring a hit, so a cached entry can no longer go
         // stale when a referenced file changes between dev ticks.
+        //
+        // The mode is encoded EXPLICITLY in the fingerprint segment
+        // (`code_highlight=single(theme=…)` vs `code_highlight=dual(light=…,dark=…)`)
+        // so a single-theme config can never alias a dual-theme entry in the
+        // compile cache, regardless of how the theme names compare (codex #5).
+        // IMPORTANT: the single-mode segment must be BYTE-IDENTICAL to the
+        // pre-dual form so existing warm caches are not invalidated on upgrade.
+        let code_highlight_seg = if let Some((light, dark)) = dual {
+            format!("code_highlight=dual(light={light:?},dark={dark:?})")
+        } else {
+            // Single mode: reproduce the exact pre-dual descriptor string so
+            // fingerprints are unchanged for all existing single-theme configs.
+            format!("theme={theme:?}")
+        };
         let base = match (
             themes_dir_fingerprint_segment(themes_dir),
             features_fingerprint_segment(features),
         ) {
             (Some(themes_seg), Some(features_seg)) => Some(format!(
-                "{FINGERPRINT_VERSION};full;theme={theme:?};{gfm};{themes_seg};cjk={cjk_friendly};hard_breaks={hard_breaks};{features_seg}",
+                "{FINGERPRINT_VERSION};full;{code_highlight_seg};{gfm};{themes_seg};cjk={cjk_friendly};hard_breaks={hard_breaks};{features_seg}",
                 gfm = gfm_fingerprint_segment(resolved),
             )),
             _ => None,

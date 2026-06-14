@@ -21,7 +21,7 @@ use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Theme, ThemeSet};
+use syntect::highlighting::{Color, Theme, ThemeSet};
 use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
@@ -256,6 +256,139 @@ impl Highlighter {
             fallback: false,
         })
     }
+
+    /// Highlight a code block **twice** (a light theme and a dark theme) and
+    /// emit per-token CSS *custom properties* (`--shiki-light` / `--shiki-dark`)
+    /// instead of an inline `color:`.
+    ///
+    /// This is the engine primitive for dual-theme (light + dark) rendering: a
+    /// single HTML payload carries both colours per token, and CSS picks which
+    /// custom property to apply based on the active colour scheme. The variable
+    /// names mirror Shiki's dual-theme convention so downstream CSS is familiar.
+    ///
+    /// * `code` - raw source code (no surrounding HTML).
+    /// * `lang` - language identifier from the markdown fence.
+    /// * `theme_light` / `theme_dark` - theme names; BOTH must resolve or the
+    ///   call returns [`HighlightError::UnknownTheme`] (same path as the
+    ///   single-theme method).
+    ///
+    /// Returns a [`DualHighlightedLines`] carrying:
+    /// - `lines`: one HTML fragment per source line. On the highlighted path each
+    ///   token is `<span style="--shiki-light:#…;--shiki-dark:#…">{escaped}</span>`.
+    ///   On the fallback path each entry is the HTML-escaped source line with no
+    ///   colour vars.
+    /// - `light_bg` / `dark_bg`: each theme's background as `#rrggbb`, or `None`
+    ///   when that theme defines no `settings.background` (colour-only `.tmTheme`).
+    /// - `fallback`: `true` when the themed-fallback path was used (unknown lang,
+    ///   tokenization error, or a per-line region-alignment mismatch).
+    ///
+    /// ## Region-alignment guard
+    ///
+    /// Tokenization is syntax/scope-driven, not theme-driven, so highlighting the
+    /// same syntax under two themes yields region lists whose text slices
+    /// concatenate to identical per-line text. This is *asserted* per line: on any
+    /// mismatch the method degrades to the escaped fallback rather than zipping
+    /// misaligned spans.
+    pub fn highlight_lines_dual(
+        &self,
+        code: &str,
+        lang: Option<&str>,
+        theme_light: &str,
+        theme_dark: &str,
+    ) -> Result<DualHighlightedLines, HighlightError> {
+        // Resolve BOTH themes up front, mirroring `highlight_lines`'
+        // UnknownTheme path. Unknown lang degrades to fallback (not an error),
+        // but an unknown theme name is always an error.
+        let light_obj: &Theme = self
+            .theme_set
+            .themes
+            .get(theme_light)
+            .ok_or_else(|| HighlightError::UnknownTheme(theme_light.to_string()))?;
+        let dark_obj: &Theme = self
+            .theme_set
+            .themes
+            .get(theme_dark)
+            .ok_or_else(|| HighlightError::UnknownTheme(theme_dark.to_string()))?;
+
+        // Background vars are emitted whenever the theme defines one; a
+        // colour-only theme (no `settings.background`) yields `None` and the
+        // corresponding `--shiki-*-bg` var is simply omitted downstream.
+        let light_bg = light_obj.settings.background.map(color_to_hex);
+        let dark_bg = dark_obj.settings.background.map(color_to_hex);
+
+        let syntax = lang.filter(|s| !s.is_empty()).and_then(|l| {
+            self.syntax_set.find_syntax_by_token(l).or_else(|| {
+                resolve_alias(l)
+                    .iter()
+                    .find_map(|name| self.syntax_set.find_syntax_by_name(name))
+            })
+        });
+
+        let Some(syntax) = syntax else {
+            return Ok(dual_fallback_lines(code, light_bg, dark_bg));
+        };
+
+        // Two highlighters over the SAME resolved syntax — only the theme
+        // differs, so per-line region *text* is identical between them.
+        let mut h_light = HighlightLines::new(syntax, light_obj);
+        let mut h_dark = HighlightLines::new(syntax, dark_obj);
+        let mut lines: Vec<String> = Vec::new();
+        for line in LinesWithEndings::from(code) {
+            let light_regions = match h_light.highlight_line(line, &self.syntax_set) {
+                Ok(r) => r,
+                Err(_) => return Ok(dual_fallback_lines(code, light_bg, dark_bg)),
+            };
+            let dark_regions = match h_dark.highlight_line(line, &self.syntax_set) {
+                Ok(r) => r,
+                Err(_) => return Ok(dual_fallback_lines(code, light_bg, dark_bg)),
+            };
+
+            // Region-zip guard: the two themes must produce the same token
+            // boundaries (same count, same text per token). If they don't, the
+            // zip would emit misaligned spans — degrade to fallback instead.
+            let aligned = light_regions.len() == dark_regions.len()
+                && light_regions
+                    .iter()
+                    .zip(dark_regions.iter())
+                    .all(|((_, lt), (_, dt))| lt == dt);
+            if !aligned {
+                return Ok(dual_fallback_lines(code, light_bg, dark_bg));
+            }
+
+            let mut line_html = String::new();
+            for ((light_style, text), (dark_style, _)) in
+                light_regions.iter().zip(dark_regions.iter())
+            {
+                // Spec (#1066): a dual span carries ONLY `--shiki-light` /
+                // `--shiki-dark` color vars — the sole difference vs the single
+                // path is those vars replacing `color:`. Syntect font styles
+                // (bold/italic/underline) are intentionally NOT emitted here:
+                // the two themes could disagree on style and there is no dual
+                // custom-property convention for it in this primitive. Wiring
+                // font styles is out of scope for this engine sub-issue.
+                //
+                // Escape with the SAME escaper syntect uses for text nodes so the
+                // escaped output is byte-identical to the single path's token
+                // text. (Verified equal to syntect's `Escape` in tests.)
+                let escaped = escape_html(text);
+                line_html.push_str("<span style=\"--shiki-light:");
+                line_html.push_str(&color_to_hex(light_style.foreground));
+                line_html.push_str(";--shiki-dark:");
+                line_html.push_str(&color_to_hex(dark_style.foreground));
+                line_html.push_str("\">");
+                line_html.push_str(&escaped);
+                line_html.push_str("</span>");
+            }
+            lines.push(line_html);
+        }
+
+        Ok(DualHighlightedLines {
+            lines,
+            light_bg,
+            dark_bg,
+            fallback: false,
+        })
+    }
 }
 
 /// Per-line highlighting result returned by [`Highlighter::highlight_lines`].
@@ -268,6 +401,31 @@ pub struct HighlightedLines {
     pub lines: Vec<String>,
     /// `true` when the output used the themed-fallback path (unknown lang or
     /// tokenization error) rather than per-token syntect highlighting.
+    pub fallback: bool,
+}
+
+/// Per-line dual-theme highlighting result returned by
+/// [`Highlighter::highlight_lines_dual`].
+///
+/// Each token carries both a light and a dark colour as CSS custom properties
+/// (`--shiki-light` / `--shiki-dark`) so a single payload renders correctly
+/// under either colour scheme. The two `*_bg` fields are the per-theme
+/// backgrounds (each `Option`: `None` when a theme defines no background).
+#[derive(Debug, Clone)]
+pub struct DualHighlightedLines {
+    /// One HTML fragment per source line. On the highlighted path each token is
+    /// `<span style="--shiki-light:#…;--shiki-dark:#…">{escaped}</span>`; on the
+    /// fallback path each entry is the HTML-escaped source line (no colour vars).
+    pub lines: Vec<String>,
+    /// Light theme background as `#rrggbb`, or `None` when the theme defines no
+    /// `settings.background` (the `--shiki-light-bg` var is then omitted).
+    pub light_bg: Option<String>,
+    /// Dark theme background as `#rrggbb`, or `None` when the theme defines no
+    /// `settings.background` (the `--shiki-dark-bg` var is then omitted).
+    pub dark_bg: Option<String>,
+    /// `true` when the output used the themed-fallback path (unknown lang,
+    /// tokenization error, or a per-line region-alignment mismatch) rather than
+    /// per-token dual highlighting.
     pub fallback: bool,
 }
 
@@ -337,6 +495,35 @@ fn fallback_lines(code: &str, slug: &str) -> HighlightedLines {
     HighlightedLines {
         theme_slug: slug.to_string(),
         lines,
+        fallback: true,
+    }
+}
+
+/// Format a syntect [`Color`] as a lowercase `#rrggbb` string, dropping alpha.
+///
+/// Matches the RGB branch of syntect's own `write_css_color`
+/// (`#{:02x}{:02x}{:02x}`) so the colours emitted in `--shiki-*` vars are
+/// byte-identical to what the single `color:` path would emit — minus the alpha
+/// channel, which is intentionally dropped for the dual custom-property form.
+fn color_to_hex(c: Color) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
+}
+
+/// Build a [`DualHighlightedLines`] for the dual fallback path (unknown lang,
+/// tokenization error, or region-alignment mismatch). Splits `code` on
+/// `LinesWithEndings` so the per-line vector matches the normal path's
+/// granularity; each line is HTML-escaped with no colour vars. Background vars
+/// are preserved (the themes resolved fine; only tokenization fell back).
+fn dual_fallback_lines(
+    code: &str,
+    light_bg: Option<String>,
+    dark_bg: Option<String>,
+) -> DualHighlightedLines {
+    let lines: Vec<String> = LinesWithEndings::from(code).map(escape_html).collect();
+    DualHighlightedLines {
+        lines,
+        light_bg,
+        dark_bg,
         fallback: true,
     }
 }
@@ -775,5 +962,264 @@ mod tests {
             h.theme_names().iter().any(|n| n == "My Custom Theme"),
             "custom theme present after mixed-dir load"
         );
+    }
+
+    // ── Dual-theme highlighting (highlight_lines_dual) ─────────────────────
+
+    #[test]
+    fn dual_highlight_rust_emits_shiki_vars_no_color() {
+        let h = Highlighter::new();
+        let result = h
+            .highlight_lines_dual(
+                "fn main() {}\n",
+                Some("rust"),
+                "base16-ocean.light",
+                "base16-ocean.dark",
+            )
+            .expect("dual highlight ok");
+        assert!(
+            !result.fallback,
+            "should be the highlighted path, not fallback"
+        );
+        let html = result.lines.concat();
+        assert!(
+            html.contains("--shiki-light:#"),
+            "missing --shiki-light var: {html}"
+        );
+        assert!(
+            html.contains("--shiki-dark:#"),
+            "missing --shiki-dark var: {html}"
+        );
+        // The whole point: no inline `color:` — dual mode uses custom props.
+        assert!(
+            !html.contains("color:#"),
+            "dual path must not emit inline color: {html}"
+        );
+    }
+
+    #[test]
+    fn dual_highlight_backgrounds_present_and_differ() {
+        let h = Highlighter::new();
+        let result = h
+            .highlight_lines_dual(
+                "fn main() {}\n",
+                Some("rust"),
+                "base16-ocean.light",
+                "base16-ocean.dark",
+            )
+            .expect("dual highlight ok");
+        let light = result.light_bg.expect("light bg present");
+        let dark = result.dark_bg.expect("dark bg present");
+        assert!(
+            light.starts_with('#') && light.len() == 7,
+            "light bg not #rrggbb: {light}"
+        );
+        assert!(
+            dark.starts_with('#') && dark.len() == 7,
+            "dark bg not #rrggbb: {dark}"
+        );
+        assert_ne!(light, dark, "light and dark backgrounds must differ");
+    }
+
+    /// Region-alignment guard: highlighting the same syntax under two themes
+    /// yields region lists whose text slices concatenate to identical per-line
+    /// text, and whose token count + text match the single path's regions.
+    #[test]
+    fn dual_region_text_aligns_and_matches_single_path() {
+        let h = Highlighter::new();
+        let code = "let x: i32 = 1 + 2;\nfn f() {}\n";
+        let syntax = h
+            .syntax_set
+            .find_syntax_by_name("Rust")
+            .expect("Rust syntax present");
+
+        let mut h_single = HighlightLines::new(syntax, &h.theme_set.themes["base16-ocean.dark"]);
+        let mut h_light = HighlightLines::new(syntax, &h.theme_set.themes["base16-ocean.light"]);
+        let mut h_dark = HighlightLines::new(syntax, &h.theme_set.themes["base16-ocean.dark"]);
+
+        for line in LinesWithEndings::from(code) {
+            let single = h_single.highlight_line(line, &h.syntax_set).unwrap();
+            let light = h_light.highlight_line(line, &h.syntax_set).unwrap();
+            let dark = h_dark.highlight_line(line, &h.syntax_set).unwrap();
+
+            // light/dark region text slices concatenate to identical text.
+            let light_text: String = light.iter().map(|(_, t)| *t).collect();
+            let dark_text: String = dark.iter().map(|(_, t)| *t).collect();
+            assert_eq!(
+                light_text, dark_text,
+                "light/dark per-line region text must be identical"
+            );
+
+            // token count + text match the single path's regions.
+            assert_eq!(
+                light.len(),
+                single.len(),
+                "dual region count must match single path"
+            );
+            for ((_, lt), (_, st)) in light.iter().zip(single.iter()) {
+                assert_eq!(lt, st, "dual region text must match single path");
+            }
+        }
+    }
+
+    /// Escaping parity (codex #2): the dual path escapes token text identically
+    /// to the single path. Verified two ways:
+    /// 1. our `escape_html` matches syntect's own `Escape` for the same input;
+    /// 2. the dual HTML's token text equals the single path's token text for a
+    ///    snippet containing `& < > " '`.
+    #[test]
+    fn dual_escaping_matches_single_path() {
+        use syntect::html::styled_line_to_highlighted_html;
+        use syntect::html::IncludeBackground;
+
+        // 1. escape_html ≡ syntect Escape for the tricky characters.
+        for sample in ["& < > \" '", "a&b<c>d\"e'f", "<script>alert(1)</script>"] {
+            let ours = escape_html(sample);
+            // syntect's Escape is applied via styled_line_to_highlighted_html; we
+            // reproduce its text-node escaping by passing a single trivial token.
+            let style = syntect::highlighting::Style::default();
+            let single = styled_line_to_highlighted_html(&[(style, sample)], IncludeBackground::No)
+                .expect("single html ok");
+            // The span wraps the escaped text; extract the inner text node.
+            let inner = single
+                .strip_prefix(&format!(
+                    "<span style=\"color:#{:02x}{:02x}{:02x};\">",
+                    style.foreground.r, style.foreground.g, style.foreground.b
+                ))
+                .and_then(|s| s.strip_suffix("</span>"))
+                .expect("span shape");
+            assert_eq!(
+                ours, inner,
+                "escape_html must match syntect Escape for {sample:?}"
+            );
+        }
+
+        // 2. End-to-end: a snippet with special chars produces the same escaped
+        // token text in dual mode as the single path emits.
+        let h = Highlighter::new();
+        let code = "let s = \"a & b < c > d ' e\";\n";
+        let dual = h
+            .highlight_lines_dual(
+                code,
+                Some("rust"),
+                "base16-ocean.light",
+                "base16-ocean.dark",
+            )
+            .expect("dual ok");
+        let dual_html = dual.lines.concat();
+        // The escaped entities must appear; raw specials must not leak.
+        for needle in ["&amp;", "&lt;", "&gt;", "&quot;", "&#39;"] {
+            assert!(
+                dual_html.contains(needle),
+                "dual output missing escaped {needle}: {dual_html}"
+            );
+        }
+        assert!(
+            !dual_html.contains(" & "),
+            "raw ampersand leaked: {dual_html}"
+        );
+    }
+
+    #[test]
+    fn dual_missing_background_omits_bg_var() {
+        // Build a Highlighter whose dark theme has no settings.background.
+        let mut h = Highlighter::new();
+        let mut no_bg = h.theme_set.themes["base16-ocean.dark"].clone();
+        no_bg.settings.background = None;
+        h.theme_set.themes.insert("no-bg-theme".to_string(), no_bg);
+
+        let result = h
+            .highlight_lines_dual(
+                "fn main() {}\n",
+                Some("rust"),
+                "base16-ocean.light",
+                "no-bg-theme",
+            )
+            .expect("dual highlight must not error on missing background");
+        assert!(
+            result.light_bg.is_some(),
+            "light bg should still be present"
+        );
+        assert!(
+            result.dark_bg.is_none(),
+            "dark bg must be omitted when theme has no background"
+        );
+    }
+
+    #[test]
+    fn dual_unknown_theme_errors() {
+        let h = Highlighter::new();
+        // Unknown light theme.
+        let err = h
+            .highlight_lines_dual("x", Some("rust"), "no-such-theme", "base16-ocean.dark")
+            .unwrap_err();
+        match err {
+            HighlightError::UnknownTheme(name) => assert_eq!(name, "no-such-theme"),
+            other => unreachable!("expected UnknownTheme for light, got {other:?}"),
+        }
+        // Unknown dark theme.
+        let err = h
+            .highlight_lines_dual("x", Some("rust"), "base16-ocean.light", "no-such-theme")
+            .unwrap_err();
+        match err {
+            HighlightError::UnknownTheme(name) => assert_eq!(name, "no-such-theme"),
+            other => unreachable!("expected UnknownTheme for dark, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dual_unknown_lang_falls_back_no_color_vars() {
+        let h = Highlighter::new();
+        let result = h
+            .highlight_lines_dual(
+                "<hello> & 'world'\n",
+                Some("klingon"),
+                "base16-ocean.light",
+                "base16-ocean.dark",
+            )
+            .expect("fallback ok");
+        assert!(result.fallback, "unknown lang must set fallback = true");
+        let html = result.lines.concat();
+        assert!(
+            !html.contains("--shiki-light:"),
+            "fallback must not emit color vars: {html}"
+        );
+        assert!(
+            !html.contains("<span"),
+            "fallback must be plain text: {html}"
+        );
+        // Escaped, not raw.
+        assert!(
+            html.contains("&lt;hello&gt;"),
+            "fallback not escaped: {html}"
+        );
+        assert!(html.contains("&amp;"), "fallback amp not escaped: {html}");
+        assert!(
+            html.contains("&#39;world&#39;"),
+            "fallback quote not escaped: {html}"
+        );
+        // Backgrounds still resolved (themes were valid).
+        assert!(result.light_bg.is_some() && result.dark_bg.is_some());
+    }
+
+    #[test]
+    fn color_to_hex_matches_syntect_rgb_format() {
+        // color_to_hex must produce the same `#rrggbb` lowercase form syntect's
+        // write_css_color emits for the alpha==0xFF case (alpha dropped).
+        let c = Color {
+            r: 0xd0,
+            g: 0x87,
+            b: 0x70,
+            a: 0xff,
+        };
+        assert_eq!(color_to_hex(c), "#d08770");
+        // Alpha is dropped even when not opaque.
+        let c2 = Color {
+            r: 0x01,
+            g: 0x02,
+            b: 0x03,
+            a: 0x80,
+        };
+        assert_eq!(color_to_hex(c2), "#010203");
     }
 }

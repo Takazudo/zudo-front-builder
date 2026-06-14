@@ -64,6 +64,58 @@ my-project/
 
 **エラー報告:** `themesDir` が存在しないディレクトリを指している場合や、いずれかの `.tmTheme` ファイルが不正な形式の場合、zfb はビルド開始時（ページの描画前）に、ファイルパスとパースエラーを含む明確なエラーを表示します。
 
+## ライト / ダークのデュアルテーマ
+
+上記の `theme` オプションは各トークンをインラインの `style="color:…"` で着色するため、テーマは 1 つだけ焼き込まれます。1 回のビルドでライトとダークの両方のサイトテーマに対応させるには、代わりに **`themeLight` と `themeDark`** を設定します。各ブロックは 2 回ハイライトされ、2 つの色が CSS カスタムプロパティとして出力されます。ブラウザは `light-dark()` ルールでアクティブな色を選びます。ランタイム JS は依然としてゼロです。
+
+```ts
+// zfb.config.ts
+export default {
+  codeHighlight: {
+    themeLight: "InspiredGitHub",
+    themeDark: "base16-ocean.dark",
+  },
+};
+```
+
+### ルール
+
+- **両方を必ずセットで指定する。** `themeLight` だけ、または `themeDark` だけを設定するとビルドエラーになります。
+- **`theme` とは排他。** デュアルのペアと同時に `theme` を設定するとビルドエラーになります。シングルテーマモード（`theme`）かデュアルテーマモード（`themeLight` + `themeDark`）のどちらか一方を選び、両方は使えません。
+- **`themesDir` は両方のモードに適用される。** `themesDir` で読み込んだカスタム `.tmTheme` ファイルは、`theme` と同様に、宣言された `name` によって `themeLight` / `themeDark` から利用できます。
+- **これらは Shiki ではなく syntect のテーマ名です** — `"base16-ocean.light"` / `"base16-ocean.dark"`、`"InspiredGitHub"`、`"Solarized (light)"` / `"Solarized (dark)"`、または読み込んだ任意のカスタム `.tmTheme`。`themesDir` 経由で読み込んでいない `"dracula"` のような名前は、やはりビルド時にエラーになります。
+
+### 出力される markup
+
+デュアルモードでは `<pre>` 要素に `class="syntect-dual"` が付与され、2 つの背景色が `--shiki-light-bg` / `--shiki-dark-bg` として `style` に入ります。各トークンの `<span>` は、インラインの `color:` の代わりに `--shiki-light` / `--shiki-dark` を持ちます。
+
+```html
+<pre class="syntect-dual" style="--shiki-light-bg:#fff;--shiki-dark-bg:#2b303b">
+  <code><span class="line"><span style="--shiki-light:#998;--shiki-dark:#65737e">token</span>…</span></code>
+</pre>
+```
+
+`<span class="line">` のラッパー構造はシングルテーマモードと同一で、異なるのはトークンごとの色の指定方法だけです。
+
+<Note>
+
+変数名 `--shiki-light` / `--shiki-dark` は、利用側の CSS をなじみやすくするため、意図的に [Shiki のデュアルテーマ CSS 規約](https://shiki.style/guide/dual-themes)に合わせています。ただし、指定する*テーマ名*は Shiki ではなく syntect のものです。
+
+</Note>
+
+### 色の解決（利用側の CSS）
+
+ライト / ダーク対応のサイトは、出力された変数を `light-dark()` を通してマッピングする **1 つの** CSS ルールを追加します。`light-dark()` はページの `color-scheme` に従います。
+
+```css
+pre[class^="syntect-"] span {
+  color: light-dark(var(--shiki-light), var(--shiki-dark));
+  background-color: light-dark(var(--shiki-light-bg), var(--shiki-dark-bg));
+}
+```
+
+`light-dark()` がアクティブなモードに解決されるよう、周囲のコンテキスト（`:root` や `<pre>` など）で `color-scheme: light dark` をオプトインしておいてください。
+
 ## 補足パターン 1 — クライアントサイドの追加ハイライト
 
 インタラクティブなテーマ切り替えやユーザーごとの設定が必要な場合は、サーバーで描画された出力の上に、クライアントサイドのハイライターを [クライアントアイランド](../concepts/islands.mdx) として重ねます。

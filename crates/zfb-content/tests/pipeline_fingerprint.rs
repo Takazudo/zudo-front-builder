@@ -14,7 +14,9 @@ use std::collections::HashSet;
 
 use serde_json::json;
 use zfb_content::pipeline::{HastNode, HastVisitor, Pipeline, ResolvedGfmConstructs};
-use zfb_content::{ExternalLinksConfig, HeadingIdStrategy, MarkdownFeaturesConfig, TocConfig};
+use zfb_content::{
+    ExternalLinksConfig, HeadingIdStrategy, MarkdownFeaturesConfig, PipelineSpec, TocConfig,
+};
 
 fn features(value: serde_json::Value) -> MarkdownFeaturesConfig {
     serde_json::from_value(value).expect("valid features config")
@@ -564,6 +566,129 @@ fn build_context_roots_join_the_fingerprint() {
     d.set_build_context_roots("/proj".into(), "/proj/public".into());
     let d = d.config_fingerprint().expect("fingerprinted");
     assert_eq!(a, d, "re-arming must replace the previous roots segment");
+}
+
+/// Dual-theme mode fingerprint tests (issue #1067).
+///
+/// The fingerprint encodes the mode explicitly:
+/// - single mode produces the SAME descriptor as before (no warm-cache
+///   invalidation on upgrade — the `code_highlight=single(theme=…)` segment
+///   expands to the same bytes as the old `theme=…` form for single mode).
+/// - dual mode produces a DISTINCT fingerprint from any single-theme or
+///   default config (so a single `{ theme: "x" }` can never alias the dual
+///   fields in the compile cache).
+#[test]
+fn dual_theme_fingerprint_is_distinct_from_single_and_default() {
+    let default_fp = baseline()
+        .config_fingerprint()
+        .expect("default fingerprintable");
+
+    let single_fp = full_config(
+        Some("base16-ocean.light"),
+        ResolvedGfmConstructs::CONSERVATIVE,
+        true,
+        false,
+        None,
+    )
+    .config_fingerprint()
+    .expect("single-theme fingerprintable");
+
+    // Dual path via the new constructor.
+    let dual_fp = Pipeline::with_defaults_and_full_config_dual(
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        None,
+        "base16-ocean.light",
+        "base16-ocean.dark",
+    )
+    .expect("no themes_dir — cannot fail")
+    .config_fingerprint()
+    .expect("dual-theme fingerprintable");
+
+    // All three must be pairwise distinct.
+    assert_ne!(
+        default_fp, single_fp,
+        "default and single-theme must have different fingerprints"
+    );
+    assert_ne!(
+        default_fp, dual_fp,
+        "default and dual-theme must have different fingerprints"
+    );
+    assert_ne!(
+        single_fp, dual_fp,
+        "single-theme and dual-theme must have different fingerprints — \
+         a single-theme config must never alias a dual entry in the compile cache"
+    );
+}
+
+/// Two dual-theme pipelines built with the SAME pair must agree on the
+/// fingerprint (the cache depends on this).
+#[test]
+fn dual_theme_fingerprint_is_stable_across_constructions() {
+    let build = || {
+        Pipeline::with_defaults_and_full_config_dual(
+            ResolvedGfmConstructs::CONSERVATIVE,
+            None,
+            true,
+            false,
+            None,
+            "base16-ocean.light",
+            "base16-ocean.dark",
+        )
+        .expect("no themes_dir — cannot fail")
+        .config_fingerprint()
+        .expect("dual-theme fingerprintable")
+    };
+    assert_eq!(build(), build(), "same dual pair → identical fingerprint");
+}
+
+/// Single-theme fingerprint byte-identity (codex #4 / #5): the default and
+/// single-theme pipeline fingerprints must be UNCHANGED by the dual-mode
+/// wiring — no warm-cache invalidation on upgrade.
+///
+/// The pinned digests are from HEAD before the dual-mode landed; if this
+/// test fails because you INTENTIONALLY changed a fingerprint input, update
+/// the literals and say so in the commit message.
+#[test]
+fn single_and_default_fingerprints_unchanged_by_dual_wiring() {
+    let default_fp = PipelineSpec::default()
+        .build_pipeline()
+        .expect("builds")
+        .config_fingerprint()
+        .expect("fingerprintable");
+    // This literal is the pre-#1067 fingerprint captured via the
+    // `side_channels_keep_fingerprint_byte_identical_to_pre_977` test in
+    // pipeline_spec.rs — unchanged by this PR.
+    assert_eq!(
+        default_fp, "87680d4705178c808751765ad1a8861b5ef0c004a3a185323af27ea506d8e6ca",
+        "default-spec fingerprint must be unchanged by dual-mode wiring"
+    );
+
+    // A single-theme spec must also produce the same fingerprint as before.
+    let single_spec = PipelineSpec {
+        code_highlight_theme: Some("InspiredGitHub".to_string()),
+        ..Default::default()
+    };
+    let single_fp_a = single_spec
+        .build_pipeline()
+        .expect("builds")
+        .config_fingerprint()
+        .expect("fingerprintable");
+    let single_fp_b = single_spec
+        .build_pipeline()
+        .expect("builds")
+        .config_fingerprint()
+        .expect("fingerprintable");
+    assert_eq!(
+        single_fp_a, single_fp_b,
+        "same single-theme spec must be stable across builds"
+    );
+    assert_ne!(
+        single_fp_a, default_fp,
+        "single-theme spec must differ from the default"
+    );
 }
 
 #[test]

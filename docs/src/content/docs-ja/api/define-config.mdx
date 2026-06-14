@@ -46,7 +46,11 @@ defineConfig(config: ZfbConfig): ZfbConfig
 
 以下のキーは Rust の設定ローダーが受け付けますが、TypeScript 型では無視されます（これらは `zfb` が JS の dev ツールではなく Rust バイナリとして動作するときにのみ適用されます）。
 
-- `codeHighlight` — syntect の構文ハイライトテーマオプション。構文ハイライトのガイドを参照してください。
+- `codeHighlight` — syntect の構文ハイライトテーマオプション。[構文ハイライトのガイド](../guides/syntax-highlighting.mdx)を参照してください。フィールド:
+  - `theme?: string` — シングルテーマモード。syntect の組み込み、またはユーザーが読み込んだテーマ名（例: `"InspiredGitHub"`、`"Solarized (dark)"`）。デフォルトは `"base16-ocean.dark"`。トークンはインラインの `color:` で着色されます。`themeLight` / `themeDark` とは排他です。これらは Shiki（`"dracula"` など）ではなく **syntect** のテーマ名です。
+  - `themesDir?: string` — `.tmTheme` ファイルのディレクトリ。プロジェクトルートからの相対です。各ファイルは宣言された `name` によって `theme`・`themeLight`・`themeDark` から利用できます。シングル / デュアル**両方**のモードに適用されます。相対パスである必要があり、`..` でルートから抜け出すことはできません。ディレクトリが存在しない場合はビルド開始時にエラーになります。
+  - `themeLight?: string` — デュアルテーマハイライト用のライトモード syntect テーマ名。`themeDark` と**必ずセットで**指定する必要があり、片方だけの指定はビルドエラーになります。`theme` とは排他です。ペアを設定すると、各ブロックが 2 回ハイライトされ、トークンはインラインの `color:` の代わりに `--shiki-light` / `--shiki-dark` カスタムプロパティを持ち、`<pre>` には `class="syntect-dual"` と `--shiki-light-bg` / `--shiki-dark-bg` が付与され、利用側は `light-dark()` CSS ルールでアクティブな色を解決します。
+  - `themeDark?: string` — デュアルテーマハイライト用のダークモード syntect テーマ名。`themeLight` と**必ずセットで**指定し、`theme` とは排他です。デュアルモードの完全な仕様は `themeLight` を参照してください。
 - `pluginHookTimeoutSecs` — プラグインフック呼び出しのタイムアウト（秒）。
 
 ## プロジェクトルート外のパスを監視する

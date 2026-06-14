@@ -774,20 +774,55 @@ pub struct BundleConfig {
 pub struct CodeHighlightConfig {
     /// Syntect built-in or user-loaded theme name.  When absent the
     /// pipeline defaults to `"base16-ocean.dark"`.
+    ///
+    /// Mutually exclusive with [`Self::theme_light`] / [`Self::theme_dark`]
+    /// — set only one mode per build.  This is a SYNTECT theme name (e.g.
+    /// `"InspiredGitHub"`, `"Solarized (dark)"`), NOT a Shiki name like
+    /// `"dracula"`.
     #[serde(default)]
     pub theme: Option<String>,
 
     /// Path to a directory of `.tmTheme` files, relative to the
     /// project root.  Every `.tmTheme` file in the directory is loaded
-    /// and becomes available by its declared `name` via `theme`.
+    /// and becomes available by its declared `name` via `theme`,
+    /// `theme_light`, or `theme_dark`.
     ///
     /// When absent only syntect's bundled themes are available.
     ///
     /// The path must be relative and must not escape the project root
     /// via `..`.  A missing directory is reported as an error at build
     /// start (before any pages are rendered).
+    ///
+    /// Applies to both single-theme and dual-theme mode.
     #[serde(default)]
     pub themes_dir: Option<std::path::PathBuf>,
+
+    /// Light-mode syntect theme name for dual-theme highlighting.
+    ///
+    /// Must be set together with [`Self::theme_dark`] — setting only one
+    /// of the two is an error.  When both are set, every fenced code block
+    /// is highlighted twice and per-token colors are emitted as CSS custom
+    /// properties (`--shiki-light` / `--shiki-dark`) instead of inline
+    /// `color:`.  The `<pre>` element carries `class="syntect-dual"` and
+    /// `--shiki-*-bg` variables.  The consumer resolves the active color
+    /// with a `light-dark()` CSS rule.
+    ///
+    /// Mutually exclusive with [`Self::theme`].
+    /// Must be a SYNTECT theme name (e.g. `"base16-ocean.light"`), NOT a
+    /// Shiki name like `"dracula"`.
+    #[serde(default)]
+    pub theme_light: Option<String>,
+
+    /// Dark-mode syntect theme name for dual-theme highlighting.
+    ///
+    /// See [`Self::theme_light`] for the full dual-mode contract.
+    /// Must be set together with [`Self::theme_light`] — setting only one
+    /// of the two is an error.  Must be a SYNTECT theme name (e.g.
+    /// `"base16-ocean.dark"`), NOT a Shiki name.
+    ///
+    /// Mutually exclusive with [`Self::theme`].
+    #[serde(default)]
+    pub theme_dark: Option<String>,
 }
 
 /// What to do when a `.md`/`.mdx` link cannot be found in the source map.
@@ -1520,6 +1555,17 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         if let Some(td) = &ch.themes_dir {
             ensure_path_in_root(td, dir).context("codeHighlight.themesDir")?;
         }
+        // Dual-theme validation: themeLight and themeDark must be set together.
+        match (ch.theme_light.as_ref(), ch.theme_dark.as_ref()) {
+            (Some(_), None) | (None, Some(_)) => {
+                bail!("codeHighlight.themeLight and themeDark must be set together");
+            }
+            _ => {}
+        }
+        // Mutual exclusion: theme and the dual pair cannot both be set.
+        if ch.theme.is_some() && (ch.theme_light.is_some() || ch.theme_dark.is_some()) {
+            bail!("codeHighlight.theme is mutually exclusive with themeLight/themeDark");
+        }
     }
     if let Some(rml) = &cfg.resolve_markdown_links {
         if !rml.docs_dir.as_os_str().is_empty() {
@@ -2041,6 +2087,107 @@ mod tests {
         assert!(
             msg.contains("codeHighlight.themesDir"),
             "error should mention field; got: {msg}"
+        );
+    }
+
+    // ── Dual-theme config parse tests (#1067) ─────────────────────────────
+
+    /// `themeLight` and `themeDark` parse from camelCase JSON and populate
+    /// the Rust `theme_light` / `theme_dark` fields.
+    #[tokio::test]
+    async fn code_highlight_theme_light_and_dark_parse_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "themeLight": "base16-ocean.light", "themeDark": "base16-ocean.dark" } }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(ch.theme_light.as_deref(), Some("base16-ocean.light"));
+        assert_eq!(ch.theme_dark.as_deref(), Some("base16-ocean.dark"));
+        assert_eq!(ch.theme, None, "theme must be absent in dual mode");
+    }
+
+    /// `themesDir` works alongside `themeLight` + `themeDark`.
+    #[tokio::test]
+    async fn code_highlight_dual_pair_works_with_themes_dir() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "themeLight": "My Light", "themeDark": "My Dark", "themesDir": "themes" } }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(ch.theme_light.as_deref(), Some("My Light"));
+        assert_eq!(ch.theme_dark.as_deref(), Some("My Dark"));
+        assert_eq!(
+            ch.themes_dir.as_deref(),
+            Some(std::path::Path::new("themes"))
+        );
+    }
+
+    /// Setting only `themeLight` (without `themeDark`) must be a validation error.
+    #[tokio::test]
+    async fn code_highlight_only_theme_light_is_error() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "themeLight": "base16-ocean.light" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("only themeLight must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("themeLight and themeDark must be set together"),
+            "error must mention the mutual-requirement; got: {msg}"
+        );
+    }
+
+    /// Setting only `themeDark` (without `themeLight`) must be a validation error.
+    #[tokio::test]
+    async fn code_highlight_only_theme_dark_is_error() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "themeDark": "base16-ocean.dark" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("only themeDark must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("themeLight and themeDark must be set together"),
+            "error must mention the mutual-requirement; got: {msg}"
+        );
+    }
+
+    /// Setting `theme` together with `themeLight` / `themeDark` must be a
+    /// validation error (mutually exclusive modes).
+    #[tokio::test]
+    async fn code_highlight_theme_and_dual_pair_mutually_exclusive() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "theme": "InspiredGitHub", "themeLight": "base16-ocean.light", "themeDark": "base16-ocean.dark" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("theme + dual pair must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("mutually exclusive with themeLight/themeDark"),
+            "error must mention mutual exclusion; got: {msg}"
         );
     }
 

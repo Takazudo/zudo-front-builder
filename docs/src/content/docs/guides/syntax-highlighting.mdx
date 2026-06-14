@@ -81,6 +81,79 @@ directly from the [Dracula GitHub repository](https://github.com/dracula/sublime
 `.tmTheme` file is malformed, zfb surfaces a clear error at build start (before
 rendering any pages) that includes the file path and the parse error.
 
+## Dual light/dark themes
+
+The `theme` option above colours each token with an inline `style="color:…"`,
+so a single theme is baked in. To support both a light and a dark site theme
+from one build, set **`themeLight` and `themeDark`** instead. Each block is
+highlighted twice and the two colours are emitted as CSS custom properties; the
+browser picks the active one with a `light-dark()` rule — still zero runtime JS.
+
+```ts
+// zfb.config.ts
+export default {
+  codeHighlight: {
+    themeLight: "InspiredGitHub",
+    themeDark: "base16-ocean.dark",
+  },
+};
+```
+
+### Rules
+
+- **Both are required together.** Setting only `themeLight` or only `themeDark`
+  is a build error.
+- **Mutually exclusive with `theme`.** Setting `theme` alongside the dual pair
+  is a build error. Pick single-theme mode (`theme`) or dual-theme mode
+  (`themeLight` + `themeDark`), not both.
+- **`themesDir` applies to both modes.** Custom `.tmTheme` files loaded via
+  `themesDir` are available to `themeLight` / `themeDark` by their declared
+  `name`, exactly as for `theme`.
+- **These are syntect theme names, not Shiki names** — `"base16-ocean.light"` /
+  `"base16-ocean.dark"`, `"InspiredGitHub"`, `"Solarized (light)"` /
+  `"Solarized (dark)"`, or any custom `.tmTheme` you loaded. A name like
+  `"dracula"` that is not loaded via `themesDir` still errors at build time.
+
+### Emitted markup
+
+In dual mode the `<pre>` element gets `class="syntect-dual"` and carries the
+two background colours as `--shiki-light-bg` / `--shiki-dark-bg` in its `style`.
+Each token `<span>` carries `--shiki-light` / `--shiki-dark` instead of an
+inline `color:`:
+
+```html
+<pre class="syntect-dual" style="--shiki-light-bg:#fff;--shiki-dark-bg:#2b303b">
+  <code><span class="line"><span style="--shiki-light:#998;--shiki-dark:#65737e">token</span>…</span></code>
+</pre>
+```
+
+The `<span class="line">` wrapper structure is identical to single-theme mode —
+only the per-token colour mechanism differs.
+
+<Note>
+
+The variable names `--shiki-light` / `--shiki-dark` intentionally mirror
+[Shiki's dual-theme CSS convention](https://shiki.style/guide/dual-themes) so
+the consumer-side CSS feels familiar. The *theme names* you pass, however, are
+syntect's — not Shiki's.
+
+</Note>
+
+### Resolving the colours (consumer CSS)
+
+A light/dark site adds **one** CSS rule that maps the emitted variables through
+`light-dark()`, which follows the page's `color-scheme`:
+
+```css
+pre[class^="syntect-"] span {
+  color: light-dark(var(--shiki-light), var(--shiki-dark));
+  background-color: light-dark(var(--shiki-light-bg), var(--shiki-dark-bg));
+}
+```
+
+Make sure the surrounding context opts in to `color-scheme: light dark` (e.g.
+on `:root` or the `<pre>`) so `light-dark()` resolves to the active mode.
+
 ## Supplementary pattern 1 — additional client-side highlighting
 
 If you want interactive theme switching or per-user preferences, layer a
