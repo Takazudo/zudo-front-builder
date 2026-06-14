@@ -108,10 +108,11 @@ const announce = () => {
     () => {
       // This fire-and-forget timer can outlive its document context — a test
       // env teardown (vitest/happy-dom) or a real page unload removes `document`
-      // before the 60ms elapses. `typeof` is safe even when the global is gone,
-      // so bail out instead of throwing an unhandled ReferenceError (#1061);
-      // the announcement is moot once the page is no longer there.
-      if (typeof document === "undefined") return;
+      // (and `location`) before the 60ms elapses. `typeof` is safe even when the
+      // global is gone, so bail out instead of throwing an unhandled
+      // ReferenceError (#1061); the announcement is moot once the page is gone.
+      // Both globals the callback dereferences are checked, not just `document`.
+      if (typeof document === "undefined" || typeof location === "undefined") return;
       let title = document.title || document.querySelector("h1")?.textContent || location.pathname;
       div.textContent = title;
     },
