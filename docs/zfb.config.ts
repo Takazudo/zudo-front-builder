@@ -154,6 +154,16 @@ export default defineConfig({
   },
   base: settings.base,
   trailingSlash: settings.trailingSlash,
+  // Dual-theme syntect highlighting (zfb next.47 / zudo-doc 0.2.8): emits
+  // per-token --shiki-light/--shiki-dark custom props (and --shiki-*-bg on the
+  // <pre class="syntect-dual">) instead of a single inline color, so code blocks
+  // follow the light/dark toggle with no client JS. The light-dark() resolution
+  // lives in src/styles/global.css ([data-theme] pre[class^="syntect-"]). Names
+  // are SYNTECT built-ins, not Shiki names.
+  codeHighlight: {
+    themeLight: "base16-ocean.light",
+    themeDark: "base16-ocean.dark",
+  },
   markdown: {
     features: {
       // Former-Core features (were always-on before zfb next.12).

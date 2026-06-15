@@ -118,10 +118,19 @@ declare module "zfb/config" {
      * Configures the syntect-based syntax highlighter shipped with zfb.
      * Mirrors `code_highlight` in crates/zfb/src/config.rs (Takazudo/zudo-front-builder#188 / sub #194; landed in commit 339e30f).
      * When omitted, the engine falls back to the hardcoded default theme `base16-ocean.dark`.
+     *
+     * Single-theme mode: set `theme` (or omit for the default) — tokens get an
+     * inline `color:`. Dual-theme mode: set both `themeLight` and `themeDark`
+     * (mutually exclusive with `theme`) — tokens get `--shiki-light`/`--shiki-dark`
+     * custom props on `<pre class="syntect-dual">`, resolved via a `light-dark()`
+     * rule. Dual-theme fields shipped in @takazudo/zfb 0.1.0-next.47; kept in sync
+     * by hand with the published `@takazudo/zfb/config` `CodeHighlightConfig`.
      */
     codeHighlight?: {
       theme?: string;
       themesDir?: string;
+      themeLight?: string;
+      themeDark?: string;
     };
     /**
      * Markdown link resolver (port of `remarkResolveMarkdownLinks`).
