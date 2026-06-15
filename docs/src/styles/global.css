@@ -719,16 +719,18 @@ pre[class^="syntect-"].word-wrap code {
  * Code-block syntax-highlight token color rule
  * ======================================== */
 
-/* Build-time: zfb's Rust pipeline runs SyntectPlugin and emits
- * <pre class="syntect-..."> with inline style="color:#hex" on every token
- * span. The inline hex is the desired token color — this rule must NOT
- * override it (so: NO !important on `color`).
+/* Build-time (dual-theme syntect — zfb codeHighlight.themeLight/themeDark,
+ * configured in zfb.config.ts): zfb's Rust pipeline emits
+ * <pre class="syntect-dual"> with per-token inline
+ * style="--shiki-light:#X;--shiki-dark:#Y" custom properties (and
+ * --shiki-*-bg on the <pre>) — NO inline `color` — so this rule resolves
+ * light-dark(var(--shiki-light), var(--shiki-dark)) to the active theme.
+ * (Single-theme mode would instead emit inline `color:#hex`, which this
+ * rule must not override; we run dual-theme, so there is no inline color.)
  *
  * Runtime (design-token-tweak panel, when enabled): Shiki re-highlights on
- * demand and emits spans with inline style="--shiki-light:#X;--shiki-dark:#Y"
- * — CSS custom properties only, no `color` declaration — depending on this
- * rule to resolve light-dark(var(--shiki-light), var(--shiki-dark)) to the
- * active theme. Shiki spans have no inline `color`, so the rule applies
+ * demand and emits the same --shiki-light/--shiki-dark custom properties.
+ * Both paths leave spans without an inline `color`, so the rule applies
  * without needing !important. */
 [data-theme] .shiki,
 [data-theme] .shiki span,
