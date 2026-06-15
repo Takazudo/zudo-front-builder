@@ -12,6 +12,21 @@ defineConfig(config: ZfbConfig): ZfbConfig
 
 `defineConfig` は `zfb/config` からエクスポートされます。このヘルパーは identity 型で、受け取った引数をそのまま返します。唯一の役割は、エディタに `ZfbConfig` 形状に対する IntelliSense と型チェックを提供することです。実際のスキーマは設定ロード時に Rust の serde によって検証されるため、設定を TypeScript で書いても JSON で書いても同じルールが適用されます。
 
+## `zfb/config` インポートの型付け
+
+`zfb.config.ts` は **ベア** specifier の `zfb/config` から `defineConfig` をインポートします。zfb は設定ロード時にそのインポートをランタイム専用のスタブにエイリアスし（そのため `@takazudo/zfb` パッケージを入れていなくても設定をパースできます）、`node_modules` に実体としての `zfb/config` モジュールは存在しません。公開されている型は **スコープ付き** のサブパス `@takazudo/zfb/config` 配下にあります。そのため素の `tsc --noEmit`（`zfb check` が実行するもの）にはベアインポートを型付けする対象がなく、`Cannot find module 'zfb/config'` を報告します。
+
+両者を橋渡しするには、スコープ付きパッケージの型を **再エクスポート** する 1 行の ambient 宣言を使います。プロジェクトルートに `zfb-shim.d.ts` を追加してください（`tsconfig` が拾う `.d.ts` ならどれでも構いません）。
+
+```ts
+// zfb-shim.d.ts — ベアの `zfb/config` specifier を型付けする。
+declare module "zfb/config" {
+  export * from "@takazudo/zfb/config";
+}
+```
+
+必ず再エクスポートにしてください — `ZfbConfig` の形状をシムに手書きでコピーしては **いけません**。手で写したフィールドリストは静かにエンジンから遅れていきます。新しい設定フィールドが追加されるたびに手で足さない限り、`zfb check` が妥当なフィールドを `TS2353: Object literal may only specify known properties` で拒否します。`export *` は公開されている `@takazudo/zfb/config` を自動的に追従するため、シムが遅れることはありません。
+
 ## 設定の形状
 
 すべてのキーは camelCase です。形状は Rust の serde デシリアライザ（`crates/zfb/src/config.rs`）によって強制されます。`packages/zfb/src/config.ts` の TypeScript 型は、エディタの IntelliSense のためにそれを反映しています。
@@ -44,7 +59,7 @@ defineConfig(config: ZfbConfig): ZfbConfig
 - `emitRoutesManifest?: boolean` — `zfb build` がビルド後のルートマニフェストを `<outDir>/__zfb/routes.json` に書き出すかどうか。デフォルト: `true`（書き出す）。`false` を設定すると抑制します。
 - `extraWatchPaths?: string[]` — プロジェクト内のソースルートに加えて、dev ウォッチャーが追跡する追加の絶対ファイルシステムパス。[プロジェクトルート外のパスを監視する](#プロジェクトルート外のパスを監視する) を参照してください。
 
-以下のキーは Rust の設定ローダーが受け付けますが、TypeScript 型では無視されます（これらは `zfb` が JS の dev ツールではなく Rust バイナリとして動作するときにのみ適用されます）。
+以下のキーも同じ `ZfbConfig` 型の一部で、`defineConfig` や `zfb check` は他のフィールドと同様に型チェックします。これらは Rust エンジンのコードレンダリングとプラグインの挙動を設定します。
 
 - `codeHighlight` — syntect の構文ハイライトテーマオプション。[構文ハイライトのガイド](../guides/syntax-highlighting.mdx)を参照してください。フィールド:
   - `theme?: string` — シングルテーマモード。syntect の組み込み、またはユーザーが読み込んだテーマ名（例: `"InspiredGitHub"`、`"Solarized (dark)"`）。デフォルトは `"base16-ocean.dark"`。トークンはインラインの `color:` で着色されます。`themeLight` / `themeDark` とは排他です。これらは Shiki（`"dracula"` など）ではなく **syntect** のテーマ名です。

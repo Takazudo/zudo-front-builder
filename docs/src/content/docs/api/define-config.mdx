@@ -12,6 +12,21 @@ defineConfig(config: ZfbConfig): ZfbConfig
 
 `defineConfig` is exported from `zfb/config`. The helper is identity-typed: it returns its argument unchanged. Its only job is to give your editor IntelliSense and type-checking against the `ZfbConfig` shape. The actual schema is enforced by Rust serde at config-load time, so the same rules apply whether you author your config in TypeScript or JSON.
 
+## Typing the `zfb/config` import
+
+`zfb.config.ts` imports `defineConfig` from the **bare** specifier `zfb/config`. At config-load time zfb aliases that import to a runtime-only stub (so your config parses without the `@takazudo/zfb` package installed), and no real `zfb/config` module exists in `node_modules` — the published types live under the **scoped** subpath `@takazudo/zfb/config`. So a plain `tsc --noEmit` (what `zfb check` runs) has nothing to type the bare import against and reports `Cannot find module 'zfb/config'`.
+
+Bridge the two with a one-line ambient declaration that **re-exports** the scoped package's types. Add a `zfb-shim.d.ts` at your project root (any `.d.ts` your `tsconfig` includes works):
+
+```ts
+// zfb-shim.d.ts — types the bare `zfb/config` specifier.
+declare module "zfb/config" {
+  export * from "@takazudo/zfb/config";
+}
+```
+
+Re-export — do **not** hand-copy the `ZfbConfig` shape into the shim. A hand-mirrored field list silently lags the engine: every new config field has to be re-added by hand, or `zfb check` rejects a perfectly valid field with `TS2353: Object literal may only specify known properties`. `export *` tracks the published `@takazudo/zfb/config` automatically, so the shim can never fall behind.
+
 ## Config shape
 
 All keys are camelCase. The shape is enforced by the Rust serde deserializer (`crates/zfb/src/config.rs`) — the TypeScript type in `packages/zfb/src/config.ts` mirrors it for editor IntelliSense.
@@ -45,7 +60,7 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
 - `emitRoutesManifest?: boolean` — whether `zfb build` writes the post-build route manifest to `<outDir>/__zfb/routes.json`. Default: `true` (emit). Set `false` to suppress.
 - `extraWatchPaths?: string[]` — extra absolute filesystem paths the dev watcher follows in addition to the in-project source roots. See [Watching paths outside the project root](#watching-paths-outside-the-project-root).
 
-The following keys are accepted by the Rust config loader and ignored by the TypeScript type (they apply only when `zfb` runs as a Rust binary, not the JS dev tooling):
+The following keys are part of the same `ZfbConfig` type — `defineConfig` and `zfb check` type-check them like any other field. They configure the Rust engine's code-rendering and plugin behaviour:
 
 - `codeHighlight` — syntect syntax-highlight theme options. See the [syntax-highlighting guide](../guides/syntax-highlighting.mdx). Fields:
   - `theme?: string` — single-theme mode. A syntect built-in or user-loaded theme name (e.g. `"InspiredGitHub"`, `"Solarized (dark)"`); defaults to `"base16-ocean.dark"`. Tokens get an inline `color:`. Mutually exclusive with `themeLight` / `themeDark`. These are **syntect** theme names, not Shiki names like `"dracula"`.
