@@ -1,0 +1,35 @@
+---
+title: v0.1.0-next.51
+sidebar_position: 1051
+---
+
+# v0.1.0-next.51
+
+Released: 2026-06-17
+
+## Bug Fixes
+
+- fix(deps): bump hono to >=4.12.25 (GHSA-88fw-hqm2-52qc) (12c13e6)
+- fix(zfb): bump HONO_VERSION pin to 4.12.25 to match lockfile (320d12c)
+- fix(directives): keep unknown/wrong-kind collapsed wrapper contents literal (5d4102b)
+- fix(directives): centralize collapsed unknown-directive warning, fix >3-colon + sibling cases (b6b7693)
+- fix(directives): recursively transform collapsed sibling/nested directives (3574f65)
+- fix(link-validation): extend anchor-id check to cross-file fragments (711e45a)
+- fix(link-validation): accept explicit anchor ids in headingless files (6934321)
+- fix(zfb-md-extras): validate bare anchors in headingless files so link_validation catches transcluded broken links (ff807ad)
+- fix(zfb-content): transform container directives in collapsed paragraphs + real-parser test (67411cb)
+- fix(zfb-md-extras): normalize expected_root in image_dimensions containment guard (2de87a4)
+- fix(zfb-md-extras): accept case-insensitive px unit; add CI-covered SVG tests (d461a0b)
+- fix(zfb): sync ImageDimensionsConfig TS type with the Rust struct (28bc039)
+- fix(zfb-md-extras): parse SVG dimensions instead of warning per file (f6a608d)
+
+## Other Changes
+
+- refactor(zfb-content): tidy collapsed-directive transform (DRY/naming) — zfb#1099 (db6491f)
+- refactor(zfb-content): use strip_trailing_cr at the collapsed-run loop (3556ac8)
+- refactor(zfb-content): tidy collapsed-directive transform (DRY/naming) (dbcbdcf)
+- test(zfb-build): un-blank-lined directive now transforms to &lt;Note&gt; (236b823)
+- style(markdown-fixes): apply cargo fmt to new directive + test code (03dd6ea)
+- ci(zfb-md-extras): run test-utils integration suite + clippy in the PR gate (240d626)
+- test(zfb-md-extras): fix reading_time + cross_feature_integration compile errors (5356829)
+- docs(zfb): document imageDimensions SVG behaviour (EN + JA) (9699e20)
