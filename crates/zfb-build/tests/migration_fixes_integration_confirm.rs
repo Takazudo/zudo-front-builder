@@ -156,31 +156,26 @@ fn directive_label_becomes_title_attribute() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Un-blank-lined directive → blank-line diagnostic
+// 2. Un-blank-lined directive → now transforms to a component
 //
-// The blank-line diagnostic is emitted by `DirectiveRegistry` when it
-// detects that a `:::note\nbody\n:::` block was merged into a single
-// paragraph (no surrounding blank lines).  We test this at the
-// `zfb-content` pipeline level — below the bundler — so this assertion
-// always runs even without an esbuild binary.
+// HISTORY: this test originally asserted the OPPOSITE — that a `:::note`
+// written without surrounding blank lines (which the markdown parser
+// collapses into a single multi-line paragraph) was left as raw text and
+// emitted a "missing blank lines" diagnostic. That was a BUG (#1085): the
+// reporter's real-world admonitions are written without blank fences and
+// silently rendered as literal `:::note` text. Issue #1090 fixed the
+// container-directive matcher to transform the collapsed single-paragraph
+// form, matching how `githubAlerts` already behaves end-to-end.
 //
-// The diagnostic is accessible via `DirectiveRegistry::take_diagnostics()`
-// which is exposed through `zfb_content::plugins::DirectiveRegistry`.
-// We drive the registry standalone (not through `Pipeline`) so we can
-// call `take_diagnostics()` after the visit.
-//
-// NOTE: The `markdown::mdast` crate is an internal dep of `zfb-content`
-// but not of `zfb-build`.  We avoid importing it directly here by using
-// `zfb_content::pipeline::Pipeline` with a custom mdast visitor — but
-// since `Pipeline` boxes visitors and doesn't expose the registry's
-// diagnostic drain, we use a different approach: we verify that the
-// bad source does NOT produce a recognized `<Note>` element in the
-// serialized HTML (because the directive was left as a raw paragraph),
-// which is the observable effect of the missing-blank-lines path.
+// This test is updated (assertion flipped, not deleted) to confirm the
+// corrected behavior at the `zfb-build` boundary: an un-blank-lined
+// `:::note` now DOES compile to a `<Note>` JSX element. The companion
+// `merged_container_transforms_to_jsx` test in `zfb-content` guards the
+// same change at the mdast-transform level.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn un_blank_lined_directive_does_not_produce_note_element() {
+fn un_blank_lined_directive_produces_note_element() {
     use zfb_content::mdx_to_jsx_module_with_pipeline;
     use zfb_content::pipeline::Pipeline;
     use zfb_content::MdxJsxOptions;
@@ -189,35 +184,31 @@ fn un_blank_lined_directive_does_not_produce_note_element() {
     //   :::note
     //   body text
     //   :::
-    // The markdown parser collapses this into a single merged paragraph
-    // (the `:::` tokens have no special meaning without the surrounding
-    // blank lines that let the directive parser see them as block fences).
-    // The DirectiveRegistry detects the merge via `paragraph_text_looks_merged`,
-    // emits a diagnostic, and leaves the paragraph intact — so no `<Note>`
-    // JSX element is emitted.
-    let bad_src = ":::note\nbody text without blank lines\n:::\n";
+    // The markdown parser collapses this into a single merged paragraph.
+    // Post-#1090 the DirectiveRegistry detects the collapsed form, strips
+    // the opener/closer fence lines, and emits the registered `<Note>`
+    // component — no diagnostic, no raw `:::` left behind.
+    let src = ":::note\nbody text without blank lines\n:::\n";
 
-    // `note → Note` is registered, so a well-formed `:::note` WOULD transform;
-    // this test proves the merged (no-blank-lines) form does NOT.
     let features = note_directive_features();
     let mut pipeline = Pipeline::with_defaults_and_features(&features);
-    let jsx = mdx_to_jsx_module_with_pipeline(bad_src, MdxJsxOptions::default(), &mut pipeline)
-        .expect("pipeline must not hard-error on bad-blank-line source");
+    let jsx = mdx_to_jsx_module_with_pipeline(src, MdxJsxOptions::default(), &mut pipeline)
+        .expect("pipeline must not hard-error on un-blank-lined directive source");
 
-    // The compiled JSX must NOT contain a `<Note` opening tag — the directive
-    // was left unrecognised (merged paragraph, no blank lines).
+    // The compiled JSX MUST contain a `<Note` opening tag — the collapsed
+    // directive is now recognised and transformed (#1090).
     assert!(
-        !jsx.contains("<Note"),
-        "un-blank-lined :::note must not produce a <Note> JSX element.\
+        jsx.contains("<Note"),
+        "un-blank-lined :::note must now produce a <Note> JSX element (#1090).\
          \nJSX excerpt: {}",
         &jsx[..jsx.len().min(1200)]
     );
 
-    // The raw `:::` fence markers (as string literals) must be visible in the
-    // JSX output, confirming the paragraph was NOT consumed by the registry.
+    // The raw `:::` fence markers must NOT survive — the paragraph was
+    // consumed by the registry and rewritten to the component.
     assert!(
-        jsx.contains(":::"),
-        "un-blank-lined directive source must survive as raw text in the JSX.\
+        !jsx.contains(":::"),
+        "un-blank-lined directive fences must be consumed, not left as raw text (#1090).\
          \nJSX excerpt: {}",
         &jsx[..jsx.len().min(1200)]
     );
