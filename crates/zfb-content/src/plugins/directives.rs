@@ -318,7 +318,7 @@ impl DirectiveRegistry {
         let mut prose_start = 0usize;
 
         while i < lines.len() {
-            let line = lines[i].trim_end_matches('\r');
+            let line = strip_trailing_cr(lines[i]);
             if let Some(open_colons) = container_opener_colons(line) {
                 // Find the matching closer line by colon count.
                 if let Some(close_idx) = find_collapsed_closer(&lines, i + 1, open_colons) {
