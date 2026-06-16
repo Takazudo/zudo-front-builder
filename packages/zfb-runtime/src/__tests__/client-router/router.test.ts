@@ -524,6 +524,208 @@ describe("popstate — forward + back history navigation", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// pageshow / bfcache re-sync (WebKit Back-history fix, #1076)
+// ---------------------------------------------------------------------------
+//
+// L2 (DOM-component) regression for the iOS/WebKit Back bug: after a real
+// SPA navigation (list → detail), a bfcache restore can leave the module's
+// private `currentHistoryIndex` desynced from the live `history.state.index`,
+// so the popstate direction calc (`nextIndex > currentHistoryIndex`)
+// misclassifies a Back as a forward navigation. The init-block `pageshow`
+// listener re-seeds `currentHistoryIndex` from `history.state.index` on a
+// `persisted` (bfcache) restore so the next popstate classifies correctly.
+//
+// DRIVE THE REAL PUBLIC PATH: the two SPA entries are seeded via navigate()
+// through production code so `currentHistoryIndex` reaches 2 organically — it
+// is never hand-set. We then simulate the bfcache restore (the live history
+// index advanced while the page sat in cache) and assert the OBSERVABLE: the
+// list page is fetched/swapped and the popstate direction is "back".
+//
+// BLIND SPOT (documented): happy-dom models neither bfcache nor
+// `hasUAVisualTransition`, so this proves the handler's branch logic, NOT the
+// real WebKit fix. Definitive proof is the Wave-2 WebKit harness on a Mac.
+describe("pageshow / bfcache re-sync — WebKit Back-history (#1076)", () => {
+  // Earlier tests in this file shim `location.href` via Object.defineProperty
+  // and never restore it, leaving a frozen own-property getter that would make
+  // `history.replaceState(state, "", path)` no longer reflect into
+  // `location.href` (which `onPopState` reads via `new URL(location.href)`).
+  // Delete any leaked own-property so happy-dom's native prototype getter — which
+  // DOES track replaceState — is back in effect for these tests.
+  beforeEach(() => {
+    if (Object.getOwnPropertyDescriptor(location, "href")) {
+      delete (location as unknown as Record<string, unknown>)["href"];
+    }
+  });
+
+  // Capture the direction the router classified for a popstate-driven
+  // transition by listening on the `zfb:before-preparation` event, which
+  // carries the resolved Direction.
+  function captureDirection(): { get: () => string | undefined; dispose: () => void } {
+    let seen: string | undefined;
+    const handler = (ev: Event) => {
+      seen = (ev as unknown as { direction: string }).direction;
+    };
+    document.addEventListener("zfb:before-preparation", handler);
+    return {
+      get: () => seen,
+      dispose: () => document.removeEventListener("zfb:before-preparation", handler),
+    };
+  }
+
+  const drain = () => new Promise((r) => setTimeout(r, 0));
+
+  // happy-dom's PageTransitionEvent ignores the `persisted` init option (it
+  // always reports `undefined`), so build a plain "pageshow" Event and shim the
+  // read-only `persisted` getter — the same defineProperty shim pattern the
+  // suite uses for location.href. `persisted: undefined` yields a no-`persisted`
+  // event (plain Event), exercising the absent-property branch.
+  function pageshowEvent(persisted?: boolean): Event {
+    const ev = new Event("pageshow");
+    if (persisted !== undefined) {
+      Object.defineProperty(ev, "persisted", { configurable: true, value: persisted });
+    }
+    return ev;
+  }
+
+  function fetchTwoPages() {
+    const fetchMock = vi.fn(async (url: RequestInfo) => {
+      const u = String(url);
+      if (u.includes("/list")) return htmlResponse(pageHtml("List", "list page"));
+      if (u.includes("/detail")) return htmlResponse(pageHtml("Detail", "detail page"));
+      if (u.includes("/home")) return htmlResponse(pageHtml("Home", "home page"));
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  // Drive a browser Back: happy-dom's `history.replaceState(state, "", path)`
+  // updates both `history.state` and `location.href` (same-origin path), which
+  // is exactly what `onPopState` reads (`history.state` + `new URL(location.href)`).
+  // We then fire the popstate the browser would have fired for that entry.
+  function dispatchBackTo(path: string, index: number) {
+    const state = { index, scrollX: 0, scrollY: 0 };
+    history.replaceState(state, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate", { state }));
+  }
+
+  // Seed two SPA entries (list → detail) through production code so the module
+  // index advances organically. `currentHistoryIndex` is module-global and
+  // monotonically increasing across the whole file, so we read the resulting
+  // live index back from `history.state.index` and compute every desync/probe
+  // index RELATIVE to it — never hand-set or assume an absolute value.
+  async function seedListThenDetail(): Promise<number> {
+    await navigate("/list");
+    await navigate("/detail");
+    expect(document.title).toBe("Detail");
+    return (history.state as { index: number }).index; // === module currentHistoryIndex
+  }
+
+  it("re-seeds currentHistoryIndex on persisted restore so the Back popstate classifies as 'back' (not forward)", async () => {
+    const fetchMock = fetchTwoPages();
+
+    const cur = await seedListThenDetail(); // module currentHistoryIndex === cur
+
+    // Inject the desync: simulate a bfcache restore where the LIVE history
+    // index advanced (to cur+2) while the page sat in cache — the module
+    // counter is still `cur`. Without a pageshow re-seed the two disagree.
+    history.replaceState({ index: cur + 2, scrollX: 0, scrollY: 0 }, "", "/detail");
+
+    // bfcache restore notification — re-seeds currentHistoryIndex from cur+2.
+    window.dispatchEvent(pageshowEvent(true));
+
+    const dir = captureDirection();
+    fetchMock.mockClear();
+
+    // Browser Back to the list entry. In the advanced (re-seeded) stack the
+    // list sits at cur+1, one below the restored detail at cur+2 → "back".
+    // Without the re-seed the module still thinks current is `cur`, so
+    // (cur+1) > cur misclassifies this Back as "forward".
+    dispatchBackTo("/list", cur + 1);
+    await drain();
+
+    // Observable 1: the LIST page was fetched/swapped (not home).
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes("/list"))).toBe(true);
+    expect(urls.some((u) => u.includes("/home"))).toBe(false);
+    // Observable 2: the direction was "back".
+    expect(dir.get()).toBe("back");
+
+    dir.dispose();
+  });
+
+  it("is a no-op on a non-persisted pageshow (normal load) — does not shift the index", async () => {
+    fetchTwoPages();
+
+    const cur = await seedListThenDetail(); // module currentHistoryIndex === cur
+
+    // Live index advanced to cur+5, but this is a NORMAL (non-bfcache)
+    // pageshow: the handler must not re-seed, so the module counter stays `cur`.
+    history.replaceState({ index: cur + 5, scrollX: 0, scrollY: 0 }, "", "/detail");
+    window.dispatchEvent(pageshowEvent(false));
+
+    const dir = captureDirection();
+    // Probe with a popstate to cur+3. With no re-seed (module still `cur`),
+    // (cur+3) > cur → "forward". A buggy re-seed to cur+5 would give
+    // (cur+3) < (cur+5) → "back". We assert the no-op outcome: "forward".
+    dispatchBackTo("/list", cur + 3);
+    await drain();
+
+    expect(dir.get()).toBe("forward");
+    dir.dispose();
+  });
+
+  it("is a no-op on a pageshow event lacking `persisted` (plain Event)", async () => {
+    fetchTwoPages();
+
+    const cur = await seedListThenDetail(); // module currentHistoryIndex === cur
+
+    history.replaceState({ index: cur + 5, scrollX: 0, scrollY: 0 }, "", "/detail");
+    // A plain Event has no `persisted` property (undefined) → must be a no-op.
+    window.dispatchEvent(pageshowEvent());
+
+    const dir = captureDirection();
+    // No re-seed happened → module index stayed `cur` → (cur+3) > cur → "forward".
+    dispatchBackTo("/list", cur + 3);
+    await drain();
+
+    expect(dir.get()).toBe("forward");
+    dir.dispose();
+  });
+
+  it("is idempotent: dispatching persisted pageshow twice does not shift the index or fire a transition", async () => {
+    const fetchMock = fetchTwoPages();
+
+    const cur = await seedListThenDetail();
+
+    history.replaceState({ index: cur + 2, scrollX: 0, scrollY: 0 }, "", "/detail");
+
+    fetchMock.mockClear();
+    const dir = captureDirection();
+
+    // Two consecutive bfcache restores. Re-seeding twice from the same live
+    // index must be a stable no-op the second time — and neither dispatch may
+    // trigger a spurious transition (no fetch, no direction classified).
+    window.dispatchEvent(pageshowEvent(true));
+    await drain();
+    window.dispatchEvent(pageshowEvent(true));
+    await drain();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(dir.get()).toBeUndefined();
+
+    // After the (idempotent) double re-seed to cur+2, a Back to cur+1
+    // classifies as "back" exactly once, proving the index settled at cur+2
+    // (a non-idempotent re-seed that shifted the index would misclassify).
+    dispatchBackTo("/list", cur + 1);
+    await drain();
+
+    expect(dir.get()).toBe("back");
+    dir.dispose();
+  });
+});
+
 describe("island lifecycle ordering during navigate()", () => {
   it("calls cancelPendingIslands then unmountIslands then mountNewIslands in that order", async () => {
     vi.stubGlobal(
