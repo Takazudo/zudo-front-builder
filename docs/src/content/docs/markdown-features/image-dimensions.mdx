@@ -29,10 +29,11 @@ For each `<img>` element, the plugin:
 2. Skips `data:` URLs unconditionally. Skips `http://`, `https://`, and
    protocol-relative (`//`) URLs when `skipRemote` is `true` (the default).
 3. Resolves the `src` to an absolute path (see **Source resolution** below).
-4. Reads only the image file header — no full decode occurs — and injects `width="W" height="H"`.
-5. If the file cannot be found or is not a recognised image format, emits a build warning and leaves the element unchanged.
+4. For raster images, reads only the file header — no full decode occurs — and injects `width="W" height="H"`.
+5. For **SVG** files (which carry no raster header), reads the intrinsic size from the markup: an explicit `width`/`height` pair (in user units or `px`) is used when present, otherwise the `viewBox` supplies the size/aspect ratio. An SVG with no determinable size is left unchanged, silently.
+6. If a raster file cannot be found or is not a recognised image format, emits a build warning and leaves the element unchanged. Undimensionable SVGs do **not** warn.
 
-Supported formats: **PNG, JPEG, GIF, WebP, AVIF**.
+Supported formats: **PNG, JPEG, GIF, WebP, AVIF** (header probe) and **SVG** (parsed from `width`/`height`/`viewBox`).
 
 ## Source resolution
 
@@ -72,7 +73,7 @@ An `<img>` with explicit dimensions is left unchanged:
 
 ## Caching
 
-The plugin caches `(path, mtime) → (width, height)` in memory. A second `<img>` reference to the same file within the same build hits the cache rather than re-reading the file header.
+The plugin caches `(path, mtime) → (width, height)` in memory. A second `<img>` reference to the same file within the same build hits the cache rather than re-reading the file.
 
 ## Ordering
 

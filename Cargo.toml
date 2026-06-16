@@ -26,6 +26,10 @@ globset = "0.4"
 # Used by zfb-md-extras::image_dimensions (Wave 6 #579) to inject
 # width/height attrs without decoding the full image payload.
 imagesize = "0.14"
+# Zero-unsafe, allocation-light XML DOM parser. `imagesize` is raster-only and
+# cannot decode vector SVGs, so zfb-md-extras::image_dimensions parses an SVG's
+# intrinsic dimensions (width/height/viewBox) straight from its markup (#1083).
+roxmltree = "0.20"
 
 # SWC umbrella crate. Pinning the major version here is the project's
 # single source of truth — both `zfb-render` (TSX→JS pipeline) and

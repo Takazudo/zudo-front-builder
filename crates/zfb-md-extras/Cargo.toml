@@ -81,6 +81,9 @@ zfb-md-ast = { path = "../zfb-md-ast" }
 zfb-types = { path = "../zfb-types" }
 # Header-only image dimension probing for the image_dimensions feature (Wave 6 #579).
 imagesize = { workspace = true }
+# SVG intrinsic-dimension parsing for image_dimensions (#1083) — imagesize is
+# raster-only, so SVGs are read from their markup (width/height/viewBox).
+roxmltree = { workspace = true }
 # Optional: compiled when `features = ["test-utils"]` is requested by a
 # downstream crate's dev-dependencies. The same packages are also listed in
 # [dev-dependencies] so that this crate's own unit tests (which compile
