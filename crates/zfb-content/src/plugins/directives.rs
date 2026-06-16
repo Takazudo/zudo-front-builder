@@ -160,17 +160,23 @@ impl DirectiveRegistry {
             // JSX flow element per top-level directive run and recurses for
             // nested ones. This must run BEFORE the 3-colon `parse_block_open`
             // check so a `:::::note` (5-colon) outer opener is handled too.
-            if let Some((text_value, base_col)) = single_text_collapsed_value(&children[i]) {
-                if first_line_is_container_opener(&text_value) {
-                    let line_no = single_text_collapsed_line_col(&children[i]).unwrap_or(1);
+            if let Some((text_value, line_no, base_col)) = single_text_collapsed(&children[i]) {
+                if container_opener_colons(first_line(&text_value).trim_end()).is_some() {
                     if let Some(replacement) =
-                        self.transform_collapsed_run(&text_value, line_no, base_col, false)
+                        self.transform_collapsed_run(&text_value, Some((line_no, base_col)))
                     {
+                        // `transform_collapsed_run` owns the paragraph: it has
+                        // transformed every recognised run and warned every
+                        // unknown exactly once. Splice in its result and skip
+                        // the block-level checks below (no double-warn).
                         let n = replacement.len();
                         children.splice(i..=i, replacement);
                         i += n;
                         continue;
                     }
+                    // First line looked like an opener but no fence run was
+                    // recognised (e.g. no closer) — fall through to the
+                    // block-level handlers below, which leave it alone.
                 }
             }
 
@@ -280,27 +286,32 @@ impl DirectiveRegistry {
     /// recognised runs that are plain prose are likewise re-parsed as markdown
     /// and emitted verbatim.
     ///
-    /// Returns `Some(replacement_nodes)` when at least one top-level directive
-    /// run was recognised and transformed; `None` when nothing matched (so the
-    /// caller falls through to other handlers / leaves the paragraph alone).
+    /// Returns `Some(replacement_nodes)` when at least one directive fence run
+    /// was recognised (transformed to JSX, or an unknown/unmatched run left as
+    /// re-parsed prose). In that case this method OWNS the paragraph and warns
+    /// every unknown directive exactly once, so the caller must splice the
+    /// result and NOT fall through to other warn paths. Returns `None` only
+    /// when no fence run was recognised at all (e.g. the first line looked
+    /// like an opener but had no closer and no other run matched), letting the
+    /// caller leave the paragraph alone.
     ///
-    /// `first_line`/`first_col` carry the source position of the paragraph's
-    /// opener for diagnostics.
+    /// Unknown directives are warned HERE (not by the caller's re-walk):
+    /// once a run is recognised, every unmatched/unknown line is folded into a
+    /// re-parsed prose Paragraph that the outer `visit` re-walk does NOT
+    /// re-block-scan (it only walks inline children), so this is the single
+    /// authoritative warn site for collapsed directives.
     ///
-    /// `is_body` distinguishes the TOP-LEVEL call (from `transform_children`,
-    /// `false`) from a recursive BODY re-segmentation (`true`). It controls
-    /// unknown-directive warning placement so each unknown is reported exactly
-    /// once (see the unknown branch below).
+    /// `first_pos` carries the `(line, column)` source position of the
+    /// paragraph's opener for diagnostics, or `None` when unknown (recursive
+    /// body re-segmentation has no reliable per-line position).
     fn transform_collapsed_run(
         &mut self,
         value: &str,
-        first_line: usize,
-        first_col: usize,
-        is_body: bool,
+        first_pos: Option<(usize, usize)>,
     ) -> Option<Vec<MdastNode>> {
         let lines: Vec<&str> = value.split('\n').collect();
         let mut out: Vec<MdastNode> = Vec::new();
-        let mut transformed_any = false;
+        let mut recognised_any = false;
         let mut i = 0usize;
         // Track plain (non-directive) lines so we can flush them as a prose
         // block in source order between recognised runs.
@@ -311,61 +322,59 @@ impl DirectiveRegistry {
             if let Some(open_colons) = container_opener_colons(line) {
                 // Find the matching closer line by colon count.
                 if let Some(close_idx) = find_collapsed_closer(&lines, i + 1, open_colons) {
-                    // Flush any pending prose before this run.
-                    self.flush_prose(&lines, prose_start, i, &mut out);
-
-                    // Reconstruct the inner body (lines between opener and
-                    // closer) as a single text block for recursive handling.
-                    let body_lines = &lines[i + 1..close_idx];
                     let opener = first_line_trim(line);
                     if let Some(parsed) = parse_directive_line(opener, open_colons) {
                         if let Some(def) = self.defs.get(&parsed.name).cloned() {
                             if def.kind == DirectiveKind::Container {
-                                let (line_no, col_no) = if i == 0 {
-                                    (Some(first_line), Some(first_col))
-                                } else {
-                                    (None, None)
+                                // Flush any pending prose before this run.
+                                self.flush_prose(&lines, prose_start, i, &mut out);
+                                // Only the very first opener line has a known
+                                // source position; later sibling/nested openers
+                                // have none (they are mid-text lines).
+                                let (line_no, col_no) = match (i, first_pos) {
+                                    (0, Some((l, c))) => (Some(l), Some(c)),
+                                    _ => (None, None),
                                 };
                                 let validated_opt =
                                     self.run_validation(&def, &parsed, line_no, col_no);
-                                let inner = self.build_collapsed_body(body_lines);
+                                // Body = lines between opener and its closer.
+                                let inner = self.build_collapsed_body(&lines[i + 1..close_idx]);
                                 let jsx =
                                     build_flow_jsx(&def, &parsed, inner, validated_opt.as_ref());
                                 out.push(jsx);
-                                transformed_any = true;
+                                recognised_any = true;
                                 i = close_idx + 1;
                                 prose_start = i;
                                 continue;
                             }
-                            // Registered but not a container: fall through and
-                            // treat as prose (leave literal).
-                        } else if is_body {
-                            // Unknown directive name BURIED in a container body.
-                            // The lines are emitted as prose (via
-                            // `flush_prose`/`reparse_block`) and re-parsed into a
-                            // paragraph nested inside the JSX element; the outer
-                            // `visit` re-walk does NOT re-discover a directive
-                            // buried mid-paragraph, so warn HERE — exactly once.
+                            // Registered but not a container: leave the run as
+                            // literal prose (no warn — known name, wrong kind).
+                        } else {
+                            // Unknown directive name. The opener..=closer lines
+                            // stay as literal prose; warn exactly once. (The
+                            // re-parsed prose is never re-block-scanned, so this
+                            // is the only place the warning can come from.)
+                            let (line_no, col_no) = match (i, first_pos) {
+                                (0, Some((l, c))) => (Some(l), Some(c)),
+                                _ => (None, None),
+                            };
                             self.diagnostics.push(DirectiveDiagnostic {
                                 message: format!("unknown directive `{}`", parsed.name),
-                                line: None,
-                                column: None,
+                                line: line_no,
+                                column: col_no,
                             });
+                            recognised_any = true;
+                            // Fall through: the lines remain part of prose_start
+                            // run and are flushed as literal text below.
                         }
-                        // Unknown directive at TOP level (`is_body == false`):
-                        // do NOT warn here. The whole run is emitted as a prose
-                        // paragraph and the outer `visit` re-walk's block scan
-                        // (`parse_block_open`) issues exactly one unknown-
-                        // directive warning for it (acceptance: warn ONCE).
                     }
                 }
-                // No matching closer (or unknown / wrong kind): leave this
-                // line as prose; advance one line.
+                // No matching closer: leave this line as prose; advance one.
             }
             i += 1;
         }
 
-        if !transformed_any {
+        if !recognised_any {
             return None;
         }
         // Flush trailing prose after the last recognised run.
@@ -403,7 +412,7 @@ impl DirectiveRegistry {
         // Recurse: a nested `:::tip … :::` inside the body is itself a
         // collapsed run. `None` means "no directive in the body" — emit the
         // body as plain markdown blocks.
-        match self.transform_collapsed_run(&body_text, 0, 0, true) {
+        match self.transform_collapsed_run(&body_text, None) {
             Some(nodes) => nodes,
             None => reparse_block(&body_text),
         }
@@ -821,12 +830,6 @@ fn first_line_trim(line: &str) -> &str {
     line.trim_end_matches('\r')
 }
 
-/// True when the first line of `value` is a container directive opener
-/// (`:::+name…`, >=3 colons followed by a name-start char).
-fn first_line_is_container_opener(value: &str) -> bool {
-    container_opener_colons(first_line(value).trim_end()).is_some()
-}
-
 /// If `line` is a container DIRECTIVE OPENER (`:::+name…`, i.e. ≥3 leading
 /// colons immediately followed by a name-start char), return its leading
 /// colon count. A bare `:::` (close fence) returns `None` because the byte
@@ -913,10 +916,11 @@ fn reparse_block(text: &str) -> Vec<MdastNode> {
 
 /// When `node` is a Paragraph with exactly one multi-line `Text` child (the
 /// collapsed shape `markdown::to_mdast` produces for blank-line-less fences),
-/// return that Text's `value` plus the paragraph's start column for
-/// diagnostics. Returns `None` for the multi-inline-child case (which the
-/// #1090 `collapsed_container_body` fallback handles instead).
-fn single_text_collapsed_value(node: &MdastNode) -> Option<(String, usize)> {
+/// return `(text_value, start_line, start_column)` — the Text's value plus the
+/// paragraph's start position (defaulting to 1:1 when absent) for diagnostics.
+/// Returns `None` for the multi-inline-child case (which the #1090
+/// `collapsed_container_body` fallback handles instead).
+fn single_text_collapsed(node: &MdastNode) -> Option<(String, usize, usize)> {
     let MdastNode::Paragraph(p) = node else {
         return None;
     };
@@ -929,16 +933,11 @@ fn single_text_collapsed_value(node: &MdastNode) -> Option<(String, usize)> {
     if !t.value.contains('\n') {
         return None;
     }
-    let col = p.position.as_ref().map_or(1, |pos| pos.start.column);
-    Some((t.value.clone(), col))
-}
-
-/// Paragraph start line for a single-text collapsed paragraph (for diags).
-fn single_text_collapsed_line_col(node: &MdastNode) -> Option<usize> {
-    let MdastNode::Paragraph(p) = node else {
-        return None;
-    };
-    Some(p.position.as_ref().map_or(1, |pos| pos.start.line))
+    let (line, col) = p
+        .position
+        .as_ref()
+        .map_or((1, 1), |pos| (pos.start.line, pos.start.column));
+    Some((t.value.clone(), line, col))
 }
 
 fn paragraph_position(node: &MdastNode) -> Option<markdown::unist::Position> {
@@ -1585,6 +1584,52 @@ separated body
         );
         assert!(!has_jsx_inner, "unknown inner must stay literal");
 
+        let diags = r.take_diagnostics();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one unknown-directive warning, got {diags:#?}"
+        );
+        assert!(diags[0].message.contains("bogus"));
+    }
+
+    #[test]
+    fn real_parser_collapsed_unknown_with_extra_colons_warns_once() {
+        // A top-level UNKNOWN collapsed container with MORE than 3 colons
+        // (`:::::bogus … :::::`) must still warn exactly once and be left as
+        // literal text — the exactly-3-colon block scan alone would miss it.
+        let mut r = registry_with_admonitions();
+        let out = run_real_parser(&mut r, ":::::bogus\nx\n:::::\n");
+        let has_jsx = out
+            .iter()
+            .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_)));
+        assert!(
+            !has_jsx,
+            "unknown directive must not transform, got {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "exactly one warning, got {diags:#?}");
+        assert!(diags[0].message.contains("bogus"));
+    }
+
+    #[test]
+    fn real_parser_collapsed_known_then_unknown_sibling_warns_once() {
+        // A KNOWN sibling followed by an UNKNOWN sibling in one collapsed run:
+        // the known transforms, the unknown is left literal and warns exactly
+        // once (no duplicate, no lost warning).
+        let mut r = registry_with_admonitions();
+        let out = run_real_parser(&mut r, ":::note\nA\n:::\n:::bogus\nB\n:::\n");
+        let note_count = out
+            .iter()
+            .filter(
+                |c| matches!(c, MdastNode::MdxJsxFlowElement(j) if j.name.as_deref() == Some("Note")),
+            )
+            .count();
+        assert_eq!(note_count, 1, "known sibling transforms, got {out:#?}");
+        let has_other_jsx = out.iter().any(
+            |c| matches!(c, MdastNode::MdxJsxFlowElement(j) if j.name.as_deref() != Some("Note")),
+        );
+        assert!(!has_other_jsx, "unknown sibling must not transform");
         let diags = r.take_diagnostics();
         assert_eq!(
             diags.len(),
