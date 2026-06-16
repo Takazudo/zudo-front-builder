@@ -707,7 +707,11 @@ fn absolute_traversal_outside_public_dir_rejected() {
     plugin.visit_with_context(&mut tree, &mut ctx);
 
     let diags = sink.take();
-    assert_eq!(diags.len(), 1, "absolute traversal src must emit one warning");
+    assert_eq!(
+        diags.len(),
+        1,
+        "absolute traversal src must emit one warning"
+    );
     assert_eq!(diags[0].severity(), DiagnosticSeverity::Warning);
     assert!(
         diag_message(&diags[0]).contains("resolves outside the expected root"),

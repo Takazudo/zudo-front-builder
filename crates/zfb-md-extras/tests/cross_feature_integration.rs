@@ -49,8 +49,8 @@ use zfb_md_ast::{
     heading_registry::HeadingRegistry,
     BuildContext, CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind,
     FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
-    LinkValidationConfig, MarkdownFeaturesConfig, ReadingTimeFeature,
-    TocConfig, TocExportConfig, TranscludeConfig,
+    LinkValidationConfig, MarkdownFeaturesConfig, ReadingTimeFeature, TocConfig, TocExportConfig,
+    TranscludeConfig,
 };
 
 // ── Case 1: transclude + link_validation ────────────────────────────────────

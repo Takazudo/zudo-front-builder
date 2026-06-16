@@ -180,8 +180,7 @@ impl DirectiveRegistry {
                         if let Some(inner) = collapsed_container_body(&children[i]) {
                             let (line, column) = paragraph_line_col(&children[i]);
                             let validated_opt = self.run_validation(&def, &parsed, line, column);
-                            let jsx =
-                                build_flow_jsx(&def, &parsed, inner, validated_opt.as_ref());
+                            let jsx = build_flow_jsx(&def, &parsed, inner, validated_opt.as_ref());
                             children[i] = jsx;
                             i += 1;
                             continue;
@@ -1057,7 +1056,10 @@ another tip
         let note = flow(&out[0]);
         assert_eq!(note.name.as_deref(), Some("Note"));
         let MdastNode::Paragraph(body) = &note.children[0] else {
-            unreachable!("note body should be a Paragraph, got {:?}", note.children[0]);
+            unreachable!(
+                "note body should be a Paragraph, got {:?}",
+                note.children[0]
+            );
         };
         let MdastNode::Text(t) = &body.children[0] else {
             unreachable!("note body text expected");
