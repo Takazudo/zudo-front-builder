@@ -197,6 +197,15 @@ impl HeadingLinksPlugin {
     /// When `registry` and `source_path` are provided, a `HeadingEntry` is
     /// pushed for each heading processed. When `registry` is `None` the
     /// behaviour is identical to the pre-wave-6 `visit` method.
+    ///
+    /// KNOWN LIMITATION (#1095): raw-HTML elements authored as literal HTML
+    /// inside markdown (e.g. `<div id="x">`) arrive as `HastNode::Raw` (an
+    /// opaque string) at this walk — they are NOT structured `Element` nodes
+    /// and therefore cannot be recorded in the anchor-id store. GFM footnote
+    /// back-reference anchors (`id="user-content-fn-1"`) similarly degrade to
+    /// `HastNode::Raw("")` in `mdast_to_hast`. Both remain unrecorded and will
+    /// still trigger a `BrokenLink` if linked from the same file. A future fix
+    /// would require a raw-HTML parser pass before this walk.
     fn visit_node(
         &mut self,
         node: &mut HastNode,
@@ -232,6 +241,30 @@ impl HeadingLinksPlugin {
                         depth,
                     },
                 );
+            }
+        } else if let (Some(reg), Some(ref path)) = (registry.as_deref_mut(), &source_path) {
+            // For non-heading elements, record explicit `id` attributes and
+            // `<a name="…">` values in the anchor-id store so that bare
+            // `#anchor` links to non-heading targets (e.g. `<div id="foo">`,
+            // `<a name="foo">`) are not falsely flagged as broken in files
+            // that happen to have no headings (#1095).
+            if let HastNode::Element { tag, attrs, .. } = &*node {
+                // Any element with an `id` attribute — `<div id="x">`, `<section id="y">`, etc.
+                if let Some(id_val) = attrs.iter().find(|(k, _)| k == "id").map(|(_, v)| v) {
+                    if !id_val.is_empty() {
+                        reg.insert_anchor_id(path.clone(), id_val.clone());
+                    }
+                }
+                // `<a name="x">` — legacy named anchors (GitHub Flavored Markdown
+                // and hand-authored HTML that survived mdast parsing as Elements).
+                if tag == "a" {
+                    if let Some(name_val) = attrs.iter().find(|(k, _)| k == "name").map(|(_, v)| v)
+                    {
+                        if !name_val.is_empty() {
+                            reg.insert_anchor_id(path.clone(), name_val.clone());
+                        }
+                    }
+                }
             }
         }
 
