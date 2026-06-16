@@ -1,0 +1,17 @@
+---
+title: v0.1.0-next.49
+sidebar_position: 1049
+---
+
+# v0.1.0-next.49
+
+Released: 2026-06-16
+
+## Bug Fixes
+
+- client-router: re-sync the history index on a WebKit bfcache restore so browser Back after an SPA navigation returns to the previous page instead of skipping an entry (71eb883)
+
+## Other Changes
+
+- test: add a WebKit back-nav Playwright reproduction harness (T4 local-heavy lane, not run in CI) (b7d828f)
+- client-router: re-sync `originalLocation` on bfcache restore and harden the harness server + script (f2c72e7)
