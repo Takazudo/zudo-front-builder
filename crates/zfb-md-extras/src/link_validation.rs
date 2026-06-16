@@ -501,9 +501,18 @@ fn validate_file_with_fragment(
             return;
         }
     };
-    if !entries.iter().any(|e| e.id == fragment) {
-        emit_broken_link(raw_href, env, ctx);
+    // Accept the fragment if it matches any heading id OR any explicit anchor id.
+    if entries.iter().any(|e| e.id == fragment) {
+        return;
     }
+    if ctx
+        .heading_registry
+        .as_ref()
+        .is_some_and(|r| r.has_anchor(&resolved, fragment))
+    {
+        return;
+    }
+    emit_broken_link(raw_href, env, ctx);
 }
 
 /// Emit a `BrokenLink` diagnostic through `ctx.diagnostics`.

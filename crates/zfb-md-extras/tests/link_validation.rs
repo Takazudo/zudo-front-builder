@@ -812,3 +812,72 @@ fn heading_file_with_element_id_both_accepted() {
         "diagnostic url must be #broken: {diags:?}"
     );
 }
+
+// ── Fixture 21: cross-file link to explicit element id (#1095) ───────────────
+
+/// `[x](./other.md#foo)` where `other.md` has `<div id="foo">` but NO headings
+/// must NOT emit `BrokenLink` — the fix must also cover cross-file fragment
+/// validation, not just bare same-file fragments.
+#[test]
+fn cross_file_link_to_explicit_element_id_no_diagnostic() {
+    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let project_root = tmpdir.path().to_path_buf();
+    let source_path = tmpdir.path().join("page.md");
+    let other_path = tmpdir.path().join("other.md");
+    std::fs::write(&source_path, "").expect("write page.md");
+    std::fs::write(&other_path, "no headings here\n").expect("write other.md");
+
+    let mut registry = HeadingRegistry::new();
+    // Pre-populate the target file's anchor id (as HeadingLinksPlugin would
+    // have done when processing other.md with a <div id="foo"> element).
+    registry.mark_tracked(other_path.clone());
+    registry.insert_anchor_id(other_path.clone(), "foo".to_string());
+
+    let md = "[link](./other.md#foo)\n";
+    let diags = run(
+        md,
+        source_path,
+        project_root,
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert!(
+        diags.is_empty(),
+        "cross-file link to explicit element id must not emit BrokenLink: {diags:?}"
+    );
+}
+
+/// Verify the regression contract: a cross-file link to a genuinely absent
+/// anchor in a headingless file must still emit `BrokenLink`.
+#[test]
+fn cross_file_link_broken_anchor_in_headingless_file_emits_diagnostic() {
+    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let project_root = tmpdir.path().to_path_buf();
+    let source_path = tmpdir.path().join("page.md");
+    let other_path = tmpdir.path().join("other.md");
+    std::fs::write(&source_path, "").expect("write page.md");
+    std::fs::write(&other_path, "no headings here\n").expect("write other.md");
+
+    let mut registry = HeadingRegistry::new();
+    // Mark other.md as tracked with only one anchor id (not "missing").
+    registry.mark_tracked(other_path.clone());
+    registry.insert_anchor_id(other_path.clone(), "present".to_string());
+
+    let md = "[link](./other.md#missing)\n";
+    let diags = run(
+        md,
+        source_path,
+        project_root,
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert_eq!(
+        diags.len(),
+        1,
+        "cross-file link to absent anchor must emit BrokenLink: {diags:?}"
+    );
+    assert!(
+        matches!(&diags[0], MarkdownDiagnostic::BrokenLink { url, .. } if url == "./other.md#missing"),
+        "diagnostic url must be the raw href: {diags:?}"
+    );
+}
