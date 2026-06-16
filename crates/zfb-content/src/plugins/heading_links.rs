@@ -172,6 +172,17 @@ impl HastVisitor for HeadingLinksPlugin {
     /// Zero-cost when `ctx.heading_registry` is `None` — no registry writes
     /// are performed.
     fn visit_with_context(&mut self, node: &mut HastNode, ctx: &mut BuildContext<'_>) {
+        // Mark this file as tracked up front so a document with zero
+        // `h2`–`h6` headings still produces a `Some(&[])` registry entry.
+        // Without this, `LinkValidationPlugin` cannot tell "processed, no
+        // headings" from "never tracked" and silently skips bare `#anchor`
+        // validation in headingless files (zfb#1093 — a transcluded snippet
+        // whose only content is a broken anchor link).
+        if let (Some(reg), Some(path)) =
+            (ctx.heading_registry.as_deref_mut(), ctx.source_path.clone())
+        {
+            reg.mark_tracked(path);
+        }
         self.visit_node(
             node,
             ctx.heading_registry.as_deref_mut(),

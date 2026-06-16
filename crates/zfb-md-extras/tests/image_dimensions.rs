@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use zfb_md_ast::diagnostics::{CollectingSink, DiagnosticSeverity};
+use zfb_md_ast::diagnostics::{CollectingSink, DiagnosticSeverity, MarkdownDiagnostic};
 use zfb_md_ast::{BuildContext, HastNode, HastVisitor, ImageDimensionsConfig};
 use zfb_md_extras::image_dimensions::ImageDimensionsPlugin;
 
@@ -61,6 +61,16 @@ fn get_attr<'a>(node: &'a HastNode, name: &str) -> Option<&'a str> {
         .iter()
         .find(|(k, _)| k == name)
         .map(|(_, v)| v.as_str())
+}
+
+/// Extract the human-readable message from a generic diagnostic (the only
+/// variant the image-dimensions plugin emits). Panics on any other variant so
+/// a test that gets an unexpected diagnostic shape fails loudly.
+fn diag_message(d: &MarkdownDiagnostic) -> &str {
+    match d {
+        MarkdownDiagnostic::Generic { message, .. } => message,
+        other => panic!("expected a Generic diagnostic, got {other:?}"),
+    }
 }
 
 fn first_img(root: &HastNode) -> &HastNode {
@@ -621,6 +631,142 @@ fn svg_cache_hit_on_second_reference() {
         assert_eq!(get_attr(child, "width"), Some("120"), "img[{i}] width");
         assert_eq!(get_attr(child, "height"), Some("80"), "img[{i}] height");
     }
+}
+
+// ── security: path-traversal containment guard (#1089) ────────────────────────
+//
+// The containment guard normalizes BOTH the candidate path and the configured
+// root before comparing, so a `..` carried by the root no longer wrongly
+// rejects a legitimately-contained image — see
+// `injects_dimensions_relative_src_via_source_dir` above, whose `project_root`
+// is `<fixtures>/..`. These tests assert the OTHER half of the contract: a
+// crafted `src` that lexically resolves OUTSIDE the normalized root is still
+// rejected with the existing warning and no dimensions injected.
+
+/// A relative `src` escaping the project root via `../../` must be skipped with
+/// a containment warning and must NOT inject width/height.
+#[test]
+fn relative_traversal_outside_root_rejected() {
+    let fixtures = fixtures_path();
+    let mut plugin = ImageDimensionsPlugin::new(ImageDimensionsConfig::default());
+    // source dir = <fixtures>, project_root = <fixtures>. The src joins onto
+    // the source dir as <fixtures>/../../etc/hosts, which normalizes to a path
+    // well above <fixtures> — outside the (normalized) root, so it is rejected
+    // before any disk probe.
+    let mut tree = root_with_img("../../etc/hosts");
+    let mut sink = CollectingSink::new();
+    let mut ctx = BuildContext {
+        source_path: Some(fixtures.join("fake-doc.mdx")),
+        project_root: fixtures.clone(),
+        public_dir: fixtures.clone(),
+        heading_registry: None,
+        diagnostics: Some(&mut sink),
+        cross_file_links: None,
+    };
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    let diags = sink.take();
+    assert_eq!(diags.len(), 1, "traversal src must emit one warning");
+    assert_eq!(diags[0].severity(), DiagnosticSeverity::Warning);
+    assert!(
+        diag_message(&diags[0]).contains("resolves outside the expected root"),
+        "warning must be the containment warning: {:?}",
+        diag_message(&diags[0])
+    );
+
+    let img = first_img(&tree);
+    assert_eq!(
+        get_attr(img, "width"),
+        None,
+        "traversal src must not inject width"
+    );
+    assert_eq!(
+        get_attr(img, "height"),
+        None,
+        "traversal src must not inject height"
+    );
+}
+
+/// An absolute `src` escaping `public_dir` via `/../../` must be skipped — the
+/// candidate normalizes to `/etc/hosts`, which is not under the normalized
+/// public_dir.
+#[test]
+fn absolute_traversal_outside_public_dir_rejected() {
+    let fixtures = fixtures_path();
+    let mut plugin = ImageDimensionsPlugin::new(ImageDimensionsConfig::default());
+    let mut tree = root_with_img("/../../etc/hosts");
+    let mut sink = CollectingSink::new();
+    let mut ctx = BuildContext {
+        source_path: Some(fixtures.join("fake-doc.mdx")),
+        project_root: fixtures.clone(),
+        public_dir: fixtures.clone(),
+        heading_registry: None,
+        diagnostics: Some(&mut sink),
+        cross_file_links: None,
+    };
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    let diags = sink.take();
+    assert_eq!(
+        diags.len(),
+        1,
+        "absolute traversal src must emit one warning"
+    );
+    assert_eq!(diags[0].severity(), DiagnosticSeverity::Warning);
+    assert!(
+        diag_message(&diags[0]).contains("resolves outside the expected root"),
+        "warning must be the containment warning: {:?}",
+        diag_message(&diags[0])
+    );
+
+    let img = first_img(&tree);
+    assert_eq!(
+        get_attr(img, "width"),
+        None,
+        "absolute traversal src must not inject width"
+    );
+}
+
+/// Regression-pair for #1089: even when the configured root itself carries a
+/// `..` (the scenario that wrongly rejected a contained image), a crafted `src`
+/// that escapes the *normalized* root is STILL rejected. This proves the fix
+/// (normalize both sides) did not weaken the traversal guard.
+#[test]
+fn traversal_still_rejected_when_root_has_dotdot() {
+    let fixtures = fixtures_path();
+    let mut plugin = ImageDimensionsPlugin::new(ImageDimensionsConfig::default());
+    // project_root = <fixtures>/.. (normalizes to the parent of fixtures).
+    // The src then climbs further out, escaping even the normalized root.
+    let mut tree = root_with_img("../../../../../../etc/hosts");
+    let mut sink = CollectingSink::new();
+    let mut ctx = BuildContext {
+        source_path: Some(fixtures.join("fake-doc.mdx")),
+        project_root: fixtures.join(".."),
+        public_dir: fixtures.join("../public"),
+        heading_registry: None,
+        diagnostics: Some(&mut sink),
+        cross_file_links: None,
+    };
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    let diags = sink.take();
+    assert_eq!(
+        diags.len(),
+        1,
+        "traversal must still warn even when root carries a .."
+    );
+    assert!(
+        diag_message(&diags[0]).contains("resolves outside the expected root"),
+        "warning must be the containment warning: {:?}",
+        diag_message(&diags[0])
+    );
+
+    let img = first_img(&tree);
+    assert_eq!(
+        get_attr(img, "width"),
+        None,
+        "traversal src must not inject width even with a ..-root"
+    );
 }
 
 // ── feature-disabled smoke test ───────────────────────────────────────────────

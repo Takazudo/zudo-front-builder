@@ -51,6 +51,20 @@ impl HeadingRegistry {
         self.entries.entry(source_path).or_default().push(entry);
     }
 
+    /// Mark a source file as **tracked** without recording any heading.
+    ///
+    /// Ensures `get(source_path)` returns `Some(&[])` (an empty slice) rather
+    /// than `None` for a file that `HeadingLinksPlugin` processed but which
+    /// contained zero `h2`–`h6` headings. This is what lets
+    /// `LinkValidationPlugin` distinguish "file processed, has no headings"
+    /// (a bare `#anchor` is then definitively broken) from "file never
+    /// tracked" (registry unaware — skip to avoid false positives, e.g. the
+    /// JSX-emit cache-hit path where `HeadingLinksPlugin` never runs).
+    /// Idempotent and never clears existing entries.
+    pub fn mark_tracked(&mut self, source_path: PathBuf) {
+        self.entries.entry(source_path).or_default();
+    }
+
     /// Look up all headings recorded for the given source file.
     ///
     /// Returns `None` if no headings have been registered for that path yet.
@@ -121,5 +135,38 @@ mod tests {
         assert!(reg
             .get(std::path::Path::new("/does/not/exist.md"))
             .is_none());
+    }
+
+    #[test]
+    fn mark_tracked_makes_get_return_empty_slice_not_none() {
+        // A file processed with zero headings must be distinguishable from a
+        // never-tracked file: `get` returns `Some(&[])`, not `None` (zfb#1093).
+        let mut reg = HeadingRegistry::new();
+        let path = PathBuf::from("/docs/headingless.md");
+        assert!(reg.get(&path).is_none());
+        reg.mark_tracked(path.clone());
+        assert_eq!(reg.get(&path), Some(&[][..]));
+        // No headings were recorded, so the registry is still empty by count.
+        assert!(reg.is_empty());
+        assert_eq!(reg.len(), 0);
+    }
+
+    #[test]
+    fn mark_tracked_is_idempotent_and_preserves_entries() {
+        let mut reg = HeadingRegistry::new();
+        let path = PathBuf::from("/docs/guide.md");
+        reg.insert(
+            path.clone(),
+            HeadingEntry {
+                id: "intro".to_string(),
+                text: "Intro".to_string(),
+                depth: 2,
+            },
+        );
+        // Marking an already-populated file must not clear its entries.
+        reg.mark_tracked(path.clone());
+        let entries = reg.get(&path).expect("entries must survive mark_tracked");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "intro");
     }
 }

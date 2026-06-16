@@ -166,26 +166,24 @@ impl DirectiveRegistry {
                             i += 1;
                             continue;
                         }
-                        // A registered container name was found but no
-                        // separate closing `:::` paragraph exists.  Check
-                        // whether the opener and body were merged into a
-                        // single paragraph because the author forgot the
-                        // surrounding blank lines and emit a helpful
-                        // diagnostic.
-                        if paragraph_text_looks_merged(&children[i]) {
+                        // No separate closing `:::` paragraph exists. In
+                        // real markdown, when the fences are NOT surrounded
+                        // by blank lines, `markdown::to_mdast` collapses the
+                        // opener, body, and closing `:::` into a SINGLE
+                        // multi-line Paragraph (the opener is the first line
+                        // of the first Text child and the `:::` closer is the
+                        // last line of the last Text child). This is the
+                        // common real-world shape (issue #1090) — detect it
+                        // and transform the collapsed paragraph just like the
+                        // blank-line-separated form, matching what
+                        // `githubAlerts` does end-to-end.
+                        if let Some(inner) = collapsed_container_body(&children[i]) {
                             let (line, column) = paragraph_line_col(&children[i]);
-                            self.diagnostics.push(DirectiveDiagnostic {
-                                message: format!(
-                                    "admonition `:::{}` looks like it is missing blank lines \
-                                     around the fences — the opening `:::{name}` and closing \
-                                     `:::` must each be on their own paragraph (separated by \
-                                     blank lines) for the directive to be recognised",
-                                    parsed.name,
-                                    name = parsed.name,
-                                ),
-                                line,
-                                column,
-                            });
+                            let validated_opt = self.run_validation(&def, &parsed, line, column);
+                            let jsx = build_flow_jsx(&def, &parsed, inner, validated_opt.as_ref());
+                            children[i] = jsx;
+                            i += 1;
+                            continue;
                         }
                     }
                 } else {
@@ -645,28 +643,129 @@ fn paragraph_line_col(node: &MdastNode) -> (Option<usize>, Option<usize>) {
     (None, None)
 }
 
-/// Returns true when `node` is a paragraph whose text begins with a
-/// `:::name` directive opener AND contains a newline — indicating that
-/// the opener, body, and (optional) closing `:::` all collapsed into a
-/// single paragraph because blank lines were omitted.  This is the
-/// primary signal for the blank-line diagnostic.
-///
-/// Only inspects the first Text child; non-Text paragraphs return false
-/// so that arbitrary rich paragraphs are not misidentified.
-fn paragraph_text_looks_merged(node: &MdastNode) -> bool {
-    let MdastNode::Paragraph(p) = node else {
-        return false;
-    };
-    let Some(MdastNode::Text(t)) = p.children.first() else {
-        return false;
-    };
-    // Must have a newline (i.e. multi-line → merged).
-    if !t.value.contains('\n') {
-        return false;
+/// Strip a leading directive-opener line (and the `\n`/`\r\n` that
+/// follows it) from `value`. The opener line is the substring up to the
+/// first newline. Returns the remaining body text.
+fn strip_opener_line(value: &str) -> &str {
+    match value.find('\n') {
+        // Everything after the first `\n` is the body. Any trailing `\r`
+        // (CRLF input) belonged to the opener line, so nothing extra to
+        // strip here.
+        Some(nl) => &value[nl + 1..],
+        // No newline: the whole value was the opener — no body.
+        None => "",
     }
-    // First line must look like a container opener (`:::[a-z]…`).
-    let first = first_line(&t.value).trim_end();
-    parse_directive_line(first, 3).is_some()
+}
+
+/// Strip a trailing standalone `:::` line (and the `\n`/`\r\n` before it)
+/// from `value`. Returns `Some(remaining)` when the last line trims to
+/// exactly `:::`, else `None`.
+fn strip_closer_line(value: &str) -> Option<&str> {
+    let last_nl = value.rfind('\n');
+    match last_nl {
+        Some(nl) => {
+            let last = &value[nl + 1..];
+            if last.trim() == ":::" {
+                // Drop the `\n` and a preceding `\r` (CRLF) too.
+                let before = &value[..nl];
+                Some(before.strip_suffix('\r').unwrap_or(before))
+            } else {
+                None
+            }
+        }
+        None => {
+            // Single line: it must itself be the closer.
+            if value.trim() == ":::" {
+                Some("")
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// When `node` is a single Paragraph that collapsed a container directive
+/// (`:::name[...]` … `:::` written WITHOUT surrounding blank lines, so the
+/// markdown parser merged the opener, body, and closing `:::` into one
+/// multi-line Paragraph — issue #1090), return the directive body wrapped
+/// as JSX flow children: a `Vec` holding one body `Paragraph` (or empty
+/// when the body is blank), matching the shape the blank-line-separated
+/// form and `githubAlerts` produce. Returns `None` when `node` is not a
+/// collapsed container.
+///
+/// Detection: the FIRST child is a Text whose first line parses as a
+/// `:::name` opener, the value spans multiple lines, and the LAST child is
+/// a Text whose last line is exactly `:::`.
+fn collapsed_container_body(node: &MdastNode) -> Option<Vec<MdastNode>> {
+    let MdastNode::Paragraph(p) = node else {
+        return None;
+    };
+    // First child: Text whose first line is a `:::name` opener.
+    let MdastNode::Text(first) = p.children.first()? else {
+        return None;
+    };
+    // Must be multi-line (i.e. the parser merged the fences in).
+    if !first.value.contains('\n') {
+        return None;
+    }
+    let opener_line = first_line(&first.value).trim_end();
+    parse_directive_line(opener_line, 3)?;
+    // Last child must be a Text whose last line is exactly `:::`.
+    let MdastNode::Text(last) = p.children.last()? else {
+        return None;
+    };
+    let last_line = last.value.rsplit('\n').next().unwrap_or(&last.value);
+    if last_line.trim() != ":::" {
+        return None;
+    }
+
+    // Build the body inline nodes: clone the paragraph children, strip the
+    // opener line from the first Text and the closing `:::` line from the
+    // last Text. When first and last are the same node (single Text child),
+    // strip both from that one node.
+    let mut inline: Vec<MdastNode> = p.children.clone();
+    let n = inline.len();
+    if n == 1 {
+        if let MdastNode::Text(t) = &mut inline[0] {
+            let body = strip_opener_line(&t.value);
+            let body = strip_closer_line(body).unwrap_or(body);
+            t.value = body.to_string();
+        }
+    } else {
+        if let MdastNode::Text(t) = &mut inline[0] {
+            t.value = strip_opener_line(&t.value).to_string();
+        }
+        if let MdastNode::Text(t) = &mut inline[n - 1] {
+            if let Some(stripped) = strip_closer_line(&t.value) {
+                t.value = stripped.to_string();
+            }
+        }
+    }
+
+    // Drop leading/trailing empty Text nodes left after stripping so the
+    // body paragraph has no stray empty text runs.
+    if let Some(MdastNode::Text(t)) = inline.first() {
+        if t.value.is_empty() {
+            inline.remove(0);
+        }
+    }
+    if let Some(MdastNode::Text(t)) = inline.last() {
+        if t.value.is_empty() {
+            inline.pop();
+        }
+    }
+
+    if inline.is_empty() {
+        // Body was blank (e.g. `:::note\n:::`) — no children.
+        return Some(Vec::new());
+    }
+
+    // Wrap the remaining inline content in a Paragraph, matching the
+    // blank-line-separated form where the body is its own Paragraph node.
+    Some(vec![MdastNode::Paragraph(markdown::mdast::Paragraph {
+        children: inline,
+        position: None,
+    })])
 }
 
 // -- JSX construction ---------------------------------------------------
@@ -897,6 +996,152 @@ mod tests {
             }
         }
         None
+    }
+
+    // ---- real-parser container tests (Sub #1090) ----
+
+    /// Parse `input` with the real markdown parser, run a registry that
+    /// transforms it, and return the resulting top-level nodes. This
+    /// exercises the SAME `markdown::to_mdast` → DirectiveRegistry path a
+    /// real build uses — NOT hand-built mdast — so it reproduces the
+    /// collapsed-paragraph shape that hand-built fixtures never hit.
+    fn run_real_parser(reg: &mut DirectiveRegistry, input: &str) -> Vec<MdastNode> {
+        let mut root = markdown::to_mdast(input, &markdown::ParseOptions::mdx())
+            .expect("markdown-rs should parse the sample");
+        reg.visit(&mut root);
+        let MdastNode::Root(Root { children, .. }) = root else {
+            unreachable!("to_mdast always yields a Root")
+        };
+        children
+    }
+
+    #[test]
+    fn real_parser_transforms_container_directives_without_blank_lines() {
+        // Issue #1090 / #1085 repro: the reporter's exact markdown with NO
+        // blank lines around the fences. `markdown::to_mdast` collapses each
+        // `:::name … :::` block into a single multi-line Paragraph; before
+        // the fix the registry left them as literal `<p>:::note…</p>` text.
+        //
+        // This is the guard test: it MUST fail before the fix and pass
+        // after. It covers both the bracket title form (`:::tip[Title]`) and
+        // the space-after-name title form (`:::tip title="…"`) — the issue
+        // calls out both. (The documented title semantics are bracket-label
+        // → `title`; the space form carries the title as an explicit
+        // `title="…"` attribute, exactly like the legacy `:::details
+        // title="Click me"` form. There is no bare-word space-to-title
+        // promotion in the engine, so this test does not assert one.)
+        let mut r = registry_with_admonitions();
+        let input = "\
+:::note
+plain note body
+:::
+
+:::tip[Bracket Title]
+tip body
+:::
+
+:::tip title=\"Space Title\"
+another tip
+:::
+";
+        let out = run_real_parser(&mut r, input);
+        // Three directive blocks → three JSX flow elements (no literal text).
+        assert_eq!(
+            out.len(),
+            3,
+            "expected 3 transformed directives, got {out:#?}"
+        );
+
+        // 1. :::note → <Note> with the plain body.
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        let MdastNode::Paragraph(body) = &note.children[0] else {
+            unreachable!(
+                "note body should be a Paragraph, got {:?}",
+                note.children[0]
+            );
+        };
+        let MdastNode::Text(t) = &body.children[0] else {
+            unreachable!("note body text expected");
+        };
+        assert_eq!(t.value, "plain note body");
+
+        // 2. :::tip[Bracket Title] → <Tip title="Bracket Title">.
+        let tip_bracket = flow(&out[1]);
+        assert_eq!(tip_bracket.name.as_deref(), Some("Tip"));
+        assert_eq!(
+            attr(tip_bracket, "title").as_deref(),
+            Some("Bracket Title"),
+            "bracket label promoted to title attr"
+        );
+
+        // 3. :::tip title="Space Title" → <Tip title="Space Title"> (space
+        //    form carries the title as an explicit attribute).
+        let tip_space = flow(&out[2]);
+        assert_eq!(tip_space.name.as_deref(), Some("Tip"));
+        assert_eq!(
+            attr(tip_space, "title").as_deref(),
+            Some("Space Title"),
+            "space-form title attribute preserved"
+        );
+
+        // No diagnostics — every block is recognised and transformed.
+        assert!(
+            r.take_diagnostics().is_empty(),
+            "no diagnostics expected for well-formed collapsed directives"
+        );
+    }
+
+    #[test]
+    fn real_parser_collapsed_container_bare_space_form_transforms() {
+        // A bare space form (`:::tip heads up`) still TRANSFORMS to <Tip>
+        // (no longer literal text) — the bug was that it stayed as a
+        // `<p>:::tip…</p>` paragraph. The trailing words parse as boolean
+        // attributes (engine semantics; not a title), but the key acceptance
+        // is that the directive is recognised at all.
+        let mut r = registry_with_admonitions();
+        let out = run_real_parser(&mut r, ":::tip heads up\nbody\n:::\n");
+        assert_eq!(out.len(), 1, "got {out:#?}");
+        let tip = flow(&out[0]);
+        assert_eq!(tip.name.as_deref(), Some("Tip"));
+    }
+
+    #[test]
+    fn real_parser_blank_line_separated_form_still_transforms() {
+        // The blank-line-separated form parses to SEPARATE paragraphs (the
+        // shape the hand-built fixtures simulate). It must keep working
+        // through the real parser too.
+        let mut r = registry_with_admonitions();
+        let input = "\
+:::note
+
+separated body
+
+:::
+";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 1, "got {out:#?}");
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn real_parser_unknown_collapsed_container_left_alone_and_warned() {
+        // A collapsed `:::unknown` block whose name is NOT registered must
+        // stay as literal text and earn an unknown-directive warning — the
+        // pre-existing unknown-directive behaviour is preserved.
+        let mut r = registry_with_admonitions();
+        let input = ":::nope\nbody\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 1);
+        assert!(
+            matches!(out[0], MdastNode::Paragraph(_)),
+            "unknown directive preserved as paragraph"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "unknown-directive warning expected");
+        assert!(diags[0].message.contains("nope"));
     }
 
     // ---- container tests ----
@@ -1292,14 +1537,23 @@ mod tests {
         );
     }
 
-    // ---- blank-line diagnostic (Sub #185 Gap 2) ----
+    // ---- merged (collapsed) container transform (Sub #1090) ----
 
     #[test]
-    fn merged_container_emits_blank_line_diagnostic() {
-        // When :::note\nbody\n::: is written without blank lines, the
-        // markdown parser collapses them into a single paragraph.  The
-        // registry should emit a diagnostic suggesting the author add
-        // blank lines.
+    fn merged_container_transforms_to_jsx() {
+        // CHANGED for #1090 (was `merged_container_emits_blank_line_diagnostic`).
+        //
+        // Previously a merged `:::note\nbody\n:::` (written WITHOUT blank
+        // lines around the fences — the shape `markdown::to_mdast` actually
+        // produces for real input) was left untransformed and only earned a
+        // "missing blank lines" diagnostic. That diverged from `githubAlerts`,
+        // which transforms the same no-blank-line shape end-to-end, and meant
+        // every container directive in a real build rendered as literal text.
+        //
+        // After the fix the collapsed single-Paragraph form TRANSFORMS, so
+        // this test asserts the new behaviour (transform, no diagnostic)
+        // instead of the old diagnostic. The assertion is updated, not
+        // deleted: the merged form is now handled, not flagged.
         let mut r = registry_with_admonitions();
         // Simulate the merged paragraph: first Text child has the full
         // un-blank-lined content as a single multi-line value.
@@ -1311,25 +1565,23 @@ mod tests {
             position: None,
         });
         let out = run_with_registry(&mut r, vec![merged_para]);
-        // Source is preserved (not converted — no separate close para).
+        // The collapsed paragraph is now rewritten to a <Note> flow element.
         assert_eq!(out.len(), 1);
-        assert!(matches!(out[0], MdastNode::Paragraph(_)));
-        // A diagnostic must be emitted.
-        let diags = r.take_diagnostics();
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly one diagnostic, got {diags:?}"
-        );
+        let j = flow(&out[0]);
+        assert_eq!(j.name.as_deref(), Some("Note"));
+        // The body becomes a single paragraph child.
+        assert_eq!(j.children.len(), 1, "body wrapped in one paragraph");
+        let MdastNode::Paragraph(body) = &j.children[0] else {
+            unreachable!("expected body Paragraph, got {:?}", j.children[0]);
+        };
+        let MdastNode::Text(t) = &body.children[0] else {
+            unreachable!("expected body Text, got {:?}", body.children[0]);
+        };
+        assert_eq!(t.value, "body text");
+        // No diagnostic — the form is handled, not flagged.
         assert!(
-            diags[0].message.contains("blank lines"),
-            "diagnostic should mention blank lines, got: {:?}",
-            diags[0].message
-        );
-        assert!(
-            diags[0].message.contains("note"),
-            "diagnostic should mention directive name, got: {:?}",
-            diags[0].message
+            r.take_diagnostics().is_empty(),
+            "merged container now transforms; no diagnostic expected"
         );
     }
 

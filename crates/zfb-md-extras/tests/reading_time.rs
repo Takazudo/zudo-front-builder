@@ -88,11 +88,11 @@ fn short_article_minimum_1_minute() {
 #[test]
 fn disabled_does_not_append_esm_node() {
     use zfb_content::pipeline::Pipeline;
-    use zfb_md_ast::FeatureToggle;
+    use zfb_md_ast::ReadingTimeFeature;
     use zfb_md_extras::MarkdownFeaturesConfig;
 
     let features = MarkdownFeaturesConfig {
-        reading_time: Some(FeatureToggle::Bool(false)),
+        reading_time: Some(ReadingTimeFeature::Bool(false)),
         ..Default::default()
     };
     let mut p = Pipeline::with_defaults_and_features(&features);
@@ -110,7 +110,7 @@ fn enabled_injects_export_in_mdast() {
     use zfb_md_ast::MdastVisitor;
     use zfb_md_extras::reading_time::ReadingTimePlugin;
 
-    let words: String = std::iter::repeat("word ").take(200).collect();
+    let words: String = "word ".repeat(200);
     let mut node = to_mdast(&words, &markdown::ParseOptions::default()).unwrap();
     ReadingTimePlugin::new().visit(&mut node);
 
@@ -139,12 +139,12 @@ fn enabled_injects_export_in_mdast() {
 fn jsx_module_contains_reading_time_export() {
     use zfb_content::mdx_jsx_emit::{mdx_to_jsx_module_with_pipeline, MdxJsxOptions};
     use zfb_content::pipeline::Pipeline;
-    use zfb_md_ast::FeatureToggle;
+    use zfb_md_ast::ReadingTimeFeature;
     use zfb_md_extras::MarkdownFeaturesConfig;
 
-    let words: String = std::iter::repeat("word ").take(200).collect();
+    let words: String = "word ".repeat(200);
     let features = MarkdownFeaturesConfig {
-        reading_time: Some(FeatureToggle::Bool(true)),
+        reading_time: Some(ReadingTimeFeature::Bool(true)),
         ..Default::default()
     };
     let mut pipeline = Pipeline::with_defaults_and_features(&features);

@@ -155,6 +155,19 @@ jobs:
       # preact/jsx-runtime islands alias guards — were local-only (issue #638).
       - run: cargo test --workspace
 
+      # Run the zfb-md-extras integration suite gated behind the `test-utils`
+      # feature (issue #1091). The `test-utils` feature is not in the default
+      # feature set, so `cargo test --workspace` above silently skips every
+      # [[test]] target carrying `required-features = ["test-utils"]`. Using the
+      # scoped `-p zfb-md-extras` form because `test-utils` exists only on this
+      # crate — `--workspace --features test-utils` would error on other members
+      # that have no such feature.
+      - run: cargo test -p zfb-md-extras --features test-utils
+
+      # Lint the test-utils-gated targets (they are excluded from the workspace
+      # clippy step above for the same reason as cargo test).
+      - run: cargo clippy -p zfb-md-extras --features test-utils --all-targets -- -D warnings
+
       - name: actionlint
         uses: docker://rhysd/actionlint:1.7.12
 

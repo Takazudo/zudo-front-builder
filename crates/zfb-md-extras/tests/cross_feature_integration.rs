@@ -49,7 +49,8 @@ use zfb_md_ast::{
     heading_registry::HeadingRegistry,
     BuildContext, CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind,
     FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
-    LinkValidationConfig, MarkdownFeaturesConfig, TocConfig, TocExportConfig, TranscludeConfig,
+    LinkValidationConfig, MarkdownFeaturesConfig, ReadingTimeFeature, TocConfig, TocExportConfig,
+    TranscludeConfig,
 };
 
 // ── Case 1: transclude + link_validation ────────────────────────────────────
@@ -515,7 +516,7 @@ fn all_features_on_does_not_crash() {
             max_depth: 2,
         })),
         github_alerts: Some(FeatureToggle::Bool(true)),
-        reading_time: Some(FeatureToggle::Bool(true)),
+        reading_time: Some(ReadingTimeFeature::Bool(true)),
         github_autolinks: Some(GithubAutolinksConfig {
             repo: Some("owner/repo".to_string()),
         }),
@@ -526,6 +527,7 @@ fn all_features_on_does_not_crash() {
         image_dimensions: Some(ImageDimensionsConfig::default()),
         link_validation: Some(LinkValidationConfig::default()),
         transclude: Some(TranscludeConfig::default()),
+        heading_ids: None,
     };
 
     let mut pipeline = Pipeline::with_defaults_and_features(&features);
