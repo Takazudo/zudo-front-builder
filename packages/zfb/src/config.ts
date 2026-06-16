@@ -778,13 +778,23 @@ export type TocExportConfig = {
 };
 
 /**
- * Options stub for the `imageDimensions` feature.
+ * Options for the `imageDimensions` feature.
  *
- * TODO: fill in actual fields when the imageDimensions feature is ported.
+ * Auto-detects and injects `width`/`height` on local `<img>` elements. Raster
+ * formats are probed header-only; SVGs are read from their markup
+ * (`width`/`height`/`viewBox`).
  *
- * Mirrors `ImageDimensionsConfig` in crates/zfb/src/config.rs.
+ * Mirrors `ImageDimensionsConfig` in crates/zfb-md-ast/src/features_config.rs.
  */
-export type ImageDimensionsConfig = Record<string, never>;
+export type ImageDimensionsConfig = {
+  /**
+   * When `true` (the default), `http://` and `https://` image sources are
+   * silently skipped and not probed for dimensions. Set to `false` only for
+   * testing or unusual setups — remote images require network access at build
+   * time and slow the pipeline.
+   */
+  skipRemote?: boolean;
+};
 
 /**
  * Options for the `linkValidation` feature.
