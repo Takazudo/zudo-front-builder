@@ -17,7 +17,7 @@
 
 import { createServer } from "node:http";
 import { createReadStream, statSync } from "node:fs";
-import { join, extname } from "node:path";
+import { join, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
@@ -41,6 +41,15 @@ function mime(filepath) {
   return MIME[extname(filepath)] ?? "application/octet-stream";
 }
 
+// Join `rel` onto `baseDir` but reject anything that escapes it (path
+// traversal, e.g. /dist/../../etc/passwd). `join` normalises the `..` segments,
+// so a contained path always stays under `baseDir + sep`.
+function safeJoin(baseDir, rel) {
+  const target = join(baseDir, rel);
+  if (target !== baseDir && !target.startsWith(baseDir + sep)) return null;
+  return target;
+}
+
 function tryServe(res, filepath) {
   try {
     const stat = statSync(filepath);
@@ -59,14 +68,15 @@ const server = createServer((req, res) => {
 
   // /dist/* -> packages/zfb-runtime/dist/*
   if (pathname.startsWith("/dist/")) {
-    const rel = pathname.slice("/dist/".length);
-    if (tryServe(res, join(DIST_DIR, rel))) return;
+    const target = safeJoin(DIST_DIR, pathname.slice("/dist/".length));
+    if (target && tryServe(res, target)) return;
   }
 
   // / or /foo.html -> fixture/*
   // Normalise bare / to /index.html
   if (pathname === "/") pathname = "/index.html";
-  if (tryServe(res, join(FIXTURE_DIR, pathname.slice(1)))) return;
+  const fxTarget = safeJoin(FIXTURE_DIR, pathname.slice(1));
+  if (fxTarget && tryServe(res, fxTarget)) return;
 
   res.writeHead(404, { "Content-Type": "text/plain" });
   res.end(`404 Not Found: ${pathname}`);

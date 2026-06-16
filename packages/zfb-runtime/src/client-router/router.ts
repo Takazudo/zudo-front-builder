@@ -758,13 +758,13 @@ function onPopState(ev: PopStateEvent) {
 }
 
 // Decide forward vs back from the popped entry's index against the last
-// tracked index. The naive `next > current` misclassifies two desync cases a
-// WebKit bfcache restore can produce, so handle them explicitly:
-//   - missing / NaN `next` (restored entry lost its index): we cannot prove a
-//     forward move, so treat it as "back" (the safe default — a forward
-//     misclassification is what makes Back skip to the wrong page).
-//   - `next === current` (index unchanged after a desync/replace): not a
-//     forward navigation; treat as "back".
+// tracked index. Two desync cases a WebKit bfcache restore can produce:
+//   - missing / NaN `next` (restored entry lost its index): handled explicitly
+//     below — we cannot prove a forward move, so treat it as "back" (the safe
+//     default; a forward misclassification is what makes Back skip to the wrong
+//     page).
+//   - `next === current` (index unchanged after a desync/replace): falls out of
+//     the `>` comparison as "back" — not a forward navigation.
 function derivePopDirection(nextIndex: number, trackedIndex: number): Direction {
   if (!Number.isFinite(nextIndex)) return "back";
   return nextIndex > trackedIndex ? "forward" : "back";
@@ -787,14 +787,18 @@ const onScrollEnd = () => {
 // seed below (which sets `currentHistoryIndex` from `history.state.index`)
 // never re-runs and the tracked index can desync from the live history stack.
 // A desynced index makes onPopState's direction calc misfire, so Back skips an
-// entry. On a persisted (bfcache) restore we re-seed the tracked index from the
-// live `history.state.index` and restore scroll — mirroring the init-block
-// seed. This is a no-op on a normal load (`persisted` falsy/absent) and
-// idempotent (re-seeding from the same state twice changes nothing and fires no
-// transition).
+// entry. On a persisted (bfcache) restore we re-seed the tracked index and the
+// `originalLocation` "from" URL from the live state, and restore scroll —
+// mirroring the init-block seed. This is a no-op on a normal load (`persisted`
+// falsy/absent) and idempotent (re-seeding from the same state twice changes
+// nothing and fires no transition).
 const onPageShow = (ev: PageTransitionEvent) => {
   // Normal (non-bfcache) loads already ran the init-block seed; leave them be.
   if (!ev.persisted) return;
+  // The init block sets `originalLocation` and `currentHistoryIndex` together;
+  // re-sync both here so the next transition() gets the correct `from` URL
+  // (a stale `originalLocation` would feed onPopState the wrong origin).
+  originalLocation = new URL(location.href);
   const index = history.state?.index;
   if (Number.isFinite(index)) {
     currentHistoryIndex = index;
