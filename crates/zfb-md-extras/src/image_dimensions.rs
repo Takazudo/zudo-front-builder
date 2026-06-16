@@ -217,16 +217,23 @@ fn try_inject_dimensions(
 
     // Containment guard: reject paths that escape the expected root directory.
     // Absolute `/…` srcs are resolved into `public_dir`; relative srcs into
-    // `project_root`. Lexically normalize to collapse any `..` components
-    // injected via crafted src values (e.g. `../../etc/hosts`).
+    // `project_root`. Lexically normalize BOTH sides to collapse any `..`/`.`
+    // components — both those injected via crafted src values (e.g.
+    // `../../etc/hosts`) AND any `..` carried by the configured root itself
+    // (e.g. `project_root = <fixtures>/..`). Comparing in normalized form is
+    // what keeps the guard correct: a candidate that lexically resolves
+    // outside the normalized root is still rejected; the normalization only
+    // prevents a legitimately-contained candidate from being wrongly skipped
+    // because the un-normalized root carried a `..`.
     let is_absolute_src = src.starts_with('/');
     let expected_root = if is_absolute_src {
         &ctx.public_dir
     } else {
         &ctx.project_root
     };
+    let normalized_root = normalize_path_lexical(expected_root);
     let normalized = normalize_path_lexical(&abs_path);
-    if !normalized.starts_with(expected_root) {
+    if !normalized.starts_with(&normalized_root) {
         emit_warning(
             ctx,
             format!(
