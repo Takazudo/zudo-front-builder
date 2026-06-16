@@ -353,12 +353,18 @@ fn validate_link(href: &str, env: &ValidationEnv<'_>, ctx: &mut BuildContext<'_>
     }
 }
 
-/// Validate a bare `#fragment` against the current file's heading registry.
+/// Validate a bare `#fragment` against the current file's heading registry
+/// and explicit-anchor-id store.
 ///
 /// No filesystem read happens here (zfb#944 audit): the fragment is
 /// checked against the in-memory registry, whose entries for the CURRENT
 /// file derive from the compile input itself — already covered by the
 /// compile cache's input hash — so there is nothing to record.
+///
+/// A `BrokenLink` is emitted only when BOTH the heading-id lookup AND the
+/// explicit-anchor-id lookup miss, so legitimate non-heading targets
+/// (e.g. `<div id="foo">`, `<a name="foo">`) recorded by
+/// `HeadingLinksPlugin` do not produce false positives (#1095).
 fn validate_fragment_in_file(
     raw_href: &str,
     fragment: &str,
@@ -377,9 +383,18 @@ fn validate_fragment_in_file(
         None => return, // no registry entry for this file → cannot distinguish
                         // "file has no headings" from "file not tracked" → skip
     };
-    if !entries.iter().any(|e| e.id == fragment) {
-        emit_broken_link(raw_href, env, ctx);
+    // Accept the fragment if it matches any heading id OR any explicit anchor id.
+    if entries.iter().any(|e| e.id == fragment) {
+        return;
     }
+    if ctx
+        .heading_registry
+        .as_ref()
+        .is_some_and(|r| r.has_anchor(env.source_path, fragment))
+    {
+        return;
+    }
+    emit_broken_link(raw_href, env, ctx);
 }
 
 /// Validate that a file-only reference (`./other.md`) exists on disk and

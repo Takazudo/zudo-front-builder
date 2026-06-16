@@ -8,7 +8,7 @@
 //! Zero-cost for non-validating callers: when no registry is passed in the
 //! `BuildContext`, `HeadingLinksPlugin` makes no registry calls at all.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// A single heading entry recorded by `HeadingLinksPlugin`.
@@ -33,6 +33,16 @@ pub struct HeadingEntry {
 #[derive(Debug, Default)]
 pub struct HeadingRegistry {
     entries: HashMap<PathBuf, Vec<HeadingEntry>>,
+    /// Explicit (non-heading) anchor ids recorded per source file.
+    ///
+    /// Populated by `HeadingLinksPlugin` for every `Element` carrying an `id`
+    /// attribute (e.g. `<div id="foo">`) and every `<a name="…">` anchor. This
+    /// is a separate store from `entries` because it must be queryable even for
+    /// files that have zero headings — the `mark_tracked` / `get` contract on
+    /// `entries` only tells the validator whether the file was processed, while
+    /// `anchor_ids` independently tells it whether a specific non-heading id
+    /// exists. See issue #1095.
+    anchor_ids: HashMap<PathBuf, HashSet<String>>,
 }
 
 impl HeadingRegistry {
@@ -63,6 +73,39 @@ impl HeadingRegistry {
     /// Idempotent and never clears existing entries.
     pub fn mark_tracked(&mut self, source_path: PathBuf) {
         self.entries.entry(source_path).or_default();
+    }
+
+    /// Record a non-heading explicit anchor `id` for `source_path`.
+    ///
+    /// Called by `HeadingLinksPlugin` for every hast `Element` whose `id`
+    /// attribute was NOT set by heading-slug logic (all non-`h2`–`h6` elements
+    /// with an explicit `id`), and for every `<a name="…">` element. This lets
+    /// `LinkValidationPlugin` accept `#foo` in a headingless file when a
+    /// `<div id="foo">` or `<a name="foo">` is present, without reporting a
+    /// false-positive `BrokenLink`.
+    ///
+    /// The store is path-keyed and independent from `entries` so a file with
+    /// zero headings can still have anchor ids recorded. Idempotent for
+    /// duplicate ids within the same file.
+    ///
+    /// NOTE: Raw-HTML elements (`<div id="x">` written as literal HTML inside
+    /// markdown) and GFM footnote back-reference anchors (`id="user-content-fn-1"`)
+    /// arrive as `HastNode::Raw` (opaque strings) at the point `HeadingLinksPlugin`
+    /// walks — they are NOT structured `Element` nodes and therefore cannot be
+    /// recorded here. See the known limitation comment in `heading_links.rs`.
+    pub fn insert_anchor_id(&mut self, source_path: PathBuf, id: String) {
+        self.anchor_ids.entry(source_path).or_default().insert(id);
+    }
+
+    /// Return `true` if `id` was recorded as an explicit anchor in `source_path`.
+    ///
+    /// Returns `false` for unknown paths and unknown ids alike, so callers can
+    /// use a simple boolean gate rather than an `Option` chain.
+    #[must_use]
+    pub fn has_anchor(&self, source_path: &std::path::Path, id: &str) -> bool {
+        self.anchor_ids
+            .get(source_path)
+            .is_some_and(|ids| ids.contains(id))
     }
 
     /// Look up all headings recorded for the given source file.
@@ -149,6 +192,54 @@ mod tests {
         // No headings were recorded, so the registry is still empty by count.
         assert!(reg.is_empty());
         assert_eq!(reg.len(), 0);
+    }
+
+    // ── anchor_ids store ──────────────────────────────────────────────────────
+
+    #[test]
+    fn insert_anchor_id_and_has_anchor() {
+        let mut reg = HeadingRegistry::new();
+        let path = PathBuf::from("/docs/headingless.md");
+        // Unknown path + unknown id → false before any insert.
+        assert!(!reg.has_anchor(&path, "foo"));
+        reg.insert_anchor_id(path.clone(), "foo".to_string());
+        assert!(reg.has_anchor(&path, "foo"));
+        // Different id on the same path → still false.
+        assert!(!reg.has_anchor(&path, "bar"));
+        // Multiple ids on the same path.
+        reg.insert_anchor_id(path.clone(), "bar".to_string());
+        assert!(reg.has_anchor(&path, "bar"));
+    }
+
+    #[test]
+    fn has_anchor_unknown_path_returns_false() {
+        let reg = HeadingRegistry::new();
+        assert!(!reg.has_anchor(std::path::Path::new("/does/not/exist.md"), "any"));
+    }
+
+    #[test]
+    fn insert_anchor_id_is_idempotent() {
+        let mut reg = HeadingRegistry::new();
+        let path = PathBuf::from("/docs/page.md");
+        reg.insert_anchor_id(path.clone(), "foo".to_string());
+        reg.insert_anchor_id(path.clone(), "foo".to_string()); // duplicate — no panic
+        assert!(reg.has_anchor(&path, "foo"));
+    }
+
+    #[test]
+    fn anchor_ids_independent_from_heading_entries() {
+        // A file can have anchor ids without any heading entries (and vice versa).
+        let mut reg = HeadingRegistry::new();
+        let path = PathBuf::from("/docs/headingless.md");
+        reg.mark_tracked(path.clone());
+        reg.insert_anchor_id(path.clone(), "section".to_string());
+        // get() still returns Some(&[]) — no headings.
+        assert_eq!(reg.get(&path), Some(&[][..]));
+        // has_anchor correctly returns true for the registered id.
+        assert!(reg.has_anchor(&path, "section"));
+        // len() / is_empty() count only heading entries, unaffected.
+        assert_eq!(reg.len(), 0);
+        assert!(reg.is_empty());
     }
 
     #[test]

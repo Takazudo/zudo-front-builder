@@ -602,3 +602,213 @@ fn query_string_file_link_validates_path_only() {
         "query-string file link with existing target must not emit diagnostic: {diags:?}"
     );
 }
+
+// ── Fixture 17: bare anchor to explicit element id (#1095) ───────────────────
+
+/// In a headingless file, `[x](#foo)` where the hast tree contains an element
+/// with `id="foo"` (e.g. a `<div id="foo">` produced by a MDX JSX element)
+/// must NOT emit a `BrokenLink` diagnostic.
+///
+/// The pipeline passes through `HeadingLinksPlugin` (which records the id in
+/// `anchor_ids`) before `LinkValidationPlugin` runs.
+#[test]
+fn bare_anchor_to_explicit_element_id_no_diagnostic() {
+    use zfb_content::pipeline::{BuildContext, HastNode, HastVisitor};
+    use zfb_content::plugins::heading_links::HeadingLinksPlugin;
+    use zfb_md_extras::link_validation::LinkValidationPlugin;
+
+    let source = PathBuf::from("/project/docs/headingless.md");
+    let mut registry = HeadingRegistry::new();
+    let mut sink = CollectingSink::new();
+
+    // Hast tree: <div id="foo">...</div> + <a href="#foo">link</a>
+    // The <div> is a non-heading element with an explicit id — simulates
+    // a MDX component or custom element that renders with an id attribute.
+    let mut tree = HastNode::Root {
+        children: vec![
+            HastNode::Element {
+                tag: "div".to_string(),
+                attrs: vec![("id".to_string(), "foo".to_string())],
+                children: vec![HastNode::Text("content".to_string())],
+                void: false,
+            },
+            HastNode::Element {
+                tag: "a".to_string(),
+                attrs: vec![("href".to_string(), "#foo".to_string())],
+                children: vec![HastNode::Text("link".to_string())],
+                void: false,
+            },
+        ],
+    };
+
+    let mut ctx = BuildContext {
+        source_path: Some(source.clone()),
+        project_root: PathBuf::from("/project"),
+        public_dir: PathBuf::from("/project/public"),
+        heading_registry: Some(&mut registry),
+        diagnostics: Some(&mut sink),
+        cross_file_links: None,
+    };
+
+    // Run HeadingLinksPlugin first (records anchor ids into the registry).
+    HeadingLinksPlugin::new().visit_with_context(&mut tree, &mut ctx);
+    // Then run LinkValidationPlugin (consults the registry).
+    let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    let diags = sink.take();
+    assert!(
+        diags.is_empty(),
+        "bare anchor to explicit element id must not emit BrokenLink: {diags:?}"
+    );
+}
+
+// ── Fixture 18: genuinely broken bare anchor in headingless file (#1095) ─────
+
+/// A headingless file with `[x](#nonexistent)` where NO element has `id="nonexistent"`
+/// must STILL emit `BrokenLink` — the fix must not suppress valid diagnostics.
+#[test]
+fn bare_broken_anchor_in_headingless_file_emits_diagnostic() {
+    use zfb_content::pipeline::{BuildContext, HastNode, HastVisitor};
+    use zfb_content::plugins::heading_links::HeadingLinksPlugin;
+    use zfb_md_extras::link_validation::LinkValidationPlugin;
+
+    let source = PathBuf::from("/project/docs/headingless.md");
+    let mut registry = HeadingRegistry::new();
+    let mut sink = CollectingSink::new();
+
+    // The file has a div with a DIFFERENT id, plus a broken anchor.
+    let mut tree = HastNode::Root {
+        children: vec![
+            HastNode::Element {
+                tag: "div".to_string(),
+                attrs: vec![("id".to_string(), "other".to_string())],
+                children: vec![],
+                void: false,
+            },
+            HastNode::Element {
+                tag: "a".to_string(),
+                attrs: vec![("href".to_string(), "#nonexistent".to_string())],
+                children: vec![HastNode::Text("bad link".to_string())],
+                void: false,
+            },
+        ],
+    };
+
+    let mut ctx = BuildContext {
+        source_path: Some(source.clone()),
+        project_root: PathBuf::from("/project"),
+        public_dir: PathBuf::from("/project/public"),
+        heading_registry: Some(&mut registry),
+        diagnostics: Some(&mut sink),
+        cross_file_links: None,
+    };
+
+    HeadingLinksPlugin::new().visit_with_context(&mut tree, &mut ctx);
+    let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    let diags = sink.take();
+    assert_eq!(
+        diags.len(),
+        1,
+        "genuinely broken bare anchor must still emit BrokenLink: {diags:?}"
+    );
+    assert!(
+        matches!(&diags[0], MarkdownDiagnostic::BrokenLink { url, .. } if url == "#nonexistent"),
+        "diagnostic url must be the raw href: {diags:?}"
+    );
+}
+
+// ── Fixture 19: bare anchor to `<a name="…">` (#1095) ────────────────────────
+
+/// An `<a name="section">` legacy named anchor in a headingless file:
+/// `[x](#section)` must NOT emit a `BrokenLink`.
+#[test]
+fn bare_anchor_to_a_name_no_diagnostic() {
+    use zfb_content::pipeline::{BuildContext, HastNode, HastVisitor};
+    use zfb_content::plugins::heading_links::HeadingLinksPlugin;
+    use zfb_md_extras::link_validation::LinkValidationPlugin;
+
+    let source = PathBuf::from("/project/docs/headingless.md");
+    let mut registry = HeadingRegistry::new();
+    let mut sink = CollectingSink::new();
+
+    // `<a name="section">` followed by a link to `#section`.
+    let mut tree = HastNode::Root {
+        children: vec![
+            HastNode::Element {
+                tag: "a".to_string(),
+                attrs: vec![("name".to_string(), "section".to_string())],
+                children: vec![],
+                void: false,
+            },
+            HastNode::Element {
+                tag: "a".to_string(),
+                attrs: vec![("href".to_string(), "#section".to_string())],
+                children: vec![HastNode::Text("link".to_string())],
+                void: false,
+            },
+        ],
+    };
+
+    let mut ctx = BuildContext {
+        source_path: Some(source.clone()),
+        project_root: PathBuf::from("/project"),
+        public_dir: PathBuf::from("/project/public"),
+        heading_registry: Some(&mut registry),
+        diagnostics: Some(&mut sink),
+        cross_file_links: None,
+    };
+
+    HeadingLinksPlugin::new().visit_with_context(&mut tree, &mut ctx);
+    let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    let diags = sink.take();
+    assert!(
+        diags.is_empty(),
+        "bare anchor to <a name> must not emit BrokenLink: {diags:?}"
+    );
+}
+
+// ── Fixture 20: heading-bearing file unaffected (#1095) ──────────────────────
+
+/// A file WITH headings plus an explicit element id: both kinds of anchor
+/// should work, and broken ones should still fail. Ensures the #1095 fix
+/// does not alter behaviour for heading-bearing files.
+#[test]
+fn heading_file_with_element_id_both_accepted() {
+    let source = PathBuf::from("/project/docs/page.md");
+    let mut registry = HeadingRegistry::new();
+    // Pre-populate a heading entry for the source file.
+    registry.insert(
+        source.clone(),
+        HeadingEntry {
+            id: "introduction".to_string(),
+            text: "Introduction".to_string(),
+            depth: 2,
+        },
+    );
+    // Also record an explicit anchor id (as HeadingLinksPlugin would).
+    registry.insert_anchor_id(source.clone(), "custom-section".to_string());
+
+    // Both `#introduction` (heading) and `#custom-section` (explicit id) must pass.
+    let md = "[a](#introduction)\n\n[b](#custom-section)\n\n[c](#broken)\n";
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert_eq!(
+        diags.len(),
+        1,
+        "only the genuinely broken anchor must produce a diagnostic: {diags:?}"
+    );
+    assert!(
+        matches!(&diags[0], MarkdownDiagnostic::BrokenLink { url, .. } if url == "#broken"),
+        "diagnostic url must be #broken: {diags:?}"
+    );
+}
