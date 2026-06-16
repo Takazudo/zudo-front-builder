@@ -482,6 +482,147 @@ fn cache_hit_on_second_reference() {
     }
 }
 
+// ── acceptance: SVG dimensions (#1083) ────────────────────────────────────────
+
+/// `<img src="/sample-svg-wh.svg">` with explicit `width`/`height` → injected.
+#[test]
+fn injects_dimensions_svg_explicit_wh() {
+    let fixtures = fixtures_path();
+    let mut plugin = ImageDimensionsPlugin::new(ImageDimensionsConfig::default());
+    let mut tree = root_with_img("/sample-svg-wh.svg");
+    let mut ctx = BuildContext::for_paths(
+        fixtures.join("fake-doc.mdx"),
+        fixtures.clone(),
+        fixtures.clone(),
+    );
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    let img = first_img(&tree);
+    assert_eq!(get_attr(img, "width"), Some("120"), "SVG width must be 120");
+    assert_eq!(get_attr(img, "height"), Some("80"), "SVG height must be 80");
+}
+
+/// An SVG with only a `viewBox` → dimensions taken from the viewBox.
+#[test]
+fn injects_dimensions_svg_viewbox_only() {
+    let fixtures = fixtures_path();
+    let mut plugin = ImageDimensionsPlugin::new(ImageDimensionsConfig::default());
+    let mut tree = root_with_img("/sample-svg-viewbox.svg");
+    let mut ctx = BuildContext::for_paths(
+        fixtures.join("fake-doc.mdx"),
+        fixtures.clone(),
+        fixtures.clone(),
+    );
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    let img = first_img(&tree);
+    assert_eq!(
+        get_attr(img, "width"),
+        Some("200"),
+        "viewBox width must be 200"
+    );
+    assert_eq!(
+        get_attr(img, "height"),
+        Some("100"),
+        "viewBox height must be 100"
+    );
+}
+
+/// KiCad/Inkscape-style export: physical `mm` width/height alongside a
+/// user-unit `viewBox` → falls back to the viewBox (aspect ratio preserved).
+#[test]
+fn injects_dimensions_svg_units_fall_back_to_viewbox() {
+    let fixtures = fixtures_path();
+    let mut plugin = ImageDimensionsPlugin::new(ImageDimensionsConfig::default());
+    let mut tree = root_with_img("/sample-svg-units.svg");
+    let mut ctx = BuildContext::for_paths(
+        fixtures.join("fake-doc.mdx"),
+        fixtures.clone(),
+        fixtures.clone(),
+    );
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    let img = first_img(&tree);
+    assert_eq!(
+        get_attr(img, "width"),
+        Some("210"),
+        "viewBox width must be 210"
+    );
+    assert_eq!(
+        get_attr(img, "height"),
+        Some("297"),
+        "viewBox height must be 297"
+    );
+}
+
+/// The core of #1083: an SVG with no determinable intrinsic dimensions must be
+/// left unchanged and emit **zero** diagnostics — no more per-SVG warning noise.
+#[test]
+fn svg_without_dimensions_emits_no_warning() {
+    let fixtures = fixtures_path();
+    let mut plugin = ImageDimensionsPlugin::new(ImageDimensionsConfig::default());
+    let mut tree = root_with_img("/sample-svg-nodims.svg");
+    let mut sink = CollectingSink::new();
+    let mut ctx = BuildContext {
+        source_path: Some(fixtures.join("fake-doc.mdx")),
+        project_root: fixtures.clone(),
+        public_dir: fixtures.clone(),
+        heading_registry: None,
+        diagnostics: Some(&mut sink),
+        cross_file_links: None,
+    };
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    assert!(
+        sink.take().is_empty(),
+        "an undimensionable SVG must emit no diagnostics (#1083)"
+    );
+    let img = first_img(&tree);
+    assert_eq!(
+        get_attr(img, "width"),
+        None,
+        "no width for dimensionless SVG"
+    );
+    assert_eq!(
+        get_attr(img, "height"),
+        None,
+        "no height for dimensionless SVG"
+    );
+}
+
+/// Two `<img>` referencing the same SVG must read it from disk only once — the
+/// SVG path participates in the mtime cache and `read_count` instrumentation.
+#[test]
+fn svg_cache_hit_on_second_reference() {
+    let fixtures = fixtures_path();
+    let mut plugin = ImageDimensionsPlugin::new(ImageDimensionsConfig::default());
+    let mut tree = HastNode::Root {
+        children: vec![
+            img_node("/sample-svg-wh.svg"),
+            img_node("/sample-svg-wh.svg"),
+        ],
+    };
+    let mut ctx = BuildContext::for_paths(
+        fixtures.join("fake-doc.mdx"),
+        fixtures.clone(),
+        fixtures.clone(),
+    );
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    assert_eq!(
+        plugin.read_count(),
+        1,
+        "second SVG reference must hit the cache (read_count must be 1)"
+    );
+    let HastNode::Root { children } = &tree else {
+        panic!()
+    };
+    for (i, child) in children.iter().enumerate() {
+        assert_eq!(get_attr(child, "width"), Some("120"), "img[{i}] width");
+        assert_eq!(get_attr(child, "height"), Some("80"), "img[{i}] height");
+    }
+}
+
 // ── feature-disabled smoke test ───────────────────────────────────────────────
 
 /// When `imageDimensions` is absent, plain `<img>` elements are passed through.
