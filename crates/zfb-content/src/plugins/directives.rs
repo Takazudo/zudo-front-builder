@@ -347,8 +347,16 @@ impl DirectiveRegistry {
                                 prose_start = i;
                                 continue;
                             }
-                            // Registered but not a container: leave the run as
-                            // literal prose (no warn — known name, wrong kind).
+                            // Registered but not a container (wrong kind): keep
+                            // the ENTIRE opener..=closer run literal — skip past
+                            // the closer so a KNOWN directive nested inside the
+                            // wrong-kind wrapper is not re-scanned and leaked out
+                            // transformed mid-prose (zfb#1094 review C1). These
+                            // lines stay in the pending prose run and are flushed
+                            // verbatim (or the whole paragraph is left alone when
+                            // nothing else in it is recognised).
+                            i = close_idx + 1;
+                            continue;
                         } else {
                             // Unknown directive name. The opener..=closer lines
                             // stay as literal prose; warn exactly once. (The
@@ -364,8 +372,14 @@ impl DirectiveRegistry {
                                 column: col_no,
                             });
                             recognised_any = true;
-                            // Fall through: the lines remain part of prose_start
-                            // run and are flushed as literal text below.
+                            // Skip past the closer: the whole unknown run stays
+                            // literal prose. Without this, a KNOWN directive
+                            // nested inside the unknown wrapper would be
+                            // re-scanned and transformed mid-prose, splitting the
+                            // literal `:::::name`/`:::::` around it (zfb#1094
+                            // review C1).
+                            i = close_idx + 1;
+                            continue;
                         }
                     }
                 }
@@ -1637,6 +1651,51 @@ separated body
             "exactly one unknown-directive warning, got {diags:#?}"
         );
         assert!(diags[0].message.contains("bogus"));
+    }
+
+    #[test]
+    fn real_parser_collapsed_unknown_outer_keeps_known_inner_literal() {
+        // zfb#1094 review C1: an UNKNOWN outer fence wrapping a KNOWN inner
+        // directive must keep the WHOLE run literal — the inner `:::note` must
+        // NOT leak out transformed mid-prose (splitting the literal
+        // `:::::bogus`/`:::::` around a real <Note>). Before the fix the unknown
+        // branch fell through into the body and re-scanned the inner opener.
+        let mut r = registry_with_admonitions();
+        let out = run_real_parser(&mut r, ":::::bogus\n:::note\nA\n:::\n:::::\n");
+        let has_jsx = out
+            .iter()
+            .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_)));
+        assert!(
+            !has_jsx,
+            "inner known directive must stay literal inside an unknown wrapper, got {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one unknown warning, got {diags:#?}"
+        );
+        assert!(diags[0].message.contains("bogus"));
+    }
+
+    #[test]
+    fn real_parser_collapsed_closer_with_more_colons_still_closes() {
+        // zfb#1094 review C2 (pin behavior): a closer with MORE colons than its
+        // opener still closes it — the colon-count rule is "a closer of k
+        // colons closes the innermost open fence whose opener colon-count
+        // <= k". This leniency is what makes nested fences (outer uses more
+        // colons) work, so `:::note\nA\n:::::` transforms to <Note> rather than
+        // being left literal. Documented + pinned so it is intended, not
+        // incidental.
+        let mut r = registry_with_admonitions();
+        let out = run_real_parser(&mut r, ":::note\nA\n:::::\n");
+        assert_eq!(out.len(), 1, "got {out:#?}");
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        assert!(
+            r.take_diagnostics().is_empty(),
+            "lenient closer is accepted without diagnostics"
+        );
     }
 
     // ---- container tests ----

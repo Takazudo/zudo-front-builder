@@ -480,6 +480,14 @@ fn validate_file_with_fragment(
             // (mirrors the bare-anchor contract; kills the
             // `./other.md#frag` unwrap_or(false) false positive).
             //
+            // Note: a target compiled in THIS build is always `Some(..)` here
+            // (HeadingLinksPlugin calls `mark_tracked` for every file it
+            // walks, yielding `Some(&[])` even when headingless), so explicit
+            // anchor ids ARE consulted below for same-build targets. Only a
+            // not-yet-compiled target falls here, and its explicit anchor ids
+            // are settled by the post-compile cross-file check (#960/#977),
+            // not this in-compile path (#1095).
+            //
             // Cross-file candidate recording (#960 / #977): exactly the
             // links reaching this branch — FileWithFragment, non-img,
             // already past containment + existence — are the ones the
