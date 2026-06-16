@@ -6,6 +6,7 @@ settings:
 
 overrides:
   devalue: ^5.8.1
+  hono: '>=4.12.25'
 
 importers:
 
@@ -194,8 +195,8 @@ importers:
   packages/zfb-runtime:
     dependencies:
       hono:
-        specifier: ^4.12.23
-        version: 4.12.23
+        specifier: '>=4.12.25'
+        version: 4.12.25
     devDependencies:
       '@takazudo/zfb':
         specifier: workspace:*
@@ -2033,8 +2034,8 @@ packages:
   hast-util-whitespace@3.0.0:
     resolution: {integrity: sha512-88JUN06ipLwsnv+dVn+OIYOvAuvBMy/Qoi6O7mQHxdPXpjy+Cd6xRkWwux7DKO+4sYILtLBRIKgsdpS2gQc7qw==}
 
-  hono@4.12.23:
-    resolution: {integrity: sha512-eIaZ9qDgu7XV0pxOCrg7/WhnQ6Ivm22UcxhXx/A3dcbqbbYgBEkc6e/J/s7j2tS96zoB0S9VBdLwQNCWwUo4LA==}
+  hono@4.12.25:
+    resolution: {integrity: sha512-2NFaIyNVgJmBs/ecmtGzlmluTFs5cHEWGTdu0t1HBwYzoGXOL5nUQBRMXsXWla5i4KkG//QMzVP88m1+I3fdAQ==}
     engines: {node: '>=16.9.0'}
 
   html-validate@10.17.0:
@@ -3600,7 +3601,7 @@ snapshots:
   '@takazudo/zfb-runtime@0.1.0-next.49(@takazudo/zfb@0.1.0-next.49)':
     dependencies:
       '@takazudo/zfb': 0.1.0-next.49
-      hono: 4.12.23
+      hono: 4.12.25
 
   '@takazudo/zfb-win32-x64-msvc@0.1.0-next.49':
     optional: true
@@ -4304,7 +4305,7 @@ snapshots:
     dependencies:
       '@types/hast': 3.0.4
 
-  hono@4.12.23: {}
+  hono@4.12.25: {}
 
   html-validate@10.17.0(vitest@2.1.9(@types/node@22.19.17)(happy-dom@15.11.7)(lightningcss@1.32.0)):
     dependencies:
