@@ -604,6 +604,50 @@ async function transition(
   }
 
   document.documentElement.setAttribute(DIRECTION_ATTR, prepEvent.direction);
+
+  // Commit the SPA history entry BEFORE the transition's update callback runs.
+  //
+  // WebKit (all iOS browsers, incl. iOS Chrome) does not reliably commit a
+  // distinct back/forward history entry when history.pushState() is issued
+  // *inside* the document.startViewTransition() update callback: the URL bar
+  // updates but no new entry is created, so a single Back press falls off the
+  // site to the browser home (zudolab/zzmod#662). Committing the entry here —
+  // outside the transition's update callback — makes WebKit create it; Chromium
+  // is unaffected either way. moveToLocation() (called later from updateDOM,
+  // inside the callback) then no-ops its own push/replace via the
+  // `to.href !== location.href` guard, since location is already at the
+  // committed URL, so currentHistoryIndex is not double-advanced.
+  //
+  // We use prepEvent.to (redirects are already resolved into it during
+  // preparation) and write before the swap, while document.title is still the
+  // old page's title — so the back entry keeps the correct (old-page) title
+  // without needing moveToLocation's title juggle. Writing here also covers the
+  // non-VT fallback path below in one place.
+  //
+  // Traverse (popstate) navigations carry historyState: the browser has already
+  // moved, so they must NOT create a new entry here.
+  if (!historyState && prepEvent.to.href !== location.href) {
+    if (options.history === "replace") {
+      const current = history.state;
+      history.replaceState(
+        {
+          ...options.state,
+          index: current.index,
+          scrollX: current.scrollX,
+          scrollY: current.scrollY,
+        },
+        "",
+        prepEvent.to.href,
+      );
+    } else {
+      history.pushState(
+        { ...options.state, index: ++currentHistoryIndex, scrollX: 0, scrollY: 0 },
+        "",
+        prepEvent.to.href,
+      );
+    }
+  }
+
   if (supportsViewTransitions && !hasUAVisualTransition) {
     // This automatically cancels any previous transition
     // We also already took care that the earlier update callback got through
