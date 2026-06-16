@@ -330,6 +330,9 @@ fn probe_dimensions(
         // read error (e.g. the file vanished between stat and read) warns.
         let bytes =
             std::fs::read(path).map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
+        // SVG is UTF-8 in practice; a non-UTF-8 file (e.g. a rare UTF-16
+        // export) decodes lossily, fails to parse, and degrades to a silent
+        // skip — never a crash or a wrong dimension.
         let content = String::from_utf8_lossy(&bytes);
         match parse_svg_dimensions(&content) {
             Some(dims) => dims,
@@ -420,13 +423,17 @@ fn parse_svg_dimensions(content: &str) -> Option<(u32, u32)> {
 }
 
 /// Parse an SVG/CSS length as integer pixels, accepting only unitless values
-/// (SVG user units == px) and an explicit `px` suffix. Percentages and physical
-/// units (`mm`, `cm`, `pt`, `in`, `em`, …) return `None` so the caller falls
-/// back to the `viewBox`.
+/// (SVG user units == px) and an explicit `px` suffix (case-insensitive — CSS
+/// units are case-insensitive). Percentages and physical units (`mm`, `cm`,
+/// `pt`, `in`, `em`, …) return `None` so the caller falls back to the `viewBox`.
 fn parse_svg_length_px(raw: &str) -> Option<u32> {
     let s = raw.trim();
-    let num = s.strip_suffix("px").unwrap_or(s).trim();
-    round_dimension(num.parse::<f64>().ok()?)
+    let num = if s.len() >= 2 && s.as_bytes()[s.len() - 2..].eq_ignore_ascii_case(b"px") {
+        &s[..s.len() - 2]
+    } else {
+        s
+    };
+    round_dimension(num.trim().parse::<f64>().ok()?)
 }
 
 /// Parse `viewBox="min-x min-y width height"` and return `(width, height)`
@@ -704,6 +711,9 @@ mod tests {
     fn parse_svg_length_px_unit_handling() {
         assert_eq!(parse_svg_length_px("100"), Some(100));
         assert_eq!(parse_svg_length_px("100px"), Some(100));
+        // CSS/SVG units are case-insensitive.
+        assert_eq!(parse_svg_length_px("100PX"), Some(100));
+        assert_eq!(parse_svg_length_px("100Px"), Some(100));
         assert_eq!(parse_svg_length_px("  100.5 "), Some(101));
         assert_eq!(parse_svg_length_px("100%"), None);
         assert_eq!(parse_svg_length_px("10mm"), None);
@@ -1002,5 +1012,58 @@ mod tests {
         assert_eq!(get_attr(&img, "width"), None);
         assert_eq!(diags.len(), 1, "raster decode failure must still warn");
         assert_eq!(diags[0].severity(), DiagnosticSeverity::Warning);
+    }
+
+    #[test]
+    fn plugin_warns_on_missing_svg() {
+        use zfb_md_ast::diagnostics::DiagnosticSeverity;
+
+        // A missing `.svg` is a broken reference, not an undimensionable SVG —
+        // the `fs::metadata` stat fails before the SVG branch, so it still
+        // warns (it is NOT swallowed by the silent-skip path).
+        let dir = tempdir::TempDir::new("imgdim_svg_missing").unwrap();
+        let (img, diags) = run_plugin_collecting("absent.svg", dir.path());
+        assert_eq!(get_attr(&img, "width"), None);
+        assert_eq!(diags.len(), 1, "a missing SVG must still warn");
+        assert_eq!(diags[0].severity(), DiagnosticSeverity::Warning);
+    }
+
+    #[test]
+    fn plugin_caches_svg_on_second_reference() {
+        // The SVG path participates in the mtime cache + read_count
+        // instrumentation, exactly like the raster path.
+        let dir = tempdir::TempDir::new("imgdim_svg_cache").unwrap();
+        std::fs::write(
+            dir.path().join("d.svg"),
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"></svg>"#,
+        )
+        .unwrap();
+
+        let mut plugin = ImageDimensionsPlugin::new(ImageDimensionsConfig::default());
+        let mut tree = HastNode::Root {
+            children: vec![img(&[("src", "d.svg")]), img(&[("src", "d.svg")])],
+        };
+        let mut ctx = BuildContext {
+            source_path: Some(dir.path().join("page.mdx")),
+            project_root: dir.path().to_path_buf(),
+            public_dir: dir.path().to_path_buf(),
+            heading_registry: None,
+            diagnostics: None,
+            cross_file_links: None,
+        };
+        plugin.visit_with_context(&mut tree, &mut ctx);
+
+        assert_eq!(
+            plugin.read_count(),
+            1,
+            "second SVG reference must hit the cache"
+        );
+        let HastNode::Root { children } = &tree else {
+            panic!()
+        };
+        for child in children {
+            assert_eq!(get_attr(child, "width"), Some("20"));
+            assert_eq!(get_attr(child, "height"), Some("10"));
+        }
     }
 }
