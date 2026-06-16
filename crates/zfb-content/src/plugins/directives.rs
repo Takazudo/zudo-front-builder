@@ -318,23 +318,20 @@ impl DirectiveRegistry {
         let mut prose_start = 0usize;
 
         while i < lines.len() {
-            let line = lines[i].trim_end_matches('\r');
+            let line = strip_trailing_cr(lines[i]);
             if let Some(open_colons) = container_opener_colons(line) {
                 // Find the matching closer line by colon count.
                 if let Some(close_idx) = find_collapsed_closer(&lines, i + 1, open_colons) {
-                    let opener = first_line_trim(line);
-                    if let Some(parsed) = parse_directive_line(opener, open_colons) {
+                    // `container_opener_colons` already counted the leading
+                    // colons, so slice them off and parse the rest directly
+                    // rather than re-scanning the same colons through
+                    // `parse_directive_line` (zfb#1099: one colon-count site).
+                    if let Some(parsed) = parse_directive_body(&line[open_colons..]) {
                         if let Some(def) = self.defs.get(&parsed.name).cloned() {
                             if def.kind == DirectiveKind::Container {
                                 // Flush any pending prose before this run.
                                 self.flush_prose(&lines, prose_start, i, &mut out);
-                                // Only the very first opener line has a known
-                                // source position; later sibling/nested openers
-                                // have none (they are mid-text lines).
-                                let (line_no, col_no) = match (i, first_pos) {
-                                    (0, Some((l, c))) => (Some(l), Some(c)),
-                                    _ => (None, None),
-                                };
+                                let (line_no, col_no) = pos_for(i, first_pos);
                                 let validated_opt =
                                     self.run_validation(&def, &parsed, line_no, col_no);
                                 // Body = lines between opener and its closer.
@@ -362,10 +359,7 @@ impl DirectiveRegistry {
                             // stay as literal prose; warn exactly once. (The
                             // re-parsed prose is never re-block-scanned, so this
                             // is the only place the warning can come from.)
-                            let (line_no, col_no) = match (i, first_pos) {
-                                (0, Some((l, c))) => (Some(l), Some(c)),
-                                _ => (None, None),
-                            };
+                            let (line_no, col_no) = pos_for(i, first_pos);
                             self.diagnostics.push(DirectiveDiagnostic {
                                 message: format!("unknown directive `{}`", parsed.name),
                                 line: line_no,
@@ -415,6 +409,13 @@ impl DirectiveRegistry {
     /// Build the JSX children of a collapsed container from its raw body
     /// lines. Recursively re-segments the body so nested collapsed directives
     /// transform too, then emits any remaining prose as markdown blocks.
+    ///
+    /// This is the line-level body builder, reached via the
+    /// [`single_text_collapsed`] entry (one multi-line `Text` child). Its
+    /// sibling [`collapsed_container_body`] is the OTHER half of an intentional
+    /// dual body-builder path: that one CLONES inline children for the rarer
+    /// multi-inline-child collapsed paragraph. The two are discriminated by
+    /// [`single_text_collapsed`] at the call site in `transform_children`.
     fn build_collapsed_body(&mut self, body_lines: &[&str]) -> Vec<MdastNode> {
         if body_lines.is_empty() {
             return Vec::new();
@@ -604,16 +605,22 @@ pub(crate) struct ParsedDirective {
 /// colons. Returns `None` if the line doesn't start with that many
 /// colons, has a different count, or has no name token.
 pub(crate) fn parse_directive_line(line: &str, expected_colons: usize) -> Option<ParsedDirective> {
-    // Count leading colons exactly.
-    let bytes = line.as_bytes();
-    let mut n = 0;
-    while n < bytes.len() && bytes[n] == b':' {
-        n += 1;
-    }
-    if n != expected_colons {
+    // Single colon-count source of truth (see `count_leading_colons`).
+    if count_leading_colons(line) != expected_colons {
         return None;
     }
-    let rest = &line[n..];
+    parse_directive_body(&line[expected_colons..])
+}
+
+/// Parse the part of a directive opener AFTER its leading colons — the name,
+/// optional `[label]`, and optional `{attrs}` (or legacy unbraced attrs).
+/// Returns `None` when `rest` does not start with a name-start char.
+///
+/// Split out of [`parse_directive_line`] so the collapsed-run path — which
+/// already knows the colon count from [`container_opener_colons`] — can slice
+/// the colons off and call here directly, instead of re-counting the same
+/// colons through `parse_directive_line` (zfb#1099).
+fn parse_directive_body(rest: &str) -> Option<ParsedDirective> {
     // The "rest" must start with a name char (so `:::` alone, or `::: `
     // is rejected).
     let rest_bytes = rest.as_bytes();
@@ -829,6 +836,12 @@ fn first_line(s: &str) -> &str {
 }
 
 /// Is this paragraph the closing `:::` fence of a container directive?
+///
+/// Node-level and stricter than its line-level sibling
+/// [`container_close_colons`]: this requires the paragraph's first line to be
+/// EXACTLY `:::` (the block-scan only ever opens 3-colon containers), whereas
+/// `container_close_colons` accepts any all-colon run of ≥3 for the
+/// nested-fence matching in the collapsed-run path.
 fn is_container_close(node: &MdastNode) -> bool {
     let MdastNode::Paragraph(p) = node else {
         return false;
@@ -839,9 +852,17 @@ fn is_container_close(node: &MdastNode) -> bool {
     first_line(&t.value).trim() == ":::"
 }
 
-/// Trim a `\r` (CRLF input) off the end of a single re-segmented line.
-fn first_line_trim(line: &str) -> &str {
+/// Strip a trailing `\r` (CRLF input) off a single re-segmented line.
+fn strip_trailing_cr(line: &str) -> &str {
     line.trim_end_matches('\r')
+}
+
+/// Count the leading `:` run at the start of `line`. The single
+/// colon-count source of truth, shared by [`container_opener_colons`] and
+/// [`parse_directive_line`] so the leading-fence scan is not re-implemented
+/// per call site (zfb#1099).
+fn count_leading_colons(line: &str) -> usize {
+    line.as_bytes().iter().take_while(|&&b| b == b':').count()
 }
 
 /// If `line` is a container DIRECTIVE OPENER (`:::+name…`, i.e. ≥3 leading
@@ -849,11 +870,9 @@ fn first_line_trim(line: &str) -> &str {
 /// colon count. A bare `:::` (close fence) returns `None` because the byte
 /// after the colons is not a name start.
 fn container_opener_colons(line: &str) -> Option<usize> {
-    let bytes = line.trim_end().as_bytes();
-    let mut n = 0;
-    while n < bytes.len() && bytes[n] == b':' {
-        n += 1;
-    }
+    let trimmed = line.trim_end();
+    let bytes = trimmed.as_bytes();
+    let n = count_leading_colons(trimmed);
     if n < 3 {
         return None;
     }
@@ -865,7 +884,9 @@ fn container_opener_colons(line: &str) -> Option<usize> {
 }
 
 /// If `line` is a bare container CLOSE fence (only colons, ≥3, no name),
-/// return its colon count, else `None`.
+/// return its colon count, else `None`. The line-level, ≥3 counterpart to
+/// the node-level, exactly-`:::` [`is_container_close`]; both encode the same
+/// "a close fence is all colons" idea for their respective scans.
 fn container_close_colons(line: &str) -> Option<usize> {
     let t = line.trim();
     if t.len() >= 3 && t.bytes().all(|b| b == b':') {
@@ -887,7 +908,7 @@ fn find_collapsed_closer(lines: &[&str], from: usize, open_colons: usize) -> Opt
     let mut stack: Vec<usize> = vec![open_colons];
     let mut j = from;
     while j < lines.len() {
-        let line = first_line_trim(lines[j]);
+        let line = strip_trailing_cr(lines[j]);
         if let Some(close_k) = container_close_colons(line) {
             // A close fence of `close_k` colons closes the innermost open
             // fence whose colon-count is <= close_k.
@@ -968,6 +989,18 @@ fn paragraph_line_col(node: &MdastNode) -> (Option<usize>, Option<usize>) {
     (None, None)
 }
 
+/// Source position for the `i`-th opener line of a collapsed run. Only the
+/// very first line (`i == 0`) carries the paragraph's known `first_pos`; later
+/// sibling/nested openers are mid-text lines with no reliable position, so they
+/// get `(None, None)`. Extracted so `transform_collapsed_run`'s known-container
+/// and unknown-name branches share one position rule (zfb#1099).
+fn pos_for(i: usize, first_pos: Option<(usize, usize)>) -> (Option<usize>, Option<usize>) {
+    match (i, first_pos) {
+        (0, Some((l, c))) => (Some(l), Some(c)),
+        _ => (None, None),
+    }
+}
+
 /// Strip a leading directive-opener line (and the `\n`/`\r\n` that
 /// follows it) from `value`. The opener line is the substring up to the
 /// first newline. Returns the remaining body text.
@@ -1021,6 +1054,12 @@ fn strip_closer_line(value: &str) -> Option<&str> {
 /// Detection: the FIRST child is a Text whose first line parses as a
 /// `:::name` opener, the value spans multiple lines, and the LAST child is
 /// a Text whose last line is exactly `:::`.
+///
+/// This is the CLONE-inline-children half of an intentional dual body-builder
+/// path: it handles the rarer multi-inline-child collapsed paragraph, while
+/// the line-level [`DirectiveRegistry::build_collapsed_body`] re-parses raw
+/// lines for the common single-`Text`-child shape. The two are discriminated
+/// by [`single_text_collapsed`] at the call site in `transform_children`.
 fn collapsed_container_body(node: &MdastNode) -> Option<Vec<MdastNode>> {
     let MdastNode::Paragraph(p) = node else {
         return None;
