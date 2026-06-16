@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Required by ClientRouter: enables SPA mode on this page -->
+    <meta name="zfb-view-transitions-enabled" content="" />
+    <!-- Fallback: "animate" is the default; "swap" would skip animations on UA swipe -->
+    <meta name="zfb-view-transitions-fallback" content="animate" />
+    <title>Home</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        padding: 2rem;
+      }
+    </style>
+    <!--
+      Import map: re-maps the bare specifier @takazudo/zfb/runtime to the no-op
+      island stubs. The built dist/client-router ESM imports this specifier at
+      runtime; without this map the browser would throw a resolution error.
+      In a real zfb site the bundler resolves it to the real island manager.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@takazudo/zfb/runtime": "/island-stubs.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <h1>Home</h1>
+    <p>This is the home page.</p>
+    <nav>
+      <a href="/list.html">Go to List</a>
+    </nav>
+    <!--
+      Boot the ClientRouter. Served from /dist/client-router/router.js by
+      serve-fixture.mjs, which maps /dist/ -> packages/zfb-runtime/dist/.
+      We import from router.js directly (not index.js) to avoid pulling in
+      the React ClientRouter component which has a react/jsx-runtime dependency.
+      Build with: pnpm -C packages/zfb-runtime build
+    -->
+    <script type="module">
+      // Init the click/submit intercept (registers link + form handlers).
+      import { init } from "/dist/client-router/router.js";
+      init();
+    </script>
+  </body>
+</html>

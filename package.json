@@ -31,9 +31,12 @@
     "format:mdx": "pnpm dlx @takazudo/mdx-formatter --write '**/*.{md,mdx}'",
     "format:check:mdx": "pnpm dlx @takazudo/mdx-formatter --check '**/*.{md,mdx}'",
     "//// === VALIDATION ===": "",
-    "b4push": "bash scripts/run-b4push.sh"
+    "b4push": "bash scripts/run-b4push.sh",
+    "//// === LOCAL-HEAVY (T4, Mac only, NOT CI) ===": "",
+    "test:webkit-back": "pnpm -C packages/zfb-runtime build && pnpm exec playwright test --config tests/webkit-back-history/playwright.config.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.0",
     "lefthook": "^2.1.6",
     "prettier": "^3.8.3",
     "wrangler": "4.85.0"
