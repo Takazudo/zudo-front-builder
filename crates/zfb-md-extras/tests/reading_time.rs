@@ -110,7 +110,7 @@ fn enabled_injects_export_in_mdast() {
     use zfb_md_ast::MdastVisitor;
     use zfb_md_extras::reading_time::ReadingTimePlugin;
 
-    let words: String = std::iter::repeat("word ").take(200).collect();
+    let words: String = "word ".repeat(200);
     let mut node = to_mdast(&words, &markdown::ParseOptions::default()).unwrap();
     ReadingTimePlugin::new().visit(&mut node);
 
@@ -142,7 +142,7 @@ fn jsx_module_contains_reading_time_export() {
     use zfb_md_ast::ReadingTimeFeature;
     use zfb_md_extras::MarkdownFeaturesConfig;
 
-    let words: String = std::iter::repeat("word ").take(200).collect();
+    let words: String = "word ".repeat(200);
     let features = MarkdownFeaturesConfig {
         reading_time: Some(ReadingTimeFeature::Bool(true)),
         ..Default::default()

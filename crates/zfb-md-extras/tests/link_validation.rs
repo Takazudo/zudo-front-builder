@@ -492,26 +492,57 @@ fn cross_file_fragment_without_target_entry_degrades_to_existence_only() {
     );
 }
 
-// ── Fixture 14: bare fragment skipped when source has no registry entry ───────
+// ── Fixture 14: bare fragment skipped when the file was never tracked ─────────
 
-/// Registry `Some` but no entry for the source file; `[x](#anything)` → no
-/// diagnostic.
+/// Registry `Some` but **no entry at all** for the source file — the
+/// genuinely-untracked / cache-hit shape where `HeadingLinksPlugin` never ran
+/// (a compile-cache hit replays output without re-running the hast chain, see
+/// the registry contract in `pipeline.rs`). Entry-presence gating must degrade
+/// to skip here so a replayed file does not produce a spurious diagnostic.
+///
+/// This drives `LinkValidationPlugin` directly (NOT through the full pipeline):
+/// on the `run_with_context` path `HeadingLinksPlugin` now marks every compiled
+/// file tracked (`Some(&[])`), so a "no entry" source is unreachable there —
+/// that headingless-but-compiled case is the one #1093 fixes and is covered by
+/// `transclude_link_validation_broken_link_in_snippet` in
+/// `cross_feature_integration.rs`. The skip-on-`None` branch this fixture
+/// guards only fires when the file was never tracked at all.
 #[test]
 fn bare_fragment_without_source_entry_skipped() {
+    use zfb_content::pipeline::{HastNode, HastVisitor};
+    use zfb_md_extras::link_validation::LinkValidationPlugin;
+
     let source = PathBuf::from("/project/docs/page.md");
+    // Registry has NO entry for source — file was never tracked.
     let mut registry = HeadingRegistry::new();
-    // No entry for source — entry-presence gating must skip.
-    let md = "[x](#anything)\n";
-    let diags = run(
-        md,
-        source,
-        PathBuf::from("/project"),
-        &mut registry,
-        LinkValidationConfig::default(),
-    );
+    let mut sink = CollectingSink::new();
+
+    // A minimal hast tree: <a href="#anything">x</a>.
+    let mut tree = HastNode::Root {
+        children: vec![HastNode::Element {
+            tag: "a".to_string(),
+            attrs: vec![("href".to_string(), "#anything".to_string())],
+            children: vec![HastNode::Text("x".to_string())],
+            void: false,
+        }],
+    };
+
+    let mut ctx = BuildContext {
+        source_path: Some(source),
+        project_root: PathBuf::from("/project"),
+        public_dir: PathBuf::from("/project/public"),
+        heading_registry: Some(&mut registry),
+        diagnostics: Some(&mut sink),
+        cross_file_links: None,
+    };
+
+    let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
+    plugin.visit_with_context(&mut tree, &mut ctx);
+
+    let diags = sink.take();
     assert!(
         diags.is_empty(),
-        "bare fragment with no source entry must not emit diagnostic: {diags:?}"
+        "bare fragment in a never-tracked file must not emit diagnostic: {diags:?}"
     );
 }
 

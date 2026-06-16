@@ -354,6 +354,13 @@ fn mdx_to_jsx_module_inner(
         if let (Some(reg), Some(src)) =
             (ctx.heading_registry.as_deref_mut(), ctx.source_path.clone())
         {
+            // Mark the file tracked before seeding individual headings so a
+            // document with zero headings still gets a `Some(&[])` entry —
+            // `LinkValidationPlugin` then validates its bare `#anchor` links
+            // as broken instead of silently skipping (zfb#1093). Mirrors the
+            // `HeadingLinksPlugin::visit_with_context` mark on the
+            // run_with_context path; keeps both compile paths in lockstep.
+            reg.mark_tracked(src.clone());
             let mut channel_entries: Vec<RegistryHeadingEntry> = Vec::new();
             for h in &headings {
                 if !h.slug.is_empty() {
