@@ -207,6 +207,8 @@ Companion attribute (mirrors Astro's `data-astro-transition-persist-props`):
 
 `NON_OVERRIDABLE_ASTRO_ATTRS` becomes `NON_OVERRIDABLE_ZFB_ATTRS = ['data-zfb-transition', 'data-zfb-transition-fallback']`.
 
+**zfb addition (deviation #11):** `swapRootAttributes` also preserves any `<html>` attribute named in a `<meta name="zfb-preserve-html-attrs" content="…">` tag, which the new `<ClientRouter preserveHtmlAttrs={[…]} />` prop emits. This is the public, declarative way for a consumer to keep a *runtime* `<html>` attribute (set from a persisted island, e.g. `data-theme` / `data-sidebar-hidden` driven from `localStorage`) across swaps — without it, the incoming SSR document's defaults wipe it on every navigation (zudolab/zudo-doc#2200 → Takazudo/zudo-front-builder#1103). The preserve-set is `NON_OVERRIDABLE_ZFB_ATTRS ∪ the meta names`, so with no meta the behavior is byte-identical to Astro's. The before-swap escape hatch — mutating `event.newDocument.documentElement` inside a `zfb:before-swap` listener — remains available for computed/dynamic cases.
+
 `PERSIST_ATTR`, `DIRECTION_ATTR`, `OLD_NEW_ATTR` constants in `swap-functions.ts` and `router.ts` rename mechanically.
 
 `VITE_ID = 'data-vite-dev-id'` — KEEP verbatim. This is Vite's own attribute, not Astro's, and zfb's dev pipeline goes through Vite too. (Note: in zfb the equivalent dev-pass-through case may not occur because zfb doesn't have a Vue dev pipeline; see decisions #8 and #9.)
@@ -666,6 +668,7 @@ For audit. Each deviation has a NAMED TECHNICAL CAUSE per the guiding principle.
 | 8 | Drop prefetch + `__PREFETCH_DISABLED__` gating | Decision #7 — out of scope for v1. |
 | 9 | New `mountNewIslands()` export from `@takazudo/zfb` (no manifest arg, captures from first `mountIslands` call) | Router lives in zfb-runtime, islands manifest lives in zfb. Captured-manifest pattern avoids threading manifest through the router. |
 | 10 | `pendingCancels: Map<Element, () => void>` for deferred-hydration cancel-on-swap | Without it, deferred-fires (rIC / observer) run against orphan elements — memory leak + Preact dev warnings. |
+| 11 | `swapRootAttributes` preserves a consumer-configurable attribute set — `NON_OVERRIDABLE_ZFB_ATTRS` ∪ the names in `<meta name="zfb-preserve-html-attrs">` (emitted by the new `<ClientRouter preserveHtmlAttrs>` prop) | Astro has no consumer-extensible preserve-list. Runtime `<html>` attributes a consumer sets from a persisted island (`data-theme`, `data-sidebar-hidden` from `localStorage`) were wiped on every swap — Takazudo/zudo-front-builder#1103. Additive + opt-in: with no meta the set is exactly `NON_OVERRIDABLE_ZFB_ATTRS`, byte-identical to Astro's behavior. |
 
 All other Astro symbols port verbatim with mechanical `astro:` → `zfb:` and `data-astro-*` → `data-zfb-*` renames.
 

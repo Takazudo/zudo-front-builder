@@ -16,6 +16,13 @@ const PERSIST_ATTR = "data-zfb-transition-persist";
 
 const NON_OVERRIDABLE_ZFB_ATTRS = ["data-zfb-transition", "data-zfb-transition-fallback"];
 
+// Consumers extend the preserve-set via <meta name="zfb-preserve-html-attrs"
+// content="data-theme data-sidebar-hidden …">, emitted by
+// <ClientRouter preserveHtmlAttrs={[…]} />. Without it, a runtime <html>
+// attribute set from a persisted island is wiped on every swap. See
+// client-router/port-spec.md deviation #11 and Takazudo/zudo-front-builder#1103.
+const PRESERVE_ATTRS_META_NAME = "zfb-preserve-html-attrs";
+
 const knownVueScopedStyles = new Map<string, HTMLStyleElement>();
 
 const scriptsAlreadyRan = new Set<string>();
@@ -45,18 +52,37 @@ export function deselectScripts(doc: Document) {
 }
 
 /*
+ * Read the consumer-configured preserve-list from the live document's
+ * <meta name="zfb-preserve-html-attrs"> tag. The list is a site-wide, static
+ * contract (the tag is rendered on every page, so it is present on both the
+ * current and incoming documents); reading the live document is sufficient.
+ * Returns [] when the tag is absent.
+ */
+function consumerPreservedAttrs(): string[] {
+  const content = document
+    .querySelector(`meta[name="${PRESERVE_ATTRS_META_NAME}"]`)
+    ?.getAttribute("content");
+  return content ? content.split(/\s+/).filter(Boolean) : [];
+}
+
+/*
  * swap attributes of the html element
  * delete all attributes from the current document
  * insert all attributes from doc
- * reinsert all original attributes that are referenced in NON_OVERRIDABLE_ZFB_ATTRS'
+ * reinsert all original attributes whose name is in the preserve-set:
+ * NON_OVERRIDABLE_ZFB_ATTRS (transition-internal) ∪ the consumer preserve-list.
+ * Preserved attributes are re-applied last, so a runtime value on the current
+ * root wins over the incoming document's default (e.g. a localStorage-driven
+ * data-theme). See client-router/port-spec.md deviation #11 / #1103.
  */
 export function swapRootAttributes(newDoc: Document) {
   const currentRoot = document.documentElement;
-  const nonOverridableZfbAttributes = [...currentRoot.attributes].filter(
-    ({ name }) => (currentRoot.removeAttribute(name), NON_OVERRIDABLE_ZFB_ATTRS.includes(name)),
+  const preserve = new Set([...NON_OVERRIDABLE_ZFB_ATTRS, ...consumerPreservedAttrs()]);
+  const preservedAttributes = [...currentRoot.attributes].filter(
+    ({ name }) => (currentRoot.removeAttribute(name), preserve.has(name)),
   );
-  [...newDoc.documentElement.attributes, ...nonOverridableZfbAttributes].forEach(
-    ({ name, value }) => currentRoot.setAttribute(name, value),
+  [...newDoc.documentElement.attributes, ...preservedAttributes].forEach(({ name, value }) =>
+    currentRoot.setAttribute(name, value),
   );
 }
 

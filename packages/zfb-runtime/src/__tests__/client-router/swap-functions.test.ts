@@ -334,6 +334,57 @@ describe("swapRootAttributes", () => {
     expect(document.documentElement.getAttribute("data-zfb-transition-fallback")).toBe("old");
     expect(document.documentElement.getAttribute("lang")).toBe("en");
   });
+
+  it("preserves a consumer attribute listed in the zfb-preserve-html-attrs meta", () => {
+    document.head.innerHTML = `<meta name="zfb-preserve-html-attrs" content="data-sidebar-hidden">`;
+    document.documentElement.setAttribute("data-sidebar-hidden", "");
+    document.documentElement.setAttribute("lang", "en");
+    const newDoc = htmlDoc(`<!doctype html><html lang="ja"><head></head><body></body></html>`);
+
+    swapRootAttributes(newDoc);
+
+    // The runtime attribute survives even though the incoming doc lacks it,
+    // while non-preserved attrs (lang) still take the new doc's value.
+    expect(document.documentElement.hasAttribute("data-sidebar-hidden")).toBe(true);
+    expect(document.documentElement.getAttribute("lang")).toBe("ja");
+  });
+
+  it("keeps the current runtime value when the incoming doc also sets the attribute", () => {
+    document.head.innerHTML = `<meta name="zfb-preserve-html-attrs" content="data-theme">`;
+    document.documentElement.setAttribute("data-theme", "dark");
+    const newDoc = htmlDoc(
+      `<!doctype html><html data-theme="light"><head></head><body></body></html>`,
+    );
+
+    swapRootAttributes(newDoc);
+
+    // Preserved attrs are re-applied last, so the live runtime value wins over
+    // the server-rendered default.
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+
+  it("preserves multiple space-separated names and tolerates extra whitespace", () => {
+    document.head.innerHTML = `<meta name="zfb-preserve-html-attrs" content="  data-theme   data-sidebar-hidden ">`;
+    document.documentElement.setAttribute("data-theme", "dark");
+    document.documentElement.setAttribute("data-sidebar-hidden", "");
+    const newDoc = htmlDoc(`<!doctype html><html><head></head><body></body></html>`);
+
+    swapRootAttributes(newDoc);
+
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(document.documentElement.hasAttribute("data-sidebar-hidden")).toBe(true);
+  });
+
+  it("does not preserve runtime attributes when no preserve-list meta is present", () => {
+    document.documentElement.setAttribute("data-sidebar-hidden", "");
+    const newDoc = htmlDoc(`<!doctype html><html lang="en"><head></head><body></body></html>`);
+
+    swapRootAttributes(newDoc);
+
+    // No meta → unchanged behavior: the non-preserved runtime attr is dropped.
+    expect(document.documentElement.hasAttribute("data-sidebar-hidden")).toBe(false);
+    expect(document.documentElement.getAttribute("lang")).toBe("en");
+  });
 });
 
 describe("swap() composition", () => {
