@@ -69,6 +69,13 @@ export interface ClientRouterProps {
    * here and the router re-applies their current value after each swap. Emitted
    * as a `<meta name="zfb-preserve-html-attrs">` tag that `swapRootAttributes`
    * reads at swap time.
+   *
+   * Mount with the **same list on every page** that participates in SPA
+   * navigation: the preserve-list is read from the *current* (outgoing) page's
+   * meta at swap time, so a page that omits an entry drops that attribute when
+   * navigating away from it. Names are matched case-insensitively (DOM attribute
+   * names are lowercased). For dynamic/computed cases, mutate
+   * `event.newDocument.documentElement` in a `zfb:before-swap` listener instead.
    * @see https://github.com/Takazudo/zudo-front-builder/issues/1103
    */
   preserveHtmlAttrs?: string[];

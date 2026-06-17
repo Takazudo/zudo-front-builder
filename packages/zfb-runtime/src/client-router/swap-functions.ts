@@ -62,7 +62,11 @@ function consumerPreservedAttrs(): string[] {
   const content = document
     .querySelector(`meta[name="${PRESERVE_ATTRS_META_NAME}"]`)
     ?.getAttribute("content");
-  return content ? content.split(/\s+/).filter(Boolean) : [];
+  // Attribute names are ASCII-case-insensitive and the DOM exposes them
+  // lowercased, so normalize the list to match (NON_OVERRIDABLE_ZFB_ATTRS is
+  // already lowercase). Without this, a mixed-case entry would silently never
+  // match the live attribute name.
+  return content ? content.toLowerCase().split(/\s+/).filter(Boolean) : [];
 }
 
 /*

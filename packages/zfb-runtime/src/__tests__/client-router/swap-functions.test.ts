@@ -375,6 +375,18 @@ describe("swapRootAttributes", () => {
     expect(document.documentElement.hasAttribute("data-sidebar-hidden")).toBe(true);
   });
 
+  it("normalizes mixed-case preserve-list names to match lowercased DOM attribute names", () => {
+    // The DOM lowercases attribute names, so a mixed-case meta entry must still
+    // match the live (lowercased) attribute — otherwise the feature silently no-ops.
+    document.head.innerHTML = `<meta name="zfb-preserve-html-attrs" content="Data-Theme">`;
+    document.documentElement.setAttribute("data-theme", "dark");
+    const newDoc = htmlDoc(`<!doctype html><html><head></head><body></body></html>`);
+
+    swapRootAttributes(newDoc);
+
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+
   it("does not preserve runtime attributes when no preserve-list meta is present", () => {
     document.documentElement.setAttribute("data-sidebar-hidden", "");
     const newDoc = htmlDoc(`<!doctype html><html lang="en"><head></head><body></body></html>`);
