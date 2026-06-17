@@ -13,10 +13,10 @@
     "b4push": "pnpm check && pnpm build"
   },
   "dependencies": {
-    "@takazudo/zfb": "0.1.0-next.49",
-    "@takazudo/zfb-runtime": "0.1.0-next.49",
-    "@takazudo/zfb-adapter-cloudflare": "0.1.0-next.49",
-    "@takazudo/zudo-doc": "^0.2.9",
+    "@takazudo/zfb": "0.1.0-next.51",
+    "@takazudo/zfb-runtime": "0.1.0-next.51",
+    "@takazudo/zfb-adapter-cloudflare": "0.1.0-next.51",
+    "@takazudo/zudo-doc": "^0.2.11",
     "zod": "^4.0.0",
     "preact": "^10.29.1",
     "preact-render-to-string": "^6.6.6",
@@ -31,7 +31,7 @@
     "katex": "^0.16.38",
     "minisearch": "^7.2.0",
     "diff": "^8.0.3",
-    "@takazudo/zudo-doc-history-server": "^0.2.9"
+    "@takazudo/zudo-doc-history-server": "^0.2.11"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.0",
