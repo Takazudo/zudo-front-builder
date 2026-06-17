@@ -26,7 +26,8 @@
 //   carries `$$typeof: Symbol.for("react.element")` a literal cannot fake. Same
 //   migration as `Island` in @takazudo/zfb.
 //
-// The component renders three sibling elements to <head>:
+// The component renders three base sibling elements to <head> (plus optional
+// metas emitted conditionally — see `prefetchDisabled` and `preserveHtmlAttrs`):
 //   1. A <style> tag with the `.zfb-route-announcer` ARIA helper class.
 //   2. <meta name="zfb-view-transitions-enabled" content="true" />
 //   3. <meta name="zfb-view-transitions-fallback" content={fallback} />
@@ -58,6 +59,26 @@ export interface ClientRouterProps {
    * (hover) by calling prefetchInit({ prefetchAll: true }) once on the client.
    */
   prefetchAll?: boolean;
+  /**
+   * Extra `<html>` attribute names to preserve across SPA swaps. By default the
+   * client router copies the incoming server-rendered document's `<html>`
+   * attributes onto the live root, dropping any current attribute that isn't
+   * internal to the transition machinery — so a *runtime* attribute a consumer
+   * sets from a persisted island (e.g. `data-theme` or `data-sidebar-hidden`
+   * driven from `localStorage`) is lost on every navigation. List those names
+   * here and the router re-applies their current value after each swap. Emitted
+   * as a `<meta name="zfb-preserve-html-attrs">` tag that `swapRootAttributes`
+   * reads at swap time.
+   *
+   * Mount with the **same list on every page** that participates in SPA
+   * navigation: the preserve-list is read from the *current* (outgoing) page's
+   * meta at swap time, so a page that omits an entry drops that attribute when
+   * navigating away from it. Names are matched case-insensitively (DOM attribute
+   * names are lowercased). For dynamic/computed cases, mutate
+   * `event.newDocument.documentElement` in a `zfb:before-swap` listener instead.
+   * @see https://github.com/Takazudo/zudo-front-builder/issues/1103
+   */
+  preserveHtmlAttrs?: string[];
 }
 
 /**
@@ -128,6 +149,7 @@ const announcerCss = `
 export function ClientRouter({
   fallback = "animate",
   prefetchAll: prefetchAllProp = false,
+  preserveHtmlAttrs = [],
 }: ClientRouterProps = {}): readonly ClientRouterElement[] {
   // Bootstrap prefetch exactly once on the client when prefetchAll is true.
   // The initialized flag inside prefetchInit() provides a second safety layer
@@ -168,6 +190,22 @@ export function ClientRouter({
         "meta",
         { name: "zfb-prefetch-disabled", content: "true" },
         "zfb-prefetch-disabled",
+      ),
+    );
+  }
+
+  // Consumer-extensible <html> attribute preserve-list (#1103). swapRootAttributes
+  // reads this meta and re-applies the listed attributes' runtime values after each
+  // swap, so persisted-island state on <html> (data-theme, data-sidebar-hidden, …)
+  // survives navigation. Emitted only when non-empty, so non-opt-in output stays
+  // byte-identical. Same conditional-emission shape as the prefetch-disabled meta.
+  const preserveList = preserveHtmlAttrs.filter(Boolean);
+  if (preserveList.length > 0) {
+    nodes.push(
+      makeVNode(
+        "meta",
+        { name: "zfb-preserve-html-attrs", content: preserveList.join(" ") },
+        "zfb-preserve-html-attrs",
       ),
     );
   }

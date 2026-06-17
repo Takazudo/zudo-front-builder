@@ -88,6 +88,55 @@ describe("ClientRouter — prefetch disabled flag", () => {
   });
 });
 
+describe("ClientRouter — preserveHtmlAttrs", () => {
+  it("does not emit a zfb-preserve-html-attrs meta when the prop is omitted", () => {
+    const nodes = ClientRouter();
+    const meta = nodes.find(
+      (n) => n.type === "meta" && n.props["name"] === "zfb-preserve-html-attrs",
+    );
+    expect(meta).toBeUndefined();
+    // Byte-identical baseline: still exactly the three base nodes.
+    expect(nodes).toHaveLength(3);
+  });
+
+  it("does not emit the meta for an empty array", () => {
+    const nodes = ClientRouter({ preserveHtmlAttrs: [] });
+    const meta = nodes.find(
+      (n) => n.type === "meta" && n.props["name"] === "zfb-preserve-html-attrs",
+    );
+    expect(meta).toBeUndefined();
+    expect(nodes).toHaveLength(3);
+  });
+
+  it("emits a space-joined zfb-preserve-html-attrs meta for a non-empty list", () => {
+    const nodes = ClientRouter({ preserveHtmlAttrs: ["data-theme", "data-sidebar-hidden"] });
+    const meta = nodes.find(
+      (n) => n.type === "meta" && n.props["name"] === "zfb-preserve-html-attrs",
+    );
+    expect(meta).toBeDefined();
+    expect(meta?.props["content"]).toBe("data-theme data-sidebar-hidden");
+    expect(nodes).toHaveLength(4);
+  });
+
+  it("filters falsy/empty entries and omits the meta when nothing remains", () => {
+    const nodes = ClientRouter({ preserveHtmlAttrs: ["", ""] });
+    const meta = nodes.find(
+      (n) => n.type === "meta" && n.props["name"] === "zfb-preserve-html-attrs",
+    );
+    expect(meta).toBeUndefined();
+  });
+
+  it("the preserve-attrs meta is a real JSX-runtime element (carries the $$typeof brand)", () => {
+    const nodes = ClientRouter({ preserveHtmlAttrs: ["data-theme"] });
+    const meta = nodes.find(
+      (n) => n.type === "meta" && n.props["name"] === "zfb-preserve-html-attrs",
+    );
+    expect(meta).toBeDefined();
+    const brand = (meta as { $$typeof?: unknown } | undefined)?.$$typeof;
+    expect(typeof brand).toBe("symbol");
+  });
+});
+
 describe("ClientRouter — baseline nodes are always present", () => {
   it("always emits a style VNode first", () => {
     const nodes = ClientRouter();

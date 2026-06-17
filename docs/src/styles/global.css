@@ -1063,6 +1063,18 @@ button[data-zd-nav-pending] {
   }
 }
 
+/* SPA-nav flash suppression (zudolab/zudo-doc#2198): while the transient
+ * data-sidebar-no-transition marker is set by the toggle island's module-scope
+ * guard across a client-router swap, zero the sidebar geometry transitions so
+ * the restored hidden state snaps in without an open-then-shut flash. The marker
+ * is removed on a double rAF, so user-initiated toggles (no marker) still animate. */
+html[data-sidebar-no-transition] #desktop-sidebar,
+html[data-sidebar-no-transition] .zd-sidebar-content-wrapper,
+html[data-sidebar-no-transition] .zd-doc-content-band,
+html[data-sidebar-no-transition] .zd-desktop-sidebar-toggle {
+  transition: none !important;
+}
+
 /* ── Find-in-page highlight (W7A: unconditional — Tauri feature gates at runtime) ── */
 .find-match {
   background-color: color-mix(in oklch, var(--color-warning) 40%, transparent);
