@@ -25,17 +25,29 @@
 //! naturally skipped here.
 //!
 //! We only ever touch a `Link` whose truncated `url` reconstructs to the
-//! exact autolink markdown-rs would have built (Guard A) and still has a
-//! real host (Guard B, ≥2 dot-separated labels — rejects degenerate IDN
-//! cuts like `https://www.日本語.com参照` that would otherwise yield a
-//! hostless/partial `https://www`). Ordinary `[label](dest)` links fail
-//! these guards. The pass is also only registered when `gfm.autolinkLiteral`
-//! is on (and `markdown.cjkFriendly` is on), so a pipeline that never
-//! produces autolink literals never runs it. The one ambiguity that cannot
-//! be resolved in mdast — an author hand-writing
-//! `[https://x.com参照](https://x.com参照)`, byte-identical to an autolink —
-//! is only reachable once bare-URL autolinking is enabled, which is the
+//! exact autolink markdown-rs would have built (Guard A — the kept URL must
+//! carry a real `http(s)://`/`ftp://` scheme, or be a `www.` host with
+//! `http://` prepended) and still has a real host (Guard B — ≥2 dot-separated
+//! labels, ignoring an optional `:port`; rejects degenerate IDN cuts like
+//! `https://www.日本語.com参照` that would otherwise yield a hostless/partial
+//! `https://www`). Ordinary `[label](dest)` links — including schemeless ones
+//! like `[example.com参照](example.com参照)` — fail these guards. The truncated
+//! URL is re-trimmed with GFM's own autolink end rules (trailing `?!.,:*_~`
+//! punctuation plus the unmatched-`)` paren-balance rule), so a cut that
+//! exposes a stray `)` (`(https://example.com)参照`) drops it from the href.
+//!
+//! This pass runs in the mdast phase **before** [`CjkFriendlyPlugin`]: that
+//! plugin re-tokenises emphasis markers inside `Text` nodes (including a
+//! `Link`'s text child), which would split an over-consumed autolink's single
+//! `Text` child apart and hide it from the boundary check. It is only
+//! registered when `gfm.autolinkLiteral` is on (and `markdown.cjkFriendly` is
+//! on), so a pipeline that never produces autolink literals never runs it.
+//! The one ambiguity that cannot be resolved in mdast — an author
+//! hand-writing `[https://x.com参照](https://x.com参照)`, byte-identical to an
+//! autolink — is only reachable once bare-URL autolinking is enabled, the
 //! same surface that produces the bug.
+//!
+//! [`CjkFriendlyPlugin`]: super::cjk_friendly::CjkFriendlyPlugin
 
 use markdown::mdast::{Link, Node as MdastNode, Text};
 
@@ -55,13 +67,38 @@ fn is_autolink_boundary(c: char) -> bool {
     is_cjk(c) || c == HORIZONTAL_ELLIPSIS
 }
 
-/// GFM trailing-punctuation set. After the CJK cut, any of these left at the
-/// new end of the URL are not part of the link — GFM trims a trailing
-/// `?!.,:*_~` from an autolink (the `)` paren-balance rule is intentionally
-/// NOT re-applied: markdown-rs already balanced parens over the full run, so
-/// a `)` surviving the cut is path data, not trailing punctuation).
+/// GFM trailing-punctuation set: `?!.,:*_~` are never part of an autolink's
+/// tail (though they may appear in its interior).
 fn is_gfm_trailing_punct(c: char) -> bool {
     matches!(c, '?' | '!' | '.' | ',' | ':' | '*' | '_' | '~')
+}
+
+/// Re-apply GFM's autolink end-trimming to `url` after the CJK cut and return
+/// the kept prefix. The cut can expose tail characters that GFM would not
+/// have treated as part of the link: trailing `?!.,:*_~` punctuation, and a
+/// trailing `)` that has no matching `(` inside the link (the paren-balance
+/// rule that lets a bare URL sit inside parentheses — `(https://example.com)`).
+/// markdown-rs applied this to the *whole* over-consumed run, which ended in
+/// CJK; once we cut before the CJK, the rule must run again on the new tail.
+/// Iterates because trimming a `)` can expose more punctuation and vice versa,
+/// mirroring cmark-gfm's backward scan.
+fn trim_gfm_url_end(url: &str) -> &str {
+    let mut end = url.len();
+    loop {
+        let s = &url[..end];
+        let after_punct = s.trim_end_matches(is_gfm_trailing_punct);
+        if after_punct.len() != end {
+            end = after_punct.len();
+            continue;
+        }
+        // Trailing `)` is dropped only when the link holds more `)` than `(`.
+        if s.ends_with(')') && s.matches(')').count() > s.matches('(').count() {
+            end -= 1; // ')' is one byte
+            continue;
+        }
+        break;
+    }
+    &url[..end]
 }
 
 /// URL schemes whose host follows a `scheme://host` shape. Used by
@@ -184,33 +221,38 @@ fn analyze(link: &Link) -> Option<SplitPlan> {
     let after0 = &visible[k..];
 
     let before0 = &visible[..k];
-    // Re-apply GFM trailing-punctuation trimming: the cut can expose ASCII
-    // punctuation that GFM would not have considered part of the link.
-    let before = before0.trim_end_matches(is_gfm_trailing_punct);
+    // Re-apply GFM autolink end-trimming (trailing punctuation + unmatched
+    // `)`): the cut can expose tail characters GFM would not treat as part of
+    // the link.
+    let before = trim_gfm_url_end(before0);
     if before.is_empty() {
         return None;
     }
     let trimmed_tail = &before0[before.len()..];
 
-    // Peel `(CJK run) + (moved trailing punct)` off the URL's end with
-    // strip_suffix (no length arithmetic). A genuine autolink's `url` is
-    // `scheme_prefix + visible == scheme_prefix + before + trimmed_tail +
-    // after0`, so both suffixes peel cleanly; an explicit `[これは詳細](url)`
-    // whose `url` does not end with the label's CJK run fails the first
-    // strip and returns `None`.
+    // Peel `(CJK run) + (moved tail)` off the URL's end with strip_suffix (no
+    // length arithmetic). A genuine autolink's `url` is `scheme_prefix +
+    // visible == scheme_prefix + before + trimmed_tail + after0`, so both
+    // suffixes peel cleanly; an explicit `[これは詳細](url)` whose `url` does
+    // not end with the label's CJK run fails the first strip and returns
+    // `None`.
     let new_url = link
         .url
         .strip_suffix(after0)
         .and_then(|u| u.strip_suffix(trimmed_tail))?;
 
-    // Guard A — reconstruction: the truncated URL must be exactly the
-    // autolink markdown-rs would have built for `before` — either `before`
-    // verbatim (the scheme is inside the visible text: `http(s)://`,
-    // `ftp://`) or `before` with `http://` prepended (the `www.` form). This
-    // rejects explicit links whose label merely *contains* a CJK run
-    // unrelated to the destination.
-    let is_reconstructable =
-        new_url == before || new_url.strip_prefix("http://").is_some_and(|h| h == before);
+    // Guard A — reconstruction: the truncated URL must be exactly the autolink
+    // markdown-rs would have built for `before`. markdown-rs only emits an
+    // autolink-literal `Link` whose visible text either carries its own scheme
+    // (`http://`, `https://`, `ftp://` — then `url == visible`) or is a `www.`
+    // host with `http://` prepended. Requiring the scheme / `www.` prefix here
+    // rejects ordinary explicit links such as `[example.com参照](example.com参照)`
+    // or `[ex.com参照](http://ex.com参照)`, which are reachable because this
+    // visitor also runs over explicit `Link` nodes.
+    let is_reconstructable = (new_url == before && starts_with_url_scheme(before))
+        || new_url
+            .strip_prefix("http://")
+            .is_some_and(|h| h == before && before.starts_with("www."));
     if !is_reconstructable {
         return None;
     }
@@ -230,17 +272,30 @@ fn analyze(link: &Link) -> Option<SplitPlan> {
     })
 }
 
+/// True when `url` begins with a literal autolink scheme (`http://`,
+/// `https://`, `ftp://`) — i.e. the scheme is part of the visible text.
+fn starts_with_url_scheme(url: &str) -> bool {
+    HOST_SCHEMES.iter().any(|scheme| url.starts_with(scheme))
+}
+
 /// True when `url`'s host is a real domain: at least two non-empty
 /// dot-separated labels (`example.com`, `www.example.com`) made of ASCII
 /// host characters. The host is the run after any recognised scheme up to
-/// the first `/`, `?`, or `#`. Rejects scheme-only (`https://`) and
-/// single-label (`https://www`) truncations.
+/// the first `/`, `?`, or `#`, with an optional `:port` stripped (so
+/// `https://example.com:8080/参照` validates on `example.com`). Rejects
+/// scheme-only (`https://`) and single-label (`https://www`) truncations.
 fn has_host(url: &str) -> bool {
     let rest = HOST_SCHEMES
         .iter()
         .find_map(|scheme| url.strip_prefix(scheme))
         .unwrap_or(url);
-    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Strip a trailing `:port` (digits only) so the port colon doesn't break
+    // label validation.
+    let host = match authority.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => authority,
+    };
     let labels: Vec<&str> = host.split('.').collect();
     labels.len() >= 2
         && labels.iter().all(|label| {
@@ -414,6 +469,49 @@ mod tests {
         assert_eq!(
             dump("[詳細](https://example.com)参照"),
             "[A href=https://example.com text=詳細]参照"
+        );
+    }
+
+    #[test]
+    fn schemeless_explicit_link_unchanged() {
+        // `[example.com参照](example.com参照)` is an explicit link with no URL
+        // scheme — Guard A requires a real scheme (or `www.`), so it is not
+        // mistaken for an autolink and is left untouched.
+        assert_eq!(
+            dump("[example.com参照](example.com参照)"),
+            "[A href=example.com参照 text=example.com参照]"
+        );
+    }
+
+    // --- Re-applied GFM end-trimming after the cut. ---
+
+    #[test]
+    fn unbalanced_trailing_paren_is_rebalanced() {
+        // An ASCII `(` wraps the URL; markdown-rs kept the `)` because the run
+        // ended in CJK, not `)`. After the cut, the unmatched `)` is dropped
+        // from the href and moved into the remainder.
+        assert_eq!(
+            dump("(https://example.com)参照"),
+            "([A href=https://example.com text=https://example.com])参照"
+        );
+    }
+
+    #[test]
+    fn balanced_interior_paren_is_kept() {
+        // A balanced `(bar)` inside the path stays in the href.
+        assert_eq!(
+            dump("https://example.com/foo(bar)参照"),
+            "[A href=https://example.com/foo(bar) text=https://example.com/foo(bar)]参照"
+        );
+    }
+
+    #[test]
+    fn port_is_kept_in_host() {
+        // `:8080` is a port, not a malformed label — the host still validates
+        // and the cut lands after the port.
+        assert_eq!(
+            dump("https://example.com:8080参照"),
+            "[A href=https://example.com:8080 text=https://example.com:8080]参照"
         );
     }
 }

@@ -371,6 +371,25 @@ fn autolink_cjk_boundary_inside_heading() {
     assert_lacks(&html, "href=\"https://example.com詳細", input);
 }
 
+/// Over-consumed autolink whose swallowed CJK run contains emphasis markers.
+/// The boundary pass must run BEFORE CjkFriendlyPlugin: the link splits at the
+/// first CJK char (the trailing `**` is GFM trailing punctuation, trimmed into
+/// the remainder), then CjkFriendlyPlugin turns the remainder's `**重要。**`
+/// into `<strong>`.
+#[test]
+fn autolink_split_runs_before_cjk_emphasis_retokenisation() {
+    let input = "https://example.com**重要。**テスト\n";
+    let html = render_autolink(input);
+    assert_contains(
+        &html,
+        "<a href=\"https://example.com\">https://example.com</a>",
+        input,
+    );
+    assert_contains(&html, "<strong>重要。</strong>テスト", input);
+    // The href must not have swallowed the emphasis markers / CJK.
+    assert_lacks(&html, "example.com**", input);
+}
+
 /// Gating: with autolink-literal OFF (the default), bare URLs are not
 /// autolinked at all, so the plugin has nothing to do and the URL stays
 /// literal text — no `<a>` tag, no behavior change.
