@@ -987,19 +987,26 @@ pub struct MarkdownConfig {
     #[serde(default)]
     pub external_links: Option<ExternalLinksConfig>,
 
-    /// Enable CJK-friendly emphasis/strong re-tokenisation.
+    /// Enable CJK-friendly markdown handling.
+    ///
+    /// Governs two mdast post-processors that adapt CommonMark/GFM rules to
+    /// CJK text: [`CjkFriendlyPlugin`] (emphasis/strong flanking around CJK
+    /// punctuation) and [`CjkAutolinkBoundaryPlugin`] (terminating a GFM
+    /// autolink-literal path at the first CJK character — zfb#1105; only
+    /// active when `gfm.autolinkLiteral` is also on).
     ///
     /// - `None` (absent, default) — CJK-friendly is **on**. Preserves
     ///   today's behaviour so existing CJK-content sites are unaffected
     ///   by the new field.
     /// - `Some(true)` — explicit opt-in; identical to absent.
-    /// - `Some(false)` — opt-out. [`CjkFriendlyPlugin`] is NOT added to
-    ///   the mdast pipeline; emphasis markers adjacent to CJK characters
-    ///   follow base CommonMark flanking rules (rarely the right choice;
-    ///   provided as an escape hatch for projects that need strict
-    ///   CommonMark output).
+    /// - `Some(false)` — opt-out. Neither plugin is added to the mdast
+    ///   pipeline; emphasis markers and bare-URL autolinks adjacent to CJK
+    ///   characters follow base CommonMark/GFM rules (rarely the right
+    ///   choice; provided as an escape hatch for projects that need strict
+    ///   CommonMark/GFM output).
     ///
     /// [`CjkFriendlyPlugin`]: zfb_content::plugins::CjkFriendlyPlugin
+    /// [`CjkAutolinkBoundaryPlugin`]: zfb_content::plugins::CjkAutolinkBoundaryPlugin
     #[serde(default)]
     pub cjk_friendly: Option<bool>,
 

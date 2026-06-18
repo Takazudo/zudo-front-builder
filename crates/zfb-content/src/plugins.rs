@@ -7,6 +7,7 @@
 //! [`MdastVisitor`]: crate::pipeline::MdastVisitor
 //! [`HastVisitor`]: crate::pipeline::HastVisitor
 
+pub mod cjk_autolink;
 pub mod cjk_friendly;
 pub mod code_title;
 pub mod directives;
@@ -20,6 +21,7 @@ pub mod syntect_plugin;
 pub mod toc;
 pub mod util;
 
+pub use cjk_autolink::CjkAutolinkBoundaryPlugin;
 pub use cjk_friendly::CjkFriendlyPlugin;
 pub use code_title::CodeTitlePlugin;
 pub use directives::{
