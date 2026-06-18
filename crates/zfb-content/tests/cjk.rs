@@ -273,3 +273,125 @@ fn bold_at_cjk_boundary_default() {
     let html = render(input);
     assert_contains(&html, "<strong>強調</strong>するテキスト", input);
 }
+
+// --- GFM autolink-literal CJK boundary fix (issue #1105). ---
+
+/// Render with GFM autolink-literal ENABLED (the surface where bare URLs
+/// become `<a>` and the over-consumption bug occurs). cjkFriendly stays on
+/// (default), so `CjkAutolinkBoundaryPlugin` is wired.
+fn render_autolink(input: &str) -> String {
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+    let resolved = ResolvedGfmConstructs {
+        autolink_literal: true,
+        ..ResolvedGfmConstructs::CONSERVATIVE
+    };
+    let mut p = Pipeline::with_defaults_and_gfm(resolved);
+    let hast = p.run(input).expect("pipeline runs");
+    serialize(&hast)
+}
+
+/// Render with autolink-literal ON but cjkFriendly OFF — the strict-
+/// CommonMark escape hatch, where the boundary plugin is NOT wired.
+fn render_autolink_no_cjk(input: &str) -> String {
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+    let resolved = ResolvedGfmConstructs {
+        autolink_literal: true,
+        ..ResolvedGfmConstructs::CONSERVATIVE
+    };
+    let mut p = Pipeline::with_defaults_and_theme_and_gfm_and_cjk(None, resolved, false);
+    let hast = p.run(input).expect("pipeline runs");
+    serialize(&hast)
+}
+
+/// The exact expected output from issue #1105: the link stops at the URL and
+/// the Japanese run becomes following text.
+#[test]
+fn autolink_cjk_boundary_matches_issue_expected() {
+    let input = "詳細はhttps://example.com参照してください。\n";
+    let html = render_autolink(input);
+    assert_contains(
+        &html,
+        "<p>詳細は<a href=\"https://example.com\">https://example.com</a>参照してください。</p>",
+        input,
+    );
+}
+
+/// Real-world hit: a full-width `）` terminates the path; the link no longer
+/// swallows the trailing sentences up to the first ASCII token.
+#[test]
+fn autolink_fullwidth_paren_terminates_path() {
+    let input = "（https://ebow.com/diy-mods）が施されており…ADDAC127\n";
+    let html = render_autolink(input);
+    assert_contains(
+        &html,
+        "<a href=\"https://ebow.com/diy-mods\">https://ebow.com/diy-mods</a>）が施されており",
+        input,
+    );
+    // The href must NOT contain any CJK.
+    assert_lacks(&html, "href=\"https://ebow.com/diy-mods）", input);
+}
+
+/// `www.` autolink keeps its prepended `http://` scheme after the cut.
+/// (markdown-rs only recognises a `www.` autolink at the start of a line or
+/// after whitespace / `*_~(`, so the bare URL leads the paragraph here.)
+#[test]
+fn autolink_www_form_split() {
+    let input = "www.example.com参照\n";
+    let html = render_autolink(input);
+    assert_contains(
+        &html,
+        "<a href=\"http://www.example.com\">www.example.com</a>参照",
+        input,
+    );
+}
+
+/// An ASCII-terminated autolink in CJK context is untouched.
+#[test]
+fn autolink_ascii_terminated_unchanged() {
+    let input = "詳細は https://example.com です\n";
+    let html = render_autolink(input);
+    assert_contains(
+        &html,
+        "<a href=\"https://example.com\">https://example.com</a>",
+        input,
+    );
+}
+
+/// The fix reaches autolinks inside headings (heading anchors are added on
+/// top, but the autolink href itself must already be clean).
+#[test]
+fn autolink_cjk_boundary_inside_heading() {
+    let input = "## 参考https://example.com詳細\n";
+    let html = render_autolink(input);
+    assert_contains(
+        &html,
+        "<a href=\"https://example.com\">https://example.com</a>詳細",
+        input,
+    );
+    assert_lacks(&html, "href=\"https://example.com詳細", input);
+}
+
+/// Gating: with autolink-literal OFF (the default), bare URLs are not
+/// autolinked at all, so the plugin has nothing to do and the URL stays
+/// literal text — no `<a>` tag, no behavior change.
+#[test]
+fn autolink_off_leaves_bare_url_as_text() {
+    let input = "詳細はhttps://example.com参照してください。\n";
+    let html = render(input);
+    assert_lacks(&html, "<a href", input);
+    assert_contains(&html, "https://example.com参照してください。", input);
+}
+
+/// Gating: with cjkFriendly OFF (strict-CommonMark escape hatch), the
+/// boundary plugin is not wired, so the stock markdown-rs over-consumption
+/// is preserved — documents the opt-out.
+#[test]
+fn autolink_cjk_friendly_false_preserves_overconsumption() {
+    let input = "詳細はhttps://example.com参照してください。\n";
+    let html = render_autolink_no_cjk(input);
+    assert_contains(
+        &html,
+        "<a href=\"https://example.com参照してください。\">",
+        input,
+    );
+}

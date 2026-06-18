@@ -30,9 +30,10 @@ use zfb_md_ast::{CrossFileLinkCandidate, FileHeadings, HeadingIdStrategy, ReadRe
 use crate::dep_manifest::DependencyManifest;
 use crate::path_norm::normalize_path_lexically;
 use crate::plugins::{
-    BrokenLinkDiagnostic, CjkFriendlyPlugin, CodeTitlePlugin, ExternalLinksConfig,
-    ExternalLinksPlugin, HardBreaksPlugin, HeadingLinksPlugin, MermaidPlugin, ResolveLinksPlugin,
-    ResolveMarkdownLinksOptions, StripMdExtensionPlugin, SyntectPlugin, TocConfig, TocPlugin,
+    BrokenLinkDiagnostic, CjkAutolinkBoundaryPlugin, CjkFriendlyPlugin, CodeTitlePlugin,
+    ExternalLinksConfig, ExternalLinksPlugin, HardBreaksPlugin, HeadingLinksPlugin, MermaidPlugin,
+    ResolveLinksPlugin, ResolveMarkdownLinksOptions, StripMdExtensionPlugin, SyntectPlugin,
+    TocConfig, TocPlugin,
 };
 use crate::syntect_highlight::Highlighter;
 
@@ -1473,6 +1474,14 @@ impl Pipeline {
         // `push_config_derived_mdast_visitor`).
         if cjk_friendly {
             p.push_config_derived_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+            // GFM autolink-literal CJK boundary fix (zfb#1105). Only fires when
+            // bare-URL autolinking is on (otherwise there are no autolink Link
+            // nodes to split, and gating on it keeps explicit links untouched).
+            // Both `cjk_friendly` and `autolink_literal` are already in the
+            // config fingerprint, so this wiring stays non-invalidating.
+            if resolved.autolink_literal {
+                p.push_config_derived_mdast_visitor(Box::new(CjkAutolinkBoundaryPlugin::new()));
+            }
         }
         // No directive registry here: core seeds zero directive names. Callers
         // that want `:::name` → `<Component>` go through
@@ -1721,6 +1730,11 @@ impl Pipeline {
         // `push_config_derived_mdast_visitor`).
         if cjk_friendly {
             p.push_config_derived_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+            // GFM autolink-literal CJK boundary fix (zfb#1105) — see the twin
+            // wiring in `build_defaults` for the gating/fingerprint rationale.
+            if resolved.autolink_literal {
+                p.push_config_derived_mdast_visitor(Box::new(CjkAutolinkBoundaryPlugin::new()));
+            }
         }
         // HardBreaksPlugin runs AFTER CjkFriendlyPlugin so CJK emphasis
         // re-tokenisation sees intact Text nodes first (emphasis markers are
