@@ -300,7 +300,7 @@ pub struct BundlerInput {
     /// (as `--define:process.env.<KEY>='<JSON-encoded value>'`). All
     /// other keys are silently dropped — server secrets MUST NOT appear
     /// in the bundle. See [`server_secrets_are_not_bundled`] in tests.
-    pub define_vars: HashMap<String, String>,
+    pub define_vars: BTreeMap<String, String>,
     /// `compilerOptions.paths`-style alias map (TS path aliases). The
     /// bundler writes a rebased copy into a synthetic `tsconfig.json`
     /// inside the shadow tree; esbuild then resolves user imports
@@ -5174,7 +5174,7 @@ mod tests {
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             framework: Framework::Preact,
-            define_vars: HashMap::new(),
+            define_vars: BTreeMap::new(),
             tsconfig_paths: BTreeMap::new(),
             external: vec![],
             main_fields: Vec::new(),
@@ -6505,7 +6505,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut defs = HashMap::new();
+        let mut defs = BTreeMap::new();
         defs.insert("PUBLIC_API_URL".into(), "https://example.test".into());
         defs.insert(
             "SECRET_KEY".into(),
