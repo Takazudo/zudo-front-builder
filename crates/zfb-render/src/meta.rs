@@ -836,4 +836,55 @@ mod tests {
         assert!(is_within(&PathBuf::from("/project/pages/index.tsx"), &root));
         assert!(!is_within(&PathBuf::from("/other/file.tsx"), &root));
     }
+
+    // ---- parity: derive_content_type must agree with zfb-server's
+    // content_type_for_extension for the extensions both tables cover.
+    // The two tables differ only in catch-all behaviour (render defaults to
+    // HTML; server defaults to application/octet-stream), so we test only
+    // the rows present in derive_content_type.  When adding an extension to
+    // either table, add it here too.  Mirror: zfb_server::routes::content_type_for_extension.
+    #[test]
+    fn derive_content_type_parity_with_server_table() {
+        let cases: &[(&str, &str)] = &[
+            ("html", "text/html; charset=utf-8"),
+            ("htm", "text/html; charset=utf-8"),
+            ("xml", "application/xml"),
+            ("rss", "application/rss+xml"),
+            ("atom", "application/atom+xml"),
+            ("json", "application/json"),
+            ("map", "application/json"),
+            ("webmanifest", "application/manifest+json"),
+            ("txt", "text/plain; charset=utf-8"),
+            ("css", "text/css; charset=utf-8"),
+            ("js", "application/javascript; charset=utf-8"),
+            ("mjs", "application/javascript; charset=utf-8"),
+            ("cjs", "application/javascript; charset=utf-8"),
+            ("wasm", "application/wasm"),
+            ("svg", "image/svg+xml"),
+            ("png", "image/png"),
+            ("jpg", "image/jpeg"),
+            ("jpeg", "image/jpeg"),
+            ("webp", "image/webp"),
+            ("avif", "image/avif"),
+            ("gif", "image/gif"),
+            ("ico", "image/x-icon"),
+            ("woff", "font/woff"),
+            ("woff2", "font/woff2"),
+            ("ttf", "font/ttf"),
+            ("otf", "font/otf"),
+            ("eot", "application/vnd.ms-fontobject"),
+            ("mp4", "video/mp4"),
+            ("webm", "video/webm"),
+            ("mp3", "audio/mpeg"),
+            ("ogg", "audio/ogg"),
+            ("pdf", "application/pdf"),
+        ];
+        for (ext, expected) in cases {
+            assert_eq!(
+                derive_content_type(ext, None),
+                *expected,
+                "derive_content_type({ext:?}) should match server table"
+            );
+        }
+    }
 }

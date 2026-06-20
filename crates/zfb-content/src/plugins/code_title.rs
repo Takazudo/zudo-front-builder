@@ -168,6 +168,10 @@ fn extract_title(meta: &str) -> Option<String> {
         if at_boundary {
             let rest = &meta[idx + "title=".len()..];
             let rest = rest.strip_prefix('"')?;
+            // `end` is the byte offset of the closing ASCII `"` — always a
+            // valid char boundary even when `rest` contains multibyte chars,
+            // because `str::find` returns char-boundary offsets and `"` (0x22)
+            // cannot appear as a continuation byte in UTF-8.
             let end = rest.find('"')?;
             return Some(rest[..end].to_string());
         }
@@ -323,5 +327,53 @@ mod tests {
     #[test]
     fn remove_title_subtitle_unchanged() {
         assert_eq!(remove_title("subtitle=\"x\""), "subtitle=\"x\"");
+    }
+
+    // --- Multibyte title values ---
+
+    #[test]
+    fn extract_title_multibyte() {
+        // CJK filename in title value: extract_title must return the full
+        // multibyte string without panicking or truncating.
+        assert_eq!(
+            extract_title("title=\"ファイル名.rs\""),
+            Some("ファイル名.rs".to_string()),
+        );
+    }
+
+    #[test]
+    fn remove_title_multibyte() {
+        // remove_title must strip the CJK title and leave the remaining key
+        // intact without corrupting the byte offsets.
+        assert_eq!(
+            remove_title("title=\"ファイル名.rs\" foo=1"),
+            "foo=1",
+        );
+    }
+
+    #[test]
+    fn wraps_pre_with_multibyte_title() {
+        // End-to-end: a <pre> with a multibyte title= value must be wrapped
+        // and the title div must carry the full string.
+        let mut tree = root(vec![pre_with_meta(Some("title=\"ファイル名.rs\""))]);
+        CodeTitlePlugin::new().visit(&mut tree);
+        let HastNode::Root { children } = tree else {
+            unreachable!("expected HastNode::Root")
+        };
+        let HastNode::Element { tag, children, .. } = &children[0] else {
+            unreachable!("expected HastNode::Element")
+        };
+        assert_eq!(tag, "div");
+        let HastNode::Element {
+            children: title_children,
+            ..
+        } = &children[0]
+        else {
+            unreachable!("expected title div")
+        };
+        assert_eq!(
+            title_children,
+            &[HastNode::Text("ファイル名.rs".into())]
+        );
     }
 }

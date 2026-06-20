@@ -30,8 +30,8 @@ Wiring concrete renderers / engines / bundlers happens in the bin crate
 `lib.rs` re-exports items across several module groups:
 
 - **Orchestrator** — `BuildOrchestrator<P>`, `OrchestratorConfig`
-  (five fields: `project_root`, `watch_roots`, `extra_watch_paths`,
-  `policy`, `debounce`), `DiscoveryHook`, `DiscoveryOutcome`.
+  (six fields: `project_root`, `watch_roots`, `extra_watch_paths`,
+  `policy`, `debounce`, `external_invalidation`), `DiscoveryHook`, `DiscoveryOutcome`.
 - **Pipeline (dev / prod)** — `AssetPipeline` trait, `DevAssetPipeline`,
   `ProductionAssetPipeline`, `apply_prod_asset_pipeline`,
   `BuildContext` (legacy transition shim — see below),

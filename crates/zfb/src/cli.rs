@@ -136,7 +136,7 @@ pub struct PreviewArgs {
 /// Two failure modes:
 ///
 /// 1. TypeScript errors — `tsc --noEmit` is invoked as a subprocess on
-///    the project. Anything tsc would flag in normal CI flagsHERE.
+///    the project. Anything tsc would flag in normal CI.
 /// 2. Content collection schema violations — every entry's frontmatter
 ///    is validated against the JSON Schema declared in
 ///    `zfb.config.json`'s `collections[].schema` field (when present).

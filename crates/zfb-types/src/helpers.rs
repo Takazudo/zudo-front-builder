@@ -65,12 +65,13 @@ pub fn escape_html(s: &str) -> String {
 
 /// Convert a `&Path` to a POSIX-style string by replacing `\` with `/`.
 ///
-/// On Unix this is a no-op (paths never contain backslashes). On Windows the
-/// resulting string uses forward slashes as separators, which is what tools
-/// like esbuild and globset expect regardless of the host OS.
+/// On Unix backslash is a valid filename character, not a path separator, so
+/// the replacement is gated behind `cfg!(windows)`. On Windows the resulting
+/// string uses forward slashes as separators, which is what tools like esbuild
+/// and globset expect regardless of the host OS.
 pub fn path_to_posix_string(p: &Path) -> String {
     let s = p.to_string_lossy().into_owned();
-    if s.contains('\\') {
+    if cfg!(windows) && s.contains('\\') {
         s.replace('\\', "/")
     } else {
         s
@@ -191,14 +192,18 @@ mod tests {
     }
 
     #[test]
-    fn path_to_posix_replaces_backslashes() {
-        // On Unix Path does not interpret `\` as a separator, but
-        // to_string_lossy still returns the literal characters, which our
-        // replace then maps to forward slashes — simulating a Windows path.
-        assert_eq!(
-            path_to_posix_string(Path::new(r"C:\abs\foo.tsx")),
-            "C:/abs/foo.tsx"
-        );
+    fn path_to_posix_backslash_behaviour_is_platform_gated() {
+        // On Windows backslash is the path separator and must be converted.
+        // On Unix backslash is a valid filename byte; we must NOT corrupt it.
+        let input = Path::new(r"C:\abs\foo.tsx");
+        let result = path_to_posix_string(input);
+        if cfg!(windows) {
+            assert_eq!(result, "C:/abs/foo.tsx", "Windows: backslashes converted");
+        } else {
+            // The literal string r"C:\abs\foo.tsx" contains backslashes that
+            // on Unix are valid filename characters — they must be preserved.
+            assert_eq!(result, r"C:\abs\foo.tsx", "Unix: backslashes preserved");
+        }
     }
 
     #[test]

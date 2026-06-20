@@ -165,9 +165,11 @@ pub struct EmbeddedV8RenderHost {
 // `RefCell<...>`, or the existing `JsRuntime` — preserves it.
 
 impl EmbeddedV8RenderHost {
-    /// Create a new host with the default extension set
-    /// (`deno_fetch` + `deno_web` + the node:* stubs + the host
-    /// globals shim).
+    /// Create a new host with the default extension set (a JS polyfill
+    /// providing Web Platform globals + the node:* stubs + the host
+    /// globals shim; no `deno_fetch` / `deno_web` Rust extensions — see
+    /// `build_extensions()` and the `Cargo.toml` note "Why a polyfill
+    /// instead of deno_fetch/deno_web").
     ///
     /// First-call cost is dominated by V8's snapshot warmup. The host
     /// is intended to be created **once per build** and reused across
