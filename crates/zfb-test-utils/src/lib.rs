@@ -1,7 +1,9 @@
 mod html_normalize;
 mod sse;
 pub use html_normalize::normalize_html;
-pub use sse::{next_sse_event_name, wait_for_subscribers};
+pub use sse::{
+    decode_utf8_incremental, next_sse_event_name, wait_for_subscribers, wait_for_subscribers_polled,
+};
 
 use std::path::{Path, PathBuf};
 

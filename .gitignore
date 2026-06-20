@@ -21,6 +21,13 @@ node_modules/
 # pnpm symlink shape before descending into a bare specifier). The
 # global `node_modules/` rule above already keeps that runtime symlink
 # out of git, so we no longer need a fixture whitelist.
+#
+# check-tsc-fail fixture: committed shell stub acting as a fake tsc binary
+# that always exits 1. The `node_modules/` rule above ignores the whole
+# dir, so we whitelist this specific stub file here.
+!crates/zfb/tests/fixtures/check-tsc-fail/node_modules/
+!crates/zfb/tests/fixtures/check-tsc-fail/node_modules/.bin/
+!crates/zfb/tests/fixtures/check-tsc-fail/node_modules/.bin/tsc
 
 # Editors
 .DS_Store

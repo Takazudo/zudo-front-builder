@@ -1154,4 +1154,157 @@ mod tests {
         // The <pre> text is not modified.
         assert!(out.contains(r#"<pre><code>data-zfb-island=""</code></pre>"#));
     }
+
+    // ---- Islands ↔ render-output marker contract (item #1146-2) ──────────────
+    //
+    // These tests simulate what a "use client" page render produces and then
+    // assert the rewriter produces the correct wrapper shape.
+    //
+    // ## Why no real V8 render path
+    //
+    // The renderer in `zfb-render` does NOT yet emit
+    // `<!--zfb-island:KEY-->` markers (see the module-level doc, line
+    // 52-57). When the renderer is updated (Sub 4), a Level-4 E2E test
+    // should drive the full pipeline with a real V8 bundle. Until then
+    // this Level-3 test exercises the same marker contract using hand-crafted
+    // HTML that exactly matches `island_marker_pair`'s output — the
+    // single public source of truth for the marker shape.
+    //
+    // This test is CI-runnable (`cargo test --workspace`) with no V8 or
+    // esbuild dependency.
+
+    /// Simulate a minimal "use client" page render: a page that server-renders
+    /// two counter islands inside the expected marker brackets. Assert that
+    /// `rewrite_islands` produces the canonical wrapper shape for each.
+    #[test]
+    fn use_client_page_marker_to_wrapper_shape() {
+        // Canonical markers from the public helper — identical to what the
+        // renderer is expected to emit once Sub 4 is done.
+        let (open_a, close_a) = island_marker_pair("counter#0");
+        let (open_b, close_b) = island_marker_pair("counter#1");
+
+        // Simulate server-rendered HTML for a "use client" page with two Counter
+        // islands. The renderer wraps each island's SSR output in the marker pair.
+        let html = format!(
+            r#"<!doctype html><html><head><title>Demo</title></head><body>
+<h1>My Page</h1>
+{open_a}<button>Count: 0</button>{close_a}
+<p>Some text between islands.</p>
+{open_b}<button>Count: 5</button>{close_b}
+</body></html>"#
+        );
+
+        let mut tree = HtmlTree::parse(html);
+        let islands = vec![
+            IslandDescriptor::new("Counter", json!({"start": 0}), "counter#0"),
+            IslandDescriptor::new("Counter", json!({"start": 5}), "counter#1")
+                .with_when(WhenHint::Visible),
+        ];
+
+        rewrite_islands(&mut tree, &islands).unwrap();
+        let out = tree.serialize();
+
+        // ── wrapper shape for island A (no data-when) ────────────────────
+        assert!(
+            out.contains(r#"data-zfb-island="Counter""#),
+            "wrapper attribute present: {out}"
+        );
+        assert!(
+            out.contains(r#"data-props="{&quot;start&quot;:0}""#),
+            "props for counter#0: {out}"
+        );
+        assert!(
+            out.contains("<button>Count: 0</button>"),
+            "inner HTML preserved for counter#0: {out}"
+        );
+
+        // ── wrapper shape for island B (data-when=visible) ───────────────
+        assert!(
+            out.contains(r#"data-props="{&quot;start&quot;:5}""#),
+            "props for counter#1: {out}"
+        );
+        assert!(
+            out.contains(r#"data-when="visible""#),
+            "data-when emitted for counter#1: {out}"
+        );
+        assert!(
+            out.contains("<button>Count: 5</button>"),
+            "inner HTML preserved for counter#1: {out}"
+        );
+
+        // ── markers are gone ─────────────────────────────────────────────
+        assert!(
+            !out.contains("<!--zfb-island:"),
+            "open markers must be removed: {out}"
+        );
+        assert!(
+            !out.contains("<!--/zfb-island:"),
+            "close markers must be removed: {out}"
+        );
+
+        // ── document structure preserved ─────────────────────────────────
+        assert!(out.contains("<h1>My Page</h1>"), "static content intact");
+        assert!(
+            out.contains("<p>Some text between islands.</p>"),
+            "between-island content intact"
+        );
+    }
+
+    /// Verify `island_marker_pair` shape is stable — both the open/close
+    /// forms and the fact that `<!--` / `-->` delimiters are present.
+    /// This is the source-of-truth contract test referenced in item #1146-2.
+    #[test]
+    fn island_marker_pair_contract_shape() {
+        let (open, close) = island_marker_pair("MyComp#3");
+        // Open marker must start with `<!--zfb-island:` and end with `-->`.
+        assert!(
+            open.starts_with("<!--zfb-island:"),
+            "open marker prefix: {open}"
+        );
+        assert!(open.ends_with("-->"), "open marker suffix: {open}");
+        // Close marker must start with `<!--/zfb-island:` and end with `-->`.
+        assert!(
+            close.starts_with("<!--/zfb-island:"),
+            "close marker prefix: {close}"
+        );
+        assert!(close.ends_with("-->"), "close marker suffix: {close}");
+        // Both must embed the key.
+        assert!(open.contains("MyComp#3"), "open contains key: {open}");
+        assert!(close.contains("MyComp#3"), "close contains key: {close}");
+        // Open and close must differ (and thus be distinguishable by the parser).
+        assert_ne!(open, close, "open and close must be distinct");
+    }
+
+    /// Verify that the rewriter correctly handles a "use client" page where
+    /// the same component appears twice under different marker keys — the
+    /// common case when a single component type is used in multiple locations.
+    #[test]
+    fn use_client_same_component_two_instances() {
+        let (o1, c1) = island_marker_pair("btn#0");
+        let (o2, c2) = island_marker_pair("btn#1");
+        let html =
+            format!("<html><body>{o1}<span>A</span>{c1}<hr>{o2}<span>B</span>{c2}</body></html>");
+        let mut tree = HtmlTree::parse(html);
+        let islands = vec![
+            IslandDescriptor::new("Button", json!({"label": "A"}), "btn#0"),
+            IslandDescriptor::new("Button", json!({"label": "B"}), "btn#1"),
+        ];
+        rewrite_islands(&mut tree, &islands).unwrap();
+        let out = tree.serialize();
+
+        // Both instances must be wrapped.
+        let count = out.matches(r#"data-zfb-island="Button""#).count();
+        assert_eq!(count, 2, "both Button instances wrapped: {out}");
+        // Inner HTML preserved for each.
+        assert!(
+            out.contains("<span>A</span>"),
+            "first instance inner: {out}"
+        );
+        assert!(
+            out.contains("<span>B</span>"),
+            "second instance inner: {out}"
+        );
+        // No dangling markers.
+        assert!(!out.contains("<!--zfb-island:"), "markers removed: {out}");
+    }
 }
