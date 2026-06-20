@@ -67,6 +67,16 @@ function isAssetProbeMethod(method) {
 export default {
   async fetch(request, env, ctx) {
     if (isAssetProbeMethod(request.method) && canDelegateToAssets(env)) {
+      // Trade-off: every GET/HEAD request that matches a prerendered route pays
+      // the cost of one env.ASSETS.fetch() round-trip before the inner worker
+      // sees it.  The upside is that CF Pages' asset server handles trailing-
+      // slash canonicalisation (e.g. /docs/foo → 308 → /docs/foo/) and serves
+      // the build-time head-injected HTML with the hashed <link>/<script> tags.
+      // If we skipped this probe, prerendered routes would be dynamic-SSR'd by
+      // the inner Hono router without the prod head injection, and islands would
+      // never hydrate.  For purely dynamic apps (prerender=false everywhere) the
+      // extra round-trip is pure overhead; splitting the wrapper into two
+      // variants is the accepted future escape hatch for that case.
       const assetResponse = await env.ASSETS.fetch(request);
       if (assetResponse.status !== 404) {
         return assetResponse;
