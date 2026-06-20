@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use lightningcss::css_modules::{Config as LcssConfig, Pattern};
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
-use zfb_types::path_to_posix_string;
 
 /// Configuration for [`CssModulesProcessor`].
 #[derive(Debug, Clone, Default)]
@@ -215,8 +214,13 @@ impl CssModulesProcessor {
 pub(crate) fn hash_filename(path: &Path, project_root: Option<&Path>) -> String {
     let rel = project_root.and_then(|root| path.strip_prefix(root).ok());
     let chosen = rel.unwrap_or(path);
-    // Normalise Windows separators so the hash matches across OSes.
-    path_to_posix_string(chosen)
+    // Normalise `\` → `/` UNCONDITIONALLY (not via the OS-path-gated
+    // `zfb_types::path_to_posix_string`, which only replaces on Windows to
+    // avoid corrupting literal `\` in Unix filenames). The module hash must be
+    // identical regardless of the host OS that produced the path — a Windows
+    // checkout's `sub\a.css` must hash the same as a Unix checkout's
+    // `sub/a.css` (#825).
+    chosen.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]
