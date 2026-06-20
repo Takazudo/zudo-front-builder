@@ -481,7 +481,10 @@ fn expect_object<'a>(
 fn expect_string(expr: &Expr, export: &str, ctx: &Ctx<'_>) -> Result<String, TsxFrontmatterError> {
     match unwrap_ts_wrappers(expr) {
         Expr::Lit(Lit::Str(s)) => Ok(wtf8_to_string(&s.value)),
-        Expr::Tpl(tpl) if tpl.exprs.is_empty() => Ok(tpl_quasi_to_string(tpl)),
+        Expr::Tpl(tpl) if tpl.exprs.is_empty() => {
+            tpl_quasi_to_string(tpl)
+                .ok_or_else(|| ctx.computed(tpl.span, export, "empty template literal has no quasi"))
+        }
         Expr::Tpl(tpl) => Err(ctx.computed(
             tpl.span,
             export,
@@ -631,7 +634,9 @@ fn expr_to_json(
                     "template strings with substitutions are not allowed",
                 ));
             }
-            Ok(JsonValue::String(tpl_quasi_to_string(tpl)))
+            let s = tpl_quasi_to_string(tpl)
+                .ok_or_else(|| ctx.computed(tpl.span, export, "empty template literal has no quasi"))?;
+            Ok(JsonValue::String(s))
         }
         Expr::Unary(u) => match u.op {
             // `-1`, `+1`, `-Infinity` (still rejected later because it
@@ -740,16 +745,12 @@ fn lit_to_json(lit: &Lit, export: &str, ctx: &Ctx<'_>) -> Result<JsonValue, TsxF
 /// preferring the cooked value and falling back to raw if SWC didn't
 /// produce a cooked atom (rare — only happens for explicit invalid
 /// escape sequences in tagged templates, which we already reject).
-fn tpl_quasi_to_string(tpl: &swc_core::ecma::ast::Tpl) -> String {
-    debug_assert!(
-        !tpl.quasis.is_empty(),
-        "a substitution-free template literal still has at least one quasi",
-    );
-    let q = &tpl.quasis[0];
-    match &q.cooked {
+fn tpl_quasi_to_string(tpl: &swc_core::ecma::ast::Tpl) -> Option<String> {
+    let q = tpl.quasis.first()?;
+    Some(match &q.cooked {
         Some(c) => wtf8_to_string(c),
         None => q.raw.as_str().to_owned(),
-    }
+    })
 }
 
 /// Convert a `Wtf8Atom` value into a Rust `String`. Frontmatter strings
@@ -788,7 +789,10 @@ fn number_to_json(value: f64) -> Option<JsonValue> {
         // Use the integer lane when the value fits cleanly. `value as
         // i64` saturates on overflow, so guard with explicit range
         // checks against the `i64` and `u64` boundaries.
-        if value >= 0.0 && value <= u64::MAX as f64 {
+        // Use strict `<` against 2^64 (u64::MAX as f64 rounds up to 2^64,
+        // making `<= u64::MAX as f64` accept 2^64 itself, which then
+        // saturates to u64::MAX on the cast).
+        if value >= 0.0 && value < 2f64.powi(64) {
             return Some(JsonValue::Number(JsonNumber::from(value as u64)));
         }
         if value >= i64::MIN as f64 && value <= i64::MAX as f64 {
@@ -1313,5 +1317,57 @@ mod tests {
     fn filename_rule_bare_tsx_yields_none() {
         // `.tsx` as the entire basename has no stem.
         assert_eq!(filename_extension_candidate(".tsx"), None);
+    }
+
+    // ----- number_to_json boundary -----
+
+    #[test]
+    fn number_to_json_u64_max_boundary() {
+        // u64::MAX as f64 rounds up to 2^64, so feeding it back through
+        // `value as u64` would saturate. Values that can't fit in u64
+        // must fall through to the f64 path.
+        let two_pow_64 = 2f64.powi(64);
+        // Exactly 2^64 is out of range — must NOT be stored as u64.
+        let v = number_to_json(two_pow_64).expect("finite, should produce Some");
+        assert!(
+            v.as_u64().is_none(),
+            "2^64 must not saturate into u64::MAX; got {v:?}",
+        );
+        // u64::MAX itself (2^64 - 1) cannot be represented exactly as f64
+        // (it rounds to 2^64), so it also falls to the f64 path.
+        let u64_max_f64 = u64::MAX as f64;
+        let v2 = number_to_json(u64_max_f64).expect("finite, should produce Some");
+        assert!(
+            v2.as_u64().is_none(),
+            "u64::MAX as f64 (rounds to 2^64) must not saturate; got {v2:?}",
+        );
+        // A value well inside the u64 range should use the integer lane.
+        let in_range = number_to_json(1_000_000.0).expect("should produce Some");
+        assert_eq!(in_range.as_u64(), Some(1_000_000));
+    }
+
+    // ----- tpl_quasi_to_string (fix #3: returns Option, no panic) -----
+
+    #[test]
+    fn tpl_quasi_to_string_empty_quasis_returns_none() {
+        // Construct a synthetic Tpl with no quasis to prove the function
+        // returns None instead of panicking (regression guard for the
+        // release panic fixed in this PR).
+        use swc_core::ecma::ast::{Tpl, TplElement};
+        use swc_core::common::DUMMY_SP;
+        let empty_tpl = Tpl { span: DUMMY_SP, exprs: vec![], quasis: vec![] };
+        assert!(
+            tpl_quasi_to_string(&empty_tpl).is_none(),
+            "empty quasis should yield None, not panic",
+        );
+        // A normal single-quasi Tpl should still produce the string.
+        let elem = TplElement {
+            span: DUMMY_SP,
+            tail: true,
+            cooked: Some("hello".into()),
+            raw: "hello".into(),
+        };
+        let normal_tpl = Tpl { span: DUMMY_SP, exprs: vec![], quasis: vec![elem] };
+        assert_eq!(tpl_quasi_to_string(&normal_tpl).as_deref(), Some("hello"));
     }
 }

@@ -126,9 +126,12 @@ fn push_comment_sanitized(s: &str, out: &mut String) {
     for ch in s.chars() {
         if ch == '-' && prev_dash {
             // Break the run by inserting a space before this dash.
+            // Keep prev_dash=true so the next consecutive dash is also
+            // separated — without this, `a---b` would produce `a- --b`
+            // which still contains `--`.
             out.push(' ');
             out.push('-');
-            prev_dash = false;
+            // prev_dash stays true: the just-pushed `-` counts as a dash
         } else {
             out.push(ch);
             prev_dash = ch == '-';
@@ -247,10 +250,28 @@ mod tests {
         // Each `--` becomes `- -`.
         assert_eq!(serialize(&h), "<!--hi - - there - - you-->");
 
-        // Three dashes in a row: only the first pair is broken; the lone
-        // trailing dash stays (it cannot prematurely close the comment).
+        // Three dashes in a row: every consecutive pair is broken up.
+        // `a---b` → `a- - -b` (no `--` survives).
         let h = HastNode::Comment("a---b".into());
-        assert_eq!(serialize(&h), "<!--a- --b-->");
+        assert_eq!(serialize(&h), "<!--a- - -b-->");
+    }
+
+    // 9b. Longer runs of dashes must not leave any `--` inside the comment body.
+    #[test]
+    fn comment_long_dash_run_has_no_double_dash() {
+        for input in &["a----b", "a-----b"] {
+            let h = HastNode::Comment((*input).into());
+            let out = serialize(&h);
+            // Strip the `<!--` prefix and `-->` suffix so we only check the body.
+            let body = out
+                .strip_prefix("<!--")
+                .and_then(|s| s.strip_suffix("-->"))
+                .unwrap_or(&out);
+            assert!(
+                !body.contains("--"),
+                "comment body still contains `--`: {body:?} (input={input:?})"
+            );
+        }
     }
 
     // 10. Nested elements.
