@@ -41,6 +41,11 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
     return query.trim().split(/\\s+/).filter(Boolean);
   }
 
+  // Scoring uses exact substring matching only (indexOf). Partial-word
+  // prefixes (e.g. "conf" not matching "configuration") are not ranked.
+  // Full MiniSearch integration with prefix/fuzzy support is deferred until
+  // the inline-script bundling limitation is resolved — see the module-level
+  // comment above.
   function scoreEntry(entry, terms) {
     var score = 0;
     var titleLower = (entry.title || "").toLowerCase();

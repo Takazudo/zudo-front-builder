@@ -36,13 +36,12 @@ import { toHistorySlug } from "@/utils/slug";
 // across the shadow boundary would resolve to the wrong location.
 import docHistoryMeta from "#doc-history-meta";
 
-// BCP-47 locale tag mapping used by Intl.DateTimeFormat.
+// BCP-47 locale tag mapping used by Intl.DateTimeFormat. Add an entry for
+// each locale in settings.locales. Falls back to "en-US" for unknown locales.
 // Originally mirrored from `src/utils/git-info.ts` (removed in S1 #1928).
-// The formatDate function below is the stable copy; kept in sync manually.
 const LOCALE_TO_BCP47: Record<string, string> = {
   en: "en-US",
   ja: "ja-JP",
-  de: "de-DE",
 };
 
 /** Format an ISO date string for display, respecting the active locale. */

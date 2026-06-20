@@ -16,7 +16,7 @@
 // rule, a local copy is used here instead.
 //
 // i18n: both `doc.tags` and `doc.taggedWith` are confirmed present for all
-// project locales (en, ja, de) in src/config/i18n.ts — no fallback needed.
+// project locales (en, ja) in src/config/i18n.ts — no fallback needed.
 
 import type { VNode } from "preact";
 import { settings } from "@/config/settings";
