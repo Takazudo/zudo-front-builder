@@ -244,6 +244,28 @@ fn try_inject_dimensions(
         return;
     }
 
+    // Symlink-escape guard: the lexical check above collapses `..` but cannot
+    // detect symlinks that point outside the root. Canonicalize the resolved
+    // path (following all symlinks) and re-check `starts_with` on the real
+    // filesystem paths — matching the pattern used in `transclude.rs`.
+    // Only perform this check when the file actually exists; a missing file
+    // is handled later by `probe_dimensions` (which emits a warning).
+    if let Ok(canonical) = abs_path.canonicalize() {
+        let canonical_root = expected_root
+            .canonicalize()
+            .unwrap_or_else(|_| normalized_root.clone());
+        if !canonical.starts_with(&canonical_root) {
+            emit_warning(
+                ctx,
+                format!(
+                    "imageDimensions: src '{src}' resolves (via symlink) outside the expected root '{}' — skipping",
+                    expected_root.display()
+                ),
+            );
+            return;
+        }
+    }
+
     // Record the dependency read (zfb#944) BEFORE probing, regardless of
     // the mtime cache below: the emitted width/height (or the warning
     // diagnostic) depends on this file's on-disk state every compile.
@@ -821,6 +843,52 @@ mod tests {
             "warning should mention containment: {:?}",
             warnings[0]
         );
+    }
+
+    /// A symlink inside the project that points to a file outside the project
+    /// root must be rejected. The lexical check passes (the symlink path
+    /// starts_with project_root lexically), but the post-canonicalization
+    /// check must catch the escape.
+    ///
+    /// Skipped on platforms that do not support symlinks (e.g. some Windows
+    /// configurations where `std::os::unix::fs::symlink` is unavailable).
+    #[test]
+    fn symlink_escape_rejected_with_warning() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let outer = tempdir::TempDir::new("imgdim_symlink_outer").unwrap();
+            let inner = tempdir::TempDir::new("imgdim_symlink_inner").unwrap();
+
+            // Create a real file outside the project root.
+            let outside_file = outer.path().join("secret.png");
+            std::fs::write(&outside_file, b"not really a png").unwrap();
+
+            // Create a symlink inside the project root pointing to the outside file.
+            let symlink_path = inner.path().join("escape.png");
+            symlink(&outside_file, &symlink_path).unwrap();
+
+            let warnings = collect_warnings_for_src(
+                "escape.png",
+                inner.path().to_str().unwrap(),
+                inner.path().join("public").to_str().unwrap(),
+                inner.path().join("page.mdx").to_str().unwrap(),
+            );
+            assert!(
+                !warnings.is_empty(),
+                "symlink escaping project root must be rejected with a warning"
+            );
+            assert!(
+                warnings[0].contains("symlink") || warnings[0].contains("resolves outside"),
+                "warning should mention containment: {:?}",
+                warnings[0]
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            // Symlinks are not reliably supported on this platform; skip gracefully.
+        }
     }
 
     // ── Read recording (zfb#944) ──────────────────────────────────────────

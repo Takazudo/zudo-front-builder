@@ -75,13 +75,22 @@ const MARKER_DEL: &str = "[!code --]";
 /// The opening `{` and closing `}` are already stripped by the caller.
 /// Individual items may be single numbers (`3`) or ranges (`3-5`).
 /// Malformed items are silently skipped.
-fn parse_line_range(s: &str) -> Vec<usize> {
+///
+/// `max_lines` caps the upper bound of any range to prevent unbounded Vec
+/// allocation from a crafted meta like `{1-100000000}` (build DoS). The cap
+/// is the actual number of lines in the code block, threaded in by the
+/// caller via [`extract_highlight_range`].
+fn parse_line_range(s: &str, max_lines: usize) -> Vec<usize> {
     let mut lines = Vec::new();
     for part in s.split(',') {
         let part = part.trim();
         if let Some((start, end)) = part.split_once('-') {
             if let (Ok(s), Ok(e)) = (start.trim().parse::<usize>(), end.trim().parse::<usize>()) {
-                for n in s..=e {
+                // Cap the upper bound to the actual line count so a crafted
+                // huge range (e.g. {1-100000000}) does not materialize a
+                // 100M-element Vec.
+                let e_capped = e.min(max_lines);
+                for n in s..=e_capped {
                     lines.push(n);
                 }
             }
@@ -97,11 +106,15 @@ fn parse_line_range(s: &str) -> Vec<usize> {
 /// Extract the `{…}` range from a `data-meta` value like `"title=\"x\" {1,3-5}"`.
 ///
 /// Returns `None` when no brace-delimited range is present.
-fn extract_highlight_range(meta: &str) -> Option<Vec<usize>> {
+///
+/// `max_lines` is forwarded to [`parse_line_range`] to cap unbounded range
+/// expansion (build DoS guard): a range like `{1-100000000}` is clamped to
+/// the actual line count of the code block, not materialised in full.
+fn extract_highlight_range(meta: &str, max_lines: usize) -> Option<Vec<usize>> {
     let open = meta.find('{')?;
     let close = meta[open..].find('}').map(|i| open + i)?;
     let inner = &meta[open + 1..close];
-    let lines = parse_line_range(inner);
+    let lines = parse_line_range(inner, max_lines);
     if lines.is_empty() {
         None
     } else {
@@ -170,12 +183,17 @@ fn detect_and_strip_marker(raw_html: &str) -> Option<(LineDiff, String)> {
     // syntect tokenised the whole comment into one span. Fallback path
     // removes `PREFIX MARKER` text (preserving surrounding markup) so
     // languages with coarser tokenisation also strip cleanly.
+    //
+    // Use `rfind` (last occurrence) rather than `replace` (all occurrences)
+    // to avoid incorrectly stripping a marker that appears inside a string
+    // literal earlier on the same line when the real trailing comment marker
+    // also exists. Only the trailing comment annotation should be stripped.
     let stripped = try_strip_whole_span(raw_html, marker, &comment_prefixes).unwrap_or_else(|| {
         let mut out = raw_html.to_string();
         for &prefix in &comment_prefixes {
             let combined = format!("{prefix}{marker}");
-            if out.contains(&combined) {
-                out = out.replace(&combined, "");
+            if let Some(pos) = out.rfind(&combined) {
+                out.drain(pos..pos + combined.len());
                 return out.trim_end().to_string();
             }
         }
@@ -322,9 +340,13 @@ impl HastVisitor for CodeEnrichmentPlugin {
 fn enrich_children(children: &mut [HastNode], diff_markers: bool, line_highlight: bool) {
     for child in children.iter_mut() {
         if let Some((meta, line_spans)) = pre_code_meta_and_lines(child) {
+            // Pass the actual line count as the cap for range parsing so a
+            // crafted meta like `{1-100000000}` cannot materialize a
+            // 100M-element Vec (build DoS fix).
+            let line_count = line_spans.len();
             let highlight_set: Vec<usize> = if line_highlight {
                 meta.as_deref()
-                    .and_then(extract_highlight_range)
+                    .and_then(|m| extract_highlight_range(m, line_count))
                     .unwrap_or_default()
             } else {
                 Vec::new()
@@ -461,59 +483,69 @@ mod tests {
 
     #[test]
     fn parse_single_number() {
-        assert_eq!(parse_line_range("3"), vec![3]);
+        assert_eq!(parse_line_range("3", usize::MAX), vec![3]);
     }
 
     #[test]
     fn parse_range() {
-        assert_eq!(parse_line_range("3-5"), vec![3, 4, 5]);
+        assert_eq!(parse_line_range("3-5", usize::MAX), vec![3, 4, 5]);
     }
 
     #[test]
     fn parse_mixed() {
-        let mut r = parse_line_range("1,3-5,8");
+        let mut r = parse_line_range("1,3-5,8", usize::MAX);
         r.sort_unstable();
         assert_eq!(r, vec![1, 3, 4, 5, 8]);
     }
 
     #[test]
     fn parse_with_spaces() {
-        assert_eq!(parse_line_range(" 1 , 2 - 3 "), vec![1, 2, 3]);
+        assert_eq!(parse_line_range(" 1 , 2 - 3 ", usize::MAX), vec![1, 2, 3]);
     }
 
     #[test]
     fn parse_empty_string_returns_empty() {
-        assert!(parse_line_range("").is_empty());
+        assert!(parse_line_range("", usize::MAX).is_empty());
     }
 
     #[test]
     fn parse_malformed_skips() {
         // "abc" is not a valid number — silently skip.
-        assert!(parse_line_range("abc").is_empty());
+        assert!(parse_line_range("abc", usize::MAX).is_empty());
+    }
+
+    /// An out-of-range upper bound is clamped to `max_lines` rather than
+    /// materialising a massive Vec (build DoS guard).
+    #[test]
+    fn parse_range_capped_to_max_lines() {
+        // Only 10 lines in the block, but the meta says {1-100000000}.
+        // The result must be at most 10 elements, not 100M.
+        let result = parse_line_range("1-100000000", 10);
+        assert_eq!(result, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     }
 
     // ── extract_highlight_range ───────────────────────────────────────────────
 
     #[test]
     fn extract_from_plain_meta() {
-        let r = extract_highlight_range("{1,3-5}").unwrap();
+        let r = extract_highlight_range("{1,3-5}", usize::MAX).unwrap();
         assert_eq!(r, vec![1, 3, 4, 5]);
     }
 
     #[test]
     fn extract_from_meta_with_title() {
-        let r = extract_highlight_range("title=\"foo\" {2,4}").unwrap();
+        let r = extract_highlight_range("title=\"foo\" {2,4}", usize::MAX).unwrap();
         assert_eq!(r, vec![2, 4]);
     }
 
     #[test]
     fn extract_from_meta_no_range() {
-        assert!(extract_highlight_range("title=\"foo\"").is_none());
+        assert!(extract_highlight_range("title=\"foo\"", usize::MAX).is_none());
     }
 
     #[test]
     fn extract_empty_braces_returns_none() {
-        assert!(extract_highlight_range("{}").is_none());
+        assert!(extract_highlight_range("{}", usize::MAX).is_none());
     }
 
     // ── detect_and_strip_marker ───────────────────────────────────────────────
@@ -586,6 +618,34 @@ mod tests {
         let html = "あ[!code ++] // [!code ++]";
         let (diff, _stripped) = detect_and_strip_marker(html).unwrap();
         assert_eq!(diff, LineDiff::Added);
+    }
+
+    /// When the marker text appears inside a string literal earlier on the
+    /// line (prefixed by a comment prefix) AND also as a real trailing
+    /// comment, only the TRAILING comment (last occurrence) must be stripped.
+    /// The earlier in-string occurrence must be preserved.
+    ///
+    /// Before the fix, `out.replace(&combined, "")` stripped ALL occurrences,
+    /// mangling the string literal content.
+    #[test]
+    fn marker_in_string_literal_earlier_on_line_is_preserved() {
+        // The string literal contains `// [!code ++]` verbatim; the real
+        // trailing comment also contains it. Only the trailing one should go.
+        let html = r#"const s = "// [!code ++]"; // [!code ++]"#;
+        let (diff, stripped) = detect_and_strip_marker(html).unwrap();
+        assert_eq!(diff, LineDiff::Added);
+        // The marker inside the string literal must survive.
+        assert!(
+            stripped.contains(r#""// [!code ++]""#),
+            "in-string occurrence must be preserved: {stripped}"
+        );
+        // The trailing real marker must be gone.
+        // After stripping `// [!code ++]` at the end, only one occurrence remains.
+        assert_eq!(
+            stripped.matches("[!code ++]").count(),
+            1,
+            "only the trailing marker should be stripped; one in-string occurrence must remain: {stripped}"
+        );
     }
 
     /// Hash-style comment prefix (`# `) is also recognised — covers Python,
