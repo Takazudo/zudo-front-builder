@@ -481,10 +481,8 @@ fn expect_object<'a>(
 fn expect_string(expr: &Expr, export: &str, ctx: &Ctx<'_>) -> Result<String, TsxFrontmatterError> {
     match unwrap_ts_wrappers(expr) {
         Expr::Lit(Lit::Str(s)) => Ok(wtf8_to_string(&s.value)),
-        Expr::Tpl(tpl) if tpl.exprs.is_empty() => {
-            tpl_quasi_to_string(tpl)
-                .ok_or_else(|| ctx.computed(tpl.span, export, "empty template literal has no quasi"))
-        }
+        Expr::Tpl(tpl) if tpl.exprs.is_empty() => tpl_quasi_to_string(tpl)
+            .ok_or_else(|| ctx.computed(tpl.span, export, "empty template literal has no quasi")),
         Expr::Tpl(tpl) => Err(ctx.computed(
             tpl.span,
             export,
@@ -634,8 +632,9 @@ fn expr_to_json(
                     "template strings with substitutions are not allowed",
                 ));
             }
-            let s = tpl_quasi_to_string(tpl)
-                .ok_or_else(|| ctx.computed(tpl.span, export, "empty template literal has no quasi"))?;
+            let s = tpl_quasi_to_string(tpl).ok_or_else(|| {
+                ctx.computed(tpl.span, export, "empty template literal has no quasi")
+            })?;
             Ok(JsonValue::String(s))
         }
         Expr::Unary(u) => match u.op {
@@ -1353,9 +1352,13 @@ mod tests {
         // Construct a synthetic Tpl with no quasis to prove the function
         // returns None instead of panicking (regression guard for the
         // release panic fixed in this PR).
-        use swc_core::ecma::ast::{Tpl, TplElement};
         use swc_core::common::DUMMY_SP;
-        let empty_tpl = Tpl { span: DUMMY_SP, exprs: vec![], quasis: vec![] };
+        use swc_core::ecma::ast::{Tpl, TplElement};
+        let empty_tpl = Tpl {
+            span: DUMMY_SP,
+            exprs: vec![],
+            quasis: vec![],
+        };
         assert!(
             tpl_quasi_to_string(&empty_tpl).is_none(),
             "empty quasis should yield None, not panic",
@@ -1367,7 +1370,11 @@ mod tests {
             cooked: Some("hello".into()),
             raw: "hello".into(),
         };
-        let normal_tpl = Tpl { span: DUMMY_SP, exprs: vec![], quasis: vec![elem] };
+        let normal_tpl = Tpl {
+            span: DUMMY_SP,
+            exprs: vec![],
+            quasis: vec![elem],
+        };
         assert_eq!(tpl_quasi_to_string(&normal_tpl).as_deref(), Some("hello"));
     }
 }

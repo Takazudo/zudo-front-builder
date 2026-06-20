@@ -490,14 +490,20 @@ mod tests {
             is_valid_npm_name(&result),
             "leading-dot name produced invalid npm name: {result}"
         );
-        assert!(!result.starts_with('.'), "leading dot must be stripped: {result}");
+        assert!(
+            !result.starts_with('.'),
+            "leading dot must be stripped: {result}"
+        );
 
         let result = sanitize_pkg_name("_private-pkg");
         assert!(
             is_valid_npm_name(&result),
             "leading-underscore name produced invalid npm name: {result}"
         );
-        assert!(!result.starts_with('_'), "leading underscore must be stripped: {result}");
+        assert!(
+            !result.starts_with('_'),
+            "leading underscore must be stripped: {result}"
+        );
 
         // Pure leading reserved chars fall back to the stable default.
         let result = sanitize_pkg_name("...");
@@ -582,7 +588,10 @@ mod tests {
         // returning the error.  Here we directly verify that remove_dir_all
         // on an empty freshly-created dir succeeds (it's the mechanism used).
         fs::remove_dir_all(&dest).unwrap();
-        assert!(!dest.exists(), "cleanup must remove the dest dir on failure");
+        assert!(
+            !dest.exists(),
+            "cleanup must remove the dest dir on failure"
+        );
     }
 
     #[test]

@@ -300,7 +300,7 @@ pub struct BundlerInput {
     /// (as `--define:process.env.<KEY>='<JSON-encoded value>'`). All
     /// other keys are silently dropped — server secrets MUST NOT appear
     /// in the bundle. See [`server_secrets_are_not_bundled`] in tests.
-    pub define_vars: BTreeMap<String, String>,
+    pub define_vars: HashMap<String, String>,
     /// `compilerOptions.paths`-style alias map (TS path aliases). The
     /// bundler writes a rebased copy into a synthetic `tsconfig.json`
     /// inside the shadow tree; esbuild then resolves user imports
@@ -4827,7 +4827,11 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
 
     // PUBLIC_-prefixed env vars only. Anything else is dropped server-
     // side and never reaches the bundle.
-    for (k, v) in &input.define_vars {
+    // Sort by key so the emitted `--define` args are byte-stable regardless
+    // of the map's iteration order (HashMap is unordered).
+    let mut define_entries: Vec<(&String, &String)> = input.define_vars.iter().collect();
+    define_entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (k, v) in define_entries {
         if !k.starts_with("PUBLIC_") {
             continue;
         }
@@ -5174,7 +5178,7 @@ mod tests {
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             framework: Framework::Preact,
-            define_vars: BTreeMap::new(),
+            define_vars: HashMap::new(),
             tsconfig_paths: BTreeMap::new(),
             external: vec![],
             main_fields: Vec::new(),
@@ -6505,7 +6509,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut defs = BTreeMap::new();
+        let mut defs = HashMap::new();
         defs.insert("PUBLIC_API_URL".into(), "https://example.test".into());
         defs.insert(
             "SECRET_KEY".into(),
