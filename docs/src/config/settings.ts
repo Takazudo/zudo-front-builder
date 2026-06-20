@@ -52,6 +52,9 @@ export const settings = {
   mermaid: true,
   sitemap: true,
   docMetainfo: true,
+  // IMPORTANT — keep false until the tag route modules exist (pages/docs/tags/
+  // index.tsx, [tag].tsx, and locale counterparts). Flipping true without those
+  // modules causes /docs/tags and /docs/tags/{tag} links to 404.
   docTags: false,
   tagPlacement: "after-title" as TagPlacement,
   tagGovernance: "off" as TagGovernanceMode,

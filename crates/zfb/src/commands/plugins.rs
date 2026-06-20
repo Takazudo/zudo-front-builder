@@ -228,7 +228,12 @@ impl DevMiddlewareDispatcher for HostDispatcher {
         let encoding = PluginResponseEncoding::parse(&resp.body_encoding);
         Ok(PluginDispatchOutcome::Response(PluginResponse {
             status: resp.status,
-            headers: resp.headers,
+            // `DevResponse.headers` is the JSON line-protocol `Record`
+            // shape (a `HashMap`), which already collapses duplicate names
+            // at the wire boundary; collect into the ordered `Vec` the
+            // server-side `PluginResponse` now uses. Lifting that residual
+            // collapse needs a multimap wire shape and is out of scope.
+            headers: resp.headers.into_iter().collect(),
             body: resp.body,
             body_encoding: encoding,
         }))

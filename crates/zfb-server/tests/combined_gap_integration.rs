@@ -21,7 +21,6 @@
 //! integration tests in this directory. No background process is held
 //! open; the server task is aborted at the end of the test.
 
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -56,8 +55,7 @@ impl SsrDispatcher for FileSsrDispatcher {
             .await
             .unwrap_or_else(|e| format!("read error: {e}"));
 
-        let mut headers = BTreeMap::new();
-        headers.insert("content-type".into(), "text/html; charset=utf-8".into());
+        let headers = vec![("content-type".into(), "text/html; charset=utf-8".into())];
 
         Ok(SsrResponse {
             status: 200,

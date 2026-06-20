@@ -49,6 +49,8 @@
 //! - Hiragana (U+3040–U+309F)
 //! - Katakana (U+30A0–U+30FF)
 //! - Hangul Syllables (U+AC00–U+D7AF)
+//! - CJK Extension B (U+20000–U+2A6DF)
+//! - CJK Extension C/D/E/F and Compatibility Ideographs Supplement (U+2A700–U+2FA1F)
 //!
 //! Source: remark-reading-time README — "It also uses CJK character count
 //! for languages that don't use spaces between words."
@@ -83,8 +85,10 @@ use zfb_md_ast::MdastVisitor;
 /// because CJK text does not delimit words with spaces.
 ///
 /// Ranges mirror those in remark-reading-time's CJK regex:
-/// `/[㐀-鿿豈-﫿]|[\uD840-\uD868][\uDC00-\uDFFF]/`
-/// extended here to also cover Hiragana, Katakana, and Hangul.
+/// `/[㐀-鿿豈-﫿]|[\uD840-\uD868][\uDC00-\uDFFF]/`
+/// extended here to also cover Hiragana, Katakana, Hangul, and the
+/// supplementary-plane CJK blocks (Extension B and beyond, U+20000–U+2FA1F)
+/// that remark-reading-time covers via the surrogate-pair clause.
 #[must_use]
 pub fn is_cjk_char(c: char) -> bool {
     matches!(c,
@@ -97,7 +101,11 @@ pub fn is_cjk_char(c: char) -> bool {
         // Katakana
         '\u{30A0}'..='\u{30FF}' |
         // Hangul Syllables
-        '\u{AC00}'..='\u{D7AF}'
+        '\u{AC00}'..='\u{D7AF}' |
+        // Supplementary-plane CJK: Extension B (U+20000–U+2A6DF), C/D/E/F, and
+        // CJK Compatibility Ideographs Supplement (U+2F800–U+2FA1F).
+        // remark-reading-time covers these via [\uD840-\uD868][\uDC00-\uDFFF].
+        '\u{20000}'..='\u{2FA1F}'
     )
 }
 
@@ -110,36 +118,39 @@ pub fn is_cjk_char(c: char) -> bool {
 /// - CJK characters: each character counts as one word.
 ///
 /// Mixed text is handled correctly: CJK characters inside Latin sentences
-/// are extracted first, and the remaining (de-CJK'd) parts are split on
-/// whitespace.
+/// are counted per-char; the surrounding non-CJK spans are tracked with an
+/// in-word boolean state machine (no allocation) that fires exactly the same
+/// token transitions as the old `String`-buffer + `split_whitespace` path.
 #[must_use]
 pub fn count_words(text: &str) -> u32 {
     let mut count = 0u32;
-    let mut latin_buf = String::new();
+    // True while we are inside a non-CJK, non-whitespace run (i.e. a Latin
+    // "word"). Equivalent to the old latin_buf being non-empty-after-trim.
+    let mut in_word = false;
 
     for c in text.chars() {
         if is_cjk_char(c) {
-            // Flush any accumulated Latin-script buffer first.
-            if !latin_buf.trim().is_empty() {
-                count += latin_buf
-                    .split_whitespace()
-                    .filter(|w| !w.is_empty())
-                    .count() as u32;
+            // Close any open Latin word first, then count this CJK char.
+            if in_word {
+                count += 1;
+                in_word = false;
             }
-            latin_buf.clear();
-            // Each CJK character is one word.
             count += 1;
+        } else if c.is_whitespace() {
+            // Whitespace ends a Latin word.
+            if in_word {
+                count += 1;
+                in_word = false;
+            }
         } else {
-            latin_buf.push(c);
+            // Non-CJK, non-whitespace character: we are inside a Latin word.
+            in_word = true;
         }
     }
 
-    // Flush any trailing Latin-script content.
-    if !latin_buf.trim().is_empty() {
-        count += latin_buf
-            .split_whitespace()
-            .filter(|w| !w.is_empty())
-            .count() as u32;
+    // Flush any trailing Latin word.
+    if in_word {
+        count += 1;
     }
 
     count
@@ -381,6 +392,29 @@ mod tests {
         assert!(!is_cjk_char(' '));
     }
 
+    #[test]
+    fn cjk_extension_b_detected() {
+        // U+20000 𠀀 — first character of CJK Extension B (supplementary plane).
+        // remark-reading-time covers this via the surrogate-pair clause
+        // [\uD840-\uD868][\uDC00-\uDFFF]; we cover it with '\u{20000}'..='\u{2FA1F}'.
+        assert!(is_cjk_char('\u{20000}'));
+        // U+2A6DF — last code point of Extension B.
+        assert!(is_cjk_char('\u{2A6DF}'));
+        // U+2FA1F — last code point of CJK Compatibility Ideographs Supplement.
+        assert!(is_cjk_char('\u{2FA1F}'));
+        // U+2FA20 — just past the supplementary-plane range, must not be CJK.
+        assert!(!is_cjk_char('\u{2FA20}'));
+    }
+
+    #[test]
+    fn cjk_extension_b_counted_per_character() {
+        // A run of Extension-B characters must be counted one-per-char, not as
+        // a single whitespace-separated token.
+        // U+20000 𠀀, U+20001 𠀁, U+20002 𠀂 — three Extension-B ideographs.
+        let ext_b = "\u{20000}\u{20001}\u{20002}";
+        assert_eq!(count_words(ext_b), 3);
+    }
+
     // ── count_words ────────────────────────────────────────────────────────
 
     #[test]
@@ -418,6 +452,70 @@ mod tests {
     fn punctuation_within_token_counts_as_one_word() {
         assert_eq!(count_words("hello-world"), 1);
         assert_eq!(count_words("don't"), 1);
+    }
+
+    /// Equivalence check for the state-machine rewrite (perf item #5).
+    ///
+    /// The new implementation must produce identical counts to the old
+    /// `String`-buffer path for all mixed CJK/Latin inputs.  We inline the
+    /// old algorithm here as `count_words_buffered` and assert both produce
+    /// the same result for a corpus covering every interesting transition:
+    /// CJK→Latin, Latin→CJK, leading/trailing whitespace, pure Latin, pure
+    /// CJK, punctuation-inside-word, multi-whitespace gaps.
+    #[test]
+    fn state_machine_matches_buffer_algorithm_on_mixed_input() {
+        fn count_words_buffered(text: &str) -> u32 {
+            let mut count = 0u32;
+            let mut latin_buf = String::new();
+            for c in text.chars() {
+                if is_cjk_char(c) {
+                    if !latin_buf.trim().is_empty() {
+                        count += latin_buf
+                            .split_whitespace()
+                            .filter(|w| !w.is_empty())
+                            .count() as u32;
+                    }
+                    latin_buf.clear();
+                    count += 1;
+                } else {
+                    latin_buf.push(c);
+                }
+            }
+            if !latin_buf.trim().is_empty() {
+                count += latin_buf
+                    .split_whitespace()
+                    .filter(|w| !w.is_empty())
+                    .count() as u32;
+            }
+            count
+        }
+
+        let cases: &[&str] = &[
+            "",
+            "   ",
+            "hello",
+            "hello world",
+            "中文",
+            "hello 中文",
+            "中文 hello",
+            "hello中文world",
+            "  hello  world  ",
+            "one two three four five",
+            "hello-world don't",
+            "あいう abc カタカナ def",
+            "\t\nhello\n\tworld\n",
+            "한국어 mixed English 日本語",
+            "\u{20000}\u{20001} latin \u{20002}",
+        ];
+
+        for &input in cases {
+            let new = count_words(input);
+            let old = count_words_buffered(input);
+            assert_eq!(
+                new, old,
+                "count_words({input:?}): state-machine={new} vs buffer={old}"
+            );
+        }
     }
 
     // ── compute_reading_time_minutes ────────────────────────────────────────

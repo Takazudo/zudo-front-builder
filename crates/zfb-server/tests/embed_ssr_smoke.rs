@@ -22,7 +22,6 @@
 //! `crates/zfb-server/src/embed_handlers.rs` cover the matcher;
 //! `embed_lifecycle_smoke.rs` covers the builder lifecycle.
 
-use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
@@ -76,8 +75,7 @@ impl DevMiddlewareDispatcher for AlwaysRespondingPluginDispatcher {
         _id: &str,
         request: PluginRequest,
     ) -> Result<PluginDispatchOutcome, PluginDispatchError> {
-        let mut headers = HashMap::new();
-        headers.insert("content-type".into(), "text/plain; charset=utf-8".into());
+        let headers = vec![("content-type".into(), "text/plain; charset=utf-8".into())];
         Ok(PluginDispatchOutcome::Response(PluginResponse {
             status: 200,
             headers,
@@ -132,6 +130,10 @@ async fn boot_with_plugins(
         css_bundle_url: None,
         host_validation: zfb_server::HostValidation::disabled(),
         render_on_request_hook: None,
+        // Test uses temp dirs — canonical roots not precomputed.
+        canonical_html_root: None,
+        canonical_dist_root: None,
+        canonical_public_root: None,
     };
     let router = build_router(state);
 
@@ -162,7 +164,7 @@ async fn rust_handler_wins_over_ssr_for_overlapping_pattern() {
     // body `ssr-body` if it were ever consulted.
     let canned = SsrResponse {
         status: 200,
-        headers: BTreeMap::new(),
+        headers: Vec::new(),
         body: b"ssr-body".to_vec(),
     };
     let ssr_dispatcher = Arc::new(CountingSsrDispatcher::new(canned));
@@ -207,7 +209,7 @@ async fn rust_handler_wins_over_ssr_for_overlapping_pattern() {
 async fn rust_handler_captures_path_params() {
     let canned = SsrResponse {
         status: 200,
-        headers: BTreeMap::new(),
+        headers: Vec::new(),
         body: b"ssr".to_vec(),
     };
     let ssr_dispatcher = Arc::new(CountingSsrDispatcher::new(canned));
@@ -254,7 +256,7 @@ async fn plugin_dev_middleware_wins_over_rust_handler() {
     // must win per the documented precedence (plugin > rust > SSR).
     let canned_ssr = SsrResponse {
         status: 200,
-        headers: BTreeMap::new(),
+        headers: Vec::new(),
         body: b"ssr".to_vec(),
     };
     let ssr_dispatcher = Arc::new(CountingSsrDispatcher::new(canned_ssr));

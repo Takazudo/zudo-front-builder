@@ -392,6 +392,14 @@ where
         css_bundle_url: opts.css_bundle_url,
         host_validation,
         render_on_request_hook: opts.render_on_request_hook,
+        // Perf #1145-3: pre-canonicalize stable root paths once at startup so
+        // resolve_within_root skips the tokio::fs::canonicalize(root) syscall
+        // on every disk-fallback hit.  std::fs is used here (blocking, startup
+        // only); failures are non-fatal — the field stays None and the per-call
+        // fallback path takes over.
+        canonical_html_root: std::fs::canonicalize(&opts.html_root).ok(),
+        canonical_dist_root: std::fs::canonicalize(&opts.dist_root).ok(),
+        canonical_public_root: std::fs::canonicalize(&opts.public_root).ok(),
     };
     let router = build_router(state);
 

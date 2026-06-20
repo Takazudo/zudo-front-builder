@@ -16,8 +16,6 @@
 //!
 //! Uses the same ephemeral-port binding pattern as `integration.rs`.
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
@@ -83,8 +81,7 @@ impl DevMiddlewareDispatcher for AlwaysRespondingPluginDispatcher {
         _id: &str,
         request: PluginRequest,
     ) -> Result<PluginDispatchOutcome, PluginDispatchError> {
-        let mut headers = HashMap::new();
-        headers.insert("content-type".into(), "text/plain; charset=utf-8".into());
+        let headers = vec![("content-type".into(), "text/plain; charset=utf-8".into())];
         Ok(PluginDispatchOutcome::Response(PluginResponse {
             status: 200,
             headers,
@@ -185,9 +182,10 @@ fn ssr_set(pattern: &str, dispatcher: Arc<dyn SsrDispatcher>) -> SsrRouteSet {
 #[tokio::test]
 async fn matched_url_dispatches_through_ssr_layer() {
     // Canned response: HTML with custom Set-Cookie header.
-    let mut headers = BTreeMap::new();
-    headers.insert("content-type".into(), "text/html; charset=utf-8".into());
-    headers.insert("set-cookie".into(), "session=abc; HttpOnly".into());
+    let headers = vec![
+        ("content-type".into(), "text/html; charset=utf-8".into()),
+        ("set-cookie".into(), "session=abc; HttpOnly".into()),
+    ];
     let canned = SsrResponse {
         status: 200,
         headers,
@@ -233,13 +231,70 @@ async fn matched_url_dispatches_through_ssr_layer() {
     server.abort();
 }
 
+/// Multi-valued `Set-Cookie` survives end-to-end through the SSR seam
+/// (sub #1144). An SSR handler returning two distinct `Set-Cookie`
+/// values must reach the wire as two separate headers, not a single
+/// collapsed value — the dev router `append`s onto the `HeaderMap`
+/// rather than `insert`ing, and `SsrResponse.headers` is an ordered
+/// `Vec` that preserves the duplicates upstream.
+#[tokio::test]
+async fn multiple_set_cookie_survive_ssr_seam() {
+    let headers = vec![
+        ("content-type".into(), "text/html; charset=utf-8".into()),
+        ("set-cookie".into(), "a=1; Path=/; HttpOnly".into()),
+        ("set-cookie".into(), "b=2; Path=/; HttpOnly".into()),
+    ];
+    let canned = SsrResponse {
+        status: 200,
+        headers,
+        body: b"<html><body>multi-cookie</body></html>".to_vec(),
+    };
+    let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
+    let set = ssr_set("/dynamic", dispatcher.clone() as Arc<dyn SsrDispatcher>);
+    let (addr, _pages, server, _tmp) = boot(Some(set), None).await;
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .get(format!("http://{addr}/dynamic"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // `get_all` yields every `Set-Cookie` value; both must be present and
+    // distinct. A last-value-wins collapse anywhere in the seam would
+    // drop one of them.
+    let cookies: Vec<String> = resp
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        cookies.len(),
+        2,
+        "both Set-Cookie headers must survive; got {cookies:?}"
+    );
+    assert!(
+        cookies.iter().any(|c| c.contains("a=1")),
+        "first cookie missing; got {cookies:?}"
+    );
+    assert!(
+        cookies.iter().any(|c| c.contains("b=2")),
+        "second cookie missing; got {cookies:?}"
+    );
+
+    server.abort();
+}
+
 #[tokio::test]
 async fn plugin_middleware_wins_over_ssr() {
     // Same path is claimed by both a plugin and the SSR set; the plugin
     // must win per the documented precedence (plugin > SSR > cache).
     let canned = SsrResponse {
         status: 200,
-        headers: BTreeMap::new(),
+        headers: Vec::new(),
         body: b"ssr body".to_vec(),
     };
     let ssr_dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
@@ -286,7 +341,7 @@ async fn plugin_middleware_wins_over_ssr() {
 async fn unmatched_url_falls_through_to_page_cache() {
     let canned = SsrResponse {
         status: 200,
-        headers: BTreeMap::new(),
+        headers: Vec::new(),
         body: b"ssr".to_vec(),
     };
     let ssr_dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
@@ -355,7 +410,7 @@ async fn base_prefix_stripped_from_url_path_dispatched_to_ssr() {
     // inspects the path.
     let canned = SsrResponse {
         status: 200,
-        headers: BTreeMap::new(),
+        headers: Vec::new(),
         body: b"ok".to_vec(),
     };
     let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
@@ -387,11 +442,7 @@ async fn post_to_ssr_route_reaches_dispatcher() {
     // would in Cloudflare. This mirrors the plugin layer.
     let canned = SsrResponse {
         status: 201,
-        headers: {
-            let mut h = BTreeMap::new();
-            h.insert("content-type".into(), "application/json".into());
-            h
-        },
+        headers: vec![("content-type".into(), "application/json".into())],
         body: br#"{"ok":true}"#.to_vec(),
     };
     let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
@@ -493,11 +544,7 @@ async fn boot_with_live_handle(
 async fn adding_ssr_route_mid_session_becomes_dispatchable() {
     let canned = SsrResponse {
         status: 200,
-        headers: {
-            let mut h = std::collections::BTreeMap::new();
-            h.insert("content-type".into(), "text/plain".into());
-            h
-        },
+        headers: vec![("content-type".into(), "text/plain".into())],
         body: b"new-route-body".to_vec(),
     };
     let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
@@ -561,7 +608,7 @@ async fn adding_ssr_route_mid_session_becomes_dispatchable() {
 async fn removing_ssr_route_mid_session_becomes_404() {
     let canned = SsrResponse {
         status: 200,
-        headers: std::collections::BTreeMap::new(),
+        headers: Vec::new(),
         body: b"dynamic-body".to_vec(),
     };
     let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
@@ -620,7 +667,7 @@ async fn removing_ssr_route_mid_session_becomes_404() {
 async fn ssr_route_update_does_not_break_static_pages() {
     let canned = SsrResponse {
         status: 200,
-        headers: std::collections::BTreeMap::new(),
+        headers: Vec::new(),
         body: b"ssr-body".to_vec(),
     };
     let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));

@@ -478,6 +478,19 @@ pub struct AppState {
     /// lock and released before the `await` — same discipline as
     /// `ssr_routes`.
     pub render_on_request_hook: Option<crate::render_hook::RenderOnRequestHandle>,
+
+    /// Pre-canonicalized forms of the three root paths, computed once at
+    /// server startup (perf item #1145-3).  `resolve_within_root` re-
+    /// canonicalizes `root` on every disk fallback hit; storing the result
+    /// here avoids two blocking-pool syscalls per cache miss.
+    ///
+    /// `None` (the default, e.g. in unit tests whose root dirs don't exist
+    /// on disk) causes `resolve_within_root` to fall back to the original
+    /// per-call `tokio::fs::canonicalize` behaviour — behaviour is
+    /// byte-identical, only performance differs.
+    pub canonical_html_root: Option<std::path::PathBuf>,
+    pub canonical_dist_root: Option<std::path::PathBuf>,
+    pub canonical_public_root: Option<std::path::PathBuf>,
 }
 
 /// Build the axum router for the dev server.
@@ -960,17 +973,28 @@ async fn serve_page(
                         s.split_once('?').map(|(p, _)| p.to_string()).unwrap_or(s)
                     })
                     .unwrap_or_else(|| format!("/{trimmed}"));
-                // Spawn so a panic in the hook doesn't unwind this handler
-                // task — the JoinError is caught and logged; we fall through
-                // to the existing legs either way.
-                let join = tokio::spawn(async move {
-                    hook.render_if_stale(&url_path).await;
-                });
-                if let Err(e) = join.await {
+                // Use catch_unwind instead of tokio::spawn to contain
+                // panics in the hook without the per-request task-spawn
+                // overhead.  FutureExt::catch_unwind wraps the async
+                // call; AssertUnwindSafe is correct here because we
+                // never use `hook` again after a panic — this is a
+                // fire-and-forget best-effort call.
+                use futures::FutureExt as _;
+                let result = std::panic::AssertUnwindSafe(hook.render_if_stale(&url_path))
+                    .catch_unwind()
+                    .await;
+                if let Err(e) = result {
+                    let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = e.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "(non-string panic payload)".to_string()
+                    };
                     tracing::warn!(
                         url_path = %trimmed,
-                        error = %e,
-                        "render-on-request hook failed (continuing with fallback legs)",
+                        error = %msg,
+                        "render-on-request hook panicked (continuing with fallback legs)",
                     );
                 }
             }
@@ -1036,7 +1060,13 @@ async fn serve_page(
     // production output. For preview / embed callers `html_root` and
     // `dist_root` point at the same directory, so behaviour is
     // unchanged there.
-    if let Some(bytes) = read_from_dist(&state.html_root, trimmed).await {
+    if let Some(bytes) = read_from_dist(
+        &state.html_root,
+        trimmed,
+        state.canonical_html_root.as_deref(),
+    )
+    .await
+    {
         // Mirror the cached-path content-type derivation. Hardcoding
         // `text/html` here used to splice a livereload `<script>` tag
         // into XML feeds (`/sitemap.xml`, `/atom.xml`) and serve them
@@ -1073,7 +1103,13 @@ async fn serve_page(
     // (above), so a same-named `pages/foo.tsx` route always wins over
     // `public/foo`.
     if !trimmed.is_empty() {
-        if let Some(bytes) = read_from_public(&state.public_root, trimmed).await {
+        if let Some(bytes) = read_from_public(
+            &state.public_root,
+            trimmed,
+            state.canonical_public_root.as_deref(),
+        )
+        .await
+        {
             let basename = trimmed.rsplit('/').next().unwrap_or(trimmed);
             let ext = basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
             let content_type = if ext.is_empty() {
@@ -1164,14 +1200,23 @@ fn strip_prefix_from_full_uri(uri: &Uri, prefix: Option<&str>) -> Option<String>
 /// Async (#903): this runs on every request-path disk fallback, so the
 /// canonicalize syscalls go through `tokio::fs` (which offloads to the
 /// blocking pool) instead of blocking the request worker directly.
+///
+/// Perf (#1145-3): `precomputed_canonical_root`, when `Some`, skips the
+/// `tokio::fs::canonicalize(root)` syscall — the caller pre-resolves the
+/// stable root once at startup and passes it in.  `None` falls back to the
+/// original per-call behaviour (used in tests where root dirs may not exist).
 async fn resolve_within_root(
     path: &std::path::Path,
     root: &std::path::Path,
+    precomputed_canonical_root: Option<&std::path::Path>,
 ) -> Option<std::path::PathBuf> {
-    let canonical_root = tokio::fs::canonicalize(root).await.ok()?;
+    let canonical_root = match precomputed_canonical_root {
+        Some(r) => std::borrow::Cow::Borrowed(r),
+        None => std::borrow::Cow::Owned(tokio::fs::canonicalize(root).await.ok()?),
+    };
     let canonical_path = tokio::fs::canonicalize(path).await.ok()?;
     canonical_path
-        .starts_with(&canonical_root)
+        .starts_with(canonical_root.as_ref())
         .then_some(canonical_path)
 }
 
@@ -1189,7 +1234,11 @@ async fn resolve_within_root(
 /// After joining, we also canonicalize the resolved path and verify it
 /// still lives inside `dist_root` — a symlink planted inside dist that
 /// points outside would otherwise be followed silently.
-async fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
+async fn read_from_dist(
+    dist_root: &std::path::Path,
+    trimmed: &str,
+    canonical_root: Option<&std::path::Path>,
+) -> Option<Vec<u8>> {
     if !is_safe_url_path(trimmed) {
         return None;
     }
@@ -1198,7 +1247,7 @@ async fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Ve
         dist_root.join(trimmed),
     ];
     for path in &candidates {
-        let Some(resolved) = resolve_within_root(path, dist_root).await else {
+        let Some(resolved) = resolve_within_root(path, dist_root, canonical_root).await else {
             continue;
         };
         // Read the canonical path returned by resolve_within_root, not
@@ -1230,12 +1279,16 @@ async fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Ve
 /// After joining, we also canonicalize the resolved path and verify it
 /// still lives inside `public_root` — a symlink planted inside public/
 /// that points outside would otherwise be followed silently.
-async fn read_from_public(public_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
+async fn read_from_public(
+    public_root: &std::path::Path,
+    trimmed: &str,
+    canonical_root: Option<&std::path::Path>,
+) -> Option<Vec<u8>> {
     if trimmed.is_empty() || !is_safe_url_path(trimmed) {
         return None;
     }
     let path = public_root.join(trimmed);
-    let resolved = resolve_within_root(&path, public_root).await?;
+    let resolved = resolve_within_root(&path, public_root, canonical_root).await?;
     // Reject directory reads explicitly — reading a directory returns an
     // EISDIR error on Unix and would surface as a None here anyway, but
     // on Windows the behaviour is platform-dependent. Being explicit also
@@ -1350,6 +1403,10 @@ async fn dispatch_plugin(
                 PluginResponseEncoding::Utf8 => resp.body.into_bytes(),
             };
             let mut builder = Response::builder().status(status);
+            // `resp.headers` is an ordered `Vec<(name, value)>`; iterating
+            // it and calling `Builder::header` (which *appends*) preserves
+            // duplicate names, so multiple `Set-Cookie` entries from the
+            // plugin each reach the wire instead of collapsing.
             for (k, v) in resp.headers {
                 // The body is reconstructed Rust-side (base64 decode /
                 // into_bytes), so any Content-Length / Transfer-Encoding the
@@ -1464,6 +1521,15 @@ async fn dispatch_ssr(
     // (`content-type`, `cache-control`) so a handler that explicitly
     // sets `cache-control: public,max-age=60` doesn't silently lose to
     // our no-store default — instead the SSR header wins.
+    //
+    // `resp.headers` is an ordered `Vec<(name, value)>`, so a handler that
+    // emits two `Set-Cookie` entries arrives here as two list items. We
+    // track which names we've already seen so the FIRST occurrence of a
+    // name `insert`s (overriding any default `page_response_bytes` wrote,
+    // e.g. cache-control), and every subsequent occurrence of that same
+    // name `append`s — preserving multiple `Set-Cookie` while still
+    // letting a single override-style header replace the default.
+    let mut seen: std::collections::HashSet<header::HeaderName> = std::collections::HashSet::new();
     for (k, v) in resp.headers.iter() {
         let lower = k.to_ascii_lowercase();
         // `page_response_bytes` rewrites the HTML body (livereload script,
@@ -1480,12 +1546,11 @@ async fn dispatch_ssr(
         }
         if let Ok(name) = header::HeaderName::try_from(k.as_str()) {
             if let Ok(value) = HeaderValue::try_from(v) {
-                // For Cache-Control we let the handler override the
-                // default no-store; for all other headers we insert
-                // (replace). Multi-valued headers like Set-Cookie
-                // would need append semantics, but the BTreeMap shape
-                // upstream already collapses duplicates.
-                out.headers_mut().insert(name, value);
+                if seen.insert(name.clone()) {
+                    out.headers_mut().insert(name, value);
+                } else {
+                    out.headers_mut().append(name, value);
+                }
             }
         }
     }
@@ -1613,15 +1678,18 @@ fn ssr_error_response(url_path: &str, message: &str, mode: crate::ServerMode) ->
 /// Origin gate for non-GET/HEAD requests reaching the dynamic dispatch
 /// surfaces — plugin dev-middleware, embed handlers, request-time SSR
 /// (issue #931 / #919). Returns `Some(403)` when the server is
-/// LAN-exposed (host validation enforced) and the request carries an
-/// `Origin` header whose host fails the same allowlist the Host-header
-/// layer uses. Returns `None` (allow) when:
+/// LAN-exposed (host validation enforced) and either:
 ///
-/// - the method is GET/HEAD (safe methods rely on the Host check),
-/// - the server is bound to loopback (default — zero behaviour change),
-/// - the `Origin` header is absent (non-browser clients: curl, native
-///   apps; surfaced with a `tracing::warn` in Dev mode so the gap is
-///   visible).
+/// - the `Origin` header is absent on a non-GET request (fail closed —
+///   browsers always send `Origin` on cross-origin non-GET requests, so
+///   absence implies a non-browser LAN client bypassing CORS), or
+/// - the request carries an `Origin` whose host fails the same allowlist
+///   the Host-header layer uses.
+///
+/// Returns `None` (allow) when:
+///
+/// - the method is GET/HEAD (safe methods rely on the Host check), or
+/// - the server is bound to loopback (default — zero behaviour change).
 ///
 /// Static read paths (`/assets`, dist/public fallbacks, livereload) are
 /// exempt by construction — this helper is only invoked at the three
@@ -1635,13 +1703,13 @@ fn origin_rejection(state: &AppState, method: &Method, headers: &HeaderMap) -> O
         return None;
     }
     let Some(value) = headers.get(header::ORIGIN) else {
-        if matches!(state.mode, crate::ServerMode::Dev) {
-            tracing::warn!(
-                method = %method,
-                "non-GET request without Origin header reached dynamic dispatch on a LAN-exposed server; allowing"
-            );
-        }
-        return None;
+        // When enforcement is on, a non-GET request that omits the Origin
+        // header cannot be a browser cross-origin request (browsers always
+        // send it). Fail closed: return 403 so non-browser LAN clients
+        // cannot bypass the CSRF guard by dropping the header.
+        return Some(crate::host_validation::missing_origin_forbidden_response(
+            state.mode,
+        ));
     };
     // Present-but-unreadable (non-ASCII) and disallowed origins both
     // fail closed.
@@ -1945,6 +2013,10 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            // Tests use bogus/temp paths — canonical roots are not precomputed.
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         }
     }
 
@@ -1968,6 +2040,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         }
     }
 
@@ -2047,6 +2122,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         // Cache miss — the fallback must read from html_root.
         let router = test_router(state);
@@ -2290,6 +2368,43 @@ mod tests {
         assert_eq!(content_type_for_extension("wasm"), "application/wasm");
     }
 
+    // ---- parity: server table must agree with zfb-render's derive_content_type
+    // for extensions present in derive_content_type's explicit match arm.
+    // derive_content_type has a different catch-all (HTML), so only the
+    // explicitly-matched extensions are in scope here.
+    // Mirror: zfb_render::meta::derive_content_type.
+    #[test]
+    fn content_type_for_extension_parity_with_render_table() {
+        let cases: &[(&str, &str)] = &[
+            ("html", "text/html; charset=utf-8"),
+            ("htm", "text/html; charset=utf-8"),
+            ("xml", "application/xml"),
+            ("rss", "application/rss+xml"),
+            ("atom", "application/atom+xml"),
+            ("json", "application/json"),
+            ("map", "application/json"),
+            ("webmanifest", "application/manifest+json"),
+            ("txt", "text/plain; charset=utf-8"),
+            ("css", "text/css; charset=utf-8"),
+            ("js", "application/javascript; charset=utf-8"),
+            ("mjs", "application/javascript; charset=utf-8"),
+            ("cjs", "application/javascript; charset=utf-8"),
+            ("wasm", "application/wasm"),
+            ("svg", "image/svg+xml"),
+            ("png", "image/png"),
+            ("jpg", "image/jpeg"),
+            ("jpeg", "image/jpeg"),
+            ("pdf", "application/pdf"),
+        ];
+        for (ext, expected) in cases {
+            assert_eq!(
+                content_type_for_extension(ext),
+                *expected,
+                "content_type_for_extension({ext:?}) should match render table"
+            );
+        }
+    }
+
     #[test]
     fn resolve_content_type_uses_override_first() {
         let entry = CachedPage {
@@ -2472,6 +2587,9 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         // HTML must include <head></head> so inject_prod_head_assets has an anchor.
         state
@@ -2536,6 +2654,9 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         state
             .pages
@@ -2581,6 +2702,9 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         state
             .pages
@@ -2638,8 +2762,7 @@ mod tests {
     }
 
     fn echo_response() -> PluginDispatchOutcome {
-        let mut headers = HashMap::new();
-        headers.insert("content-type".to_string(), "application/json".to_string());
+        let headers = vec![("content-type".to_string(), "application/json".to_string())];
         PluginDispatchOutcome::Response(crate::plugin_middleware::PluginResponse {
             status: 200,
             headers,
@@ -2677,6 +2800,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         }
     }
 
@@ -3380,7 +3506,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = read_from_dist(dist.path(), "escape.txt").await;
+        let result = read_from_dist(dist.path(), "escape.txt", None).await;
         assert!(
             result.is_none(),
             "out-of-root symlink in dist must not be served"
@@ -3394,7 +3520,7 @@ mod tests {
         let dist = tempfile::tempdir().expect("dist dir");
         std::fs::write(dist.path().join("page.html"), b"<h1>hello</h1>").unwrap();
 
-        let result = read_from_dist(dist.path(), "page.html").await;
+        let result = read_from_dist(dist.path(), "page.html", None).await;
         assert_eq!(result.as_deref(), Some(b"<h1>hello</h1>".as_ref()));
     }
 
@@ -3414,7 +3540,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = read_from_dist(dist.path(), "alias.html").await;
+        let result = read_from_dist(dist.path(), "alias.html", None).await;
         assert_eq!(
             result.as_deref(),
             Some(b"<h1>real</h1>".as_ref()),
@@ -3438,7 +3564,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = read_from_public(public.path(), "escape.txt").await;
+        let result = read_from_public(public.path(), "escape.txt", None).await;
         assert!(
             result.is_none(),
             "out-of-root symlink in public must not be served"
@@ -3451,7 +3577,7 @@ mod tests {
         let public = tempfile::tempdir().expect("public dir");
         std::fs::write(public.path().join("logo.svg"), b"<svg/>").unwrap();
 
-        let result = read_from_public(public.path(), "logo.svg").await;
+        let result = read_from_public(public.path(), "logo.svg", None).await;
         assert_eq!(result.as_deref(), Some(b"<svg/>".as_ref()));
     }
 
@@ -3470,7 +3596,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = read_from_public(public.path(), "alias.svg").await;
+        let result = read_from_public(public.path(), "alias.svg", None).await;
         assert_eq!(
             result.as_deref(),
             Some(b"<svg/>".as_ref()),
@@ -3513,6 +3639,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3570,6 +3699,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3629,6 +3761,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3682,6 +3817,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3730,6 +3868,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3782,6 +3923,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3806,6 +3950,147 @@ mod tests {
             body_bytes.is_empty(),
             "HEAD response body must be empty (got {} bytes)",
             body_bytes.len()
+        );
+    }
+
+    // --- LAN security: origin_rejection unit tests -----------------------
+    //
+    // These tests call `origin_rejection` directly to cover the
+    // fail-closed missing-Origin path and the loopback short-circuit
+    // without needing a full plugin/SSR stack wired up.
+
+    fn enforced_state() -> AppState {
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let dist = std::env::temp_dir().join("zfb-test-dist");
+        AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist.clone(),
+            html_root: dist,
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+            // Non-loopback bind → enforcement on.
+            host_validation: crate::host_validation::HostValidation::for_bind(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                None,
+                &[],
+                crate::ServerMode::Dev,
+            ),
+            render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
+        }
+    }
+
+    #[test]
+    fn origin_rejection_get_is_always_allowed() {
+        let state = enforced_state();
+        let headers = HeaderMap::new();
+        // GET with no Origin must pass even when enforced.
+        let result = origin_rejection(&state, &Method::GET, &headers);
+        assert!(
+            result.is_none(),
+            "GET without Origin must not be rejected when enforced"
+        );
+        // HEAD likewise.
+        let result = origin_rejection(&state, &Method::HEAD, &headers);
+        assert!(
+            result.is_none(),
+            "HEAD without Origin must not be rejected when enforced"
+        );
+    }
+
+    #[test]
+    fn origin_rejection_missing_origin_rejected_when_enforced() {
+        let state = enforced_state();
+        let headers = HeaderMap::new(); // no Origin
+        let result = origin_rejection(&state, &Method::POST, &headers);
+        assert!(
+            result.is_some(),
+            "POST without Origin must be 403 when enforced"
+        );
+        let resp = result.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "missing Origin on enforced server must be 403"
+        );
+    }
+
+    #[test]
+    fn origin_rejection_missing_origin_allowed_on_loopback() {
+        let state = test_state(); // host_validation: disabled (loopback)
+        let headers = HeaderMap::new();
+        // Not enforced — missing Origin must not reject.
+        let result = origin_rejection(&state, &Method::POST, &headers);
+        assert!(
+            result.is_none(),
+            "POST without Origin must be allowed on loopback-bound server"
+        );
+    }
+
+    #[test]
+    fn origin_rejection_present_allowed_origin_passes() {
+        let state = enforced_state();
+        let mut headers = HeaderMap::new();
+        // localhost is always in the built-in allowlist.
+        headers.insert(header::ORIGIN, "http://localhost:3000".parse().unwrap());
+        let result = origin_rejection(&state, &Method::POST, &headers);
+        assert!(
+            result.is_none(),
+            "POST from localhost Origin must pass when enforced"
+        );
+    }
+
+    #[test]
+    fn origin_rejection_disallowed_origin_rejected_when_enforced() {
+        let state = enforced_state();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, "https://evil.test".parse().unwrap());
+        let result = origin_rejection(&state, &Method::POST, &headers);
+        assert!(
+            result.is_some(),
+            "POST from disallowed Origin must be 403 when enforced"
+        );
+        assert_eq!(result.unwrap().status(), StatusCode::FORBIDDEN);
+    }
+
+    // --- LAN security: DefaultBodyLimit (body size cap) ---------------
+
+    #[tokio::test]
+    async fn router_rejects_oversized_post_body() {
+        let state = test_state();
+        let router = test_router(state);
+
+        // 2 MiB + 1 byte — just over the cap set in build_router.
+        let oversized = vec![b'x'; 2 * 1024 * 1024 + 1];
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::CONTENT_TYPE, "application/octet-stream")
+                    .header(header::CONTENT_LENGTH, oversized.len().to_string())
+                    .body(Body::from(oversized))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // axum returns 413 Payload Too Large when DefaultBodyLimit is exceeded.
+        assert_eq!(
+            resp.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "POST body exceeding 2 MiB cap must be rejected with 413"
         );
     }
 }

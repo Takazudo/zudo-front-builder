@@ -504,16 +504,22 @@ async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
 /// Extract a semver-shaped version string from `wrangler --version`'s
 /// banner. The current banner is roughly ` ⛅️ wrangler 4.85.0` — we
 /// look for a version-shaped token *immediately following* a literal
-/// `wrangler` token, then fall back to the first version-shaped token
-/// in the output. The "wrangler-prefix" preference is what makes the
-/// parser robust against banners that mention other version-shaped
-/// strings (e.g. a copyright date or "[pre-release of 4.x.y]" remark)
-/// before the real wrangler version. A leading `v` (e.g. `v4.85.0`)
-/// is stripped, since other CLIs in the ecosystem emit that prefix
-/// even though wrangler does not today — keeping the parser tolerant
-/// future-proofs against an upstream banner reshuffle. Returns `None`
-/// if no token matches, which the caller turns into a "could not
-/// parse" error.
+/// `wrangler` token. A leading `v` (e.g. `v4.85.0`) is stripped,
+/// since other CLIs in the ecosystem emit that prefix even though
+/// wrangler does not today — keeping the parser tolerant future-proofs
+/// against an upstream banner reshuffle.
+///
+/// Fallback: when the output contains no `wrangler` literal but
+/// consists of **exactly one token** that is version-shaped (e.g. a
+/// bare-version CI shim that prints just `4.85.0`), that token is
+/// accepted. The fallback is intentionally narrow — a broad "first
+/// version-shaped token in any output" rule can match an unrelated
+/// version string (e.g. a copyright year `2024.10.0`) in multi-token
+/// output that lacks a `wrangler` label, producing a confusing
+/// "version mismatch" instead of "could not parse".
+///
+/// Returns `None` if no token matches, which the caller turns into a
+/// "could not parse" error.
 fn parse_wrangler_version(stdout: &str) -> Option<String> {
     let tokens: Vec<&str> = stdout.split_whitespace().collect();
 
@@ -533,13 +539,16 @@ fn parse_wrangler_version(stdout: &str) -> Option<String> {
         }
     }
 
-    // Fallback: any version-shaped token. Tolerated for safety on
-    // unforeseen banner reshuffles.
-    for raw_token in &tokens {
-        if let Some(v) = version_shape(raw_token) {
+    // Narrow fallback: accept a bare-version shim that prints a single
+    // version-shaped token and nothing else. Refusing to scan multi-token
+    // output avoids false positives (e.g. copyright years, pre-release
+    // annotations) that would surface a confusing "version mismatch".
+    if tokens.len() == 1 {
+        if let Some(v) = version_shape(tokens[0]) {
             return Some(v);
         }
     }
+
     None
 }
 
@@ -1215,11 +1224,25 @@ mod tests {
 
     #[test]
     fn parse_wrangler_version_falls_back_when_no_wrangler_literal() {
-        // No `wrangler` token in the banner — fall back to the first
-        // version-shaped token. Keeps bare-version shims working.
+        // No `wrangler` token in the banner — narrow fallback accepts a
+        // single-token output (bare-version shim) and nothing else.
         assert_eq!(
             parse_wrangler_version("4.85.0\n").as_deref(),
             Some("4.85.0"),
+        );
+    }
+
+    #[test]
+    fn parse_wrangler_version_returns_none_for_multi_token_no_wrangler_label() {
+        // A multi-token output with version-shaped strings but no `wrangler`
+        // label must return None rather than matching an unrelated token (e.g.
+        // a copyright year). Previously the broad fallback would have returned
+        // "2024.10.0" here, causing a confusing "version mismatch" error.
+        let stdout = "Copyright 2024.10.0 Cloudflare.";
+        assert_eq!(
+            parse_wrangler_version(stdout),
+            None,
+            "must not match a version-shaped token in multi-token output without a wrangler label",
         );
     }
 

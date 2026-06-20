@@ -212,10 +212,20 @@ async function fetchHTML(
 export function getFallback(): Fallback {
   const el = document.querySelector('[name="zfb-view-transitions-fallback"]');
   if (el) {
-    return el.getAttribute("content") as Fallback;
+    // Astro casts `content` straight to Fallback; harden against an arbitrary/typo'd
+    // attribute value by validating against the known set and defaulting to "animate".
+    const content = el.getAttribute("content");
+    if (content === "none" || content === "animate" || content === "swap") {
+      return content;
+    }
   }
   return "animate";
 }
+
+// Upper bound (ms) for waiting on a single external <script>'s load/error in
+// runScripts(). Not an Astro upstream value — added so a slow/broken external
+// script can never hang the transition indefinitely.
+const EXTERNAL_SCRIPT_WAIT_TIMEOUT = 5000;
 
 function runScripts() {
   let wait = Promise.resolve();
@@ -244,8 +254,17 @@ function runScripts() {
     newScript.innerHTML = script.innerHTML;
     for (const attr of script.attributes) {
       if (attr.name === "src") {
-        const p = new Promise((r) => {
-          newScript.onload = newScript.onerror = r;
+        // Astro awaits onload/onerror with no upper bound; a slow or broken
+        // external <script> would then hang the whole transition. Race the
+        // load against a timeout so the transition can always proceed.
+        const p = new Promise<void>((r) => {
+          let timer: ReturnType<typeof setTimeout>;
+          const done = () => {
+            clearTimeout(timer);
+            r();
+          };
+          newScript.onload = newScript.onerror = done;
+          timer = setTimeout(done, EXTERNAL_SCRIPT_WAIT_TIMEOUT);
         });
         wait = wait.then(() => p as any);
       }
@@ -274,7 +293,14 @@ const moveToLocation = (
   let scrolledToTop = false;
   if (to.href !== location.href && !historyState) {
     if (options.history === "replace") {
-      const current = history.state;
+      // Astro reads current.index/scrollX/scrollY directly; `history.state` can be
+      // null (page entered without a transition state), which would throw a
+      // TypeError. Fall back to a synthesized state from the tracked index/scroll.
+      const current = history.state ?? {
+        index: currentHistoryIndex,
+        scrollX,
+        scrollY,
+      };
       history.replaceState(
         {
           ...options.state,
@@ -628,7 +654,14 @@ async function transition(
   // moved, so they must NOT create a new entry here.
   if (!historyState && prepEvent.to.href !== location.href) {
     if (options.history === "replace") {
-      const current = history.state;
+      // Mirror of the moveToLocation replace-path guard: `history.state` can be
+      // null here too (page entered without a transition state), so synthesize a
+      // state from the tracked index/scroll instead of dereferencing null.
+      const current = history.state ?? {
+        index: currentHistoryIndex,
+        scrollX,
+        scrollY,
+      };
       history.replaceState(
         {
           ...options.state,
@@ -1054,10 +1087,14 @@ let initialized = false;
  */
 export function init(_options?: InitOptions): void {
   if (initialized) return;
-  initialized = true;
 
+  // Latch the guard only AFTER the early-return guards below: an ineligible
+  // early call (no browser, or fallback "none") must not permanently latch
+  // `initialized`, or a later legitimately-eligible init() would no-op forever.
   if (!inBrowser) return;
   if (!supportsViewTransitions && getFallback() === "none") return;
+
+  initialized = true;
 
   document.addEventListener("click", handleClick);
   document.addEventListener("submit", handleSubmit as EventListener);

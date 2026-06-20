@@ -344,10 +344,7 @@ fn is_cjk_friendly_close(inner_last: Option<char>, right_outer: Option<char>) ->
     if inner_is_cjk_punct && outer_is_cjk {
         return true;
     }
-    // Case B: inner is a CJK alphanumeric, outer is end-of-line or
-    // anything that satisfies stock right-flanking already. markdown-rs
-    // already covered this — we should not retokenise.
-    // Case C: inner is a non-CJK char that happens to be Unicode
+    // Case B: inner is a non-CJK char that happens to be Unicode
     // punctuation (e.g. `.`), outer is CJK. This is the ASCII-period-
     // before-close case (`**X.**Y` with Y being CJK). The reference
     // implementation also accepts this.

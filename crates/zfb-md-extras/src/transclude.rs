@@ -345,10 +345,19 @@ fn resolve_and_expand(
         }
     };
 
-    let canonical_root = env
-        .project_root
-        .canonicalize()
-        .unwrap_or_else(|_| env.project_root.to_path_buf());
+    let canonical_root = match env.project_root.canonicalize() {
+        Ok(r) => r,
+        Err(e) => {
+            emit_error(
+                ctx,
+                format!(
+                    "transclude: cannot canonicalize project root \"{}\": {e}",
+                    env.project_root.display()
+                ),
+            );
+            return Vec::new();
+        }
+    };
     if !canonical.starts_with(&canonical_root) {
         // The escape diagnostic depends on the target's on-disk state
         // (deleting it changes the outcome to "cannot read"), so the

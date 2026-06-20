@@ -5747,7 +5747,6 @@ mod tests {
             /// succeed — `render_one` drives the stub closure exactly
             /// like a live V8 host.
             fn install_stub_renderer(session: &DevRenderSession, body: &'static str) {
-                use std::collections::BTreeMap;
                 use zfb_build::renderer::{start, Backend, HttpResponseLike, RendererStartInput};
                 let state = start(RendererStartInput {
                     // Ignored by `Backend::Stub` (no bundle is loaded).
@@ -5757,7 +5756,7 @@ mod tests {
                         handler: Arc::new(move |_url| HttpResponseLike {
                             status: 200,
                             content_type: "text/html; charset=utf-8".into(),
-                            headers: BTreeMap::new(),
+                            headers: Vec::new(),
                             body: body.as_bytes().to_vec(),
                         }),
                     },

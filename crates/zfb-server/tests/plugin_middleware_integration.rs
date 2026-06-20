@@ -11,7 +11,6 @@
 //!
 //! Uses the same ephemeral-port binding pattern as `integration.rs`.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -59,9 +58,10 @@ impl DevMiddlewareDispatcher for CountingDispatcher {
             return Ok(PluginDispatchOutcome::Passthrough);
         }
         if handler_id == self.response_handler_id {
-            let mut headers = HashMap::new();
-            headers.insert("content-type".into(), "application/json".into());
-            headers.insert("x-zfb-plugin".into(), "ok".into());
+            let headers = vec![
+                ("content-type".into(), "application/json".into()),
+                ("x-zfb-plugin".into(), "ok".into()),
+            ];
             // Echo what the plugin saw so the test can assert on the
             // wire-level method propagation rather than relying on an
             // out-of-band channel.

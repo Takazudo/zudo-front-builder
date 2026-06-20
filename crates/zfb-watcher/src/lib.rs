@@ -405,6 +405,17 @@ fn reconcile_emit_kind(kind: ChangeKind, exists: std::io::Result<bool>) -> Chang
     }
 }
 
+/// Force a flush once `pending` reaches this many distinct paths, even if
+/// the `tick` arm has not had a chance to run. Under a sustained high-rate
+/// event stream (e.g. `git checkout` of a huge tree, or a build tool
+/// rewriting files in a loop) the `biased` `select!` keeps servicing the
+/// `recv` arm and STARVES the `tick` arm, so `pending` would otherwise grow
+/// without bound and never drain until the burst stops. The outbound
+/// channel is bounded at 256; a threshold an order of magnitude below that
+/// keeps memory bounded while still coalescing normal editor-save bursts
+/// (which are a handful of paths) untouched.
+const MAX_PENDING_BEFORE_FORCED_FLUSH: usize = 1024;
+
 /// The debouncer loop. Runs on a tokio task.
 ///
 /// Strategy: bridge the sync `notify` channel onto a tokio channel via
@@ -412,6 +423,16 @@ fn reconcile_emit_kind(kind: ChangeKind, exists: std::io::Result<bool>) -> Chang
 /// timer that flushes any path whose last event is older than the
 /// debounce window. This avoids per-path timer tasks (cheap) and gives
 /// O(1) flush per tick.
+///
+/// Starvation / livelock guard: the `select!` is `biased`, so under a
+/// continuous high-rate event stream the `recv` arm fires forever and the
+/// `tick` arm never runs — `pending` grows unbounded and a continuously
+/// touched "hot" file (whose `last_seen` is bumped on every event) never
+/// satisfies the quiet-window drain condition (livelock). To bound both,
+/// the `recv` arm forces an inline flush whenever `pending` exceeds
+/// [`MAX_PENDING_BEFORE_FORCED_FLUSH`] OR the wall-time since the last
+/// drain exceeds the debounce window. Neither check depends on the `tick`
+/// arm getting scheduled, so a sustained burst always makes progress.
 async fn debouncer_task(
     raw_rx: std_mpsc::Receiver<notify::Result<Event>>,
     out_tx: mpsc::Sender<Change>,
@@ -431,6 +452,10 @@ async fn debouncer_task(
     });
 
     let mut pending: HashMap<PathBuf, Pending> = HashMap::new();
+    // Wall-clock of the last time we drained ready entries (via the `tick`
+    // arm or the recv-arm forced flush). Used by the recv arm to force a
+    // flush when the `tick` arm is being starved by a continuous stream.
+    let mut last_drain = Instant::now();
     // Wake at half the debounce window so worst-case extra latency is
     // ~debounce + debounce/2. With the default 50ms that's ~75ms.
     let mut tick = tokio::time::interval(debounce / 2);
@@ -479,6 +504,25 @@ async fn debouncer_task(
                             let merged_kind = merge_kind(pending.get(&path).map(|p| p.kind), kind);
                             pending.insert(path, Pending { kind: merged_kind, last_seen: now });
                         }
+                        // Starvation / livelock guard (see fn docs). The `biased`
+                        // `select!` lets this arm fire forever under a continuous
+                        // stream, so we cannot rely on the `tick` arm to drain. Force
+                        // a flush of ALL pending entries — not just the quiet ones —
+                        // when either the map has grown too large OR a full debounce
+                        // window has elapsed since the last drain. Draining all (not
+                        // just `now - last_seen >= debounce`) is what breaks the
+                        // hot-file livelock: a continuously touched path is never
+                        // "quiet", so a quiet-only filter would never release it.
+                        if pending.len() >= MAX_PENDING_BEFORE_FORCED_FLUSH
+                            || now.duration_since(last_drain) >= debounce
+                        {
+                            last_drain = now;
+                            if drain_all(&mut pending, &out_tx).await.is_err() {
+                                // Receiver dropped; bail out of the loop.
+                                bridge.abort();
+                                return;
+                            }
+                        }
                     }
                     Err(e) => {
                         warn!(error = %e, "notify watcher error");
@@ -497,6 +541,7 @@ async fn debouncer_task(
                 for (path, _) in &ready {
                     pending.remove(path);
                 }
+                last_drain = now;
                 for (path, kind) in ready {
                     let kind = resolve_emit_kind(&path, kind);
                     if out_tx.send(Change { path, kind }).await.is_err() {
@@ -514,12 +559,24 @@ async fn debouncer_task(
 }
 
 async fn flush_all(pending: &mut HashMap<PathBuf, Pending>, out_tx: &mpsc::Sender<Change>) {
+    let _ = drain_all(pending, out_tx).await;
+}
+
+/// Drain and emit **every** pending entry, regardless of how recently it was
+/// last seen. Used by the recv-arm starvation/livelock guard (and, via
+/// [`flush_all`], by the shutdown / bridge-closed paths). Returns `Err(())`
+/// if the outbound receiver was dropped mid-drain so the caller can bail.
+async fn drain_all(
+    pending: &mut HashMap<PathBuf, Pending>,
+    out_tx: &mpsc::Sender<Change>,
+) -> Result<(), ()> {
     for (path, p) in pending.drain() {
         let kind = resolve_emit_kind(&path, p.kind);
         if out_tx.send(Change { path, kind }).await.is_err() {
-            return;
+            return Err(());
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -908,5 +965,149 @@ mod tests {
         );
 
         watcher.shutdown().await;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Starvation / livelock regression (sub #1138 ← source #1113).
+    //
+    // Under a *continuous* high-rate event stream the `biased` `select!` in
+    // `debouncer_task` services the `recv` arm forever and STARVES the `tick`
+    // arm, so the quiet-window drain never runs while the burst is in flight.
+    // Worse, a single continuously rewritten "hot" file has its `last_seen`
+    // bumped on every event, so it is never "quiet" — a quiet-only filter would
+    // livelock and never release it until the stream stops.
+    //
+    // We drive `debouncer_task` DIRECTLY with a synthetic saturating stream
+    // rather than through a live `notify` watcher: the kernel's inotify layer
+    // coalesces rapid writes to one path down to a handful of events, so a
+    // real-FS writer cannot reliably reproduce the saturating stream the bug
+    // needs. Feeding the sync `raw_rx` channel ourselves gives a deterministic,
+    // platform-independent reproduction of the exact `select!` pathology.
+    // ---------------------------------------------------------------------------
+
+    /// Build a synthetic `notify` modify event for a single path (mirrors what
+    /// the recommended watcher hands us for a content edit).
+    fn modify_event(path: &Path) -> notify::Result<Event> {
+        use notify::event::{DataChange, EventKind, ModifyKind};
+        Ok(Event {
+            kind: EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+            paths: vec![path.to_path_buf()],
+            attrs: Default::default(),
+        })
+    }
+
+    /// A continuous single-hot-file stream must flush MID-STREAM. Against the
+    /// pre-fix loop the `recv` arm starves `tick` and the hot file never goes
+    /// quiet, so nothing is emitted until the producer stops; the deadline
+    /// (well under the producer's lifetime) makes that failure observable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sustained_hot_file_stream_flushes_mid_burst() {
+        let hot = PathBuf::from("/synthetic/hot.txt");
+
+        let (raw_tx, raw_rx) = std_mpsc::channel::<notify::Result<Event>>();
+        let (out_tx, mut out_rx) = mpsc::channel::<Change>(256);
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let debounce = Duration::from_millis(100);
+        let task = tokio::spawn(debouncer_task(raw_rx, out_tx, debounce, shutdown_rx));
+
+        // Producer: hammer the SAME path as fast as the bounded bridge will
+        // accept, for ~2s. No sleep — keeping an event always buffered is what
+        // makes the `biased` recv arm win every `select!` and starve `tick`.
+        // `raw_tx` is moved in and dropped when the loop ends, which closes the
+        // channel and lets the task exit cleanly.
+        let producer_path = hot.clone();
+        let producer = std::thread::spawn(move || {
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(2) {
+                if raw_tx.send(modify_event(&producer_path)).is_err() {
+                    break; // debouncer task gone
+                }
+            }
+        });
+
+        // Must observe a flush for the hot file WHILE the producer is still
+        // running. 1s << the producer's 2s lifetime, so a pass proves the
+        // forced flush fired mid-stream and not after the stream ended.
+        let flushed = tokio::time::timeout(Duration::from_secs(1), async {
+            while let Some(change) = out_rx.recv().await {
+                if change.path == hot {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+
+        assert!(
+            flushed,
+            "a continuously streamed hot file must flush mid-burst; the tick \
+             arm was starved and/or the hot file livelocked (sub #1138)",
+        );
+
+        // Drop the receiver so the debouncer's next `out_tx.send` errors and the
+        // task returns (which drops `raw_rx`, ending the producer's sends). Doing
+        // this BEFORE awaiting avoids a deadlock where the task blocks on a full
+        // outbound channel that nobody is draining.
+        drop(out_rx);
+        let _ = producer.join();
+        let _ = task.await;
+    }
+
+    /// A continuous stream across MANY distinct paths must also drain mid-burst
+    /// — exercising the `pending.len() >= MAX_PENDING_BEFORE_FORCED_FLUSH`
+    /// branch (a `git checkout` of a huge tree), not just the elapsed-window
+    /// branch. We assert a steady flow of distinct paths arrives while the
+    /// producer is still running, so `pending` cannot grow without bound.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sustained_many_paths_stream_drains_mid_burst() {
+        let (raw_tx, raw_rx) = std_mpsc::channel::<notify::Result<Event>>();
+        let (out_tx, mut out_rx) = mpsc::channel::<Change>(256);
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let debounce = Duration::from_millis(100);
+        let task = tokio::spawn(debouncer_task(raw_rx, out_tx, debounce, shutdown_rx));
+
+        // Producer: a flood of DISTINCT paths (like a bulk checkout) for ~2s.
+        let producer = std::thread::spawn(move || {
+            let started = Instant::now();
+            let mut n: u64 = 0;
+            while started.elapsed() < Duration::from_secs(2) {
+                let p = PathBuf::from(format!("/synthetic/tree/file_{n}.txt"));
+                if raw_tx.send(modify_event(&p)).is_err() {
+                    break;
+                }
+                n += 1;
+            }
+        });
+
+        // Expect a healthy number of distinct emitted changes WHILE the
+        // producer runs. Any positive flow proves `pending` is draining under a
+        // continuous stream rather than starving `tick` and growing unbounded.
+        let drained = tokio::time::timeout(Duration::from_secs(1), async {
+            let mut count = 0usize;
+            while let Some(_change) = out_rx.recv().await {
+                count += 1;
+                if count >= 50 {
+                    return count;
+                }
+            }
+            count
+        })
+        .await
+        .unwrap_or(0);
+
+        assert!(
+            drained >= 50,
+            "a continuous many-path stream must drain mid-burst (got {drained} \
+             changes in 1s); pending was starving `tick` (sub #1138)",
+        );
+
+        // See the note in the hot-file test: drop the receiver before awaiting
+        // so the task can unwind instead of blocking on a full outbound channel.
+        drop(out_rx);
+        let _ = producer.join();
+        let _ = task.await;
     }
 }

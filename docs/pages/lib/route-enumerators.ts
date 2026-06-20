@@ -89,6 +89,13 @@ export function enumerateDocsRoutes(locale: string): string[] {
  * Returns:
  *   - /docs/tags/ (or /{locale}/docs/tags/)
  *   - /docs/tags/{tag}/ (or /{locale}/docs/tags/{tag}/) for each unique tag
+ *
+ * IMPORTANT — feature incomplete: the tag route modules that serve these URLs
+ * do not exist yet (pages/docs/tags/index.tsx, pages/docs/tags/[tag].tsx, and
+ * their locale counterparts pages/[locale]/docs/tags/*). Do NOT flip
+ * settings.docTags to true until those route modules are implemented — all
+ * emitted URLs would 404. Tracked for implementation alongside docTags
+ * activation.
  */
 export function enumerateTagsRoutes(locale: string): string[] {
   if (!settings.docTags) return [];

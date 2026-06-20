@@ -8539,4 +8539,70 @@ mod tests {
             "names the limit: {msg}"
         );
     }
+
+    /// `OnBrokenLinks::Error` causes `bundle()` to return `Err` when a
+    /// content file contains an unresolvable markdown link.
+    ///
+    /// Uses `mock_subprocess_output` so no esbuild binary is required —
+    /// broken-link detection runs during the MDX pipeline (before esbuild)
+    /// and the `bail!` at the fatal-findings gate fires before the mock
+    /// write is reached.
+    ///
+    /// Level: 1 (unit — pure logic in the bundler pipeline).
+    #[test]
+    fn on_broken_links_error_returns_err_without_esbuild() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Minimal project layout.
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("content/docs")).unwrap();
+        fs::create_dir_all(root.join("components")).unwrap();
+        fs::create_dir_all(root.join("layouts")).unwrap();
+
+        fs::write(
+            root.join("pages/index.tsx"),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+
+        // The MDX file with a broken cross-doc link.
+        // `./ghost.mdx` does not exist in content/docs/ — this is the
+        // broken link that must trigger the error.
+        fs::write(
+            root.join("content/docs/article.mdx"),
+            "---\ntitle: Article\n---\n\n[ghost link](./ghost.mdx)\n",
+        )
+        .unwrap();
+
+        let input = BundlerInput {
+            content_collections: vec![ContentCollectionSpec::new(
+                "docs",
+                PathBuf::from("content/docs"),
+            )],
+            resolve_markdown_links: Some(ResolveMarkdownLinksSpec {
+                routes: vec![ResolveMarkdownLinksRoute {
+                    docs_dir: PathBuf::from("content/docs"),
+                    route_prefix: "/docs/".to_string(),
+                }],
+                on_broken_links: OnBrokenLinks::Error,
+            }),
+            ..make_minimal_input(&tmp)
+        };
+
+        let err = bundle(input)
+            .expect_err("bundle must fail with OnBrokenLinks::Error when broken link exists");
+        let msg = format!("{err:#}");
+
+        // The error must name the broken link URL.
+        assert!(
+            msg.contains("ghost.mdx"),
+            "error message must name the broken link; got: {msg}"
+        );
+        // The error must describe the problem domain.
+        assert!(
+            msg.contains("broken") || msg.contains("link"),
+            "error message must describe the problem; got: {msg}"
+        );
+    }
 }

@@ -108,11 +108,7 @@ impl SsrDispatcher for StubSsrDispatcher {
     async fn dispatch(&self, _req: SsrRequest) -> Result<SsrResponse, SsrDispatchError> {
         Ok(SsrResponse {
             status: 200,
-            headers: {
-                let mut m = std::collections::BTreeMap::new();
-                m.insert("content-type".into(), "text/html; charset=utf-8".into());
-                m
-            },
+            headers: vec![("content-type".into(), "text/html; charset=utf-8".into())],
             body: self.body.clone(),
         })
     }

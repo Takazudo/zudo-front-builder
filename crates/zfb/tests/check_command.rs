@@ -81,3 +81,65 @@ fn check_fails_with_schema_violation() {
         "expected summary line:\n{combined}",
     );
 }
+
+/// Exercise the tsc failure-folding path in `zfb check`.
+///
+/// All existing tests pass `--skip-tsc`, so this is the only test that
+/// drives the tsc subprocess code path to a non-zero exit.
+///
+/// Fixture: `check-tsc-fail/` contains a committed shell stub at
+/// `node_modules/.bin/tsc` that always exits 1, matching the tsc
+/// convention for "type errors found". The stub is deterministic and
+/// runs in any POSIX shell (CI uses Ubuntu/Linux). Schema validation
+/// passes (the content is valid) so the only failure is tsc.
+///
+/// Rationale: this exercises `run_tsc → locate_tsc` (which prefers
+/// `node_modules/.bin/tsc`) and the `tsc_failed = true` branch that
+/// folds tsc failure into the check summary.
+#[test]
+fn check_fails_when_tsc_exits_nonzero() {
+    let dir = fixture("check-tsc-fail");
+
+    // Sanity: the stub must exist and be executable.
+    let stub = dir.join("node_modules/.bin/tsc");
+    assert!(
+        stub.exists(),
+        "tsc stub must exist at {}: run `git submodule update` or check that \
+         the fixture was committed correctly",
+        stub.display()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::metadata(&stub).unwrap().permissions();
+        assert!(
+            perms.mode() & 0o111 != 0,
+            "tsc stub at {} must be executable; fix permissions in the fixture",
+            stub.display()
+        );
+    }
+
+    let output = Command::new(zfb_binary!())
+        .args(["check"])
+        // No --skip-tsc: we want the tsc subprocess to run.
+        .current_dir(&dir)
+        .output()
+        .expect("spawn zfb");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit when tsc exits 1, got status={:?}",
+        output.status,
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stdout}{stderr}");
+
+    // `zfb check` must report a tsc-related failure in its summary.
+    // `render_summary(0, true)` produces "check failed: type errors".
+    assert!(
+        combined.contains("type errors") || combined.contains("check failed"),
+        "expected 'type errors' or 'check failed' in output:\n{combined}",
+    );
+}

@@ -144,10 +144,15 @@ pub struct SsrRequest {
 /// router's response builder. Additional headers in `headers` are
 /// merged after `Content-Type` so a handler can stamp custom cache
 /// directives, cookies, etc. — the server never overrides these.
+///
+/// `headers` is an ordered `Vec<(name, value)>` multimap rather than a
+/// map, so multi-valued headers (notably multiple `Set-Cookie`) survive:
+/// the dev router `append`s each entry onto the `http::HeaderMap` instead
+/// of `insert`ing (which would collapse duplicates to last-value-wins).
 #[derive(Debug, Clone, Default)]
 pub struct SsrResponse {
     pub status: u16,
-    pub headers: BTreeMap<String, String>,
+    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 

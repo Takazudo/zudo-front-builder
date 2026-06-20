@@ -414,3 +414,49 @@ async fn good_bundle_dispatches_and_bad_only_host_reports_install_error() {
         "expected install-error suffix when bad module was the last loaded, got: {msg}"
     );
 }
+
+/// Item #1 perf: request bodies are now passed via base64 + atob instead of a
+/// Uint8Array.from([b0,b1,...]) numeric-array literal.  This test dispatches a
+/// POST request with a binary body and asserts the handler receives it intact.
+///
+/// Regression guard: if the base64 decode in the JS expression is broken, the
+/// handler's `req.arrayBuffer()` call returns an empty or mangled buffer and
+/// the echoed JSON will not match.
+#[tokio::test]
+async fn dispatch_post_with_binary_body_round_trips() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    // Bundle echoes the raw request body bytes back as a JSON array.
+    let bundle = r#"
+        export default {
+          async fetch(request) {
+            const buf = await request.arrayBuffer();
+            const bytes = Array.from(new Uint8Array(buf));
+            return new Response(JSON.stringify(bytes), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          },
+        };
+    "#;
+    host.execute_module("bundle.mjs", bundle)
+        .await
+        .expect("execute bundle");
+
+    // Send a body with all 256 byte values to catch any byte-value aliasing.
+    let body: Vec<u8> = (0u8..=255u8).collect();
+    let req = HttpRequestLike {
+        url: "http://zfb.local/echo".to_string(),
+        method: "POST".to_string(),
+        headers: std::collections::BTreeMap::new(),
+        body: Some(body.clone()),
+    };
+    let resp = host.dispatch_fetch(req).await.expect("dispatch POST");
+    assert_eq!(resp.status, 200);
+    let body_str = resp.body_utf8().expect("response must be UTF-8");
+    let echoed: Vec<u8> =
+        serde_json::from_str::<Vec<u8>>(body_str).expect("response must be valid JSON array");
+    assert_eq!(
+        echoed, body,
+        "dispatched body must round-trip intact through base64 encode/atob decode"
+    );
+}

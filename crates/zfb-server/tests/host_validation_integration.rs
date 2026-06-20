@@ -12,8 +12,9 @@
 //! 2. enforced bind + base prefix: the base-prefixed router branch is
 //!    protected too (the #931 two-branches warning);
 //! 3. cross-origin non-GET to SSR and plugin dispatch → 403 and the
-//!    dispatcher is NOT invoked; allowed-origin and absent-origin
-//!    non-GET requests still dispatch;
+//!    dispatcher is NOT invoked; allowed-origin non-GET requests still
+//!    dispatch; absent-origin non-GET requests → 403 (fail closed —
+//!    browsers always send Origin on cross-origin non-GET requests);
 //! 4. static read paths are exempt from the Origin check (cross-origin
 //!    GET works; non-GET to static paths still 405s, not 403s);
 //! 5. default loopback bind: any Host and any Origin pass through
@@ -22,8 +23,6 @@
 //! Uses the same ephemeral-port binding pattern as `integration.rs`
 //! and the same synthetic dispatchers as `ssr_integration.rs`.
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
@@ -61,8 +60,7 @@ impl CountingSsrDispatcher {
 impl SsrDispatcher for CountingSsrDispatcher {
     async fn dispatch(&self, _request: SsrRequest) -> Result<SsrResponse, SsrDispatchError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
-        let mut headers = BTreeMap::new();
-        headers.insert("content-type".into(), "text/html; charset=utf-8".into());
+        let headers = vec![("content-type".into(), "text/html; charset=utf-8".into())];
         Ok(SsrResponse {
             status: 200,
             headers,
@@ -96,8 +94,7 @@ impl DevMiddlewareDispatcher for CountingPluginDispatcher {
         request: PluginRequest,
     ) -> Result<PluginDispatchOutcome, PluginDispatchError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
-        let mut headers = HashMap::new();
-        headers.insert("content-type".into(), "text/plain; charset=utf-8".into());
+        let headers = vec![("content-type".into(), "text/plain; charset=utf-8".into())];
         Ok(PluginDispatchOutcome::Response(PluginResponse {
             status: 200,
             headers,
@@ -353,15 +350,23 @@ async fn cross_origin_post_to_ssr_route_is_rejected_without_dispatch() {
     assert_eq!(resp.status().as_u16(), 200);
     assert_eq!(dispatcher.count(), 1);
 
-    // Absent Origin (curl-style client) → allowed through.
+    // Absent Origin on a non-GET request → 403 when the server is
+    // LAN-exposed (enforced). Browsers always send Origin on cross-origin
+    // non-GET requests; absence implies a non-browser client that may be
+    // bypassing CORS — fail closed.
     let resp = client()
         .post(local_url(addr, "/dynamic"))
         .header(reqwest::header::HOST, "allowed.test")
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-    assert_eq!(dispatcher.count(), 2);
+    assert_eq!(resp.status().as_u16(), 403);
+    // Dispatcher was NOT invoked — the gate fired before dispatch.
+    assert_eq!(
+        dispatcher.count(),
+        1,
+        "dispatcher must not run when Origin is absent on an enforced LAN server"
+    );
 
     // Cross-origin GET is NOT blocked (safe method; Host check covers it).
     let resp = client()
@@ -372,7 +377,7 @@ async fn cross_origin_post_to_ssr_route_is_rejected_without_dispatch() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
-    assert_eq!(dispatcher.count(), 3);
+    assert_eq!(dispatcher.count(), 2);
 
     server.abort();
 }

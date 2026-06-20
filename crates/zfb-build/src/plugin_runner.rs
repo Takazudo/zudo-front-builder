@@ -59,9 +59,11 @@
 //!   the list of `(path, handler_id)` pairs the dev server should
 //!   route into the plugin host. [`PluginHost::invoke_dev_handler`]
 //!   dispatches one HTTP request to a registered handler.
-//! - [`PluginHost::shutdown`] sends a `shutdown` command and joins the
-//!   child. Drop also kills the process — the explicit shutdown is the
-//!   graceful path.
+//! - [`PluginHost::shutdown`] sends a `shutdown` command, waits the
+//!   child, and joins the reader task (bounded). It is idempotent — the
+//!   host is `Clone` and only the first caller across all clones tears
+//!   down; later/overlapping calls are no-ops. Drop also kills the
+//!   process — the explicit shutdown is the graceful path.
 //!
 //! The host writes logger calls out-of-band (no `id`) and the Rust
 //! reader forwards them into [`tracing`] at the matching level so the
@@ -71,7 +73,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
@@ -293,6 +295,20 @@ struct HostInner {
     /// Child process handle. Held for the lifetime of the host so
     /// dropping the [`PluginHost`] kills the subprocess.
     child: Mutex<Option<Child>>,
+    /// Latch that makes [`PluginHost::shutdown`] idempotent. The first
+    /// caller to flip this false→true owns the teardown (send `shutdown`,
+    /// take + wait the child, join the reader). Every other call — on any
+    /// of the [`Clone`]d handles the dev server holds — returns `Ok(())`
+    /// immediately without touching the child or sending a second
+    /// `shutdown` command. This is what stops an in-flight
+    /// `invoke_dev_handler` on one clone from being pre-empted by another
+    /// clone's `shutdown` `take()`ing the child out from under it.
+    shutting_down: AtomicBool,
+    /// Reader-task join handle, kept so teardown can be *bounded*: a hung
+    /// child only closes stdout (and thus ends the reader loop) when it
+    /// actually dies, so shutdown joins this with a deadline instead of
+    /// detaching and hoping. `None` once joined.
+    reader_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Dropping the [`_tempdir`] removes the staged plugin-host script.
     _tempdir: tempfile::TempDir,
     /// Maximum time any single plugin hook reply is awaited before the
@@ -436,6 +452,8 @@ impl PluginHost {
             stdin: Mutex::new(stdin),
             next_id: AtomicU64::new(1),
             child: Mutex::new(Some(child)),
+            shutting_down: AtomicBool::new(false),
+            reader_handle: Mutex::new(None),
             _tempdir: tmp,
             hook_timeout,
         });
@@ -443,7 +461,7 @@ impl PluginHost {
         // Reader task — drains stdout, dispatches replies to the
         // matching pending sender, and forwards log lines into tracing.
         let inner_for_reader = Arc::clone(&inner);
-        tokio::spawn(async move {
+        let reader_handle = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             loop {
                 match lines.next_line().await {
@@ -476,6 +494,13 @@ impl PluginHost {
                 });
             }
         });
+        // Stash the reader handle so shutdown can join it with a bound
+        // rather than leaving the task fully detached.
+        *inner
+            .reader_handle
+            .try_lock()
+            .expect("reader_handle uncontended at spawn time — no other handle exists yet") =
+            Some(reader_handle);
 
         // Stderr drain — the host should never write to stderr in
         // practice, but a programmer error there shouldn't deadlock
@@ -686,8 +711,30 @@ impl PluginHost {
     }
 
     /// Send a `shutdown` command and wait for the child to exit.
+    ///
+    /// **Idempotent.** [`PluginHost`] is [`Clone`] and the dev server holds
+    /// clones; the first call to `shutdown` on any clone wins (latched via
+    /// an [`AtomicBool`]) and every subsequent call — including overlapping
+    /// ones on sibling clones — is a no-op returning `Ok(())`. Without this
+    /// latch a second clone calling `shutdown` would `take()` and kill the
+    /// child out from under an in-flight `invoke_dev_handler` on another
+    /// clone, which then races the reader task's stdout-close path and gets
+    /// the synthetic "stdout closed before reply" error.
+    ///
     /// Best-effort: if the child has already died, this returns Ok.
-    pub async fn shutdown(self) -> Result<()> {
+    ///
+    /// **Caller contract:** no dispatch (hook or `invoke_dev_handler`) may
+    /// overlap `shutdown`. The latch makes *shutdown itself* race-free, but
+    /// it does not order a concurrent dispatch against the teardown — the
+    /// caller (dev server / build orchestrator) is responsible for quiescing
+    /// dispatch before tearing the host down.
+    pub async fn shutdown(&self) -> Result<()> {
+        // Latch: the first caller to flip false→true owns teardown; all
+        // others (overlapping calls on sibling clones) return immediately.
+        if self.inner.shutting_down.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+
         // Send the shutdown with the 2s shutdown budget, not the hook timeout.
         let shutdown_budget = std::time::Duration::from_secs(2);
         let _ = self
@@ -697,16 +744,35 @@ impl PluginHost {
                 shutdown_budget,
             )
             .await;
-        let mut guard = self.inner.child.lock().await;
-        if let Some(mut child) = guard.take() {
-            // Give the child a moment to exit cleanly; otherwise force-kill.
-            match tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await {
-                Ok(Ok(status)) => {
-                    debug!(?status, "plugin host: child exited");
+        {
+            let mut guard = self.inner.child.lock().await;
+            if let Some(mut child) = guard.take() {
+                // Give the child a moment to exit cleanly; otherwise force-kill.
+                match tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await {
+                    Ok(Ok(status)) => {
+                        debug!(?status, "plugin host: child exited");
+                    }
+                    Ok(Err(e)) => warn!(error = %e, "plugin host: wait failed"),
+                    Err(_) => {
+                        let _ = child.kill().await;
+                    }
                 }
-                Ok(Err(e)) => warn!(error = %e, "plugin host: wait failed"),
+            }
+        }
+
+        // Join the reader task with a bound. Once the child is gone its
+        // stdout closes and the reader loop returns on its own; the deadline
+        // is a guard against a wedged pipe so teardown can't hang here.
+        if let Some(handle) = self.inner.reader_handle.lock().await.take() {
+            let abort = handle.abort_handle();
+            match tokio::time::timeout(std::time::Duration::from_secs(2), handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => warn!(error = %e, "plugin host: reader task join failed"),
                 Err(_) => {
-                    let _ = child.kill().await;
+                    warn!("plugin host: reader task did not finish within shutdown budget");
+                    // Bounded teardown: abort the wedged reader rather than
+                    // dropping its JoinHandle (which would only detach it).
+                    abort.abort();
                 }
             }
         }
@@ -1804,6 +1870,8 @@ mod tests {
             stdin: Mutex::new(stdin),
             next_id: AtomicU64::new(1),
             child: Mutex::new(Some(child)),
+            shutting_down: AtomicBool::new(false),
+            reader_handle: Mutex::new(None),
             _tempdir: tmp,
             hook_timeout: timeout,
         });
@@ -1906,5 +1974,80 @@ mod tests {
     fn resolve_hook_timeout_config_field_wins_over_default() {
         let d = resolve_hook_timeout(Some(42));
         assert_eq!(d, std::time::Duration::from_secs(42));
+    }
+
+    // --- Shutdown idempotency / concurrency (no node required) ---------------
+    //
+    // #1140: `shutdown` takes `&self` and is latched so overlapping calls on
+    // sibling clones (the dev server holds clones) don't race the child-take.
+    // These tests use the `sleep`-stub host (no reader task, no real
+    // protocol) so they exercise pure Rust shared-state — Level 1, T0.
+
+    /// A second `shutdown` after the child is already gone must short-circuit
+    /// on the latch and return `Ok(())` essentially instantly — it must NOT
+    /// re-enter the 2s shutdown-request budget. This is the regression guard:
+    /// before the fix `shutdown(self)` consumed the host so a "second" call
+    /// wasn't even expressible; now it must be a cheap no-op.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn shutdown_is_idempotent_second_call_is_a_fast_noop() {
+        let host = match stub_host_with_timeout(std::time::Duration::from_secs(120)).await {
+            Some(h) => h,
+            None => {
+                eprintln!("skipping: `sleep` not available");
+                return;
+            }
+        };
+        // First shutdown owns teardown. No reader task replies, so the
+        // shutdown request drains its 2s budget; bound it with a watchdog so
+        // a regression (hang) is RED, not a silent slow pass.
+        let watchdog = std::time::Duration::from_secs(8);
+        tokio::time::timeout(watchdog, host.shutdown())
+            .await
+            .expect("first shutdown must finish within the watchdog")
+            .expect("first shutdown returns Ok");
+        // Child must be gone after the first teardown.
+        assert!(
+            host.inner.child.lock().await.is_none(),
+            "child must be taken by the first shutdown"
+        );
+        // Second call: the latch is already set, so this must return without
+        // awaiting the budget at all. 200ms is far below the 2s budget but
+        // generous enough to never flake on a loaded CI box.
+        let started = std::time::Instant::now();
+        host.shutdown()
+            .await
+            .expect("second shutdown is a no-op Ok");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "second shutdown must short-circuit on the latch, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Overlapping `shutdown` calls on two clones must both return `Ok` and
+    /// exactly one of them must perform teardown (the other no-ops on the
+    /// latch). This is the concurrency shape the dev server hits.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn concurrent_shutdown_on_clones_both_ok_single_teardown() {
+        let host = match stub_host_with_timeout(std::time::Duration::from_secs(120)).await {
+            Some(h) => h,
+            None => {
+                eprintln!("skipping: `sleep` not available");
+                return;
+            }
+        };
+        let clone = host.clone();
+        let watchdog = std::time::Duration::from_secs(8);
+        let (a, b) = tokio::time::timeout(watchdog, async move {
+            tokio::join!(host.shutdown(), clone.shutdown())
+        })
+        .await
+        .expect("concurrent shutdown must finish within the watchdog");
+        a.expect("clone A shutdown Ok");
+        b.expect("clone B shutdown Ok");
+        // No panic, no double-kill: reaching here with both Ok is the
+        // assertion. (The child was already taken by whichever clone won.)
     }
 }

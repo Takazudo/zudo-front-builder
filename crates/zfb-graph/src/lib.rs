@@ -620,6 +620,14 @@ impl DependencyGraph {
     /// - Otherwise accumulates the specific sets from each individual path and
     ///   returns a single deduplicated [`DirtySet::Specific`].
     ///
+    /// **Deleted dependencies return an empty set**, matching the behaviour of
+    /// [`Self::dirty_pages`]: once a dep is deleted via [`Self::remove_node`],
+    /// its reverse-index entry is drained, so subsequent queries for that path
+    /// return an empty [`DirtySet::Specific`] rather than the stale consumer
+    /// list. Callers that handle deletion events must call
+    /// [`Self::remove_node`] (which returns the affected set and updates the
+    /// index) **before** falling back to `dirty_pages_batch`.
+    ///
     /// Calling this once over a batch is more efficient than calling
     /// [`Self::dirty_pages`] in a loop and merging the results yourself,
     /// because the batch variant short-circuits on the first global hit and

@@ -121,17 +121,21 @@ impl SsrDispatcher for EmbeddedV8SsrAdapter {
 /// header map didn't already carry one (the renderer duplicates
 /// content-type out to a typed field for its own hot path).
 ///
-/// Multi-valued headers (notably `Set-Cookie`) still collapse to the
-/// last value via `BTreeMap<String, String>` — a preexisting design
-/// limit of the seam documented on `HttpResponseLike`. Fixing that
-/// needs a wider switch to `Vec<(String, String)>` or `http::HeaderMap`
-/// and is intentionally deferred.
+/// Multi-valued headers (notably `Set-Cookie`) are preserved: both sides
+/// carry an ordered `Vec<(String, String)>`, so duplicate entries survive
+/// the seam verbatim and the zfb-server edge `append`s them onto the
+/// `http::HeaderMap`. (Any residual collapse is upstream of this seam, at
+/// the JS `Response.headers` → `Record` boundary in `zfb-render`.)
 fn http_response_to_ssr(resp: HttpResponseLike) -> SsrResponse {
     let mut headers = resp.headers;
-    if !resp.content_type.is_empty() {
-        headers
-            .entry("content-type".into())
-            .or_insert(resp.content_type);
+    // The renderer duplicates content-type out to a typed field; fold it
+    // back into the header list only when the bundle's own header map did
+    // not already carry one (the bundle's Header is the source of truth).
+    let has_content_type = headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+    if !resp.content_type.is_empty() && !has_content_type {
+        headers.push(("content-type".into(), resp.content_type));
     }
     SsrResponse {
         status: resp.status,
@@ -143,7 +147,14 @@ fn http_response_to_ssr(resp: HttpResponseLike) -> SsrResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+
+    /// First value for `name` (case-insensitive) in an ordered header list.
+    fn first(headers: &[(String, String)], name: &str) -> Option<String> {
+        headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.clone())
+    }
 
     /// Deep-review regression (PR #376): every header the V8 bundle
     /// sets must reach the SsrResponse — earlier only content-type
@@ -151,10 +162,11 @@ mod tests {
     /// classes of header Cloudflare's adapter forwards.
     #[test]
     fn http_response_to_ssr_forwards_all_headers() {
-        let mut headers = BTreeMap::new();
-        headers.insert("cache-control".into(), "no-store".into());
-        headers.insert("x-trace-id".into(), "abc-123".into());
-        headers.insert("location".into(), "/elsewhere".into());
+        let headers = vec![
+            ("cache-control".into(), "no-store".into()),
+            ("x-trace-id".into(), "abc-123".into()),
+            ("location".into(), "/elsewhere".into()),
+        ];
         let resp = HttpResponseLike {
             status: 302,
             content_type: "text/html; charset=utf-8".into(),
@@ -165,30 +177,54 @@ mod tests {
         assert_eq!(ssr.status, 302);
         assert_eq!(ssr.body, b"redirected");
         assert_eq!(
-            ssr.headers.get("cache-control").map(String::as_str),
-            Some("no-store"),
+            first(&ssr.headers, "cache-control").as_deref(),
+            Some("no-store")
         );
         assert_eq!(
-            ssr.headers.get("x-trace-id").map(String::as_str),
-            Some("abc-123"),
+            first(&ssr.headers, "x-trace-id").as_deref(),
+            Some("abc-123")
         );
         assert_eq!(
-            ssr.headers.get("location").map(String::as_str),
-            Some("/elsewhere"),
+            first(&ssr.headers, "location").as_deref(),
+            Some("/elsewhere")
         );
         assert_eq!(
-            ssr.headers.get("content-type").map(String::as_str),
+            first(&ssr.headers, "content-type").as_deref(),
             Some("text/html; charset=utf-8"),
         );
     }
 
-    /// When the rich `headers` map already carries content-type, it
+    /// Multi-valued `Set-Cookie` survives the build→server seam: two
+    /// distinct cookies arrive as two entries in the ordered list, not a
+    /// single collapsed value (sub #1144).
+    #[test]
+    fn http_response_to_ssr_preserves_duplicate_set_cookie() {
+        let headers = vec![
+            ("set-cookie".into(), "a=1; Path=/".into()),
+            ("set-cookie".into(), "b=2; Path=/".into()),
+        ];
+        let resp = HttpResponseLike {
+            status: 200,
+            content_type: "text/html".into(),
+            headers,
+            body: Vec::new(),
+        };
+        let ssr = http_response_to_ssr(resp);
+        let cookies: Vec<&str> = ssr
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(cookies, vec!["a=1; Path=/", "b=2; Path=/"]);
+    }
+
+    /// When the rich `headers` list already carries content-type, it
     /// wins over the duplicated `content_type` field — the JS bundle's
     /// own Header is the source of truth.
     #[test]
     fn http_response_to_ssr_prefers_header_map_content_type() {
-        let mut headers = BTreeMap::new();
-        headers.insert("content-type".into(), "application/json".into());
+        let headers = vec![("content-type".into(), "application/json".into())];
         let resp = HttpResponseLike {
             status: 200,
             content_type: "text/html".into(),
@@ -197,19 +233,19 @@ mod tests {
         };
         let ssr = http_response_to_ssr(resp);
         assert_eq!(
-            ssr.headers.get("content-type").map(String::as_str),
+            first(&ssr.headers, "content-type").as_deref(),
             Some("application/json"),
         );
     }
 
-    /// An empty `content_type` field with no header-map entry yields
+    /// An empty `content_type` field with no header-list entry yields
     /// no content-type header (defensive parity with the old behaviour).
     #[test]
     fn http_response_to_ssr_omits_content_type_when_empty() {
         let resp = HttpResponseLike {
             status: 204,
             content_type: String::new(),
-            headers: BTreeMap::new(),
+            headers: Vec::new(),
             body: Vec::new(),
         };
         let ssr = http_response_to_ssr(resp);

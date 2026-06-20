@@ -114,6 +114,40 @@ mod module_loader;
 pub use dispatch::{HttpRequestLike, HttpResponseLike};
 pub use module_loader::{AliasHook, BundleModuleLoader, PluginRegistryHooks, VirtualModuleHook};
 
+/// Encode `bytes` as a standard base64 string (RFC 4648, alphabet A-Za-z0-9+/).
+///
+/// Used to pass request bodies to the JS dispatch shim without building a
+/// numeric-array literal (`Uint8Array.from([b0,b1,…])`), which grows O(N)
+/// as source text that V8 must re-parse on every call.  The encoded form is
+/// always a valid JSON string; the caller wraps it in `serde_json::to_string`
+/// before embedding it in the dispatch script.
+///
+/// No external crate needed — the alphabet and padding rules are trivial and
+/// adding a dep purely for this one site would bloat the compile graph.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((triple >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((triple >> 12) & 0x3f) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((triple >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(triple & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 /// Synthetic main-module specifier used when the caller calls
 /// [`EmbeddedV8RenderHost::execute_module`] without supplying a URL.
 /// Bundles are self-contained, so the URL only affects diagnostic
@@ -165,9 +199,11 @@ pub struct EmbeddedV8RenderHost {
 // `RefCell<...>`, or the existing `JsRuntime` — preserves it.
 
 impl EmbeddedV8RenderHost {
-    /// Create a new host with the default extension set
-    /// (`deno_fetch` + `deno_web` + the node:* stubs + the host
-    /// globals shim).
+    /// Create a new host with the default extension set (a JS polyfill
+    /// providing Web Platform globals + the node:* stubs + the host
+    /// globals shim; no `deno_fetch` / `deno_web` Rust extensions — see
+    /// `build_extensions()` and the `Cargo.toml` note "Why a polyfill
+    /// instead of deno_fetch/deno_web").
     ///
     /// First-call cost is dominated by V8's snapshot warmup. The host
     /// is intended to be created **once per build** and reused across
@@ -366,10 +402,18 @@ impl EmbeddedV8RenderHost {
         let url = request.url.clone();
         let method = request.method.clone();
         // Serialise headers + body as JSON literals embedded in the
-        // expression. Bodies are rare on the SSG path (GETs) so the
-        // base64 round-trip cost is negligible; we go through a
-        // simple `Uint8Array.from(numberArray)` to avoid pulling in
-        // a base64 polyfill for the host shim.
+        // expression.  Bodies are rare on the SSG path (GETs).
+        //
+        // Old approach: `Uint8Array.from([b0,b1,…])` — an O(N) numeric-array
+        // literal that V8 must re-parse and re-evaluate at dispatch time.  For
+        // a 64 KiB body that is ~200 000 characters of source to tokenise.
+        //
+        // New approach: encode the body as a base64 string in Rust, embed it
+        // as a JSON string literal, then decode with a one-liner in the JS
+        // expression.  The expression uses only `atob` (present in the host
+        // shim's web-polyfills) and `TextEncoder`-free byte math — no extra
+        // polyfill needed.  Encoding cost is O(N/3) string concatenation in
+        // Rust (fast) vs O(N) number-format-and-join (slow for large bodies).
         let headers_literal = serde_json::to_string(&request.headers).map_err(|e| {
             RenderError::Runtime(format!("encoding request headers as JSON failed: {e}"))
         })?;
@@ -377,8 +421,17 @@ impl EmbeddedV8RenderHost {
             None => "undefined".to_string(),
             Some(bytes) if bytes.is_empty() => "undefined".to_string(),
             Some(bytes) => {
-                let nums: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
-                format!("Uint8Array.from([{}])", nums.join(","))
+                // base64-encode in Rust; decode in JS with atob + Uint8Array.
+                // atob is part of the host shim's web-polyfills (web_polyfills.js).
+                let b64 = base64_encode(bytes);
+                let b64_json =
+                    serde_json::to_string(&b64).expect("base64 string is always valid JSON");
+                format!(
+                    "(()=>{{const s=atob({b64_json});\
+                      const u=new Uint8Array(s.length);\
+                      for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);\
+                      return u;}})()"
+                )
             }
         };
         let url_literal = serde_json::to_string(&url).map_err(|e| {

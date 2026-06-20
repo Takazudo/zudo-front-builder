@@ -376,7 +376,6 @@ impl RenderOnRequestHook for LazyRenderAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
@@ -423,7 +422,7 @@ mod tests {
         HttpResponseLike {
             status: 200,
             content_type: "text/html; charset=utf-8".into(),
-            headers: BTreeMap::new(),
+            headers: Vec::new(),
             body: body.as_bytes().to_vec(),
         }
     }
@@ -613,7 +612,7 @@ mod tests {
         let resp = HttpResponseLike {
             status: 500,
             content_type: "text/plain".into(),
-            headers: BTreeMap::new(),
+            headers: Vec::new(),
             body: b"boom".to_vec(),
         };
         let h = harness(posts_route(), resp);
@@ -676,7 +675,7 @@ mod tests {
         let resp = HttpResponseLike {
             status: 200,
             content_type: "application/rss+xml".into(),
-            headers: BTreeMap::new(),
+            headers: Vec::new(),
             body: b"<?xml version=\"1.0\"?><rss/>".to_vec(),
         };
         let routes = vec![(

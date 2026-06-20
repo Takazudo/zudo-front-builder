@@ -47,10 +47,18 @@ pub struct PluginRequest {
 }
 
 /// One HTTP response returned from a plugin handler.
+///
+/// `headers` is an ordered `Vec<(name, value)>` multimap (not a map) so
+/// multi-valued response headers — most notably multiple `Set-Cookie` —
+/// survive to the wire: the dev router `append`s each entry onto the
+/// `http::HeaderMap` rather than `insert`ing (which collapses duplicates
+/// to last-value-wins). The request side ([`PluginRequest::headers`])
+/// stays a `HashMap` — request headers don't carry the duplicate-value
+/// concern here.
 #[derive(Debug, Clone)]
 pub struct PluginResponse {
     pub status: u16,
-    pub headers: HashMap<String, String>,
+    pub headers: Vec<(String, String)>,
     /// Response body. UTF-8 text by default; if `body_encoding` is
     /// `"base64"` the bytes are decoded before being written.
     pub body: String,

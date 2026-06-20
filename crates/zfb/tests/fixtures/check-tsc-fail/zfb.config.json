@@ -1,0 +1,16 @@
+{
+  "framework": "preact",
+  "collections": [
+    {
+      "name": "blog",
+      "path": "content/blog",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" }
+        },
+        "required": ["title"]
+      }
+    }
+  ]
+}

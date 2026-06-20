@@ -67,6 +67,7 @@ use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use crate::html_tree::HtmlTree;
+use zfb_types::escape_html;
 
 // ---------------------------------------------------------------------------
 // WhenHint
@@ -94,7 +95,7 @@ use crate::html_tree::HtmlTree;
 /// shape). The client runtime reads `data-media` via `getAttribute("data-media")`
 /// and passes it to `window.matchMedia`. The two-attribute shape was chosen
 /// so each attribute is orthogonal and attribute escaping is handled
-/// uniformly by the existing `escape_attr` helper.
+/// uniformly by `zfb_types::escape_html`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WhenHint {
@@ -266,15 +267,22 @@ pub enum IslandSkeletonRewriteError {
 /// [`HtmlTree::parse`] once before the render pipeline and pass the same
 /// handle to all subsequent helpers.
 ///
-/// ## Implementation note
+/// ## Implementation note — single-pass strategy
 ///
-/// Island markers are HTML comments (`<!--zfb-island:KEY-->`). `lol_html`'s
-/// document-level comment handler replaces each marker comment with a
-/// unique random sentinel string; the inner-HTML extraction then byte-finds
-/// those sentinels. Because `lol_html` only fires the comment handler on
-/// tokens it parsed as real HTML comments, a literal marker byte sequence
-/// inside a `<script>`/`<style>` raw-text body is never replaced and so
-/// can never be mistaken for the real marker by the subsequent splice.
+/// Island markers are HTML comments (`<!--zfb-island:KEY-->`). The old
+/// implementation did one lol_html pass **per island** followed by one full
+/// string rebuild per island — O(N) HTML re-parses for N islands.
+///
+/// The new implementation does ONE lol_html Phase-1 pass that replaces ALL
+/// marker comments in a single streaming scan, then N sequential in-place
+/// string splices (Phase 2) with no further HTML parsing.  For a page with
+/// ten islands this is a 10× reduction in lol_html parse work.
+///
+/// `lol_html`'s comment handler fires only on tokens it parsed as real HTML
+/// comments, so a literal marker byte sequence inside a `<script>`/`<style>`
+/// raw-text body is left untouched, and the sentinel strings those handlers
+/// emit are hex-only (`[A-Za-z0-9_]`) so they can never be mistaken for the
+/// original markers by Phase 2's byte-find.
 ///
 /// # Errors
 ///
@@ -304,58 +312,56 @@ pub fn rewrite_islands(
         }
     }
 
-    // Process each island descriptor in sequence.
-    for d in islands {
-        rewrite_single_island(tree, d)?;
-    }
-    Ok(())
-}
+    // Build per-island sentinel pairs before the lol_html pass.  All
+    // sentinels are derived from the current html content, so they are all
+    // collision-free with respect to the original HTML and with each other
+    // (make_sentinels already checks for collisions; since the sentinels are
+    // only ever inserted by lol_html's comment handler — not by each other —
+    // cross-sentinel collisions cannot occur in practice for the hex-only
+    // alphabet).
+    let sentinels: Vec<(String, String)> = islands
+        .iter()
+        .map(|d| make_sentinels(&tree.html, &d.marker_key))
+        .collect();
 
-/// Process one `<!--zfb-island:KEY-->…<!--/zfb-island:KEY-->` pair.
-///
-/// Phase 1 uses `lol_html`'s document comment handler to *replace* each
-/// marker comment with a unique, randomly-suffixed plain-text sentinel.
-/// Because the replacement only happens for tokens `lol_html` parsed as
-/// actual HTML comments, a literal `<!--zfb-island:KEY-->` byte sequence
-/// living inside a raw-text element (`<script>`/`<style>`) or RCDATA
-/// element (`<textarea>`/`<title>`) is left untouched. Phase 2 then
-/// byte-finds the sentinels — which `lol_html` just emitted and which the
-/// raw-text occurrences cannot contain — so the splice can never land on
-/// the wrong span.
-fn rewrite_single_island(
-    tree: &mut HtmlTree,
-    d: &IslandDescriptor,
-) -> Result<(), IslandRewriteError> {
-    let open_text = format!("zfb-island:{}", d.marker_key);
-    let close_text = format!("/zfb-island:{}", d.marker_key);
-
-    // Generate collision-free sentinels. These are plain-text strings
-    // (hex-only suffix — never contains `-->`, which would break lol_html's
-    // comment-text validation) that replace the marker comments so Phase 2
-    // can byte-find them unambiguously.
-    let (open_sentinel, close_sentinel) = make_sentinels(&tree.html, &d.marker_key);
-
-    // Phase 1: replace each marker comment with its sentinel via a mutating
-    // rewrite. Shared flags (Rc<Cell<bool>>) record which markers fired so
-    // we can surface the missing-marker errors after the pass.
-    let open_seen = Rc::new(Cell::new(false));
-    let close_seen = Rc::new(Cell::new(false));
+    // Phase 1: ONE lol_html pass that replaces ALL marker comments with their
+    // sentinel strings.  Seen-flags are collected per island.
+    type SeenPair = (Rc<Cell<bool>>, Rc<Cell<bool>>);
+    let seen_flags: Vec<SeenPair> = islands
+        .iter()
+        .map(|_| (Rc::new(Cell::new(false)), Rc::new(Cell::new(false))))
+        .collect();
 
     {
-        let open_seen_c = Rc::clone(&open_seen);
-        let close_seen_c = Rc::clone(&close_seen);
-        let open_sentinel_c = open_sentinel.clone();
-        let close_sentinel_c = close_sentinel.clone();
+        // Build the per-island comment-text → (sentinel, seen_flag) map that
+        // the single comment handler walks.  We use a Vec of tuples because N
+        // is always small (typically < 50 islands per page).
+        let mut handlers: Vec<(String, String, Rc<Cell<bool>>)> =
+            Vec::with_capacity(islands.len() * 2);
+        for (i, d) in islands.iter().enumerate() {
+            let (open_s, close_s) = &sentinels[i];
+            let (open_seen, close_seen) = &seen_flags[i];
+            handlers.push((
+                format!("zfb-island:{}", d.marker_key),
+                open_s.clone(),
+                Rc::clone(open_seen),
+            ));
+            handlers.push((
+                format!("/zfb-island:{}", d.marker_key),
+                close_s.clone(),
+                Rc::clone(close_seen),
+            ));
+        }
 
         let settings: RewriteStrSettings<'_, '_> = RewriteStrSettings {
             document_content_handlers: vec![doc_comments!(move |c| {
                 let text = c.text();
-                if text == open_text {
-                    open_seen_c.set(true);
-                    c.replace(&open_sentinel_c, ContentType::Text);
-                } else if text == close_text {
-                    close_seen_c.set(true);
-                    c.replace(&close_sentinel_c, ContentType::Text);
+                for (comment_text, sentinel, seen) in &handlers {
+                    if text == comment_text.as_str() {
+                        seen.set(true);
+                        c.replace(sentinel, ContentType::Text);
+                        break;
+                    }
                 }
                 Ok(())
             })],
@@ -366,48 +372,52 @@ fn rewrite_single_island(
             .expect("lol_html rewriting for marker replacement should not fail");
     }
 
-    if !open_seen.get() {
-        return Err(IslandRewriteError::OpenMarkerMissing {
-            component: d.component_name.clone(),
-            key: d.marker_key.clone(),
-        });
-    }
-    if !close_seen.get() {
-        return Err(IslandRewriteError::CloseMarkerMissing {
-            component: d.component_name.clone(),
-            key: d.marker_key.clone(),
-        });
+    // Validate that all markers fired.
+    for (i, d) in islands.iter().enumerate() {
+        let (open_seen, close_seen) = &seen_flags[i];
+        if !open_seen.get() {
+            return Err(IslandRewriteError::OpenMarkerMissing {
+                component: d.component_name.clone(),
+                key: d.marker_key.clone(),
+            });
+        }
+        if !close_seen.get() {
+            return Err(IslandRewriteError::CloseMarkerMissing {
+                component: d.component_name.clone(),
+                key: d.marker_key.clone(),
+            });
+        }
     }
 
-    // Phase 2: targeted string splice on the sentinels. The sentinels were
-    // just emitted by lol_html's comment handler (Phase 1), so a byte-find
-    // is unambiguous — the raw-text marker occurrences that fooled the old
-    // implementation cannot contain these generated strings.
-    let html = &tree.html;
-    let open_idx =
-        html.find(&open_sentinel)
-            .ok_or_else(|| IslandRewriteError::OpenMarkerMissing {
+    // Phase 2: N sequential string splices — no further HTML parsing.
+    // Each iteration byte-finds its own open/close sentinel (guaranteed
+    // unique in the post-Phase-1 HTML) and splices in the wrapper.
+    for (i, d) in islands.iter().enumerate() {
+        let (open_sentinel, close_sentinel) = &sentinels[i];
+        let html = &tree.html;
+        let open_idx = html.find(open_sentinel.as_str()).ok_or_else(|| {
+            IslandRewriteError::OpenMarkerMissing {
+                component: d.component_name.clone(),
+                key: d.marker_key.clone(),
+            }
+        })?;
+        let after_open = open_idx + open_sentinel.len();
+        let close_rel = html[after_open..]
+            .find(close_sentinel.as_str())
+            .ok_or_else(|| IslandRewriteError::CloseMarkerMissing {
                 component: d.component_name.clone(),
                 key: d.marker_key.clone(),
             })?;
-    let after_open = open_idx + open_sentinel.len();
-    let close_rel = html[after_open..].find(&close_sentinel).ok_or_else(|| {
-        IslandRewriteError::CloseMarkerMissing {
-            component: d.component_name.clone(),
-            key: d.marker_key.clone(),
-        }
-    })?;
-    let close_idx = after_open + close_rel;
-    let inner_html = &html[after_open..close_idx];
-
-    let replacement = render_wrapper(d, inner_html);
-
-    let end_idx = close_idx + close_sentinel.len();
-    let mut rebuilt = String::with_capacity(html.len() + replacement.len());
-    rebuilt.push_str(&html[..open_idx]);
-    rebuilt.push_str(&replacement);
-    rebuilt.push_str(&html[end_idx..]);
-    tree.html = rebuilt;
+        let close_idx = after_open + close_rel;
+        let inner_html = &html[after_open..close_idx];
+        let replacement = render_wrapper(d, inner_html);
+        let end_idx = close_idx + close_sentinel.len();
+        let mut rebuilt = String::with_capacity(html.len() + replacement.len());
+        rebuilt.push_str(&html[..open_idx]);
+        rebuilt.push_str(&replacement);
+        rebuilt.push_str(&html[end_idx..]);
+        tree.html = rebuilt;
+    }
 
     Ok(())
 }
@@ -524,8 +534,8 @@ pub fn rewrite_islands_in_attr_skeleton(
 
                     let props_json = serde_json::to_string(&d.props)
                         .expect("serde_json::Value always serialises to valid JSON");
-                    el.set_attribute("data-zfb-island", &escape_attr(&d.component_name))?;
-                    el.set_attribute("data-props", &escape_attr(&props_json))?;
+                    el.set_attribute("data-zfb-island", &escape_html(&d.component_name))?;
+                    el.set_attribute("data-props", &escape_html(&props_json))?;
 
                     Ok(())
                 }),
@@ -581,7 +591,7 @@ fn count_island_skeletons(html: &str) -> usize {
 pub fn islands_runtime_script_tag(runtime_url: &str) -> String {
     format!(
         "<script type=\"module\" src=\"{src}\"></script>",
-        src = escape_attr(runtime_url),
+        src = escape_html(runtime_url),
     )
 }
 
@@ -678,17 +688,17 @@ fn render_wrapper(d: &IslandDescriptor, inner: &str) -> String {
 
     let mut s = String::with_capacity(inner.len() + props_json.len() + 96);
     s.push_str("<div data-zfb-island=\"");
-    s.push_str(&escape_attr(&d.component_name));
+    s.push_str(&escape_html(&d.component_name));
     s.push_str("\" data-props=\"");
-    s.push_str(&escape_attr(&props_json));
+    s.push_str(&escape_html(&props_json));
     s.push('"');
     if let Some(when) = &d.when {
         s.push_str(" data-when=\"");
-        s.push_str(&escape_attr(&when.as_str()));
+        s.push_str(&escape_html(&when.as_str()));
         s.push('"');
         if let WhenHint::Media(query) = when {
             s.push_str(" data-media=\"");
-            s.push_str(&escape_attr(query));
+            s.push_str(&escape_html(query));
             s.push('"');
         }
     }
@@ -696,27 +706,6 @@ fn render_wrapper(d: &IslandDescriptor, inner: &str) -> String {
     s.push_str(inner);
     s.push_str("</div>");
     s
-}
-
-/// HTML-escape a value for use inside an attribute value. We escape the
-/// five characters that can break out of an attribute or change its
-/// meaning (`&`, `<`, `>`, `"`, `'`) and leave everything else verbatim.
-/// Single-quote escaping is defence-in-depth: today the rewriter only
-/// emits double-quoted attributes, but consumers / downstream rewriters
-/// may not, and `&#39;` is cheap.
-fn escape_attr(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for c in value.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 /// Build the `<script type="module" …>` tag the renderer drops into the
@@ -733,8 +722,8 @@ fn escape_attr(value: &str) -> String {
 pub fn hydration_script_tag(runtime_url: &str, bundle_url: &str) -> String {
     format!(
         "<script type=\"module\" src=\"{runtime}\" data-zfb-bundle=\"{bundle}\"></script>",
-        runtime = escape_attr(runtime_url),
-        bundle = escape_attr(bundle_url),
+        runtime = escape_html(runtime_url),
+        bundle = escape_html(bundle_url),
     )
 }
 
@@ -1165,5 +1154,158 @@ mod tests {
         assert!(out.contains(r#"data-zfb-island="Real""#));
         // The <pre> text is not modified.
         assert!(out.contains(r#"<pre><code>data-zfb-island=""</code></pre>"#));
+    }
+
+    // ---- Islands ↔ render-output marker contract (item #1146-2) ──────────────
+    //
+    // These tests simulate what a "use client" page render produces and then
+    // assert the rewriter produces the correct wrapper shape.
+    //
+    // ## Why no real V8 render path
+    //
+    // The renderer in `zfb-render` does NOT yet emit
+    // `<!--zfb-island:KEY-->` markers (see the module-level doc, line
+    // 52-57). When the renderer is updated (Sub 4), a Level-4 E2E test
+    // should drive the full pipeline with a real V8 bundle. Until then
+    // this Level-3 test exercises the same marker contract using hand-crafted
+    // HTML that exactly matches `island_marker_pair`'s output — the
+    // single public source of truth for the marker shape.
+    //
+    // This test is CI-runnable (`cargo test --workspace`) with no V8 or
+    // esbuild dependency.
+
+    /// Simulate a minimal "use client" page render: a page that server-renders
+    /// two counter islands inside the expected marker brackets. Assert that
+    /// `rewrite_islands` produces the canonical wrapper shape for each.
+    #[test]
+    fn use_client_page_marker_to_wrapper_shape() {
+        // Canonical markers from the public helper — identical to what the
+        // renderer is expected to emit once Sub 4 is done.
+        let (open_a, close_a) = island_marker_pair("counter#0");
+        let (open_b, close_b) = island_marker_pair("counter#1");
+
+        // Simulate server-rendered HTML for a "use client" page with two Counter
+        // islands. The renderer wraps each island's SSR output in the marker pair.
+        let html = format!(
+            r#"<!doctype html><html><head><title>Demo</title></head><body>
+<h1>My Page</h1>
+{open_a}<button>Count: 0</button>{close_a}
+<p>Some text between islands.</p>
+{open_b}<button>Count: 5</button>{close_b}
+</body></html>"#
+        );
+
+        let mut tree = HtmlTree::parse(html);
+        let islands = vec![
+            IslandDescriptor::new("Counter", json!({"start": 0}), "counter#0"),
+            IslandDescriptor::new("Counter", json!({"start": 5}), "counter#1")
+                .with_when(WhenHint::Visible),
+        ];
+
+        rewrite_islands(&mut tree, &islands).unwrap();
+        let out = tree.serialize();
+
+        // ── wrapper shape for island A (no data-when) ────────────────────
+        assert!(
+            out.contains(r#"data-zfb-island="Counter""#),
+            "wrapper attribute present: {out}"
+        );
+        assert!(
+            out.contains(r#"data-props="{&quot;start&quot;:0}""#),
+            "props for counter#0: {out}"
+        );
+        assert!(
+            out.contains("<button>Count: 0</button>"),
+            "inner HTML preserved for counter#0: {out}"
+        );
+
+        // ── wrapper shape for island B (data-when=visible) ───────────────
+        assert!(
+            out.contains(r#"data-props="{&quot;start&quot;:5}""#),
+            "props for counter#1: {out}"
+        );
+        assert!(
+            out.contains(r#"data-when="visible""#),
+            "data-when emitted for counter#1: {out}"
+        );
+        assert!(
+            out.contains("<button>Count: 5</button>"),
+            "inner HTML preserved for counter#1: {out}"
+        );
+
+        // ── markers are gone ─────────────────────────────────────────────
+        assert!(
+            !out.contains("<!--zfb-island:"),
+            "open markers must be removed: {out}"
+        );
+        assert!(
+            !out.contains("<!--/zfb-island:"),
+            "close markers must be removed: {out}"
+        );
+
+        // ── document structure preserved ─────────────────────────────────
+        assert!(out.contains("<h1>My Page</h1>"), "static content intact");
+        assert!(
+            out.contains("<p>Some text between islands.</p>"),
+            "between-island content intact"
+        );
+    }
+
+    /// Verify `island_marker_pair` shape is stable — both the open/close
+    /// forms and the fact that `<!--` / `-->` delimiters are present.
+    /// This is the source-of-truth contract test referenced in item #1146-2.
+    #[test]
+    fn island_marker_pair_contract_shape() {
+        let (open, close) = island_marker_pair("MyComp#3");
+        // Open marker must start with `<!--zfb-island:` and end with `-->`.
+        assert!(
+            open.starts_with("<!--zfb-island:"),
+            "open marker prefix: {open}"
+        );
+        assert!(open.ends_with("-->"), "open marker suffix: {open}");
+        // Close marker must start with `<!--/zfb-island:` and end with `-->`.
+        assert!(
+            close.starts_with("<!--/zfb-island:"),
+            "close marker prefix: {close}"
+        );
+        assert!(close.ends_with("-->"), "close marker suffix: {close}");
+        // Both must embed the key.
+        assert!(open.contains("MyComp#3"), "open contains key: {open}");
+        assert!(close.contains("MyComp#3"), "close contains key: {close}");
+        // Open and close must differ (and thus be distinguishable by the parser).
+        assert_ne!(open, close, "open and close must be distinct");
+    }
+
+    /// Verify that the rewriter correctly handles a "use client" page where
+    /// the same component appears twice under different marker keys — the
+    /// common case when a single component type is used in multiple locations.
+    #[test]
+    fn use_client_same_component_two_instances() {
+        let (o1, c1) = island_marker_pair("btn#0");
+        let (o2, c2) = island_marker_pair("btn#1");
+        let html =
+            format!("<html><body>{o1}<span>A</span>{c1}<hr>{o2}<span>B</span>{c2}</body></html>");
+        let mut tree = HtmlTree::parse(html);
+        let islands = vec![
+            IslandDescriptor::new("Button", json!({"label": "A"}), "btn#0"),
+            IslandDescriptor::new("Button", json!({"label": "B"}), "btn#1"),
+        ];
+        rewrite_islands(&mut tree, &islands).unwrap();
+        let out = tree.serialize();
+
+        // Both instances must be wrapped.
+        let count = out.matches(r#"data-zfb-island="Button""#).count();
+        assert_eq!(count, 2, "both Button instances wrapped: {out}");
+        // Inner HTML preserved for each.
+        assert!(
+            out.contains("<span>A</span>"),
+            "first instance inner: {out}"
+        );
+        assert!(
+            out.contains("<span>B</span>"),
+            "second instance inner: {out}"
+        );
+        // No dangling markers.
+        assert!(!out.contains("<!--zfb-island:"), "markers removed: {out}");
     }
 }
