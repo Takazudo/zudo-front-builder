@@ -313,6 +313,10 @@ impl Server {
             // it is Dev-only and the hook gate in `serve_page` enforces
             // this, but `None` keeps the contract explicit.
             render_on_request_hook: None,
+            // Perf #1145-3: pre-canonicalize stable root paths at startup.
+            canonical_html_root: std::fs::canonicalize(&self.dist_root).ok(),
+            canonical_dist_root: std::fs::canonicalize(&self.dist_root).ok(),
+            canonical_public_root: std::fs::canonicalize(&self.public_root).ok(),
         };
         let router = build_router(state);
         let router = apply_request_extension_layer(router, self.request_extensions);

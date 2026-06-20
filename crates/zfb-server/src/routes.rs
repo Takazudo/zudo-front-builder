@@ -478,6 +478,19 @@ pub struct AppState {
     /// lock and released before the `await` — same discipline as
     /// `ssr_routes`.
     pub render_on_request_hook: Option<crate::render_hook::RenderOnRequestHandle>,
+
+    /// Pre-canonicalized forms of the three root paths, computed once at
+    /// server startup (perf item #1145-3).  `resolve_within_root` re-
+    /// canonicalizes `root` on every disk fallback hit; storing the result
+    /// here avoids two blocking-pool syscalls per cache miss.
+    ///
+    /// `None` (the default, e.g. in unit tests whose root dirs don't exist
+    /// on disk) causes `resolve_within_root` to fall back to the original
+    /// per-call `tokio::fs::canonicalize` behaviour — behaviour is
+    /// byte-identical, only performance differs.
+    pub canonical_html_root: Option<std::path::PathBuf>,
+    pub canonical_dist_root: Option<std::path::PathBuf>,
+    pub canonical_public_root: Option<std::path::PathBuf>,
 }
 
 /// Build the axum router for the dev server.
@@ -960,17 +973,28 @@ async fn serve_page(
                         s.split_once('?').map(|(p, _)| p.to_string()).unwrap_or(s)
                     })
                     .unwrap_or_else(|| format!("/{trimmed}"));
-                // Spawn so a panic in the hook doesn't unwind this handler
-                // task — the JoinError is caught and logged; we fall through
-                // to the existing legs either way.
-                let join = tokio::spawn(async move {
-                    hook.render_if_stale(&url_path).await;
-                });
-                if let Err(e) = join.await {
+                // Use catch_unwind instead of tokio::spawn to contain
+                // panics in the hook without the per-request task-spawn
+                // overhead.  FutureExt::catch_unwind wraps the async
+                // call; AssertUnwindSafe is correct here because we
+                // never use `hook` again after a panic — this is a
+                // fire-and-forget best-effort call.
+                use futures::FutureExt as _;
+                let result = std::panic::AssertUnwindSafe(hook.render_if_stale(&url_path))
+                    .catch_unwind()
+                    .await;
+                if let Err(e) = result {
+                    let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = e.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "(non-string panic payload)".to_string()
+                    };
                     tracing::warn!(
                         url_path = %trimmed,
-                        error = %e,
-                        "render-on-request hook failed (continuing with fallback legs)",
+                        error = %msg,
+                        "render-on-request hook panicked (continuing with fallback legs)",
                     );
                 }
             }
@@ -1036,7 +1060,13 @@ async fn serve_page(
     // production output. For preview / embed callers `html_root` and
     // `dist_root` point at the same directory, so behaviour is
     // unchanged there.
-    if let Some(bytes) = read_from_dist(&state.html_root, trimmed).await {
+    if let Some(bytes) = read_from_dist(
+        &state.html_root,
+        trimmed,
+        state.canonical_html_root.as_deref(),
+    )
+    .await
+    {
         // Mirror the cached-path content-type derivation. Hardcoding
         // `text/html` here used to splice a livereload `<script>` tag
         // into XML feeds (`/sitemap.xml`, `/atom.xml`) and serve them
@@ -1073,7 +1103,13 @@ async fn serve_page(
     // (above), so a same-named `pages/foo.tsx` route always wins over
     // `public/foo`.
     if !trimmed.is_empty() {
-        if let Some(bytes) = read_from_public(&state.public_root, trimmed).await {
+        if let Some(bytes) = read_from_public(
+            &state.public_root,
+            trimmed,
+            state.canonical_public_root.as_deref(),
+        )
+        .await
+        {
             let basename = trimmed.rsplit('/').next().unwrap_or(trimmed);
             let ext = basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
             let content_type = if ext.is_empty() {
@@ -1164,14 +1200,23 @@ fn strip_prefix_from_full_uri(uri: &Uri, prefix: Option<&str>) -> Option<String>
 /// Async (#903): this runs on every request-path disk fallback, so the
 /// canonicalize syscalls go through `tokio::fs` (which offloads to the
 /// blocking pool) instead of blocking the request worker directly.
+///
+/// Perf (#1145-3): `precomputed_canonical_root`, when `Some`, skips the
+/// `tokio::fs::canonicalize(root)` syscall — the caller pre-resolves the
+/// stable root once at startup and passes it in.  `None` falls back to the
+/// original per-call behaviour (used in tests where root dirs may not exist).
 async fn resolve_within_root(
     path: &std::path::Path,
     root: &std::path::Path,
+    precomputed_canonical_root: Option<&std::path::Path>,
 ) -> Option<std::path::PathBuf> {
-    let canonical_root = tokio::fs::canonicalize(root).await.ok()?;
+    let canonical_root = match precomputed_canonical_root {
+        Some(r) => std::borrow::Cow::Borrowed(r),
+        None => std::borrow::Cow::Owned(tokio::fs::canonicalize(root).await.ok()?),
+    };
     let canonical_path = tokio::fs::canonicalize(path).await.ok()?;
     canonical_path
-        .starts_with(&canonical_root)
+        .starts_with(canonical_root.as_ref())
         .then_some(canonical_path)
 }
 
@@ -1189,7 +1234,11 @@ async fn resolve_within_root(
 /// After joining, we also canonicalize the resolved path and verify it
 /// still lives inside `dist_root` — a symlink planted inside dist that
 /// points outside would otherwise be followed silently.
-async fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
+async fn read_from_dist(
+    dist_root: &std::path::Path,
+    trimmed: &str,
+    canonical_root: Option<&std::path::Path>,
+) -> Option<Vec<u8>> {
     if !is_safe_url_path(trimmed) {
         return None;
     }
@@ -1198,7 +1247,7 @@ async fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Ve
         dist_root.join(trimmed),
     ];
     for path in &candidates {
-        let Some(resolved) = resolve_within_root(path, dist_root).await else {
+        let Some(resolved) = resolve_within_root(path, dist_root, canonical_root).await else {
             continue;
         };
         // Read the canonical path returned by resolve_within_root, not
@@ -1230,12 +1279,16 @@ async fn read_from_dist(dist_root: &std::path::Path, trimmed: &str) -> Option<Ve
 /// After joining, we also canonicalize the resolved path and verify it
 /// still lives inside `public_root` — a symlink planted inside public/
 /// that points outside would otherwise be followed silently.
-async fn read_from_public(public_root: &std::path::Path, trimmed: &str) -> Option<Vec<u8>> {
+async fn read_from_public(
+    public_root: &std::path::Path,
+    trimmed: &str,
+    canonical_root: Option<&std::path::Path>,
+) -> Option<Vec<u8>> {
     if trimmed.is_empty() || !is_safe_url_path(trimmed) {
         return None;
     }
     let path = public_root.join(trimmed);
-    let resolved = resolve_within_root(&path, public_root).await?;
+    let resolved = resolve_within_root(&path, public_root, canonical_root).await?;
     // Reject directory reads explicitly — reading a directory returns an
     // EISDIR error on Unix and would surface as a None here anyway, but
     // on Windows the behaviour is platform-dependent. Being explicit also
@@ -1960,6 +2013,10 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            // Tests use bogus/temp paths — canonical roots are not precomputed.
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         }
     }
 
@@ -1983,6 +2040,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         }
     }
 
@@ -2062,6 +2122,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         // Cache miss — the fallback must read from html_root.
         let router = test_router(state);
@@ -2524,6 +2587,9 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         // HTML must include <head></head> so inject_prod_head_assets has an anchor.
         state
@@ -2588,6 +2654,9 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         state
             .pages
@@ -2633,6 +2702,9 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         state
             .pages
@@ -2728,6 +2800,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         }
     }
 
@@ -3431,7 +3506,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = read_from_dist(dist.path(), "escape.txt").await;
+        let result = read_from_dist(dist.path(), "escape.txt", None).await;
         assert!(
             result.is_none(),
             "out-of-root symlink in dist must not be served"
@@ -3445,7 +3520,7 @@ mod tests {
         let dist = tempfile::tempdir().expect("dist dir");
         std::fs::write(dist.path().join("page.html"), b"<h1>hello</h1>").unwrap();
 
-        let result = read_from_dist(dist.path(), "page.html").await;
+        let result = read_from_dist(dist.path(), "page.html", None).await;
         assert_eq!(result.as_deref(), Some(b"<h1>hello</h1>".as_ref()));
     }
 
@@ -3465,7 +3540,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = read_from_dist(dist.path(), "alias.html").await;
+        let result = read_from_dist(dist.path(), "alias.html", None).await;
         assert_eq!(
             result.as_deref(),
             Some(b"<h1>real</h1>".as_ref()),
@@ -3489,7 +3564,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = read_from_public(public.path(), "escape.txt").await;
+        let result = read_from_public(public.path(), "escape.txt", None).await;
         assert!(
             result.is_none(),
             "out-of-root symlink in public must not be served"
@@ -3502,7 +3577,7 @@ mod tests {
         let public = tempfile::tempdir().expect("public dir");
         std::fs::write(public.path().join("logo.svg"), b"<svg/>").unwrap();
 
-        let result = read_from_public(public.path(), "logo.svg").await;
+        let result = read_from_public(public.path(), "logo.svg", None).await;
         assert_eq!(result.as_deref(), Some(b"<svg/>".as_ref()));
     }
 
@@ -3521,7 +3596,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = read_from_public(public.path(), "alias.svg").await;
+        let result = read_from_public(public.path(), "alias.svg", None).await;
         assert_eq!(
             result.as_deref(),
             Some(b"<svg/>".as_ref()),
@@ -3564,6 +3639,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3621,6 +3699,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3680,6 +3761,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3733,6 +3817,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3781,6 +3868,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3833,6 +3923,9 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         };
         let router = build_router(state);
 
@@ -3892,6 +3985,9 @@ mod tests {
                 crate::ServerMode::Dev,
             ),
             render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            canonical_public_root: None,
         }
     }
 
