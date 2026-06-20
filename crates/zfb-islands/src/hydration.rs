@@ -67,6 +67,7 @@ use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use crate::html_tree::HtmlTree;
+use zfb_types::escape_html;
 
 // ---------------------------------------------------------------------------
 // WhenHint
@@ -94,7 +95,7 @@ use crate::html_tree::HtmlTree;
 /// shape). The client runtime reads `data-media` via `getAttribute("data-media")`
 /// and passes it to `window.matchMedia`. The two-attribute shape was chosen
 /// so each attribute is orthogonal and attribute escaping is handled
-/// uniformly by the existing `escape_attr` helper.
+/// uniformly by `zfb_types::escape_html`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WhenHint {
@@ -524,8 +525,8 @@ pub fn rewrite_islands_in_attr_skeleton(
 
                     let props_json = serde_json::to_string(&d.props)
                         .expect("serde_json::Value always serialises to valid JSON");
-                    el.set_attribute("data-zfb-island", &escape_attr(&d.component_name))?;
-                    el.set_attribute("data-props", &escape_attr(&props_json))?;
+                    el.set_attribute("data-zfb-island", &escape_html(&d.component_name))?;
+                    el.set_attribute("data-props", &escape_html(&props_json))?;
 
                     Ok(())
                 }),
@@ -581,7 +582,7 @@ fn count_island_skeletons(html: &str) -> usize {
 pub fn islands_runtime_script_tag(runtime_url: &str) -> String {
     format!(
         "<script type=\"module\" src=\"{src}\"></script>",
-        src = escape_attr(runtime_url),
+        src = escape_html(runtime_url),
     )
 }
 
@@ -678,17 +679,17 @@ fn render_wrapper(d: &IslandDescriptor, inner: &str) -> String {
 
     let mut s = String::with_capacity(inner.len() + props_json.len() + 96);
     s.push_str("<div data-zfb-island=\"");
-    s.push_str(&escape_attr(&d.component_name));
+    s.push_str(&escape_html(&d.component_name));
     s.push_str("\" data-props=\"");
-    s.push_str(&escape_attr(&props_json));
+    s.push_str(&escape_html(&props_json));
     s.push('"');
     if let Some(when) = &d.when {
         s.push_str(" data-when=\"");
-        s.push_str(&escape_attr(&when.as_str()));
+        s.push_str(&escape_html(&when.as_str()));
         s.push('"');
         if let WhenHint::Media(query) = when {
             s.push_str(" data-media=\"");
-            s.push_str(&escape_attr(query));
+            s.push_str(&escape_html(query));
             s.push('"');
         }
     }
@@ -698,26 +699,6 @@ fn render_wrapper(d: &IslandDescriptor, inner: &str) -> String {
     s
 }
 
-/// HTML-escape a value for use inside an attribute value. We escape the
-/// five characters that can break out of an attribute or change its
-/// meaning (`&`, `<`, `>`, `"`, `'`) and leave everything else verbatim.
-/// Single-quote escaping is defence-in-depth: today the rewriter only
-/// emits double-quoted attributes, but consumers / downstream rewriters
-/// may not, and `&#39;` is cheap.
-fn escape_attr(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for c in value.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            other => out.push(other),
-        }
-    }
-    out
-}
 
 /// Build the `<script type="module" …>` tag the renderer drops into the
 /// page's `<head>` (or end-of-`<body>`) so the hydration runtime can find
@@ -733,8 +714,8 @@ fn escape_attr(value: &str) -> String {
 pub fn hydration_script_tag(runtime_url: &str, bundle_url: &str) -> String {
     format!(
         "<script type=\"module\" src=\"{runtime}\" data-zfb-bundle=\"{bundle}\"></script>",
-        runtime = escape_attr(runtime_url),
-        bundle = escape_attr(bundle_url),
+        runtime = escape_html(runtime_url),
+        bundle = escape_html(bundle_url),
     )
 }
 

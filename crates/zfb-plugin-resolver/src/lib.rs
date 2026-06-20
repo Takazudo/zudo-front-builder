@@ -763,24 +763,24 @@ mod tests {
         assert!(paths.contains_key("@/data"));
     }
 
-    /// `to_posix` is a no-op on Unix-style paths and converts
-    /// backslashes when present. The output must contain only forward
-    /// slashes.
+    /// `to_posix` is a no-op on Unix-style paths. On Windows it converts
+    /// backslashes to forward slashes; on Unix it preserves them (backslash
+    /// is a valid filename byte on Unix, not a separator).
     #[test]
     fn to_posix_replaces_backslashes() {
         assert_eq!(
             path_to_posix_string(Path::new("/abs/foo.tsx")),
             "/abs/foo.tsx"
         );
-        // Simulate a Windows-style path string. On Unix `Path` does not
-        // recognize `\` as a separator, but `to_string_lossy()` still
-        // returns the literal characters, which our replace then maps
-        // to forward slashes.
-        assert_eq!(
-            path_to_posix_string(Path::new(r"C:\abs\foo.tsx")),
-            "C:/abs/foo.tsx",
-            "to_posix must replace backslashes with forward slashes"
-        );
+        // Platform-gated: on Windows the backslashes are converted; on
+        // Unix the path string is returned verbatim (preserving the
+        // backslash as a valid filename byte).
+        let result = path_to_posix_string(Path::new(r"C:\abs\foo.tsx"));
+        if cfg!(windows) {
+            assert_eq!(result, "C:/abs/foo.tsx", "Windows: backslashes converted");
+        } else {
+            assert_eq!(result, r"C:\abs\foo.tsx", "Unix: backslashes preserved");
+        }
     }
 
     /// Combined: aliases + virtual modules together produce one entry

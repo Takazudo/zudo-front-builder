@@ -2293,6 +2293,43 @@ mod tests {
         assert_eq!(content_type_for_extension("wasm"), "application/wasm");
     }
 
+    // ---- parity: server table must agree with zfb-render's derive_content_type
+    // for extensions present in derive_content_type's explicit match arm.
+    // derive_content_type has a different catch-all (HTML), so only the
+    // explicitly-matched extensions are in scope here.
+    // Mirror: zfb_render::meta::derive_content_type.
+    #[test]
+    fn content_type_for_extension_parity_with_render_table() {
+        let cases: &[(&str, &str)] = &[
+            ("html", "text/html; charset=utf-8"),
+            ("htm", "text/html; charset=utf-8"),
+            ("xml", "application/xml"),
+            ("rss", "application/rss+xml"),
+            ("atom", "application/atom+xml"),
+            ("json", "application/json"),
+            ("map", "application/json"),
+            ("webmanifest", "application/manifest+json"),
+            ("txt", "text/plain; charset=utf-8"),
+            ("css", "text/css; charset=utf-8"),
+            ("js", "application/javascript; charset=utf-8"),
+            ("mjs", "application/javascript; charset=utf-8"),
+            ("cjs", "application/javascript; charset=utf-8"),
+            ("wasm", "application/wasm"),
+            ("svg", "image/svg+xml"),
+            ("png", "image/png"),
+            ("jpg", "image/jpeg"),
+            ("jpeg", "image/jpeg"),
+            ("pdf", "application/pdf"),
+        ];
+        for (ext, expected) in cases {
+            assert_eq!(
+                content_type_for_extension(ext),
+                *expected,
+                "content_type_for_extension({ext:?}) should match render table"
+            );
+        }
+    }
+
     #[test]
     fn resolve_content_type_uses_override_first() {
         let entry = CachedPage {
