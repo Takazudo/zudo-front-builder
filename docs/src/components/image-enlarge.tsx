@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "preact/compat";
 import type { JSX } from "preact";
+import { AFTER_NAVIGATE_EVENT } from "@takazudo/zudo-doc/transitions";
 
 interface ImageData {
   src: string;
@@ -117,14 +118,14 @@ export default function ImageEnlarge() {
 
     startObserving();
     window.addEventListener("resize", handleWindowResize);
-    document.addEventListener("DOMContentLoaded", handleAfterSwap);
+    document.addEventListener(AFTER_NAVIGATE_EVENT, handleAfterSwap);
 
     return () => {
       sharedResizeObserver.disconnect();
       observedImages.clear();
       mutationObserver?.disconnect();
       window.removeEventListener("resize", handleWindowResize);
-      document.removeEventListener("DOMContentLoaded", handleAfterSwap);
+      document.removeEventListener(AFTER_NAVIGATE_EVENT, handleAfterSwap);
       clearTimeout(resizeTimer);
     };
   }, []);
@@ -190,8 +191,8 @@ export default function ImageEnlarge() {
       if (dialog?.open) dialog.close();
       setImgData(null);
     }
-    document.addEventListener("DOMContentLoaded", handleAfterSwap);
-    return () => document.removeEventListener("DOMContentLoaded", handleAfterSwap);
+    document.addEventListener(AFTER_NAVIGATE_EVENT, handleAfterSwap);
+    return () => document.removeEventListener(AFTER_NAVIGATE_EVENT, handleAfterSwap);
   }, []);
 
   function handleBackdropClick(e: JSX.TargetedMouseEvent<HTMLDialogElement>) {

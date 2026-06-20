@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "preact/compat";
 import { diffLines } from "diff";
+import { AFTER_NAVIGATE_EVENT } from "@takazudo/zudo-doc/transitions";
 import type { DocHistoryData, DocHistoryEntry } from "@/types/doc-history";
 import { SmartBreak } from "@/utils/smart-break";
 
@@ -478,10 +479,10 @@ export function DocHistory({ slug, locale, basePath = "/" }: DocHistoryProps) {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [view, handleClose]);
 
-  // Close on View Transition navigation
+  // Close on SPA navigation
   useEffect(() => {
-    document.addEventListener("DOMContentLoaded", handleClose);
-    return () => document.removeEventListener("DOMContentLoaded", handleClose);
+    document.addEventListener(AFTER_NAVIGATE_EVENT, handleClose);
+    return () => document.removeEventListener(AFTER_NAVIGATE_EVENT, handleClose);
   }, [handleClose]);
 
   const isOpen = view !== "closed";
