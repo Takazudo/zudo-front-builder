@@ -19,5 +19,8 @@
     "type": "git",
     "url": "git+https://github.com/Takazudo/zudo-front-builder.git",
     "directory": "packages/zfb-darwin-arm64"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
