@@ -267,15 +267,22 @@ pub enum IslandSkeletonRewriteError {
 /// [`HtmlTree::parse`] once before the render pipeline and pass the same
 /// handle to all subsequent helpers.
 ///
-/// ## Implementation note
+/// ## Implementation note — single-pass strategy
 ///
-/// Island markers are HTML comments (`<!--zfb-island:KEY-->`). `lol_html`'s
-/// document-level comment handler replaces each marker comment with a
-/// unique random sentinel string; the inner-HTML extraction then byte-finds
-/// those sentinels. Because `lol_html` only fires the comment handler on
-/// tokens it parsed as real HTML comments, a literal marker byte sequence
-/// inside a `<script>`/`<style>` raw-text body is never replaced and so
-/// can never be mistaken for the real marker by the subsequent splice.
+/// Island markers are HTML comments (`<!--zfb-island:KEY-->`). The old
+/// implementation did one lol_html pass **per island** followed by one full
+/// string rebuild per island — O(N) HTML re-parses for N islands.
+///
+/// The new implementation does ONE lol_html Phase-1 pass that replaces ALL
+/// marker comments in a single streaming scan, then N sequential in-place
+/// string splices (Phase 2) with no further HTML parsing.  For a page with
+/// ten islands this is a 10× reduction in lol_html parse work.
+///
+/// `lol_html`'s comment handler fires only on tokens it parsed as real HTML
+/// comments, so a literal marker byte sequence inside a `<script>`/`<style>`
+/// raw-text body is left untouched, and the sentinel strings those handlers
+/// emit are hex-only (`[A-Za-z0-9_]`) so they can never be mistaken for the
+/// original markers by Phase 2's byte-find.
 ///
 /// # Errors
 ///
@@ -305,58 +312,55 @@ pub fn rewrite_islands(
         }
     }
 
-    // Process each island descriptor in sequence.
-    for d in islands {
-        rewrite_single_island(tree, d)?;
-    }
-    Ok(())
-}
+    // Build per-island sentinel pairs before the lol_html pass.  All
+    // sentinels are derived from the current html content, so they are all
+    // collision-free with respect to the original HTML and with each other
+    // (make_sentinels already checks for collisions; since the sentinels are
+    // only ever inserted by lol_html's comment handler — not by each other —
+    // cross-sentinel collisions cannot occur in practice for the hex-only
+    // alphabet).
+    let sentinels: Vec<(String, String)> = islands
+        .iter()
+        .map(|d| make_sentinels(&tree.html, &d.marker_key))
+        .collect();
 
-/// Process one `<!--zfb-island:KEY-->…<!--/zfb-island:KEY-->` pair.
-///
-/// Phase 1 uses `lol_html`'s document comment handler to *replace* each
-/// marker comment with a unique, randomly-suffixed plain-text sentinel.
-/// Because the replacement only happens for tokens `lol_html` parsed as
-/// actual HTML comments, a literal `<!--zfb-island:KEY-->` byte sequence
-/// living inside a raw-text element (`<script>`/`<style>`) or RCDATA
-/// element (`<textarea>`/`<title>`) is left untouched. Phase 2 then
-/// byte-finds the sentinels — which `lol_html` just emitted and which the
-/// raw-text occurrences cannot contain — so the splice can never land on
-/// the wrong span.
-fn rewrite_single_island(
-    tree: &mut HtmlTree,
-    d: &IslandDescriptor,
-) -> Result<(), IslandRewriteError> {
-    let open_text = format!("zfb-island:{}", d.marker_key);
-    let close_text = format!("/zfb-island:{}", d.marker_key);
-
-    // Generate collision-free sentinels. These are plain-text strings
-    // (hex-only suffix — never contains `-->`, which would break lol_html's
-    // comment-text validation) that replace the marker comments so Phase 2
-    // can byte-find them unambiguously.
-    let (open_sentinel, close_sentinel) = make_sentinels(&tree.html, &d.marker_key);
-
-    // Phase 1: replace each marker comment with its sentinel via a mutating
-    // rewrite. Shared flags (Rc<Cell<bool>>) record which markers fired so
-    // we can surface the missing-marker errors after the pass.
-    let open_seen = Rc::new(Cell::new(false));
-    let close_seen = Rc::new(Cell::new(false));
+    // Phase 1: ONE lol_html pass that replaces ALL marker comments with their
+    // sentinel strings.  Seen-flags are collected per island.
+    let seen_flags: Vec<(Rc<Cell<bool>>, Rc<Cell<bool>>)> = islands
+        .iter()
+        .map(|_| (Rc::new(Cell::new(false)), Rc::new(Cell::new(false))))
+        .collect();
 
     {
-        let open_seen_c = Rc::clone(&open_seen);
-        let close_seen_c = Rc::clone(&close_seen);
-        let open_sentinel_c = open_sentinel.clone();
-        let close_sentinel_c = close_sentinel.clone();
+        // Build the per-island comment-text → (sentinel, seen_flag) map that
+        // the single comment handler walks.  We use a Vec of tuples because N
+        // is always small (typically < 50 islands per page).
+        let mut handlers: Vec<(String, String, Rc<Cell<bool>>)> =
+            Vec::with_capacity(islands.len() * 2);
+        for (i, d) in islands.iter().enumerate() {
+            let (open_s, close_s) = &sentinels[i];
+            let (open_seen, close_seen) = &seen_flags[i];
+            handlers.push((
+                format!("zfb-island:{}", d.marker_key),
+                open_s.clone(),
+                Rc::clone(open_seen),
+            ));
+            handlers.push((
+                format!("/zfb-island:{}", d.marker_key),
+                close_s.clone(),
+                Rc::clone(close_seen),
+            ));
+        }
 
         let settings: RewriteStrSettings<'_, '_> = RewriteStrSettings {
             document_content_handlers: vec![doc_comments!(move |c| {
                 let text = c.text();
-                if text == open_text {
-                    open_seen_c.set(true);
-                    c.replace(&open_sentinel_c, ContentType::Text);
-                } else if text == close_text {
-                    close_seen_c.set(true);
-                    c.replace(&close_sentinel_c, ContentType::Text);
+                for (comment_text, sentinel, seen) in &handlers {
+                    if text == comment_text.as_str() {
+                        seen.set(true);
+                        c.replace(sentinel, ContentType::Text);
+                        break;
+                    }
                 }
                 Ok(())
             })],
@@ -367,48 +371,52 @@ fn rewrite_single_island(
             .expect("lol_html rewriting for marker replacement should not fail");
     }
 
-    if !open_seen.get() {
-        return Err(IslandRewriteError::OpenMarkerMissing {
-            component: d.component_name.clone(),
-            key: d.marker_key.clone(),
-        });
-    }
-    if !close_seen.get() {
-        return Err(IslandRewriteError::CloseMarkerMissing {
-            component: d.component_name.clone(),
-            key: d.marker_key.clone(),
-        });
+    // Validate that all markers fired.
+    for (i, d) in islands.iter().enumerate() {
+        let (open_seen, close_seen) = &seen_flags[i];
+        if !open_seen.get() {
+            return Err(IslandRewriteError::OpenMarkerMissing {
+                component: d.component_name.clone(),
+                key: d.marker_key.clone(),
+            });
+        }
+        if !close_seen.get() {
+            return Err(IslandRewriteError::CloseMarkerMissing {
+                component: d.component_name.clone(),
+                key: d.marker_key.clone(),
+            });
+        }
     }
 
-    // Phase 2: targeted string splice on the sentinels. The sentinels were
-    // just emitted by lol_html's comment handler (Phase 1), so a byte-find
-    // is unambiguous — the raw-text marker occurrences that fooled the old
-    // implementation cannot contain these generated strings.
-    let html = &tree.html;
-    let open_idx =
-        html.find(&open_sentinel)
-            .ok_or_else(|| IslandRewriteError::OpenMarkerMissing {
+    // Phase 2: N sequential string splices — no further HTML parsing.
+    // Each iteration byte-finds its own open/close sentinel (guaranteed
+    // unique in the post-Phase-1 HTML) and splices in the wrapper.
+    for (i, d) in islands.iter().enumerate() {
+        let (open_sentinel, close_sentinel) = &sentinels[i];
+        let html = &tree.html;
+        let open_idx = html.find(open_sentinel.as_str()).ok_or_else(|| {
+            IslandRewriteError::OpenMarkerMissing {
+                component: d.component_name.clone(),
+                key: d.marker_key.clone(),
+            }
+        })?;
+        let after_open = open_idx + open_sentinel.len();
+        let close_rel = html[after_open..]
+            .find(close_sentinel.as_str())
+            .ok_or_else(|| IslandRewriteError::CloseMarkerMissing {
                 component: d.component_name.clone(),
                 key: d.marker_key.clone(),
             })?;
-    let after_open = open_idx + open_sentinel.len();
-    let close_rel = html[after_open..].find(&close_sentinel).ok_or_else(|| {
-        IslandRewriteError::CloseMarkerMissing {
-            component: d.component_name.clone(),
-            key: d.marker_key.clone(),
-        }
-    })?;
-    let close_idx = after_open + close_rel;
-    let inner_html = &html[after_open..close_idx];
-
-    let replacement = render_wrapper(d, inner_html);
-
-    let end_idx = close_idx + close_sentinel.len();
-    let mut rebuilt = String::with_capacity(html.len() + replacement.len());
-    rebuilt.push_str(&html[..open_idx]);
-    rebuilt.push_str(&replacement);
-    rebuilt.push_str(&html[end_idx..]);
-    tree.html = rebuilt;
+        let close_idx = after_open + close_rel;
+        let inner_html = &html[after_open..close_idx];
+        let replacement = render_wrapper(d, inner_html);
+        let end_idx = close_idx + close_sentinel.len();
+        let mut rebuilt = String::with_capacity(html.len() + replacement.len());
+        rebuilt.push_str(&html[..open_idx]);
+        rebuilt.push_str(&replacement);
+        rebuilt.push_str(&html[end_idx..]);
+        tree.html = rebuilt;
+    }
 
     Ok(())
 }
