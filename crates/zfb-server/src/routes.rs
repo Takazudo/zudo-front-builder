@@ -75,6 +75,7 @@ use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
+use axum::extract::DefaultBodyLimit;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, Extensions, HeaderMap, HeaderValue, Method, Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -581,6 +582,10 @@ pub fn build_router(state: AppState) -> Router {
     // unchanged) when the validator is not enforcing (loopback bind).
     // TraceLayer wraps outermost so rejected requests still get traced.
     crate::host_validation::apply_host_validation_layer(router, host_validation)
+        // 2 MiB cap: generous enough for any legitimate dev-middleware
+        // POST payload, prevents unbounded memory buffering on the page
+        // routes that extract `body: Bytes` with no size guard.
+        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
 }
 
