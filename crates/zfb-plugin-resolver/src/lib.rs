@@ -212,9 +212,11 @@ pub fn merge_into_tsconfig_paths(
 pub struct TsConfigPaths {
     /// Absolute directory used as the anchor for relative
     /// `compilerOptions.paths` targets.  This is the resolved
-    /// `compilerOptions.baseUrl` from the leafiest config that declared
-    /// one; when no `baseUrl` appears anywhere in the chain, it defaults
-    /// to the directory of the `tsconfig.json` that declared `paths`.
+    /// `compilerOptions.baseUrl` from the config that declared `paths` (or a
+    /// leafier one); a `baseUrl` that appears only in a *parent* of the
+    /// `paths`-declaring config does NOT anchor those `paths` (matching
+    /// TypeScript). When no anchoring `baseUrl` applies, it defaults to the
+    /// directory of the `tsconfig.json` that declared `paths`.
     pub base_dir: PathBuf,
     /// Parsed alias entries, in `compilerOptions.paths` source order.
     pub aliases: Vec<TsPathAlias>,
@@ -263,9 +265,12 @@ pub struct TsPathAlias {
 ///
 /// The **first** `compilerOptions.paths` table encountered walking from
 /// the leaf toward the root is used.  The **first** `compilerOptions.baseUrl`
-/// encountered similarly wins.  When `baseUrl` is absent everywhere in
-/// the chain, it defaults to the directory of the config that declared
-/// `paths`.
+/// encountered similarly wins — but it only anchors the `paths` when it was
+/// declared at, or leafier than, the `paths`-declaring config. A `baseUrl`
+/// found only in a *parent* of the `paths` config does NOT apply to those
+/// leaf `paths` (TypeScript semantics); the `paths`-declaring config's own
+/// directory anchors them instead.  When no anchoring `baseUrl` applies, the
+/// anchor defaults to the directory of the config that declared `paths`.
 pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
     let tsconfig_file = tsconfig_dir.join("tsconfig.json");
 
@@ -273,6 +278,12 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
         base_dir: Option<PathBuf>,
         aliases: Option<Vec<TsPathAlias>>,
         paths_anchor: Option<PathBuf>,
+        /// True once a `baseUrl` has been captured at, or leafier than, the
+        /// config that declared `paths`. TypeScript anchors a config's
+        /// `paths` on its own (or a closer) `baseUrl`; a `baseUrl` that only
+        /// appears in a *parent* of the `paths`-declaring config does NOT
+        /// apply to those leaf `paths` — `paths_anchor` wins instead.
+        base_dir_anchors_aliases: bool,
     }
 
     fn walk(
@@ -332,12 +343,31 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
             if let Some(local) = local_aliases {
                 state.paths_anchor = Some(dir.to_path_buf());
                 state.aliases = Some(local);
+                // A `baseUrl` already in scope here was declared at or
+                // leafier than this `paths` config, so it legitimately
+                // anchors them. A `baseUrl` captured only in a later (parent)
+                // recursion must NOT — `paths_anchor` wins in that case.
+                state.base_dir_anchors_aliases = state.base_dir.is_some();
             }
         }
 
-        // If we have both pieces, no need to walk further.
+        // If we have aliases and a `baseUrl` that legitimately anchors them
+        // (declared at or leafier than the `paths` config), we have both
+        // pieces and need not walk further. When the only `baseUrl` so far
+        // came from a parent of the `paths` config, keep walking is moot —
+        // the parent `baseUrl` does not apply, so we fall through to the
+        // `paths_anchor`-preferring return below.
         if let (Some(b), Some(a)) = (&state.base_dir, &state.aliases) {
-            return Some((b.clone(), a.clone()));
+            if state.base_dir_anchors_aliases {
+                return Some((b.clone(), a.clone()));
+            }
+            // `base_dir` came from a parent of the `paths` config; the leaf's
+            // own dir (`paths_anchor`) is the correct anchor for its `paths`.
+            let anchor = state
+                .paths_anchor
+                .clone()
+                .unwrap_or_else(|| dir.to_path_buf());
+            return Some((anchor, a.clone()));
         }
 
         // Follow `extends` if present.
@@ -347,6 +377,7 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
                     base_dir: state.base_dir.clone(),
                     aliases: state.aliases.clone(),
                     paths_anchor: state.paths_anchor.clone(),
+                    base_dir_anchors_aliases: state.base_dir_anchors_aliases,
                 };
                 if let Some(found) = walk(&parent_file, depth + 1, recurse_state) {
                     return Some(found);
@@ -356,11 +387,20 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
 
         // No extends (or extends couldn't resolve): return paths if we have
         // them, anchored at the declaring config's directory.
+        //
+        // Anchor precedence: a `baseUrl` only anchors the `paths` when it was
+        // declared at or leafier than the `paths` config
+        // (`base_dir_anchors_aliases`). Otherwise the `paths`-declaring
+        // config's own dir (`paths_anchor`) wins, falling back to this dir.
         let aliases = state.aliases?;
-        let base_dir = state
-            .base_dir
-            .or(state.paths_anchor)
-            .unwrap_or_else(|| dir.to_path_buf());
+        let base_dir = if state.base_dir_anchors_aliases {
+            state.base_dir.unwrap_or_else(|| dir.to_path_buf())
+        } else {
+            state
+                .paths_anchor
+                .or(state.base_dir)
+                .unwrap_or_else(|| dir.to_path_buf())
+        };
         Some((base_dir, aliases))
     }
 
@@ -371,6 +411,7 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
             base_dir: None,
             aliases: None,
             paths_anchor: None,
+            base_dir_anchors_aliases: false,
         },
     )?;
 
@@ -894,6 +935,62 @@ mod tests {
             &vec![expected.clone()],
             "target must be anchored at baseUrl (./src), not project root; \
              expected {expected:?}, got {targets:?}"
+        );
+    }
+
+    /// Regression (#1135): a leaf tsconfig declares `paths` but NO `baseUrl`,
+    /// and the parent it extends declares `baseUrl`. The parent's `baseUrl`
+    /// must NOT anchor the leaf's `paths` — TypeScript anchors a config's
+    /// `paths` on its own (or a closer) `baseUrl`, never an inherited parent
+    /// `baseUrl` that is leafier-than nothing. The leaf's relative targets
+    /// must resolve under the LEAF dir, not the parent's `baseUrl` dir.
+    #[test]
+    fn read_tsconfig_paths_leaf_paths_ignore_parent_base_url() {
+        use std::fs;
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Parent lives in a subdir and declares a `baseUrl` pointing into its
+        // own `lib/` — a directory distinct from both the leaf dir and the
+        // leaf's intended target, so a mis-anchor is observable.
+        let parent_dir = root.join("config");
+        fs::create_dir_all(&parent_dir).unwrap();
+        fs::write(
+            parent_dir.join("tsconfig.base.json"),
+            r#"{
+              "compilerOptions": {
+                "baseUrl": "./lib"
+              }
+            }"#,
+        )
+        .unwrap();
+        // Leaf declares `paths` only (no `baseUrl`) and extends the parent.
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{
+              "extends": "./config/tsconfig.base.json",
+              "compilerOptions": {
+                "paths": {
+                  "@/*": ["src/*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let result = read_tsconfig_paths_into_map(root);
+        assert!(result.contains_key("@/*"), "missing @/*; got {result:?}");
+
+        let targets = &result["@/*"];
+        // Correct: anchored at the LEAF dir (where `paths` was declared).
+        let expected = format!("{}/src/*", root.display());
+        // Wrong (the bug): anchored at the parent's `baseUrl` dir.
+        let wrong = format!("{}/config/lib/src/*", root.display());
+        assert_eq!(
+            targets,
+            &vec![expected.clone()],
+            "leaf `paths` must anchor on the leaf dir, not the parent's \
+             baseUrl; expected {expected:?}, must NOT be {wrong:?}, got {targets:?}"
         );
     }
 
