@@ -326,7 +326,8 @@ pub fn rewrite_islands(
 
     // Phase 1: ONE lol_html pass that replaces ALL marker comments with their
     // sentinel strings.  Seen-flags are collected per island.
-    let seen_flags: Vec<(Rc<Cell<bool>>, Rc<Cell<bool>>)> = islands
+    type SeenPair = (Rc<Cell<bool>>, Rc<Cell<bool>>);
+    let seen_flags: Vec<SeenPair> = islands
         .iter()
         .map(|_| (Rc::new(Cell::new(false)), Rc::new(Cell::new(false))))
         .collect();
