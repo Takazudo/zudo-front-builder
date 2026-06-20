@@ -258,9 +258,13 @@ function runScripts() {
         // external <script> would then hang the whole transition. Race the
         // load against a timeout so the transition can always proceed.
         const p = new Promise<void>((r) => {
-          const done = () => r();
+          let timer: ReturnType<typeof setTimeout>;
+          const done = () => {
+            clearTimeout(timer);
+            r();
+          };
           newScript.onload = newScript.onerror = done;
-          setTimeout(done, EXTERNAL_SCRIPT_WAIT_TIMEOUT);
+          timer = setTimeout(done, EXTERNAL_SCRIPT_WAIT_TIMEOUT);
         });
         wait = wait.then(() => p as any);
       }

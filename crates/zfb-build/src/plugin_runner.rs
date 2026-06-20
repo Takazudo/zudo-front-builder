@@ -764,10 +764,16 @@ impl PluginHost {
         // stdout closes and the reader loop returns on its own; the deadline
         // is a guard against a wedged pipe so teardown can't hang here.
         if let Some(handle) = self.inner.reader_handle.lock().await.take() {
+            let abort = handle.abort_handle();
             match tokio::time::timeout(std::time::Duration::from_secs(2), handle).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => warn!(error = %e, "plugin host: reader task join failed"),
-                Err(_) => warn!("plugin host: reader task did not finish within shutdown budget"),
+                Err(_) => {
+                    warn!("plugin host: reader task did not finish within shutdown budget");
+                    // Bounded teardown: abort the wedged reader rather than
+                    // dropping its JoinHandle (which would only detach it).
+                    abort.abort();
+                }
             }
         }
         Ok(())
