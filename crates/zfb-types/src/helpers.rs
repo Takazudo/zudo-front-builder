@@ -23,6 +23,12 @@ pub fn json_string(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            // U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR are
+            // valid JSON string content per the spec but terminate JS
+            // string literals in older environments; escape them so the
+            // output is safe to embed in inline <script> tags.
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
             c if (c as u32) < 0x20 => {
                 out.push_str(&format!("\\u{:04x}", c as u32));
             }
@@ -141,6 +147,17 @@ mod tests {
     fn json_string_unicode_passthrough() {
         // Non-ASCII printable characters should pass through unchanged.
         assert_eq!(json_string("日本語"), "\"日本語\"");
+    }
+
+    #[test]
+    fn json_string_escapes_line_and_paragraph_separators() {
+        // U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR must be
+        // escaped so the output is safe to embed in inline <script> tags
+        // (they terminate JS string literals in older JS engines even
+        // though they are valid JSON string content).
+        assert_eq!(json_string("\u{2028}"), "\"\\u2028\"");
+        assert_eq!(json_string("\u{2029}"), "\"\\u2029\"");
+        assert_eq!(json_string("a\u{2028}b\u{2029}c"), "\"a\\u2028b\\u2029c\"");
     }
 
     // ── escape_html ───────────────────────────────────────────────────────────

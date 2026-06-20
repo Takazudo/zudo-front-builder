@@ -83,7 +83,13 @@
     "hono": "^4.12.25"
   },
   "peerDependencies": {
-    "@takazudo/zfb": "workspace:*"
+    "@takazudo/zfb": "workspace:*",
+    "react": "^19.2.3"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@takazudo/zfb": "workspace:*",

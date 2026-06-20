@@ -342,11 +342,13 @@ async fn load_ts_via_inprocess_v8(
 /// path resolves plugins in `config-loader.mjs` and emits the envelope).
 #[cfg(feature = "embed_v8")]
 fn resolve_plugins_from_value(raw_value: &serde_json::Value, dir: &Path) -> Result<Vec<String>> {
-    let plugins_arr = raw_value
-        .get("plugins")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let plugins_arr = match raw_value.get("plugins") {
+        None => vec![],
+        Some(v) => v
+            .as_array()
+            .cloned()
+            .ok_or_else(|| anyhow!("config loader: 'plugins' must be an array, got {}", v))?,
+    };
 
     let mut resolved_plugins: Vec<String> = Vec::with_capacity(plugins_arr.len());
     for plugin_val in &plugins_arr {
@@ -839,6 +841,34 @@ mod tests {
             .expect_err("missing relative plugin file should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("does the file exist"), "msg: {msg}");
+    }
+
+    // --- resolve_plugins_from_value tests ---------------------------------------
+
+    /// A missing `plugins` key is a clean no-plugins load (not an error).
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn resolve_plugins_from_value_absent_plugins_returns_empty() {
+        let value = serde_json::json!({ "port": 3000 });
+        let result = resolve_plugins_from_value(&value, Path::new("/proj"))
+            .expect("absent plugins must not error");
+        assert!(result.is_empty(), "expected empty vec, got: {result:?}");
+    }
+
+    /// A `plugins` value that is present but not an array (e.g. an accidental
+    /// object typo) must return a descriptive error rather than silently
+    /// treating the config as plugin-free.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn resolve_plugins_from_value_non_array_plugins_errors() {
+        let value = serde_json::json!({ "plugins": { "name": "oops-should-be-array" } });
+        let err = resolve_plugins_from_value(&value, Path::new("/proj"))
+            .expect_err("non-array plugins must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("plugins") && msg.contains("array"),
+            "error should mention 'plugins' and 'array'; got: {msg}"
+        );
     }
 
     // --- output_bounded tests ---------------------------------------------------

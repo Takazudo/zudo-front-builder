@@ -102,7 +102,7 @@ jobs:
         if: ${{ matrix.platform.use_cross == true }}
         uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
         with:
-          tool: cross
+          tool: cross@0.2.5
 
       - name: Build zfb binary (native)
         if: ${{ matrix.platform.use_cross != true }}

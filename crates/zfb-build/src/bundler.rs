@@ -4827,7 +4827,11 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
 
     // PUBLIC_-prefixed env vars only. Anything else is dropped server-
     // side and never reaches the bundle.
-    for (k, v) in &input.define_vars {
+    // Sort by key so the emitted `--define` args are byte-stable regardless
+    // of the map's iteration order (HashMap is unordered).
+    let mut define_entries: Vec<(&String, &String)> = input.define_vars.iter().collect();
+    define_entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (k, v) in define_entries {
         if !k.starts_with("PUBLIC_") {
             continue;
         }

@@ -4,6 +4,7 @@
 // lets us consume React-typed components in this Preact app (configured
 // project-wide).
 import { useState, useCallback, useEffect, useMemo, useRef } from "preact/hooks";
+import { AFTER_NAVIGATE_EVENT } from "@takazudo/zudo-doc/transitions";
 import type { NavNode } from "@/utils/docs";
 import type { LocaleLink } from "@/types/locale";
 import {
@@ -85,10 +86,8 @@ function useActiveSlug(nodes: NavNode[], initial?: string): string | undefined {
       if (found !== undefined) setSlug(found);
     };
     update();
-    // zfb's `<ViewTransitions />` does a real page load on every
-    // navigation, so `DOMContentLoaded` is the post-navigate signal.
-    document.addEventListener("DOMContentLoaded", update);
-    return () => document.removeEventListener("DOMContentLoaded", update);
+    document.addEventListener(AFTER_NAVIGATE_EVENT, update);
+    return () => document.removeEventListener(AFTER_NAVIGATE_EVENT, update);
   }, [nodes]);
 
   return slug;
