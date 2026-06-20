@@ -49,13 +49,11 @@ pub async fn wait_for_subscribers<T: Clone + Send + 'static>(
     // Task: wake the notify on each message (= each send from the server).
     // We capture `rx` by move; the spawned future is 'static so T must be Send.
     let watch = tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    notify_w.notify_one();
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
+        // Continue while messages arrive (Ok) or we lag (still a signal);
+        // a Closed channel fails the pattern and ends the loop.
+        while let Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) = rx.recv().await
+        {
+            notify_w.notify_one();
         }
     });
 
