@@ -63,10 +63,8 @@ mod tailwind_version_parity {
 
         // 3. Extract version from crates/zfb-css/README.md:
         //    `| Pinned version        | **`x.y.z`**`
-        let readme = std::fs::read_to_string(
-            workspace_root.join("crates/zfb-css/README.md"),
-        )
-        .expect("read crates/zfb-css/README.md");
+        let readme = std::fs::read_to_string(workspace_root.join("crates/zfb-css/README.md"))
+            .expect("read crates/zfb-css/README.md");
         let readme_ver = readme
             .lines()
             .find(|l| l.contains("Pinned version"))

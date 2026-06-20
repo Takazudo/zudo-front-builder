@@ -699,7 +699,6 @@ fn render_wrapper(d: &IslandDescriptor, inner: &str) -> String {
     s
 }
 
-
 /// Build the `<script type="module" …>` tag the renderer drops into the
 /// page's `<head>` (or end-of-`<body>`) so the hydration runtime can find
 /// the islands bundle.

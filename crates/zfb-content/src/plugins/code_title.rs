@@ -345,10 +345,7 @@ mod tests {
     fn remove_title_multibyte() {
         // remove_title must strip the CJK title and leave the remaining key
         // intact without corrupting the byte offsets.
-        assert_eq!(
-            remove_title("title=\"ファイル名.rs\" foo=1"),
-            "foo=1",
-        );
+        assert_eq!(remove_title("title=\"ファイル名.rs\" foo=1"), "foo=1",);
     }
 
     #[test]
@@ -371,9 +368,6 @@ mod tests {
         else {
             unreachable!("expected title div")
         };
-        assert_eq!(
-            title_children,
-            &[HastNode::Text("ファイル名.rs".into())]
-        );
+        assert_eq!(title_children, &[HastNode::Text("ファイル名.rs".into())]);
     }
 }
