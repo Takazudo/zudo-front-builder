@@ -26,7 +26,7 @@ set -euo pipefail
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 version_arg=""
-tap_path="${HOME}/repos/myoss/homebrew-tap"
+tap_path="${HOME}/repos/Takazudo/homebrew-tap"
 do_push=false
 
 while [[ $# -gt 0 ]]; do

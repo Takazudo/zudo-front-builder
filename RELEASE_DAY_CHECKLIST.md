@@ -155,7 +155,7 @@ releases keep full provenance across every package.
 
 After the GitHub Release assets are published, regenerate and push the Homebrew
 tap formula. Requires a local checkout of `Takazudo/homebrew-tap` at the default
-path (`~/repos/myoss/homebrew-tap`):
+path (`~/repos/Takazudo/homebrew-tap`):
 
 ```sh
 ./scripts/update-homebrew-formula.sh vX.Y.Z --push
