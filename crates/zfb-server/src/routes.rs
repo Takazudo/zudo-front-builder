@@ -1613,15 +1613,18 @@ fn ssr_error_response(url_path: &str, message: &str, mode: crate::ServerMode) ->
 /// Origin gate for non-GET/HEAD requests reaching the dynamic dispatch
 /// surfaces — plugin dev-middleware, embed handlers, request-time SSR
 /// (issue #931 / #919). Returns `Some(403)` when the server is
-/// LAN-exposed (host validation enforced) and the request carries an
-/// `Origin` header whose host fails the same allowlist the Host-header
-/// layer uses. Returns `None` (allow) when:
+/// LAN-exposed (host validation enforced) and either:
 ///
-/// - the method is GET/HEAD (safe methods rely on the Host check),
-/// - the server is bound to loopback (default — zero behaviour change),
-/// - the `Origin` header is absent (non-browser clients: curl, native
-///   apps; surfaced with a `tracing::warn` in Dev mode so the gap is
-///   visible).
+/// - the `Origin` header is absent on a non-GET request (fail closed —
+///   browsers always send `Origin` on cross-origin non-GET requests, so
+///   absence implies a non-browser LAN client bypassing CORS), or
+/// - the request carries an `Origin` whose host fails the same allowlist
+///   the Host-header layer uses.
+///
+/// Returns `None` (allow) when:
+///
+/// - the method is GET/HEAD (safe methods rely on the Host check), or
+/// - the server is bound to loopback (default — zero behaviour change).
 ///
 /// Static read paths (`/assets`, dist/public fallbacks, livereload) are
 /// exempt by construction — this helper is only invoked at the three
@@ -1635,13 +1638,13 @@ fn origin_rejection(state: &AppState, method: &Method, headers: &HeaderMap) -> O
         return None;
     }
     let Some(value) = headers.get(header::ORIGIN) else {
-        if matches!(state.mode, crate::ServerMode::Dev) {
-            tracing::warn!(
-                method = %method,
-                "non-GET request without Origin header reached dynamic dispatch on a LAN-exposed server; allowing"
-            );
-        }
-        return None;
+        // When enforcement is on, a non-GET request that omits the Origin
+        // header cannot be a browser cross-origin request (browsers always
+        // send it). Fail closed: return 403 so non-browser LAN clients
+        // cannot bypass the CSRF guard by dropping the header.
+        return Some(crate::host_validation::missing_origin_forbidden_response(
+            state.mode,
+        ));
     };
     // Present-but-unreadable (non-ASCII) and disallowed origins both
     // fail closed.
@@ -3806,6 +3809,144 @@ mod tests {
             body_bytes.is_empty(),
             "HEAD response body must be empty (got {} bytes)",
             body_bytes.len()
+        );
+    }
+
+    // --- LAN security: origin_rejection unit tests -----------------------
+    //
+    // These tests call `origin_rejection` directly to cover the
+    // fail-closed missing-Origin path and the loopback short-circuit
+    // without needing a full plugin/SSR stack wired up.
+
+    fn enforced_state() -> AppState {
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+        let dist = std::env::temp_dir().join("zfb-test-dist");
+        AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist.clone(),
+            html_root: dist,
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+            // Non-loopback bind → enforcement on.
+            host_validation: crate::host_validation::HostValidation::for_bind(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                None,
+                &[],
+                crate::ServerMode::Dev,
+            ),
+            render_on_request_hook: None,
+        }
+    }
+
+    #[test]
+    fn origin_rejection_get_is_always_allowed() {
+        let state = enforced_state();
+        let headers = HeaderMap::new();
+        // GET with no Origin must pass even when enforced.
+        let result = origin_rejection(&state, &Method::GET, &headers);
+        assert!(
+            result.is_none(),
+            "GET without Origin must not be rejected when enforced"
+        );
+        // HEAD likewise.
+        let result = origin_rejection(&state, &Method::HEAD, &headers);
+        assert!(
+            result.is_none(),
+            "HEAD without Origin must not be rejected when enforced"
+        );
+    }
+
+    #[test]
+    fn origin_rejection_missing_origin_rejected_when_enforced() {
+        let state = enforced_state();
+        let headers = HeaderMap::new(); // no Origin
+        let result = origin_rejection(&state, &Method::POST, &headers);
+        assert!(
+            result.is_some(),
+            "POST without Origin must be 403 when enforced"
+        );
+        let resp = result.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "missing Origin on enforced server must be 403"
+        );
+    }
+
+    #[test]
+    fn origin_rejection_missing_origin_allowed_on_loopback() {
+        let state = test_state(); // host_validation: disabled (loopback)
+        let headers = HeaderMap::new();
+        // Not enforced — missing Origin must not reject.
+        let result = origin_rejection(&state, &Method::POST, &headers);
+        assert!(
+            result.is_none(),
+            "POST without Origin must be allowed on loopback-bound server"
+        );
+    }
+
+    #[test]
+    fn origin_rejection_present_allowed_origin_passes() {
+        let state = enforced_state();
+        let mut headers = HeaderMap::new();
+        // localhost is always in the built-in allowlist.
+        headers.insert(header::ORIGIN, "http://localhost:3000".parse().unwrap());
+        let result = origin_rejection(&state, &Method::POST, &headers);
+        assert!(
+            result.is_none(),
+            "POST from localhost Origin must pass when enforced"
+        );
+    }
+
+    #[test]
+    fn origin_rejection_disallowed_origin_rejected_when_enforced() {
+        let state = enforced_state();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, "https://evil.test".parse().unwrap());
+        let result = origin_rejection(&state, &Method::POST, &headers);
+        assert!(
+            result.is_some(),
+            "POST from disallowed Origin must be 403 when enforced"
+        );
+        assert_eq!(result.unwrap().status(), StatusCode::FORBIDDEN);
+    }
+
+    // --- LAN security: DefaultBodyLimit (body size cap) ---------------
+
+    #[tokio::test]
+    async fn router_rejects_oversized_post_body() {
+        let state = test_state();
+        let router = test_router(state);
+
+        // 2 MiB + 1 byte — just over the cap set in build_router.
+        let oversized = vec![b'x'; 2 * 1024 * 1024 + 1];
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::CONTENT_TYPE, "application/octet-stream")
+                    .header(header::CONTENT_LENGTH, oversized.len().to_string())
+                    .body(Body::from(oversized))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // axum returns 413 Payload Too Large when DefaultBodyLimit is exceeded.
+        assert_eq!(
+            resp.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "POST body exceeding 2 MiB cap must be rejected with 413"
         );
     }
 }
