@@ -381,7 +381,7 @@ fn sanitize_pkg_name(input: &str) -> String {
 
     // Strip any leading `.` or `_` that survived the truncation boundary
     // (shouldn't happen after the trim above, but be defensive).
-    let final_name = capped.trim_start_matches(|c: char| c == '.' || c == '_');
+    let final_name = capped.trim_start_matches(['.', '_']);
 
     if final_name.is_empty() {
         return "zfb-project".to_string();
