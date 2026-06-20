@@ -279,6 +279,15 @@ pub(crate) fn host_forbidden_response(host: &str, mode: ServerMode) -> Response 
     forbidden_response("blocked Host header", &detail, mode)
 }
 
+/// Build the `403 Forbidden` served when a LAN-exposed server receives
+/// a request with no `Host` header at all. Non-browser tools (e.g.
+/// raw TCP clients, some proxies) may omit it, but a browser never does
+/// for HTTP/1.1 — failing closed here is safe.
+pub(crate) fn missing_host_forbidden_response(mode: ServerMode) -> Response {
+    let detail = "LAN-exposed server requires a Host header; request had none";
+    forbidden_response("missing Host header", detail, mode)
+}
+
 /// Build the `403 Forbidden` served for a cross-origin non-GET request
 /// to a dynamic (SSR/plugin/embed) dispatch surface. Same #926 body
 /// policy as [`host_forbidden_response`].
@@ -287,6 +296,16 @@ pub(crate) fn origin_forbidden_response(origin: &str, mode: ServerMode) -> Respo
         "cross-origin request blocked: Origin {origin:?} is not in the allowed-hosts set; add its host to `allowedHosts` in zfb.config.ts"
     );
     forbidden_response("blocked cross-origin request", &detail, mode)
+}
+
+/// Build the `403 Forbidden` served when a LAN-exposed server receives
+/// a non-GET request with no `Origin` header. Browsers always send
+/// `Origin` on cross-origin non-GET requests, so absence implies a
+/// non-browser client bypassing CORS — fail closed to block it.
+pub(crate) fn missing_origin_forbidden_response(mode: ServerMode) -> Response {
+    let detail =
+        "LAN-exposed server requires an Origin header on non-GET requests; request had none";
+    forbidden_response("missing Origin header", detail, mode)
 }
 
 fn forbidden_response(title: &str, detail: &str, mode: ServerMode) -> Response {
@@ -365,6 +384,13 @@ async fn validate_host_middleware(
             }
         }
         None => {
+            // When enforcement is on (LAN-exposed bind), a missing Host
+            // header is a protocol violation — browsers always send one.
+            // Fail closed so non-browser LAN clients cannot bypass the
+            // allowlist by omitting the header entirely.
+            if validation.is_enforced() {
+                return missing_host_forbidden_response(validation.mode());
+            }
             tracing::warn!(
                 uri = %req.uri(),
                 "request without Host header reached the host-validation layer; allowing"
@@ -613,8 +639,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn layer_allows_requests_without_host_header() {
+    async fn layer_rejects_requests_without_host_header_when_enforcing() {
+        // When the server is LAN-exposed (enforcing), a missing Host
+        // header must 403 — browsers always send one, so absence implies
+        // a non-browser client that could bypass the allowlist check.
         let v = HostValidation::for_bind(ANY_IP, None, &[], ServerMode::Dev);
+        let router = apply_host_validation_layer(test_router(), v);
+        let (status, body) = status_for(router, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("missing Host header"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn layer_allows_requests_without_host_header_when_not_enforced() {
+        // Loopback bind: not enforced — missing Host is allowed (no
+        // behaviour change from the pre-LAN-security path).
+        let v = HostValidation::for_bind(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            None,
+            &[],
+            ServerMode::Dev,
+        );
         let router = apply_host_validation_layer(test_router(), v);
         let (status, _) = status_for(router, None).await;
         assert_eq!(status, StatusCode::OK);
