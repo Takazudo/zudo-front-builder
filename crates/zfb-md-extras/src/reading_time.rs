@@ -118,36 +118,39 @@ pub fn is_cjk_char(c: char) -> bool {
 /// - CJK characters: each character counts as one word.
 ///
 /// Mixed text is handled correctly: CJK characters inside Latin sentences
-/// are extracted first, and the remaining (de-CJK'd) parts are split on
-/// whitespace.
+/// are counted per-char; the surrounding non-CJK spans are tracked with an
+/// in-word boolean state machine (no allocation) that fires exactly the same
+/// token transitions as the old `String`-buffer + `split_whitespace` path.
 #[must_use]
 pub fn count_words(text: &str) -> u32 {
     let mut count = 0u32;
-    let mut latin_buf = String::new();
+    // True while we are inside a non-CJK, non-whitespace run (i.e. a Latin
+    // "word"). Equivalent to the old latin_buf being non-empty-after-trim.
+    let mut in_word = false;
 
     for c in text.chars() {
         if is_cjk_char(c) {
-            // Flush any accumulated Latin-script buffer first.
-            if !latin_buf.trim().is_empty() {
-                count += latin_buf
-                    .split_whitespace()
-                    .filter(|w| !w.is_empty())
-                    .count() as u32;
+            // Close any open Latin word first, then count this CJK char.
+            if in_word {
+                count += 1;
+                in_word = false;
             }
-            latin_buf.clear();
-            // Each CJK character is one word.
             count += 1;
+        } else if c.is_whitespace() {
+            // Whitespace ends a Latin word.
+            if in_word {
+                count += 1;
+                in_word = false;
+            }
         } else {
-            latin_buf.push(c);
+            // Non-CJK, non-whitespace character: we are inside a Latin word.
+            in_word = true;
         }
     }
 
-    // Flush any trailing Latin-script content.
-    if !latin_buf.trim().is_empty() {
-        count += latin_buf
-            .split_whitespace()
-            .filter(|w| !w.is_empty())
-            .count() as u32;
+    // Flush any trailing Latin word.
+    if in_word {
+        count += 1;
     }
 
     count
@@ -449,6 +452,70 @@ mod tests {
     fn punctuation_within_token_counts_as_one_word() {
         assert_eq!(count_words("hello-world"), 1);
         assert_eq!(count_words("don't"), 1);
+    }
+
+    /// Equivalence check for the state-machine rewrite (perf item #5).
+    ///
+    /// The new implementation must produce identical counts to the old
+    /// `String`-buffer path for all mixed CJK/Latin inputs.  We inline the
+    /// old algorithm here as `count_words_buffered` and assert both produce
+    /// the same result for a corpus covering every interesting transition:
+    /// CJK→Latin, Latin→CJK, leading/trailing whitespace, pure Latin, pure
+    /// CJK, punctuation-inside-word, multi-whitespace gaps.
+    #[test]
+    fn state_machine_matches_buffer_algorithm_on_mixed_input() {
+        fn count_words_buffered(text: &str) -> u32 {
+            let mut count = 0u32;
+            let mut latin_buf = String::new();
+            for c in text.chars() {
+                if is_cjk_char(c) {
+                    if !latin_buf.trim().is_empty() {
+                        count += latin_buf
+                            .split_whitespace()
+                            .filter(|w| !w.is_empty())
+                            .count() as u32;
+                    }
+                    latin_buf.clear();
+                    count += 1;
+                } else {
+                    latin_buf.push(c);
+                }
+            }
+            if !latin_buf.trim().is_empty() {
+                count += latin_buf
+                    .split_whitespace()
+                    .filter(|w| !w.is_empty())
+                    .count() as u32;
+            }
+            count
+        }
+
+        let cases: &[&str] = &[
+            "",
+            "   ",
+            "hello",
+            "hello world",
+            "中文",
+            "hello 中文",
+            "中文 hello",
+            "hello中文world",
+            "  hello  world  ",
+            "one two three four five",
+            "hello-world don't",
+            "あいう abc カタカナ def",
+            "\t\nhello\n\tworld\n",
+            "한국어 mixed English 日本語",
+            "\u{20000}\u{20001} latin \u{20002}",
+        ];
+
+        for &input in cases {
+            let new = count_words(input);
+            let old = count_words_buffered(input);
+            assert_eq!(
+                new, old,
+                "count_words({input:?}): state-machine={new} vs buffer={old}"
+            );
+        }
     }
 
     // ── compute_reading_time_minutes ────────────────────────────────────────
