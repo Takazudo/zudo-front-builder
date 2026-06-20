@@ -153,7 +153,17 @@ pub fn render_framed(diag: &Diagnostic) -> String {
     ));
 
     if let Some(src) = &diag.source {
-        let lines: Vec<&str> = src.split('\n').collect();
+        // `split('\n')` on a newline-terminated file produces a trailing empty
+        // segment (e.g. `"a\nb\n".split('\n')` → `["a", "b", ""]`). Drop it
+        // so window arithmetic counts real lines only — without this, the
+        // after-context line at EOF can be the empty trailing segment, which
+        // either renders as a blank line or is silently skipped.
+        let raw: Vec<&str> = src.split('\n').collect();
+        let lines: Vec<&str> = match raw.last() {
+            Some(&"") => &raw[..raw.len() - 1],
+            _ => &raw[..],
+        }
+        .to_vec();
         if lines.is_empty() {
             return out;
         }
@@ -320,12 +330,32 @@ pub trait DecodedPosition {
 // ---------------------------------------------------------------------------
 
 /// Locate the first `export ... <ident>` occurrence in `source` and
-/// return a 1-based `(line, col)` of the `ident`. We only consider
-/// identifiers that appear inside the **declaration** keywords — i.e.
-/// on a line that starts with `export ` and whose `<ident>` is preceded
-/// by `const `, `let `, `var `, `function `, `async function `, or
-/// `class ` — so that strings such as `"Bad paths"` inside other
-/// declarations don't accidentally win the search.
+/// return a 1-based `(line, col)` of the `ident`.
+///
+/// Two forms are handled:
+///
+/// 1. **Declaration prefix** — lines whose (trimmed) start matches
+///    `export const `, `export let `, `export var `, `export function `,
+///    `export async function `, or `export class `. The identifier
+///    immediately following the keyword prefix is compared to `ident`.
+///
+/// 2. **Named re-export** — lines whose (trimmed) start matches
+///    `export {` are scanned for `ident` as a member name. Only the
+///    unaliased form (`export { ident }` or `export { ident, ... }`) is
+///    found; aliased members (`export { orig as ident }`) are not matched
+///    because their binding name differs from the declared source name
+///    that `ident` refers to.
+///
+/// **Known limitations** (document rather than paper over):
+/// - Indented exports (`  export const foo`) are supported (leading
+///   whitespace is stripped before matching).
+/// - Multi-line `export { ... }` blocks (opening brace on one line,
+///   members on subsequent lines) are **not** walked — only single-line
+///   `export { ... }` forms are detected.
+/// - `export default function` / `export default class` without an
+///   explicit name (anonymous default) cannot be located by `ident` and
+///   will not produce a match.
+/// - `export * from` re-exports are not matched (no local name).
 pub fn locate_export_ident(source: &str, ident: &str) -> Option<(usize, usize)> {
     let prefixes = [
         "export const ",
@@ -341,6 +371,8 @@ pub fn locate_export_ident(source: &str, ident: &str) -> Option<(usize, usize)> 
     for (line_idx, line) in source.lines().enumerate() {
         let trimmed_start = line.trim_start();
         let leading_ws = line.len() - trimmed_start.len();
+
+        // Form 1: declaration keyword prefix.
         for prefix in prefixes {
             if let Some(rest) = trimmed_start.strip_prefix(prefix) {
                 // The next token (up to whitespace, `(`, `=`, or `<`) is the
@@ -352,6 +384,33 @@ pub fn locate_export_ident(source: &str, ident: &str) -> Option<(usize, usize)> 
                 if declared == ident {
                     let col = leading_ws + prefix.len() + 1; // 1-based to ident start
                     return Some((line_idx + 1, col));
+                }
+            }
+        }
+
+        // Form 2: named re-export `export { a, b, c }` on a single line.
+        // Scan the member list for `ident` as an unaliased name.
+        if let Some(rest) = trimmed_start.strip_prefix("export {") {
+            // Find the closing `}` — only handles single-line forms.
+            if let Some(close) = rest.find('}') {
+                let members = &rest[..close];
+                for raw_member in members.split(',') {
+                    let member = raw_member.trim();
+                    // Skip aliased members (`orig as alias`); only the
+                    // unaliased name (or the original name in `orig as alias`)
+                    // matches the declared source binding.
+                    let name = if let Some((orig, _alias)) = member.split_once(" as ") {
+                        orig.trim()
+                    } else {
+                        member
+                    };
+                    if name == ident {
+                        // Locate the exact byte offset of `ident` in the
+                        // original (non-trimmed) line for the column.
+                        if let Some(offset) = line.find(ident) {
+                            return Some((line_idx + 1, offset + 1)); // 1-based
+                        }
+                    }
                 }
             }
         }
@@ -427,9 +486,9 @@ mod tests {
 
     #[test]
     fn render_framed_header_only_when_line_past_end() {
-        // "first\nsecond\nthird\n".split('\n') yields ["first","second","third",""]
-        // — four segments, so lines.len() == 4. line=100 → zero_based=99 ≥ 4
-        // → short-circuits to header-only form.
+        // After dropping the trailing empty segment, "first\nsecond\nthird\n"
+        // yields 3 real lines. line=100 → zero_based=99 ≥ 3 → short-circuits
+        // to header-only form.
         owo_colors::set_override(false);
         let src = "first\nsecond\nthird\n";
         let diag = Diagnostic::with_source("a.md", 100, 1, "boom", src);
@@ -442,9 +501,9 @@ mod tests {
 
     #[test]
     fn render_framed_header_only_when_line_one_past_end() {
-        // Same 4-segment source. line=5 → zero_based=4 ≥ 4 → short-circuits.
-        // (line=4 → zero_based=3 < 4 and would render the empty trailing
-        // segment; this test deliberately uses line=5 as the boundary case.)
+        // After dropping the trailing empty segment, the 3-line source has
+        // lines.len() == 3. line=4 → zero_based=3 ≥ 3 → short-circuits.
+        // line=5 also short-circuits for the same reason.
         owo_colors::set_override(false);
         let src = "first\nsecond\nthird\n";
         let diag = Diagnostic::with_source("a.md", 5, 1, "boom", src);
@@ -453,6 +512,31 @@ mod tests {
         assert!(out.contains(" --> a.md:5:1\n"), "got:\n{out}");
         // No snippet block emitted.
         assert!(!out.contains('|'), "got:\n{out}");
+    }
+
+    #[test]
+    fn render_framed_last_line_no_blank_after_context() {
+        // Regression: before fix, `split('\n')` on a newline-terminated source
+        // produced a trailing empty segment, so the window's after-context
+        // line was that empty segment — rendered as a blank `N |` line at EOF.
+        // After the fix the trailing empty segment is dropped and `end` clamps
+        // to the real last line, so the after-context is omitted cleanly.
+        owo_colors::set_override(false);
+        let src = "first\nsecond\nthird\n";
+        // Report an error on the last real line (line 3).
+        let diag = Diagnostic::with_source("a.md", 3, 1, "boom", src);
+        let out = strip_ansi(&render_framed(&diag));
+        // The error line itself must be present.
+        assert!(
+            out.contains("3 | third\n"),
+            "expected last line in output: {out:?}"
+        );
+        // There must be no blank-content line in the snippet window
+        // (a trailing-segment blank would appear as "4 | \n" or similar).
+        assert!(
+            !out.contains("4 |"),
+            "unexpected blank after-context line: {out:?}"
+        );
     }
 
     #[test]
@@ -541,5 +625,47 @@ mod tests {
     fn locate_export_ident_returns_none_when_absent() {
         let src = "export const foo = 1;\n";
         assert!(locate_export_ident(src, "bar").is_none());
+    }
+
+    #[test]
+    fn locate_export_ident_finds_named_re_export_single_member() {
+        // `export { paths }` — the identifier is the only member.
+        let src = "const paths = [];\nexport { paths };\n";
+        let found = locate_export_ident(src, "paths");
+        assert!(found.is_some(), "expected a match for export {{ paths }}");
+        let (line, _col) = found.unwrap();
+        assert_eq!(line, 2);
+    }
+
+    #[test]
+    fn locate_export_ident_finds_named_re_export_multi_member() {
+        // `export { foo, paths, bar }` — target is not the first member.
+        let src = "export { foo, paths, bar };\n";
+        let found = locate_export_ident(src, "paths");
+        assert!(
+            found.is_some(),
+            "expected a match for paths in multi-member export"
+        );
+        let (line, col) = found.unwrap();
+        assert_eq!(line, 1);
+        // "paths" starts at byte offset 14 (0-based) → col 15 (1-based).
+        assert_eq!(
+            col, 15,
+            "unexpected column for `paths` in `export {{ foo, paths, bar }}`"
+        );
+    }
+
+    #[test]
+    fn locate_export_ident_named_re_export_does_not_match_alias_target() {
+        // `export { orig as paths }` — `paths` is the alias, not the source
+        // binding. The function should not match aliased exports by alias name.
+        let src = "export { orig as paths };\n";
+        // `paths` is the alias; the source binding is `orig`. Neither should
+        // match when searching for `paths` (alias target lookup is out of scope).
+        let found = locate_export_ident(src, "paths");
+        assert!(
+            found.is_none(),
+            "aliased export target `paths` must not match (alias lookup is not supported)"
+        );
     }
 }

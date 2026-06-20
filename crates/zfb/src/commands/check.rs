@@ -190,8 +190,16 @@ fn collect_entry_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let p = entry.path();
+        // Use the raw file_type (does not follow symlinks) so that a symlink
+        // to a directory is seen as a symlink, not a dir. Recursing through
+        // symlinked directories can produce infinite loops when a symlink
+        // points at an ancestor directory. Skipping symlinks entirely is the
+        // safe bound: entry files should not live behind a symlink in a
+        // standard zfb project layout.
         let ft = entry.file_type()?;
-        if ft.is_dir() {
+        if ft.is_symlink() {
+            continue;
+        } else if ft.is_dir() {
             collect_entry_files(&p, out)?;
         } else if ft.is_file() && is_entry_file(&p) {
             out.push(p);

@@ -39,6 +39,11 @@ pub fn resolve_outdir(root: &Path, path: &Path) -> PathBuf {
 /// either path are resolved before comparison (mirrors the overlap check in
 /// `dev.rs` and the traversal guard in `config.rs:ensure_path_in_root`).
 ///
+/// Warns (but does not bail) when `outdir` exists and is **outside** the
+/// project root — e.g. an absolute `--outdir /tmp/build` path. The wipe is
+/// unconditional, so pointing `outdir` at an external directory deletes its
+/// contents. The warning prompts the user to double-check before proceeding.
+///
 /// No source-marker heuristics (package.json, src/, …) — a previous valid
 /// build may have copied those from `public/` into `dist/` (#805).
 ///
@@ -69,6 +74,19 @@ pub fn validate_outdir_safety(project_root: &Path, outdir: &Path) -> Result<()> 
             outdir.display(),
             canonical_out.display(),
         );
+    }
+
+    // Warn when outdir exists but is outside the project root. The wipe that
+    // follows is unconditional; an external outdir (e.g. `--outdir /tmp/build`)
+    // would silently delete whatever is there. Surface a clear warning so the
+    // user can abort if this is unintentional.
+    if !canonical_out.starts_with(&canonical_root) {
+        crate::output::warn(format!(
+            "outdir ({}) is outside the project root ({}) — its contents will be wiped. \
+             Pass a subdirectory of the project root (e.g. `dist/`) to avoid this.",
+            canonical_out.display(),
+            canonical_root.display(),
+        ));
     }
 
     Ok(())
@@ -373,6 +391,24 @@ mod tests {
         assert!(
             err.to_string().contains("project root or an ancestor"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_outdir_safety_accepts_existing_outdir_outside_root() {
+        // An outdir outside the project root is allowed (returns Ok) — a
+        // warning is printed to stderr but no error is returned, so the build
+        // can proceed and the user can abort manually if needed.
+        let tmp = tempfile::tempdir().unwrap();
+        // root = tmp/proj; outdir = tmp/other (sibling, outside root).
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let outdir = tmp.path().join("other");
+        std::fs::create_dir_all(&outdir).unwrap();
+        assert!(
+            validate_outdir_safety(&root, &outdir).is_ok(),
+            "outdir outside root must return Ok (warning only, no bail)"
         );
     }
 
