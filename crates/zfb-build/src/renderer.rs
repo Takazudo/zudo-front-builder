@@ -127,14 +127,17 @@ pub struct RouteUniverseEntry {
 /// from `headers["content-type"]` because the renderer's HEAD-injection
 /// path reads it on the hot path.
 ///
-/// Response headers travel as a `BTreeMap<String, String>` — multi-
-/// valued headers (most notably `Set-Cookie`, which Cloudflare allows
-/// multiple of in a single response) collapse to the last value seen.
-/// This is a preexisting design limitation of the seam; a fix would
-/// switch every layer to `Vec<(String, String)>` or an `http::HeaderMap`
-/// and is deferred to a follow-up. Cloudflare prod, by contrast,
-/// forwards headers through `Response.headers.entries()` which preserves
-/// each entry verbatim.
+/// Response headers travel as an ordered `Vec<(String, String)>`
+/// multimap so multi-valued headers (most notably `Set-Cookie`, which
+/// Cloudflare allows multiple of in a single response) survive: each
+/// entry is kept verbatim rather than collapsing to a last-value-wins
+/// map. The zfb-server edge converts this list to `http::HeaderMap` with
+/// `append` (not `insert`) so the duplicates reach the wire. (A residual
+/// collapse remains upstream of this struct at the JS `Response.headers`
+/// → `Record<string,string>` boundary in `zfb-render`/`plugin_runner`,
+/// where the dispatch glue serialises headers as a JS object; lifting
+/// that needs a `getSetCookie()`-aware bundle template and is out of
+/// scope here.)
 #[derive(Debug, Clone, Default)]
 pub struct HttpResponseLike {
     /// HTTP status code (e.g. 200, 404, 500).
@@ -142,13 +145,15 @@ pub struct HttpResponseLike {
     /// Value of the `Content-Type` response header, or an empty string
     /// when absent.
     pub content_type: String,
-    /// All other response headers from the V8 bundle's `Response`.
-    /// Keys are lowercase to mirror the canonicalisation
-    /// `EmbeddedV8RenderHost::dispatch_fetch` performs on the way out.
-    /// `content-type` may or may not appear here — callers should
-    /// prefer the dedicated [`Self::content_type`] field on the hot
-    /// path and merge `headers` afterwards.
-    pub headers: std::collections::BTreeMap<String, String>,
+    /// All other response headers from the V8 bundle's `Response`, as an
+    /// ordered list of `(name, value)` pairs. Keys are lowercase to
+    /// mirror the canonicalisation `EmbeddedV8RenderHost::dispatch_fetch`
+    /// performs on the way out. Duplicate names are preserved in order
+    /// (e.g. two `set-cookie` entries). `content-type` may or may not
+    /// appear here — callers should prefer the dedicated
+    /// [`Self::content_type`] field on the hot path and merge `headers`
+    /// afterwards.
+    pub headers: Vec<(String, String)>,
     /// Full response body bytes.
     pub body: Vec<u8>,
 }
@@ -366,14 +371,14 @@ impl BackendHandle {
                 // Forward ALL response headers (lowercase keys) so the
                 // SSR seam can mirror Cloudflare's response shape:
                 // Cache-Control, Set-Cookie, Location, CORS, X-*, etc.
-                // Multi-valued headers collapse to the last value (see
-                // the HttpResponseLike doc-comment); fixing that needs a
-                // wider seam change.
-                let mut headers: std::collections::BTreeMap<String, String> =
-                    std::collections::BTreeMap::new();
+                // `reqwest::HeaderMap::iter()` yields one item per header
+                // *value*, so multiple `Set-Cookie` entries each appear —
+                // pushing into the ordered `Vec` preserves every one (see
+                // the HttpResponseLike doc-comment).
+                let mut headers: Vec<(String, String)> = Vec::with_capacity(resp.headers().len());
                 for (name, value) in resp.headers().iter() {
                     if let Ok(v) = value.to_str() {
-                        headers.insert(name.as_str().to_ascii_lowercase(), v.to_string());
+                        headers.push((name.as_str().to_ascii_lowercase(), v.to_string()));
                     }
                 }
                 let body = resp

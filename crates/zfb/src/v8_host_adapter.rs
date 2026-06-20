@@ -257,13 +257,12 @@ impl ThreadedV8Host {
                                 // so the dev SSR seam matches Cloudflare
                                 // prod parity. `content_type` is duplicated
                                 // out as the renderer's hot-path field;
-                                // `headers` retains everything else.
-                                //
-                                // Multi-valued headers (notably Set-Cookie)
-                                // still collapse to the last value through
-                                // this BTreeMap shape — preexisting design
-                                // limit of the seam, doc'd on
-                                // `HttpResponseLike`.
+                                // `headers` retains everything else as an
+                                // ordered `Vec` so multi-valued headers
+                                // (e.g. Set-Cookie) survive the seam. Any
+                                // residual collapse is upstream, at the JS
+                                // `Response.headers` → `Record` boundary
+                                // (`zfb-render` parses it into a BTreeMap).
                                 let content_type = resp
                                     .headers
                                     .get("content-type")
@@ -272,7 +271,7 @@ impl ThreadedV8Host {
                                 HttpResponseLike {
                                     status: resp.status,
                                     content_type,
-                                    headers: resp.headers,
+                                    headers: resp.headers.into_iter().collect(),
                                     body: resp.body,
                                 }
                             })

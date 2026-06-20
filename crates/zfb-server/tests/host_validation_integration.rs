@@ -23,8 +23,6 @@
 //! Uses the same ephemeral-port binding pattern as `integration.rs`
 //! and the same synthetic dispatchers as `ssr_integration.rs`.
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
@@ -62,8 +60,7 @@ impl CountingSsrDispatcher {
 impl SsrDispatcher for CountingSsrDispatcher {
     async fn dispatch(&self, _request: SsrRequest) -> Result<SsrResponse, SsrDispatchError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
-        let mut headers = BTreeMap::new();
-        headers.insert("content-type".into(), "text/html; charset=utf-8".into());
+        let headers = vec![("content-type".into(), "text/html; charset=utf-8".into())];
         Ok(SsrResponse {
             status: 200,
             headers,
@@ -97,8 +94,7 @@ impl DevMiddlewareDispatcher for CountingPluginDispatcher {
         request: PluginRequest,
     ) -> Result<PluginDispatchOutcome, PluginDispatchError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
-        let mut headers = HashMap::new();
-        headers.insert("content-type".into(), "text/plain; charset=utf-8".into());
+        let headers = vec![("content-type".into(), "text/plain; charset=utf-8".into())];
         Ok(PluginDispatchOutcome::Response(PluginResponse {
             status: 200,
             headers,

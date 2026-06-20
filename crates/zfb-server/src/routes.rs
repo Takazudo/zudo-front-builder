@@ -1350,6 +1350,10 @@ async fn dispatch_plugin(
                 PluginResponseEncoding::Utf8 => resp.body.into_bytes(),
             };
             let mut builder = Response::builder().status(status);
+            // `resp.headers` is an ordered `Vec<(name, value)>`; iterating
+            // it and calling `Builder::header` (which *appends*) preserves
+            // duplicate names, so multiple `Set-Cookie` entries from the
+            // plugin each reach the wire instead of collapsing.
             for (k, v) in resp.headers {
                 // The body is reconstructed Rust-side (base64 decode /
                 // into_bytes), so any Content-Length / Transfer-Encoding the
@@ -1464,6 +1468,15 @@ async fn dispatch_ssr(
     // (`content-type`, `cache-control`) so a handler that explicitly
     // sets `cache-control: public,max-age=60` doesn't silently lose to
     // our no-store default — instead the SSR header wins.
+    //
+    // `resp.headers` is an ordered `Vec<(name, value)>`, so a handler that
+    // emits two `Set-Cookie` entries arrives here as two list items. We
+    // track which names we've already seen so the FIRST occurrence of a
+    // name `insert`s (overriding any default `page_response_bytes` wrote,
+    // e.g. cache-control), and every subsequent occurrence of that same
+    // name `append`s — preserving multiple `Set-Cookie` while still
+    // letting a single override-style header replace the default.
+    let mut seen: std::collections::HashSet<header::HeaderName> = std::collections::HashSet::new();
     for (k, v) in resp.headers.iter() {
         let lower = k.to_ascii_lowercase();
         // `page_response_bytes` rewrites the HTML body (livereload script,
@@ -1480,12 +1493,11 @@ async fn dispatch_ssr(
         }
         if let Ok(name) = header::HeaderName::try_from(k.as_str()) {
             if let Ok(value) = HeaderValue::try_from(v) {
-                // For Cache-Control we let the handler override the
-                // default no-store; for all other headers we insert
-                // (replace). Multi-valued headers like Set-Cookie
-                // would need append semantics, but the BTreeMap shape
-                // upstream already collapses duplicates.
-                out.headers_mut().insert(name, value);
+                if seen.insert(name.clone()) {
+                    out.headers_mut().insert(name, value);
+                } else {
+                    out.headers_mut().append(name, value);
+                }
             }
         }
     }
@@ -2678,8 +2690,7 @@ mod tests {
     }
 
     fn echo_response() -> PluginDispatchOutcome {
-        let mut headers = HashMap::new();
-        headers.insert("content-type".to_string(), "application/json".to_string());
+        let headers = vec![("content-type".to_string(), "application/json".to_string())];
         PluginDispatchOutcome::Response(crate::plugin_middleware::PluginResponse {
             status: 200,
             headers,
