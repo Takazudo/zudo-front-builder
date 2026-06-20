@@ -49,6 +49,8 @@
 //! - Hiragana (U+3040–U+309F)
 //! - Katakana (U+30A0–U+30FF)
 //! - Hangul Syllables (U+AC00–U+D7AF)
+//! - CJK Extension B (U+20000–U+2A6DF)
+//! - CJK Extension C/D/E/F and Compatibility Ideographs Supplement (U+2A700–U+2FA1F)
 //!
 //! Source: remark-reading-time README — "It also uses CJK character count
 //! for languages that don't use spaces between words."
@@ -83,8 +85,10 @@ use zfb_md_ast::MdastVisitor;
 /// because CJK text does not delimit words with spaces.
 ///
 /// Ranges mirror those in remark-reading-time's CJK regex:
-/// `/[㐀-鿿豈-﫿]|[\uD840-\uD868][\uDC00-\uDFFF]/`
-/// extended here to also cover Hiragana, Katakana, and Hangul.
+/// `/[㐀-鿿豈-﫿]|[\uD840-\uD868][\uDC00-\uDFFF]/`
+/// extended here to also cover Hiragana, Katakana, Hangul, and the
+/// supplementary-plane CJK blocks (Extension B and beyond, U+20000–U+2FA1F)
+/// that remark-reading-time covers via the surrogate-pair clause.
 #[must_use]
 pub fn is_cjk_char(c: char) -> bool {
     matches!(c,
@@ -97,7 +101,11 @@ pub fn is_cjk_char(c: char) -> bool {
         // Katakana
         '\u{30A0}'..='\u{30FF}' |
         // Hangul Syllables
-        '\u{AC00}'..='\u{D7AF}'
+        '\u{AC00}'..='\u{D7AF}' |
+        // Supplementary-plane CJK: Extension B (U+20000–U+2A6DF), C/D/E/F, and
+        // CJK Compatibility Ideographs Supplement (U+2F800–U+2FA1F).
+        // remark-reading-time covers these via [\uD840-\uD868][\uDC00-\uDFFF].
+        '\u{20000}'..='\u{2FA1F}'
     )
 }
 
@@ -379,6 +387,29 @@ mod tests {
         assert!(!is_cjk_char('Z'));
         assert!(!is_cjk_char('1'));
         assert!(!is_cjk_char(' '));
+    }
+
+    #[test]
+    fn cjk_extension_b_detected() {
+        // U+20000 𠀀 — first character of CJK Extension B (supplementary plane).
+        // remark-reading-time covers this via the surrogate-pair clause
+        // [\uD840-\uD868][\uDC00-\uDFFF]; we cover it with '\u{20000}'..='\u{2FA1F}'.
+        assert!(is_cjk_char('\u{20000}'));
+        // U+2A6DF — last code point of Extension B.
+        assert!(is_cjk_char('\u{2A6DF}'));
+        // U+2FA1F — last code point of CJK Compatibility Ideographs Supplement.
+        assert!(is_cjk_char('\u{2FA1F}'));
+        // U+2FA20 — just past the supplementary-plane range, must not be CJK.
+        assert!(!is_cjk_char('\u{2FA20}'));
+    }
+
+    #[test]
+    fn cjk_extension_b_counted_per_character() {
+        // A run of Extension-B characters must be counted one-per-char, not as
+        // a single whitespace-separated token.
+        // U+20000 𠀀, U+20001 𠀁, U+20002 𠀂 — three Extension-B ideographs.
+        let ext_b = "\u{20000}\u{20001}\u{20002}";
+        assert_eq!(count_words(ext_b), 3);
     }
 
     // ── count_words ────────────────────────────────────────────────────────
