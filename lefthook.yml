@@ -7,5 +7,5 @@ pre-commit:
       stage_fixed: true
     format-mdx:
       glob: "*.{md,mdx}"
-      run: "pnpm dlx @takazudo/mdx-formatter --write {staged_files}"
+      run: "pnpm dlx @takazudo/mdx-formatter@1.2.1 --write {staged_files}"
       stage_fixed: true
