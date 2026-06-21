@@ -125,7 +125,8 @@ use zfb_content::plugins::util::source_map::{
     build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
 };
 use zfb_content::{
-    compile_mdx_to_jsx_module_cached, CrossFileLinkCandidate, FileHeadings, MdxModuleCache,
+    compile_mdx_to_jsx_module_cached, compile_mdx_to_jsx_module_cached_with_deps,
+    CrossFileLinkCandidate, FileHeadings, MdxModuleCache,
 };
 use zfb_render::adapters::{make_adapter, Framework};
 use zfb_types::{json_string as json_str, normalize_path_lexical, path_to_posix_string};
@@ -922,6 +923,17 @@ pub struct ShadowSession {
     /// tree — symlink-mode and copy-mode materialise the same source
     /// differently, so reusing across the flip would mix the two.
     copy_mode: Option<bool>,
+    /// Incremental content-materialise skip cache (zfb#1148), keyed by
+    /// the SOURCE `.mdx` path. A content file whose `(mtime, size)` is
+    /// unchanged since the entry was recorded — and whose last compile
+    /// recorded no external reads — reuses its cached bridge import and
+    /// shadow file instead of re-reading / re-compiling / re-writing.
+    ///
+    /// MUST be cleared whenever the session wipes the shadow tree (dirty
+    /// or copy_mode flip): the entries describe shadow files that the
+    /// wipe just deleted, so a stale entry would reuse a vanished file.
+    /// Cleared alongside `written` / `prev_visited` in [`ShadowWriter::new`].
+    content_skip: HashMap<PathBuf, ContentSkipEntry>,
 }
 
 impl ShadowSession {
@@ -937,6 +949,7 @@ impl ShadowSession {
             prev_visited: HashSet::new(),
             dirty: false,
             copy_mode: None,
+            content_skip: HashMap::new(),
         })
     }
 
@@ -1064,6 +1077,11 @@ impl<'s> ShadowWriter<'s> {
                     wipe_dir_contents(s.work.path())?;
                     s.written.clear();
                     s.prev_visited.clear();
+                    // The wipe just deleted every shadow file the skip
+                    // cache describes — clearing it here is what keeps a
+                    // wipe from ever leaving us reusing a vanished file
+                    // (zfb#1148, rule 5).
+                    s.content_skip.clear();
                 }
                 s.copy_mode = Some(copy_mode);
                 // Armed for the whole call; cleared by `mark_clean()` only
@@ -1227,6 +1245,57 @@ impl<'s> ShadowWriter<'s> {
             }
         }
         fs::create_dir_all(to)
+    }
+
+    /// Whether this writer is in session mode (a persistent dev
+    /// [`ShadowSession`] is attached). The content-file skip cache
+    /// (zfb#1148) only ever engages in session mode; passthrough
+    /// (`bundle()` / prod) always takes the full materialise path, so
+    /// production builds stay byte-for-byte unchanged.
+    fn in_session(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// Record a shadow path as visited THIS call WITHOUT writing it —
+    /// the prune-pass seam the content skip-cache needs (zfb#1148, rule
+    /// 4). A skipped content file does not re-write its shadow JSX, so
+    /// without this it would land in `prev_visited − visited` and be
+    /// pruned, breaking the bundle. No-op in passthrough mode (the prune
+    /// pass only runs in session mode).
+    fn record_visited(&self, to: &Path) -> std::io::Result<()> {
+        if self.session.is_some() {
+            let rel = self.rel_of(to)?;
+            self.visited.borrow_mut().insert(rel);
+        }
+        Ok(())
+    }
+
+    /// Look up a content skip-cache entry by source path (zfb#1148).
+    /// Returns a clone of the entry if present (session mode only). The
+    /// caller validates `(mtime, size)` and the dest-file existence
+    /// before honouring it.
+    fn content_skip_get(&self, from: &Path) -> Option<ContentSkipEntry> {
+        let cell = self.session.as_ref()?;
+        cell.borrow().content_skip.get(from).cloned()
+    }
+
+    /// Insert/update a content skip-cache entry (session mode only;
+    /// no-op in passthrough). Called after a full compile that recorded
+    /// no external reads.
+    fn content_skip_store(&self, from: PathBuf, entry: ContentSkipEntry) {
+        if let Some(cell) = &self.session {
+            cell.borrow_mut().content_skip.insert(from, entry);
+        }
+    }
+
+    /// Drop a content skip-cache entry (session mode only; no-op in
+    /// passthrough). Called when a file is recompiled and now records
+    /// external reads, or its `(mtime, size)` changed — so a later tick
+    /// never false-reuses a stale entry.
+    fn content_skip_remove(&self, from: &Path) {
+        if let Some(cell) = &self.session {
+            cell.borrow_mut().content_skip.remove(from);
+        }
     }
 
     /// Delete stale shadow files (`prev_visited − visited`) — MUST run
@@ -3020,6 +3089,51 @@ struct ContentImport {
     shadow_rel_path: String,
 }
 
+/// One content `.mdx` file's cached materialise result, keyed in
+/// [`ShadowSession::content_skip`] by the SOURCE path (`from`). Lets a
+/// later session tick whose `(mtime, size)` is unchanged reuse this
+/// file's bridge import + cross-file-check contribution instead of
+/// re-reading / re-compiling / re-writing it (zfb#1148).
+///
+/// Only stored for files whose last compile recorded ZERO external reads
+/// (no transclude deps): a file that reads other files can change output
+/// while its own mtime is unchanged, so it always takes the full path
+/// and is never stored here (see the markdown branch of
+/// [`materialise_collection`]).
+#[derive(Debug, Clone)]
+struct ContentSkipEntry {
+    /// Source-file mtime at the time the cached result was produced. With
+    /// `size`, the skip key — an unchanged `(mtime, size)` reuses the
+    /// cached result.
+    mtime: std::time::SystemTime,
+    /// Source-file byte length at cache time.
+    size: u64,
+    /// Shadow-relative dest path (forward-slash form) the compiled JSX
+    /// was written to, e.g. `content/docs/intro.mdx`. Re-derived as the
+    /// absolute shadow path to confirm the file still exists before a
+    /// skip, and recorded as "visited" on skip so the prune pass does not
+    /// delete it.
+    shadow_rel_path: String,
+    /// The exact bridge import the full compile produced — REPLAYED
+    /// verbatim on a skip so the snapshot↔bridge byte-for-byte specifier
+    /// parity holds (the snapshot walker bakes the matching
+    /// `module_specifier`; recomputing the specifier on skip risks a
+    /// drift for `idStripSuffix` / EN-sibling collections, so we never
+    /// recompute — we replay).
+    import: ContentImport,
+    /// This file's `FileHeadings` contribution — replayed into
+    /// `file_headings_out` on skip so the build-wide cross-file anchor
+    /// check (which runs every tick) still sees this file's headings. At
+    /// most one entry for a single compile (`Vec` to mirror the
+    /// drain shape; empty when the file has no anchor-addressable
+    /// headings).
+    headings: Vec<FileHeadings>,
+    /// This file's cross-file fragment-link candidates — replayed into
+    /// `cross_file_links_out` on skip for the same reason: a link FROM a
+    /// changed file TO a heading in this skipped file must still resolve.
+    cross_links: Vec<CrossFileLinkCandidate>,
+}
+
 /// Walk one content collection's source root and materialise its
 /// entries into `dest`, compiling MDX to JSX on the fly via
 /// [`compile_mdx_to_jsx_module_cached`] and recording every entry in
@@ -3169,6 +3283,71 @@ fn materialise_collection(
             Some("md") | Some("mdx")
         );
         if is_markdown {
+            // Incremental-materialise skip (zfb#1148). In session mode
+            // ONLY (passthrough/prod never skips — rule 6): if this
+            // file's `(mtime, size)` matches a prior compile that
+            // recorded NO external reads, and the cached shadow file
+            // still exists, reuse the cached bridge import + cross-file
+            // contribution verbatim instead of re-reading / re-compiling
+            // / re-writing it. The `(mtime, size)` stat is the only I/O
+            // on the skip path — vastly cheaper than the read + compile +
+            // write it replaces.
+            //
+            // Parity (rule 1): the cached `ContentImport` is replayed
+            // BYTE-FOR-BYTE — never recomputed — so the bridge specifier
+            // stays exactly what the full compile produced (critical for
+            // `idStripSuffix` / EN-sibling collections, where recomputing
+            // could drift from the snapshot's baked `module_specifier`).
+            //
+            // Cross-file replay (rule 2): the skipped file still pushes
+            // its `FileHeadings` + `CrossFileLinkCandidate`s into the
+            // out-params so the build-wide anchor check (which runs every
+            // tick) sees this file's headings — otherwise a link FROM a
+            // changed file TO a heading in this skipped file would
+            // falsely report broken. We DELIBERATELY do NOT replay this
+            // file's per-file `broken_links_out` / `markdown_diagnostics_out`:
+            // those are intra-file warnings for an unchanged file and
+            // need not be re-emitted each tick (re-stating them would only
+            // duplicate stderr lines for a file the user did not touch).
+            if ctx.writer.in_session() {
+                if let Ok(meta) = fs::metadata(from) {
+                    if let Ok(mtime) = meta.modified() {
+                        let size = meta.len();
+                        if let Some(entry) = ctx.writer.content_skip_get(from) {
+                            // Never false-reuse (rule 5): the cached
+                            // shadow dest file must still exist, and the
+                            // `(mtime, size)` must match. A failed stat,
+                            // changed metadata, or a vanished shadow file
+                            // all fall through to the full path.
+                            let dest_exists = ctx
+                                .writer
+                                .shadow_root
+                                .join(
+                                    entry.shadow_rel_path.replace(
+                                        '/',
+                                        std::path::MAIN_SEPARATOR_STR,
+                                    ),
+                                )
+                                .exists();
+                            if entry.mtime == mtime && entry.size == size && dest_exists {
+                                imports.push(entry.import.clone());
+                                file_headings_out.extend(entry.headings.iter().cloned());
+                                cross_file_links_out.extend(entry.cross_links.iter().cloned());
+                                // Mark the un-rewritten shadow file visited
+                                // so the prune pass keeps it (rule 4).
+                                ctx.writer.record_visited(&to).with_context(|| {
+                                    format!(
+                                        "record visited (content skip) {}",
+                                        to.display()
+                                    )
+                                })?;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Reset per-document state (e.g. HeadingLinksPlugin's slug
             // counter) before each new MDX file (zfb#187).
             pipeline.reset_per_entry();
@@ -3223,7 +3402,15 @@ fn materialise_collection(
             // snapshot walker: the key includes the pipeline-config
             // fingerprint and the specifier below is re-derived from
             // THIS file's path on every hit.
-            let compiled = compile_mdx_to_jsx_module_cached(
+            // `_with_deps` variant (zfb#1148): also reports whether the
+            // served compile recorded any external file reads. A file
+            // that recorded ANY read (transclude `./include.md`, an
+            // image probed for dimensions, a link-validated sibling) can
+            // change output while its own mtime is unchanged, so it must
+            // never be entered into the skip cache (rule 3 — the simple,
+            // sound zero-deps rule). The compiled output is identical to
+            // `compile_mdx_to_jsx_module_cached`.
+            let (compiled, had_external_reads) = compile_mdx_to_jsx_module_cached_with_deps(
                 &body,
                 from,
                 Some(MdxModuleCache::process_global()),
@@ -3237,7 +3424,13 @@ fn materialise_collection(
             // Drain generic markdown diagnostics adjacent to broken-links
             // drain (zfb#953).
             markdown_diagnostics_out.extend(pipeline.take_markdown_diagnostics());
-            // Drain cross-file anchor-check side channels (#980).
+            // Drain cross-file anchor-check side channels (#980). Snapshot
+            // the out-param lengths BEFORE extending so we can slice out
+            // exactly THIS file's contribution for the skip cache below —
+            // the cached entry must replay this file's own headings /
+            // cross-links, not the whole accumulator (zfb#1148).
+            let cross_links_base = cross_file_links_out.len();
+            let headings_base = file_headings_out.len();
             cross_file_links_out.extend(pipeline.take_cross_file_link_candidates());
             file_headings_out.extend(pipeline.take_file_headings());
             ctx.writer
@@ -3264,6 +3457,11 @@ fn materialise_collection(
                     "zfb bundler: skipping MDX content bridge for {} — compiled JSX contains bare `{{\\letter}}` expressions that esbuild rejects. The page will render via the <pre data-zfb-content-fallback> shape.",
                     from.display(),
                 );
+                // No bridge import was pushed for this file, so it must
+                // never be skip-cached (a future skip replays a stored
+                // import). Drop any stale entry so a later tick recompiles
+                // (zfb#1148).
+                ctx.writer.content_skip_remove(from);
                 continue;
             }
 
@@ -3280,10 +3478,51 @@ fn materialise_collection(
                 &compiled.specifier,
                 strip_suffix,
             );
-            imports.push(ContentImport {
+            let import = ContentImport {
                 specifier,
-                shadow_rel_path,
-            });
+                shadow_rel_path: shadow_rel_path.clone(),
+            };
+            imports.push(import.clone());
+
+            // Maintain the incremental-materialise skip cache (zfb#1148)
+            // — session mode only (no-op in passthrough). Store an entry
+            // ONLY when this compile recorded NO external reads: a file
+            // with transclude/image/link-validation deps can change
+            // output while its own mtime is unchanged, so it must always
+            // take the full path. The cached `(mtime, size)` is stat'd
+            // here (after the write) so a future tick can compare. A
+            // failed stat means we cannot build a sound skip key — drop
+            // any stale entry and fall through unchanged.
+            if ctx.writer.in_session() {
+                let stat = fs::metadata(from)
+                    .ok()
+                    .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
+                match (had_external_reads, stat) {
+                    (false, Some((mtime, size))) => {
+                        // Slice out exactly THIS file's heading /
+                        // cross-link contribution (captured via the
+                        // `*_base` snapshots above) so a later skip
+                        // replays this file's own records, not the whole
+                        // accumulator.
+                        let headings = file_headings_out[headings_base..].to_vec();
+                        let cross_links = cross_file_links_out[cross_links_base..].to_vec();
+                        ctx.writer.content_skip_store(
+                            from.to_path_buf(),
+                            ContentSkipEntry {
+                                mtime,
+                                size,
+                                shadow_rel_path,
+                                import,
+                                headings,
+                                cross_links,
+                            },
+                        );
+                    }
+                    // Recorded external reads, or stat failed — never
+                    // skip this file: drop any stale entry.
+                    _ => ctx.writer.content_skip_remove(from),
+                }
+            }
         } else {
             // Non-MDX source in a content collection: same eager
             // `import.meta.glob(...)` expansion as the page/component pass.
