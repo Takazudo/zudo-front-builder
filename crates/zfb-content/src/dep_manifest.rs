@@ -87,6 +87,23 @@ impl DependencyManifest {
         self.entries.iter().map(|(k, v)| (k.as_str(), v))
     }
 
+    /// The set of external paths this compile recorded reads of, as
+    /// owned `PathBuf`s in sorted order — every recorded path regardless
+    /// of [`ReadOutcome`] (`Content`, `Missing`, and `Error` alike).
+    ///
+    /// Surfaced for the dev bundler's incremental-materialise skip cache
+    /// (zfb#1148): the bundler stats each recorded dep at record time and
+    /// at skip-check time and re-materialises the dependent file unless
+    /// every dep's on-disk state (present? + mtime + size) is unchanged.
+    /// Returning ALL recorded paths (not just `Content`) keeps the check
+    /// sound for `Missing` deps too — a transclude/link target that was
+    /// absent must stay absent, which the bundler observes as a still-
+    /// failing stat.
+    #[must_use]
+    pub fn recorded_paths(&self) -> Vec<PathBuf> {
+        self.entries.keys().map(PathBuf::from).collect()
+    }
+
     /// True when every recorded dependency re-validates against the
     /// current filesystem state — the gate a cache hit must pass. See
     /// the module docs for the per-outcome rules.

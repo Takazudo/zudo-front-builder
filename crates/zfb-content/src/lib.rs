@@ -57,9 +57,10 @@ pub use zfb_md_ast::{CrossFileLinkCandidate, FileHeadings};
 
 pub use frontmatter::{FrontmatterError, UnifiedFrontmatter};
 pub use mdx_jsx_emit::{
-    compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached, mdx_to_jsx_module,
-    mdx_to_jsx_module_with_pipeline, parse_mdx_specifier, CompiledMdx, MdxJsxOptions,
-    MdxModuleCache, MdxModuleSpecifier, SpecifierError,
+    compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached,
+    compile_mdx_to_jsx_module_cached_with_deps, mdx_to_jsx_module, mdx_to_jsx_module_with_pipeline,
+    parse_mdx_specifier, CompiledMdx, MdxJsxOptions, MdxModuleCache, MdxModuleSpecifier,
+    SpecifierError,
 };
 pub use tsx_frontmatter::{
     extract as extract_tsx_frontmatter, filename_extension_candidate, TsxFrontmatter,
