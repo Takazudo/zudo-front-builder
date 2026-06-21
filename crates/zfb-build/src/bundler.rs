@@ -1669,6 +1669,9 @@ pub fn bundle_with_session(
         bundle_exclude: &bundle_exclude,
         project_root: &input.project_root,
         writer: &writer,
+        // #1151: the SHA-accurate collection-skip signal, parsed once per
+        // bundle from the snapshot JSON the bundler already received.
+        snapshot_specifiers: snapshot_specifier_set(input.content_snapshot_json.as_deref()),
     };
 
     let shadow_pages = shadow.join("pages");
@@ -2620,6 +2623,41 @@ struct MaterialiseCtx<'a, 's> {
     /// session. Every shadow write in the materialise passes routes
     /// through this.
     writer: &'a ShadowWriter<'s>,
+    /// SHA-256-accurate skip signal for collection `.mdx` (#1151). The set
+    /// of every `module_specifier` in the per-tick content snapshot the
+    /// bundler already receives (`BundlerInput.content_snapshot_json`) —
+    /// each is `mdx://<collection>/<slug>#<hash8>`, the hash re-derived from
+    /// the file's current bytes every tick by the snapshot walker. The
+    /// content-skip check (see [`materialise_mdx_with_skip`]) requires a
+    /// collection file's cached bridge specifier to still appear here before
+    /// honouring a skip, so a content edit that preserves `(mtime, size)`
+    /// (coarse-mtime FS / `touch -r` / `rsync --times`) flips the hash and
+    /// correctly invalidates the skip instead of replaying a stale specifier
+    /// (the #1151 broken-`<pre>` bug). `None` when no snapshot was supplied
+    /// (passthrough / prod-sessionless never skip; tests without a snapshot
+    /// fall back to the legacy `(mtime, size)` key).
+    snapshot_specifiers: Option<std::collections::HashSet<String>>,
+}
+
+/// Build the [`MaterialiseCtx::snapshot_specifiers`] set (#1151) from the
+/// per-tick content snapshot JSON the bundler already holds. Returns the set
+/// of every entry's `module_specifier` across all collections, or `None`
+/// when no snapshot JSON was supplied. A single flat cross-collection set is
+/// sound because every specifier embeds its collection segment
+/// (`mdx://<collection>/<slug>#hash`), so cross-collection aliasing is
+/// impossible. A parse failure degrades to `None` (legacy `(mtime, size)`)
+/// rather than failing the build — the snapshot is an optimisation signal,
+/// not a correctness input here.
+fn snapshot_specifier_set(json: Option<&str>) -> Option<std::collections::HashSet<String>> {
+    let json = json?;
+    let snapshot: zfb_content::ContentSnapshot = serde_json::from_str(json).ok()?;
+    Some(
+        snapshot
+            .collections
+            .into_values()
+            .flat_map(|entries| entries.into_iter().map(|e| e.module_specifier))
+            .collect(),
+    )
 }
 
 /// Recursively copy `src` into `dest`, transforming `.mdx` files via
@@ -3227,7 +3265,10 @@ fn file_stat(path: &Path) -> FileStat {
 /// any) + cross-file-check contribution instead of re-reading /
 /// re-compiling / re-writing it (zfb#1148), as long as the stored
 /// SOURCE's `(mtime, size)` AND every recorded dependency's on-disk state
-/// are unchanged.
+/// are unchanged — AND, for collection files (those carrying a bridge
+/// [`import`](Self::import)), the cached specifier still appears in the
+/// per-tick snapshot specifier set (zfb#1151, the SHA-256-accurate gate; see
+/// [`materialise_mdx_with_skip`]).
 ///
 /// Stored for EVERY successfully-compiled content file (the thorough
 /// dep-mtime variant), not only dep-free ones: the external reads this
@@ -3401,14 +3442,16 @@ fn materialise_mdx_with_skip(
 
     // ---- Skip path (session mode only — passthrough/prod never skips) ----
     //
-    // LIMITATION (#1151, accepted): the source key is `(mtime, size)`, not
-    // a content hash, so a content edit that PRESERVES both — possible on a
-    // coarse-mtime filesystem or under mtime-preserving tooling
-    // (`touch -r`, `rsync --times`, some checkout/restore flows) — would be
-    // falsely skipped, serving a stale specifier (bridge fallback). This is
-    // standard mtime-incrementality and pathological on APFS; prod never
-    // skips (sessionless). Tracked in #1151; do NOT switch to SHA-256 here
-    // without re-evaluating the per-tick stat-vs-hash cost.
+    // Collection `.mdx` (entries carrying a bridge `import`) are gated
+    // SHA-256-accurately via the snapshot specifier set (#1151, see below):
+    // a content edit that preserves `(mtime, size)` flips the snapshot hash
+    // and correctly invalidates the skip. The SOURCE / `materialise_shadow`
+    // pass (`import: None`) and the `source_skip` path retain the
+    // `(mtime, size)` key by design — they have no snapshot↔bridge invariant,
+    // so a stale plain-copy is at worst byte-stale, never a broken `<pre>`.
+    // That residual `(mtime, size)` limitation (coarse-mtime FS /
+    // `touch -r` / `rsync --times`) is the accepted, documented one; prod
+    // never skips (sessionless).
     if ctx.writer.in_session() {
         if let Some(dest_rel) = dest_rel.as_ref() {
             if let Some((mtime, size)) = file_stat(from) {
@@ -3431,10 +3474,46 @@ fn materialise_mdx_with_skip(
                         .deps
                         .iter()
                         .all(|(dep_path, recorded)| file_stat(dep_path) == *recorded);
+                    // #1151: SHA-accurate gate for collection `.mdx`. A
+                    // collection entry carries a bridge `import` whose
+                    // `.specifier` is byte-identical to the snapshot's
+                    // `module_specifier` (`mdx://col/slug#hash`). The skip is
+                    // valid only while that exact specifier still appears in
+                    // the current snapshot — i.e. the file's live content
+                    // re-hashes to the same value. A content edit preserving
+                    // `(mtime, size)` (or a transclude-dep content change the
+                    // snapshot's inlined re-hash reflects) flips the hash, so
+                    // the stored specifier drops out of the set and we fall
+                    // through to a full recompile instead of replaying a
+                    // stale bridge specifier. Additive: it can only turn a
+                    // would-be skip into a recompile, never the reverse.
+                    // Source files (`import: None`) and snapshot-absent runs
+                    // skip this gate and keep the legacy `(mtime, size)` key.
+                    let snapshot_hash_ok = match (&entry.import, &ctx.snapshot_specifiers) {
+                        (Some(import), Some(specifiers)) => specifiers.contains(&import.specifier),
+                        (Some(_), None) => {
+                            // In production dev session mode the snapshot is
+                            // always built first, so this is a should-not-happen
+                            // state — but the no-snapshot fallback is a legitimate,
+                            // supported path (passthrough, and unit tests), so we
+                            // must NOT panic. Emit a debug signal so a future
+                            // refactor that drops the dev snapshot leaves a trace
+                            // (the collection skip would silently revert to the
+                            // weaker (mtime,size) key, un-fixing #1151), then fall
+                            // back to the legacy key.
+                            tracing::debug!(
+                                "#1151: collection content_skip entry but no snapshot specifier \
+                                 set in session mode — falling back to the weaker (mtime,size) key"
+                            );
+                            true
+                        }
+                        (None, _) => true,
+                    };
                     if entry.source == from
                         && entry.mtime == mtime
                         && entry.size == size
                         && deps_unchanged
+                        && snapshot_hash_ok
                         && dest_exists
                     {
                         if let Some(import) = &entry.import {
@@ -4114,11 +4193,17 @@ fn materialise_source_file(
     // (`doc/`, `sub-packages/`, `static/`, …) that this otherwise
     // re-copies/re-symlinks every tick.
     //
-    // LIMITATION (#1151, accepted): same `(mtime, size)`-vs-SHA-256 caveat
-    // as the MDX skip — a content edit preserving both (coarse-mtime FS,
-    // `touch -r` / `rsync --times`) is falsely skipped. Standard
-    // mtime-incrementality; prod never skips. Do NOT switch to hashing
-    // without re-evaluating cost.
+    // LIMITATION (#1151, accepted — and intentionally retained here): unlike
+    // the collection `.mdx` skip (now SHA-accurate via the snapshot specifier
+    // set, see `materialise_mdx_with_skip`), the SOURCE path keeps the
+    // `(mtime, size)` key. A content edit preserving both (coarse-mtime FS,
+    // `touch -r` / `rsync --times`) is falsely skipped — but a source file
+    // has NO snapshot↔bridge invariant, so the worst case is a byte-stale
+    // plain copy/symlink, never a broken `<pre>` page. Standard
+    // mtime-incrementality; prod never skips. There is no free SHA signal for
+    // non-collection files (they aren't in the content snapshot), so hashing
+    // here would cost a real per-tick read — do NOT add it without
+    // re-evaluating that cost.
     let dest_rel = writer.rel_of(to).ok();
     if writer.in_session() {
         if let Some(dest_rel) = dest_rel.as_ref() {
@@ -6762,6 +6847,33 @@ mod tests {
         id_strip_suffix: Option<&str>,
         include: Option<&[String]>,
     ) -> CollectionTickOut {
+        // Legacy callers: no snapshot supplied → collection skip falls back
+        // to the `(mtime, size)` key (the pre-#1151 behaviour).
+        run_collection_tick_with_snapshot(
+            session,
+            spec,
+            src,
+            collection_name,
+            id_strip_suffix,
+            include,
+            None,
+        )
+    }
+
+    /// Like [`run_collection_tick`] but threads an explicit
+    /// [`MaterialiseCtx::snapshot_specifiers`] set so tests can exercise the
+    /// #1151 SHA-accurate collection-skip gate deterministically — injecting
+    /// a mismatching set simulates a coarse-mtime content edit the per-tick
+    /// snapshot re-hashed, without fighting filesystem mtime granularity.
+    fn run_collection_tick_with_snapshot(
+        session: &mut ShadowSession,
+        spec: zfb_content::PipelineSpec,
+        src: &Path,
+        collection_name: &str,
+        id_strip_suffix: Option<&str>,
+        include: Option<&[String]>,
+        snapshot_specifiers: Option<std::collections::HashSet<String>>,
+    ) -> CollectionTickOut {
         let shadow_root = session.shadow_root().to_path_buf();
         let dest = shadow_root.join("content").join(collection_name);
         let exclude = no_bundle_exclude();
@@ -6778,6 +6890,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
+            snapshot_specifiers,
         };
         let mut imports = Vec::new();
         let mut broken = Vec::new();
@@ -6839,6 +6952,9 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
+            // This dual-pass helper exercises the source/`materialise_shadow`
+            // path (`import: None`), which is not snapshot-gated; `None` here.
+            snapshot_specifiers: None,
         };
         let mut imports = Vec::new();
         materialise_collection(
@@ -7131,6 +7247,217 @@ mod tests {
             jsx.contains("_createMdxContent"),
             "changed file must be recompiled to JSX; got:\n{jsx}"
         );
+    }
+
+    #[test]
+    fn content_skip_collection_snapshot_hash_mismatch_forces_rematerialise() {
+        // zfb#1151 regression (the bug): a collection .mdx whose CONTENT
+        // changed while `(mtime, size)` was preserved must NOT be falsely
+        // skipped. We reproduce the mechanism deterministically — without
+        // fighting filesystem mtime granularity — by leaving the file
+        // byte-identical on disk across both ticks (so `(mtime, size)` is
+        // provably unchanged) while supplying a tick-2 snapshot specifier set
+        // that does NOT contain the stored bridge specifier. That models a
+        // coarse-mtime content edit the per-tick snapshot re-hashed: the snapshot
+        // now bakes a different `mdx://…#hash`, so the cached specifier drops out
+        // of the set and the skip MUST be invalidated. Pre-fix (no snapshot
+        // gate) this would replay the stale specifier and serve a broken
+        // raw-markdown `<pre>` page.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("intro.mdx"), "# Intro\n\nbody one\n").unwrap();
+
+        let mut session = ShadowSession::new().unwrap();
+        // Tick 1: full materialise, stores the skip entry (snapshot irrelevant
+        // on the full path — entries are always stored).
+        let out1 = run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+        assert_eq!(out1.imports.len(), 1);
+        let key = collection_skip_key("docs", "intro.mdx");
+        assert!(
+            session.content_skip.contains_key(&key),
+            "collection file must be skip-cached after tick 1"
+        );
+
+        // White-box discriminator: corrupt the dest + drop its `written` hash.
+        // A SKIP leaves the corruption; a full recompile rewrites fresh JSX.
+        let dest_file = session
+            .shadow_root()
+            .join("content")
+            .join("docs")
+            .join("intro.mdx");
+        fs::write(&dest_file, b"__CORRUPTED_NOT_JSX__").unwrap();
+        session
+            .written
+            .remove(&PathBuf::from("content/docs/intro.mdx"));
+
+        // Tick 2: file untouched on disk (so `(mtime, size)` matches and deps
+        // are unchanged — the ONLY thing that can force a recompile is the
+        // snapshot gate), but the snapshot set lacks the stored specifier.
+        let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let out2 = run_collection_tick_with_snapshot(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+            Some(empty),
+        );
+
+        // Must have RE-materialised despite unchanged `(mtime, size)`.
+        assert_eq!(out2.imports.len(), 1);
+        let jsx = fs::read_to_string(&dest_file).unwrap();
+        assert!(
+            jsx.contains("_createMdxContent"),
+            "a snapshot-hash mismatch must force a full recompile even with \
+             unchanged (mtime,size); got:\n{jsx}"
+        );
+    }
+
+    #[test]
+    fn content_skip_collection_snapshot_hash_match_still_skips() {
+        // zfb#1151 positive parity: when the snapshot set STILL contains the
+        // stored specifier (content genuinely unchanged), the SHA gate is a
+        // no-op and the file is skipped exactly as before — dest left
+        // untouched and the import replayed byte-for-byte. Proves the gate does
+        // not over-invalidate the happy path.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("intro.mdx"), "# Intro\n\nbody one\n").unwrap();
+
+        let mut session = ShadowSession::new().unwrap();
+        let out1 = run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+        assert_eq!(out1.imports.len(), 1);
+        let specifier = out1.imports[0].specifier.clone();
+
+        let dest_file = session
+            .shadow_root()
+            .join("content")
+            .join("docs")
+            .join("intro.mdx");
+        fs::write(&dest_file, b"__CORRUPTED_NOT_JSX__").unwrap();
+        session
+            .written
+            .remove(&PathBuf::from("content/docs/intro.mdx"));
+
+        // Tick 2: snapshot set contains the stored specifier → SKIP honoured.
+        let set: std::collections::HashSet<String> =
+            std::collections::HashSet::from([specifier.clone()]);
+        let out2 = run_collection_tick_with_snapshot(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+            Some(set),
+        );
+
+        assert_eq!(out2.imports.len(), 1);
+        assert_eq!(
+            out2.imports[0].specifier, specifier,
+            "skipped-file specifier must be replayed byte-identical to tick 1"
+        );
+        let after = fs::read(&dest_file).unwrap();
+        assert_eq!(
+            after, b"__CORRUPTED_NOT_JSX__",
+            "a matching snapshot hash must still SKIP — dest not re-written"
+        );
+    }
+
+    #[test]
+    fn content_skip_no_snapshot_falls_back_to_mtime_size() {
+        // zfb#1151 fallback: with NO snapshot supplied (snapshot_specifiers ==
+        // None) the collection skip degrades to the legacy `(mtime, size)`
+        // key — an unchanged file still skips. Guards the
+        // passthrough/snapshot-absent path so the gate never breaks existing
+        // behaviour when the snapshot is unavailable.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("intro.mdx"), "# Intro\n\nbody one\n").unwrap();
+
+        let mut session = ShadowSession::new().unwrap();
+        let _out1 = run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+
+        let dest_file = session
+            .shadow_root()
+            .join("content")
+            .join("docs")
+            .join("intro.mdx");
+        fs::write(&dest_file, b"__CORRUPTED_NOT_JSX__").unwrap();
+        session
+            .written
+            .remove(&PathBuf::from("content/docs/intro.mdx"));
+
+        // Tick 2: no snapshot, file unchanged → legacy `(mtime, size)` skip.
+        let out2 = run_collection_tick_with_snapshot(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(out2.imports.len(), 1);
+        let after = fs::read(&dest_file).unwrap();
+        assert_eq!(
+            after, b"__CORRUPTED_NOT_JSX__",
+            "with no snapshot, an unchanged file must still SKIP via (mtime,size)"
+        );
+    }
+
+    #[test]
+    fn snapshot_specifier_set_parses_and_degrades() {
+        // zfb#1151: unit-cover the helper itself — None input, malformed JSON
+        // (→ None, degrade to the legacy key, never fail the build), and a
+        // multi-collection snapshot (every entry's module_specifier collected
+        // into the flat cross-collection set).
+        assert!(snapshot_specifier_set(None).is_none());
+        assert!(
+            snapshot_specifier_set(Some("{ not valid json")).is_none(),
+            "malformed JSON must degrade to None, not panic"
+        );
+
+        let json = r#"{
+            "collections": {
+                "docs": [
+                    {"slug":"intro","frontmatter":null,"body":"","module_specifier":"mdx://docs/intro#aaaa1111","rel_path":"intro.mdx"}
+                ],
+                "blog": [
+                    {"slug":"post","frontmatter":null,"body":"","module_specifier":"mdx://blog/post#bbbb2222","rel_path":"post.mdx"}
+                ]
+            }
+        }"#;
+        let set = snapshot_specifier_set(Some(json)).expect("valid snapshot parses");
+        assert_eq!(set.len(), 2);
+        assert!(set.contains("mdx://docs/intro#aaaa1111"));
+        assert!(set.contains("mdx://blog/post#bbbb2222"));
     }
 
     #[test]
@@ -9751,6 +10078,9 @@ mod tests {
             bundle_exclude: exclude,
             project_root,
             writer: leaked_passthrough_writer(),
+            // Passthrough/sessionless never skips, so the snapshot gate is
+            // irrelevant here.
+            snapshot_specifiers: None,
         }
     }
 
