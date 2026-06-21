@@ -3089,25 +3089,58 @@ struct ContentImport {
     shadow_rel_path: String,
 }
 
+/// On-disk state of one source/dependency file captured at materialise
+/// time and re-compared on a later tick's skip check (zfb#1148):
+/// `Some((mtime, size))` when the file was present, `None` when a
+/// recorded read found it absent (a `Missing` transclude / link target).
+/// The skip holds only while the live stat reproduces this exact state —
+/// a present file must stat to the same `(mtime, size)`; an absent file
+/// must still fail to stat.
+type FileStat = Option<(std::time::SystemTime, u64)>;
+
+/// Capture the current on-disk `(mtime, size)` of `path`, or `None` if it
+/// cannot be stat'd (absent / permission / I-O). The same observation is
+/// taken at store time and at skip-check time, so the comparison is
+/// apples-to-apples: a vanished present-file or an appeared absent-file
+/// both flip the value and correctly invalidate the skip.
+fn file_stat(path: &Path) -> FileStat {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok().map(|t| (t, m.len())))
+}
+
 /// One content `.mdx` file's cached materialise result, keyed in
 /// [`ShadowSession::content_skip`] by the SOURCE path (`from`). Lets a
-/// later session tick whose `(mtime, size)` is unchanged reuse this
-/// file's bridge import + cross-file-check contribution instead of
-/// re-reading / re-compiling / re-writing it (zfb#1148).
+/// later session tick reuse this file's bridge import + cross-file-check
+/// contribution instead of re-reading / re-compiling / re-writing it
+/// (zfb#1148), as long as the file's own `(mtime, size)` AND every
+/// recorded dependency's on-disk state are unchanged.
 ///
-/// Only stored for files whose last compile recorded ZERO external reads
-/// (no transclude deps): a file that reads other files can change output
-/// while its own mtime is unchanged, so it always takes the full path
-/// and is never stored here (see the markdown branch of
-/// [`materialise_collection`]).
+/// Stored for EVERY successfully-compiled content file (the thorough
+/// dep-mtime variant), not only dep-free ones: a file's recorded reads
+/// (transclude `:::include`, link-validated / resolve-links targets) are
+/// captured in `deps` and re-checked on the skip path, so a file with
+/// deps is skipped while those deps are byte-stable and re-materialised
+/// the moment any of them changes. A file with zero deps is the trivial
+/// all-deps-unchanged case → still skippable. See the markdown branch of
+/// [`materialise_collection`].
 #[derive(Debug, Clone)]
 struct ContentSkipEntry {
     /// Source-file mtime at the time the cached result was produced. With
-    /// `size`, the skip key — an unchanged `(mtime, size)` reuses the
-    /// cached result.
+    /// `size`, the file's own half of the skip key.
     mtime: std::time::SystemTime,
     /// Source-file byte length at cache time.
     size: u64,
+    /// Each external file this compile recorded a read of, paired with
+    /// its on-disk state at materialise time (see [`FileStat`]). On a
+    /// skip check EVERY dep must re-stat to the same state, else the
+    /// dependent file takes the full path. Soundness: any edit to a
+    /// transcluded / linked dep bumps its mtime (or changes its size), so
+    /// the dependent file re-validates / re-rewrites; a previously-absent
+    /// dep that appears flips `None`→`Some` and likewise invalidates.
+    /// Empty for files with no recorded reads (then the skip reduces to
+    /// the file's own `(mtime, size)` check).
+    deps: Vec<(PathBuf, FileStat)>,
     /// Shadow-relative dest path (forward-slash form) the compiled JSX
     /// was written to, e.g. `content/docs/intro.mdx`. Re-derived as the
     /// absolute shadow path to confirm the file still exists before a
@@ -3283,15 +3316,33 @@ fn materialise_collection(
             Some("md") | Some("mdx")
         );
         if is_markdown {
-            // Incremental-materialise skip (zfb#1148). In session mode
-            // ONLY (passthrough/prod never skips — rule 6): if this
-            // file's `(mtime, size)` matches a prior compile that
-            // recorded NO external reads, and the cached shadow file
-            // still exists, reuse the cached bridge import + cross-file
-            // contribution verbatim instead of re-reading / re-compiling
-            // / re-writing it. The `(mtime, size)` stat is the only I/O
-            // on the skip path — vastly cheaper than the read + compile +
-            // write it replaces.
+            // Incremental-materialise skip (zfb#1148, thorough dep-mtime
+            // variant). In session mode ONLY (passthrough/prod never
+            // skips — rule 6): reuse the cached bridge import + cross-file
+            // contribution verbatim instead of re-reading / re-compiling /
+            // re-writing this file, as long as
+            //   (a) the file's own `(mtime, size)` matches the cached
+            //       entry,
+            //   (b) EVERY recorded dependency re-stats to the same
+            //       on-disk state (present files unchanged in mtime+size;
+            //       absent files still absent), and
+            //   (c) the cached shadow dest file still exists.
+            // The stats are the only I/O on the skip path — vastly cheaper
+            // than the read + compile + write it replaces. The dep re-stat
+            // upgrades the earlier zero-deps rule: real sites wire link
+            // resolution / link-validation (the `ResolveLinksPlugin` /
+            // `LinkValidationPlugin` record reads of linked files), so most
+            // content files DO record reads — the zero-deps rule skipped
+            // almost none of them. Re-checking each dep's mtime/size lets
+            // the many files whose deps are unchanged still skip.
+            //
+            // Soundness: any edit to a transcluded / linked dep bumps its
+            // mtime (or size), so the dependent file fails check (b) and
+            // takes the full path, re-validating / re-rewriting against
+            // the new dep. The build-wide cross-file anchor check
+            // (~the `2c-anchor` gate) still runs every tick over the
+            // replayed headings/cross_links, so cross-file heading/link
+            // correctness holds regardless of which files were skipped.
             //
             // Parity (rule 1): the cached `ContentImport` is replayed
             // BYTE-FOR-BYTE — never recomputed — so the bridge specifier
@@ -3310,35 +3361,41 @@ fn materialise_collection(
             // need not be re-emitted each tick (re-stating them would only
             // duplicate stderr lines for a file the user did not touch).
             if ctx.writer.in_session() {
-                if let Ok(meta) = fs::metadata(from) {
-                    if let Ok(mtime) = meta.modified() {
-                        let size = meta.len();
-                        if let Some(entry) = ctx.writer.content_skip_get(from) {
-                            // Never false-reuse (rule 5): the cached
-                            // shadow dest file must still exist, and the
-                            // `(mtime, size)` must match. A failed stat,
-                            // changed metadata, or a vanished shadow file
-                            // all fall through to the full path.
-                            let dest_exists = ctx
-                                .writer
-                                .shadow_root
-                                .join(
-                                    entry
-                                        .shadow_rel_path
-                                        .replace('/', std::path::MAIN_SEPARATOR_STR),
-                                )
-                                .exists();
-                            if entry.mtime == mtime && entry.size == size && dest_exists {
-                                imports.push(entry.import.clone());
-                                file_headings_out.extend(entry.headings.iter().cloned());
-                                cross_file_links_out.extend(entry.cross_links.iter().cloned());
-                                // Mark the un-rewritten shadow file visited
-                                // so the prune pass keeps it (rule 4).
-                                ctx.writer.record_visited(&to).with_context(|| {
-                                    format!("record visited (content skip) {}", to.display())
-                                })?;
-                                continue;
-                            }
+                if let Some((mtime, size)) = file_stat(from) {
+                    if let Some(entry) = ctx.writer.content_skip_get(from) {
+                        // Never false-reuse (rule 5): the cached shadow
+                        // dest file must still exist, the file's own
+                        // `(mtime, size)` must match, and every recorded
+                        // dep must re-stat unchanged. A failed/changed
+                        // stat, a moved dep, or a vanished shadow file all
+                        // fall through to the full path.
+                        let dest_exists = ctx
+                            .writer
+                            .shadow_root
+                            .join(
+                                entry
+                                    .shadow_rel_path
+                                    .replace('/', std::path::MAIN_SEPARATOR_STR),
+                            )
+                            .exists();
+                        let deps_unchanged = entry
+                            .deps
+                            .iter()
+                            .all(|(dep_path, recorded)| file_stat(dep_path) == *recorded);
+                        if entry.mtime == mtime
+                            && entry.size == size
+                            && deps_unchanged
+                            && dest_exists
+                        {
+                            imports.push(entry.import.clone());
+                            file_headings_out.extend(entry.headings.iter().cloned());
+                            cross_file_links_out.extend(entry.cross_links.iter().cloned());
+                            // Mark the un-rewritten shadow file visited
+                            // so the prune pass keeps it (rule 4).
+                            ctx.writer.record_visited(&to).with_context(|| {
+                                format!("record visited (content skip) {}", to.display())
+                            })?;
+                            continue;
                         }
                     }
                 }
@@ -3398,15 +3455,15 @@ fn materialise_collection(
             // snapshot walker: the key includes the pipeline-config
             // fingerprint and the specifier below is re-derived from
             // THIS file's path on every hit.
-            // `_with_deps` variant (zfb#1148): also reports whether the
-            // served compile recorded any external file reads. A file
-            // that recorded ANY read (transclude `./include.md`, an
-            // image probed for dimensions, a link-validated sibling) can
-            // change output while its own mtime is unchanged, so it must
-            // never be entered into the skip cache (rule 3 — the simple,
-            // sound zero-deps rule). The compiled output is identical to
+            // `_with_deps` variant (zfb#1148): also returns the external
+            // file paths this compile recorded reads of (transclude
+            // `:::include` targets, link-validated / resolve-links
+            // siblings, probed images). Each is stat'd below and stored in
+            // the skip entry so a later tick can re-check that every dep is
+            // byte-stable before skipping — the thorough dep-mtime variant.
+            // The compiled output is identical to
             // `compile_mdx_to_jsx_module_cached`.
-            let (compiled, had_external_reads) = compile_mdx_to_jsx_module_cached_with_deps(
+            let (compiled, recorded_deps) = compile_mdx_to_jsx_module_cached_with_deps(
                 &body,
                 from,
                 Some(MdxModuleCache::process_global()),
@@ -3480,21 +3537,21 @@ fn materialise_collection(
             };
             imports.push(import.clone());
 
-            // Maintain the incremental-materialise skip cache (zfb#1148)
-            // — session mode only (no-op in passthrough). Store an entry
-            // ONLY when this compile recorded NO external reads: a file
-            // with transclude/image/link-validation deps can change
-            // output while its own mtime is unchanged, so it must always
-            // take the full path. The cached `(mtime, size)` is stat'd
-            // here (after the write) so a future tick can compare. A
-            // failed stat means we cannot build a sound skip key — drop
-            // any stale entry and fall through unchanged.
+            // Maintain the incremental-materialise skip cache (zfb#1148,
+            // thorough dep-mtime variant) — session mode only (no-op in
+            // passthrough). Store an entry for EVERY successfully-compiled
+            // file, capturing both the file's own `(mtime, size)` and each
+            // recorded dep's on-disk state, so a later tick can skip the
+            // file while it AND every dep are byte-stable. A file with no
+            // recorded deps stores an empty `deps` list (the trivial
+            // all-deps-unchanged case → still skippable). A failed stat of
+            // the file ITSELF means we cannot build a sound skip key —
+            // drop any stale entry and fall through unchanged. Dep stats
+            // that fail are stored as `None` (was-absent) and re-checked
+            // as "must stay absent" on skip.
             if ctx.writer.in_session() {
-                let stat = fs::metadata(from)
-                    .ok()
-                    .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
-                match (had_external_reads, stat) {
-                    (false, Some((mtime, size))) => {
+                match file_stat(from) {
+                    Some((mtime, size)) => {
                         // Slice out exactly THIS file's heading /
                         // cross-link contribution (captured via the
                         // `*_base` snapshots above) so a later skip
@@ -3502,11 +3559,22 @@ fn materialise_collection(
                         // accumulator.
                         let headings = file_headings_out[headings_base..].to_vec();
                         let cross_links = cross_file_links_out[cross_links_base..].to_vec();
+                        // Stat each recorded dep NOW (right after the
+                        // compile observed it) so the stored state matches
+                        // what the compile actually read.
+                        let deps: Vec<(PathBuf, FileStat)> = recorded_deps
+                            .into_iter()
+                            .map(|p| {
+                                let st = file_stat(&p);
+                                (p, st)
+                            })
+                            .collect();
                         ctx.writer.content_skip_store(
                             from.to_path_buf(),
                             ContentSkipEntry {
                                 mtime,
                                 size,
+                                deps,
                                 shadow_rel_path,
                                 import,
                                 headings,
@@ -3514,9 +3582,9 @@ fn materialise_collection(
                             },
                         );
                     }
-                    // Recorded external reads, or stat failed — never
-                    // skip this file: drop any stale entry.
-                    _ => ctx.writer.content_skip_remove(from),
+                    // Could not stat the file itself — cannot build a
+                    // sound skip key: drop any stale entry.
+                    None => ctx.writer.content_skip_remove(from),
                 }
             }
         } else {
@@ -6476,6 +6544,18 @@ mod tests {
         }
     }
 
+    /// The specifier of the import whose `shadow_rel_path` equals
+    /// `rel_path`, for tests that materialise more than one content file
+    /// (e.g. a page plus its transcluded sibling).
+    fn page_import_specifier(imports: &[ContentImport], rel_path: &str) -> String {
+        imports
+            .iter()
+            .find(|i| i.shadow_rel_path == rel_path)
+            .unwrap_or_else(|| panic!("no import for {rel_path}; got {imports:?}"))
+            .specifier
+            .clone()
+    }
+
     #[test]
     fn content_skip_unchanged_file_is_skipped_and_still_contributes_import() {
         // Tick 1 materialises; tick 2 (source untouched) must SKIP the
@@ -6694,39 +6774,139 @@ mod tests {
     }
 
     #[test]
-    fn content_skip_transcluding_file_is_never_skipped() {
-        // A file that transcludes another records an external read, so it
-        // must NEVER enter the skip cache (rule 3) — even when its own
-        // bytes/mtime are unchanged, because the transcluded file can
-        // change underneath it.
+    fn content_skip_file_with_unchanged_deps_is_skipped() {
+        // Thorough dep-mtime variant (zfb#1148): a file that transcludes
+        // another (a recorded read) IS skip-cached, and on a later tick —
+        // where neither the file NOR its transcluded dep changed — it is
+        // SKIPPED, reusing its import without re-reading/re-compiling/
+        // re-writing.
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("docs");
         fs::create_dir_all(&src).unwrap();
-        // The transcluding file (depends on snippet.md) and a plain
-        // sibling (dep-free) so we can contrast the two.
-        fs::write(
-            src.join("page.mdx"),
-            "# Page\n\n:::include{file=\"./snippet.md\"}\n",
-        )
-        .unwrap();
+        let page = src.join("page.mdx");
+        fs::write(&page, "# Page\n\n:::include{file=\"./snippet.md\"}\n").unwrap();
         fs::write(src.join("snippet.md"), "included body\n").unwrap();
-        fs::write(src.join("plain.mdx"), "# Plain\n\nno deps\n").unwrap();
 
         let mut session = ShadowSession::new().unwrap();
-        let spec = transclude_spec(tmp.path());
-        run_collection_tick(&mut session, spec, &src, "docs", None, None);
-
-        let page = src.join("page.mdx");
-        let plain = src.join("plain.mdx");
-        // snippet.md is also compiled as its own content file, but it has
-        // no deps, so it CAN be cached; the transcluding page must not.
-        assert!(
-            !session.content_skip.contains_key(&page),
-            "a transcluding file must NOT be entered into the skip cache"
+        let out1 = run_collection_tick(
+            &mut session,
+            transclude_spec(tmp.path()),
+            &src,
+            "docs",
+            None,
+            None,
         );
+        // Two imports: the transcluding page.mdx AND snippet.md (which is
+        // also a content file in the collection). We track the page's.
+        let page_spec_1 = page_import_specifier(&out1.imports, "content/docs/page.mdx");
+        // The transcluding file IS cached, and its entry records a
+        // non-empty dep set (it read snippet.md).
+        let entry = session
+            .content_skip
+            .get(&page)
+            .expect("a transcluding file must now be skip-cached (dep-mtime variant)");
         assert!(
-            session.content_skip.contains_key(&plain),
-            "a dep-free sibling must still be cached (control)"
+            !entry.deps.is_empty(),
+            "the transcluding file's entry must record its transcluded dep"
+        );
+
+        // White-box discriminator (same as the dep-free skip test):
+        // corrupt the dest + drop its `written` hash. A SKIP leaves the
+        // corruption; a full recompile rewrites fresh JSX.
+        let dest_file = session
+            .shadow_root()
+            .join("content")
+            .join("docs")
+            .join("page.mdx");
+        fs::write(&dest_file, b"__CORRUPTED__").unwrap();
+        let rel = PathBuf::from("content/docs/page.mdx");
+        session.written.remove(&rel);
+
+        // Tick 2: nothing changed → SKIP.
+        let out2 = run_collection_tick(
+            &mut session,
+            transclude_spec(tmp.path()),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+        let page_spec_2 = page_import_specifier(&out2.imports, "content/docs/page.mdx");
+        assert_eq!(
+            page_spec_2, page_spec_1,
+            "skipped transcluding file must replay its import byte-for-byte"
+        );
+        let after = fs::read(&dest_file).unwrap();
+        assert_eq!(
+            after, b"__CORRUPTED__",
+            "a file with UNCHANGED deps must be SKIPPED — dest not re-written"
+        );
+    }
+
+    #[test]
+    fn content_skip_dep_change_invalidates_dependent() {
+        // When a transcluded dep changes, the dependent file must take the
+        // full path (re-validate / re-rewrite) even though its OWN
+        // bytes/mtime are untouched. We change the dep's SIZE (different
+        // content length) so the invalidation is granularity-independent.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        let page = src.join("page.mdx");
+        let snippet = src.join("snippet.md");
+        fs::write(&page, "# Page\n\n:::include{file=\"./snippet.md\"}\n").unwrap();
+        fs::write(&snippet, "v1\n").unwrap();
+
+        let mut session = ShadowSession::new().unwrap();
+        let out1 = run_collection_tick(
+            &mut session,
+            transclude_spec(tmp.path()),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+        assert!(session.content_skip.contains_key(&page));
+        let page_spec_1 = page_import_specifier(&out1.imports, "content/docs/page.mdx");
+
+        // Corrupt the dest + drop its written hash: now a SKIP would leave
+        // the corruption, a full recompile rewrites fresh JSX.
+        let dest_file = session
+            .shadow_root()
+            .join("content")
+            .join("docs")
+            .join("page.mdx");
+        fs::write(&dest_file, b"__CORRUPTED__").unwrap();
+        let rel = PathBuf::from("content/docs/page.mdx");
+        session.written.remove(&rel);
+
+        // Change ONLY the transcluded dep (different length ⇒ size differs).
+        fs::write(
+            &snippet,
+            "a much longer second version of the snippet body\n",
+        )
+        .unwrap();
+
+        // Tick 2: page bytes unchanged, but its dep changed → full path.
+        let out2 = run_collection_tick(
+            &mut session,
+            transclude_spec(tmp.path()),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+        let page_spec_2 = page_import_specifier(&out2.imports, "content/docs/page.mdx");
+        let after = fs::read_to_string(&dest_file).unwrap();
+        assert!(
+            after.contains("_createMdxContent"),
+            "a dep change must FORCE re-materialise of the dependent file (no false skip); got:\n{after}"
+        );
+        // The transcluded content changed, so the compiled JSX (and hence
+        // the content hash / specifier) differs from tick 1.
+        assert_ne!(
+            page_spec_2, page_spec_1,
+            "the re-materialised page must reflect the new transcluded content"
         );
     }
 
