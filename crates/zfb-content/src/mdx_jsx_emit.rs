@@ -2393,8 +2393,43 @@ pub fn compile_mdx_to_jsx_module_cached(
     input: &str,
     file_path: &Path,
     cache: Option<&MdxModuleCache>,
-    mut pipeline: Option<&mut Pipeline>,
+    pipeline: Option<&mut Pipeline>,
 ) -> Result<CompiledMdx, PipelineError> {
+    compile_mdx_to_jsx_module_cached_with_deps(input, file_path, cache, pipeline).map(|(c, _)| c)
+}
+
+/// Like [`compile_mdx_to_jsx_module_cached`], but also reports whether
+/// the served compile recorded any **external file reads** — i.e. the
+/// dependency manifest of the compile (fresh on a miss, the validated
+/// stored manifest on a hit) is non-empty.
+///
+/// This is the incremental-materialise signal the dev bundler's
+/// `ShadowSession` content-file skip cache needs (zfb#1148): a content
+/// `.mdx` that recorded zero external reads is a pure function of its own
+/// bytes, so an unchanged-`(mtime, size)` file can safely reuse its
+/// previous compile/import without re-reading. A file that recorded ANY
+/// external read (transclude `./include.md`, an image probed for
+/// dimensions, a link-validated sibling) can change output while its own
+/// mtime is unchanged, so it must never be skipped — hence `true` forces
+/// the full path.
+///
+/// The signal is read from the **served** compile's manifest, NOT the
+/// live recorder: on a cache hit the feature plugins never run, so the
+/// recorder would look empty even for a file that genuinely has deps —
+/// only the stored manifest is authoritative. On a miss it is the
+/// freshly-drained manifest, captured before it is moved into the cache
+/// entry.
+///
+/// A pipeline without a read-recorder (no filesystem-dependent feature
+/// enabled) always reports `false` — its manifest is empty by
+/// construction, which is correct: with no such feature wired, a file's
+/// output is a pure function of its own bytes.
+pub fn compile_mdx_to_jsx_module_cached_with_deps(
+    input: &str,
+    file_path: &Path,
+    cache: Option<&MdxModuleCache>,
+    mut pipeline: Option<&mut Pipeline>,
+) -> Result<(CompiledMdx, bool), PipelineError> {
     let (collection, slug) = collection_and_slug(file_path);
 
     // Fingerprint component of the cache key. `None` here means "no key
@@ -2498,14 +2533,24 @@ pub fn compile_mdx_to_jsx_module_cached(
                     p.replay_cross_file_link_candidates(hit.cross_file_links);
                     p.replay_file_headings(hit.file_headings);
                 }
-                return Ok(CompiledMdx {
-                    jsx_source: hit.compiled.jsx_source,
-                    content_hash: hit.compiled.content_hash.clone(),
-                    // Path-derived, so NOT taken from the cached entry: an
-                    // identical body first compiled at another path must
-                    // not hand this file the other file's collection/slug.
-                    specifier: format!("mdx://{collection}/{slug}#{}", hit.compiled.content_hash),
-                });
+                // Incremental-materialise signal (zfb#1148): the served
+                // entry's validated manifest is authoritative for "had
+                // external reads" — the plugins did not run on this hit.
+                let had_external_reads = !hit.dependencies.is_empty();
+                return Ok((
+                    CompiledMdx {
+                        jsx_source: hit.compiled.jsx_source,
+                        content_hash: hit.compiled.content_hash.clone(),
+                        // Path-derived, so NOT taken from the cached entry: an
+                        // identical body first compiled at another path must
+                        // not hand this file the other file's collection/slug.
+                        specifier: format!(
+                            "mdx://{collection}/{slug}#{}",
+                            hit.compiled.content_hash
+                        ),
+                    },
+                    had_external_reads,
+                ));
             }
         }
     }
@@ -2546,6 +2591,20 @@ pub fn compile_mdx_to_jsx_module_cached(
         specifier,
     };
 
+    // Drain the reads this compile's plugins reported into a
+    // [`DependencyManifest`] (zfb#942). Hoisted OUT of the cache-insert
+    // block (it was previously nested there) so the
+    // incremental-materialise "had external reads" signal (zfb#1148) is
+    // computed on every miss — including the no-cache path — and so the
+    // recorder is always drained (leaving it for the next compile to find
+    // would leak reads into another entry's manifest). Empty without a
+    // recorder. Captured before the manifest is moved into the entry.
+    let dependencies = pipeline
+        .as_deref()
+        .map(|p| p.take_dependency_manifest())
+        .unwrap_or_default();
+    let had_external_reads = !dependencies.is_empty();
+
     if let (Some(c), Some(key)) = (cache_for_lookup, cache_key) {
         let broken_links = pipeline
             .as_deref()
@@ -2569,15 +2628,10 @@ pub fn compile_mdx_to_jsx_module_cached(
             .as_deref()
             .map(|p| p.file_headings_since(file_headings_before))
             .unwrap_or_default();
-        // Drain the reads this compile's plugins reported into the
-        // entry's manifest (zfb#942). A manifest carrying a read
-        // *error* is unstorable: error states cannot be re-validated,
-        // so the entry could never be served — skip the insert and let
-        // every later call recompile until the read stops erroring.
-        let dependencies = pipeline
-            .as_deref()
-            .map(|p| p.take_dependency_manifest())
-            .unwrap_or_default();
+        // A manifest carrying a read *error* is unstorable: error states
+        // cannot be re-validated, so the entry could never be served —
+        // skip the insert and let every later call recompile until the
+        // read stops erroring.
         if dependencies.is_storable() {
             let mut guard = c.lock();
             // Clear-on-overflow: if inserting this entry would push the map
@@ -2601,7 +2655,7 @@ pub fn compile_mdx_to_jsx_module_cached(
         }
     }
 
-    Ok(compiled)
+    Ok((compiled, had_external_reads))
 }
 
 #[cfg(test)]
