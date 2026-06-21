@@ -7433,6 +7433,34 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_specifier_set_parses_and_degrades() {
+        // zfb#1151: unit-cover the helper itself — None input, malformed JSON
+        // (→ None, degrade to the legacy key, never fail the build), and a
+        // multi-collection snapshot (every entry's module_specifier collected
+        // into the flat cross-collection set).
+        assert!(snapshot_specifier_set(None).is_none());
+        assert!(
+            snapshot_specifier_set(Some("{ not valid json")).is_none(),
+            "malformed JSON must degrade to None, not panic"
+        );
+
+        let json = r#"{
+            "collections": {
+                "docs": [
+                    {"slug":"intro","frontmatter":null,"body":"","module_specifier":"mdx://docs/intro#aaaa1111","rel_path":"intro.mdx"}
+                ],
+                "blog": [
+                    {"slug":"post","frontmatter":null,"body":"","module_specifier":"mdx://blog/post#bbbb2222","rel_path":"post.mdx"}
+                ]
+            }
+        }"#;
+        let set = snapshot_specifier_set(Some(json)).expect("valid snapshot parses");
+        assert_eq!(set.len(), 2);
+        assert!(set.contains("mdx://docs/intro#aaaa1111"));
+        assert!(set.contains("mdx://blog/post#bbbb2222"));
+    }
+
+    #[test]
     fn content_skip_file_with_unchanged_deps_is_skipped() {
         // Thorough dep-mtime variant (zfb#1148): a file that transcludes
         // another (a recorded read) IS skip-cached, and on a later tick —
