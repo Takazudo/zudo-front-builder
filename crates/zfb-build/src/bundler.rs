@@ -958,6 +958,17 @@ pub struct ShadowSession {
     ///
     /// Cleared on the same dirty/copy_mode wipe as `content_skip`.
     source_skip: HashMap<PathBuf, SourceSkipEntry>,
+    /// The pipeline `config_fingerprint` of the LAST successful call —
+    /// the wipe trigger for a config/route-map change (zfb#1148, Defect
+    /// A). Both skip caches reuse a file's previous compiled output, but
+    /// `ResolveLinksPlugin` (resolve_markdown_links) rewrites links from an
+    /// in-memory route→URL map and records NO deps, so a map change is
+    /// invisible to the per-dep stat check. The fingerprint folds in the
+    /// map digest (and every other compile-affecting knob), so comparing
+    /// it on each call and wiping both skip caches on a mismatch keeps the
+    /// skip cache consistent with what the MDX compile cache invalidates.
+    /// `None` until the first call. Updated in [`ShadowWriter::new`].
+    config_fingerprint: Option<String>,
 }
 
 impl ShadowSession {
@@ -975,6 +986,7 @@ impl ShadowSession {
             copy_mode: None,
             content_skip: HashMap::new(),
             source_skip: HashMap::new(),
+            config_fingerprint: None,
         })
     }
 
@@ -1087,10 +1099,18 @@ struct ShadowWriter<'s> {
 impl<'s> ShadowWriter<'s> {
     /// Build the writer; in session mode also performs the dirty /
     /// copy-mode-flip wipe and arms the dirty flag for this call.
+    ///
+    /// `config_fingerprint` is the effective pipeline's
+    /// `config_fingerprint` for THIS call (zfb#1148, Defect A). When it
+    /// differs from the session's stored value, both incremental-skip
+    /// caches are cleared so a config/route-map change forces a full
+    /// re-materialise — see the field doc on
+    /// [`ShadowSession::config_fingerprint`].
     fn new(
         shadow_root: PathBuf,
         session: Option<&'s mut ShadowSession>,
         copy_mode: bool,
+        config_fingerprint: Option<String>,
     ) -> Result<Self> {
         let session = match session {
             Some(s) => {
@@ -1108,6 +1128,29 @@ impl<'s> ShadowWriter<'s> {
                     // (zfb#1148, rule 5).
                     s.content_skip.clear();
                     s.source_skip.clear();
+                }
+                // Config/route-map change wipe (zfb#1148, Defect A): a
+                // change to any compile-affecting knob — in particular the
+                // `resolve_source_map` digest, which `ResolveLinksPlugin`
+                // consumes WITHOUT recording any dep — alters a page's
+                // rewritten URLs / content hash while its own
+                // `(mtime, size)` is unchanged. The per-dep stat check
+                // cannot see that, so without this a resolve-links page
+                // would be wrongly skipped (stale URL → 404, snapshot↔
+                // bridge hash desync → `<pre data-zfb-content-fallback>`,
+                // and a suppressed `onBrokenLinks: 'error'`). Wiping both
+                // skip caches on a fingerprint mismatch forces a full
+                // re-materialise (the shadow tree itself is left intact —
+                // every file simply re-materialises with no skip entry and
+                // `write_if_changed` overwrites what changed). `None` (an
+                // uncacheable pipeline) is treated as "config unknown" and
+                // always mismatches, so it never skips. Steady-state body
+                // edits don't change the fingerprint, so normal skipping is
+                // preserved.
+                if s.config_fingerprint != config_fingerprint || config_fingerprint.is_none() {
+                    s.content_skip.clear();
+                    s.source_skip.clear();
+                    s.config_fingerprint = config_fingerprint;
                 }
                 s.copy_mode = Some(copy_mode);
                 // Armed for the whole call; cleared by `mark_clean()` only
@@ -1579,24 +1622,49 @@ pub fn bundle_with_session(
         }
     };
     let shadow: &Path = &shadow;
-    let writer = ShadowWriter::new(shadow.to_path_buf(), session, copy_mode)?;
 
-    // Build the shared materialisation context from the fields of `input`
-    // that are invariant across every materialise_shadow / materialise_collection
-    // call in this bundle invocation.
-    //
     // The effective `PipelineSpec` is the input spec with its
     // `resolve_source_map` knob ALWAYS rewritten from the derivation
     // above (`Some(map)` when `resolve_markdown_links` is configured,
     // `None` otherwise) — the bundler owns that knob, so a caller-set
     // value on `input.pipeline_spec` can never desync from the route
     // spec (zfb#917).
+    let effective_spec = {
+        let mut spec = input.pipeline_spec.clone();
+        spec.resolve_source_map = resolve_source_map;
+        spec
+    };
+
+    // Pipeline config fingerprint for the incremental-skip wipe trigger
+    // (zfb#1148, Defect A). The MDX compile cache keys every entry on this
+    // `config_fingerprint` (see `Pipeline::config_fingerprint`), which
+    // folds in EVERY compile-affecting knob — crucially the
+    // `resolve_source_map` digest (`add_resolve_links`), whose
+    // `ResolveLinksPlugin` rewrites `./other.mdx` links from an in-memory
+    // route→URL map and records NOTHING through the ReadRecorder. So a
+    // resolve-links page's recorded deps are EMPTY: a renamed/removed link
+    // target changes the map (and the page's rewritten URLs + content
+    // hash) while the page's own source `(mtime, size)` is unchanged. The
+    // per-dep stat check cannot see that. Folding the fingerprint into the
+    // session wipe makes a config/route-map change force a full
+    // re-materialise (matching exactly what the compile cache already
+    // invalidates), while steady-state body edits (which don't change the
+    // fingerprint) keep skipping. Built once here from the effective spec
+    // so the wipe in `ShadowWriter::new` can compare it. `None` (an
+    // uncacheable pipeline — the bundler never produces one, but be
+    // defensive) is treated as "config unknown" → always wipe.
+    let config_fingerprint: Option<String> = effective_spec
+        .build_pipeline()
+        .ok()
+        .and_then(|p| p.config_fingerprint());
+
+    let writer = ShadowWriter::new(shadow.to_path_buf(), session, copy_mode, config_fingerprint)?;
+
+    // Build the shared materialisation context from the fields of `input`
+    // that are invariant across every materialise_shadow / materialise_collection
+    // call in this bundle invocation.
     let mat_ctx = MaterialiseCtx {
-        pipeline_spec: {
-            let mut spec = input.pipeline_spec.clone();
-            spec.resolve_source_map = resolve_source_map;
-            spec
-        },
+        pipeline_spec: effective_spec,
         copy_mode,
         bundle_exclude: &bundle_exclude,
         project_root: &input.project_root,
@@ -3162,15 +3230,24 @@ fn file_stat(path: &Path) -> FileStat {
 /// are unchanged.
 ///
 /// Stored for EVERY successfully-compiled content file (the thorough
-/// dep-mtime variant), not only dep-free ones: a file's recorded reads
-/// (transclude `:::include`, link-validated / resolve-links targets) are
-/// captured in `deps` and re-checked on the skip path, so a file with
-/// deps is skipped while those deps are byte-stable and re-materialised
-/// the moment any of them changes. A file with zero deps is the trivial
+/// dep-mtime variant), not only dep-free ones: the external reads this
+/// file's compile recorded through the `ReadRecorder` are captured in
+/// `deps` and re-checked on the skip path, so a file with deps is skipped
+/// while those deps are byte-stable and re-materialised the moment any of
+/// them changes. A file with zero recorded reads is the trivial
 /// all-deps-unchanged case → still skippable. Used by both
 /// [`materialise_collection`] (bridge pass) and [`materialise_shadow`]'s
 /// `.mdx` branch (the `src/` extra-top-level-dir pass) via the shared
 /// [`materialise_mdx_with_skip`] helper.
+///
+/// NOTE: `deps` covers ONLY recorder-tracked filesystem reads — transclude
+/// `:::include` targets, link-validation existence/anchor probes, and
+/// image-dimension probes. It does NOT cover `resolve_source_map`
+/// (`resolveMarkdownLinks`): `ResolveLinksPlugin` rewrites `./other.mdx`
+/// links from an IN-MEMORY route→URL map and records nothing, so a
+/// resolve-links page's `deps` are empty. A route-map change is instead
+/// caught by the pipeline config-fingerprint wipe (see
+/// [`ShadowSession::config_fingerprint`]), not by `deps`.
 #[derive(Debug, Clone)]
 struct ContentSkipEntry {
     /// Absolute SOURCE path this dest was materialised from. The dest is
@@ -3184,11 +3261,14 @@ struct ContentSkipEntry {
     mtime: std::time::SystemTime,
     /// Source-file byte length at cache time.
     size: u64,
-    /// Each external file this compile recorded a read of, paired with
-    /// its on-disk state at materialise time (see [`FileStat`]). On a
-    /// skip check EVERY dep must re-stat to the same state, else the
-    /// dependent file takes the full path. Soundness: any edit to a
-    /// transcluded / linked dep bumps its mtime (or changes its size), so
+    /// Each external file this compile recorded a read of through the
+    /// `ReadRecorder` (transclude `:::include` targets, link-validation
+    /// existence/anchor probes, image-dimension probes — NOT
+    /// resolve-links, which records nothing; see the type-level note),
+    /// paired with its on-disk state at materialise time (see
+    /// [`FileStat`]). On a skip check EVERY dep must re-stat to the same
+    /// state, else the dependent file takes the full path. Soundness: any
+    /// edit to a recorded dep bumps its mtime (or changes its size), so
     /// the dependent file re-validates / re-rewrites; a previously-absent
     /// dep that appears flips `None`→`Some` and likewise invalidates.
     /// Empty for files with no recorded reads (then the skip reduces to
@@ -3320,6 +3400,15 @@ fn materialise_mdx_with_skip(
     let dest_rel = ctx.writer.rel_of(to).ok();
 
     // ---- Skip path (session mode only — passthrough/prod never skips) ----
+    //
+    // LIMITATION (#1151, accepted): the source key is `(mtime, size)`, not
+    // a content hash, so a content edit that PRESERVES both — possible on a
+    // coarse-mtime filesystem or under mtime-preserving tooling
+    // (`touch -r`, `rsync --times`, some checkout/restore flows) — would be
+    // falsely skipped, serving a stale specifier (bridge fallback). This is
+    // standard mtime-incrementality and pathological on APFS; prod never
+    // skips (sessionless). Tracked in #1151; do NOT switch to SHA-256 here
+    // without re-evaluating the per-tick stat-vs-hash cost.
     if ctx.writer.in_session() {
         if let Some(dest_rel) = dest_rel.as_ref() {
             if let Some((mtime, size)) = file_stat(from) {
@@ -4024,6 +4113,12 @@ fn materialise_source_file(
     // is the only I/O on the skip path — the win on large ancillary trees
     // (`doc/`, `sub-packages/`, `static/`, …) that this otherwise
     // re-copies/re-symlinks every tick.
+    //
+    // LIMITATION (#1151, accepted): same `(mtime, size)`-vs-SHA-256 caveat
+    // as the MDX skip — a content edit preserving both (coarse-mtime FS,
+    // `touch -r` / `rsync --times`) is falsely skipped. Standard
+    // mtime-incrementality; prod never skips. Do NOT switch to hashing
+    // without re-evaluating cost.
     let dest_rel = writer.rel_of(to).ok();
     if writer.in_session() {
         if let Some(dest_rel) = dest_rel.as_ref() {
@@ -6674,7 +6769,8 @@ mod tests {
         // armed) have a concrete anchor above the collection.
         let project_root = src.parent().unwrap_or(src).to_path_buf();
 
-        let writer = ShadowWriter::new(shadow_root, Some(session), false)
+        let fingerprint = spec_fingerprint(&spec);
+        let writer = ShadowWriter::new(shadow_root, Some(session), false, fingerprint)
             .expect("session writer construction");
         let ctx = MaterialiseCtx {
             pipeline_spec: spec,
@@ -6733,10 +6829,12 @@ mod tests {
         let exclude = no_bundle_exclude();
         let project_root = src.parent().unwrap_or(src).to_path_buf();
 
-        let writer = ShadowWriter::new(shadow_root, Some(session), false)
+        let spec = zfb_content::PipelineSpec::default();
+        let fingerprint = spec_fingerprint(&spec);
+        let writer = ShadowWriter::new(shadow_root, Some(session), false, fingerprint)
             .expect("session writer construction");
         let ctx = MaterialiseCtx {
-            pipeline_spec: zfb_content::PipelineSpec::default(),
+            pipeline_spec: spec,
             copy_mode: false,
             bundle_exclude: &exclude,
             project_root: &project_root,
@@ -6794,6 +6892,15 @@ mod tests {
     /// `content/<name>/<rel>` (zfb#1148, dest-keyed cache).
     fn collection_skip_key(name: &str, rel: &str) -> PathBuf {
         PathBuf::from(format!("content/{name}/{rel}"))
+    }
+
+    /// The pipeline `config_fingerprint` a `ShadowWriter` needs for the
+    /// config-change wipe — the same value the production bundler computes
+    /// from the effective spec (zfb#1148, Defect A).
+    fn spec_fingerprint(spec: &zfb_content::PipelineSpec) -> Option<String> {
+        spec.build_pipeline()
+            .ok()
+            .and_then(|p| p.config_fingerprint())
     }
 
     /// The specifier of the import whose `shadow_rel_path` equals
@@ -7443,6 +7550,83 @@ mod tests {
         );
     }
 
+    /// A `PipelineSpec` with `resolve_source_map` armed (the
+    /// `resolveMarkdownLinks` feature), mapping `target_key` → `target_url`.
+    /// `ResolveLinksPlugin` rewrites `./target.mdx` links to the URL but
+    /// records NOTHING through the ReadRecorder — so the page's deps are
+    /// empty and a map change is invisible to the per-dep stat check
+    /// (the Defect-A hazard).
+    fn resolve_links_spec(target_key: &Path, target_url: &str) -> zfb_content::PipelineSpec {
+        let mut map = HashMap::new();
+        map.insert(target_key.to_path_buf(), target_url.to_string());
+        zfb_content::PipelineSpec {
+            resolve_source_map: Some(map),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn content_skip_resolve_source_map_change_forces_rematerialise() {
+        // Defect A (zfb#1148): a resolve-links page links to a target via
+        // the IN-MEMORY route→URL map. `ResolveLinksPlugin` records no dep,
+        // so the page's `deps` are empty. When the map's URL for the target
+        // changes between ticks (e.g. the target was renamed / re-slugged),
+        // the page's rewritten link — and thus its compiled JSX / content
+        // hash / bridge specifier — MUST change, even though the page's own
+        // source `(mtime, size)` is untouched. The config-fingerprint wipe
+        // is what catches this: the map digest is folded into
+        // `config_fingerprint`, so a map change wipes the skip caches and
+        // forces a full re-materialise. Without the fix the page would be
+        // wrongly skipped → stale URL.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        // The page links to ./target.mdx; the resolver keys the lookup on
+        // the absolute path of the link target (source_dir = page's dir).
+        fs::write(
+            src.join("page.mdx"),
+            "# Page\n\n[see target](./target.mdx)\n",
+        )
+        .unwrap();
+        let target_key = src.join("target.mdx");
+
+        let mut session = ShadowSession::new().unwrap();
+        // Tick 1: target maps to /docs/target/.
+        let spec1 = resolve_links_spec(&target_key, "/docs/target/");
+        let out1 = run_collection_tick(&mut session, spec1, &src, "docs", None, None);
+        let spec_1 = page_import_specifier(&out1.imports, "content/docs/page.mdx");
+        // The page IS skip-cached (resolve-links pages have empty deps, so
+        // they would otherwise be eagerly skipped — exactly the hazard).
+        assert!(session
+            .content_skip
+            .contains_key(&collection_skip_key("docs", "page.mdx")));
+        // Sanity: the rewritten URL is in the compiled shadow JSX.
+        let dest = session.shadow_root().join("content/docs/page.mdx");
+        assert!(
+            fs::read_to_string(&dest).unwrap().contains("/docs/target/"),
+            "tick 1 must rewrite the link to /docs/target/"
+        );
+
+        // Tick 2: the SAME page source (mtime/size unchanged), but the map
+        // now points the target at a NEW url ⇒ the config fingerprint
+        // changes ⇒ skip caches wiped ⇒ page re-materialised with the new
+        // rewritten URL and a new specifier.
+        let spec2 = resolve_links_spec(&target_key, "/docs/renamed-target/");
+        let out2 = run_collection_tick(&mut session, spec2, &src, "docs", None, None);
+        let spec_2 = page_import_specifier(&out2.imports, "content/docs/page.mdx");
+
+        assert_ne!(
+            spec_2, spec_1,
+            "a resolve_source_map change MUST re-materialise the page (new specifier), not skip it"
+        );
+        assert!(
+            fs::read_to_string(&dest)
+                .unwrap()
+                .contains("/docs/renamed-target/"),
+            "the re-materialised page must reflect the NEW map URL"
+        );
+    }
+
     /// Run ONE tick that materialises each `(src_file, dest_rel)` pair
     /// through `materialise_source_file` against `session`, mirroring the
     /// writer lifecycle (build writer + wipe, materialise, prune,
@@ -7450,7 +7634,8 @@ mod tests {
     /// Returns nothing; tests inspect the session + shadow tree.
     fn run_source_tick(session: &mut ShadowSession, files: &[(&Path, &str)]) {
         let shadow_root = session.shadow_root().to_path_buf();
-        let writer = ShadowWriter::new(shadow_root.clone(), Some(session), false)
+        let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
+        let writer = ShadowWriter::new(shadow_root.clone(), Some(session), false, fingerprint)
             .expect("session writer construction");
         for (from, dest_rel) in files {
             let to = shadow_root.join(dest_rel);
@@ -9580,6 +9765,7 @@ mod tests {
                 PathBuf::from("/nonexistent-passthrough-shadow"),
                 None,
                 false,
+                None,
             )
             .expect("passthrough writer construction is infallible"),
         ))
