@@ -95,6 +95,92 @@ import type { ContentSnapshot } from "@takazudo/zfb-runtime/snapshot";
 import { ClientRouter } from "@takazudo/zfb-runtime/client-router";
 ```
 
+#### Enabling SPA soft-navigation — the bootstrap island
+
+Mounting `<ClientRouter />` in your layout `<head>` emits the meta tags and
+styles the soft-navigation router reads, **but it is not enough on its own** to
+turn navigation interception on. You also need a tiny client-side *bootstrap
+island*. This step is easy to miss, so it is spelled out here.
+
+**Why.** The click/form interception is registered by an `init()` call that runs
+as a top-of-module side effect in the client-router module, guarded so it never
+runs during SSR:
+
+```ts
+// inside @takazudo/zfb-runtime — client-router.ts
+if (typeof document !== "undefined") {
+  init();
+}
+```
+
+When your **only** import of the client-router happens in a layout that renders
+server-side — `import { ClientRouter } from "@takazudo/zfb-runtime"` — that
+import is evaluated where `typeof document === "undefined"`, so:
+
+1. `init()` is correctly skipped during SSR, **and**
+2. because nothing reachable from a `"use client"` graph imports the
+   client-router, the module never enters the **client** bundle either — so the
+   guard never gets a chance to fire in the browser.
+
+The result: the `<ClientRouter />` meta tags are present, but no navigation is
+ever intercepted. Every link falls through to a full page load — no view
+transition, and persisted islands are destroyed.
+
+**The fix** is a minimal `"use client"` bootstrap island whose only job is a
+side-effect import of the `/client-router` subpath. zfb's island scanner walks
+`page → bootstrap island → @takazudo/zfb-runtime/client-router`, which pulls the
+client-router subgraph into the browser bundle, where the
+`typeof document !== "undefined"` guard finally fires:
+
+```tsx
+// src/components/client-router-bootstrap.tsx
+"use client";
+
+// Side-effect import. Running this island's bundle in the browser triggers the
+// `if (typeof document !== "undefined") { init(); }` guard at the top of the
+// client-router module, registering the SPA click/form intercepts. init() is
+// idempotent (guarded by an `initialized` flag), so reaching it again is a
+// no-op.
+import "@takazudo/zfb-runtime/client-router";
+
+// Renders nothing — the component exists only so the scanner has a page-reachable
+// "use client" module to bundle the side-effect import into.
+export default function ClientRouterBootstrap() {
+  return null;
+}
+
+// Stable marker name so the SSR marker, the scanner record, and the hydration
+// manifest agree under production minification.
+ClientRouterBootstrap.displayName = "ClientRouterBootstrap";
+```
+
+Mount it once near the end of `<body>`, wrapped in zfb's `<Island>` so it
+hydrates as early as possible:
+
+```tsx
+import { Island } from "@takazudo/zfb";
+import ClientRouterBootstrap from "@/components/client-router-bootstrap";
+
+// when="load" registers the intercepts as soon as the islands runtime starts —
+// before the first navigation.
+<Island when="load">
+  <ClientRouterBootstrap />
+</Island>;
+```
+
+Notes:
+
+- Keep `<ClientRouter />` in `<head>` **and** add the bootstrap island — they
+  are complementary. The head component emits the configuration meta tags; the
+  bootstrap island delivers the runtime to the browser.
+- The bootstrap pulls in only the client-router subgraph (router + swap +
+  events + types) plus the island-manager dependency; the server-only runtime
+  modules stay out of the client bundle.
+- The bootstrap island must be reachable through a normal `import` chain from a
+  page module — that is how the scanner discovers it. Mounting `<ClientRouter />`
+  alone does not make the runtime reachable, because `<ClientRouter />` renders
+  into `<head>` and is not itself a `"use client"` island.
+
 ### `createPageRouter(options) → PageRouter`
 
 Build a fetch-handler that serves the supplied pages. The returned
