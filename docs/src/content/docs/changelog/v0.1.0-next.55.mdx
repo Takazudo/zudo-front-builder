@@ -1,0 +1,20 @@
+---
+title: v0.1.0-next.55
+sidebar_position: 1055
+---
+
+# v0.1.0-next.55
+
+Released: 2026-06-21
+
+## Features
+
+- zfb dev: incremental shadow materialise (#1148, #1150) — content (`.mdx`) and source/asset edits no longer re-materialise the whole project's shadow tree on every rebuild tick. A per-session skip cache reuses unchanged files, validated by mtime+size plus each MDX file's recorded transclude / link-validation / image-dimension dependencies; `import.meta.glob` files always re-expand for soundness, and production builds are byte-for-byte unchanged. On a large content site this dropped the dev live-reload tick from ~6.7s to ~2.5s (bundler materialise ~4.6s → ~0.6s), matching the Linux baseline. (28a57b5, 33038e1, a35973d, 23f50d8, 619de8c, db34678)
+
+## Bug Fixes
+
+- fix(zfb-build): wipe the materialise skip cache on a pipeline config-fingerprint change, so `resolveMarkdownLinks` pages re-render correctly after a sibling rename / slug change (9b7a63b)
+
+## Other Changes
+
+- test(zfb-build): ShadowSession content-file skip cache tests (e6e0671)
