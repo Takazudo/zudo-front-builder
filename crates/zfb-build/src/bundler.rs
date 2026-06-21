@@ -3323,10 +3323,9 @@ fn materialise_collection(
                                 .writer
                                 .shadow_root
                                 .join(
-                                    entry.shadow_rel_path.replace(
-                                        '/',
-                                        std::path::MAIN_SEPARATOR_STR,
-                                    ),
+                                    entry
+                                        .shadow_rel_path
+                                        .replace('/', std::path::MAIN_SEPARATOR_STR),
                                 )
                                 .exists();
                             if entry.mtime == mtime && entry.size == size && dest_exists {
@@ -3336,10 +3335,7 @@ fn materialise_collection(
                                 // Mark the un-rewritten shadow file visited
                                 // so the prune pass keeps it (rule 4).
                                 ctx.writer.record_visited(&to).with_context(|| {
-                                    format!(
-                                        "record visited (content skip) {}",
-                                        to.display()
-                                    )
+                                    format!("record visited (content skip) {}", to.display())
                                 })?;
                                 continue;
                             }
@@ -6390,6 +6386,550 @@ mod tests {
             ESBUILD_LOADER_ARGS.contains(&"--loader:.md=jsx"),
             "ESBUILD_LOADER_ARGS must include --loader:.md=jsx; got: {ESBUILD_LOADER_ARGS:?}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // ShadowSession content-file skip cache (incremental materialise,
+    // zfb#1148)
+    // -----------------------------------------------------------------
+
+    /// Result of one simulated `materialise_collection` tick in session
+    /// mode (see [`run_collection_tick`]).
+    struct CollectionTickOut {
+        imports: Vec<ContentImport>,
+        headings: Vec<FileHeadings>,
+        cross_links: Vec<CrossFileLinkCandidate>,
+    }
+
+    /// Run ONE tick of `materialise_collection` against `session` in
+    /// session mode, faithfully mirroring `bundle_with_session`'s
+    /// per-call lifecycle: build the `ShadowWriter` (which performs the
+    /// dirty/copy_mode-flip wipe + arms dirty), materialise, prune stale
+    /// files, then `mark_clean`. The shadow root is the session's
+    /// persistent tempdir; `dest` lives under `content/<name>/` within it,
+    /// exactly as the real bundler arranges.
+    fn run_collection_tick(
+        session: &mut ShadowSession,
+        spec: zfb_content::PipelineSpec,
+        src: &Path,
+        collection_name: &str,
+        id_strip_suffix: Option<&str>,
+        include: Option<&[String]>,
+    ) -> CollectionTickOut {
+        let shadow_root = session.shadow_root().to_path_buf();
+        let dest = shadow_root.join("content").join(collection_name);
+        let exclude = no_bundle_exclude();
+        // project_root = src's parent so transclude/context roots (when
+        // armed) have a concrete anchor above the collection.
+        let project_root = src.parent().unwrap_or(src).to_path_buf();
+
+        let writer = ShadowWriter::new(shadow_root, Some(session), false)
+            .expect("session writer construction");
+        let ctx = MaterialiseCtx {
+            pipeline_spec: spec,
+            copy_mode: false,
+            bundle_exclude: &exclude,
+            project_root: &project_root,
+            writer: &writer,
+        };
+        let mut imports = Vec::new();
+        let mut broken = Vec::new();
+        let mut md = Vec::new();
+        let mut cross_links = Vec::new();
+        let mut headings = Vec::new();
+        materialise_collection(
+            src,
+            &dest,
+            collection_name,
+            &mut imports,
+            &ctx,
+            include,
+            None,
+            id_strip_suffix,
+            &mut broken,
+            &mut md,
+            &mut cross_links,
+            &mut headings,
+        )
+        .expect("materialise_collection tick");
+        writer.prune_stale().expect("prune");
+        writer.mark_clean();
+        CollectionTickOut {
+            imports,
+            headings,
+            cross_links,
+        }
+    }
+
+    /// A `PipelineSpec` with transclude (and therefore a `ReadRecorder`)
+    /// armed, anchored at `project_root` / `public_dir` so the
+    /// context-aware plugins actually fire and record their reads.
+    fn transclude_spec(project_root: &Path) -> zfb_content::PipelineSpec {
+        let features = zfb_content::MarkdownFeaturesConfig {
+            transclude: Some(zfb_content::TranscludeConfig::default()),
+            ..Default::default()
+        };
+        zfb_content::PipelineSpec {
+            features: Some(features),
+            build_context_roots: Some((project_root.to_path_buf(), project_root.to_path_buf())),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn content_skip_unchanged_file_is_skipped_and_still_contributes_import() {
+        // Tick 1 materialises; tick 2 (source untouched) must SKIP the
+        // file — reusing its cached bridge import without re-reading /
+        // re-compiling / re-writing — yet still contribute the import.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        // A heading so the file contributes a `FileHeadings` record we can
+        // assert is replayed on skip (rule 2: the build-wide cross-file
+        // anchor check runs every tick and must still see this file).
+        fs::write(src.join("intro.mdx"), "# Intro\n\nbody one\n").unwrap();
+
+        let mut session = ShadowSession::new().unwrap();
+        let out1 = run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+        assert_eq!(out1.imports.len(), 1, "tick 1 must produce one import");
+        // A skip entry must have been recorded for the (dep-free) file.
+        let from = src.join("intro.mdx");
+        assert!(
+            session.content_skip.contains_key(&from),
+            "a dep-free content file must be entered into the skip cache after tick 1"
+        );
+
+        // White-box discriminator: corrupt the dest shadow file AND drop
+        // its `written` hash. A full recompile would land in
+        // write_if_changed's `None` branch and rewrite fresh JSX; a SKIP
+        // leaves the corrupted bytes untouched. This isolates the skip
+        // path from #993's identical-bytes write-elision.
+        let dest_file = session
+            .shadow_root()
+            .join("content")
+            .join("docs")
+            .join("intro.mdx");
+        assert!(
+            dest_file.is_file(),
+            "dest shadow file must exist after tick 1"
+        );
+        fs::write(&dest_file, b"__CORRUPTED_NOT_JSX__").unwrap();
+        let rel = PathBuf::from("content/docs/intro.mdx");
+        session.written.remove(&rel);
+
+        let out2 = run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+
+        // The skipped file STILL contributes its bridge import, byte-equal
+        // to tick 1 (parity), and the dest file was NOT rewritten.
+        assert_eq!(
+            out2.imports.len(),
+            1,
+            "tick 2 must still contribute the import"
+        );
+        assert_eq!(
+            out2.imports[0].specifier, out1.imports[0].specifier,
+            "skipped-file specifier must be byte-identical to tick 1"
+        );
+        assert_eq!(
+            out2.imports[0].shadow_rel_path, out1.imports[0].shadow_rel_path,
+            "skipped-file shadow_rel_path must be byte-identical to tick 1"
+        );
+        let after = fs::read(&dest_file).unwrap();
+        assert_eq!(
+            after, b"__CORRUPTED_NOT_JSX__",
+            "an unchanged file must be SKIPPED — its shadow JSX must not be re-written"
+        );
+
+        // Rule 2: the skipped file must STILL contribute its cross-file
+        // anchor records (FileHeadings) to the out-params, so a link from
+        // a changed file to a heading here cannot falsely report broken.
+        // The default pipeline does not run linkValidation, so the
+        // headings channel may be empty; assert the replay is at least
+        // byte-equal to tick 1 (same records, whatever they are).
+        assert_eq!(
+            out2.headings, out1.headings,
+            "skipped-file FileHeadings replay must equal tick 1's contribution"
+        );
+        assert_eq!(
+            out2.cross_links, out1.cross_links,
+            "skipped-file cross-link replay must equal tick 1's contribution"
+        );
+    }
+
+    /// A `PipelineSpec` with linkValidation armed (which populates the
+    /// per-file `FileHeadings` cross-file channel), anchored at
+    /// `project_root`.
+    fn link_validation_spec(project_root: &Path) -> zfb_content::PipelineSpec {
+        let features = zfb_content::MarkdownFeaturesConfig {
+            link_validation: Some(zfb_content::LinkValidationConfig::default()),
+            ..Default::default()
+        };
+        zfb_content::PipelineSpec {
+            features: Some(features),
+            build_context_roots: Some((project_root.to_path_buf(), project_root.to_path_buf())),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn content_skip_replays_nonempty_headings_for_skipped_file() {
+        // With linkValidation armed, a heading-only (link-free) file is
+        // still dep-free, so it is skip-cached — and its NON-EMPTY
+        // FileHeadings record must be replayed on skip, proving the
+        // cross-file anchor check still sees the skipped file (rule 2).
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("anchored.mdx"),
+            "# Top Heading\n\n## Second Heading\n\nbody\n",
+        )
+        .unwrap();
+
+        let mut session = ShadowSession::new().unwrap();
+        let out1 = run_collection_tick(
+            &mut session,
+            link_validation_spec(tmp.path()),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+        // The file is dep-free (no link reads) ⇒ skip-cached, and it
+        // surfaced a non-empty headings record.
+        let from = src.join("anchored.mdx");
+        assert!(
+            session.content_skip.contains_key(&from),
+            "a heading-only, link-free file must be skip-cached even with linkValidation on"
+        );
+        assert_eq!(
+            out1.headings.len(),
+            1,
+            "exactly one FileHeadings record for the file"
+        );
+        assert!(
+            !out1.headings[0].headings.is_empty(),
+            "the file has anchor-addressable headings — the record must be non-empty"
+        );
+
+        let out2 = run_collection_tick(
+            &mut session,
+            link_validation_spec(tmp.path()),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+        // Tick 2 skips, yet replays the identical non-empty headings.
+        assert_eq!(
+            out2.headings, out1.headings,
+            "skip must replay the file's non-empty FileHeadings byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn content_skip_changed_file_is_rematerialised() {
+        // A file whose bytes (and so size/mtime) change must take the
+        // full path on tick 2: the dest is rewritten with fresh JSX.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        let file = src.join("intro.mdx");
+        fs::write(&file, "# Intro\n\nbody one\n").unwrap();
+
+        let mut session = ShadowSession::new().unwrap();
+        let out1 = run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+
+        // Change the body (different length ⇒ size differs ⇒ skip key
+        // misses even if mtime granularity is coarse).
+        fs::write(&file, "# Intro\n\nbody two is a bit longer than one\n").unwrap();
+
+        let out2 = run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+
+        // Different body ⇒ different content hash ⇒ different specifier.
+        assert_eq!(out2.imports.len(), 1);
+        assert_ne!(
+            out2.imports[0].specifier, out1.imports[0].specifier,
+            "a changed file must recompile to a fresh specifier (no false skip)"
+        );
+        // The shadow JSX reflects the new body.
+        let dest_file = session
+            .shadow_root()
+            .join("content")
+            .join("docs")
+            .join("intro.mdx");
+        let jsx = fs::read_to_string(&dest_file).unwrap();
+        assert!(
+            jsx.contains("_createMdxContent"),
+            "changed file must be recompiled to JSX; got:\n{jsx}"
+        );
+    }
+
+    #[test]
+    fn content_skip_transcluding_file_is_never_skipped() {
+        // A file that transcludes another records an external read, so it
+        // must NEVER enter the skip cache (rule 3) — even when its own
+        // bytes/mtime are unchanged, because the transcluded file can
+        // change underneath it.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        // The transcluding file (depends on snippet.md) and a plain
+        // sibling (dep-free) so we can contrast the two.
+        fs::write(
+            src.join("page.mdx"),
+            "# Page\n\n:::include{file=\"./snippet.md\"}\n",
+        )
+        .unwrap();
+        fs::write(src.join("snippet.md"), "included body\n").unwrap();
+        fs::write(src.join("plain.mdx"), "# Plain\n\nno deps\n").unwrap();
+
+        let mut session = ShadowSession::new().unwrap();
+        let spec = transclude_spec(tmp.path());
+        run_collection_tick(&mut session, spec, &src, "docs", None, None);
+
+        let page = src.join("page.mdx");
+        let plain = src.join("plain.mdx");
+        // snippet.md is also compiled as its own content file, but it has
+        // no deps, so it CAN be cached; the transcluding page must not.
+        assert!(
+            !session.content_skip.contains_key(&page),
+            "a transcluding file must NOT be entered into the skip cache"
+        );
+        assert!(
+            session.content_skip.contains_key(&plain),
+            "a dep-free sibling must still be cached (control)"
+        );
+    }
+
+    #[test]
+    fn content_skip_add_then_delete_prunes_with_no_stale_shadow() {
+        // Tick 1: only a.mdx exists. Tick 2: add b.mdx (materialises).
+        // Tick 3: delete b.mdx — it is no longer walked, so the prune
+        // pass must remove its shadow file and no stale entry survives.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.mdx"), "# A\n\naye\n").unwrap();
+
+        let mut session = ShadowSession::new().unwrap();
+        run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+
+        // Add b.mdx.
+        let b = src.join("b.mdx");
+        fs::write(&b, "# B\n\nbee\n").unwrap();
+        let out2 = run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+        assert_eq!(out2.imports.len(), 2, "tick 2 must materialise both files");
+        let b_dest = session
+            .shadow_root()
+            .join("content")
+            .join("docs")
+            .join("b.mdx");
+        assert!(b_dest.is_file(), "b.mdx shadow file must exist after add");
+
+        // Delete b.mdx and re-run: it is not walked, so the prune pass
+        // must delete its shadow file and drop the skip entry.
+        fs::remove_file(&b).unwrap();
+        let out3 = run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            None,
+            None,
+        );
+        assert_eq!(
+            out3.imports.len(),
+            1,
+            "tick 3 must drop the deleted file's import"
+        );
+        assert!(
+            !b_dest.exists(),
+            "the deleted file's shadow copy must be pruned (no stale module)"
+        );
+        // a.mdx must still be present and skipped-but-contributing.
+        let a_dest = session
+            .shadow_root()
+            .join("content")
+            .join("docs")
+            .join("a.mdx");
+        assert!(
+            a_dest.is_file(),
+            "the surviving file's shadow copy must remain"
+        );
+    }
+
+    #[test]
+    fn content_skip_strip_suffix_parity_skipped_equals_full_compile() {
+        // The skipped-file bridge import for an `idStripSuffix` collection
+        // must be byte-identical to the full-compile import (the
+        // snapshot↔bridge specifier-parity invariant). We obtain the
+        // ground-truth full-compile import from a SEPARATE fresh session
+        // (so it never skips), and compare it against the SKIP-produced
+        // import from a reused session.
+        let strip = Some(".en");
+        let body = "# Guide\n\nstrip-suffix body\n";
+
+        // Ground truth: a fresh session, single tick → full compile.
+        let tmp_truth = tempfile::tempdir().unwrap();
+        let src_truth = tmp_truth.path().join("docs");
+        fs::create_dir_all(&src_truth).unwrap();
+        fs::write(src_truth.join("guide.en.mdx"), body).unwrap();
+        let mut truth_session = ShadowSession::new().unwrap();
+        let truth = run_collection_tick(
+            &mut truth_session,
+            zfb_content::PipelineSpec::default(),
+            &src_truth,
+            "docs",
+            strip,
+            None,
+        );
+        assert_eq!(truth.imports.len(), 1);
+        let full_specifier = truth.imports[0].specifier.clone();
+        // Sanity: the `.en` suffix is stripped from the slug segment.
+        assert!(
+            !full_specifier.contains(".en#") && !full_specifier.contains(".en/"),
+            "idStripSuffix must strip `.en` from the specifier slug; got {full_specifier}"
+        );
+
+        // Skip path: same source in a reused session; tick 2 skips.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("guide.en.mdx"), body).unwrap();
+        let mut session = ShadowSession::new().unwrap();
+        run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            strip,
+            None,
+        );
+        let from = src.join("guide.en.mdx");
+        assert!(
+            session.content_skip.contains_key(&from),
+            "strip-suffix file must be skip-cached"
+        );
+        let out2 = run_collection_tick(
+            &mut session,
+            zfb_content::PipelineSpec::default(),
+            &src,
+            "docs",
+            strip,
+            None,
+        );
+        assert_eq!(out2.imports.len(), 1);
+        assert_eq!(
+            out2.imports[0].specifier, full_specifier,
+            "the skipped-file specifier MUST byte-equal the full-compile specifier (parity)"
+        );
+    }
+
+    #[test]
+    fn content_skip_sessionless_never_skips() {
+        // The sessionless (`bundle()` / prod) path must never engage the
+        // skip cache: passthrough writers report `in_session() == false`,
+        // so every tick takes the full materialise path. Two runs through
+        // the passthrough ctx both write the dest fresh.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("intro.mdx"), "# Intro\n\nbody\n").unwrap();
+        let dest = tmp.path().join("shadow").join("content").join("docs");
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
+        assert!(
+            !ctx.writer.in_session(),
+            "default (passthrough) test writer must report not-in-session"
+        );
+
+        let mut imports = Vec::new();
+        materialise_collection(
+            &src,
+            &dest,
+            "docs",
+            &mut imports,
+            &ctx,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        // Corrupt the dest, then re-run: a passthrough write always
+        // remove-firsts and rewrites (no write-if-changed elision, no
+        // skip), so the dest is fresh JSX again.
+        let dest_file = dest.join("intro.mdx");
+        fs::write(&dest_file, b"__CORRUPTED__").unwrap();
+        let mut imports2 = Vec::new();
+        materialise_collection(
+            &src,
+            &dest,
+            "docs",
+            &mut imports2,
+            &ctx,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let jsx = fs::read_to_string(&dest_file).unwrap();
+        assert!(
+            jsx.contains("_createMdxContent"),
+            "sessionless re-run must re-materialise fresh JSX (no skip); got:\n{jsx}"
+        );
+        assert_eq!(imports2.len(), 1);
     }
 
     #[test]
