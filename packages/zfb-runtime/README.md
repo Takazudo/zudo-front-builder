@@ -95,6 +95,109 @@ import type { ContentSnapshot } from "@takazudo/zfb-runtime/snapshot";
 import { ClientRouter } from "@takazudo/zfb-runtime/client-router";
 ```
 
+#### Enabling SPA soft-navigation (the runtime ships automatically)
+
+Mounting `<ClientRouter />` in your layout `<head>` is normally **all you need**.
+The build detects the usage and automatically ships the client-router runtime to
+the browser — you do **not** have to add a manual `"use client"` bootstrap
+island.
+
+```tsx
+import { ClientRouter } from "@takazudo/zfb-runtime";
+
+export default function Layout({ children }) {
+  return (
+    <html>
+      <head>
+        <ClientRouter fallback="animate" />
+      </head>
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+**How the runtime reaches the browser.** `<ClientRouter />` itself only renders
+SSR `<head>` tags. The click/form interception is registered by an `init()` call
+that runs as a side effect when `@takazudo/zfb-runtime/client-router` is imported
+in the browser, guarded so it never runs during SSR:
+
+```ts
+// inside @takazudo/zfb-runtime — client-router.ts
+if (typeof document !== "undefined") {
+  init();
+}
+```
+
+To get that side-effect import into the client bundle, zfb's island scanner
+detects when a page transitively reaches `<ClientRouter />` and injects
+`import "@takazudo/zfb-runtime/client-router"` into the islands asset
+(`assets/islands.js`) — **even when the project has no `"use client"` islands of
+its own**. The asset is then loaded on the page, the import runs, and `init()`
+fires on the client with zero boilerplate. (Auto-include added in zfb #289 /
+#307; the runtime is byte-for-byte absent from projects that never reach
+`<ClientRouter />`.)
+
+**What counts as a `ClientRouter` usage the scanner detects:**
+
+- a named `ClientRouter` import from the `@takazudo/zfb-runtime` barrel —
+  `import { ClientRouter } from "@takazudo/zfb-runtime"` (renamed forms like
+  `{ ClientRouter as CR }` match on the imported name), or
+- any import or re-export of the `@takazudo/zfb-runtime/client-router` subpath
+  (e.g. when you only need `navigate` / `prefetch`), or
+- a named `ClientRouter` imported from a *local* barrel that re-exports the
+  runtime via `export * from "@takazudo/zfb-runtime"`.
+
+The importing module has to be reachable from a page in `pages/` — that is the
+import graph the scanner walks.
+
+**When you need a manual side-effect import.** Detection keys off the *import* of
+`ClientRouter`, and a couple of shapes are deliberately **not** treated as a
+trigger — firing on them would ship the runtime to projects that only reference
+`ClientRouter` as a type or never call it:
+
+- a namespace import — `import * as rt from "@takazudo/zfb-runtime"` used as
+  `rt.ClientRouter`, and
+- a type-only import — `import type { ClientRouter }` (or `{ type ClientRouter }`).
+
+If soft-navigation is not working because your reference takes one of these forms
+(or the mounting module is otherwise not reachable from a page), force the
+runtime in with an explicit side-effect import from a page-reachable
+`"use client"` island. The island renders nothing; running its bundle in the
+browser fires the same `typeof document !== "undefined"` guard (`init()` is
+idempotent, so reaching it again is a no-op):
+
+```tsx
+// src/components/client-router-bootstrap.tsx
+"use client";
+import "@takazudo/zfb-runtime/client-router";
+
+export default function ClientRouterBootstrap() {
+  return null;
+}
+
+// Stable marker name so the SSR marker, the scanner record, and the hydration
+// manifest agree under production minification.
+ClientRouterBootstrap.displayName = "ClientRouterBootstrap";
+```
+
+```tsx
+import { Island } from "@takazudo/zfb";
+import ClientRouterBootstrap from "@/components/client-router-bootstrap";
+
+// Mount once near the end of <body>; when="load" registers the intercepts as
+// soon as the islands runtime starts.
+<Island when="load">
+  <ClientRouterBootstrap />
+</Island>;
+```
+
+This is the escape hatch, not the default — prefer a plain
+`import { ClientRouter } from "@takazudo/zfb-runtime"`, which the scanner detects
+on its own. See the [Client-Side Routing concept
+guide](https://takazudomodular.com/pj/zudo-front-builder/docs/concepts/client-side-routing/)
+for the full API.
+
 ### `createPageRouter(options) → PageRouter`
 
 Build a fetch-handler that serves the supplied pages. The returned
