@@ -5,8 +5,8 @@ sidebar_position: 1056
 
 # v0.1.0-next.56
 
-Released: 2026-06-21
+Released: 2026-06-22
 
-## Bug Fixes
+## Other Changes
 
-- fix(zfb-build): make the incremental dev-materialise skip key SHA-256-accurate for collection `.mdx` (#1151) — the per-session skip cache (#1148) keyed collection content on `(mtime, size)`, a weaker signal than the SHA-256 content hash the per-tick content snapshot already computes. A content edit that preserved `(mtime, size)` (coarse-mtime filesystems, or `touch -r` / `rsync --times`) could be falsely skipped, replaying a stale `mdx://…#hash` specifier so the page rendered the raw-markdown `<pre>` fallback. The collection skip now additionally requires the cached bridge specifier to still appear in the current snapshot's specifier set — reusing the snapshot's already-computed hash (free, no new hashing pass) and guaranteeing snapshot↔bridge parity. Source / non-collection files keep the `(mtime, size)` key by design (no bridge invariant). Production builds are sessionless and never skip, so they were unaffected.
+- docs(zfb-runtime): document the `<ClientRouter />` runtime auto-include behavior and the bootstrap-island escape hatch in the README. Mounting `<ClientRouter />` already ships the client-router runtime to the browser automatically (the island scanner injects the side-effect import into `assets/islands.js`); the manual `"use client"` bootstrap island is now documented only as the fallback for the import shapes detection deliberately skips (`import * as`, `import type`). (#1152, 91e575f, 488d4b9)
