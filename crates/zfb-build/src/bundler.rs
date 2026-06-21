@@ -941,6 +941,23 @@ pub struct ShadowSession {
     /// wipe just deleted, so a stale entry would reuse a vanished file.
     /// Cleared alongside `written` / `prev_visited` in [`ShadowWriter::new`].
     content_skip: HashMap<PathBuf, ContentSkipEntry>,
+    /// Incremental NON-MDX source/asset skip cache (zfb#1148), keyed by
+    /// the DESTINATION shadow-relative path (same rationale as
+    /// `content_skip` — the same source can land at two dests). Lets a
+    /// later tick skip the plain copy/symlink of a source or asset file
+    /// whose own `(mtime, size)` is unchanged — the dominant cost of the
+    /// extra-top-level-dir pass over large ancillary trees (`doc/`,
+    /// `sub-packages/`, `static/`, …), which `materialise_source_file`
+    /// otherwise re-copies/re-symlinks every tick.
+    ///
+    /// A plain copy/symlink is a pure function of the file's own bytes, so
+    /// an unchanged `(mtime, size)` is an exact skip. Files using
+    /// `import.meta.glob` are NEVER skipped (`has_glob` gate) — their
+    /// expansion depends on the live project tree, so they re-expand every
+    /// tick, preserving glob add/remove soundness.
+    ///
+    /// Cleared on the same dirty/copy_mode wipe as `content_skip`.
+    source_skip: HashMap<PathBuf, SourceSkipEntry>,
 }
 
 impl ShadowSession {
@@ -957,6 +974,7 @@ impl ShadowSession {
             dirty: false,
             copy_mode: None,
             content_skip: HashMap::new(),
+            source_skip: HashMap::new(),
         })
     }
 
@@ -1089,6 +1107,7 @@ impl<'s> ShadowWriter<'s> {
                     // wipe from ever leaving us reusing a vanished file
                     // (zfb#1148, rule 5).
                     s.content_skip.clear();
+                    s.source_skip.clear();
                 }
                 s.copy_mode = Some(copy_mode);
                 // Armed for the whole call; cleared by `mark_clean()` only
@@ -1305,6 +1324,33 @@ impl<'s> ShadowWriter<'s> {
     fn content_skip_remove(&self, dest_rel: &Path) {
         if let Some(cell) = &self.session {
             cell.borrow_mut().content_skip.remove(dest_rel);
+        }
+    }
+
+    /// Look up a NON-MDX source/asset skip entry by its DESTINATION
+    /// shadow-relative path (zfb#1148; session mode only). The caller
+    /// validates the stored source `(mtime, size)`, the `!has_glob` gate,
+    /// and the dest existence before honouring it.
+    fn source_skip_get(&self, dest_rel: &Path) -> Option<SourceSkipEntry> {
+        let cell = self.session.as_ref()?;
+        cell.borrow().source_skip.get(dest_rel).cloned()
+    }
+
+    /// Insert/update a NON-MDX source/asset skip entry keyed by its
+    /// DESTINATION shadow-relative path (session mode only; no-op in
+    /// passthrough).
+    fn source_skip_store(&self, dest_rel: PathBuf, entry: SourceSkipEntry) {
+        if let Some(cell) = &self.session {
+            cell.borrow_mut().source_skip.insert(dest_rel, entry);
+        }
+    }
+
+    /// Drop a NON-MDX source/asset skip entry by its DESTINATION
+    /// shadow-relative path (session mode only; no-op in passthrough).
+    /// Called when the file's own stat cannot be taken — no sound skip key.
+    fn source_skip_remove(&self, dest_rel: &Path) {
+        if let Some(cell) = &self.session {
+            cell.borrow_mut().source_skip.remove(dest_rel);
         }
     }
 
@@ -3177,6 +3223,39 @@ struct ContentSkipEntry {
     cross_links: Vec<CrossFileLinkCandidate>,
 }
 
+/// One NON-MDX source/asset file's cached materialise state, keyed in
+/// [`ShadowSession::source_skip`] by its DESTINATION shadow-relative path
+/// (zfb#1148). Lets a later tick skip the plain copy/symlink of a file
+/// whose own `(mtime, size)` is unchanged.
+///
+/// `materialise_source_file` does exactly two things: expand
+/// `import.meta.glob` (cross-file — must re-run every tick) then write, OR
+/// a plain copy/symlink (a pure function of the file's own bytes). So a
+/// file is skippable iff its `(mtime, size)` is unchanged AND it does NOT
+/// use a glob (`has_glob == false`). The persistent shadow already holds
+/// the correct copy/symlink from the last full pass; a skip only
+/// re-marks the dest visited (so the prune keeps it) — no read, no copy,
+/// no expand.
+#[derive(Debug, Clone)]
+struct SourceSkipEntry {
+    /// Absolute SOURCE path this dest was materialised from. The dest is
+    /// the cache KEY; the skip check stats the SOURCE and re-confirms it
+    /// matches before honouring the skip.
+    source: PathBuf,
+    /// Source-file mtime at materialise time. With `size`, the skip key.
+    mtime: std::time::SystemTime,
+    /// Source-file byte length at materialise time.
+    size: u64,
+    /// Whether this file's text contained `import.meta.glob` at materialise
+    /// time (always `false` for binary/asset files that skip the UTF-8
+    /// pre-read entirely). A glob file's expansion depends on the live
+    /// project tree, so it is NEVER skipped — it gets an entry, but the
+    /// skip-check's `!has_glob` gate refuses it, re-expanding every tick. A
+    /// file flipping to/from using a glob changes its mtime → full path →
+    /// `has_glob` re-detected.
+    has_glob: bool,
+}
+
 /// What to do with the bridge import after a full MDX compile inside
 /// [`materialise_mdx_with_skip`]. The caller decides because the bridge
 /// import is pass-specific:
@@ -3934,16 +4013,66 @@ fn materialise_source_file(
     copy_mode: bool,
     writer: &ShadowWriter<'_>,
 ) -> Result<()> {
+    // Incremental NON-MDX skip (zfb#1148). In session mode ONLY
+    // (passthrough/prod never skips): a plain copy/symlink is a pure
+    // function of the file's own bytes, so an unchanged `(mtime, size)`
+    // reuses the dest already in the persistent shadow — no read, no copy,
+    // no glob expand. Skippable iff a dest-keyed entry matches the source
+    // `(mtime, size)`, the dest still exists, AND the file does NOT use a
+    // glob (`!has_glob` — glob files re-expand every tick because their
+    // output depends on the live project tree). The `(mtime, size)` stat
+    // is the only I/O on the skip path — the win on large ancillary trees
+    // (`doc/`, `sub-packages/`, `static/`, …) that this otherwise
+    // re-copies/re-symlinks every tick.
+    let dest_rel = writer.rel_of(to).ok();
+    if writer.in_session() {
+        if let Some(dest_rel) = dest_rel.as_ref() {
+            if let Some((mtime, size)) = file_stat(from) {
+                if let Some(entry) = writer.source_skip_get(dest_rel) {
+                    // Never false-reuse: entry must describe THIS source,
+                    // its `(mtime, size)` must match, it must not be a glob
+                    // file, and the dest must still exist on disk (regular
+                    // file OR symlink — `symlink_metadata` does not follow,
+                    // so a present link entry counts; its target is `from`,
+                    // which we just confirmed exists).
+                    let dest_exists = fs::symlink_metadata(to).is_ok();
+                    if entry.source == from
+                        && entry.mtime == mtime
+                        && entry.size == size
+                        && !entry.has_glob
+                        && dest_exists
+                    {
+                        // Mark the un-touched dest visited so the prune pass
+                        // keeps it (works for both copies and symlinks).
+                        writer.record_visited(to).with_context(|| {
+                            format!("record visited (source skip) {}", to.display())
+                        })?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Full path: the original materialise + (re)store the skip entry. ----
     let is_js_like = matches!(
         from.extension().and_then(|s| s.to_str()),
         Some("ts") | Some("tsx") | Some("js") | Some("jsx")
     );
+    // `has_glob` is the skip gate: a file that uses `import.meta.glob` must
+    // never be skipped (its expansion depends on other files). It is `true`
+    // only when the file is JS-like, reads as UTF-8, AND contains the
+    // literal substring — exactly the predicate that selects the expand
+    // branch below. Binary/asset files (non-UTF-8 or non-JS) are always
+    // `false`.
+    let mut has_glob = false;
     if is_js_like {
         // Cheap pre-read of the file is only worthwhile when it might contain
         // the macro. `fs::read_to_string` fails on non-UTF-8; in that case
         // (binary masquerading as .js, etc.) fall back to copy.
         if let Ok(source) = fs::read_to_string(from) {
             if source.contains("import.meta.glob") {
+                has_glob = true;
                 let file_dir = from.parent().unwrap_or_else(|| Path::new("."));
                 let expanded = expand_import_meta_glob(&source, file_dir, is_excluded)
                     .with_context(|| format!("expand import.meta.glob in {}", from.display()))?;
@@ -3956,6 +4085,7 @@ fn materialise_source_file(
                 writer
                     .write_if_changed(to, expanded.as_bytes())
                     .with_context(|| format!("write expanded source to {}", to.display()))?;
+                store_source_skip_entry(writer, dest_rel, from, has_glob);
                 return Ok(());
             }
         }
@@ -3966,11 +4096,43 @@ fn materialise_source_file(
         // — from the shadow tree, not the canonicalised original.
         writer
             .copy_if_changed(from, to)
-            .with_context(|| format!("copy (copy_mode) {} -> {}", from.display(), to.display()))
+            .with_context(|| format!("copy (copy_mode) {} -> {}", from.display(), to.display()))?;
     } else {
         writer
             .symlink_if_absent(from, to)
-            .with_context(|| format!("symlink_or_copy {} -> {}", from.display(), to.display()))
+            .with_context(|| format!("symlink_or_copy {} -> {}", from.display(), to.display()))?;
+    }
+    store_source_skip_entry(writer, dest_rel, from, has_glob);
+    Ok(())
+}
+
+/// Store (or, on a failed source stat, drop) the NON-MDX source/asset
+/// skip entry for `from` materialised to dest `dest_rel` (zfb#1148).
+/// Session mode only (no-op in passthrough — `dest_rel` is `None` /
+/// the writer has no session). `has_glob` records whether this file used
+/// `import.meta.glob` so the skip-check can refuse to skip it.
+fn store_source_skip_entry(
+    writer: &ShadowWriter<'_>,
+    dest_rel: Option<PathBuf>,
+    from: &Path,
+    has_glob: bool,
+) {
+    if !writer.in_session() {
+        return;
+    }
+    let Some(dest_rel) = dest_rel else { return };
+    match file_stat(from) {
+        Some((mtime, size)) => writer.source_skip_store(
+            dest_rel,
+            SourceSkipEntry {
+                source: from.to_path_buf(),
+                mtime,
+                size,
+                has_glob,
+            },
+        ),
+        // Could not stat the source — cannot build a sound skip key.
+        None => writer.source_skip_remove(&dest_rel),
     }
 }
 
@@ -7278,6 +7440,189 @@ mod tests {
             fs::read(&shadow_dest).unwrap(),
             b"__CORRUPT_SHADOW__",
             "materialise_shadow dest must be SKIPPED (not re-written) on tick 2"
+        );
+    }
+
+    /// Run ONE tick that materialises each `(src_file, dest_rel)` pair
+    /// through `materialise_source_file` against `session`, mirroring the
+    /// writer lifecycle (build writer + wipe, materialise, prune,
+    /// mark_clean). `dest_rel` is shadow-root-relative (forward slashes).
+    /// Returns nothing; tests inspect the session + shadow tree.
+    fn run_source_tick(session: &mut ShadowSession, files: &[(&Path, &str)]) {
+        let shadow_root = session.shadow_root().to_path_buf();
+        let writer = ShadowWriter::new(shadow_root.clone(), Some(session), false)
+            .expect("session writer construction");
+        for (from, dest_rel) in files {
+            let to = shadow_root.join(dest_rel);
+            if let Some(parent) = to.parent() {
+                writer.ensure_dir(parent).expect("ensure dest parent dir");
+            }
+            materialise_source_file(from, &to, &|_| false, false, &writer)
+                .expect("materialise_source_file tick");
+        }
+        writer.prune_stale().expect("prune");
+        writer.mark_clean();
+    }
+
+    #[test]
+    fn source_skip_plain_file_is_skipped_on_second_tick() {
+        // A plain (non-glob) `.ts` source is symlinked on tick 1 and
+        // SKIPPED on tick 2 (source untouched). White-box: replace the
+        // dest with a corrupt REGULAR file + drop its `written` hash — a
+        // full re-materialise would re-symlink/overwrite; a skip leaves
+        // the corruption untouched.
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("util.ts");
+        fs::write(&from, "export const x = 1;\n").unwrap();
+        let dest_rel = "src/util.ts";
+
+        let mut session = ShadowSession::new().unwrap();
+        run_source_tick(&mut session, &[(&from, dest_rel)]);
+        // Entry recorded, non-glob.
+        let key = PathBuf::from(dest_rel);
+        let entry = session
+            .source_skip
+            .get(&key)
+            .expect("plain source file must be skip-cached");
+        assert!(
+            !entry.has_glob,
+            "a non-glob file's entry must record has_glob=false"
+        );
+        assert_eq!(entry.source, from);
+
+        // White-box discriminator: a real file with distinct bytes + no
+        // `written` hash. A full path would re-symlink (removing this file
+        // and creating the link); a skip leaves it.
+        let dest = session.shadow_root().join(dest_rel);
+        fs::remove_file(&dest).ok();
+        fs::write(&dest, b"__CORRUPT_NOT_THE_SOURCE__").unwrap();
+        session.written.remove(&key);
+
+        run_source_tick(&mut session, &[(&from, dest_rel)]);
+        assert_eq!(
+            fs::read(&dest).unwrap(),
+            b"__CORRUPT_NOT_THE_SOURCE__",
+            "an unchanged plain file must be SKIPPED — dest not re-materialised"
+        );
+    }
+
+    #[test]
+    fn source_skip_glob_file_is_never_skipped() {
+        // A `.ts` file using `import.meta.glob` must be re-expanded every
+        // tick (its expansion depends on the live tree). It gets an entry
+        // (has_glob=true) but the skip gate refuses it. White-box: corrupt
+        // the dest + drop its written hash; tick 2 must re-expand and
+        // overwrite with the expanded barrel.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("styleguide");
+        fs::create_dir_all(dir.join("widgets")).unwrap();
+        fs::write(dir.join("widgets/a.tsx"), "export const a = 1;\n").unwrap();
+        let from = dir.join("barrel.ts");
+        fs::write(
+            &from,
+            "const m = import.meta.glob('./widgets/*.tsx', { eager: true });\nexport default m;\n",
+        )
+        .unwrap();
+        let dest_rel = "src/styleguide/barrel.ts";
+
+        let mut session = ShadowSession::new().unwrap();
+        run_source_tick(&mut session, &[(&from, dest_rel)]);
+        let key = PathBuf::from(dest_rel);
+        let entry = session
+            .source_skip
+            .get(&key)
+            .expect("glob file is still entered into the cache");
+        assert!(
+            entry.has_glob,
+            "a glob file's entry must record has_glob=true"
+        );
+        // The dest holds the EXPANDED barrel (macro removed).
+        let dest = session.shadow_root().join(dest_rel);
+        let first = fs::read_to_string(&dest).unwrap();
+        assert!(
+            !first.contains("import.meta.glob(") && first.contains("__glob_0"),
+            "tick 1 must expand the glob; got:\n{first}"
+        );
+
+        // Corrupt + drop written hash: a skip would leave the corruption, a
+        // re-expand overwrites with the barrel again.
+        fs::write(&dest, b"__CORRUPT__").unwrap();
+        session.written.remove(&key);
+        run_source_tick(&mut session, &[(&from, dest_rel)]);
+        let second = fs::read_to_string(&dest).unwrap();
+        assert!(
+            !second.contains("import.meta.glob(") && second.contains("__glob_0"),
+            "a glob file must be RE-EXPANDED every tick (never skipped); got:\n{second}"
+        );
+    }
+
+    #[test]
+    fn source_skip_changed_plain_file_is_rematerialised() {
+        // A plain file whose bytes (size) change must take the full path on
+        // tick 2 — the dest reflects the new content.
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("util.ts");
+        fs::write(&from, "export const x = 1;\n").unwrap();
+        let dest_rel = "src/util.ts";
+
+        let mut session = ShadowSession::new().unwrap();
+        run_source_tick(&mut session, &[(&from, dest_rel)]);
+
+        // White-box: corrupt the dest + drop its written hash so a full
+        // re-materialise is observable (re-symlink replaces the file).
+        let dest = session.shadow_root().join(dest_rel);
+        fs::remove_file(&dest).ok();
+        fs::write(&dest, b"__CORRUPT__").unwrap();
+        session.written.remove(&PathBuf::from(dest_rel));
+
+        // Change the source (different length ⇒ size differs ⇒ skip miss).
+        fs::write(&from, "export const x = 1;\nexport const y = 2;\n").unwrap();
+        run_source_tick(&mut session, &[(&from, dest_rel)]);
+
+        // The dest is now a symlink to the (new) source again, NOT the
+        // corruption — so reading it follows the link to the source body.
+        let resolved = fs::read_to_string(&dest).unwrap();
+        assert!(
+            resolved.contains("export const y = 2;"),
+            "a changed plain file must be RE-MATERIALISED; got:\n{resolved}"
+        );
+    }
+
+    #[test]
+    fn source_skip_binary_asset_is_skipped_on_second_tick() {
+        // A binary/asset file (non-UTF-8, non-JS) takes the copy/symlink
+        // path with has_glob=false (no UTF-8 pre-read), so it is skipped on
+        // tick 2 exactly like a plain text file.
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("logo.png");
+        // Invalid UTF-8 bytes → `fs::read_to_string` would fail; this path
+        // never reaches the glob pre-read (extension is not JS-like anyway).
+        fs::write(&from, [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]).unwrap();
+        let dest_rel = "static/logo.png";
+
+        let mut session = ShadowSession::new().unwrap();
+        run_source_tick(&mut session, &[(&from, dest_rel)]);
+        let key = PathBuf::from(dest_rel);
+        let entry = session
+            .source_skip
+            .get(&key)
+            .expect("binary asset must be skip-cached");
+        assert!(
+            !entry.has_glob,
+            "a binary asset's entry must record has_glob=false"
+        );
+
+        // White-box: corrupt the dest + drop written hash.
+        let dest = session.shadow_root().join(dest_rel);
+        fs::remove_file(&dest).ok();
+        fs::write(&dest, b"__CORRUPT__").unwrap();
+        session.written.remove(&key);
+
+        run_source_tick(&mut session, &[(&from, dest_rel)]);
+        assert_eq!(
+            fs::read(&dest).unwrap(),
+            b"__CORRUPT__",
+            "an unchanged binary asset must be SKIPPED — dest not re-materialised"
         );
     }
 
