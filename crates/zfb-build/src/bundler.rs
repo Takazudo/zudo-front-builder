@@ -125,7 +125,7 @@ use zfb_content::plugins::util::source_map::{
     build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
 };
 use zfb_content::{
-    compile_mdx_to_jsx_module_cached, compile_mdx_to_jsx_module_cached_with_deps,
+    compile_mdx_to_jsx_module_cached, compile_mdx_to_jsx_module_cached_with_deps, CompiledMdx,
     CrossFileLinkCandidate, FileHeadings, MdxModuleCache,
 };
 use zfb_render::adapters::{make_adapter, Framework};
@@ -924,10 +924,17 @@ pub struct ShadowSession {
     /// differently, so reusing across the flip would mix the two.
     copy_mode: Option<bool>,
     /// Incremental content-materialise skip cache (zfb#1148), keyed by
-    /// the SOURCE `.mdx` path. A content file whose `(mtime, size)` is
-    /// unchanged since the entry was recorded — and whose last compile
-    /// recorded no external reads — reuses its cached bridge import and
-    /// shadow file instead of re-reading / re-compiling / re-writing.
+    /// the DESTINATION shadow-relative path. A content `.md`/`.mdx` whose
+    /// stored source `(mtime, size)` and every recorded dependency are
+    /// unchanged reuses its cached bridge import and shadow file instead
+    /// of re-reading / re-compiling / re-writing.
+    ///
+    /// Keyed by DEST (not source) because the SAME source `.mdx` is
+    /// materialised into two distinct shadow dests each tick — once via
+    /// `materialise_collection` (`content/<name>/foo.mdx`, with a bridge
+    /// import) and once via the extra-top-level-dir `materialise_shadow`
+    /// walk of `src/` (`src/mdx/foo.mdx`, no bridge import). Dest-keying
+    /// gives each pass its own independent entry so both can skip.
     ///
     /// MUST be cleared whenever the session wipes the shadow tree (dirty
     /// or copy_mode flip): the entries describe shadow files that the
@@ -1270,31 +1277,34 @@ impl<'s> ShadowWriter<'s> {
         Ok(())
     }
 
-    /// Look up a content skip-cache entry by source path (zfb#1148).
-    /// Returns a clone of the entry if present (session mode only). The
-    /// caller validates `(mtime, size)` and the dest-file existence
-    /// before honouring it.
-    fn content_skip_get(&self, from: &Path) -> Option<ContentSkipEntry> {
+    /// Look up a content skip-cache entry by its DESTINATION
+    /// shadow-relative path (zfb#1148). The dest path is the key (not the
+    /// source) so the same source materialised into two distinct shadow
+    /// dests — e.g. `content/<name>/foo.mdx` via a collection AND
+    /// `src/mdx/foo.mdx` via the extra-top-level-dir walk — gets two
+    /// independent entries. Returns a clone if present (session mode
+    /// only). The caller validates the stored source's `(mtime, size)`,
+    /// every dep's state, and the dest-file existence before honouring it.
+    fn content_skip_get(&self, dest_rel: &Path) -> Option<ContentSkipEntry> {
         let cell = self.session.as_ref()?;
-        cell.borrow().content_skip.get(from).cloned()
+        cell.borrow().content_skip.get(dest_rel).cloned()
     }
 
-    /// Insert/update a content skip-cache entry (session mode only;
-    /// no-op in passthrough). Called after a full compile that recorded
-    /// no external reads.
-    fn content_skip_store(&self, from: PathBuf, entry: ContentSkipEntry) {
+    /// Insert/update a content skip-cache entry keyed by its DESTINATION
+    /// shadow-relative path (session mode only; no-op in passthrough).
+    fn content_skip_store(&self, dest_rel: PathBuf, entry: ContentSkipEntry) {
         if let Some(cell) = &self.session {
-            cell.borrow_mut().content_skip.insert(from, entry);
+            cell.borrow_mut().content_skip.insert(dest_rel, entry);
         }
     }
 
-    /// Drop a content skip-cache entry (session mode only; no-op in
-    /// passthrough). Called when a file is recompiled and now records
-    /// external reads, or its `(mtime, size)` changed — so a later tick
-    /// never false-reuses a stale entry.
-    fn content_skip_remove(&self, from: &Path) {
+    /// Drop a content skip-cache entry by its DESTINATION shadow-relative
+    /// path (session mode only; no-op in passthrough). Called when a file
+    /// is recompiled but must not be cached (e.g. the defensive
+    /// broken-JSX skip), so a later tick never false-reuses a stale entry.
+    fn content_skip_remove(&self, dest_rel: &Path) {
         if let Some(cell) = &self.session {
-            cell.borrow_mut().content_skip.remove(from);
+            cell.borrow_mut().content_skip.remove(dest_rel);
         }
     }
 
@@ -2679,52 +2689,40 @@ fn materialise_shadow(
         }
 
         if is_mdx {
-            // Reset per-document state (e.g. HeadingLinksPlugin's slug
-            // counter) before each new MDX file so cross-document state
-            // cannot leak and alter content_hash (zfb#187).
-            pipeline.reset_per_entry();
-            // Update per-file source context for ResolveLinksPlugin so
-            // relative links like `./other.mdx` resolve correctly (the
-            // file path also arms the zfb#1030 URL-space fallback for
-            // non-index pages).
-            if ctx.pipeline_spec.resolve_source_map.is_some() {
-                pipeline.set_resolve_links_source_file(from.to_path_buf());
-            }
+            // Incremental-materialise this `.mdx` via the shared core
+            // (zfb#1148). This pass produces NO bridge import (the bridge
+            // map is built by `materialise_collection`); it only mirrors
+            // the compiled shadow `.mdx` for esbuild's resolver. Crucially,
+            // the SAME source `src/mdx/foo.mdx` is also materialised by the
+            // collection pass to `content/<name>/foo.mdx`, so without an
+            // incremental skip here that second walk re-compiled every
+            // content file each dev tick (the residual bottleneck after the
+            // collection pass went incremental). The skip cache is keyed by
+            // DEST, so this pass's entry is independent of the collection
+            // pass's. `import.meta.glob` soundness is untouched — only the
+            // `.mdx` branch is incremental; `.tsx`/`.js`/`.css`/glob
+            // importers below stay full and re-enumerate the on-disk file
+            // set each tick. Body is stripped with the local
+            // `strip_yaml_frontmatter` (this pass has no snapshot-parity
+            // constraint — it emits no bridge specifier).
             let raw =
                 fs::read_to_string(from).with_context(|| format!("read mdx {}", from.display()))?;
-            let body = strip_yaml_frontmatter(&raw);
-            // Process-global compile cache (zfb#905): unchanged files
-            // recompile for free on later dev ticks / sibling walks. The
-            // cache keys on (input, pipeline-config fingerprint, per-file
-            // resolve-links source_dir — zfb#939), so resolveMarkdownLinks
-            // workloads cache too; broken-link diagnostics are stored
-            // with the entry and replayed on hits, so the drain below
-            // sees them either way. A manually-extended pipeline still
-            // transparently bypasses the cache.
-            let compiled = compile_mdx_to_jsx_module_cached(
-                body,
+            let body = strip_yaml_frontmatter(&raw).to_string();
+            materialise_mdx_with_skip(
                 from,
-                Some(MdxModuleCache::process_global()),
-                Some(&mut pipeline),
-            )
-            .with_context(|| format!("compile mdx {}", from.display()))?;
-            // Drain broken-link diagnostics and record them with the file path.
-            for diag in pipeline.take_broken_links() {
-                broken_links_out.push((from.display().to_string(), diag.url));
-            }
-            // Drain generic markdown diagnostics (transclude errors,
-            // imageDimensions warnings, linkValidation findings) — adjacent
-            // to the broken-links drain so all pipeline output is collected
-            // before the shadow write (zfb#953).
-            markdown_diagnostics_out.extend(pipeline.take_markdown_diagnostics());
-            // Drain cross-file anchor-check side channels (#980): candidates
-            // and per-file heading records are buffered here and checked
-            // build-wide after ALL walks complete (gate 2c-anchor).
-            cross_file_links_out.extend(pipeline.take_cross_file_link_candidates());
-            file_headings_out.extend(pipeline.take_file_headings());
-            ctx.writer
-                .write_if_changed(&to, compiled.jsx_source.as_bytes())
-                .with_context(|| format!("write compiled mdx to {}", to.display()))?;
+                &to,
+                ctx,
+                &mut pipeline,
+                &body,
+                // No bridge import on this pass — a throwaway sink; the
+                // closure always returns `NoBridge`, so nothing is pushed.
+                &mut Vec::new(),
+                broken_links_out,
+                markdown_diagnostics_out,
+                cross_file_links_out,
+                file_headings_out,
+                |_compiled| ImportDecision::NoBridge,
+            )?;
         } else if is_md && is_pages_dir {
             // .md page: compile via the MDX pipeline then wrap in a minimal
             // HTML shell.  The compiled body is written to a `_`-prefixed
@@ -3109,12 +3107,13 @@ fn file_stat(path: &Path) -> FileStat {
         .and_then(|m| m.modified().ok().map(|t| (t, m.len())))
 }
 
-/// One content `.mdx` file's cached materialise result, keyed in
-/// [`ShadowSession::content_skip`] by the SOURCE path (`from`). Lets a
-/// later session tick reuse this file's bridge import + cross-file-check
-/// contribution instead of re-reading / re-compiling / re-writing it
-/// (zfb#1148), as long as the file's own `(mtime, size)` AND every
-/// recorded dependency's on-disk state are unchanged.
+/// One content `.md`/`.mdx` file's cached materialise result, keyed in
+/// [`ShadowSession::content_skip`] by its DESTINATION shadow-relative
+/// path. Lets a later session tick reuse this file's bridge import (when
+/// any) + cross-file-check contribution instead of re-reading /
+/// re-compiling / re-writing it (zfb#1148), as long as the stored
+/// SOURCE's `(mtime, size)` AND every recorded dependency's on-disk state
+/// are unchanged.
 ///
 /// Stored for EVERY successfully-compiled content file (the thorough
 /// dep-mtime variant), not only dep-free ones: a file's recorded reads
@@ -3122,10 +3121,18 @@ fn file_stat(path: &Path) -> FileStat {
 /// captured in `deps` and re-checked on the skip path, so a file with
 /// deps is skipped while those deps are byte-stable and re-materialised
 /// the moment any of them changes. A file with zero deps is the trivial
-/// all-deps-unchanged case → still skippable. See the markdown branch of
-/// [`materialise_collection`].
+/// all-deps-unchanged case → still skippable. Used by both
+/// [`materialise_collection`] (bridge pass) and [`materialise_shadow`]'s
+/// `.mdx` branch (the `src/` extra-top-level-dir pass) via the shared
+/// [`materialise_mdx_with_skip`] helper.
 #[derive(Debug, Clone)]
 struct ContentSkipEntry {
+    /// Absolute SOURCE path this dest was materialised from. The dest is
+    /// the cache KEY, but the skip check stats the SOURCE — and the same
+    /// dest could in principle be reused for a different source after a
+    /// restructure, so the entry pins which source it describes and the
+    /// caller re-confirms it matches before honouring the skip.
+    source: PathBuf,
     /// Source-file mtime at the time the cached result was produced. With
     /// `size`, the file's own half of the skip key.
     mtime: std::time::SystemTime,
@@ -3145,15 +3152,18 @@ struct ContentSkipEntry {
     /// was written to, e.g. `content/docs/intro.mdx`. Re-derived as the
     /// absolute shadow path to confirm the file still exists before a
     /// skip, and recorded as "visited" on skip so the prune pass does not
-    /// delete it.
+    /// delete it. Equals the rendered cache key.
     shadow_rel_path: String,
     /// The exact bridge import the full compile produced — REPLAYED
     /// verbatim on a skip so the snapshot↔bridge byte-for-byte specifier
     /// parity holds (the snapshot walker bakes the matching
     /// `module_specifier`; recomputing the specifier on skip risks a
     /// drift for `idStripSuffix` / EN-sibling collections, so we never
-    /// recompute — we replay).
-    import: ContentImport,
+    /// recompute — we replay). `None` for the `materialise_shadow` pass,
+    /// which produces no bridge import (the `src/` walk only mirrors the
+    /// shadow `.mdx` for esbuild's resolver; the bridge map is built by
+    /// the collection pass).
+    import: Option<ContentImport>,
     /// This file's `FileHeadings` contribution — replayed into
     /// `file_headings_out` on skip so the build-wide cross-file anchor
     /// check (which runs every tick) still sees this file's headings. At
@@ -3165,6 +3175,215 @@ struct ContentSkipEntry {
     /// `cross_file_links_out` on skip for the same reason: a link FROM a
     /// changed file TO a heading in this skipped file must still resolve.
     cross_links: Vec<CrossFileLinkCandidate>,
+}
+
+/// What to do with the bridge import after a full MDX compile inside
+/// [`materialise_mdx_with_skip`]. The caller decides because the bridge
+/// import is pass-specific:
+/// - the collection pass builds the `mdx://…` import (and may suppress it
+///   when the compiled JSX would break esbuild — the defensive skip);
+/// - the `materialise_shadow` `src/` pass never produces a bridge import.
+enum ImportDecision {
+    /// Collection pass, healthy JSX: push this import and store a
+    /// skippable entry carrying it (replayed verbatim on a later skip).
+    Bridge(ContentImport),
+    /// `materialise_shadow` pass: no bridge import, but the file is still
+    /// cached (entry carries `import: None`) so a later tick can skip it.
+    NoBridge,
+    /// Collection pass, defensive broken-JSX skip: the file was written to
+    /// the shadow but contributes no bridge import and must NOT be cached
+    /// — every tick recompiles (and re-warns) until the source is fixed.
+    DoNotCache,
+}
+
+/// Shared incremental-materialise core for a single `.md`/`.mdx` content
+/// file (zfb#1148), used by BOTH [`materialise_collection`] (bridge pass)
+/// and [`materialise_shadow`]'s `.mdx` branch (the `src/`
+/// extra-top-level-dir pass). The same source is materialised into two
+/// distinct shadow dests each tick, so the skip cache is keyed by the
+/// DESTINATION shadow-relative path — each pass gets its own entry.
+///
+/// Returns `true` when the file was SKIPPED (cached outputs replayed, no
+/// read/compile/write), `false` when it was fully materialised.
+///
+/// The caller supplies `body` (already frontmatter-stripped — the two
+/// passes strip differently, and the collection pass needs byte-parity
+/// with the snapshot walker) and `import_decision`, a closure that — on
+/// the full path, after the compile — inspects the `CompiledMdx` and
+/// decides the bridge-import disposition (see [`ImportDecision`]).
+///
+/// On a skip the helper: replays the cached import (if any) into
+/// `imports`, extends `file_headings_out` / `cross_file_links_out` with
+/// the cached records (so the build-wide cross-file anchor check still
+/// sees this file), and marks the dest shadow path visited so the prune
+/// pass keeps it. It deliberately does NOT replay per-file
+/// `broken_links_out` / `markdown_diagnostics_out`: those are intra-file
+/// warnings for an unchanged file and need not be re-emitted each tick.
+#[allow(clippy::too_many_arguments)]
+fn materialise_mdx_with_skip(
+    from: &Path,
+    to: &Path,
+    ctx: &MaterialiseCtx<'_, '_>,
+    pipeline: &mut zfb_content::pipeline::Pipeline,
+    body: &str,
+    imports: &mut Vec<ContentImport>,
+    broken_links_out: &mut Vec<(String, String)>,
+    markdown_diagnostics_out: &mut Vec<MarkdownDiagnostic>,
+    cross_file_links_out: &mut Vec<CrossFileLinkCandidate>,
+    file_headings_out: &mut Vec<FileHeadings>,
+    import_decision: impl FnOnce(&CompiledMdx) -> ImportDecision,
+) -> Result<bool> {
+    // The cache is keyed by the DEST shadow-relative path. Compute it
+    // once (used both for the lookup/store key and for the
+    // visited-on-skip mark). In session mode `rel_of` must succeed (the
+    // dest is always under the shadow root); in passthrough we never skip
+    // so the key is unused.
+    let dest_rel = ctx.writer.rel_of(to).ok();
+
+    // ---- Skip path (session mode only — passthrough/prod never skips) ----
+    if ctx.writer.in_session() {
+        if let Some(dest_rel) = dest_rel.as_ref() {
+            if let Some((mtime, size)) = file_stat(from) {
+                if let Some(entry) = ctx.writer.content_skip_get(dest_rel) {
+                    // Never false-reuse (rule 5): the entry must describe
+                    // THIS source, the source's own `(mtime, size)` must
+                    // match, every recorded dep must re-stat unchanged, and
+                    // the cached dest shadow file must still exist. Any
+                    // mismatch / failed stat / vanished dest → full path.
+                    let dest_exists = ctx
+                        .writer
+                        .shadow_root
+                        .join(
+                            entry
+                                .shadow_rel_path
+                                .replace('/', std::path::MAIN_SEPARATOR_STR),
+                        )
+                        .exists();
+                    let deps_unchanged = entry
+                        .deps
+                        .iter()
+                        .all(|(dep_path, recorded)| file_stat(dep_path) == *recorded);
+                    if entry.source == from
+                        && entry.mtime == mtime
+                        && entry.size == size
+                        && deps_unchanged
+                        && dest_exists
+                    {
+                        if let Some(import) = &entry.import {
+                            imports.push(import.clone());
+                        }
+                        file_headings_out.extend(entry.headings.iter().cloned());
+                        cross_file_links_out.extend(entry.cross_links.iter().cloned());
+                        // Mark the un-rewritten shadow file visited so the
+                        // prune pass keeps it (rule 4).
+                        ctx.writer.record_visited(to).with_context(|| {
+                            format!("record visited (content skip) {}", to.display())
+                        })?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Full path: compile, write, and (re)store the skip entry. ----
+
+    // Reset per-document state (e.g. HeadingLinksPlugin's slug counter)
+    // before each new MDX file (zfb#187).
+    pipeline.reset_per_entry();
+    // Update per-file source context for ResolveLinksPlugin (file path
+    // arms the zfb#1030 URL-space fallback for non-index pages).
+    if ctx.pipeline_spec.resolve_source_map.is_some() {
+        pipeline.set_resolve_links_source_file(from.to_path_buf());
+    }
+
+    // Process-global compile cache (zfb#905) + dep-path signal (zfb#1148).
+    let (compiled, recorded_deps) = compile_mdx_to_jsx_module_cached_with_deps(
+        body,
+        from,
+        Some(MdxModuleCache::process_global()),
+        Some(pipeline),
+    )
+    .with_context(|| format!("compile mdx {}", from.display()))?;
+    // Drain broken-link diagnostics and record them with the file path.
+    for diag in pipeline.take_broken_links() {
+        broken_links_out.push((from.display().to_string(), diag.url));
+    }
+    // Drain generic markdown diagnostics adjacent to broken-links (zfb#953).
+    markdown_diagnostics_out.extend(pipeline.take_markdown_diagnostics());
+    // Drain cross-file anchor-check side channels (#980). Snapshot the
+    // out-param lengths BEFORE extending so we can slice out exactly THIS
+    // file's contribution for the skip cache — the cached entry must
+    // replay this file's own headings / cross-links, not the whole
+    // accumulator (zfb#1148).
+    let cross_links_base = cross_file_links_out.len();
+    let headings_base = file_headings_out.len();
+    cross_file_links_out.extend(pipeline.take_cross_file_link_candidates());
+    file_headings_out.extend(pipeline.take_file_headings());
+    ctx.writer
+        .write_if_changed(to, compiled.jsx_source.as_bytes())
+        .with_context(|| format!("write compiled mdx to {}", to.display()))?;
+
+    // Caller decides the bridge-import disposition for this compile.
+    let decision = import_decision(&compiled);
+
+    // Maintain the skip cache (session mode only; no-op in passthrough).
+    // The dest_rel key is required to store — without it we cannot cache.
+    let import = match decision {
+        ImportDecision::Bridge(import) => {
+            imports.push(import.clone());
+            Some(import)
+        }
+        ImportDecision::NoBridge => None,
+        ImportDecision::DoNotCache => {
+            // Broken-JSX defensive skip: never cache; drop any stale entry
+            // so a later tick recompiles.
+            if let Some(dest_rel) = dest_rel.as_ref() {
+                ctx.writer.content_skip_remove(dest_rel);
+            }
+            return Ok(false);
+        }
+    };
+
+    if ctx.writer.in_session() {
+        if let Some(dest_rel) = dest_rel {
+            match file_stat(from) {
+                Some((mtime, size)) => {
+                    let headings = file_headings_out[headings_base..].to_vec();
+                    let cross_links = cross_file_links_out[cross_links_base..].to_vec();
+                    // Stat each recorded dep NOW (right after the compile
+                    // observed it) so the stored state matches what the
+                    // compile actually read.
+                    let deps: Vec<(PathBuf, FileStat)> = recorded_deps
+                        .into_iter()
+                        .map(|p| {
+                            let st = file_stat(&p);
+                            (p, st)
+                        })
+                        .collect();
+                    let shadow_rel_path = path_to_posix_string(&dest_rel);
+                    ctx.writer.content_skip_store(
+                        dest_rel,
+                        ContentSkipEntry {
+                            source: from.to_path_buf(),
+                            mtime,
+                            size,
+                            deps,
+                            shadow_rel_path,
+                            import,
+                            headings,
+                            cross_links,
+                        },
+                    );
+                }
+                // Could not stat the file itself — cannot build a sound
+                // skip key: drop any stale entry.
+                None => ctx.writer.content_skip_remove(&dest_rel),
+            }
+        }
+    }
+
+    Ok(false)
 }
 
 /// Walk one content collection's source root and materialise its
@@ -3316,277 +3535,79 @@ fn materialise_collection(
             Some("md") | Some("mdx")
         );
         if is_markdown {
-            // Incremental-materialise skip (zfb#1148, thorough dep-mtime
-            // variant). In session mode ONLY (passthrough/prod never
-            // skips — rule 6): reuse the cached bridge import + cross-file
-            // contribution verbatim instead of re-reading / re-compiling /
-            // re-writing this file, as long as
-            //   (a) the file's own `(mtime, size)` matches the cached
-            //       entry,
-            //   (b) EVERY recorded dependency re-stats to the same
-            //       on-disk state (present files unchanged in mtime+size;
-            //       absent files still absent), and
-            //   (c) the cached shadow dest file still exists.
-            // The stats are the only I/O on the skip path — vastly cheaper
-            // than the read + compile + write it replaces. The dep re-stat
-            // upgrades the earlier zero-deps rule: real sites wire link
-            // resolution / link-validation (the `ResolveLinksPlugin` /
-            // `LinkValidationPlugin` record reads of linked files), so most
-            // content files DO record reads — the zero-deps rule skipped
-            // almost none of them. Re-checking each dep's mtime/size lets
-            // the many files whose deps are unchanged still skip.
-            //
-            // Soundness: any edit to a transcluded / linked dep bumps its
-            // mtime (or size), so the dependent file fails check (b) and
-            // takes the full path, re-validating / re-rewriting against
-            // the new dep. The build-wide cross-file anchor check
-            // (~the `2c-anchor` gate) still runs every tick over the
-            // replayed headings/cross_links, so cross-file heading/link
-            // correctness holds regardless of which files were skipped.
-            //
-            // Parity (rule 1): the cached `ContentImport` is replayed
-            // BYTE-FOR-BYTE — never recomputed — so the bridge specifier
-            // stays exactly what the full compile produced (critical for
-            // `idStripSuffix` / EN-sibling collections, where recomputing
-            // could drift from the snapshot's baked `module_specifier`).
-            //
-            // Cross-file replay (rule 2): the skipped file still pushes
-            // its `FileHeadings` + `CrossFileLinkCandidate`s into the
-            // out-params so the build-wide anchor check (which runs every
-            // tick) sees this file's headings — otherwise a link FROM a
-            // changed file TO a heading in this skipped file would
-            // falsely report broken. We DELIBERATELY do NOT replay this
-            // file's per-file `broken_links_out` / `markdown_diagnostics_out`:
-            // those are intra-file warnings for an unchanged file and
-            // need not be re-emitted each tick (re-stating them would only
-            // duplicate stderr lines for a file the user did not touch).
-            if ctx.writer.in_session() {
-                if let Some((mtime, size)) = file_stat(from) {
-                    if let Some(entry) = ctx.writer.content_skip_get(from) {
-                        // Never false-reuse (rule 5): the cached shadow
-                        // dest file must still exist, the file's own
-                        // `(mtime, size)` must match, and every recorded
-                        // dep must re-stat unchanged. A failed/changed
-                        // stat, a moved dep, or a vanished shadow file all
-                        // fall through to the full path.
-                        let dest_exists = ctx
-                            .writer
-                            .shadow_root
-                            .join(
-                                entry
-                                    .shadow_rel_path
-                                    .replace('/', std::path::MAIN_SEPARATOR_STR),
-                            )
-                            .exists();
-                        let deps_unchanged = entry
-                            .deps
-                            .iter()
-                            .all(|(dep_path, recorded)| file_stat(dep_path) == *recorded);
-                        if entry.mtime == mtime
-                            && entry.size == size
-                            && deps_unchanged
-                            && dest_exists
-                        {
-                            imports.push(entry.import.clone());
-                            file_headings_out.extend(entry.headings.iter().cloned());
-                            cross_file_links_out.extend(entry.cross_links.iter().cloned());
-                            // Mark the un-rewritten shadow file visited
-                            // so the prune pass keeps it (rule 4).
-                            ctx.writer.record_visited(&to).with_context(|| {
-                                format!("record visited (content skip) {}", to.display())
-                            })?;
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            // Reset per-document state (e.g. HeadingLinksPlugin's slug
-            // counter) before each new MDX file (zfb#187).
-            pipeline.reset_per_entry();
-            // Update per-file source context for ResolveLinksPlugin
-            // (file path => zfb#1030 URL-space fallback armed for
-            // non-index pages).
-            if ctx.pipeline_spec.resolve_source_map.is_some() {
-                pipeline.set_resolve_links_source_file(from.to_path_buf());
-            }
+            // Read + frontmatter-strip here in the caller because the
+            // collection pass needs byte-parity with the snapshot walker:
+            // use `zfb_content::frontmatter::extract` rather than the
+            // local `strip_yaml_frontmatter` helper so the body fed into
+            // the compiler is **byte-for-byte identical** to the body
+            // `zfb_content::collection::walk_collection` (→ `build_snapshot`)
+            // passes. The two helpers differ on leading-newline handling —
+            // `strip_yaml_frontmatter` greedily trims `\r`/`\n` after the
+            // closing `---`, dropping the blank-line separator between
+            // frontmatter and body — which yields a different compiled-JSX
+            // content_hash and therefore a different `mdx://…#<hash>`
+            // specifier than what the snapshot bakes. The bridge map and
+            // the snapshot's `module_specifier` field MUST agree on the
+            // hash byte-for-byte; otherwise every `bridge.get(spec)` lookup
+            // misses and the page renders the raw-markdown fallback.
             let raw =
                 fs::read_to_string(from).with_context(|| format!("read mdx {}", from.display()))?;
-            // Use `zfb_content::frontmatter::extract` rather than the
-            // local `strip_yaml_frontmatter` helper so the body fed
-            // into the compiler is **byte-for-byte identical** to the
-            // body that `zfb_content::collection::walk_collection`
-            // (and therefore `zfb_content::build_snapshot`) would
-            // pass. The two helpers have subtly different leading-
-            // newline handling — `strip_yaml_frontmatter` greedily
-            // trims `\r`/`\n` after the closing `---`, dropping the
-            // blank-line separator between frontmatter and body —
-            // which yields a different compiled-JSX content_hash and
-            // therefore a different `mdx://…#<hash>` specifier than
-            // what the snapshot bakes. The bridge map and the
-            // snapshot's `module_specifier` field MUST agree on the
-            // hash byte-for-byte; otherwise every `bridge.get(spec)`
-            // lookup misses and the page renders the raw-markdown
-            // fallback.
             let body = match zfb_frontmatter::extract(from, &raw) {
                 Ok(uf) => uf.body.unwrap_or_default(),
                 Err(_) => {
-                    // Frontmatter parse failures fall back to the
-                    // local stripper — the snapshot's
-                    // `walk_collection` would surface the same error
-                    // up its CollectionError path, so missing this
-                    // file in the bridge is a no-op (the snapshot
-                    // entry is missing too, the page rendering hits
-                    // the fallback regardless).
+                    // Frontmatter parse failures fall back to the local
+                    // stripper — the snapshot's `walk_collection` would
+                    // surface the same error up its CollectionError path,
+                    // so missing this file in the bridge is a no-op (the
+                    // snapshot entry is missing too).
                     strip_yaml_frontmatter(&raw).to_string()
                 }
             };
-            // Pass the SOURCE path (not the shadow destination) so
-            // `compile_mdx_to_jsx_module_cached`'s
-            // `collection_and_slug` helper sees the same
-            // `(parent_dir, file_stem)` tuple it sees during
-            // `zfb_content::build_snapshot` — and therefore bakes the
-            // same `mdx://...` specifier into both the snapshot and
-            // the bridge map. Mismatch here would make every bridge
-            // lookup miss and silently fall back to the
-            // raw-markdown <pre> block.
-            // Process-global compile cache (zfb#905) — see the matching
-            // comment in `materialise_shadow`. Safe to share with the
-            // snapshot walker: the key includes the pipeline-config
-            // fingerprint and the specifier below is re-derived from
-            // THIS file's path on every hit.
-            // `_with_deps` variant (zfb#1148): also returns the external
-            // file paths this compile recorded reads of (transclude
-            // `:::include` targets, link-validated / resolve-links
-            // siblings, probed images). Each is stat'd below and stored in
-            // the skip entry so a later tick can re-check that every dep is
-            // byte-stable before skipping — the thorough dep-mtime variant.
-            // The compiled output is identical to
-            // `compile_mdx_to_jsx_module_cached`.
-            let (compiled, recorded_deps) = compile_mdx_to_jsx_module_cached_with_deps(
-                &body,
-                from,
-                Some(MdxModuleCache::process_global()),
-                Some(&mut pipeline),
-            )
-            .with_context(|| format!("compile mdx {}", from.display()))?;
-            // Drain broken-link diagnostics and record them with the file path.
-            for diag in pipeline.take_broken_links() {
-                broken_links_out.push((from.display().to_string(), diag.url));
-            }
-            // Drain generic markdown diagnostics adjacent to broken-links
-            // drain (zfb#953).
-            markdown_diagnostics_out.extend(pipeline.take_markdown_diagnostics());
-            // Drain cross-file anchor-check side channels (#980). Snapshot
-            // the out-param lengths BEFORE extending so we can slice out
-            // exactly THIS file's contribution for the skip cache below —
-            // the cached entry must replay this file's own headings /
-            // cross-links, not the whole accumulator (zfb#1148).
-            let cross_links_base = cross_file_links_out.len();
-            let headings_base = file_headings_out.len();
-            cross_file_links_out.extend(pipeline.take_cross_file_link_candidates());
-            file_headings_out.extend(pipeline.take_file_headings());
-            ctx.writer
-                .write_if_changed(&to, compiled.jsx_source.as_bytes())
-                .with_context(|| format!("write compiled mdx to {}", to.display()))?;
-
-            // Defensive skip — see [`jsx_likely_breaks_downstream_parser`].
-            // The original trigger for this guard was `remark-math`
-            // `$$...$$` blocks leaking into the JSX as bare expression
-            // containers like `{\infty}` (zfb#93). The emitter now
-            // recognises `Math` / `InlineMath` mdast nodes natively
-            // (see `crates/zfb-content/src/mdx_jsx_emit.rs`), so the
-            // intended math path no longer trips this heuristic. We
-            // keep the skip in place as a defensive net for any
-            // future leak — bare `{\foo}` expressions in the emitted
-            // JSX are unparseable by esbuild and would abort the
-            // whole bundle. When the heuristic does fire, omitting
-            // the broken module from the bridge map falls the page
-            // back to the `<pre data-zfb-content-fallback>` shape;
-            // the shadow file is left on disk so downstream debugging
-            // can see the emitter output.
-            if jsx_likely_breaks_downstream_parser(&compiled.jsx_source) {
-                eprintln!(
-                    "zfb bundler: skipping MDX content bridge for {} — compiled JSX contains bare `{{\\letter}}` expressions that esbuild rejects. The page will render via the <pre data-zfb-content-fallback> shape.",
-                    from.display(),
-                );
-                // No bridge import was pushed for this file, so it must
-                // never be skip-cached (a future skip replays a stored
-                // import). Drop any stale entry so a later tick recompiles
-                // (zfb#1148).
-                ctx.writer.content_skip_remove(from);
-                continue;
-            }
-
             let rel_str = path_to_posix_string(rel);
             let shadow_rel_path = format!("content/{}/{}", collection_name, rel_str);
-            // Apply `idStripSuffix` to the specifier's slug segment
-            // so the bundler's bridge-map key matches the snapshot's
-            // `EntrySnapshot::module_specifier` after stripping. The
-            // shared helper lives in `zfb-content` so both surfaces
-            // share one implementation — divergence here is what the
-            // snapshot↔bridge byte-for-byte invariant exists to
-            // prevent.
-            let specifier = zfb_content::collection::maybe_strip_specifier_suffix(
-                &compiled.specifier,
-                strip_suffix,
-            );
-            let import = ContentImport {
-                specifier,
-                shadow_rel_path: shadow_rel_path.clone(),
-            };
-            imports.push(import.clone());
-
-            // Maintain the incremental-materialise skip cache (zfb#1148,
-            // thorough dep-mtime variant) — session mode only (no-op in
-            // passthrough). Store an entry for EVERY successfully-compiled
-            // file, capturing both the file's own `(mtime, size)` and each
-            // recorded dep's on-disk state, so a later tick can skip the
-            // file while it AND every dep are byte-stable. A file with no
-            // recorded deps stores an empty `deps` list (the trivial
-            // all-deps-unchanged case → still skippable). A failed stat of
-            // the file ITSELF means we cannot build a sound skip key —
-            // drop any stale entry and fall through unchanged. Dep stats
-            // that fail are stored as `None` (was-absent) and re-checked
-            // as "must stay absent" on skip.
-            if ctx.writer.in_session() {
-                match file_stat(from) {
-                    Some((mtime, size)) => {
-                        // Slice out exactly THIS file's heading /
-                        // cross-link contribution (captured via the
-                        // `*_base` snapshots above) so a later skip
-                        // replays this file's own records, not the whole
-                        // accumulator.
-                        let headings = file_headings_out[headings_base..].to_vec();
-                        let cross_links = cross_file_links_out[cross_links_base..].to_vec();
-                        // Stat each recorded dep NOW (right after the
-                        // compile observed it) so the stored state matches
-                        // what the compile actually read.
-                        let deps: Vec<(PathBuf, FileStat)> = recorded_deps
-                            .into_iter()
-                            .map(|p| {
-                                let st = file_stat(&p);
-                                (p, st)
-                            })
-                            .collect();
-                        ctx.writer.content_skip_store(
-                            from.to_path_buf(),
-                            ContentSkipEntry {
-                                mtime,
-                                size,
-                                deps,
-                                shadow_rel_path,
-                                import,
-                                headings,
-                                cross_links,
-                            },
+            // The shared incremental-materialise core does the skip-check /
+            // compile / write / store. The closure decides the bridge
+            // import after the compile: the collection pass produces an
+            // `mdx://…` import (with `idStripSuffix` applied to the slug so
+            // the bundler's bridge key matches the snapshot's stripped
+            // `module_specifier`), UNLESS the compiled JSX would break
+            // esbuild — the defensive skip, which omits the import and
+            // refuses to cache so the page falls back to
+            // `<pre data-zfb-content-fallback>` and every tick re-warns.
+            materialise_mdx_with_skip(
+                from,
+                &to,
+                ctx,
+                &mut pipeline,
+                &body,
+                imports,
+                broken_links_out,
+                markdown_diagnostics_out,
+                cross_file_links_out,
+                file_headings_out,
+                |compiled| {
+                    if jsx_likely_breaks_downstream_parser(&compiled.jsx_source) {
+                        eprintln!(
+                            "zfb bundler: skipping MDX content bridge for {} — compiled JSX contains bare `{{\\letter}}` expressions that esbuild rejects. The page will render via the <pre data-zfb-content-fallback> shape.",
+                            from.display(),
                         );
+                        return ImportDecision::DoNotCache;
                     }
-                    // Could not stat the file itself — cannot build a
-                    // sound skip key: drop any stale entry.
-                    None => ctx.writer.content_skip_remove(from),
-                }
-            }
+                    // Apply `idStripSuffix` to the specifier's slug segment
+                    // via the shared `zfb-content` helper so the bundler's
+                    // bridge-map key matches the snapshot's
+                    // `EntrySnapshot::module_specifier` after stripping —
+                    // the snapshot↔bridge byte-for-byte invariant.
+                    let specifier = zfb_content::collection::maybe_strip_specifier_suffix(
+                        &compiled.specifier,
+                        strip_suffix,
+                    );
+                    ImportDecision::Bridge(ContentImport {
+                        specifier,
+                        shadow_rel_path,
+                    })
+                },
+            )?;
         } else {
             // Non-MDX source in a content collection: same eager
             // `import.meta.glob(...)` expansion as the page/component pass.
@@ -6529,6 +6550,68 @@ mod tests {
         }
     }
 
+    /// Run ONE tick that materialises `src` through BOTH passes under a
+    /// SINGLE `ShadowWriter` — the collection pass (→
+    /// `content/<collection_name>/...`, with bridge imports) AND the
+    /// `materialise_shadow` extra-top-level-dir pass (→
+    /// `<shadow_dir_name>/...`, no bridge imports) — exactly as
+    /// `bundle_with_session` does for `src/mdx/**`. Both passes must share
+    /// one writer so the single prune pass at the end sees the union of
+    /// their visited paths (a per-pass writer would prune the other pass's
+    /// output). Returns the collection pass's imports.
+    fn run_collection_and_shadow_tick(
+        session: &mut ShadowSession,
+        src: &Path,
+        collection_name: &str,
+        shadow_dir_name: &str,
+    ) -> Vec<ContentImport> {
+        let shadow_root = session.shadow_root().to_path_buf();
+        let collection_dest = shadow_root.join("content").join(collection_name);
+        let shadow_dest = shadow_root.join(shadow_dir_name);
+        let exclude = no_bundle_exclude();
+        let project_root = src.parent().unwrap_or(src).to_path_buf();
+
+        let writer = ShadowWriter::new(shadow_root, Some(session), false)
+            .expect("session writer construction");
+        let ctx = MaterialiseCtx {
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            copy_mode: false,
+            bundle_exclude: &exclude,
+            project_root: &project_root,
+            writer: &writer,
+        };
+        let mut imports = Vec::new();
+        materialise_collection(
+            src,
+            &collection_dest,
+            collection_name,
+            &mut imports,
+            &ctx,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect("collection tick");
+        materialise_shadow(
+            src,
+            &shadow_dest,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect("shadow tick");
+        writer.prune_stale().expect("prune");
+        writer.mark_clean();
+        imports
+    }
+
     /// A `PipelineSpec` with transclude (and therefore a `ReadRecorder`)
     /// armed, anchored at `project_root` / `public_dir` so the
     /// context-aware plugins actually fire and record their reads.
@@ -6542,6 +6625,13 @@ mod tests {
             build_context_roots: Some((project_root.to_path_buf(), project_root.to_path_buf())),
             ..Default::default()
         }
+    }
+
+    /// The `content_skip` cache KEY (a DEST shadow-relative `PathBuf`) for
+    /// a file at `rel` inside collection `name` — i.e.
+    /// `content/<name>/<rel>` (zfb#1148, dest-keyed cache).
+    fn collection_skip_key(name: &str, rel: &str) -> PathBuf {
+        PathBuf::from(format!("content/{name}/{rel}"))
     }
 
     /// The specifier of the import whose `shadow_rel_path` equals
@@ -6579,10 +6669,11 @@ mod tests {
             None,
         );
         assert_eq!(out1.imports.len(), 1, "tick 1 must produce one import");
-        // A skip entry must have been recorded for the (dep-free) file.
-        let from = src.join("intro.mdx");
+        // A skip entry must have been recorded for the (dep-free) file,
+        // keyed by its DEST shadow-relative path (zfb#1148).
+        let key = collection_skip_key("docs", "intro.mdx");
         assert!(
-            session.content_skip.contains_key(&from),
+            session.content_skip.contains_key(&key),
             "a dep-free content file must be entered into the skip cache after tick 1"
         );
 
@@ -6691,9 +6782,9 @@ mod tests {
         );
         // The file is dep-free (no link reads) ⇒ skip-cached, and it
         // surfaced a non-empty headings record.
-        let from = src.join("anchored.mdx");
+        let key = collection_skip_key("docs", "anchored.mdx");
         assert!(
-            session.content_skip.contains_key(&from),
+            session.content_skip.contains_key(&key),
             "a heading-only, link-free file must be skip-cached even with linkValidation on"
         );
         assert_eq!(
@@ -6800,10 +6891,11 @@ mod tests {
         // also a content file in the collection). We track the page's.
         let page_spec_1 = page_import_specifier(&out1.imports, "content/docs/page.mdx");
         // The transcluding file IS cached, and its entry records a
-        // non-empty dep set (it read snippet.md).
+        // non-empty dep set (it read snippet.md). Keyed by DEST path.
+        let page_key = collection_skip_key("docs", "page.mdx");
         let entry = session
             .content_skip
-            .get(&page)
+            .get(&page_key)
             .expect("a transcluding file must now be skip-cached (dep-mtime variant)");
         assert!(
             !entry.deps.is_empty(),
@@ -6866,7 +6958,9 @@ mod tests {
             None,
             None,
         );
-        assert!(session.content_skip.contains_key(&page));
+        assert!(session
+            .content_skip
+            .contains_key(&collection_skip_key("docs", "page.mdx")));
         let page_spec_1 = page_import_specifier(&out1.imports, "content/docs/page.mdx");
 
         // Corrupt the dest + drop its written hash: now a SKIP would leave
@@ -7028,9 +7122,10 @@ mod tests {
             strip,
             None,
         );
-        let from = src.join("guide.en.mdx");
         assert!(
-            session.content_skip.contains_key(&from),
+            session
+                .content_skip
+                .contains_key(&collection_skip_key("docs", "guide.en.mdx")),
             "strip-suffix file must be skip-cached"
         );
         let out2 = run_collection_tick(
@@ -7110,6 +7205,80 @@ mod tests {
             "sessionless re-run must re-materialise fresh JSX (no skip); got:\n{jsx}"
         );
         assert_eq!(imports2.len(), 1);
+    }
+
+    #[test]
+    fn content_skip_same_source_two_dests_two_independent_entries_both_skip() {
+        // The SAME source `.mdx` is materialised into TWO distinct shadow
+        // dests each tick — `content/docs/foo.mdx` (collection pass, with a
+        // bridge import) and `src/foo.mdx` (the `materialise_shadow`
+        // extra-top-level-dir pass, no bridge import). Dest-keying gives
+        // each pass its own independent skip entry, and on the 2nd tick
+        // (source untouched) BOTH must skip — no re-write to either dest.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("foo.mdx"), "# Foo\n\nbody\n").unwrap();
+
+        let mut session = ShadowSession::new().unwrap();
+        let imports1 = run_collection_and_shadow_tick(&mut session, &src, "docs", "src");
+        // The collection pass produced the bridge import for foo.
+        assert_eq!(imports1.len(), 1, "collection pass produces one import");
+        let collection_spec = imports1[0].specifier.clone();
+
+        // Two independent entries: one per dest.
+        let collection_key = collection_skip_key("docs", "foo.mdx");
+        let shadow_key = PathBuf::from("src/foo.mdx");
+        let collection_entry = session
+            .content_skip
+            .get(&collection_key)
+            .expect("collection-pass dest must be skip-cached");
+        let shadow_entry = session
+            .content_skip
+            .get(&shadow_key)
+            .expect("materialise_shadow-pass dest must be skip-cached");
+        // The collection entry carries a bridge import; the shadow one does not.
+        assert!(
+            collection_entry.import.is_some(),
+            "collection-pass entry must carry the bridge import"
+        );
+        assert!(
+            shadow_entry.import.is_none(),
+            "materialise_shadow-pass entry must carry NO bridge import"
+        );
+        // Both describe the same source.
+        let foo = src.join("foo.mdx");
+        assert_eq!(collection_entry.source, foo);
+        assert_eq!(shadow_entry.source, foo);
+
+        // White-box: corrupt BOTH dests + drop their `written` hashes. A
+        // full recompile of either would rewrite fresh JSX; a SKIP leaves
+        // the corruption.
+        let coll_dest = session.shadow_root().join("content/docs/foo.mdx");
+        let shadow_dest = session.shadow_root().join("src/foo.mdx");
+        assert!(coll_dest.is_file() && shadow_dest.is_file());
+        fs::write(&coll_dest, b"__CORRUPT_COLL__").unwrap();
+        fs::write(&shadow_dest, b"__CORRUPT_SHADOW__").unwrap();
+        session.written.remove(&collection_key);
+        session.written.remove(&shadow_key);
+
+        // Tick 2: source untouched → BOTH passes skip.
+        let imports2 = run_collection_and_shadow_tick(&mut session, &src, "docs", "src");
+        assert_eq!(imports2.len(), 1);
+        assert_eq!(
+            imports2[0].specifier, collection_spec,
+            "collection bridge import replayed byte-for-byte on skip"
+        );
+        assert_eq!(
+            fs::read(&coll_dest).unwrap(),
+            b"__CORRUPT_COLL__",
+            "collection dest must be SKIPPED (not re-written) on tick 2"
+        );
+        assert_eq!(
+            fs::read(&shadow_dest).unwrap(),
+            b"__CORRUPT_SHADOW__",
+            "materialise_shadow dest must be SKIPPED (not re-written) on tick 2"
+        );
     }
 
     #[test]
