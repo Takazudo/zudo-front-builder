@@ -314,6 +314,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // the hook entries hold references into it.
     let _setup_registries = plugin_setup.setup_registries;
 
+    // Issue #1182 — decide whether the eager dev bundle is DEFERRED past
+    // `TcpListener::bind`. Only in boot-lazy mode with a servable prebuilt
+    // `dist/`: then the prebuilt `dist/` serves every route until the deferred
+    // boot task publishes the renderer, so first-accept is O(1) regardless of
+    // project size (the residual of #1161 that #1166/#1170 left behind). The
+    // gate matches `run_boot_render`'s boot-lazy gate exactly, so a deferred
+    // boot always takes the boot-lazy branch there. Decided here (before
+    // `boot_dev_renderer`) so the scaffold-vs-eager choice and the deferred
+    // task agree on one value.
+    let defer_dev_bundle = defer_dev_bundle_decision(
+        lazy_dev_render_enabled(),
+        std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
+        dist_is_servable_seed(&dist_root),
+    );
+
     // 2. Stand up the long-lived renderer state if the project looks
     //    runnable. We surface failures as a warning + fall back to the
     //    noop renderer so the dev server still boots — the user can
@@ -325,6 +340,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         v8_plugin_hooks,
         dev_plugin_alias_entries.clone(),
         dev_plugin_virtual_modules.clone(),
+        defer_dev_bundle,
     ) {
         Ok(s) => Some(s),
         Err(err) => {
@@ -823,6 +839,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let islands_plugin_config_for_boot = islands_plugin_config.clone();
     let islands_url_prefix_for_boot = dev_islands_url_prefix.clone();
     let framework_for_boot = cfg.framework;
+    // Issue #1182 — the deferred boot task publishes the live SSR route handle
+    // after the deferred bundle lands (`refresh_bundle_and_routes` swaps the
+    // session's tables but NOT the server's `ssr_route_set` handle — its
+    // callers do that). Clone the handle now, before `ServeOpts` consumes the
+    // original below. `None` when the renderer is disabled. Inert unless
+    // `defer_dev_bundle` is set.
+    let ssr_route_set_for_boot = ssr_route_set.clone();
 
     // 6. Build the serve options and announce readiness.
     //
@@ -1011,6 +1034,68 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 }
             }
 
+            // 0. Deferred dev bundle (issue #1182). When the eager dev bundle
+            //    was deferred past `TcpListener::bind` (boot-lazy + servable
+            //    `dist/` — `defer_dev_bundle`), build the renderer + route
+            //    tables NOW, on this deferred boot task, and publish them in
+            //    place via `refresh_bundle_and_routes` (it swaps the first live
+            //    V8 host into the scaffold's `None` renderer slot and swaps the
+            //    rebuilt tables in under the route `RwLock`). Until this lands
+            //    the prebuilt `dist/` serves every route — that is what makes
+            //    first-accept O(1) regardless of project size.
+            //
+            //    Ordered FIRST in the hook — before the graph seed (step 3) —
+            //    because the seed reads `session.page_ids()`, which is empty on
+            //    the scaffold until the route tables are published here. Run
+            //    before the seed, the graph is populated from a live route
+            //    table; run after, every watcher tick would be a cold-start
+            //    no-op.
+            if defer_dev_bundle {
+                // Test-only slow-step injection (issue #1182 regression guard):
+                // `ZFB_DEV_TEST_SLOW_BUNDLE_MS` sleeps right before the deferred
+                // bundle, so an e2e can prove the port accepts connections /
+                // answers HTTP while this slow step is still in flight.
+                // Reverting the deferral (bundling before the bind) makes that
+                // assertion fail — the falsifiable proof that bind precedes the
+                // bundle. Blocking `std::thread::sleep` is fine: request
+                // handling runs on other multi-thread runtime workers.
+                // Independent of the digest / boot-render / islands slow-steps.
+                if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_BUNDLE_MS") {
+                    if let Ok(ms) = raw.trim().parse::<u64>() {
+                        if ms > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(ms));
+                        }
+                    }
+                }
+                if let Some(ref session) = dev_session_for_boot {
+                    match session.refresh_bundle_and_routes() {
+                        Ok(_) => {
+                            // Publish the live SSR route handle now the route
+                            // tables exist: `refresh_bundle_and_routes` swaps
+                            // the SESSION tables but not the server's
+                            // `ssr_route_set` handle (issue #807 — its callers
+                            // do). Without this, `prerender = false` routes keep
+                            // resolving against the empty pre-bind set until the
+                            // first watcher tick.
+                            if let Some(handle) = &ssr_route_set_for_boot {
+                                refresh_live_ssr_routes(session, handle);
+                            }
+                        }
+                        Err(e) => {
+                            // Same warn-and-continue contract as the eager
+                            // islands boot build below: the server stays up
+                            // serving the prebuilt `dist/`, the renderer slot
+                            // stays `None`, and the next watcher tick's
+                            // `reload_renderer` retries the bundle.
+                            output::warn(format!(
+                                "deferred dev bundle failed (serving prebuilt dist/ until \
+                                 the next successful rebuild): {e:#}"
+                            ));
+                        }
+                    }
+                }
+            }
+
             // 1. Manifest digest — the size-bound walk moved past bind.
             let manifest_digest = compute_manifest_digest(&project_root_for_boot, &watch_roots);
 
@@ -1118,7 +1203,27 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             //    synthesise a `BuildOutcome` carrying only the islands info.
             //    A single merged outcome is returned (one broadcast), never
             //    two.
-            match (render_outcome, islands_info) {
+            // Issue #1182 — drain the routes the deferred publish marked stale.
+            // In a deferred boot, step 0 published the renderer and
+            // `run_boot_render`'s boot-lazy branch then staled every known
+            // route. Fold those into `pages_stale` so the single
+            // `run_with_boot` broadcast emits one `ReloadEvent::Page`
+            // (livereload.rs): a tab that loaded the prebuilt `dist/` during the
+            // pre-renderer window reloads, and its GET re-renders through the
+            // now-live request-time hook. Drained from the same tick buffer the
+            // pipeline's stale probe uses; the per-route stale map (claimable
+            // for request-time render) is untouched — this is the broadcast,
+            // not a second one. Empty and inert unless the bundle was deferred.
+            let boot_stale: Vec<PathBuf> = if defer_dev_bundle {
+                dev_session_for_boot
+                    .as_ref()
+                    .map(|s| s.inner.take_tick_stale())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+            let mut outcome = match (render_outcome, islands_info) {
                 (Some(mut outcome), Some(info)) => {
                     outcome.islands_rerun = true;
                     outcome.islands_changed = info.changed;
@@ -1133,7 +1238,19 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     ..BuildOutcome::default()
                 }),
                 (None, None) => None,
+            };
+            if !boot_stale.is_empty() {
+                match &mut outcome {
+                    Some(o) => o.pages_stale = boot_stale,
+                    None => {
+                        outcome = Some(BuildOutcome {
+                            pages_stale: boot_stale,
+                            ..BuildOutcome::default()
+                        })
+                    }
+                }
             }
+            outcome
         };
 
         // Orchestrator watcher loop — registers the watch, runs the boot
@@ -1696,6 +1813,30 @@ fn boot_lazy_enabled(lazy_render_on: bool) -> bool {
 /// "requires lazy" rule is unit-testable without process-global env mutation.
 fn boot_lazy_decision(lazy_render_on: bool, boot_lazy_var: Option<&str>) -> bool {
     lazy_render_on && resolve_boot_lazy(boot_lazy_var)
+}
+
+/// Pure decision for the deferred dev bundle (issue #1182): defer the eager
+/// `assemble_and_bundle_dev` (+ V8 host start + `paths()`-expanding route-table
+/// build) past `TcpListener::bind` only when
+///
+/// 1. boot-lazy is active ([`boot_lazy_decision`]) — so the request-time
+///    render-on-request hook (#1026) is installed and the prebuilt `dist/` is
+///    the serving source for every route until the renderer is published, AND
+/// 2. a servable `dist/` seed is present ([`dist_is_servable_seed`]).
+///
+/// Both conditions match [`run_boot_render`]'s boot-lazy gate exactly, so a
+/// deferred boot always takes the boot-lazy branch there (mark-stale, no eager
+/// render). When the gate is off, `boot_dev_renderer` builds the renderer
+/// eagerly before bind exactly as before — the deferral is strictly additive.
+///
+/// Split out so the gate is unit-testable without process-global env mutation
+/// or a real `dist/` tree.
+fn defer_dev_bundle_decision(
+    lazy_render_on: bool,
+    boot_lazy_var: Option<&str>,
+    dist_servable: bool,
+) -> bool {
+    boot_lazy_decision(lazy_render_on, boot_lazy_var) && dist_servable
 }
 
 /// Pure precedence rule for the boot-lazy switch (issue #1057):
@@ -3636,6 +3777,14 @@ fn boot_dev_renderer(
     // Plugin-registered virtual-module `(specifier, source)` pairs.
     // Threaded into `BundlerInput::plugin_virtual_modules` (#268).
     plugin_virtual_modules: Vec<(String, String)>,
+    // Issue #1182 — when `true`, return a SCAFFOLD session (no V8 host, empty
+    // route tables) and SKIP `assemble_and_bundle_dev` + host start +
+    // route-table build. The deferred boot task runs that expensive work past
+    // `TcpListener::bind` via [`DevRenderSession::refresh_bundle_and_routes`]
+    // (it swaps the host into the `None` slot and publishes the rebuilt tables
+    // in place). Gated by [`defer_dev_bundle_decision`] in `run`. `false`
+    // keeps the eager pre-bind path unchanged.
+    defer_bundle: bool,
 ) -> Result<DevRenderSession> {
     check_runtime_installed(project_root)?;
 
@@ -3703,56 +3852,109 @@ fn boot_dev_renderer(
     // `DevRenderInner` so every refresh reuses the same shadow tree.
     let mut shadow_session = ShadowSession::new()?;
 
-    // Boot path — timing not collected here (one-shot at startup, not a
-    // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
-    let bundler_out: BundlerOutput = assemble_and_bundle_dev(
-        project_root,
-        cfg,
-        plugin_alias_entries,
-        plugin_virtual_modules,
-        false,
-        Some(&mut shadow_session),
-        rebuild_inputs.esbuild_path(),
-    )?
-    .output;
-
-    let state = start(RendererStartInput {
-        bundle_path: bundler_out.bundle_path.clone(),
-        sourcemap_path: bundler_out.sourcemap_path.clone(),
-        backend: Backend::EmbeddedV8 {
-            host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(v8_plugin_hooks),
-        },
-        request_timeout: None,
-    })
-    .map_err(anyhow::Error::from)
-    .context("renderer start failed")?;
-
-    // Wrap the renderer state in the shared `Arc<Mutex<Option<...>>>` up
-    // front so the SSG `paths()` runtime-evaluation phase below can borrow
-    // the live embedded V8 host out of the same handle the SSG render
-    // callback and the SSR adapter use later (#502/#507). One host, shared
-    // across boot-time paths() eval, build-time SSG render, and request-time
-    // SSR.
-    let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(Some(state)));
-
-    // Issue #367 — extract `export const prerender = …` per page so
-    // we can keep SSG-eligible pages in `routes_by_source` (the SSG
-    // render callback's lookup table) while routing `prerender =
-    // false` pages into the request-time SSR set instead. Without this
-    // split the SSG callback would stamp a stale snapshot to disk on
-    // every watcher tick and the dist fallback would shadow the SSR
-    // handler.
-    // Build the route tables from the router scan + the live host (#659:
-    // extracted into `build_dev_route_tables` so the watch-ADD rebuild
-    // reproduces the boot tables exactly).
-    //
     // #994 item B — the PathsCache is seeded here and stored on
     // `DevRenderInner` below, so every refresh tick reuses the entries
     // this boot-time build populated (boot/refresh parity: both go
-    // through the same cache).
+    // through the same cache). Built before the eager/deferred branch so the
+    // deferred-scaffold path also stores a (still-empty) cache the deferred
+    // `refresh_bundle_and_routes` then populates.
     let mut paths_cache = PathsCache::new();
-    let (routes_by_source, ssr_routes, url_index) =
-        build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
+
+    // Issue #1182 — deferred dev bundle. The eager `assemble_and_bundle_dev`
+    // (content-snapshot embed + esbuild over the route graph) is the dominant,
+    // size-scaling pre-bind cost — the residual of #1161 that #1166/#1170 left
+    // behind. When `defer_bundle` is set (boot-lazy + a servable prebuilt
+    // `dist/`, decided by `defer_dev_bundle_decision`), build a SCAFFOLD
+    // session here: NO V8 host (renderer slot `None`) and EMPTY route tables.
+    // The deferred boot task then runs the bundle + host start +
+    // `paths()`-expanding route-table build past `TcpListener::bind` via
+    // `refresh_bundle_and_routes`, which swaps the host into this `None` slot
+    // and publishes the rebuilt tables in place. The prebuilt `dist/` serves
+    // every route until that publish lands, so first-accept is O(1) regardless
+    // of project size. When `defer_bundle` is false, the eager pre-bind path
+    // below runs exactly as before.
+    let (renderer, routes_by_source, ssr_routes, url_index) = if defer_bundle {
+        (
+            // Scaffold renderer slot — the deferred `refresh_bundle_and_routes`
+            // swaps the first live host into this same `Arc` (which the render
+            // callback, SSR adapter, and render-on-request hook all already
+            // hold a clone of).
+            Arc::new(Mutex::new(None)),
+            HashMap::new(),
+            Vec::new(),
+            HashMap::new(),
+        )
+    } else {
+        // Test-only slow-step injection (issue #1182 falsifiability guard,
+        // EAGER half): `ZFB_DEV_TEST_SLOW_BUNDLE_MS` sleeps right before the
+        // EAGER pre-bind bundle. This is the co-located twin of the
+        // deferred-task seam in `run` — together they make the bind-before-bundle
+        // e2e falsifiable wherever the BOOT bundle runs. In the correct ordering
+        // a boot-lazy + servable-`dist/` boot takes the scaffold branch above,
+        // so this eager seam never fires and only the deferred-task seam does
+        // (after bind → banner stays fast). If the deferral is reverted — the
+        // boot bundle moved back here, before `TcpListener::bind` — THIS seam
+        // fires before bind and delays the ready banner past the e2e's deadline,
+        // failing the guard. Without a co-located eager seam, an un-defer revert
+        // would silently pass. Runs synchronously in `run` before bind, so the
+        // blocking sleep delays bind exactly as a real pre-bind bundle would.
+        if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_BUNDLE_MS") {
+            if let Ok(ms) = raw.trim().parse::<u64>() {
+                if ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
+            }
+        }
+
+        // Boot path — timing not collected here (one-shot at startup, not a
+        // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
+        let bundler_out: BundlerOutput = assemble_and_bundle_dev(
+            project_root,
+            cfg,
+            plugin_alias_entries,
+            plugin_virtual_modules,
+            false,
+            Some(&mut shadow_session),
+            rebuild_inputs.esbuild_path(),
+        )?
+        .output;
+
+        let state = start(RendererStartInput {
+            bundle_path: bundler_out.bundle_path.clone(),
+            sourcemap_path: bundler_out.sourcemap_path.clone(),
+            backend: Backend::EmbeddedV8 {
+                host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
+                    v8_plugin_hooks,
+                ),
+            },
+            request_timeout: None,
+        })
+        .map_err(anyhow::Error::from)
+        .context("renderer start failed")?;
+
+        // Wrap the renderer state in the shared `Arc<Mutex<Option<...>>>` up
+        // front so the SSG `paths()` runtime-evaluation phase below can borrow
+        // the live embedded V8 host out of the same handle the SSG render
+        // callback and the SSR adapter use later (#502/#507). One host, shared
+        // across boot-time paths() eval, build-time SSG render, and request-time
+        // SSR.
+        let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(Some(state)));
+
+        // Issue #367 — extract `export const prerender = …` per page so
+        // we can keep SSG-eligible pages in `routes_by_source` (the SSG
+        // render callback's lookup table) while routing `prerender =
+        // false` pages into the request-time SSR set instead. Without this
+        // split the SSG callback would stamp a stale snapshot to disk on
+        // every watcher tick and the dist fallback would shadow the SSR
+        // handler.
+        // Build the route tables from the router scan + the live host (#659:
+        // extracted into `build_dev_route_tables` so the watch-ADD rebuild
+        // reproduces the boot tables exactly).
+        let (routes_by_source, ssr_routes, url_index) =
+            build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
+
+        (renderer, routes_by_source, ssr_routes, url_index)
+    };
 
     // Issue #958 — seed the frontmatter gate cache so the FIRST body-only
     // edit of a pre-existing collection file can already narrow (G4 only
@@ -5698,6 +5900,30 @@ mod tests {
                 // lazy on but env off/unset => off.
                 assert!(!boot_lazy_decision(true, None));
                 assert!(!boot_lazy_decision(true, Some("0")));
+            }
+
+            /// Issue #1182 — the eager dev bundle is deferred past
+            /// `TcpListener::bind` ONLY when boot-lazy is active AND a servable
+            /// `dist/` seed is present. Both conjuncts are load-bearing: drop
+            /// boot-lazy and there is no request-time render-on-request hook to
+            /// recover the deferred renderer; drop the servable seed and there
+            /// is nothing to serve during the pre-renderer window. The gate is
+            /// `boot_lazy_decision(..) && dist_servable`.
+            #[test]
+            fn defer_dev_bundle_requires_boot_lazy_and_servable_dist() {
+                // boot-lazy on (lazy on + env on) + servable dist => defer.
+                assert!(defer_dev_bundle_decision(true, Some("1"), true));
+                assert!(defer_dev_bundle_decision(true, Some("true"), true));
+                // boot-lazy on but NO servable dist => eager (no safe seed).
+                assert!(!defer_dev_bundle_decision(true, Some("1"), false));
+                // servable dist but boot-lazy OFF (env off) => eager.
+                assert!(!defer_dev_bundle_decision(true, None, true));
+                assert!(!defer_dev_bundle_decision(true, Some("0"), true));
+                // servable dist + env on but lazy rendering OFF => eager
+                // (no render-on-request hook is installed).
+                assert!(!defer_dev_bundle_decision(false, Some("1"), true));
+                // neither => eager.
+                assert!(!defer_dev_bundle_decision(false, None, false));
             }
 
             /// Issue #1057 — the freshness gate accepts a `dist/` only when it
