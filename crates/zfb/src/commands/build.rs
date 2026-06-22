@@ -4603,8 +4603,7 @@ mod tests {
         // The rendered index.html must be untouched.
         let index = std::fs::read(outdir.join("foo/index.html")).unwrap();
         assert_eq!(
-            index,
-            b"<h1>rendered foo</h1>",
+            index, b"<h1>rendered foo</h1>",
             "dist/foo/index.html must not be overwritten by public/foo",
         );
         // The public/foo raw content must NOT appear as a flat file at dist/foo.

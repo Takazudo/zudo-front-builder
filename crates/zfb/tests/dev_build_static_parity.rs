@@ -257,7 +257,10 @@ async fn poll_until_contains(
                 if status == expected_status && body.contains(needle) {
                     return;
                 }
-                last = format!("status {status}, body start: {}", &body[..body.len().min(300)]);
+                last = format!(
+                    "status {status}, body start: {}",
+                    &body[..body.len().min(300)]
+                );
             }
             Err(e) => last = format!("request error: {e}"),
         }
