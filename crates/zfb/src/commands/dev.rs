@@ -103,6 +103,16 @@ use crate::render_pipeline::{
 use zfb_render::paths::PathsCache;
 
 /// Default source directories the watcher follows.
+// Issue #1165 — `public/` is served directly from disk by the dev
+// server (static-file middleware) and does NOT feed the dep-graph or
+// the renderer. Watching it caused `compute_manifest_digest` to walk
+// every file in `public/` via WalkDir+metadata() BEFORE the TCP
+// listener bound, producing a visible pre-bind hang on projects with
+// large asset directories. Custom `publicDir` values that happen to
+// overlap a real source root (e.g. `src/public`) are still watched
+// because `derive_watch_roots` adds all configured collection paths
+// and source roots independently — only the literal default `"public"`
+// is excluded here.
 const DEFAULT_WATCH_ROOTS: &[&str] = &[
     "pages",
     "content",
@@ -110,7 +120,6 @@ const DEFAULT_WATCH_ROOTS: &[&str] = &[
     "layouts",
     "styles",
     "data",
-    "public",
     "zfb.config.json",
     "zfb.config.ts",
 ];
@@ -4555,6 +4564,23 @@ mod tests {
         // Defaults are preserved in front.
         assert!(roots.contains(&PathBuf::from("pages")));
         assert!(roots.contains(&PathBuf::from("content")));
+    }
+
+    /// Issue #1165 — `public/` must NOT appear in the default watch roots.
+    /// It is served directly from disk by the dev server and does not feed
+    /// the dep-graph or renderer. Walking it via WalkDir in
+    /// `compute_manifest_digest` caused a visible pre-bind hang on projects
+    /// with large asset directories. A custom `publicDir` that happens to
+    /// overlap a real source root is still watched (via collection/source
+    /// root derivation) — only the literal default `"public"` is excluded.
+    #[test]
+    fn derive_watch_roots_excludes_public_by_default() {
+        let cfg = config::Config::default();
+        let roots = derive_watch_roots(&cfg);
+        assert!(
+            !roots.contains(&PathBuf::from("public")),
+            "default `public/` must not be a watch root (issue #1165)"
+        );
     }
 
     /// A collection under the default `content/` root must NOT be
