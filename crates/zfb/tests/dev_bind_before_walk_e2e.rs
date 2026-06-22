@@ -149,6 +149,12 @@ const _: () = assert!(
      belt-and-braces check proves nothing"
 );
 
+const _: () = assert!(
+    FIRST_RESPONSE_DEADLINE.as_secs() * 1000 < SLOW_ISLANDS_MS,
+    "FIRST_RESPONSE_DEADLINE must be shorter than SLOW_ISLANDS_MS or Test 4's serve-path \
+     belt-and-braces check proves nothing"
+);
+
 /// Test 3 reap budget: after SIGINT (sent while the digest is still sleeping),
 /// the GRACEFUL shutdown must read the still-`None` digest slot, skip the save,
 /// and exit within this window. A shutdown that instead blocked on the
@@ -171,6 +177,14 @@ const _: () = assert!(
     GRACEFUL_SHUTDOWN_DEADLINE.as_secs() < SHUTDOWN_FORCE_KILL_AFTER.as_secs(),
     "GRACEFUL_SHUTDOWN_DEADLINE must be shorter than SHUTDOWN_FORCE_KILL_AFTER or the \
      force-kill fallback would mask a shutdown that blocked on the digest"
+);
+
+const _: () = assert!(
+    SHUTDOWN_FORCE_KILL_AFTER.as_secs() * 1000 < SLOW_DIGEST_MS,
+    "SHUTDOWN_FORCE_KILL_AFTER must stay under SLOW_DIGEST_MS — the force-kill must cap a \
+     hung shutdown's reap WELL below the digest sleep so it overshoots \
+     GRACEFUL_SHUTDOWN_DEADLINE and fails; if the force-kill landed at/after the digest \
+     sleep the masking this whole decoupling guards against could re-emerge"
 );
 
 /// Deadline for the eager boot render to populate a route (after the
@@ -449,7 +463,7 @@ async fn dev_binds_and_serves_before_slow_deferred_step() {
         answered,
         "the dev server did not answer GET {url} within {}s of the banner while the \
          digest slow-step ({}ms) was in flight — the serve path is blocking on the \
-         deferred digest walk (the pre-#1166 ordering).\n{}",
+         deferred digest walk (issue #1166).\n{}",
         FIRST_RESPONSE_DEADLINE.as_secs(),
         SLOW_DIGEST_MS,
         session.logs(),
