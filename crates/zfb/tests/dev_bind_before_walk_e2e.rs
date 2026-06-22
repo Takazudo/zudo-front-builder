@@ -63,6 +63,14 @@
 //!    deferred boot task. Uses the same strategy with a co-located
 //!    `ZFB_DEV_TEST_SLOW_ISLANDS_MS` slow step, independent of the digest
 //!    one, so it specifically pins the islands build's position past bind.
+//! 5. `dev_binds_and_serves_before_slow_bundle_step` — the
+//!    bind-before-bundle guard (issue #1182). The eager esbuild dev bundle
+//!    (`assemble_and_bundle_dev`) used to run synchronously before the bind
+//!    even in boot-lazy mode with a servable `dist/` (the residual of #1161);
+//!    it now runs on the deferred boot task in that mode. Runs boot-lazy with
+//!    a seeded servable `dist/` and pins the bundle's position past bind via
+//!    TWO co-located `ZFB_DEV_TEST_SLOW_BUNDLE_MS` seams (deferred + eager) so
+//!    an un-defer revert is caught.
 //!
 //! ## Spawn / teardown discipline (from `dev_serve_e2e.rs` /
 //! `build_terminates.rs`)
@@ -135,6 +143,25 @@ const _: () = assert!(
      would still print the banner within the deadline and the guard proves nothing"
 );
 
+/// The injected dev-bundle slow-step for the bind-before-bundle guard (issue
+/// #1182). Same rationale as `SLOW_DIGEST_MS` / `SLOW_ISLANDS_MS`, pinning the
+/// EAGER esbuild dev bundle (`assemble_and_bundle_dev`) — the dominant,
+/// size-scaling pre-bind cost #1166/#1170 left behind. Deliberately set LONGER
+/// than `BANNER_DEADLINE`: the binary reads `ZFB_DEV_TEST_SLOW_BUNDLE_MS` from
+/// TWO co-located seams — one before the DEFERRED boot bundle (which runs after
+/// bind, so in the correct ordering the banner lands fast), one before the
+/// EAGER pre-bind bundle (which fires only if the deferral is reverted, delaying
+/// the banner past `BANNER_DEADLINE` so `wait_for_banner_port` times out and
+/// fails). A green run never waits this out — it answers fast and Drop SIGKILLs
+/// the group — so the large value is free.
+const SLOW_BUNDLE_MS: u64 = 120_000;
+
+const _: () = assert!(
+    SLOW_BUNDLE_MS > BANNER_DEADLINE.as_secs() * 1000,
+    "SLOW_BUNDLE_MS must exceed BANNER_DEADLINE — otherwise an un-deferred pre-bind dev \
+     bundle would still print the banner within the deadline and the guard proves nothing"
+);
+
 /// Deadline for the FIRST successful HTTP response after the banner. The banner
 /// timeout is the PRIMARY bind-ordering signal (see `SLOW_DIGEST_MS`); this is
 /// the belt-and-braces serve-path check — answering within this window while
@@ -152,6 +179,12 @@ const _: () = assert!(
 const _: () = assert!(
     FIRST_RESPONSE_DEADLINE.as_secs() * 1000 < SLOW_ISLANDS_MS,
     "FIRST_RESPONSE_DEADLINE must be shorter than SLOW_ISLANDS_MS or Test 4's serve-path \
+     belt-and-braces check proves nothing"
+);
+
+const _: () = assert!(
+    FIRST_RESPONSE_DEADLINE.as_secs() * 1000 < SLOW_BUNDLE_MS,
+    "FIRST_RESPONSE_DEADLINE must be shorter than SLOW_BUNDLE_MS or Test 5's serve-path \
      belt-and-braces check proves nothing"
 );
 
@@ -313,7 +346,8 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_BOOT_LAZY")
         .env_remove("ZFB_DEV_TEST_SLOW_DIGEST_MS")
-        .env_remove("ZFB_DEV_TEST_SLOW_ISLANDS_MS");
+        .env_remove("ZFB_DEV_TEST_SLOW_ISLANDS_MS")
+        .env_remove("ZFB_DEV_TEST_SLOW_BUNDLE_MS");
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
@@ -838,4 +872,145 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
     );
 
     // The deferred slow step is still sleeping; Drop group-kills it.
+}
+
+// ---------------------------------------------------------------------------
+// Test 5 — bind-before-bundle guard (issue #1182).
+// ---------------------------------------------------------------------------
+
+/// Bind-before-bundle guard (issue #1182). The eager esbuild dev bundle
+/// (`assemble_and_bundle_dev`, via `boot_dev_renderer`) used to run
+/// SYNCHRONOUSLY before `TcpListener::bind`; on a large project its
+/// content-snapshot embed + esbuild over the route graph was the dominant
+/// pre-bind cost (the residual of #1161 that #1166/#1170 left behind), so
+/// first-accept took ~140–250s even in boot-lazy mode with a servable `dist/`.
+/// #1182 defers it past the bind, on the deferred boot task, gated on boot-lazy
+/// + a servable `dist/` seed.
+///
+/// ## Mode — boot-lazy + servable `dist/` (the ONLY mode the deferral applies)
+///
+/// The deferral gate is `ZFB_DEV_BOOT_LAZY=1` (with lazy rendering on, the
+/// default) AND `dist_is_servable_seed(dist/)`. So this test sets
+/// `ZFB_DEV_BOOT_LAZY=1` and seeds a minimal servable `dist/index.html` BEFORE
+/// spawning. A hand-written seed (not a full `zfb build`) is deliberate: the
+/// gate only checks for a servable `index.html`, and a real build would add the
+/// multi-minute V8 + esbuild cost this very test exists to keep OFF the bind
+/// critical path — far too heavy for the PR gate. Without the seed, boot-lazy
+/// falls back to eager and the bundle would NOT be deferred (the test would be
+/// vacuous).
+///
+/// ## Falsifiability — two co-located seams, anchored to banner-vs-bind ordering
+///
+/// The binary reads `ZFB_DEV_TEST_SLOW_BUNDLE_MS` from TWO seams co-located
+/// with the boot bundle: one before the DEFERRED bundle (deferred boot task,
+/// after bind) and one before the EAGER bundle (`boot_dev_renderer`, before
+/// bind). `SLOW_BUNDLE_MS` (> `BANNER_DEADLINE`).
+///
+/// - Correct (deferred) ordering: the boot takes the scaffold path, so only the
+///   DEFERRED seam fires — after the bind/banner. The banner lands at boot time,
+///   far under `BANNER_DEADLINE`. ✅
+/// - Reverted ordering (the bug): the boot bundle runs eagerly before bind, so
+///   the EAGER seam fires before bind, delaying the banner by `SLOW_BUNDLE_MS`
+///   (> `BANNER_DEADLINE`) — `wait_for_banner_port` times out and the test
+///   fails. ❌ A single deferred-only seam would NOT catch an un-defer revert
+///   (the deferred block simply wouldn't run), which is exactly why the eager
+///   twin exists.
+///
+/// Belt-and-braces: `GET /__zfb/reload` answers 200 within
+/// `FIRST_RESPONSE_DEADLINE` while the deferred bundle slow-step is still in
+/// flight — proof the serve path does not block on the deferred bundle.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_binds_and_serves_before_slow_bundle_step() {
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+
+    // Seed a servable `dist/` so the deferral gate (dist_is_servable_seed) is
+    // satisfied. `spawn_dev` copies the fixture INTO this tempdir without
+    // clearing it (and `dev-loop-basic` ships no `dist/`), so the seed written
+    // here survives the copy. The dev server serves this `dist/index.html` for
+    // `/` until the deferred renderer publishes.
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).expect("create dist seed dir");
+    fs::write(
+        dist.join("index.html"),
+        "<!doctype html><html><head><title>seed</title></head>\
+         <body>servable-dist-seed</body></html>",
+    )
+    .expect("write dist seed index.html");
+
+    let slow = SLOW_BUNDLE_MS.to_string();
+    // Boot-lazy + servable seed => the eager dev bundle is DEFERRED past bind.
+    // No ZFB_DEV_EAGER (that would force eager rendering off the lazy path and
+    // disable boot-lazy / the deferral entirely).
+    let spawn_t = Instant::now();
+    let mut session = spawn_dev(
+        &tmp,
+        &esbuild,
+        &[
+            ("ZFB_DEV_TEST_SLOW_BUNDLE_MS", slow.as_str()),
+            ("ZFB_DEV_BOOT_LAZY", "1"),
+        ],
+    );
+
+    // Guarantee 1 (bind precedes the dev bundle): the banner follows the bind,
+    // so it lands at boot time in the correct (deferred) ordering. An
+    // un-deferred pre-bind bundle would fire the eager seam before bind, delay
+    // the banner by SLOW_BUNDLE_MS (> BANNER_DEADLINE), and time out the wait
+    // below — that timeout IS the bind-before-bundle regression signal.
+    let Some(port) = wait_for_banner_port(&mut session).await else {
+        return; // known-skip (no V8 / no esbuild)
+    };
+    // Explicit, clearly-messaged form of the same guarantee (in case the
+    // deadlines are ever retuned): the banner — and the bind it follows —
+    // landed well before the injected bundle slow-step could have.
+    let banner_elapsed = spawn_t.elapsed();
+    assert!(
+        (banner_elapsed.as_millis() as u64) < SLOW_BUNDLE_MS,
+        "ready banner appeared {}ms after spawn, but the injected dev-bundle slow-step is \
+         {}ms — the eager dev bundle (and its sleep) ran BEFORE the bind/banner \
+         (bind-before-bundle regression, issue #1182).\n{}",
+        banner_elapsed.as_millis(),
+        SLOW_BUNDLE_MS,
+        session.logs(),
+    );
+
+    let base = format!("http://localhost:{port}");
+    let client = client();
+
+    // Guarantee 2 (serve path is not blocked by the deferred bundle):
+    // `GET /__zfb/reload` is 200 the instant the router is mounted, independent
+    // of any bundle / render. Answering within FIRST_RESPONSE_DEADLINE of the
+    // banner while the deferred bundle slow-step is still in flight proves the
+    // serve path does not wait on the bundle.
+    let url = format!("{base}/__zfb/reload");
+    let request_start = Instant::now();
+    let mut answered = false;
+    while request_start.elapsed() < FIRST_RESPONSE_DEADLINE {
+        if let Ok(resp) = client.get(&url).send().await {
+            assert_eq!(
+                resp.status().as_u16(),
+                200,
+                "SSE endpoint must answer 200; the server is serving but on a wrong status.\n{}",
+                session.logs(),
+            );
+            answered = true;
+            break;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    assert!(
+        answered,
+        "the dev server did not answer GET {url} within {}s of the banner while the \
+         dev-bundle slow-step was in flight — the serve path is blocking on the deferred \
+         dev bundle (issue #1182).\n{}",
+        FIRST_RESPONSE_DEADLINE.as_secs(),
+        session.logs(),
+    );
+
+    // The deferred bundle slow step is still sleeping; Drop group-kills it.
 }
