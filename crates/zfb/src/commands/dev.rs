@@ -1829,6 +1829,20 @@ fn boot_lazy_decision(lazy_render_on: bool, boot_lazy_var: Option<&str>) -> bool
 /// render). When the gate is off, `boot_dev_renderer` builds the renderer
 /// eagerly before bind exactly as before — the deferral is strictly additive.
 ///
+/// SSR-window trade-off (issue #1182, accepted): the gate only proves SOME
+/// servable `index.html` exists, not that every route is covered during the
+/// deferred-bundle window. SSG routes with a prebuilt `dist/<route>/index.html`
+/// serve from the `read_from_dist` leg (`ServeOpts.dist_root`) the whole window;
+/// SSR-only (`prerender = false`) routes have no static artifact, so they serve
+/// the controlled dev 404 (+ livereload) until the renderer publishes — then the
+/// post-publish `pages_stale` broadcast reloads those tabs and they resolve.
+/// This is the same request-before-render contract #1166 already ships, just
+/// over the bundle window; it does extend the SSR-unavailable window (which was
+/// ~0 in non-deferred boot-lazy, where the renderer was live before bind) to the
+/// bundle duration. Acceptable for the large-SSG projects this targets; a
+/// per-route dist-coverage gate would need the route tables, which need the
+/// bundle we are deferring. Tracked for revisit in issue-raising below.
+///
 /// Split out so the gate is unit-testable without process-global env mutation
 /// or a real `dist/` tree.
 fn defer_dev_bundle_decision(
