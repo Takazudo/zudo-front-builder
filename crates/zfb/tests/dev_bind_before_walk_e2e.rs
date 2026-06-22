@@ -15,19 +15,33 @@
 //! ## Determinism strategy (the authoritative guard — no wall-clock
 //! threshold)
 //!
-//! The dev binary reads a TEST-ONLY env var
-//! `ZFB_DEV_TEST_SLOW_DIGEST_MS` and sleeps that long inside the
-//! deferred boot task, BEFORE the digest walk. The test sets a long
-//! sleep (`SLOW_MS`) and asserts the server answers an HTTP request
-//! (`GET /__zfb/reload`, the SSE live-reload endpoint, which is 200 the
-//! instant the router is mounted and does NOT depend on any render or
-//! digest) well before that sleep could have elapsed.
+//! The dev binary reads TEST-ONLY env vars (`ZFB_DEV_TEST_SLOW_DIGEST_MS`,
+//! `ZFB_DEV_TEST_SLOW_ISLANDS_MS`) and sleeps that long inside the deferred
+//! boot task, immediately BEFORE the step being pinned (the digest walk / the
+//! islands build). Each guard injects a sleep LONGER than `BANNER_DEADLINE`
+//! (`SLOW_DIGEST_MS` / `SLOW_ISLANDS_MS`).
 //!
-//! Falsifiability: reverting the restructure (binding AFTER the digest /
-//! boot render, the pre-#1166 ordering) makes the first successful HTTP
-//! response land only AFTER `SLOW_MS` — and the `< SLOW_MS` assertion
-//! fails. The assertion is keyed to the injected slow step, not a bare
-//! wall-clock guess.
+//! Falsifiability is anchored to the banner-vs-bind ordering, NOT to a
+//! banner-relative response window. The ready banner is printed immediately
+//! after a successful `TcpListener::bind`, so in the correct (post-bind)
+//! ordering it lands at boot time, far under `BANNER_DEADLINE`. Reverting the
+//! restructure (running the slow step BEFORE the bind — the pre-#1166 /
+//! pre-#1170 ordering) delays the banner by the injected sleep
+//! (> `BANNER_DEADLINE`), so `wait_for_banner_port` times out and the test
+//! fails.
+//!
+//! A banner-RELATIVE window can NOT catch a pre-bind step, because the banner
+//! floats with the bind: an earlier shared `SLOW_MS = 12_000` (< the 90s
+//! `BANNER_DEADLINE`) let `wait_for_banner_port` patiently wait out a 12s
+//! pre-bind digest, after which the `< SLOW_MS` window still passed — so the
+//! two #1166 guards proved nothing about bind ordering. Issue #1174 replaced
+//! `SLOW_MS` with `SLOW_DIGEST_MS` (> `BANNER_DEADLINE`) to close that gap, the
+//! same fix #1170 already applied to the islands guard.
+//!
+//! Each guard additionally asserts the serve path answers `GET /__zfb/reload`
+//! (200 the instant the router is mounted, independent of any render / digest /
+//! islands build) while the slow step is still in flight — belt-and-braces
+//! proof the serve path does not block on the deferred work.
 //!
 //! ## Tests
 //!
@@ -74,28 +88,45 @@ use zfb_test_utils::{locate_esbuild, zfb_binary};
 /// and CPU and produce flaky boot deadlines (dev_serve_e2e.rs:96).
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-/// The injected deferred-step sleep. Must be comfortably longer than the
-/// time it takes the server to bind + answer one request, so the
-/// "answered before the slow step finished" assertion is unambiguous.
-const SLOW_MS: u64 = 12_000;
-
 /// Deadline for the dev server to print its ready banner. Boot now does
 /// NOT block on the digest/render (that is the whole point), so the
 /// banner — which still follows a successful bind — lands fast. Kept
 /// generous for cold V8 + esbuild boot.
 const BANNER_DEADLINE: Duration = Duration::from_secs(90);
 
+/// The injected digest slow-step for the two bind-before-digest guards
+/// (Test 1 + Test 3, issue #1166). Deliberately set LONGER than
+/// `BANNER_DEADLINE`, exactly like `SLOW_ISLANDS_MS` below. The ready banner is
+/// printed immediately after a successful bind, so in the correct (post-bind)
+/// ordering it lands at boot time, far under `BANNER_DEADLINE`. If the digest
+/// walk — and this co-located sleep — were moved back BEFORE the bind (the
+/// pre-#1166 ordering these tests guard), the banner would be delayed by
+/// `SLOW_DIGEST_MS` (> `BANNER_DEADLINE`) and `wait_for_banner_port` would time
+/// out and fail the test.
+///
+/// This replaced an earlier shared `SLOW_MS = 12_000` (< `BANNER_DEADLINE`):
+/// because a 12s pre-bind sleep stayed under the 90s banner deadline,
+/// `wait_for_banner_port` patiently waited it out and the banner-relative
+/// `< SLOW_MS` window still passed — so the guards were NOT falsifiable for a
+/// pre-bind digest (issue #1174). Anchoring to the banner-vs-bind ordering
+/// fixes that. A green run never waits this out — it answers fast and Drop
+/// SIGKILLs the group — so the large value is free.
+const SLOW_DIGEST_MS: u64 = 120_000;
+
+const _: () = assert!(
+    SLOW_DIGEST_MS > BANNER_DEADLINE.as_secs() * 1000,
+    "SLOW_DIGEST_MS must exceed BANNER_DEADLINE — otherwise a pre-bind digest walk \
+     would still print the banner within the deadline and the guards prove nothing"
+);
+
 /// The injected islands slow-step for the bind-before-islands guard (issue
-/// #1170). Deliberately set LONGER than `BANNER_DEADLINE`. The ready banner
-/// is printed immediately after a successful bind, so in the correct
-/// (post-bind) ordering the banner lands at boot time, far under
-/// `BANNER_DEADLINE`. If the islands build — and this co-located sleep — were
-/// moved back BEFORE the bind, the banner would be delayed by
-/// `SLOW_ISLANDS_MS` (> `BANNER_DEADLINE`) and `wait_for_banner_port` would
-/// time out and fail the test. Anchoring to the banner-vs-bind ordering (not
-/// a banner-relative window) is what makes the guard genuinely falsifiable
-/// without fighting V8-boot variance. A green run never waits this out — it
-/// answers fast and Drop SIGKILLs the group — so the large value is free.
+/// #1170). Deliberately set LONGER than `BANNER_DEADLINE` — same rationale as
+/// `SLOW_DIGEST_MS` above, but pinning the islands build's position rather than
+/// the digest's. If the islands build — and this co-located sleep — were moved
+/// back BEFORE the bind, the banner would be delayed by `SLOW_ISLANDS_MS`
+/// (> `BANNER_DEADLINE`) and `wait_for_banner_port` would time out and fail the
+/// test. A green run never waits this out — it answers fast and Drop SIGKILLs
+/// the group — so the large value is free.
 const SLOW_ISLANDS_MS: u64 = 120_000;
 
 const _: () = assert!(
@@ -104,16 +135,56 @@ const _: () = assert!(
      would still print the banner within the deadline and the guard proves nothing"
 );
 
-/// Deadline for the FIRST successful HTTP response after the banner.
-/// This MUST be shorter than `SLOW_MS` for the guard to mean anything:
-/// answering within this window while the deferred step is still
-/// sleeping `SLOW_MS` proves bind precedes the walk.
+/// Deadline for the FIRST successful HTTP response after the banner. The banner
+/// timeout is the PRIMARY bind-ordering signal (see `SLOW_DIGEST_MS`); this is
+/// the belt-and-braces serve-path check — answering within this window while
+/// the deferred step is still sleeping proves the serve path does not block on
+/// the deferred digest / islands build. MUST stay shorter than the injected
+/// slow steps.
 const FIRST_RESPONSE_DEADLINE: Duration = Duration::from_secs(6);
 
 const _: () = assert!(
-    FIRST_RESPONSE_DEADLINE.as_secs() * 1000 < SLOW_MS,
-    "FIRST_RESPONSE_DEADLINE must be shorter than SLOW_MS or the bind-before-walk \
-     guard proves nothing"
+    FIRST_RESPONSE_DEADLINE.as_secs() * 1000 < SLOW_DIGEST_MS,
+    "FIRST_RESPONSE_DEADLINE must be shorter than SLOW_DIGEST_MS or the serve-path \
+     belt-and-braces check proves nothing"
+);
+
+const _: () = assert!(
+    FIRST_RESPONSE_DEADLINE.as_secs() * 1000 < SLOW_ISLANDS_MS,
+    "FIRST_RESPONSE_DEADLINE must be shorter than SLOW_ISLANDS_MS or Test 4's serve-path \
+     belt-and-braces check proves nothing"
+);
+
+/// Test 3 reap budget: after SIGINT (sent while the digest is still sleeping),
+/// the GRACEFUL shutdown must read the still-`None` digest slot, skip the save,
+/// and exit within this window. A shutdown that instead blocked on the
+/// in-flight digest would take ~`SLOW_DIGEST_MS`. Decoupled from
+/// `SLOW_DIGEST_MS` on purpose: now that the digest sleep exceeds
+/// `BANNER_DEADLINE` (issue #1174), keying the reap assertion to it would let
+/// the force-kill fallback below mask a hung shutdown (it would SIGKILL at
+/// `SHUTDOWN_FORCE_KILL_AFTER`, landing the reap under the digest sleep and so
+/// passing a `< SLOW_DIGEST_MS` check even when the shutdown never skipped).
+const GRACEFUL_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(12);
+
+/// Test 3 force-kill fallback: if SIGINT does not reap the group within this
+/// window, SIGKILL it so a hung process can't hang the test. MUST stay LONGER
+/// than `GRACEFUL_SHUTDOWN_DEADLINE` — otherwise a shutdown that blocked on the
+/// digest would be force-killed early and its reap would fall under the
+/// deadline, masking the regression instead of failing it.
+const SHUTDOWN_FORCE_KILL_AFTER: Duration = Duration::from_secs(20);
+
+const _: () = assert!(
+    GRACEFUL_SHUTDOWN_DEADLINE.as_secs() < SHUTDOWN_FORCE_KILL_AFTER.as_secs(),
+    "GRACEFUL_SHUTDOWN_DEADLINE must be shorter than SHUTDOWN_FORCE_KILL_AFTER or the \
+     force-kill fallback would mask a shutdown that blocked on the digest"
+);
+
+const _: () = assert!(
+    SHUTDOWN_FORCE_KILL_AFTER.as_secs() * 1000 < SLOW_DIGEST_MS,
+    "SHUTDOWN_FORCE_KILL_AFTER must stay under SLOW_DIGEST_MS — the force-kill must cap a \
+     hung shutdown's reap WELL below the digest sleep so it overshoots \
+     GRACEFUL_SHUTDOWN_DEADLINE and fails; if the force-kill landed at/after the digest \
+     sleep the masking this whole decoupling guards against could re-emerge"
 );
 
 /// Deadline for the eager boot render to populate a route (after the
@@ -309,9 +380,13 @@ fn client() -> reqwest::Client {
 // Test 1 — the authoritative bind-before-walk guard.
 // ---------------------------------------------------------------------------
 
-/// With a long injected deferred-step sleep, the server must bind and
-/// answer an HTTP request well before that sleep completes — proving the
-/// listener binds BEFORE the digest walk + boot render (issue #1166).
+/// The authoritative bind-before-walk guard. The injected digest slow-step
+/// (`SLOW_DIGEST_MS` > `BANNER_DEADLINE`) sleeps immediately before the digest
+/// walk, so in the correct ordering the banner lands at boot time; a pre-bind
+/// digest walk would delay the banner past `BANNER_DEADLINE` →
+/// `wait_for_banner_port` times out → the test fails (issue #1166;
+/// falsifiability fixed in #1174). Also proves the serve path answers while the
+/// slow step is still in flight.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_binds_and_serves_before_slow_deferred_step() {
     let _serial = SERIAL.lock().await;
@@ -321,10 +396,11 @@ async fn dev_binds_and_serves_before_slow_deferred_step() {
     };
 
     let tmp = tempfile::tempdir().expect("tempdir");
-    let slow = SLOW_MS.to_string();
+    let slow = SLOW_DIGEST_MS.to_string();
     // Eager mode keeps the heaviest deferred work (the full boot render)
     // on the background task too — the strongest demonstration that the
     // bind no longer waits on any of it.
+    let spawn_t = Instant::now();
     let mut session = spawn_dev(
         &tmp,
         &esbuild,
@@ -334,13 +410,30 @@ async fn dev_binds_and_serves_before_slow_deferred_step() {
         ],
     );
 
+    // Guarantee 1 (bind precedes the digest walk): the banner follows the bind,
+    // so it lands at boot time in the correct ordering. A pre-bind digest walk
+    // would delay the banner by SLOW_DIGEST_MS (> BANNER_DEADLINE) and the wait
+    // below would time out — that timeout IS the regression signal (the
+    // pre-#1166 ordering).
     let Some(port) = wait_for_banner_port(&mut session).await else {
         return; // known-skip
     };
-    // The banner is printed immediately AFTER a successful bind and
-    // BEFORE the deferred task's slow step elapses — already strong
-    // evidence. Now prove the server actually SERVES while the slow step
-    // is still in flight.
+    // Explicit, clearly-messaged form of the same guarantee (in case the
+    // deadlines are ever retuned): the banner — and the bind it follows —
+    // landed well before the injected digest slow-step could have.
+    let banner_elapsed = spawn_t.elapsed();
+    assert!(
+        (banner_elapsed.as_millis() as u64) < SLOW_DIGEST_MS,
+        "ready banner appeared {}ms after spawn, but the injected digest slow-step is \
+         {}ms — the digest walk (and its sleep) ran BEFORE the bind/banner \
+         (bind-before-walk regression, the pre-#1166 ordering).\n{}",
+        banner_elapsed.as_millis(),
+        SLOW_DIGEST_MS,
+        session.logs(),
+    );
+
+    // Guarantee 2 (serve path is not blocked by the deferred walk): prove the
+    // server actually SERVES while the slow step is still in flight.
     let base = format!("http://localhost:{port}");
     let client = client();
 
@@ -348,7 +441,7 @@ async fn dev_binds_and_serves_before_slow_deferred_step() {
     // instant the router is mounted, independent of any render/digest.
     // We send the request with a short per-request timeout so a never-
     // bound port can't hang the test; success within
-    // FIRST_RESPONSE_DEADLINE (< SLOW_MS) is the proof.
+    // FIRST_RESPONSE_DEADLINE (< SLOW_DIGEST_MS) is the proof.
     let url = format!("{base}/__zfb/reload");
     let request_start = Instant::now();
     let mut answered = false;
@@ -368,19 +461,18 @@ async fn dev_binds_and_serves_before_slow_deferred_step() {
 
     assert!(
         answered,
-        "the dev server did not answer GET {url} within {}s — but the injected \
-         deferred slow step is {}ms. If bind happened BEFORE the deferred step, the \
-         server would answer near-instantly; this failure is the bind-before-walk \
-         regression (the pre-#1166 ordering).\n{}",
+        "the dev server did not answer GET {url} within {}s of the banner while the \
+         digest slow-step ({}ms) was in flight — the serve path is blocking on the \
+         deferred digest walk (issue #1166).\n{}",
         FIRST_RESPONSE_DEADLINE.as_secs(),
-        SLOW_MS,
+        SLOW_DIGEST_MS,
         session.logs(),
     );
 
     // Belt-and-braces: the whole answered-request round trip finished
     // strictly before the injected slow step could have.
     assert!(
-        request_start.elapsed().as_millis() < SLOW_MS as u128,
+        request_start.elapsed().as_millis() < SLOW_DIGEST_MS as u128,
         "served a response only after the injected slow step elapsed — bind did not \
          precede the deferred walk.\n{}",
         session.logs(),
@@ -501,6 +593,16 @@ async fn eager_request_before_render_serves_controlled_body() {
 /// If the dev server is killed BEFORE the deferred digest completes, no
 /// `.zfb/graph.bin` is written — never a graph tagged with an absent /
 /// wrong digest (issue #1166 graph-cache deferred-state correctness).
+///
+/// Uses `SLOW_DIGEST_MS` (> `BANNER_DEADLINE`) so the bind-before-digest
+/// ordering is itself falsifiable via the banner timeout (issue #1174). The
+/// reap budget is a SEPARATE constant (`GRACEFUL_SHUTDOWN_DEADLINE`, with the
+/// force-kill fallback at `SHUTDOWN_FORCE_KILL_AFTER`) so that bumping the
+/// digest sleep past the banner deadline can't let the force-kill mask a
+/// shutdown that blocked on the digest. (Verified against `dev.rs`: SIGINT
+/// `boot_handle.abort()`s the boot task rather than joining it, so the longer
+/// digest sleep does not slow the graceful reap; the still-`None` digest slot
+/// is what drives the skip-save.)
 #[tokio::test(flavor = "multi_thread")]
 async fn early_shutdown_before_digest_skips_graph_save() {
     let _serial = SERIAL.lock().await;
@@ -510,16 +612,32 @@ async fn early_shutdown_before_digest_skips_graph_save() {
     };
 
     let tmp = tempfile::tempdir().expect("tempdir");
-    let slow = SLOW_MS.to_string();
+    let slow = SLOW_DIGEST_MS.to_string();
+    let spawn_t = Instant::now();
     let mut session = spawn_dev(
         &tmp,
         &esbuild,
         &[("ZFB_DEV_TEST_SLOW_DIGEST_MS", slow.as_str())],
     );
 
+    // Bind precedes the digest walk: a pre-bind digest (and its co-located
+    // sleep) would delay the banner past BANNER_DEADLINE and time out
+    // wait_for_banner_port — that timeout IS the bind-before-walk regression
+    // signal (the pre-#1166 ordering).
     let Some(port) = wait_for_banner_port(&mut session).await else {
         return;
     };
+    let banner_elapsed = spawn_t.elapsed();
+    assert!(
+        (banner_elapsed.as_millis() as u64) < SLOW_DIGEST_MS,
+        "ready banner appeared {}ms after spawn, but the injected digest slow-step is \
+         {}ms — the digest walk ran BEFORE the bind/banner (bind-before-walk \
+         regression, the pre-#1166 ordering).\n{}",
+        banner_elapsed.as_millis(),
+        SLOW_DIGEST_MS,
+        session.logs(),
+    );
+
     let base = format!("http://localhost:{port}");
     let client = client();
 
@@ -553,7 +671,7 @@ async fn early_shutdown_before_digest_skips_graph_save() {
         session.logs(),
     );
 
-    // SIGINT the group NOW (well within SLOW_MS, before the digest
+    // SIGINT the group NOW (well within SLOW_DIGEST_MS, before the digest
     // lands). SIGINT is what `zfb dev` listens for via
     // `tokio::signal::ctrl_c()`, so this runs the GRACEFUL shutdown path
     // — which reads the (still-`None`) digest slot and must SKIP the
@@ -569,9 +687,10 @@ async fn early_shutdown_before_digest_skips_graph_save() {
         if session.guard.try_exit_status().is_some() {
             break;
         }
-        if reap_start.elapsed() > Duration::from_secs(20) {
-            // Force kill if SIGTERM didn't take; the assertion below
-            // still holds (no save can happen after SIGKILL either).
+        if reap_start.elapsed() > SHUTDOWN_FORCE_KILL_AFTER {
+            // Force kill if SIGINT didn't take; the assertion below still
+            // catches it (a force-kill lands the reap at ~SHUTDOWN_FORCE_KILL_AFTER,
+            // which exceeds GRACEFUL_SHUTDOWN_DEADLINE → fails).
             unsafe {
                 libc::kill(-pgid, libc::SIGKILL);
             }
@@ -581,10 +700,20 @@ async fn early_shutdown_before_digest_skips_graph_save() {
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 
+    // The graceful shutdown must have skipped fast (read the None digest slot
+    // and exited), NOT blocked on the in-flight digest. A blocked shutdown
+    // would not exit until ~SLOW_DIGEST_MS; the force-kill fallback caps that
+    // at SHUTDOWN_FORCE_KILL_AFTER (> GRACEFUL_SHUTDOWN_DEADLINE), so either
+    // way a non-skipping shutdown overshoots this deadline. Keyed to a
+    // dedicated reap budget — NOT SLOW_DIGEST_MS — precisely so the long digest
+    // sleep can't push the bar above the force-kill window and hide a hang.
     assert!(
-        reap_start.elapsed().as_millis() < SLOW_MS as u128,
-        "the dev process took longer to exit than the injected slow step — the kill \
-         did not precede the digest; this test would not prove the skip-save path.\n{}",
+        reap_start.elapsed() < GRACEFUL_SHUTDOWN_DEADLINE,
+        "graceful shutdown after SIGINT took {}ms (>= {}s) — the shutdown path did \
+         not skip-and-exit while the digest was still sleeping; this test would not \
+         prove the skip-save path.\n{}",
+        reap_start.elapsed().as_millis(),
+        GRACEFUL_SHUTDOWN_DEADLINE.as_secs(),
         session.logs(),
     );
 
