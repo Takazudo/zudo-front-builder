@@ -183,6 +183,17 @@
   --breakpoint-sm: 640px;
   --breakpoint-lg: 1024px;
   --breakpoint-xl: 1280px;
+
+  /* ========================================
+   * Z-index tiers — modal tier required by the search dialog (epic #2148).
+   * Values match upstream zudo-doc (src/config/z-index-tokens.ts).
+   * Tailwind v4 reads --z-index-<name> and generates z-<name> utilities,
+   * e.g. --z-index-modal: 60 → .z-modal { z-index: 60 }.
+   * @takazudo/zudo-doc/safelist.css does NOT ship z-modal / z-modal-backdrop,
+   * so these tokens must be declared here for Tailwind to emit them.
+   * ======================================== */
+  --z-index-modal-backdrop: 50;
+  --z-index-modal: 60;
 }
 
 :root {

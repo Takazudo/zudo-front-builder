@@ -24,6 +24,19 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
 
   var PAGE_SIZE = 10;
 
+  // Allowlist-based href sanitizer: only relative paths and http(s) URLs are
+  // permitted. Anything else (e.g. javascript:, data:) falls back to "#" so a
+  // malicious entry in search-index.json cannot turn a result link into a
+  // script-injection vector.
+  function safeHref(url) {
+    if (!url) return "#";
+    var s = String(url);
+    if (s.startsWith("/") || s.startsWith("http://") || s.startsWith("https://")) {
+      return s;
+    }
+    return "#";
+  }
+
   function escapeHtml(text) {
     return String(text)
       .replace(/&/g, "&amp;")
@@ -41,23 +54,33 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
     return query.trim().split(/\\s+/).filter(Boolean);
   }
 
-  // Scoring uses exact substring matching only (indexOf). Partial-word
-  // prefixes (e.g. "conf" not matching "configuration") are not ranked.
-  // Full MiniSearch integration with prefix/fuzzy support is deferred until
-  // the inline-script bundling limitation is resolved — see the module-level
-  // comment above.
+  // scoreEntry reads pre-lowercased fields (_titleLc, _descLc, _bodyLc)
+  // set by prepareLc() at index-load time. Terms arrive already lowercased
+  // from search() so no per-call toLowerCase() is needed.
   function scoreEntry(entry, terms) {
     var score = 0;
-    var titleLower = (entry.title || "").toLowerCase();
-    var bodyLower = (entry.body || "").toLowerCase();
-    var descLower = (entry.description || "").toLowerCase();
+    var titleLc = entry._titleLc;
+    var descLc  = entry._descLc;
+    var bodyLc  = entry._bodyLc;
     for (var i = 0; i < terms.length; i++) {
-      var t = terms[i].toLowerCase();
-      if (titleLower.indexOf(t) !== -1) score += 3;
-      if (descLower.indexOf(t) !== -1) score += 2;
-      if (bodyLower.indexOf(t) !== -1) score += 1;
+      var t = terms[i];
+      if (titleLc.indexOf(t) !== -1) score += 3;
+      if (descLc.indexOf(t) !== -1)  score += 2;
+      if (bodyLc.indexOf(t) !== -1)  score += 1;
     }
     return score;
+  }
+
+  // Pre-lowercase the searched fields on each entry once at load time so that
+  // scoreEntry() does not re-lowercase the entire ~162 KB index on every
+  // debounced keystroke.  Original-case fields are preserved for display.
+  function prepareLc(entries) {
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      e._titleLc = (e.title       || "").toLowerCase();
+      e._descLc  = (e.description || "").toLowerCase();
+      e._bodyLc  = (e.body        || "").toLowerCase();
+    }
   }
 
   function highlightTerms(text, terms) {
@@ -104,6 +127,7 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
       this._countNarrow = null;
       this._entries = null;
       this._loading = false;
+      this._indexUnavailable = false;
       this._debounce = null;
       this._currentQuery = "";
       this._allResults = [];
@@ -111,6 +135,10 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
       this._shortcut = "";
       this._resultCountTemplate = "";
       this._keydownHandler = null;
+      // Delegated click handler on the results container: closing the dialog
+      // when a result link is activated (epic #2148). Held so disconnectedCallback
+      // can detach it on body swap.
+      this._resultsClickHandler = null;
       this._observer = null;
       this._sentinel = null;
       this._isLoadingBatch = false;
@@ -167,6 +195,24 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
         this._input.addEventListener("input", function() { self.handleInput(); });
       }
 
+      // Close-on-result-click (epic #2148): result links are created dynamically
+      // in renderResult(), so use one delegated listener on the results container
+      // instead of per-link handlers. We do NOT preventDefault — the link's own
+      // navigation (zfb Strategy-B SPA swap or a plain load) must still proceed;
+      // we only close the <dialog> so it does not linger over the swapped page.
+      // closeDialog() runs synchronously before navigation; the dialog's close
+      // restores documentElement overflow via the existing "close" listener.
+      if (this._results) {
+        this._resultsClickHandler = function(e) {
+          var t = e.target;
+          while (t && t !== self._results) {
+            if (t.tagName === "A") { self.closeDialog(); return; }
+            t = t.parentNode;
+          }
+        };
+        this._results.addEventListener("click", this._resultsClickHandler);
+      }
+
       // Global keyboard shortcut (⌘K / Ctrl+K to open)
       this._keydownHandler = function(e) {
         if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -181,6 +227,11 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
       // body swap when this element is NOT persisted via
       // data-zfb-transition-persist (zudolab/zudo-doc#1523).
       this._afterNavHandler = function() {
+        // Backstop for the original bug (epic #2148): if the dialog is somehow
+        // still open after an SPA body swap (e.g. a nav path that bypassed the
+        // result-click handler), close it so it does not linger / flash over the
+        // newly-swapped page. Safe no-op when already closed.
+        if (self._dialog && self._dialog.open) self.closeDialog();
         var kbdEl2 = self.querySelector("[data-kbd-shortcut]");
         if (kbdEl2) kbdEl2.textContent = self._shortcut;
       };
@@ -195,6 +246,10 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
       if (this._afterNavHandler) {
         document.removeEventListener(${JSON.stringify(AFTER_NAVIGATE_EVENT)}, this._afterNavHandler);
         this._afterNavHandler = null;
+      }
+      if (this._resultsClickHandler && this._results) {
+        this._results.removeEventListener("click", this._resultsClickHandler);
+        this._resultsClickHandler = null;
       }
       this.teardownSentinel();
     }
@@ -236,7 +291,11 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
         })
         .then(function(data) {
           self._entries = Array.isArray(data) ? data : (data.entries || []);
+          prepareLc(self._entries);
           self._loading = false;
+          // Clear the unavailable flag BEFORE re-running search so a successful
+          // retry (e.g. via the openDialog() reload path) fully recovers (#2062).
+          self._indexUnavailable = false;
           // If user already typed, search now
           if (self._input && self._input.value.trim()) {
             self.search();
@@ -244,7 +303,10 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
         })
         .catch(function() {
           self._loading = false;
-          // Index unavailable — silently degrade
+          self._indexUnavailable = true;
+          if (self._results) {
+            self._results.innerHTML = "<p class=\\"text-small text-muted\\">Search unavailable</p>";
+          }
         });
     }
 
@@ -262,6 +324,20 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
       }
 
       if (!this._entries) {
+        // Index failed to load: show the terminal "Search unavailable" state and
+        // stop — do NOT show "Loading search index…" or refetch on every
+        // keystroke (#2062). The openDialog() reload path is the intended retry
+        // trigger. Clear any stale result state/count/sentinel first.
+        if (this._indexUnavailable) {
+          this.teardownSentinel();
+          this._allResults = [];
+          this._shownCount = 0;
+          if (this._results) {
+            this._results.innerHTML = "<p class=\\"text-small text-muted\\">Search unavailable</p>";
+          }
+          this.updateCount();
+          return;
+        }
         if (this._results) {
           this._results.innerHTML = "<p class=\\"text-small text-muted\\">Loading search index\\u2026</p>";
         }
@@ -269,7 +345,10 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
         return;
       }
 
-      var terms = parseTerms(query);
+      // Lowercase the query terms once here so scoreEntry() can do plain
+      // indexOf() against pre-lowercased entry fields without repeating
+      // toLowerCase() across the entire index on every keystroke.
+      var terms = parseTerms(query).map(function(t) { return t.toLowerCase(); });
       var scored = [];
       for (var i = 0; i < this._entries.length; i++) {
         var s = scoreEntry(this._entries[i], terms);
@@ -366,7 +445,7 @@ export const SEARCH_WIDGET_SCRIPT = /* javascript */ `(function () {
       var article = document.createElement("article");
       article.className = "-mx-hsp-lg border-b border-muted";
       var link = document.createElement("a");
-      link.href = entry.url || "#";
+      link.href = safeHref(entry.url);
       link.className =
         "group block px-hsp-lg py-vsp-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
       var title = document.createElement("span");

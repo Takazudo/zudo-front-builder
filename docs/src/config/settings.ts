@@ -117,6 +117,7 @@ export const settings = {
   headerRightItems: [
     { type: "component", component: "github-link" },
     { type: "component", component: "theme-toggle" },
+    { type: "component", component: "search" },
     { type: "component", component: "language-switcher" },
   ] as HeaderRightItem[],
 };
