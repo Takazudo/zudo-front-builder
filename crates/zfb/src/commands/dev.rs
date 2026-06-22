@@ -1123,55 +1123,100 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             }
         }
 
-        // 1. Manifest digest — the size-bound walk moved past bind.
-        let manifest_digest =
-            compute_manifest_digest(&project_root_for_boot, &watch_roots);
-
-        // 2. Load the persisted graph (digest-gated). On a hit, replace
-        //    the orchestrator's (currently empty) graph contents under
-        //    the lock; on a miss leave it empty (built fresh on ticks).
-        if let Some(persisted) =
-            load_persisted_graph(&graph_cache_path_for_boot, manifest_digest.as_ref())
-        {
-            if let Ok(mut g) = graph_for_seed.lock() {
-                *g = persisted;
-            }
-        }
-
-        // 3. Seed the graph with all page source paths from the router
-        //    scan so `plan_for_changes` can resolve `PageSelection::All`
-        //    to a concrete page list even before the first file-change
-        //    tick. Without this seeding the graph is empty, `resolve_all`
-        //    produces an empty page set, and every watcher tick is a
-        //    no-op (cold-start bug).
-        if let Some(ref session) = dev_session_for_boot {
-            if let Ok(mut g) = graph_for_seed.lock() {
-                for page_id in session.page_ids() {
-                    g.upsert(PageDeps::new(page_id, vec![]));
+        // Steps 1-4 (digest walk, persisted-graph load, graph seed, boot
+        // render) now run inside a ONE-SHOT BOOT HOOK that
+        // `BuildOrchestrator::run_with_boot` invokes AFTER the notify watch
+        // is registered but BEFORE the drain loop consumes events (issue
+        // #1166 startup-race fixes):
+        //
+        //   - Finding 2 (missed-edit window): registering `watch()` first
+        //     means a source edit saved during the digest walk / boot
+        //     render is buffered by notify and drained by the loop, instead
+        //     of being lost until the next FS event. The boot render writes
+        //     only to the dev HTML root (not a watched source root), so it
+        //     never triggers a spurious self-tick — no boot-vs-watcher
+        //     double-render from the boot render's own writes.
+        //   - Finding 1 (reload-after-boot-render): the boot render's
+        //     outcome is returned from the hook so `run_with_boot`
+        //     broadcasts it through the same `on_outcome`/reload path a
+        //     watcher tick uses — a browser that got the dev 404 page (with
+        //     its live-reload script) during the pre-render window
+        //     auto-refreshes the instant the eager render lands.
+        let boot = move |orchestrator: &BuildOrchestrator<DevAssetPipeline>,
+                         ctx: &BuildContext|
+              -> Option<BuildOutcome> {
+            // Test-only window injection (issue #1166 Finding 2 regression
+            // guard): `ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS` sleeps here — INSIDE
+            // the boot hook, which `run_with_boot` calls AFTER the notify
+            // watch is already registered but BEFORE the drain loop runs. A
+            // test can save a source edit during this window and prove the
+            // edit is observed (buffered by notify, drained by the loop)
+            // rather than lost. Reverting the watch-first ordering (watch
+            // registered only after the boot render) makes that edit fall in
+            // an unobserved window and the test fail. Blocking sleep is fine:
+            // the dev server's request handling runs on other runtime workers
+            // (the multi-thread `#[tokio::main]`), so the port keeps serving.
+            if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS") {
+                if let Ok(ms) = raw.trim().parse::<u64>() {
+                    if ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                    }
                 }
             }
-        }
 
-        // Publish the digest so the shutdown path can persist the graph
-        // tagged with it. Done AFTER load+seed so a shutdown that races
-        // the digest landing still sees a graph the digest agrees with.
-        if let Ok(mut slot) = manifest_digest_slot_for_boot.lock() {
-            *slot = manifest_digest;
-        }
+            // 1. Manifest digest — the size-bound walk moved past bind.
+            let manifest_digest = compute_manifest_digest(&project_root_for_boot, &watch_roots);
 
-        // 4. Boot render — eager by default (zfb#642 / #644), opt-in
-        //    boot-lazy (#1057). See `run_boot_render` for the full
-        //    contract; it is a free fn so the boot path stays readable
-        //    even though it now lives inside the deferred task.
-        run_boot_render(
-            &orchestrator,
-            &ctx,
-            dev_session_for_boot.as_ref(),
-            &dist_root_for_boot,
-        );
+            // 2. Load the persisted graph (digest-gated). On a hit, replace
+            //    the orchestrator's (currently empty) graph contents under
+            //    the lock; on a miss leave it empty (built fresh on ticks).
+            if let Some(persisted) =
+                load_persisted_graph(&graph_cache_path_for_boot, manifest_digest.as_ref())
+            {
+                if let Ok(mut g) = graph_for_seed.lock() {
+                    *g = persisted;
+                }
+            }
 
-        // 5. Orchestrator watcher loop — runs until aborted on shutdown.
-        if let Err(err) = orchestrator.run(ctx, discover_hook, on_outcome).await {
+            // 3. Seed the graph with all page source paths from the router
+            //    scan so `plan_for_changes` can resolve `PageSelection::All`
+            //    to a concrete page list even before the first file-change
+            //    tick. Without this seeding the graph is empty, `resolve_all`
+            //    produces an empty page set, and every watcher tick is a
+            //    no-op (cold-start bug).
+            if let Some(ref session) = dev_session_for_boot {
+                if let Ok(mut g) = graph_for_seed.lock() {
+                    for page_id in session.page_ids() {
+                        g.upsert(PageDeps::new(page_id, vec![]));
+                    }
+                }
+            }
+
+            // Publish the digest so the shutdown path can persist the graph
+            // tagged with it. Done AFTER load+seed so a shutdown that races
+            // the digest landing still sees a graph the digest agrees with.
+            if let Ok(mut slot) = manifest_digest_slot_for_boot.lock() {
+                *slot = manifest_digest;
+            }
+
+            // 4. Boot render — eager by default (zfb#642 / #644), opt-in
+            //    boot-lazy (#1057). Returns the eager outcome (or `None` for
+            //    boot-lazy / no-pages) so `run_with_boot` can broadcast a
+            //    reload after the render lands. See `run_boot_render`.
+            run_boot_render(
+                orchestrator,
+                ctx,
+                dev_session_for_boot.as_ref(),
+                &dist_root_for_boot,
+            )
+        };
+
+        // 5. Orchestrator watcher loop — registers the watch, runs the boot
+        //    hook above, then drains change events until aborted on shutdown.
+        if let Err(err) = orchestrator
+            .run_with_boot(ctx, discover_hook, on_outcome, Some(boot))
+            .await
+        {
             output::error(format!("build orchestrator stopped: {err:#}"));
         }
     });
@@ -1266,7 +1311,7 @@ fn run_boot_render(
     ctx: &BuildContext,
     dev_session: Option<&DevRenderSession>,
     dist_root: &Path,
-) {
+) -> Option<BuildOutcome> {
     let boot_lazy = dev_session
         .map(|s| boot_lazy_enabled(s.lazy_render_enabled()))
         .unwrap_or(false)
@@ -1285,7 +1330,10 @@ fn run_boot_render(
                  re-renders on first request (ZFB_DEV_BOOT_LAZY=1)"
             ));
         }
-        return;
+        // Boot-lazy renders nothing eagerly (each route re-renders on its
+        // first request), so there is no eager outcome to broadcast. The
+        // request-time render path drives its own reload.
+        return None;
     }
 
     // Eager initial render (zfb#642 / #644).
@@ -1311,18 +1359,28 @@ fn run_boot_render(
                      check the bundler / runtime output above."
                 ));
             }
+            // Return the eager outcome so the caller broadcasts a reload
+            // through the same `outcome_to_events` path a watcher tick uses
+            // (issue #1166 Finding 1): a browser that requested a route
+            // during the pre-render window received the dev 404 page (which
+            // carries the live-reload script); broadcasting here auto-
+            // refreshes that tab the instant the real HTML lands on disk.
+            Some(outcome)
         }
         Ok(None) => {
             // No pages in the graph at all (renderer disabled or a
             // project with zero SSG routes). The dev server still boots so
             // the user can poke at it / fix the project; SSR-only routes
-            // still work via the request-time path.
+            // still work via the request-time path. Nothing rendered → no
+            // reload to broadcast.
+            None
         }
         Err(err) => {
             output::error(format!(
                 "dev initial render failed — every route will 404 until the next \
                  successful rebuild: {err:#}"
             ));
+            None
         }
     }
 }
