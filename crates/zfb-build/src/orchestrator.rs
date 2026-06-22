@@ -965,14 +965,69 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     /// brand-new content file is rebundled + rediscovered in place. The
     /// hook only ever sees [`ChangeKind::Created`] paths, so the edit
     /// path is unaffected.
+    ///
+    /// Thin wrapper over [`run_with_boot`](Self::run_with_boot) with no
+    /// boot hook — i.e. the legacy "watcher-driven only" behaviour, kept
+    /// for callers (mostly tests) that drive a render through file-change
+    /// events rather than an eager boot render.
     pub async fn run<F>(
         self,
         ctx: BuildContext,
         discover: Option<DiscoveryHook>,
-        mut on_outcome: F,
+        on_outcome: F,
     ) -> Result<()>
     where
         F: FnMut(&BuildOutcome) + Send + 'static,
+        P: 'static,
+    {
+        self.run_with_boot(
+            ctx,
+            discover,
+            on_outcome,
+            None::<fn(&BuildOrchestrator<P>, &BuildContext) -> Option<BuildOutcome>>,
+        )
+        .await
+    }
+
+    /// [`run`](Self::run), but with a one-shot `boot` hook that runs
+    /// AFTER the watcher's OS-level `watch()` is registered yet BEFORE the
+    /// drain loop begins (issue #1166 startup-race fixes).
+    ///
+    /// Two startup races this ordering closes:
+    ///
+    /// 1. **Missed-edit window (Finding 2).** Before this, the dev command
+    ///    ran its eager boot render and only THEN called `run`, which
+    ///    registered the notify watch. A source edit saved in that window
+    ///    was observed by nobody — `notify` was not yet watching — so the
+    ///    dev server kept serving pre-save output until the *next* FS event.
+    ///    Registering `watch()` first means `notify` buffers any event from
+    ///    the boot-render window into its channel; the drain loop below
+    ///    picks it up on its first `recv()` and re-renders the edited route.
+    ///    The boot render writes only to the dev HTML root (NOT a watched
+    ///    source root), so it cannot trigger a spurious self-tick — there is
+    ///    no boot-vs-watcher double-render of the same routes from the boot
+    ///    render's own writes. A *genuine* edit in the window does render
+    ///    twice (boot render of all pages, then the watcher tick for the
+    ///    edited route) — which is correct: the second render carries the
+    ///    new bytes and is the authoritative result.
+    ///
+    /// 2. **Reload-after-boot-render (Finding 1).** The boot render's
+    ///    outcome is fed through the SAME `on_outcome` path as a watcher
+    ///    tick, so a browser that requested a route during the pre-render
+    ///    window (and received the dev 404 page, which carries the
+    ///    live-reload script) auto-refreshes the instant the eager render
+    ///    lands. Returning `None` from `boot` (e.g. boot-lazy, which renders
+    ///    on first request) broadcasts nothing.
+    pub async fn run_with_boot<F, B>(
+        self,
+        ctx: BuildContext,
+        discover: Option<DiscoveryHook>,
+        mut on_outcome: F,
+        boot: Option<B>,
+    ) -> Result<()>
+    where
+        F: FnMut(&BuildOutcome) + Send + 'static,
+        B: FnOnce(&BuildOrchestrator<P>, &BuildContext) -> Option<BuildOutcome>,
         P: 'static,
     {
         let debounce = self
@@ -990,6 +1045,17 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             project_root = %self.config.project_root.display(),
             "build orchestrator running"
         );
+
+        // Boot hook — runs with the watch already registered (so any edit
+        // saved during it is buffered by notify and drained by the loop
+        // below) but before the loop consumes events. Its outcome, if any,
+        // is broadcast through the same `on_outcome` path a watcher tick
+        // uses so early clients auto-refresh once the eager render lands.
+        if let Some(boot) = boot {
+            if let Some(outcome) = boot(&self, &ctx) {
+                on_outcome(&outcome);
+            }
+        }
 
         // Drain loop: wait for the first event, then drain everything
         // currently in the channel so we coalesce concurrent bursts

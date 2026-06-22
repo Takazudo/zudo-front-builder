@@ -266,7 +266,10 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]
     // ZFB_DEV_EAGER (the precise override wins by design). Each test
     // must control the mode exclusively through `extra_env`.
     cmd.env_remove("ZFB_DEV_EAGER")
-        .env_remove("ZFB_LAZY_DEV_RENDER");
+        .env_remove("ZFB_LAZY_DEV_RENDER")
+        // Test-only boot-window injection knob (#1166 Finding 2) — strip any
+        // inherited value so only the test that opts in sees the slow window.
+        .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS");
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
@@ -527,6 +530,189 @@ async fn dev_e2e_eager_escape_hatch() {
             panic!(
                 "[watchdog] dev E2E (eager escape hatch) did not finish within {}s — \
                  this indicates a hang. Process group {pgid} will be killed.\n{}",
+                OVERALL_DEADLINE_EAGER.as_secs(),
+                session.logs(),
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 3 — the boot-render missed-edit window (issue #1166 Finding 2).
+//
+// Before the watch-first fix, the notify watcher was registered only AFTER
+// the deferred eager boot render finished. A source edit saved in the
+// post-ready / pre-watcher window was observed by NOBODY, so the dev server
+// kept serving the pre-edit output until the next FS event.
+//
+// This test injects a deterministic boot-render window via
+// `ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS` (the boot hook sleeps that long, with
+// the watch ALREADY registered), edits a content file inside the window,
+// and asserts the edited route eventually serves the NEW marker — proving
+// the edit was buffered by notify and drained by the loop, not lost.
+//
+// Falsifiability: revert the watch-first ordering (register the watch only
+// after the boot render). Then the in-window edit lands before any watch
+// exists, notify buffers nothing, and the boot render renders the OLD
+// boot-time content snapshot. No watcher tick ever fires for that edit, so
+// the route keeps serving the OLD marker and the assertion times out.
+// (The boot render uses the boot-time bundled snapshot — scenario 2 in this
+// file documents that only a per-tick renderer reload picks up an edit — so
+// the ONLY way the new marker reaches disk is a watcher tick.)
+// ---------------------------------------------------------------------------
+
+/// The injected boot-render window. Long enough to comfortably edit a file
+/// inside it after the ready banner, short enough to keep the test brisk.
+const BOOT_RENDER_WINDOW_MS: u64 = 5_000;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_e2e_edit_during_boot_render_window_is_observed() {
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[dev_serve_e2e] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("create tempdir for dev-loop-basic fixture");
+    let window = BOOT_RENDER_WINDOW_MS.to_string();
+    // Eager mode: the boot render is the eager `initial_build`, so the
+    // window straddles a real render. The watch is registered BEFORE the
+    // injected sleep (it is the first thing `run_with_boot` does), so an
+    // edit made while the server is up but the render has not landed is in
+    // exactly the window Finding 2 is about.
+    let mut session = spawn_dev(
+        &tmp,
+        &esbuild,
+        &[
+            ("ZFB_DEV_EAGER", "1"),
+            ("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS", window.as_str()),
+        ],
+    );
+    let pgid = session.guard.pgid;
+
+    let body = async {
+        // Phase A/B: discover the port from the ready banner (printed right
+        // after a successful bind, BEFORE the deferred boot hook's sleep)
+        // and confirm the server is actually serving.
+        let boot_start = Instant::now();
+        let port = loop {
+            if let Some(status) = session.guard.try_exit_status() {
+                let combined = format!(
+                    "{}{}",
+                    read_log(&session.stdout_path),
+                    read_log(&session.stderr_path)
+                );
+                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                    eprintln!(
+                        "[dev_serve_e2e] `zfb dev` exited with a known-skip indicator; \
+                         skipping test.\n{}",
+                        session.logs(),
+                    );
+                    return ScenarioOutcome::Skipped;
+                }
+                panic!(
+                    "`zfb dev` exited prematurely (status {status:?}) before the ready \
+                     banner.\n{}",
+                    session.logs(),
+                );
+            }
+            if let Some(port) = parse_ready_port(&read_log(&session.stdout_path)) {
+                break port;
+            }
+            assert!(
+                boot_start.elapsed() < BOOT_DEADLINE,
+                "`zfb dev` did not print a parseable ready banner within {}s.\n{}",
+                BOOT_DEADLINE.as_secs(),
+                session.logs(),
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
+        let base = format!("http://localhost:{port}");
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("build reqwest client");
+
+        // Confirm we are inside the pre-render window: the route is not yet
+        // rendered (the boot hook is sleeping), so `GET /posts/a/` serves
+        // the controlled dev body and NOT the V1 marker. This both proves
+        // the server is up and pins the edit below to the real window. (The
+        // watch is registered before the sleep, so it is already live here.)
+        let page_url = format!("{base}/posts/a/");
+        let window_open = Instant::now();
+        let mut confirmed_pre_render = false;
+        while window_open.elapsed() < Duration::from_millis(BOOT_RENDER_WINDOW_MS / 2) {
+            match client.get(&page_url).send().await {
+                Ok(resp) => {
+                    let body = resp.text().await.unwrap_or_default();
+                    // The boot snapshot has NOT been rendered yet, so the V1
+                    // marker cannot be on disk. If it already is, the window
+                    // was too short on this host — bail to the edit anyway.
+                    if !body.contains("V1-MARKER-A") {
+                        confirmed_pre_render = true;
+                    }
+                    break;
+                }
+                Err(_) => tokio::time::sleep(POLL_INTERVAL).await,
+            }
+        }
+
+        // Edit a.md IN THE WINDOW: rewrite the body with a fresh marker
+        // (truncate + write, the editor-save shape). With the watch-first
+        // fix this Modify is buffered by notify even though the boot render
+        // has not finished; the loop drains it once the render lands.
+        let a_md = session.root.join("content/posts/a.md");
+        fs::write(
+            &a_md,
+            "---\ntitle: Alpha\ndate: 2026-01-01\n---\n\nV3-WINDOW-MARKER-A body for the alpha post.\n",
+        )
+        .expect("edit a.md body during the boot-render window");
+
+        // The authoritative assertion: the edited route eventually serves
+        // the NEW marker. This can ONLY happen via a watcher tick (the boot
+        // render renders the OLD boot-time snapshot), so a pass proves the
+        // in-window edit was observed. Polling issues real requests, which
+        // is fine: the marker still only reaches disk through a tick.
+        poll_until_contains(
+            &client,
+            &page_url,
+            "V3-WINDOW-MARKER-A",
+            SCENARIO_DEADLINE,
+            "boot-render-window edit",
+            &session,
+        )
+        .await;
+
+        // Sanity: the stale V1 marker must be gone from the served body —
+        // the tick re-rendered the route, it didn't merely append.
+        match client.get(&page_url).send().await {
+            Ok(resp) => {
+                let served = resp.text().await.unwrap_or_default();
+                assert!(
+                    !served.contains("V1-MARKER-A"),
+                    "the route still serves the pre-edit V1 marker after the in-window \
+                     edit was observed (pre_render_confirmed={confirmed_pre_render}).\n{}",
+                    session.logs(),
+                );
+            }
+            Err(e) => panic!("final GET {page_url} failed: {e}\n{}", session.logs()),
+        }
+
+        ScenarioOutcome::Completed
+    };
+
+    let outcome = tokio::time::timeout(OVERALL_DEADLINE_EAGER, body).await;
+    match outcome {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => {
+            panic!(
+                "[watchdog] dev E2E (boot-render window edit) did not finish within {}s — \
+                 a hang, or the in-window edit was never observed (Finding 2 regression). \
+                 Process group {pgid} will be killed.\n{}",
                 OVERALL_DEADLINE_EAGER.as_secs(),
                 session.logs(),
             );
