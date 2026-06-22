@@ -928,12 +928,14 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     /// #644). `zfb build` was unaffected because it never goes through
     /// the orchestrator at all.
     ///
-    /// Pages-only by design: the dev command already bundles CSS and
-    /// islands eagerly at boot (the #494 / #377 wiring) before
-    /// constructing the orchestrator, so re-running those sub-pipelines
-    /// here would be redundant work. We force `PageSelection::All` (not a
-    /// change-derived plan) so the result does not depend on the graph's
-    /// reverse-edge state — the seeded page nodes are enough.
+    /// Pages-only by design: in dev, CSS is bundled eagerly at boot (the
+    /// #494 wiring), and the islands bundle is produced out-of-band by the
+    /// deferred boot task (the #377 / #1170 wiring — no longer before the
+    /// orchestrator, but it never flows through this `apply` either), so
+    /// re-running those sub-pipelines here would be redundant work. We force
+    /// `PageSelection::All` (not a change-derived plan) so the result does
+    /// not depend on the graph's reverse-edge state — the seeded page nodes
+    /// are enough.
     ///
     /// Returns `Ok(None)` only when the graph has zero pages (nothing to
     /// render); otherwise `Ok(Some(outcome))` whose `pages_rendered`
@@ -941,9 +943,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     pub fn initial_build(&self, ctx: &BuildContext) -> Result<Option<BuildOutcome>> {
         let mut plan = RebuildPlan::empty();
         plan.mark_pages(PageSelection::All);
-        // The dev command bundles eagerly at boot right before this
-        // call — the renderer is already bound to a fresh bundle, so the
-        // pipeline must not re-bundle again for the initial render.
+        // The dev renderer's page bundle is built eagerly at boot
+        // (`boot_dev_renderer`, before the bind) — the renderer is already
+        // bound to a fresh bundle, so the pipeline must not re-bundle it
+        // again for the initial render. (This is the V8 page bundle, distinct
+        // from the islands bundle, which the deferred boot task builds
+        // out-of-band — issue #1170.)
         plan.mark_renderer_fresh();
         self.resolve_all(&mut plan);
         if plan.pages.is_empty() {

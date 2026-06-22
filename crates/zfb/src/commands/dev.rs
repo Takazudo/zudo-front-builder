@@ -337,15 +337,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     // 3. Build orchestrator setup.
     //
-    // Issue #1166 — the manifest-digest + persisted-graph load + graph
-    // seed + boot render are all DEFERRED past `TcpListener::bind` (see
-    // the deferred task in step 7 below). The cold-start hang #1161
-    // reports is `compute_manifest_digest`'s `WalkDir`+`metadata()` walk
-    // over the watched tree; running it before bind made the port's
-    // reachability scale with the static-asset / watched-tree SIZE.
-    // Binding first and doing this walk on a background task makes the
-    // server accept connections in O(1) regardless of tree size,
-    // completing #1057's "serve immediately" intent.
+    // Issues #1166, #1170 — the manifest-digest + persisted-graph load +
+    // graph seed + boot render + eager islands bundle are all DEFERRED past
+    // `TcpListener::bind` (see the deferred task in step 7 below). The
+    // cold-start hang #1161 reports is `compute_manifest_digest`'s
+    // `WalkDir`+`metadata()` walk over the watched tree; #1170's is the
+    // islands `"use client"` scan + esbuild bundle — both ran before bind
+    // and made the port's reachability scale with the watched-tree /
+    // dependency-tree SIZE. Binding first and doing this work on a
+    // background task makes the server accept connections in O(1) regardless
+    // of tree size, completing #1057's "serve immediately" intent.
     //
     // Cold-start optimisation (now performed inside the deferred task):
     // try to reuse a previously persisted graph from `.zfb/graph.bin`.
@@ -924,14 +925,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         Err(e) => return Err(e),
     };
 
-    // 7b. Deferred boot task (issue #1166). Now that the listener is
-    //     bound and the server is about to accept connections, run the
+    // 7b. Deferred boot task (issues #1166, #1170). Now that the listener
+    //     is bound and the server is about to accept connections, run the
     //     work that used to block the bind:
     //       1. compute_manifest_digest (the size-bound walk we moved)
     //       2. load_persisted_graph (digest-gated cache reuse)
     //       3. seed the graph from session.page_ids()
     //       4. boot render (boot-lazy mark-stale vs eager initial_build)
-    //       5. orchestrator.run (the watcher loop)
+    //       5. eager islands bundle (issue #1170 — the other size-bound
+    //          step we moved; folded into the boot outcome so a tab loaded
+    //          during the pre-bundle window gets a livereload and hydrates)
+    //     then orchestrator.run drains the watcher loop.
     //     The digest is published into `manifest_digest_slot` so the
     //     shutdown persistence path (step 8) can read it; until it lands
     //     the slot stays `None` and an early Ctrl+C skips the save.
@@ -966,11 +970,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             }
         }
 
-        // Steps 1-4 (digest walk, persisted-graph load, graph seed, boot
-        // render) now run inside a ONE-SHOT BOOT HOOK that
-        // `BuildOrchestrator::run_with_boot` invokes AFTER the notify watch
-        // is registered but BEFORE the drain loop consumes events (issue
-        // #1166 startup-race fixes):
+        // Steps 1-5 (digest walk, persisted-graph load, graph seed, boot
+        // render, and the eager islands bundle — issue #1170) now run inside
+        // a ONE-SHOT BOOT HOOK that `BuildOrchestrator::run_with_boot`
+        // invokes AFTER the notify watch is registered but BEFORE the drain
+        // loop consumes events (issue #1166 startup-race fixes):
         //
         //   - Finding 2 (missed-edit window): registering `watch()` first
         //     means a source edit saved during the digest walk / boot
@@ -1132,8 +1136,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             }
         };
 
-        // 5. Orchestrator watcher loop — registers the watch, runs the boot
-        //    hook above, then drains change events until aborted on shutdown.
+        // Orchestrator watcher loop — registers the watch, runs the boot
+        // hook above (steps 1-5), then drains change events until aborted on
+        // shutdown.
         if let Err(err) = orchestrator
             .run_with_boot(ctx, discover_hook, on_outcome, Some(boot))
             .await

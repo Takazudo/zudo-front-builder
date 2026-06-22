@@ -85,6 +85,25 @@ const SLOW_MS: u64 = 12_000;
 /// generous for cold V8 + esbuild boot.
 const BANNER_DEADLINE: Duration = Duration::from_secs(90);
 
+/// The injected islands slow-step for the bind-before-islands guard (issue
+/// #1170). Deliberately set LONGER than `BANNER_DEADLINE`. The ready banner
+/// is printed immediately after a successful bind, so in the correct
+/// (post-bind) ordering the banner lands at boot time, far under
+/// `BANNER_DEADLINE`. If the islands build — and this co-located sleep — were
+/// moved back BEFORE the bind, the banner would be delayed by
+/// `SLOW_ISLANDS_MS` (> `BANNER_DEADLINE`) and `wait_for_banner_port` would
+/// time out and fail the test. Anchoring to the banner-vs-bind ordering (not
+/// a banner-relative window) is what makes the guard genuinely falsifiable
+/// without fighting V8-boot variance. A green run never waits this out — it
+/// answers fast and Drop SIGKILLs the group — so the large value is free.
+const SLOW_ISLANDS_MS: u64 = 120_000;
+
+const _: () = assert!(
+    SLOW_ISLANDS_MS > BANNER_DEADLINE.as_secs() * 1000,
+    "SLOW_ISLANDS_MS must exceed BANNER_DEADLINE — otherwise a pre-bind islands build \
+     would still print the banner within the deadline and the guard proves nothing"
+);
+
 /// Deadline for the FIRST successful HTTP response after the banner.
 /// This MUST be shorter than `SLOW_MS` for the guard to mean anything:
 /// answering within this window while the deferred step is still
@@ -590,20 +609,29 @@ async fn early_shutdown_before_digest_skips_graph_save() {
 /// step #1166 had not yet moved). It now runs on the deferred boot task.
 ///
 /// The dev binary reads a TEST-ONLY env var `ZFB_DEV_TEST_SLOW_ISLANDS_MS`
-/// and sleeps that long right before the deferred islands build. With a long
-/// sleep the server must STILL bind and answer an HTTP request well before it
-/// elapses — proving the listener binds BEFORE the islands build.
+/// and sleeps that long right before the deferred islands build. This test
+/// sets `SLOW_ISLANDS_MS` (> `BANNER_DEADLINE`) and checks TWO things:
 ///
-/// Falsifiability: the slow step is co-located with the islands build, so
-/// moving the build back ahead of the bind moves the sleep with it — the bind
-/// would then be delayed by `SLOW_MS` and the `< FIRST_RESPONSE_DEADLINE`
-/// assertion fails. This is independent of `ZFB_DEV_TEST_SLOW_DIGEST_MS`
-/// (which pins the digest's position); this pins the islands build's.
+/// 1. **Bind precedes the islands build.** The ready banner is printed
+///    immediately after a successful bind, so in the correct (post-bind)
+///    ordering it lands at boot time — well under `BANNER_DEADLINE`. If the
+///    islands build (and its co-located sleep) were moved back BEFORE the
+///    bind, the banner would be delayed by `SLOW_ISLANDS_MS`
+///    (> `BANNER_DEADLINE`) and `wait_for_banner_port` would time out → the
+///    test fails. Anchoring to the banner-vs-bind ordering — NOT a
+///    banner-relative response window — is what makes this falsifiable: a
+///    banner-relative deadline does NOT catch a pre-bind build, because the
+///    banner floats with the bind.
+/// 2. **The serve path does not block on the deferred islands build.** The
+///    server answers `GET /__zfb/reload` (200 the instant the router is
+///    mounted) within `FIRST_RESPONSE_DEADLINE` of the banner while the
+///    islands slow-step is still in flight on the boot task.
 ///
-/// The `dev-loop-basic` fixture ships no `"use client"` islands, so the build
-/// itself produces no bundle — but the injected sleep runs unconditionally
-/// right before it, so the guard holds regardless of whether the project has
-/// islands.
+/// Independent of `ZFB_DEV_TEST_SLOW_DIGEST_MS` (which pins the digest's
+/// position); this pins the islands build's. The `dev-loop-basic` fixture
+/// ships no `"use client"` islands, so the build produces no bundle — but the
+/// injected sleep runs unconditionally right before it, so the guard holds
+/// regardless of whether the project has islands.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_binds_and_serves_before_slow_islands_step() {
     let _serial = SERIAL.lock().await;
@@ -613,9 +641,10 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
     };
 
     let tmp = tempfile::tempdir().expect("tempdir");
-    let slow = SLOW_MS.to_string();
+    let slow = SLOW_ISLANDS_MS.to_string();
     // Eager mode runs the full boot render on the background task too, so the
     // islands slow step sits behind the render — the bind precedes BOTH.
+    let spawn_t = Instant::now();
     let mut session = spawn_dev(
         &tmp,
         &esbuild,
@@ -625,16 +654,35 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
         ],
     );
 
+    // Guarantee 1 (bind precedes islands): the banner follows the bind, so it
+    // lands at boot time in the correct ordering. A pre-bind islands build
+    // would delay the banner by SLOW_ISLANDS_MS (> BANNER_DEADLINE) and the
+    // wait below would time out — that timeout IS the regression signal.
     let Some(port) = wait_for_banner_port(&mut session).await else {
         return; // known-skip
     };
+    // Explicit, clearly-messaged form of the same guarantee (in case the
+    // deadlines are ever retuned): the banner — and the bind it follows —
+    // landed well before the injected islands slow-step could have.
+    let banner_elapsed = spawn_t.elapsed();
+    assert!(
+        (banner_elapsed.as_millis() as u64) < SLOW_ISLANDS_MS,
+        "ready banner appeared {}ms after spawn, but the injected islands slow-step is \
+         {}ms — the islands build (and its sleep) ran BEFORE the bind/banner \
+         (bind-before-islands regression, issue #1170).\n{}",
+        banner_elapsed.as_millis(),
+        SLOW_ISLANDS_MS,
+        session.logs(),
+    );
+
     let base = format!("http://localhost:{port}");
     let client = client();
 
+    // Guarantee 2 (serve path is not blocked by the deferred build):
     // `GET /__zfb/reload` is 200 the instant the router is mounted,
     // independent of any render / islands build. Answering within
-    // FIRST_RESPONSE_DEADLINE (< SLOW_MS) while the slow islands step is in
-    // flight is the proof that bind precedes the islands build.
+    // FIRST_RESPONSE_DEADLINE of the banner while the islands slow-step is
+    // still in flight proves the serve path does not wait on the build.
     let url = format!("{base}/__zfb/reload");
     let request_start = Instant::now();
     let mut answered = false;
@@ -651,24 +699,12 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
-
     assert!(
         answered,
-        "the dev server did not answer GET {url} within {}s — but the injected \
-         slow islands step is {}ms. If bind happened BEFORE the islands build, the \
-         server would answer near-instantly; this failure is the bind-before-islands \
-         regression (issue #1170).\n{}",
+        "the dev server did not answer GET {url} within {}s of the banner while the \
+         islands slow-step was in flight — the serve path is blocking on the deferred \
+         islands build (issue #1170).\n{}",
         FIRST_RESPONSE_DEADLINE.as_secs(),
-        SLOW_MS,
-        session.logs(),
-    );
-
-    // Belt-and-braces: the whole answered-request round trip finished
-    // strictly before the injected slow step could have.
-    assert!(
-        request_start.elapsed().as_millis() < SLOW_MS as u128,
-        "served a response only after the injected slow islands step elapsed — bind \
-         did not precede the islands build.\n{}",
         session.logs(),
     );
 
