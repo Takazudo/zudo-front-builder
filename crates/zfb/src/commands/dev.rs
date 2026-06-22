@@ -337,45 +337,50 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     // 3. Build orchestrator setup.
     //
-    // Cold-start optimisation: try to reuse a previously persisted
-    // graph from `.zfb/graph.bin`. If the manifest digest still
-    // matches the current project layout, deserialise and reuse —
-    // otherwise build fresh and save the new graph back so the
-    // *next* cold start is fast.
+    // Issue #1166 — the manifest-digest + persisted-graph load + graph
+    // seed + boot render are all DEFERRED past `TcpListener::bind` (see
+    // the deferred task in step 7 below). The cold-start hang #1161
+    // reports is `compute_manifest_digest`'s `WalkDir`+`metadata()` walk
+    // over the watched tree; running it before bind made the port's
+    // reachability scale with the static-asset / watched-tree SIZE.
+    // Binding first and doing this walk on a background task makes the
+    // server accept connections in O(1) regardless of tree size,
+    // completing #1057's "serve immediately" intent.
+    //
+    // Cold-start optimisation (now performed inside the deferred task):
+    // try to reuse a previously persisted graph from `.zfb/graph.bin`.
+    // If the manifest digest still matches the current project layout,
+    // deserialise and reuse — otherwise build fresh and save the new
+    // graph back on shutdown so the *next* cold start is fast.
     // Includes configured collection paths (e.g. `src/mdx/notes`) so
-    // edits there produce watcher events; the manifest digest below
-    // covers them automatically since it walks the same roots.
+    // edits there produce watcher events; the manifest digest covers
+    // them automatically since it walks the same roots.
     let watch_roots: Vec<PathBuf> = derive_watch_roots(&cfg);
     let graph_cache_path = project_root.join(".zfb").join("graph.bin");
-    let manifest_digest = compute_manifest_digest(&project_root, &watch_roots);
-    let initial_graph = load_persisted_graph(&graph_cache_path, manifest_digest.as_ref());
-    // Note: we deliberately do NOT write a fresh empty graph here on
-    // a cache miss. If we did, a `zfb dev` killed before the
-    // orchestrator's first watcher tick would persist an empty graph
-    // tagged with the current digest — and the next cold start would
-    // happily reuse that empty cache as authoritative. Save only on
-    // shutdown (below), once the graph has actually been populated.
+
+    // The graph starts EMPTY. The deferred task (step 7) loads the
+    // persisted graph (if the digest matches) and seeds it from
+    // `session.page_ids()` BEFORE it runs the orchestrator loop or the
+    // boot render — so the orchestrator never observes the empty graph
+    // during its loop. `graph_for_save` keeps a handle for the shutdown
+    // persistence path; the orchestrator owns the other clone.
     //
-    // Formerly `initial_graph.unwrap_or_default()`. Now explicit: on a
-    // cache miss we construct a known-empty graph. Default was removed
-    // from DependencyGraph to prevent silent empty-graph construction
-    // elsewhere.
-    let graph = Arc::new(Mutex::new(initial_graph.unwrap_or_default()));
-
-    // Seed the graph with all page source paths from the router scan so
-    // `plan_for_changes` can resolve `PageSelection::All` to a concrete
-    // page list even before the first file-change tick. Without this
-    // seeding the graph is empty, `resolve_all` produces an empty page
-    // set, and every watcher tick is a no-op (zfb#N / cold-start bug).
-    if let Some(ref session) = dev_session {
-        if let Ok(mut g) = graph.lock() {
-            for page_id in session.page_ids() {
-                g.upsert(PageDeps::new(page_id, vec![]));
-            }
-        }
-    }
-
+    // We deliberately do NOT write a fresh empty graph here on a cache
+    // miss. If we did, a `zfb dev` killed before the orchestrator's
+    // first watcher tick would persist an empty graph tagged with the
+    // current digest — and the next cold start would happily reuse that
+    // empty cache as authoritative. Save only on shutdown (below), once
+    // the graph has actually been populated AND the digest is known.
+    let graph = Arc::new(Mutex::new(DependencyGraph::new()));
     let graph_for_save = Arc::clone(&graph);
+
+    // Issue #1166 — the manifest digest is now produced inside the
+    // deferred task (it is the expensive walk we moved past bind). The
+    // shutdown persistence path (step 8) reads it through this shared
+    // slot. If Ctrl+C arrives BEFORE the digest completes the slot is
+    // still `None` and the save is SKIPPED — never write a graph tagged
+    // with a wrong/absent digest.
+    let manifest_digest_slot: Arc<Mutex<Option<ManifestDigest>>> = Arc::new(Mutex::new(None));
     // Issue #1025 — wire the stale probe so each tick's BuildOutcome
     // reports the routes the lazy render callback marked stale
     // (`pages_stale`). Always wired when a render session exists; the
@@ -933,78 +938,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         reload_renderer,
     };
 
-    // 3b. Boot render — eager by default (zfb#642 / #644), opt-in lazy (#1057).
-    //
-    // Opt-in boot-lazy mode (issue #1057): with `ZFB_DEV_BOOT_LAZY=1` AND a
-    // valid prebuilt `dist/` present, SKIP the synchronous eager boot render
-    // entirely — mark every route stale and let the dev server serve the
-    // prebuilt `dist/` immediately (via the `read_from_dist` cold fallback,
-    // which already points at `dist_root`), while the request-time
-    // render-on-request hook (#1026) re-renders each route on its first GET.
-    // Turns a large content set's multi-second blocking boot into a
-    // near-instant serve. Requires lazy rendering (the hook only exists
-    // then), enforced by `boot_lazy_enabled`; without a servable `dist/` we
-    // fall through to the eager render so the server never serves 404s.
-    let boot_lazy = dev_session
-        .as_ref()
-        .map(|s| boot_lazy_enabled(s.lazy_render_enabled()))
-        .unwrap_or(false)
-        && dist_is_servable_seed(&dist_root);
-
-    if boot_lazy {
-        if let Some(session) = dev_session.as_ref() {
-            // Consume the one-shot boot-render-pending flag (the eager boot
-            // render that would have consumed it is being skipped) so the
-            // FIRST watcher edit takes the normal lazy path, not the
-            // boot-eager one.
-            let _ = session.inner.take_boot_render_pending();
-            let n = session.mark_all_routes_stale();
-            output::info(format!(
-                "dev: boot-lazy — serving prebuilt dist/ for {n} route(s); each \
-                 re-renders on first request (ZFB_DEV_BOOT_LAZY=1)"
-            ));
-        }
-    } else {
-        // Eager initial render (zfb#642 / #644).
-        //
-        // `BuildOrchestrator::run` is purely watcher-driven — it renders a
-        // page only after a file-change event. Without this eager render a
-        // fresh `zfb dev` leaves `.zfb-build/dev-pages/` empty and 404s EVERY
-        // route until the user edits a file. Run the initial full render NOW
-        // — synchronously, before the watcher loop and before `output::ready`
-        // — so the dev cache is populated before the server serves a request.
-        // Going through the orchestrator/pipeline (not the raw render
-        // callback) also primes `DevAssetPipeline.last_bytes` so the first
-        // real edit dedups correctly.
-        match orchestrator.initial_build(&ctx) {
-            Ok(Some(outcome)) => {
-                let expected_routes = dev_session.as_ref().map(|s| s.route_count()).unwrap_or(0);
-                // Surface the previously-silent zero-page failure (zfb#642):
-                // the renderer knows about routes, yet produced no HTML. Every
-                // route would 404. Make it visible on stderr instead.
-                if expected_routes > 0 && outcome.pages_rendered == 0 {
-                    output::error(format!(
-                        "dev initial render produced 0 pages for {expected_routes} known route(s) — \
-                         every route will 404. This usually means the renderer failed silently; \
-                         check the bundler / runtime output above."
-                    ));
-                }
-            }
-            Ok(None) => {
-                // No pages in the graph at all (renderer disabled or a
-                // project with zero SSG routes). The dev server still boots so
-                // the user can poke at it / fix the project; SSR-only routes
-                // still work via the request-time path.
-            }
-            Err(err) => {
-                output::error(format!(
-                    "dev initial render failed — every route will 404 until the next \
-                     successful rebuild: {err:#}"
-                ));
-            }
-        }
-    }
-
     // 4. on_outcome — translate each tick into reload events.
     let tx_cb = tx.clone();
     let on_outcome = move |outcome: &BuildOutcome| {
@@ -1013,10 +946,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
     };
 
-    // 5. Spawn the orchestrator's watcher loop.
+    // 5. Build the watch-ADD discovery hook (issue #659).
     //
-    // Issue #659 — `discover_hook` makes a content file CREATED after
-    // boot discoverable without a `zfb dev` restart: it rebundles the
+    // `discover_hook` makes a content file CREATED after boot
+    // discoverable without a `zfb dev` restart: it rebundles the
     // content snapshot, reloads the embedded V8 host in place, re-expands
     // `paths()`, and rebuilds the dev session's source→route table. Built
     // from `dev_session` (the V8-backed renderer); `None` when the
@@ -1034,11 +967,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             ssr_route_set.clone(),
         )
     });
-    let orch_handle = tokio::spawn(async move {
-        if let Err(err) = orchestrator.run(ctx, discover_hook, on_outcome).await {
-            output::error(format!("build orchestrator stopped: {err:#}"));
-        }
-    });
+
+    // Issue #1166 — handles the deferred boot task needs that ServeOpts
+    // also consumes below. Clone them now, before ServeOpts moves the
+    // originals: the deferred task computes the manifest digest (which
+    // needs `project_root` + `watch_roots`), loads + seeds the graph, and
+    // runs the boot render against `dev_session`.
+    let project_root_for_boot = project_root.clone();
+    let dev_session_for_boot = dev_session.clone();
+    let graph_for_seed = Arc::clone(&graph_for_save);
+    let graph_cache_path_for_boot = graph_cache_path.clone();
+    let manifest_digest_slot_for_boot = Arc::clone(&manifest_digest_slot);
+    let dist_root_for_boot = dist_root.clone();
 
     // 6. Build the serve options and announce readiness.
     //
@@ -1118,19 +1058,123 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         render_on_request_hook,
     };
 
-    // 7. Bind the TCP listener first so the port-in-use error surfaces
-    //    before the ready banner is printed. If bind fails here we exit
-    //    with an error and no banner — which is the correct ordering.
+    // 7. Bind the TCP listener FIRST — before the manifest-digest walk,
+    //    the persisted-graph load, the graph seed, and the boot render —
+    //    so cold-start reachability is independent of the watched-tree
+    //    SIZE (issue #1166; completes #1057's "serve immediately"
+    //    intent). The expensive `WalkDir`+`metadata()` digest walk
+    //    (#1161) and the boot render then run on a background task while
+    //    the server already accepts connections.
+    //
+    //    Ordering guarantees preserved:
+    //    - The port-in-use error still surfaces BEFORE the ready banner:
+    //      we bind here, return on failure, and only print the banner
+    //      after a successful bind.
+    //    - No leaked background task on a failed bind: the deferred task
+    //      is spawned ONLY after the bind succeeds, so a bind failure
+    //      returns with nothing to abort.
     let listener = match TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind dev server to {addr}"))
     {
         Ok(l) => l,
-        Err(e) => {
-            orch_handle.abort();
-            return Err(e);
-        }
+        Err(e) => return Err(e),
     };
+
+    // 7b. Deferred boot task (issue #1166). Now that the listener is
+    //     bound and the server is about to accept connections, run the
+    //     work that used to block the bind:
+    //       1. compute_manifest_digest (the size-bound walk we moved)
+    //       2. load_persisted_graph (digest-gated cache reuse)
+    //       3. seed the graph from session.page_ids()
+    //       4. boot render (boot-lazy mark-stale vs eager initial_build)
+    //       5. orchestrator.run (the watcher loop)
+    //     The digest is published into `manifest_digest_slot` so the
+    //     shutdown persistence path (step 8) can read it; until it lands
+    //     the slot stays `None` and an early Ctrl+C skips the save.
+    //
+    //     REQUEST-BEFORE-RENDER RACE (eager mode): a GET can arrive
+    //     before this task's boot render finishes. The dev server's serve
+    //     waterfall is `PageCache → html_root → dist_root → public_root →
+    //     404` (zfb-server `serve_page`): until the eager render writes a
+    //     route's HTML, the request is served from the prebuilt `dist/`
+    //     (the `read_from_dist` leg, which points at `dist_root`) if a
+    //     servable copy exists, and otherwise gets the controlled
+    //     `DEV_404_BODY` — a complete, well-formed HTML page carrying the
+    //     live-reload script that auto-upgrades the moment the real render
+    //     lands. It is NEVER a wrong/empty/partial body. This matches the
+    //     boot-lazy contract (#1057), which seeds `dist/` and re-renders
+    //     on first request via the render-on-request hook installed in
+    //     `ServeOpts` above (already live before the first accept, so a
+    //     request can never race a not-yet-installed hook).
+    let boot_handle = tokio::spawn(async move {
+        // Test-only slow-step injection (issue #1166 regression guard):
+        // `ZFB_DEV_TEST_SLOW_DIGEST_MS` makes the deferred boot work
+        // sleep BEFORE the digest walk, so a test can prove the port
+        // accepts connections / answers HTTP while this slow step is
+        // still in flight. Reverting the bind-first restructure (binding
+        // after this work) makes that assertion fail — the falsifiable
+        // proof that bind precedes the walk.
+        if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_DIGEST_MS") {
+            if let Ok(ms) = raw.trim().parse::<u64>() {
+                if ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                }
+            }
+        }
+
+        // 1. Manifest digest — the size-bound walk moved past bind.
+        let manifest_digest =
+            compute_manifest_digest(&project_root_for_boot, &watch_roots);
+
+        // 2. Load the persisted graph (digest-gated). On a hit, replace
+        //    the orchestrator's (currently empty) graph contents under
+        //    the lock; on a miss leave it empty (built fresh on ticks).
+        if let Some(persisted) =
+            load_persisted_graph(&graph_cache_path_for_boot, manifest_digest.as_ref())
+        {
+            if let Ok(mut g) = graph_for_seed.lock() {
+                *g = persisted;
+            }
+        }
+
+        // 3. Seed the graph with all page source paths from the router
+        //    scan so `plan_for_changes` can resolve `PageSelection::All`
+        //    to a concrete page list even before the first file-change
+        //    tick. Without this seeding the graph is empty, `resolve_all`
+        //    produces an empty page set, and every watcher tick is a
+        //    no-op (cold-start bug).
+        if let Some(ref session) = dev_session_for_boot {
+            if let Ok(mut g) = graph_for_seed.lock() {
+                for page_id in session.page_ids() {
+                    g.upsert(PageDeps::new(page_id, vec![]));
+                }
+            }
+        }
+
+        // Publish the digest so the shutdown path can persist the graph
+        // tagged with it. Done AFTER load+seed so a shutdown that races
+        // the digest landing still sees a graph the digest agrees with.
+        if let Ok(mut slot) = manifest_digest_slot_for_boot.lock() {
+            *slot = manifest_digest;
+        }
+
+        // 4. Boot render — eager by default (zfb#642 / #644), opt-in
+        //    boot-lazy (#1057). See `run_boot_render` for the full
+        //    contract; it is a free fn so the boot path stays readable
+        //    even though it now lives inside the deferred task.
+        run_boot_render(
+            &orchestrator,
+            &ctx,
+            dev_session_for_boot.as_ref(),
+            &dist_root_for_boot,
+        );
+
+        // 5. Orchestrator watcher loop — runs until aborted on shutdown.
+        if let Err(err) = orchestrator.run(ctx, discover_hook, on_outcome).await {
+            output::error(format!("build orchestrator stopped: {err:#}"));
+        }
+    });
 
     // Announce the ACTUAL bound port, not the requested one: with
     // `--port 0` the OS picks an ephemeral port, and printing the literal
@@ -1149,7 +1193,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     };
     let result = tokio::select! {
         res = serve_with_listener(opts, listener, ctrl_c) => {
-            orch_handle.abort();
+            boot_handle.abort();
             res
         }
     };
@@ -1166,11 +1210,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let _ = h.shutdown().await;
     }
 
-    // Persist the graph one more time before exit so the latest
+    // 8. Persist the graph one more time before exit so the latest
     // populated state — not just the boot-time fresh one — is what
     // the next cold start sees. Best-effort; warn-and-ignore on
     // failure (don't block shutdown on a disk error).
-    if let Some(d) = manifest_digest.as_ref() {
+    //
+    // Issue #1166 — the digest is now produced inside the deferred boot
+    // task and published through `manifest_digest_slot`. If Ctrl+C
+    // arrived BEFORE the digest landed the slot is still `None` and we
+    // SKIP the save entirely: writing a graph tagged with an absent /
+    // wrong digest would let the next cold start reuse a stale or empty
+    // cache as authoritative. The seed runs before the digest is
+    // published, so a present digest implies the graph it tags is at
+    // least seeded.
+    let final_digest = manifest_digest_slot.lock().ok().and_then(|s| s.clone());
+    if let Some(d) = final_digest.as_ref() {
         if let Ok(g) = graph_for_save.lock() {
             if let Err(err) = save_to_disk(&g, d, &graph_cache_path) {
                 output::warn(format!(
@@ -1182,6 +1236,95 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     }
 
     result
+}
+
+/// Boot render — eager by default (zfb#642 / #644), opt-in boot-lazy
+/// (#1057). Extracted from `run` so it can run inside the deferred boot
+/// task (issue #1166) while staying readable.
+///
+/// Opt-in boot-lazy mode (issue #1057): with `ZFB_DEV_BOOT_LAZY=1` AND a
+/// valid prebuilt `dist/` present, SKIP the eager boot render entirely —
+/// mark every route stale and let the dev server serve the prebuilt
+/// `dist/` immediately (via the `read_from_dist` cold fallback, which
+/// points at `dist_root`), while the request-time render-on-request hook
+/// (#1026) re-renders each route on its first GET. Requires lazy
+/// rendering (the hook only exists then), enforced by `boot_lazy_enabled`;
+/// without a servable `dist/` we fall through to the eager render so the
+/// server never serves a wrong/empty body.
+///
+/// Eager mode request-before-render race (issue #1166): because this now
+/// runs on a background task AFTER the listener binds, a GET can arrive
+/// before the eager render writes a route's HTML. The dev server's serve
+/// waterfall (`PageCache → html_root → dist_root → public_root → 404`)
+/// handles it: the request is served from the prebuilt `dist/` if a
+/// servable copy exists, otherwise the controlled `DEV_404_BODY` (a
+/// complete HTML page carrying the live-reload script, which auto-upgrades
+/// the instant the real render lands) — never a wrong/empty/partial body.
+#[cfg(feature = "embed_v8")]
+fn run_boot_render(
+    orchestrator: &BuildOrchestrator<DevAssetPipeline>,
+    ctx: &BuildContext,
+    dev_session: Option<&DevRenderSession>,
+    dist_root: &Path,
+) {
+    let boot_lazy = dev_session
+        .map(|s| boot_lazy_enabled(s.lazy_render_enabled()))
+        .unwrap_or(false)
+        && dist_is_servable_seed(dist_root);
+
+    if boot_lazy {
+        if let Some(session) = dev_session {
+            // Consume the one-shot boot-render-pending flag (the eager boot
+            // render that would have consumed it is being skipped) so the
+            // FIRST watcher edit takes the normal lazy path, not the
+            // boot-eager one.
+            let _ = session.inner.take_boot_render_pending();
+            let n = session.mark_all_routes_stale();
+            output::info(format!(
+                "dev: boot-lazy — serving prebuilt dist/ for {n} route(s); each \
+                 re-renders on first request (ZFB_DEV_BOOT_LAZY=1)"
+            ));
+        }
+        return;
+    }
+
+    // Eager initial render (zfb#642 / #644).
+    //
+    // `BuildOrchestrator::run` is purely watcher-driven — it renders a
+    // page only after a file-change event. Without this eager render a
+    // fresh `zfb dev` leaves `.zfb-build/dev-pages/` empty and 404s EVERY
+    // route until the user edits a file. Going through the
+    // orchestrator/pipeline (not the raw render callback) also primes
+    // `DevAssetPipeline.last_bytes` so the first real edit dedups
+    // correctly. Runs on the deferred boot task now (#1166) — see the
+    // request-before-render race note in the doc comment above.
+    match orchestrator.initial_build(ctx) {
+        Ok(Some(outcome)) => {
+            let expected_routes = dev_session.map(|s| s.route_count()).unwrap_or(0);
+            // Surface the previously-silent zero-page failure (zfb#642):
+            // the renderer knows about routes, yet produced no HTML. Every
+            // route would 404. Make it visible on stderr instead.
+            if expected_routes > 0 && outcome.pages_rendered == 0 {
+                output::error(format!(
+                    "dev initial render produced 0 pages for {expected_routes} known route(s) — \
+                     every route will 404. This usually means the renderer failed silently; \
+                     check the bundler / runtime output above."
+                ));
+            }
+        }
+        Ok(None) => {
+            // No pages in the graph at all (renderer disabled or a
+            // project with zero SSG routes). The dev server still boots so
+            // the user can poke at it / fix the project; SSR-only routes
+            // still work via the request-time path.
+        }
+        Err(err) => {
+            output::error(format!(
+                "dev initial render failed — every route will 404 until the next \
+                 successful rebuild: {err:#}"
+            ));
+        }
+    }
 }
 
 /// V8-off stub for `zfb dev` (issue #371, sub-task 4.1a).
