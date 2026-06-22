@@ -27,11 +27,19 @@ tab to see the updated SSR output. For context on the dev-side SSR path, see
 
 The moment you save, the operating system fires a filesystem event on the file's
 path. `crates/zfb-watcher` is watching every relevant directory — `pages/`,
-`components/`, `content/`, `layouts/`, `styles/`, `data/`, `public/`, and the two
+`components/`, `content/`, `layouts/`, `styles/`, `data/`, and the two
 config files `zfb.config.json` and `zfb.config.ts` — plus each configured
 collection's `path` when it lives outside those default roots — via the
 [`notify`](https://crates.io/crates/notify) crate. (See `DEFAULT_WATCH_ROOTS` and
 `derive_watch_roots` in `crates/zfb/src/commands/dev.rs` for the canonical list.)
+
+Note that `public/` is **not** a watch root. Static assets are served live from
+disk on each request (see [Static Assets — dev / prod parity](./static-assets.mdx#dev--prod-parity)),
+so editing a file under `public/` never produces a watcher event and never
+triggers a livereload — the dev server simply serves the new bytes on the next
+request. Keeping `public/` out of the watched set is also what lets boot stay
+fast regardless of how large your asset tree is (see
+[Boot is bind-first](#boot-is-bind-first) below).
 
 Editor saves are rarely a single clean event. vim renames a swap file over the
 original; VS Code emits several metadata-then-data events in quick succession; a
@@ -177,6 +185,40 @@ Any concurrent `Islands` events for that tab are mooted by the reload.
 runs; if the output changed, a `Css` event fires. The browser swaps the stylesheet
 in place — no document reload, your scroll position and any client-side state are
 preserved.
+
+## Boot is bind-first
+
+Everything above describes the steady-state edit loop. Boot itself is ordered to
+get the server reachable as fast as possible: `zfb dev` **binds the TCP listener
+before** it does any project-wide work. The manifest-digest walk, the persisted
+dependency-graph load, the graph seed, and the initial render all run on a
+background task that is spawned only **after** the bind succeeds. (See the
+bind-first restructure around `TcpListener::bind` in
+`crates/zfb/src/commands/dev.rs`.)
+
+The cost this removes is `compute_manifest_digest`'s `WalkDir` + `metadata()`
+walk over the watched tree. Running it before the bind made the port's
+reachability scale with the **size of the watched tree** — a project with a large
+static-asset directory or a symlinked tree could hang for a noticeable beat
+before the server accepted its first connection. Binding first, then walking on a
+background task, makes the server start accepting connections in constant time
+regardless of how big that tree is.
+
+<Note title="What this win is — and isn't">
+
+The boot improvement is independence from **static-asset / watched-tree size**.
+It removed a pre-bind walk; it did not make the actual build cheaper. Initial
+page rendering, CSS bundling, and the islands bundle still scale with the number
+of pages, islands, and source files in your project — that work still happens,
+just on the background task after the listener is up. A request that arrives for
+a route the boot render has not reached yet still blocks until that route is
+rendered; what you gain is that the **listen socket** is up immediately, not that
+the first render is free.
+
+</Note>
+
+This change pairs with `public/` no longer being a watch root (above): together
+they mean a large `public/` tree neither slows startup nor feeds the watcher.
 
 ## Related
 

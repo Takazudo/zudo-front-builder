@@ -2611,6 +2611,23 @@ fn copy_public_dir(
             std::fs::create_dir_all(&dest)
                 .with_context(|| format!("public dir copy: create dir {}", dest.display()))?;
         } else if entry.file_type().is_file() {
+            // Route-vs-static collision: if the renderer already created
+            // `dest` as a directory (e.g. `dist/foo/` for a `pages/foo.tsx`
+            // route that emits `dist/foo/index.html`), copying the public
+            // file flat onto that path would fail with EISDIR. The documented
+            // precedence — rendered page > public file — means we skip it.
+            // In dev the same result is achieved naturally because the
+            // PageCache / html_root waterfall runs before the public_root
+            // fallback in `serve_page`.
+            if dest.is_dir() {
+                output::warn(format!(
+                    "public dir copy: skipping {} because destination {} is a \
+                     rendered-route directory (page route takes precedence over public file)",
+                    entry.path().display(),
+                    dest.display(),
+                ));
+                continue;
+            }
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent).with_context(|| {
                     format!("public dir copy: create parent dir {}", parent.display())
@@ -4561,6 +4578,39 @@ mod tests {
         assert!(
             !outdir.join("https:").exists(),
             "no literal 'https:' directory must be created"
+        );
+    }
+
+    /// Route-vs-static collision: if the renderer already created
+    /// `dest` as a directory (e.g. `dist/foo/`), `copy_public_dir` must
+    /// skip the conflicting `public/foo` file rather than crashing with
+    /// EISDIR — rendered page wins over public file (issue #1167).
+    #[test]
+    fn copy_public_dir_skips_file_when_dest_is_directory() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        // Stage public/foo (plain file) — same name as a rendered route.
+        std::fs::create_dir_all(project_root.join("public")).unwrap();
+        std::fs::write(project_root.join("public/foo"), b"public-foo-content").unwrap();
+        // Pre-create dist/foo/ as a directory (what the renderer would write
+        // for a pages/foo.tsx route that emits dist/foo/index.html).
+        std::fs::create_dir_all(outdir.join("foo")).unwrap();
+        std::fs::write(outdir.join("foo/index.html"), b"<h1>rendered foo</h1>").unwrap();
+        // The copy must succeed without crashing (EISDIR).
+        copy_public_dir(project_root, &outdir, std::path::Path::new("public"), None)
+            .expect("copy must succeed even when dest is a rendered-route directory");
+        // The rendered index.html must be untouched.
+        let index = std::fs::read(outdir.join("foo/index.html")).unwrap();
+        assert_eq!(
+            index, b"<h1>rendered foo</h1>",
+            "dist/foo/index.html must not be overwritten by public/foo",
+        );
+        // The public/foo raw content must NOT appear as a flat file at dist/foo.
+        // dist/foo is still a directory — verifying it was not replaced.
+        assert!(
+            outdir.join("foo").is_dir(),
+            "dist/foo must remain a directory after copy_public_dir",
         );
     }
 
