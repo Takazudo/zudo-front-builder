@@ -1680,10 +1680,11 @@ fn dist_is_servable_seed(dist_root: &Path) -> bool {
         for entry in rd.flatten() {
             let path = entry.path();
             match entry.file_type() {
-                Ok(ft) if ft.is_file() => {
-                    if path.file_name().and_then(|n| n.to_str()) == Some("index.html") {
-                        return true;
-                    }
+                Ok(ft)
+                    if ft.is_file()
+                        && path.file_name().and_then(|n| n.to_str()) == Some("index.html") =>
+                {
+                    return true;
                 }
                 Ok(ft) if ft.is_dir() => subdirs.push(path),
                 _ => {}
