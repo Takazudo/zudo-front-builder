@@ -43,6 +43,12 @@
 //!    deferred-state correctness: if the dev server is killed BEFORE the
 //!    deferred digest completes, NO `.zfb/graph.bin` is written (never a
 //!    graph tagged with an absent / wrong digest).
+//! 4. `dev_binds_and_serves_before_slow_islands_step` — the
+//!    bind-before-islands guard (issue #1170). The eager initial islands
+//!    bundle used to run synchronously before the bind; it now runs on the
+//!    deferred boot task. Uses the same strategy with a co-located
+//!    `ZFB_DEV_TEST_SLOW_ISLANDS_MS` slow step, independent of the digest
+//!    one, so it specifically pins the islands build's position past bind.
 //!
 //! ## Spawn / teardown discipline (from `dev_serve_e2e.rs` /
 //! `build_terminates.rs`)
@@ -216,7 +222,8 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]
     cmd.env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_BOOT_LAZY")
-        .env_remove("ZFB_DEV_TEST_SLOW_DIGEST_MS");
+        .env_remove("ZFB_DEV_TEST_SLOW_DIGEST_MS")
+        .env_remove("ZFB_DEV_TEST_SLOW_ISLANDS_MS");
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
@@ -570,4 +577,100 @@ async fn early_shutdown_before_digest_skips_graph_save() {
         graph_path.display(),
         session.logs(),
     );
+}
+
+// ---------------------------------------------------------------------------
+// Test 4 — bind-before-islands guard (issue #1170).
+// ---------------------------------------------------------------------------
+
+/// Issue #1170 — the eager initial islands bundle
+/// (`build_default_islands_payload`) used to run SYNCHRONOUSLY before
+/// `TcpListener::bind`. On a large-dependency consumer its `"use client"`
+/// scan + esbuild bundle was the dominant pre-bind cost (the last size-bound
+/// step #1166 had not yet moved). It now runs on the deferred boot task.
+///
+/// The dev binary reads a TEST-ONLY env var `ZFB_DEV_TEST_SLOW_ISLANDS_MS`
+/// and sleeps that long right before the deferred islands build. With a long
+/// sleep the server must STILL bind and answer an HTTP request well before it
+/// elapses — proving the listener binds BEFORE the islands build.
+///
+/// Falsifiability: the slow step is co-located with the islands build, so
+/// moving the build back ahead of the bind moves the sleep with it — the bind
+/// would then be delayed by `SLOW_MS` and the `< FIRST_RESPONSE_DEADLINE`
+/// assertion fails. This is independent of `ZFB_DEV_TEST_SLOW_DIGEST_MS`
+/// (which pins the digest's position); this pins the islands build's.
+///
+/// The `dev-loop-basic` fixture ships no `"use client"` islands, so the build
+/// itself produces no bundle — but the injected sleep runs unconditionally
+/// right before it, so the guard holds regardless of whether the project has
+/// islands.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_binds_and_serves_before_slow_islands_step() {
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let slow = SLOW_MS.to_string();
+    // Eager mode runs the full boot render on the background task too, so the
+    // islands slow step sits behind the render — the bind precedes BOTH.
+    let mut session = spawn_dev(
+        &tmp,
+        &esbuild,
+        &[
+            ("ZFB_DEV_TEST_SLOW_ISLANDS_MS", slow.as_str()),
+            ("ZFB_DEV_EAGER", "1"),
+        ],
+    );
+
+    let Some(port) = wait_for_banner_port(&mut session).await else {
+        return; // known-skip
+    };
+    let base = format!("http://localhost:{port}");
+    let client = client();
+
+    // `GET /__zfb/reload` is 200 the instant the router is mounted,
+    // independent of any render / islands build. Answering within
+    // FIRST_RESPONSE_DEADLINE (< SLOW_MS) while the slow islands step is in
+    // flight is the proof that bind precedes the islands build.
+    let url = format!("{base}/__zfb/reload");
+    let request_start = Instant::now();
+    let mut answered = false;
+    while request_start.elapsed() < FIRST_RESPONSE_DEADLINE {
+        if let Ok(resp) = client.get(&url).send().await {
+            assert_eq!(
+                resp.status().as_u16(),
+                200,
+                "SSE endpoint must answer 200; the server is serving but on a wrong status.\n{}",
+                session.logs(),
+            );
+            answered = true;
+            break;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+
+    assert!(
+        answered,
+        "the dev server did not answer GET {url} within {}s — but the injected \
+         slow islands step is {}ms. If bind happened BEFORE the islands build, the \
+         server would answer near-instantly; this failure is the bind-before-islands \
+         regression (issue #1170).\n{}",
+        FIRST_RESPONSE_DEADLINE.as_secs(),
+        SLOW_MS,
+        session.logs(),
+    );
+
+    // Belt-and-braces: the whole answered-request round trip finished
+    // strictly before the injected slow step could have.
+    assert!(
+        request_start.elapsed().as_millis() < SLOW_MS as u128,
+        "served a response only after the injected slow islands step elapsed — bind \
+         did not precede the islands build.\n{}",
+        session.logs(),
+    );
+
+    // The deferred slow step is still sleeping; Drop group-kills it.
 }

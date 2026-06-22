@@ -472,92 +472,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // next rebundle tick can delete stale ones (issue #809).
     let live_chunk_filenames: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
-    // Eager initial bundle. Failures are non-fatal — we warn and let the
-    // dev server boot anyway. The hot-rebuild path will retry on the next
-    // file change so a transient esbuild hiccup at boot doesn't strand the
-    // user.
-    // Unlike the production path (which only emits a hashed file), the dev
-    // server must write the stable `dist/assets/islands.js` explicitly so
-    // `ServeDir` can serve `GET /assets/islands.js` (mirrors the CSS path
-    // below — the bundler carries bytes in memory only; disk writes belong
-    // to the caller).
-    // Small helper closure to translate a stable_url into the prefixed
-    // form the dev server actually serves it at (`/assets/islands.js`
-    // for no-base, `/foo/assets/islands.js` for `base: "/foo/"`, plain
-    // `/assets/islands.js` for absolute-URL bases). Captures by clone
-    // so the run_islands callback below can own its own copy.
-    let prefix_for_init = dev_islands_url_prefix.clone();
-    let prefixed_islands_url = move |stable: String| -> String {
-        if prefix_for_init.is_empty() {
-            stable
-        } else {
-            format!("{prefix_for_init}{stable}")
-        }
-    };
-    match crate::commands::build::build_default_islands_payload(
-        &project_root,
-        &dist_root,
-        cfg.framework,
-        &islands_plugin_config,
-    ) {
-        Ok((Some(payload), _marker_names)) => {
-            // Write the stable `islands.js` bytes to disk so the dev
-            // server's `ServeDir` can handle `GET /assets/islands.js`.
-            // The bundler no longer writes to disk itself — the caller
-            // owns the disk write (same pattern as the CSS path below).
-            // Only publish the bundle URL when the write succeeded —
-            // setting it on a failed write would inject a `<script>` tag
-            // pointing at a file that 404s (mirrors the pre-change
-            // behaviour where a bundler write failure produced no URL).
-            let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
-            let islands_out_path = assets_dir.join(zfb_types::STABLE_ISLANDS_FILENAME);
-            if let Some(parent) = islands_out_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            match std::fs::write(&islands_out_path, &payload.bytes) {
-                Ok(()) => {
-                    let url = prefixed_islands_url(payload.stable_url);
-                    if let Ok(mut guard) = islands_bundle_url_handle.write() {
-                        *guard = Some(url);
-                    }
-                }
-                Err(e) => {
-                    output::warn(format!(
-                        "initial islands bundle write failed (no <script \
-                         type=\"module\"> will be injected until the next \
-                         successful rebuild): {e:#}"
-                    ));
-                }
-            }
-            // Write chunk companions alongside islands.js and seed the
-            // live-chunk tracker. Boot failures here are non-fatal —
-            // the server still comes up; the next successful rebuild
-            // will retry.
-            match refresh_dev_island_chunks(&assets_dir, &payload.companions, &HashSet::new()) {
-                Ok(names) => {
-                    if let Ok(mut guard) = live_chunk_filenames.lock() {
-                        *guard = names;
-                    }
-                }
-                Err(e) => {
-                    output::warn(format!(
-                        "initial islands chunks write failed (chunks may 404 \
-                         until the next rebuild): {e:#}"
-                    ));
-                }
-            }
-        }
-        Ok((None, _marker_names)) => {
-            // No `"use client"` islands in the project. Leave the handle
-            // at `None` so the server skips head injection entirely.
-        }
-        Err(err) => {
-            output::warn(format!(
-                "initial islands bundle failed (no <script type=\"module\"> \
-                 will be injected until the next successful rebuild): {err:#}"
-            ));
-        }
-    }
+    // Issue #1170 — the eager initial islands bundle used to run HERE,
+    // synchronously, before `TcpListener::bind`. On a large-dependency
+    // consumer its `"use client"` scan + esbuild bundle was the dominant
+    // pre-bind cost (the last size-bound step #1166 had not yet moved). It
+    // now runs in the deferred boot task (step 7b) via `rebundle_islands`,
+    // publishing the bundle URL late through `islands_bundle_url_handle`
+    // and folding the result into the boot `BuildOutcome` so a browser that
+    // loaded during the pre-bundle window gets a `ReloadEvent::Islands` and
+    // hydrates. Until the bundle lands the handle stays `None` and the
+    // server simply omits the `<script type="module">` (the same contract
+    // the project-has-no-islands path already ships).
 
     let run_islands: Option<IslandsRunner> = {
         let project_root = project_root.clone();
@@ -567,116 +492,23 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let url_prefix = dev_islands_url_prefix.clone();
         let url_handle = Arc::clone(&islands_bundle_url_handle);
         let chunk_names = Arc::clone(&live_chunk_filenames);
+        // The watcher tick and the deferred boot build (issue #1170) share
+        // ONE implementation — `rebundle_islands` — so the boot-time bundle
+        // and every rebundle tick write islands.js, prune chunks, and
+        // publish the shared URL handle identically (no drift). The watcher
+        // path propagates the `Err` (an esbuild / disk failure on a tick
+        // should fail loudly); the boot path catches it and warns-and-
+        // continues (see step 7b).
         Some(Arc::new(move || -> Result<Option<IslandsBundleInfo>> {
-            // Marker names are only needed by the production build pass; dev
-            // mode already surfaces unknown-marker warnings in the browser
-            // console via the runtime.ts warn path.
-            let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
+            rebundle_islands(
                 &project_root,
                 &dist_root_for_islands,
                 framework,
                 &plugin_cfg,
-            )?;
-            // Rewrite the shared handle so the next initial GET (a fresh
-            // browser tab, or a page that has not yet hydrated) sees the
-            // current bundle URL. The dev server holds the same Arc, so
-            // this is visible without re-routing through ServeOpts.
-            //
-            // Treat lock poisoning as a soft event: a writer panic should
-            // not abort the watcher loop. Recover the inner and continue.
-            let mut guard = url_handle.write().unwrap_or_else(|p| {
-                tracing::warn!(
-                    site = "dev.run_islands.url_handle",
-                    "rwlock poisoned, recovered"
-                );
-                p.into_inner()
-            });
-            let Some(payload) = payload else {
-                // The project produced no islands bundle this tick. Clear
-                // the shared URL so the next served HTML response does
-                // NOT keep injecting a stale `<script type="module">`
-                // tag — without this, removing the last `"use client"`
-                // component would leave the previously-emitted bundle URL
-                // visible on every page until the dev server restarts.
-                *guard = None;
-                // Also prune any chunks that were part of the last bundle
-                // — with no islands bundle at all, none of the chunk files
-                // should be served either.
-                {
-                    let mut prev = chunk_names.lock().unwrap_or_else(|p| {
-                        tracing::warn!(
-                            site = "dev.run_islands.chunk_names (clear)",
-                            "mutex poisoned, recovered"
-                        );
-                        p.into_inner()
-                    });
-                    let assets_dir = dist_root_for_islands.join(zfb_types::DIST_ASSETS_DIR);
-                    if let Err(e) = refresh_dev_island_chunks(&assets_dir, &[], &prev) {
-                        tracing::warn!(
-                            error = %e,
-                            "dev islands: failed to prune stale chunks after no-bundle tick (ignored)"
-                        );
-                    }
-                    *prev = HashSet::new();
-                }
-                return Ok(None);
-            };
-            // Write the stable `islands.js` bytes to disk so ServeDir can
-            // serve `GET /assets/islands.js`. The bundler carries bytes in
-            // memory only — the dev caller owns the disk write (same
-            // pattern as the CSS path).
-            {
-                let assets_dir = dist_root_for_islands.join(zfb_types::DIST_ASSETS_DIR);
-                let islands_out_path = assets_dir.join(zfb_types::STABLE_ISLANDS_FILENAME);
-                if let Some(parent) = islands_out_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Err(e) = std::fs::write(&islands_out_path, &payload.bytes) {
-                    return Err(anyhow::anyhow!(
-                        "dev islands: failed to write islands.js to disk: {e:#}"
-                    ));
-                }
-            }
-            let bundle_url = if url_prefix.is_empty() {
-                payload.stable_url
-            } else {
-                format!("{url_prefix}{}", payload.stable_url)
-            };
-            // Write / prune chunk files for this generation.
-            {
-                let mut prev = chunk_names.lock().unwrap_or_else(|p| {
-                    tracing::warn!(
-                        site = "dev.run_islands.chunk_names",
-                        "mutex poisoned, recovered"
-                    );
-                    p.into_inner()
-                });
-                let assets_dir = dist_root_for_islands.join(zfb_types::DIST_ASSETS_DIR);
-                match refresh_dev_island_chunks(&assets_dir, &payload.companions, &prev) {
-                    Ok(names) => *prev = names,
-                    Err(e) => {
-                        return Err(e.context("dev islands: failed to refresh chunk files"));
-                    }
-                }
-            }
-            // The bundler does not currently surface a "bytes-changed" bit
-            // back through `build_default_islands_payload` — the URL stays
-            // stable (`/assets/islands.js`) on every rebuild, the bytes on
-            // disk update in place. Report `changed = true` so the SSE
-            // layer always emits a reload event after a successful
-            // re-bundle; the browser then re-imports the URL with a
-            // cache-busting `?v=…` query that picks up the new bytes.
-            // `components` is empty because the build-side payload doesn't
-            // carry per-island names; the livereload client's empty-
-            // component path handles "unknown components" by reloading the
-            // whole bundle.
-            let info = IslandsBundleInfo {
-                changed: true,
-                bundle_url: bundle_url.clone(),
-                components: Vec::new(),
-            };
-            *guard = Some(bundle_url);
-            Ok(Some(info))
+                &url_prefix,
+                &url_handle,
+                &chunk_names,
+            )
         }))
     };
 
@@ -979,6 +811,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let graph_cache_path_for_boot = graph_cache_path.clone();
     let manifest_digest_slot_for_boot = Arc::clone(&manifest_digest_slot);
     let dist_root_for_boot = dist_root.clone();
+    // Issue #1170 — the deferred boot task also runs the eager islands
+    // bundle (the last size-bound step that used to gate the bind). Clone
+    // its inputs now, before `ServeOpts` / `run_islands` consume the
+    // originals: `rebundle_islands` needs the project + dist roots, the
+    // framework, the islands plugin config, the URL prefix, the shared
+    // bundle-URL handle, and the live-chunk tracker.
+    let islands_url_handle_for_boot = Arc::clone(&islands_bundle_url_handle);
+    let islands_chunk_names_for_boot = Arc::clone(&live_chunk_filenames);
+    let islands_plugin_config_for_boot = islands_plugin_config.clone();
+    let islands_url_prefix_for_boot = dev_islands_url_prefix.clone();
+    let framework_for_boot = cfg.framework;
 
     // 6. Build the serve options and announce readiness.
     //
@@ -1201,14 +1044,92 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
             // 4. Boot render — eager by default (zfb#642 / #644), opt-in
             //    boot-lazy (#1057). Returns the eager outcome (or `None` for
-            //    boot-lazy / no-pages) so `run_with_boot` can broadcast a
-            //    reload after the render lands. See `run_boot_render`.
-            run_boot_render(
+            //    boot-lazy / no-pages / render error) so `run_with_boot` can
+            //    broadcast a reload after the render lands. See
+            //    `run_boot_render`.
+            let render_outcome = run_boot_render(
                 orchestrator,
                 ctx,
                 dev_session_for_boot.as_ref(),
                 &dist_root_for_boot,
-            )
+            );
+
+            // 5. Eager islands bundle (issue #1170). This is the last
+            //    size-bound step that used to run synchronously before
+            //    `TcpListener::bind`; on a large-dependency consumer its
+            //    `"use client"` scan + esbuild bundle was the dominant
+            //    pre-bind cost. Running it HERE (post-bind, on the deferred
+            //    boot task) keeps cold-start reachability O(1) in the
+            //    consumer's dependency-tree size.
+            //
+            //    Test-only slow-step injection (issue #1170 regression
+            //    guard): `ZFB_DEV_TEST_SLOW_ISLANDS_MS` sleeps right before
+            //    the islands build, so a test can prove the port accepts
+            //    connections / answers HTTP while this slow step is still in
+            //    flight. Reverting the deferral (building islands before the
+            //    bind) makes that assertion fail. Blocking `std::thread::sleep`
+            //    is fine for the same reason the boot-render slow-step above
+            //    is: request handling runs on other multi-thread runtime
+            //    workers. Independent of the digest / boot-render slow-steps.
+            if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_ISLANDS_MS") {
+                if let Ok(ms) = raw.trim().parse::<u64>() {
+                    if ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                    }
+                }
+            }
+            let islands_info = match rebundle_islands(
+                &project_root_for_boot,
+                &dist_root_for_boot,
+                framework_for_boot,
+                &islands_plugin_config_for_boot,
+                &islands_url_prefix_for_boot,
+                &islands_url_handle_for_boot,
+                &islands_chunk_names_for_boot,
+            ) {
+                Ok(info) => info,
+                Err(e) => {
+                    // Same contract as the pre-#1170 eager build's Err /
+                    // write-fail arms: warn and continue. The server stays
+                    // up, the bundle-URL handle stays `None` (no
+                    // `<script type="module">` injected), and the next
+                    // successful watcher rebuild retries.
+                    output::warn(format!(
+                        "initial islands bundle failed (no <script \
+                         type=\"module\"> will be injected until the next \
+                         successful rebuild): {e:#}"
+                    ));
+                    None
+                }
+            };
+
+            // 6. Fold the islands bundle into the boot outcome so
+            //    `run_with_boot` broadcasts a `ReloadEvent::Islands` (via
+            //    `outcome_to_events`) — a browser that loaded a page during
+            //    the pre-bundle window then re-imports the bundle and
+            //    hydrates. CRITICAL: `run_boot_render` returns `None` on
+            //    boot-lazy / no-pages / render-error, but the islands reload
+            //    must STILL fire on those paths — otherwise a pre-bundle tab
+            //    never hydrates. So when the render produced no outcome we
+            //    synthesise a `BuildOutcome` carrying only the islands info.
+            //    A single merged outcome is returned (one broadcast), never
+            //    two.
+            match (render_outcome, islands_info) {
+                (Some(mut outcome), Some(info)) => {
+                    outcome.islands_rerun = true;
+                    outcome.islands_changed = info.changed;
+                    outcome.islands_bundle = Some(info);
+                    Some(outcome)
+                }
+                (Some(outcome), None) => Some(outcome),
+                (None, Some(info)) => Some(BuildOutcome {
+                    islands_rerun: true,
+                    islands_changed: info.changed,
+                    islands_bundle: Some(info),
+                    ..BuildOutcome::default()
+                }),
+                (None, None) => None,
+            }
         };
 
         // 5. Orchestrator watcher loop — registers the watch, runs the boot
@@ -1281,6 +1202,137 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     }
 
     result
+}
+
+/// Re-bundle the project's `"use client"` islands once and publish the
+/// result: build the payload, write the stable `dist/assets/islands.js`,
+/// refresh / prune the chunk companions, and rewrite the shared bundle-URL
+/// handle. Returns `Some(IslandsBundleInfo { changed: true, .. })` when a
+/// bundle was produced (so `outcome_to_events` emits a
+/// `ReloadEvent::Islands`), or `None` when the project has no `"use client"`
+/// components this run — in which case the handle is cleared and stale
+/// chunks are pruned so no `<script type="module">` and no dead chunk files
+/// keep being served.
+///
+/// Shared by the watcher-tick `run_islands` callback and the deferred boot
+/// build (issue #1170) so both write disk, prune chunks, and publish the URL
+/// IDENTICALLY — the two paths cannot drift. Lock poisoning is recovered (a
+/// writer panic must not strand the watcher loop). Disk / chunk-write
+/// failures are returned as `Err`: the watcher path propagates it (a tick
+/// failure is loud), the boot path warns-and-continues (issue #1170).
+fn rebundle_islands(
+    project_root: &Path,
+    dist_root: &Path,
+    framework: crate::config::Framework,
+    plugin_config: &crate::commands::build::IslandsPluginConfig,
+    url_prefix: &str,
+    url_handle: &zfb_server::IslandsBundleUrl,
+    chunk_names: &Arc<Mutex<HashSet<String>>>,
+) -> anyhow::Result<Option<IslandsBundleInfo>> {
+    // Marker names are only needed by the production build pass; dev mode
+    // already surfaces unknown-marker warnings in the browser console via
+    // the runtime.ts warn path.
+    let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
+        project_root,
+        dist_root,
+        framework,
+        plugin_config,
+    )?;
+    // Rewrite the shared handle so the next initial GET (a fresh browser
+    // tab, or a page that has not yet hydrated) sees the current bundle URL.
+    // The dev server holds the same Arc, so this is visible without
+    // re-routing through ServeOpts.
+    //
+    // Treat lock poisoning as a soft event: a writer panic should not abort
+    // the watcher loop. Recover the inner and continue.
+    let mut guard = url_handle.write().unwrap_or_else(|p| {
+        tracing::warn!(
+            site = "dev.rebundle_islands.url_handle",
+            "rwlock poisoned, recovered"
+        );
+        p.into_inner()
+    });
+    let Some(payload) = payload else {
+        // The project produced no islands bundle this run. Clear the shared
+        // URL so the next served HTML response does NOT keep injecting a
+        // stale `<script type="module">` tag — without this, removing the
+        // last `"use client"` component would leave the previously-emitted
+        // bundle URL visible on every page until the dev server restarts.
+        *guard = None;
+        // Also prune any chunks that were part of the last bundle — with no
+        // islands bundle at all, none of the chunk files should be served.
+        {
+            let mut prev = chunk_names.lock().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "dev.rebundle_islands.chunk_names (clear)",
+                    "mutex poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+            if let Err(e) = refresh_dev_island_chunks(&assets_dir, &[], &prev) {
+                tracing::warn!(
+                    error = %e,
+                    "dev islands: failed to prune stale chunks after no-bundle tick (ignored)"
+                );
+            }
+            *prev = HashSet::new();
+        }
+        return Ok(None);
+    };
+    // Write the stable `islands.js` bytes to disk so ServeDir can serve
+    // `GET /assets/islands.js`. The bundler carries bytes in memory only —
+    // the dev caller owns the disk write (same pattern as the CSS path).
+    {
+        let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+        let islands_out_path = assets_dir.join(zfb_types::STABLE_ISLANDS_FILENAME);
+        if let Some(parent) = islands_out_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&islands_out_path, &payload.bytes) {
+            return Err(anyhow::anyhow!(
+                "dev islands: failed to write islands.js to disk: {e:#}"
+            ));
+        }
+    }
+    let bundle_url = if url_prefix.is_empty() {
+        payload.stable_url
+    } else {
+        format!("{url_prefix}{}", payload.stable_url)
+    };
+    // Write / prune chunk files for this generation.
+    {
+        let mut prev = chunk_names.lock().unwrap_or_else(|p| {
+            tracing::warn!(
+                site = "dev.rebundle_islands.chunk_names",
+                "mutex poisoned, recovered"
+            );
+            p.into_inner()
+        });
+        let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+        match refresh_dev_island_chunks(&assets_dir, &payload.companions, &prev) {
+            Ok(names) => *prev = names,
+            Err(e) => {
+                return Err(e.context("dev islands: failed to refresh chunk files"));
+            }
+        }
+    }
+    // The bundler does not currently surface a "bytes-changed" bit back
+    // through `build_default_islands_payload` — the URL stays stable
+    // (`/assets/islands.js`) on every rebuild, the bytes on disk update in
+    // place. Report `changed = true` so the SSE layer always emits a reload
+    // event after a successful re-bundle; the browser then re-imports the
+    // URL with a cache-busting `?v=…` query that picks up the new bytes.
+    // `components` is empty because the build-side payload doesn't carry
+    // per-island names; the livereload client's empty-component path handles
+    // "unknown components" by reloading the whole bundle.
+    let info = IslandsBundleInfo {
+        changed: true,
+        bundle_url: bundle_url.clone(),
+        components: Vec::new(),
+    };
+    *guard = Some(bundle_url);
+    Ok(Some(info))
 }
 
 /// Boot render — eager by default (zfb#642 / #644), opt-in boot-lazy
