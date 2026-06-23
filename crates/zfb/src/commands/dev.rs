@@ -1377,7 +1377,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 }
 
 /// Re-bundle the project's `"use client"` islands once and publish the
-/// result: build the payload, write the stable `dist/assets/islands.js`,
+/// result: build the payload, write the stable `islands.js` under
+/// `assets_root/assets/` (issue #1189: the isolated `.zfb-build/dev-assets`
+/// root, NOT the build-shared `dist/`),
 /// refresh / prune the chunk companions, and rewrite the shared bundle-URL
 /// handle. Returns `Some(IslandsBundleInfo { changed: true, .. })` when a
 /// bundle was produced (so `outcome_to_events` emits a
@@ -1394,7 +1396,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 /// failure is loud), the boot path warns-and-continues (issue #1170).
 fn rebundle_islands(
     project_root: &Path,
-    dist_root: &Path,
+    // Where dev assets are written + served from (issue #1189: the isolated
+    // `.zfb-build/dev-assets` root, NOT the build-shared `dist/`).
+    assets_root: &Path,
     framework: crate::config::Framework,
     plugin_config: &crate::commands::build::IslandsPluginConfig,
     url_prefix: &str,
@@ -1406,7 +1410,7 @@ fn rebundle_islands(
     // the runtime.ts warn path.
     let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
         project_root,
-        dist_root,
+        assets_root,
         framework,
         plugin_config,
     )?;
@@ -1441,7 +1445,7 @@ fn rebundle_islands(
                 );
                 p.into_inner()
             });
-            let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+            let assets_dir = assets_root.join(zfb_types::DIST_ASSETS_DIR);
             if let Err(e) = refresh_dev_island_chunks(&assets_dir, &[], &prev) {
                 tracing::warn!(
                     error = %e,
@@ -1456,7 +1460,7 @@ fn rebundle_islands(
     // `GET /assets/islands.js`. The bundler carries bytes in memory only —
     // the dev caller owns the disk write (same pattern as the CSS path).
     {
-        let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+        let assets_dir = assets_root.join(zfb_types::DIST_ASSETS_DIR);
         let islands_out_path = assets_dir.join(zfb_types::STABLE_ISLANDS_FILENAME);
         if let Some(parent) = islands_out_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -1481,7 +1485,7 @@ fn rebundle_islands(
             );
             p.into_inner()
         });
-        let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+        let assets_dir = assets_root.join(zfb_types::DIST_ASSETS_DIR);
         match refresh_dev_island_chunks(&assets_dir, &payload.companions, &prev) {
             Ok(names) => *prev = names,
             Err(e) => {

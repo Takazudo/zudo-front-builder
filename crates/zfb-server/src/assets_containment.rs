@@ -5,11 +5,23 @@
 //! symlinks freely.  A symlink planted at `dist/assets/evil → /etc/passwd`
 //! would be served without this layer.
 //!
-//! ## How it works
+//! ## One or more roots
 //!
-//! [`ContainedAssetsService`] wraps `ServeDir` and intercepts every request
-//! before forwarding it.  It replicates the exact path-building step
-//! `ServeDir` uses internally (verified against tower-http 0.6.11 source):
+//! [`ContainedAssetsService`] wraps one [`ServeDir`] per asset root and
+//! tries them in priority order: the first root whose containment check
+//! passes AND that holds the requested file serves it; a miss falls through
+//! to the next. Single-root callers (preview / embed) behave exactly as a
+//! lone `ServeDir`; `zfb dev` (issue #1189) layers the isolated
+//! `.zfb-build/dev-assets/assets/` ahead of the build `dist/assets/` so a
+//! concurrent `zfb build` can't 404 dev's stable stylesheet. Each root is
+//! canonicalized and containment-checked **independently** — the guarantee
+//! below holds per-root.
+//!
+//! ## How it works (per root)
+//!
+//! For each root in order, [`ContainedAssetsService`] replicates the exact
+//! path-building step `ServeDir` uses internally (verified against
+//! tower-http 0.6.11 source):
 //!
 //! 1. Take the URI path after `nest_service` has stripped `/assets`
 //!    (so the path starts with `/`).
