@@ -1404,7 +1404,9 @@ pub(crate) fn build_default_client_scripts_payloads(
 ///   pass it as `prev_entry_names` on the next call.
 pub(crate) fn build_dev_client_scripts_to_disk(
     project_root: &Path,
-    dist_root: &Path,
+    // Where dev client scripts are written + served from (issue #1189: the
+    // isolated `.zfb-build/dev-assets` root, NOT the build-shared `dist/`).
+    assets_root: &Path,
     framework: crate::config::Framework,
     prev_entry_names: &std::collections::HashSet<String>,
 ) -> Result<(bool, std::collections::HashSet<String>)> {
@@ -1428,7 +1430,7 @@ pub(crate) fn build_dev_client_scripts_to_disk(
         }
     }
 
-    let client_dir = dist_root
+    let client_dir = assets_root
         .join(zfb_types::DIST_ASSETS_DIR)
         .join(zfb_types::DIST_CLIENT_SCRIPTS_DIR);
 
@@ -1505,7 +1507,7 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     }
     .jsx_import_source();
     let bundle_cfg = BundleConfig::dev()
-        .with_outdir(dist_root.to_path_buf())
+        .with_outdir(assets_root.to_path_buf())
         .with_jsx_import_source(jsx_import_source);
 
     if let Some(parent) = client_dir.parent() {

@@ -68,6 +68,7 @@ impl Harness {
         let opts = ServeOpts {
             project_root: root.clone(),
             dist_root: dist_root.clone(),
+            dev_assets_root: None,
             html_root: dist_root,
             public_root: public_root.clone(),
             addr,
@@ -471,6 +472,7 @@ async fn serve_returns_error_when_port_is_occupied() {
     let opts = ServeOpts {
         project_root: root.clone(),
         dist_root: dist_root.clone(),
+        dev_assets_root: None,
         html_root: dist_root,
         public_root,
         addr: occupied_addr,

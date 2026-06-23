@@ -2,8 +2,11 @@
 //!
 //! ## Route map
 //!
-//! - `GET /assets/*path` — static files from `<dist_root>/assets/`,
-//!   served via [`tower_http::services::ServeDir`].
+//! - `GET /assets/*path` — static files served via
+//!   [`tower_http::services::ServeDir`] from `<dist_root>/assets/`, or —
+//!   when `dev_assets_root` is set (`zfb dev`, issue #1189) — from
+//!   `<dev_assets_root>/assets/` first with `<dist_root>/assets/` as a
+//!   fallback. See [`crate::assets_containment`].
 //! - `GET /__zfb/livereload.js` — bundled JS that opens an SSE
 //!   connection back to this server. Always served with
 //!   `Cache-Control: no-store`.
@@ -51,7 +54,7 @@
 //!   the same `dist/` + `public/` disk fallback chain described above,
 //!   so `public/logo.svg` is reachable at `/foo/logo.svg`),
 //! - `GET /foo/assets/<file>` serves built static assets from
-//!   `<dist_root>/assets/`,
+//!   `<dist_root>/assets/` (or the layered dev-assets roots above),
 //! - `GET /foo/__zfb/livereload.js` and `GET /foo/__zfb/reload` serve
 //!   live-reload (and the injected `<script src>` matches),
 //! - plugin-registered dev-middleware paths are auto-prefixed too
@@ -398,6 +401,16 @@ pub struct AppState {
     /// renders can target a separate directory from the production
     /// `outDir` (issue #534).
     pub dist_root: std::path::PathBuf,
+    /// Optional isolated dev-assets root (issue #1189). When `Some`,
+    /// `/assets/*` is served from `<dev_assets_root>/assets/` FIRST and
+    /// falls back to `<dist_root>/assets/` for anything not found there.
+    /// `zfb dev` writes its STABLE assets (`styles.css`, `islands.js`,
+    /// island chunks, `client/*.js`) into the isolated root so a concurrent
+    /// `zfb build` that wipes `dist/` cannot 404 the dev-served stylesheet;
+    /// the `dist_root` fallback still serves a boot-lazy prebuilt seed's
+    /// HASHED assets (the namespaces never collide). `None` (preview /
+    /// embed / tests) keeps the historical single-root `dist_root` mount.
+    pub dev_assets_root: Option<std::path::PathBuf>,
     /// On-disk page root used as the page-cache fallback in
     /// `serve_page`. `<html_root>/<path>/index.html` and
     /// `<html_root>/<path>` are probed when the in-memory cache misses
@@ -611,11 +624,22 @@ pub fn build_router(state: AppState) -> Router {
 /// /api/echo`). The page handlers below strip the prefix from the
 /// captured wildcard / URI before forwarding into [`serve_page`].
 fn build_core_router(state: AppState, prefix: &str) -> Router {
-    let assets_dir = state.dist_root.join("assets");
+    let dist_assets = state.dist_root.join("assets");
     // Wrap ServeDir with symlink containment: any request whose resolved
-    // FS path escapes `assets_dir` (including via symlinks) is rejected
+    // FS path escapes the assets root (including via symlinks) is rejected
     // with 404 before ServeDir sees it.  See `assets_containment` module.
-    let assets_service = ContainedAssetsService::new(assets_dir);
+    //
+    // Issue #1189: in `zfb dev` the isolated dev-assets dir is tried first,
+    // with `dist/assets/` as a boot-lazy-seed fallback, so a concurrent
+    // `zfb build` wiping `dist/` can't 404 dev's stable `/assets/styles.css`.
+    // Preview / embed / tests pass `dev_assets_root = None` → single-root
+    // mount on `dist/assets/`, byte-identical to before.
+    let assets_service = match state.dev_assets_root.as_ref() {
+        Some(dev_assets_root) => {
+            ContainedAssetsService::layered(vec![dev_assets_root.join("assets"), dist_assets])
+        }
+        None => ContainedAssetsService::new(dist_assets),
+    };
 
     let livereload_path = format!("{prefix}/__zfb/livereload.js");
     let sse_path = format!("{prefix}/__zfb/reload");
@@ -2016,6 +2040,7 @@ mod tests {
             // Tests use bogus/temp paths — canonical roots are not precomputed.
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         }
     }
@@ -2042,6 +2067,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         }
     }
@@ -2124,6 +2150,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         // Cache miss — the fallback must read from html_root.
@@ -2148,6 +2175,113 @@ mod tests {
             !body.contains("prod-build-leftover-from-dist_root"),
             "disk fallback must NOT read from dist_root; got body:\n{body}",
         );
+    }
+
+    /// Issue #1189 wiring: `build_core_router` must mount `/assets/*` as a
+    /// TWO-ROOT lookup when `dev_assets_root` is `Some` — the isolated
+    /// dev-assets dir first, with `dist/assets/` as the boot-lazy-seed
+    /// fallback. This exercises the `layered`-vs-`new` branch end-to-end
+    /// through the real router (not `ContainedAssetsService` in isolation),
+    /// and proves the writer-dir == mount-primary-dir invariant: dev's
+    /// stable stylesheet survives a concurrent `zfb build` wiping `dist/`.
+    #[tokio::test]
+    async fn assets_mount_serves_dev_assets_first_with_dist_fallback() {
+        use tempfile::TempDir;
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+
+        let dev_assets_dir = TempDir::new().expect("dev-assets tempdir");
+        let dist_dir = TempDir::new().expect("dist tempdir");
+
+        // Dev writes its STABLE stylesheet into the isolated dev-assets root.
+        let dev_assets = dev_assets_dir.path().join("assets");
+        std::fs::create_dir_all(&dev_assets).unwrap();
+        std::fs::write(dev_assets.join("styles.css"), b"body{color:blue}").unwrap();
+
+        // A prior `zfb build` left a HASHED seed asset in `dist/assets/`.
+        let dist_assets = dist_dir.path().join("assets");
+        std::fs::create_dir_all(&dist_assets).unwrap();
+        std::fs::write(dist_assets.join("styles-abc123.css"), b"seed{}").unwrap();
+
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist_dir.path().to_path_buf(),
+            html_root: std::env::temp_dir().join("zfb-test-html-1189"),
+            public_root: std::env::temp_dir().join("zfb-test-public-1189"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            dev_assets_root: Some(dev_assets_dir.path().to_path_buf()),
+            canonical_public_root: None,
+        };
+        let router = build_router(state);
+
+        // Stable stylesheet comes from the isolated dev-assets root (primary).
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/styles.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "dev stylesheet must serve from the dev-assets primary root"
+        );
+        assert_eq!(body_string(resp).await, "body{color:blue}");
+
+        // The hashed seed asset falls through to the `dist/assets/` fallback.
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/styles-abc123.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "boot-lazy seed asset must serve from the dist fallback root"
+        );
+
+        // Simulate a concurrent `zfb build` wiping `dist/`. The isolated dev
+        // stylesheet is untouched; before #1189 it lived in `dist/assets/`
+        // and this would 404.
+        drop(dist_dir);
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/styles.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "isolated dev stylesheet must survive a dist/ wipe (#1189)"
+        );
+        assert_eq!(body_string(resp).await, "body{color:blue}");
     }
 
     #[tokio::test]
@@ -2589,6 +2723,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         // HTML must include <head></head> so inject_prod_head_assets has an anchor.
@@ -2656,6 +2791,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         state
@@ -2704,6 +2840,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         state
@@ -2802,6 +2939,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         }
     }
@@ -3641,6 +3779,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3701,6 +3840,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3763,6 +3903,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3819,6 +3960,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3870,6 +4012,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3925,6 +4068,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3987,6 +4131,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         }
     }

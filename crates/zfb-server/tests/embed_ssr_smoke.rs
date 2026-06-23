@@ -133,6 +133,7 @@ async fn boot_with_plugins(
         // Test uses temp dirs — canonical roots not precomputed.
         canonical_html_root: None,
         canonical_dist_root: None,
+        dev_assets_root: None,
         canonical_public_root: None,
     };
     let router = build_router(state);

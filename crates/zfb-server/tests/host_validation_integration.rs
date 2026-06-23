@@ -160,6 +160,7 @@ async fn boot(
     let serve_opts = ServeOpts {
         project_root: tmp.path().to_path_buf(),
         dist_root: dist_root.clone(),
+        dev_assets_root: None,
         html_root: dist_root,
         public_root,
         addr,

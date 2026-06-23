@@ -134,6 +134,7 @@ async fn boot_with_opts(
     let opts = ServeOpts {
         project_root: tmp.path().to_path_buf(),
         dist_root: dist_root.clone(),
+        dev_assets_root: None,
         html_root: dist_root,
         public_root,
         addr,
@@ -513,6 +514,7 @@ async fn boot_with_live_handle(
     let opts = ServeOpts {
         project_root: tmp.path().to_path_buf(),
         dist_root: dist_root.clone(),
+        dev_assets_root: None,
         html_root: dist_root,
         public_root,
         addr,

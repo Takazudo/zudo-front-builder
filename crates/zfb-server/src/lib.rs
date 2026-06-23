@@ -135,8 +135,18 @@ pub struct ServeOpts {
     pub project_root: PathBuf,
 
     /// Build output directory. `/assets/*` is served from
-    /// `<dist_root>/assets/`.
+    /// `<dist_root>/assets/` (or as the boot-lazy-seed fallback when
+    /// `dev_assets_root` is set — see [`Self::dev_assets_root`]).
     pub dist_root: PathBuf,
+
+    /// Optional isolated dev-assets root (issue #1189). `zfb dev` passes
+    /// `Some(<project_root>/.zfb-build/dev-assets)` and writes its STABLE
+    /// assets there instead of into `dist/assets/`; the router then serves
+    /// `/assets/*` from `<dev_assets_root>/assets/` first, falling back to
+    /// `<dist_root>/assets/`. This keeps a one-off `zfb build` against the
+    /// shared `dist/` from clobbering the dev-served stylesheet. `None`
+    /// (preview / embed) keeps the single-root `dist_root` mount.
+    pub dev_assets_root: Option<PathBuf>,
 
     /// Page (HTML) on-disk root used as the page-cache fallback inside
     /// the page handler. Issue #534: this used to alias `dist_root` for
@@ -382,6 +392,9 @@ where
         // builder threads its own `AppState` directly.
         embed_handlers: None,
         dist_root: opts.dist_root.clone(),
+        // Issue #1189 — isolated dev-assets root (or `None` for preview /
+        // embed). See `ServeOpts::dev_assets_root`.
+        dev_assets_root: opts.dev_assets_root.clone(),
         // Issue #534 — see `ServeOpts::html_root` for the dev / preview
         // / embed contract.
         html_root: opts.html_root.clone(),

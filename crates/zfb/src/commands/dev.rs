@@ -240,6 +240,40 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         })?;
     }
 
+    // Issue #1189 — dev's STABLE served assets (`styles.css`, `islands.js`,
+    // island chunks, `client/*.js`) must NOT land in the project's `outDir`
+    // (`dist/`) either. They used to, which meant a one-off `zfb build`
+    // against the shared `dist/` (a quick prod sanity-check while dev is
+    // live) wiped them and re-emitted HASHED-only assets — leaving the
+    // dev-served `/assets/styles.css` a 404 (unstyled, no self-heal). Write
+    // them to an isolated `.zfb-build/dev-assets/` dir instead (mirroring
+    // the #534 dev-HTML isolation); the router serves `/assets/*` from there
+    // first and falls back to `dist/assets/` for a boot-lazy prebuilt seed.
+    let dev_assets_root = dev_assets_root_for(&project_root);
+    // Symmetric guard to the dev-HTML one above: a pathological `outDir`
+    // that overlaps the dev-assets scratch root re-creates the clobber.
+    if dev_assets_root == dist_root
+        || dev_assets_root.starts_with(&dist_root)
+        || dist_root.starts_with(&dev_assets_root)
+    {
+        anyhow::bail!(
+            "zfb dev: configured `outDir` ({}) overlaps with the dev asset \
+             scratch root ({}). Pick an `outDir` outside `.zfb-build/` \
+             (the default `dist/` is fine) — otherwise a one-off `zfb build` \
+             would clobber the dev-served `/assets/styles.css`.",
+            dist_root.display(),
+            dev_assets_root.display(),
+        );
+    }
+    if !dev_assets_root.exists() {
+        std::fs::create_dir_all(&dev_assets_root).with_context(|| {
+            format!(
+                "failed to create dev assets dir {}",
+                dev_assets_root.display()
+            )
+        })?;
+    }
+
     let host = resolve_host(args.host.as_deref(), cfg.host.as_deref(), DEFAULT_DEV_HOST);
     let port = resolve_port(args.port, cfg.port, DEFAULT_DEV_PORT);
     let addr = resolve_addr(host.as_str(), port)?;
@@ -503,7 +537,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     let run_islands: Option<IslandsRunner> = {
         let project_root = project_root.clone();
-        let dist_root_for_islands = dist_root.clone();
+        // Issue #1189: write islands.js + chunks to the isolated dev-assets
+        // root, not the build-shared `dist/`.
+        let dev_assets_root_for_islands = dev_assets_root.clone();
         let plugin_cfg = islands_plugin_config.clone();
         let framework = cfg.framework;
         let url_prefix = dev_islands_url_prefix.clone();
@@ -519,7 +555,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         Some(Arc::new(move || -> Result<Option<IslandsBundleInfo>> {
             rebundle_islands(
                 &project_root,
-                &dist_root_for_islands,
+                &dev_assets_root_for_islands,
                 framework,
                 &plugin_cfg,
                 &url_prefix,
@@ -543,12 +579,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // change.
     let dev_css_url_prefix: String =
         zfb_types::dev_mount_prefix(cfg.base.as_deref()).unwrap_or_default();
-    match crate::commands::build::build_default_css_payload(&project_root, &dist_root, &cfg) {
+    match crate::commands::build::build_default_css_payload(&project_root, &dev_assets_root, &cfg) {
         Ok(Some(payload)) => {
-            // Write the bytes to dist so `GET /assets/styles.css` is
-            // immediately serveable (unlike islands, the CSS pipeline does
-            // not write to disk as a side-effect of building).
-            let out_path = dist_root.join(&payload.relative_path);
+            // Write the bytes to the isolated dev-assets root (issue #1189)
+            // so `GET /assets/styles.css` is immediately serveable (unlike
+            // islands, the CSS pipeline does not write to disk as a
+            // side-effect of building).
+            let out_path = dev_assets_root.join(&payload.relative_path);
             if let Some(parent) = out_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -585,14 +622,15 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // fresh bytes to disk, and updates the shared URL handle.
     let run_css: Option<CssRunner> = {
         let project_root_for_css = project_root.clone();
-        let dist_root_for_css = dist_root.clone();
+        // Issue #1189: build + write CSS into the isolated dev-assets root.
+        let dev_assets_root_for_css = dev_assets_root.clone();
         let cfg_for_css = cfg.clone();
         let url_prefix = dev_css_url_prefix.clone();
         let url_handle = Arc::clone(&css_bundle_url_handle);
         Some(Arc::new(move || -> Result<bool> {
             let payload = crate::commands::build::build_default_css_payload(
                 &project_root_for_css,
-                &dist_root_for_css,
+                &dev_assets_root_for_css,
                 &cfg_for_css,
             )?;
             let mut guard = url_handle.write().unwrap_or_else(|p| {
@@ -608,11 +646,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 *guard = None;
                 return Ok(false);
             };
-            // Write fresh bytes to dist so the dev server serves them
-            // immediately. This is the "freshness proof" the acceptance
-            // test checks (byte-for-byte match between payload.bytes and
-            // GET /assets/styles.css).
-            let out_path = dist_root_for_css.join(&payload.relative_path);
+            // Write fresh bytes to the isolated dev-assets root so the dev
+            // server serves them immediately. This is the "freshness proof"
+            // the acceptance test checks (byte-for-byte match between
+            // payload.bytes and GET /assets/styles.css).
+            let out_path = dev_assets_root_for_css.join(&payload.relative_path);
             if let Some(parent) = out_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -645,7 +683,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // Eager boot bundle — non-fatal, mirrors islands / CSS.
     match crate::commands::build::build_dev_client_scripts_to_disk(
         &project_root,
-        &dist_root,
+        // Issue #1189: client scripts go to the isolated dev-assets root.
+        &dev_assets_root,
         cfg.framework,
         &std::collections::HashSet::new(),
     ) {
@@ -665,7 +704,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // Watcher-driven rebuild closure.
     let run_client_scripts: Option<ClientScriptsRunner> = {
         let project_root_for_cs = project_root.clone();
-        let dist_root_for_cs = dist_root.clone();
+        // Issue #1189: rebuild client scripts into the isolated dev-assets root.
+        let dev_assets_root_for_cs = dev_assets_root.clone();
         let framework = cfg.framework;
         let entry_names = Arc::clone(&live_client_script_names);
         Some(Arc::new(move || -> Result<bool> {
@@ -681,7 +721,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .clone();
             let (changed, new_names) = crate::commands::build::build_dev_client_scripts_to_disk(
                 &project_root_for_cs,
-                &dist_root_for_cs,
+                &dev_assets_root_for_cs,
                 framework,
                 &prev,
             )?;
@@ -828,10 +868,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let graph_cache_path_for_boot = graph_cache_path.clone();
     let manifest_digest_slot_for_boot = Arc::clone(&manifest_digest_slot);
     let dist_root_for_boot = dist_root.clone();
+    // Issue #1189: the deferred boot's islands rebundle writes to the
+    // isolated dev-assets root (NOT `dist_root_for_boot`, which `run_boot_render`
+    // still needs as the real `dist/` for its servable-seed check).
+    let dev_assets_root_for_boot = dev_assets_root.clone();
     // Issue #1170 — the deferred boot task also runs the eager islands
     // bundle (the last size-bound step that used to gate the bind). Clone
     // its inputs now, before `ServeOpts` / `run_islands` consume the
-    // originals: `rebundle_islands` needs the project + dist roots, the
+    // originals: `rebundle_islands` needs the project + dev-assets roots, the
     // framework, the islands plugin config, the URL prefix, the shared
     // bundle-URL handle, and the live-chunk tracker.
     let islands_url_handle_for_boot = Arc::clone(&islands_bundle_url_handle);
@@ -884,6 +928,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let opts = ServeOpts {
         project_root,
         dist_root,
+        // Issue #1189 — serve `/assets/*` from the isolated dev-assets root
+        // first (clobber-proof: a concurrent `zfb build` can't touch
+        // `.zfb-build/`), falling back to `dist_root/assets` for a boot-lazy
+        // prebuilt seed's hashed assets. `dist_root` above stays the real
+        // `dist/` so the seed fallback and `dist_is_servable_seed` still work.
+        dev_assets_root: Some(dev_assets_root.clone()),
         // Issue #534 — point the page-cache disk fallback at the dev
         // HTML dir, not the project's `outDir`. With `dist_root` here
         // (the historical wiring) the dev server's `read_from_dist`
@@ -1169,7 +1219,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             }
             let islands_info = match rebundle_islands(
                 &project_root_for_boot,
-                &dist_root_for_boot,
+                &dev_assets_root_for_boot,
                 framework_for_boot,
                 &islands_plugin_config_for_boot,
                 &islands_url_prefix_for_boot,
@@ -1327,7 +1377,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 }
 
 /// Re-bundle the project's `"use client"` islands once and publish the
-/// result: build the payload, write the stable `dist/assets/islands.js`,
+/// result: build the payload, write the stable `islands.js` under
+/// `assets_root/assets/` (issue #1189: the isolated `.zfb-build/dev-assets`
+/// root, NOT the build-shared `dist/`),
 /// refresh / prune the chunk companions, and rewrite the shared bundle-URL
 /// handle. Returns `Some(IslandsBundleInfo { changed: true, .. })` when a
 /// bundle was produced (so `outcome_to_events` emits a
@@ -1344,7 +1396,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 /// failure is loud), the boot path warns-and-continues (issue #1170).
 fn rebundle_islands(
     project_root: &Path,
-    dist_root: &Path,
+    // Where dev assets are written + served from (issue #1189: the isolated
+    // `.zfb-build/dev-assets` root, NOT the build-shared `dist/`).
+    assets_root: &Path,
     framework: crate::config::Framework,
     plugin_config: &crate::commands::build::IslandsPluginConfig,
     url_prefix: &str,
@@ -1356,7 +1410,7 @@ fn rebundle_islands(
     // the runtime.ts warn path.
     let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
         project_root,
-        dist_root,
+        assets_root,
         framework,
         plugin_config,
     )?;
@@ -1391,7 +1445,7 @@ fn rebundle_islands(
                 );
                 p.into_inner()
             });
-            let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+            let assets_dir = assets_root.join(zfb_types::DIST_ASSETS_DIR);
             if let Err(e) = refresh_dev_island_chunks(&assets_dir, &[], &prev) {
                 tracing::warn!(
                     error = %e,
@@ -1406,7 +1460,7 @@ fn rebundle_islands(
     // `GET /assets/islands.js`. The bundler carries bytes in memory only —
     // the dev caller owns the disk write (same pattern as the CSS path).
     {
-        let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+        let assets_dir = assets_root.join(zfb_types::DIST_ASSETS_DIR);
         let islands_out_path = assets_dir.join(zfb_types::STABLE_ISLANDS_FILENAME);
         if let Some(parent) = islands_out_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -1431,7 +1485,7 @@ fn rebundle_islands(
             );
             p.into_inner()
         });
-        let assets_dir = dist_root.join(zfb_types::DIST_ASSETS_DIR);
+        let assets_dir = assets_root.join(zfb_types::DIST_ASSETS_DIR);
         match refresh_dev_island_chunks(&assets_dir, &payload.companions, &prev) {
             Ok(names) => *prev = names,
             Err(e) => {
@@ -4075,6 +4129,24 @@ fn dev_html_root_for(project_root: &Path) -> PathBuf {
     project_root.join(".zfb-build").join("dev-pages")
 }
 
+/// The isolated directory `zfb dev` writes its STABLE served assets into
+/// (issue #1189) — `styles.css`, `islands.js`, island chunks, and
+/// `client/*.js`. Its `assets/` subdir is mounted at `/assets/` FIRST,
+/// with the project's `dist/assets/` as a fallback (for a boot-lazy
+/// prebuilt seed's hashed assets).
+///
+/// Why a separate dir, mirroring [`dev_html_root_for`]: dev used to write
+/// these stable assets straight into the project's `outDir` (`dist/`),
+/// which `zfb build` shares. A one-off `zfb build` against the live `dist/`
+/// wipes it and emits HASHED-only assets, so the dev-served
+/// `/assets/styles.css` 404s and the site goes unstyled with no self-heal.
+/// Writing dev's assets under `.zfb-build/` (already `.gitignore`d) takes
+/// them out of the build's write set entirely — the same fix #534 applied
+/// to dev HTML, now for assets.
+fn dev_assets_root_for(project_root: &Path) -> PathBuf {
+    project_root.join(".zfb-build").join("dev-assets")
+}
+
 /// `true` when one of the edited entry's slug candidates appears among a
 /// route's resolved params (issue #958, spec §4). ANY-param semantics:
 /// scalars match by value, catchall arrays match by their `/`-join (an
@@ -5125,6 +5197,40 @@ mod tests {
             "dev html dir must not live anywhere under outDir ({}); got {}",
             dist_root.display(),
             dev_html_root.display(),
+        );
+    }
+
+    /// Issue #1189: dev's STABLE served assets must NOT live under the
+    /// project's `outDir` (`dist/`) — otherwise a one-off `zfb build` wipes
+    /// them and the dev server 404s `/assets/styles.css`. The relocation
+    /// target is a dedicated `.zfb-build/dev-assets` dir, distinct from both
+    /// `outDir` and the dev-HTML root.
+    #[test]
+    fn dev_assets_root_lives_under_dot_zfb_build_not_outdir() {
+        let project_root = PathBuf::from("/tmp/proj");
+        let dev_assets_root = dev_assets_root_for(&project_root);
+
+        // The exact, documented contract: `<project_root>/.zfb-build/dev-assets`.
+        assert_eq!(
+            dev_assets_root,
+            PathBuf::from("/tmp/proj/.zfb-build/dev-assets"),
+        );
+
+        // Must not collide with `outDir` (the bug) ...
+        let dist_root = project_root.join("dist");
+        assert_ne!(dev_assets_root, dist_root, "must not equal outDir");
+        assert!(
+            !dev_assets_root.starts_with(&dist_root) && !dist_root.starts_with(&dev_assets_root),
+            "dev assets dir must not overlap outDir ({}); got {}",
+            dist_root.display(),
+            dev_assets_root.display(),
+        );
+
+        // ... nor with the dev-HTML root (they're siblings under .zfb-build/).
+        assert_ne!(
+            dev_assets_root,
+            dev_html_root_for(&project_root),
+            "dev assets and dev html roots must be distinct"
         );
     }
 

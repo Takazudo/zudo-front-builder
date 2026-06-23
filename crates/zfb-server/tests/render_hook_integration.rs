@@ -166,6 +166,7 @@ async fn boot(
     let serve_opts = ServeOpts {
         project_root: tmp.path().to_path_buf(),
         dist_root: dist_root.clone(),
+        dev_assets_root: None,
         html_root: dist_root.clone(),
         public_root,
         addr,
@@ -392,6 +393,7 @@ async fn hook_side_effect_served_after_hook_returns() {
     let serve_opts = ServeOpts {
         project_root: tmp.path().to_path_buf(),
         dist_root: html_root.clone(),
+        dev_assets_root: None,
         html_root,
         public_root: tmp.path().join("public"),
         addr,
