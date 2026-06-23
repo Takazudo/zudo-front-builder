@@ -66,46 +66,85 @@ type ReqBody = Body;
 /// The concrete inner Service type (ServeDir with default fallback, Body request).
 type InnerService = ServeDir;
 
-/// A thin Tower [`Service`] that enforces symlink-containment on the
-/// `dist/assets/` directory before delegating to the inner [`ServeDir`].
-///
-/// Constructed via [`ContainedAssetsService::new`].
+/// One asset root: its raw dir, the pre-canonicalized form, and the inner
+/// [`ServeDir`] that serves files from it.
 #[derive(Clone)]
-pub(crate) struct ContainedAssetsService {
-    /// Canonical form of `<dist_root>/assets/`.  Pre-computed at
-    /// construction time so the per-request hot path only calls
-    /// `tokio::fs::canonicalize` once (for the candidate path).
+struct AssetRoot {
+    /// Canonical form of the assets dir.  Pre-computed at construction time
+    /// so the per-request hot path only calls `tokio::fs::canonicalize` once
+    /// (for the candidate path).
     ///
-    /// `None` means the assets directory didn't exist at boot (first dev
-    /// boot before a build finishes).  Each request retries the
-    /// canonicalize so assets start serving as soon as the dir appears.
+    /// `None` means the dir didn't exist at boot (first dev boot before a
+    /// build finishes).  Each request retries the canonicalize so assets
+    /// start serving as soon as the dir appears.
     ///
     /// Wrapped in `Arc` so cloning (required by Tower) is cheap.
     canonical_root: Arc<Option<PathBuf>>,
     /// The raw (non-canonical) assets directory.
     assets_dir: PathBuf,
-    /// Inner service that does the actual file serving.
+    /// Inner service that does the actual file serving for this root.
     inner: InnerService,
 }
 
-impl ContainedAssetsService {
-    /// Build a new [`ContainedAssetsService`] that serves files from
-    /// `assets_dir`, rejecting any request whose resolved FS path escapes
-    /// that directory (even via symlinks).
-    ///
-    /// `assets_dir` need not exist at construction time — a missing root
-    /// simply means every request will get a 404 (same behaviour as an
-    /// empty directory from the client's perspective).
-    pub(crate) fn new(assets_dir: PathBuf) -> Self {
+impl AssetRoot {
+    fn new(assets_dir: PathBuf) -> Self {
         // Best-effort pre-canonicalize at boot (sync, outside the hot loop).
-        // If the dir doesn't exist yet, `canonical_root` is None and the
-        // per-request path retries canonicalize so it becomes available
-        // as soon as the first build completes.
         let canonical_root = std::fs::canonicalize(&assets_dir).ok();
         Self {
             canonical_root: Arc::new(canonical_root),
             inner: ServeDir::new(&assets_dir),
             assets_dir,
+        }
+    }
+}
+
+/// A thin Tower [`Service`] that enforces symlink-containment on one or more
+/// `assets/` directories before delegating to the inner [`ServeDir`].
+///
+/// Constructed via [`ContainedAssetsService::new`] (single root) or
+/// [`ContainedAssetsService::layered`] (ordered roots).
+#[derive(Clone)]
+pub(crate) struct ContainedAssetsService {
+    /// Asset roots tried IN ORDER on every request: the first root whose
+    /// containment check passes AND that actually holds the file serves it;
+    /// a miss falls through to the next root.
+    ///
+    /// `zfb dev` (issue #1189) passes two roots — the isolated
+    /// `.zfb-build/dev-assets/assets/` first, then the build `dist/assets/`
+    /// as a boot-lazy-seed fallback — so a concurrent `zfb build` that wipes
+    /// `dist/` can never 404 dev's stable `/assets/styles.css`. The
+    /// namespaces don't collide: dev's isolated dir only holds STABLE names
+    /// (`styles.css`, `islands.js`, chunks, `client/*.js`) while a prebuilt
+    /// seed only serves HASHED names, so isolated-first never shadows a
+    /// legitimately newer hashed seed asset. Single-root callers (preview /
+    /// embed / tests) get exactly the historical behavior.
+    roots: Vec<AssetRoot>,
+}
+
+impl ContainedAssetsService {
+    /// Build a single-root [`ContainedAssetsService`] that serves files from
+    /// `assets_dir`, rejecting any request whose resolved FS path escapes
+    /// that directory (even via symlinks). Byte-identical to the historical
+    /// behavior (preview / embed / tests).
+    ///
+    /// `assets_dir` need not exist at construction time — a missing root
+    /// simply means every request will get a 404 (same behaviour as an
+    /// empty directory from the client's perspective).
+    pub(crate) fn new(assets_dir: PathBuf) -> Self {
+        Self {
+            roots: vec![AssetRoot::new(assets_dir)],
+        }
+    }
+
+    /// Build a layered [`ContainedAssetsService`]: the roots are tried in
+    /// priority order, and the first one that contains the requested file
+    /// serves it. Each root is canonicalized and containment-checked
+    /// INDEPENDENTLY, so the symlink-containment guarantee holds for every
+    /// root (never canonicalize a merged root). Used by `zfb dev` to put the
+    /// isolated dev-assets dir ahead of the build `dist/assets/` (#1189).
+    pub(crate) fn layered(assets_dirs: Vec<PathBuf>) -> Self {
+        Self {
+            roots: assets_dirs.into_iter().map(AssetRoot::new).collect(),
         }
     }
 
@@ -159,46 +198,73 @@ impl Service<Request<ReqBody>> for ContainedAssetsService {
     type Future = BoxedFuture<Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        <InnerService as Service<Request<ReqBody>>>::poll_ready(&mut self.inner, cx)
+        // ServeDir is always immediately ready (no bounded resource pool), so
+        // this loop short-circuits on the first poll. Polling every root keeps
+        // the contract honest if that ever changes.
+        for root in &mut self.roots {
+            match <InnerService as Service<Request<ReqBody>>>::poll_ready(&mut root.inner, cx) {
+                Poll::Ready(Ok(())) => {}
+                // ServeDir's error is `Infallible` — the arm is uninhabited.
+                Poll::Ready(Err(e)) => match e {},
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         let uri_path = req.uri().path().to_owned();
-        let assets_dir = self.assets_dir.clone();
-        let canonical_root = Arc::clone(&self.canonical_root);
-
-        // Clone the inner service so we can move it into the async block.
-        let mut inner = self.inner.clone();
+        // Clone the roots so we can move them into the async block.
+        let roots = self.roots.clone();
 
         Box::pin(async move {
-            // Build the candidate FS path using the same logic as ServeDir.
-            let candidate = match Self::candidate_path(&assets_dir, &uri_path) {
-                Some(p) => p,
-                None => return Ok(not_found()),
-            };
+            // Phase 1 — find the first root that actually contains the file. A
+            // successful `canonicalize` means the file exists; a failure (or a
+            // containment-check failure) is a miss for THIS root, so we fall
+            // through to the next. ServeDir is invoked only for the winning
+            // root (Phase 2), so `req` is moved exactly once regardless of how
+            // many roots are probed.
+            let mut hit: Option<(PathBuf, PathBuf, InnerService)> = None;
+            for root in &roots {
+                // Build the candidate FS path using the same logic as ServeDir.
+                let Some(candidate) = Self::candidate_path(&root.assets_dir, &uri_path) else {
+                    continue;
+                };
 
-            // Canonicalize resolves symlinks; if it fails the file/target
-            // doesn't exist — 404.
-            let canonical_candidate = match tokio::fs::canonicalize(&candidate).await {
-                Ok(p) => p,
-                Err(_) => return Ok(not_found()),
-            };
-
-            // Determine the canonical root.  Prefer the pre-computed value;
-            // fall back to a fresh canonicalize if it was None at boot.
-            let canon_root = match canonical_root.as_ref() {
-                Some(r) => r.clone(),
-                None => match tokio::fs::canonicalize(&assets_dir).await {
+                // Canonicalize resolves symlinks; if it fails the file/target
+                // doesn't exist in this root — try the next root.
+                let canonical_candidate = match tokio::fs::canonicalize(&candidate).await {
                     Ok(p) => p,
-                    Err(_) => return Ok(not_found()),
-                },
-            };
+                    Err(_) => continue,
+                };
 
-            // Containment check: the canonical candidate must be inside
-            // (or equal to) the canonical assets root.
-            if !canonical_candidate.starts_with(&canon_root) {
-                return Ok(not_found());
+                // Determine the canonical root.  Prefer the pre-computed
+                // value; fall back to a fresh canonicalize if it was None at
+                // boot. Each root is canonicalized INDEPENDENTLY so the
+                // containment guarantee holds per-root.
+                let canon_root = match root.canonical_root.as_ref() {
+                    Some(r) => r.clone(),
+                    None => match tokio::fs::canonicalize(&root.assets_dir).await {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    },
+                };
+
+                // Containment check: the canonical candidate must be inside
+                // (or equal to) this canonical assets root. An escape is a
+                // miss for this root (and will escape the others too) — fall
+                // through; the loop ends in a 404.
+                if !canonical_candidate.starts_with(&canon_root) {
+                    continue;
+                }
+
+                hit = Some((canonical_candidate, canon_root, root.inner.clone()));
+                break;
             }
+
+            let Some((canonical_candidate, canon_root, mut inner)) = hit else {
+                return Ok(not_found());
+            };
 
             // TOCTOU narrowing: rewrite the request URI to the CANONICAL
             // path relative to the canonical root before delegating, so
@@ -505,6 +571,130 @@ mod tests {
             b"body{color:red}",
             "rewritten-URI delegation must serve the canonical target's bytes"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Layered two-root service (issue #1189) — `zfb dev` serves `/assets/*`
+    // from the isolated dev-assets root first, with `dist/assets/` as the
+    // boot-lazy-seed fallback. A concurrent `zfb build` that wipes `dist/`
+    // must not 404 the dev-served stylesheet.
+    // -----------------------------------------------------------------------
+
+    /// Build a layered service over two tempdirs (primary tried first), run
+    /// `setup` on each, and return `(service, primary_dir, secondary_dir)`.
+    /// The tempdirs are returned so the caller keeps them alive.
+    fn make_layered(
+        primary_setup: impl FnOnce(&Path),
+        secondary_setup: impl FnOnce(&Path),
+    ) -> (ContainedAssetsService, tempfile::TempDir, tempfile::TempDir) {
+        let primary = tempfile::tempdir().expect("primary tempdir");
+        let secondary = tempfile::tempdir().expect("secondary tempdir");
+        primary_setup(primary.path());
+        secondary_setup(secondary.path());
+        let svc = ContainedAssetsService::layered(vec![
+            primary.path().to_path_buf(),
+            secondary.path().to_path_buf(),
+        ]);
+        (svc, primary, secondary)
+    }
+
+    async fn body_for(svc: ContainedAssetsService, path: &str) -> (StatusCode, Vec<u8>) {
+        let resp = svc
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 4096).await.unwrap();
+        (status, bytes.to_vec())
+    }
+
+    #[tokio::test]
+    async fn layered_serves_from_primary_root() {
+        let (svc, _p, _s) = make_layered(
+            |p| std::fs::write(p.join("styles.css"), b"primary{}").unwrap(),
+            |_s| {},
+        );
+        let (status, body) = body_for(svc, "/styles.css").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"primary{}", "primary root must serve its file");
+    }
+
+    #[tokio::test]
+    async fn layered_falls_back_to_secondary_root() {
+        // Mirrors a boot-lazy prebuilt seed: only the build `dist/assets/`
+        // (secondary) holds the hashed asset; the isolated dev root doesn't.
+        let (svc, _p, _s) = make_layered(
+            |_p| {},
+            |s| std::fs::write(s.join("styles-abc123.css"), b"seed{}").unwrap(),
+        );
+        let (status, body) = body_for(svc, "/styles-abc123.css").await;
+        assert_eq!(status, StatusCode::OK, "must fall through to dist seed");
+        assert_eq!(&body[..], b"seed{}");
+    }
+
+    #[tokio::test]
+    async fn layered_primary_shadows_same_name_in_secondary() {
+        let (svc, _p, _s) = make_layered(
+            |p| std::fs::write(p.join("styles.css"), b"dev-stable{}").unwrap(),
+            |s| std::fs::write(s.join("styles.css"), b"stale-build{}").unwrap(),
+        );
+        let (status, body) = body_for(svc, "/styles.css").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            &body[..],
+            b"dev-stable{}",
+            "primary (isolated dev-assets) must win over the secondary"
+        );
+    }
+
+    /// THE regression for issue #1189: dev's stable `styles.css` lives in the
+    /// isolated primary root; a concurrent `zfb build` wipes the secondary
+    /// (`dist/`). The stylesheet must STILL be served (before the fix, dev
+    /// wrote into `dist/assets/` and this returned 404 → unstyled site).
+    #[tokio::test]
+    async fn layered_primary_survives_secondary_wipe() {
+        let (svc, _p, secondary) = make_layered(
+            |p| std::fs::write(p.join("styles.css"), b"body{color:blue}").unwrap(),
+            |s| {
+                std::fs::write(s.join("styles-old.css"), b"seed{}").unwrap();
+            },
+        );
+
+        // Sanity: served before the wipe.
+        let (status, body) = body_for(svc.clone(), "/styles.css").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(&body[..], b"body{color:blue}");
+
+        // Simulate `zfb build` wiping the shared `dist/` (the secondary root).
+        std::fs::remove_dir_all(secondary.path()).unwrap();
+
+        // The dev-served stylesheet is untouched — still 200.
+        let (status, body) = body_for(svc, "/styles.css").await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "isolated dev stylesheet must survive a dist/ wipe (#1189)"
+        );
+        assert_eq!(&body[..], b"body{color:blue}");
+    }
+
+    #[tokio::test]
+    async fn layered_missing_in_both_roots_is_404() {
+        let (svc, _p, _s) = make_layered(|_p| {}, |_s| {});
+        let (status, _body) = body_for(svc, "/nope.css").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn layered_enforces_containment_on_both_roots() {
+        // A traversal escape must be rejected regardless of which root it
+        // would resolve under — each root is canonicalized independently.
+        let (svc, _p, _s) = make_layered(
+            |p| std::fs::write(p.join("ok.css"), b"x{}").unwrap(),
+            |s| std::fs::write(s.join("ok.css"), b"y{}").unwrap(),
+        );
+        let (status, _body) = body_for(svc, "/../../etc/passwd").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "traversal must 404");
     }
 
     // -----------------------------------------------------------------------

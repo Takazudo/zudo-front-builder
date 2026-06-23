@@ -304,6 +304,7 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
     let opts = ServeOpts {
         project_root: project.clone(),
         dist_root: html_root.clone(),
+        dev_assets_root: None,
         html_root: html_root.clone(),
         public_root: project.join("public"),
         addr,
@@ -546,6 +547,7 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
     let opts = ServeOpts {
         project_root: project.clone(),
         dist_root: html_root.clone(),
+        dev_assets_root: None,
         html_root: html_root.clone(),
         public_root: project.join("public"),
         addr,
@@ -748,6 +750,7 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
     let opts = ServeOpts {
         project_root: project.clone(),
         dist_root: html_root.clone(),
+        dev_assets_root: None,
         html_root: html_root.clone(),
         public_root: project.join("public"),
         addr,

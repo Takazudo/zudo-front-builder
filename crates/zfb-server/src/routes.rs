@@ -398,6 +398,16 @@ pub struct AppState {
     /// renders can target a separate directory from the production
     /// `outDir` (issue #534).
     pub dist_root: std::path::PathBuf,
+    /// Optional isolated dev-assets root (issue #1189). When `Some`,
+    /// `/assets/*` is served from `<dev_assets_root>/assets/` FIRST and
+    /// falls back to `<dist_root>/assets/` for anything not found there.
+    /// `zfb dev` writes its STABLE assets (`styles.css`, `islands.js`,
+    /// island chunks, `client/*.js`) into the isolated root so a concurrent
+    /// `zfb build` that wipes `dist/` cannot 404 the dev-served stylesheet;
+    /// the `dist_root` fallback still serves a boot-lazy prebuilt seed's
+    /// HASHED assets (the namespaces never collide). `None` (preview /
+    /// embed / tests) keeps the historical single-root `dist_root` mount.
+    pub dev_assets_root: Option<std::path::PathBuf>,
     /// On-disk page root used as the page-cache fallback in
     /// `serve_page`. `<html_root>/<path>/index.html` and
     /// `<html_root>/<path>` are probed when the in-memory cache misses
@@ -611,11 +621,22 @@ pub fn build_router(state: AppState) -> Router {
 /// /api/echo`). The page handlers below strip the prefix from the
 /// captured wildcard / URI before forwarding into [`serve_page`].
 fn build_core_router(state: AppState, prefix: &str) -> Router {
-    let assets_dir = state.dist_root.join("assets");
+    let dist_assets = state.dist_root.join("assets");
     // Wrap ServeDir with symlink containment: any request whose resolved
-    // FS path escapes `assets_dir` (including via symlinks) is rejected
+    // FS path escapes the assets root (including via symlinks) is rejected
     // with 404 before ServeDir sees it.  See `assets_containment` module.
-    let assets_service = ContainedAssetsService::new(assets_dir);
+    //
+    // Issue #1189: in `zfb dev` the isolated dev-assets dir is tried first,
+    // with `dist/assets/` as a boot-lazy-seed fallback, so a concurrent
+    // `zfb build` wiping `dist/` can't 404 dev's stable `/assets/styles.css`.
+    // Preview / embed / tests pass `dev_assets_root = None` → single-root
+    // mount on `dist/assets/`, byte-identical to before.
+    let assets_service = match state.dev_assets_root.as_ref() {
+        Some(dev_assets_root) => {
+            ContainedAssetsService::layered(vec![dev_assets_root.join("assets"), dist_assets])
+        }
+        None => ContainedAssetsService::new(dist_assets),
+    };
 
     let livereload_path = format!("{prefix}/__zfb/livereload.js");
     let sse_path = format!("{prefix}/__zfb/reload");
@@ -2016,6 +2037,7 @@ mod tests {
             // Tests use bogus/temp paths — canonical roots are not precomputed.
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         }
     }
@@ -2042,6 +2064,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         }
     }
@@ -2124,6 +2147,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         // Cache miss — the fallback must read from html_root.
@@ -2589,6 +2613,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         // HTML must include <head></head> so inject_prod_head_assets has an anchor.
@@ -2656,6 +2681,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         state
@@ -2704,6 +2730,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         state
@@ -2802,6 +2829,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         }
     }
@@ -3641,6 +3669,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3701,6 +3730,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3763,6 +3793,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3819,6 +3850,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3870,6 +3902,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3925,6 +3958,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         };
         let router = build_router(state);
@@ -3987,6 +4021,7 @@ mod tests {
             render_on_request_hook: None,
             canonical_html_root: None,
             canonical_dist_root: None,
+            dev_assets_root: None,
             canonical_public_root: None,
         }
     }
