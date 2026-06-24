@@ -575,7 +575,7 @@ impl<'a> PluginSetupAccumulator<'a> {
                                 second_entrypoint: resolved.display().to_string(),
                             });
                         }
-                        // Same plugin, same resolved path — idempotent no-op.
+                        // Same resolved path → idempotent no-op regardless of which plugin registered it.
                         continue;
                     }
                     self.client_entry_origin.insert(
