@@ -543,22 +543,28 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub copy_public_with_base: bool,
 
-    /// Config presets to merge before validation (#1196).
+    /// Config presets to merge before validation (#1196, #1199, #1202).
     ///
-    /// Each preset is a partial `ZfbConfig`-shaped object. The merge pass
-    /// in `parse_loaded_config` runs BEFORE `validate()` and folds preset
-    /// contributions into the known fields using additive semantics:
+    /// Each preset is a partial `ZfbConfig`-shaped object. Presets are merged
+    /// at the raw `serde_json::Value` layer BEFORE the user config is
+    /// deserialized into `Config` (and before `validate()`), so the merge
+    /// keys on key *presence* rather than value-equals-default:
     ///
-    /// - **Array fields** (`plugins`, `collections`, `extraWatchPaths`):
-    ///   preset values are prepended to the main config's values. Presets
-    ///   listed earlier in the array win position (first preset's plugins
-    ///   come first).
-    /// - **Scalar / optional fields**: a preset value fills in only when
-    ///   the main config leaves the field at its zero / default value
-    ///   (i.e. the main config is authoritative; presets act as defaults).
+    /// - **The four top-level additive array fields** (`plugins`,
+    ///   `collections`, `extraWatchPaths`, `allowedHosts`): the merged value
+    ///   is `[first preset…, second preset…, user…]` — earlier-declared
+    ///   presets come first, the user's entries last. (Nested arrays like
+    ///   `bundle.exclude` are NOT additive — user-wins-if-present.)
+    /// - **Scalars / objects**: a key the user PROVIDED wins (even when the
+    ///   value equals the type default — #1199); a key the user omitted is
+    ///   filled from the first preset that supplies it. Objects recurse to
+    ///   arbitrary depth (#1202), so a preset's nested sibling survives a
+    ///   user value set elsewhere in the same nested object. An explicit
+    ///   `null` (e.g. `adapter: null`) blocks the preset value (opt-out).
     ///
-    /// After merging, `presets` is cleared so downstream consumers never
-    /// see it.
+    /// `presets` is stripped before the final deserialize (and any nested
+    /// `presets` key inside a preset is dropped — no recursive expansion),
+    /// so downstream consumers never see it.
     ///
     /// The TS form is `presets: [somePreset()]` where `somePreset()`
     /// returns a `Partial<ZfbConfig>`. `#[serde(rename_all = "camelCase")]`
@@ -1433,7 +1439,12 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
         let text = tokio::fs::read_to_string(&json_path)
             .await
             .with_context(|| format!("reading {}", json_path.display()))?;
-        let mut cfg: Config = serde_json::from_str(&text).map_err(|e| {
+        // Parse to a raw Value first so the preset merge can run at the Value
+        // layer (#1199, #1202): key *presence* is observable there, so a user
+        // who explicitly sets a scalar to its type default still beats a
+        // preset, and the merge recurses to arbitrary depth. The syntax error
+        // here keeps the line/column message.
+        let mut user_value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
             anyhow!(
                 "{}: invalid config JSON at line {}, column {}: {}",
                 json_path.display(),
@@ -1442,33 +1453,43 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
                 e
             )
         })?;
-        // #1196 — merge presets before plugin resolution so preset-contributed
-        // plugins are included in the resolve pass below.
-        //
-        // #1191 review (codex P2): `merge_preset_into` PREPENDS each preset's
-        // additive arrays. Folding forward while each prepends would REVERSE
-        // declared order (`presets: [a, b]` → `b, a, user`). Iterate in
-        // REVERSE so the first declared preset is folded LAST and ends up
-        // first → documented order `a, b, user`. `.enumerate()` runs before
-        // `.rev()` so the `presets[i]` index in errors stays the declared one.
-        if !cfg.presets.is_empty() {
-            let presets = std::mem::take(&mut cfg.presets);
-            // Snapshot the user's config BEFORE folding any preset. Every
-            // scalar / nested fill in `merge_preset_into` decides against
-            // this immutable baseline so the first-declared preset wins
-            // consistently (#1191 review [12]).
-            let baseline = cfg.clone();
-            for (i, preset_value) in presets.into_iter().enumerate().rev() {
-                let preset: Config = serde_json::from_value(preset_value).map_err(|e| {
+        // #1196 — split out `presets`. When there are none, deserialize from
+        // the original `text` so a TYPE/schema error keeps the line/column
+        // message (`from_value` on a merged Value loses position info). Only
+        // the preset path needs the Value-layer merge.
+        let presets =
+            take_presets(&mut user_value).map_err(|e| anyhow!("{}: {}", json_path.display(), e))?;
+        let mut cfg: Config = if let Some(presets) = presets {
+            // Validate each preset as a `Config` fragment BEFORE merging so an
+            // invalid preset field surfaces even when the user also sets that
+            // key (all `Config` fields are `#[serde(default)]`, so a partial
+            // fragment deserializes cleanly).
+            for (i, preset_value) in presets.iter().enumerate() {
+                serde_json::from_value::<Config>(preset_value.clone()).map_err(|e| {
                     anyhow!(
                         "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
                         json_path.display(),
                         e
                     )
                 })?;
-                merge_preset_into(&mut cfg, preset, &baseline);
             }
-        }
+            let preset_defaults = build_preset_defaults(presets);
+            let merged_value = merge_user_over_presets(preset_defaults, user_value);
+            // A merged Value loses byte offsets, so a type error can't name a
+            // line/column — `.with_context()` still names the file.
+            serde_json::from_value(merged_value)
+                .with_context(|| format!("{}: invalid zfb config", json_path.display()))?
+        } else {
+            serde_json::from_str(&text).map_err(|e| {
+                anyhow!(
+                    "{}: invalid config JSON at line {}, column {}: {}",
+                    json_path.display(),
+                    e.line(),
+                    e.column(),
+                    e
+                )
+            })?
+        };
         // Issue #211: the JSON config path used to leave every
         // `PluginConfig.resolved_module` at `None`, which made the
         // downstream plugin-host filter silently drop ALL plugins
@@ -1595,63 +1616,96 @@ fn parse_loaded_config(
     dir: &Path,
 ) -> Result<Config> {
     let zfb_config_loader::LoadedTsConfig {
-        config: value,
+        config: mut value,
         resolved_plugins: resolved,
     } = loaded;
 
-    let mut config: Config = serde_json::from_value(value.clone()).map_err(|e| {
-        anyhow!(
-            "{}: failed to parse the default export as zfb config JSON: {}\n--- received ---\n{}",
-            ts_path.display(),
-            e,
-            value
-        )
-    })?;
-
-    // Zip the TS evaluator's resolved specifiers onto the top-level plugins
-    // first, BEFORE merging presets. Preset-contributed plugins are not in
-    // `resolved` (the evaluator only sees top-level `config.plugins`), so the
-    // count check and zip must run against the original plugin count. (#1196)
-    if !resolved.is_empty() && resolved.len() != config.plugins.len() {
+    // Zip the TS evaluator's resolved specifiers onto the RAW top-level
+    // `plugins` Value array, BEFORE the preset merge prepends preset plugins
+    // and shifts the indices (#1196, #1199, #1202). The count guard anchors
+    // on the original top-level plugin count — preset-contributed plugins are
+    // not in `resolved` (the evaluator only sees top-level `config.plugins`).
+    // The key inserted is `resolved_module` (snake_case): `PluginConfig` has
+    // no `#[serde(rename_all)]`, so its serde key is the field name verbatim
+    // (see `PluginConfig` definition).
+    let top_level_plugin_count = value
+        .get("plugins")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    if !resolved.is_empty() && resolved.len() != top_level_plugin_count {
         bail!(
             "{}: plugin resolution count mismatch (config has {} plugins, loader resolved {}); \
              this indicates a bug in the TS config evaluator",
             ts_path.display(),
-            config.plugins.len(),
+            top_level_plugin_count,
             resolved.len()
         );
     }
-    for (entry, resolved_specifier) in config.plugins.iter_mut().zip(resolved) {
-        entry.resolved_module = Some(resolved_specifier);
+    if !resolved.is_empty() {
+        if let Some(plugins) = value
+            .get_mut("plugins")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for (entry, resolved_specifier) in plugins.iter_mut().zip(resolved) {
+                if let Some(obj) = entry.as_object_mut() {
+                    obj.insert(
+                        "resolved_module".to_string(),
+                        serde_json::Value::String(resolved_specifier),
+                    );
+                }
+            }
+        }
     }
 
-    // #1196 — merge presets AFTER the zip so the count guard above sees only
-    // the original top-level plugins. Preset-contributed plugins arrive with
-    // `resolved_module = None`; resolve them Rust-side below.
-    if !config.presets.is_empty() {
-        let presets = std::mem::take(&mut config.presets);
-        // #1191 review (codex P2): fold presets in REVERSE so prepend-merge
-        // preserves declared order (`presets: [a, b]` → `a, b, user`, not
-        // `b, a, user`). Same fix as the JSON path. `.enumerate()` precedes
-        // `.rev()` to keep the declared `presets[i]` index in error messages.
-        //
-        // Snapshot the user's config BEFORE folding (same as the JSON path)
-        // so scalar / nested fills test the immutable user baseline and the
-        // first-declared preset wins consistently (#1191 review [12]).
-        let baseline = config.clone();
-        for (i, preset_value) in presets.into_iter().enumerate().rev() {
-            let preset: Config = serde_json::from_value(preset_value).map_err(|e| {
+    // #1196 — split out `presets`, validate each as a `Config` fragment for
+    // diagnostics, build `preset_defaults`, then merge the (presets-stripped)
+    // user Value over it. Preset plugins prepend here, after the zip above, so
+    // the resolved top-level plugins keep their `resolved_module` and the
+    // count guard saw the original indices.
+    let mut had_presets = false;
+    let presets = take_presets(&mut value).map_err(|e| {
+        anyhow!(
+            "{}: failed to parse the default export: {}",
+            ts_path.display(),
+            e
+        )
+    })?;
+    let merged_value = if let Some(presets) = presets {
+        had_presets = true;
+        for (i, preset_value) in presets.iter().enumerate() {
+            serde_json::from_value::<Config>(preset_value.clone()).map_err(|e| {
                 anyhow!(
                     "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
                     ts_path.display(),
                     e
                 )
             })?;
-            merge_preset_into(&mut config, preset, &baseline);
         }
-        // Resolve any plugin entries that still have `resolved_module = None`
-        // (i.e. those contributed by presets). Mirrors the JSON-load path
-        // resolution so preset plugins load and run on the TS path too.
+        let preset_defaults = build_preset_defaults(presets);
+        merge_user_over_presets(preset_defaults, value)
+    } else {
+        // Still strip a `presets: []` / `presets: null` key before the final
+        // deserialize so it never reaches `Config`.
+        if let Some(map) = value.as_object_mut() {
+            map.remove("presets");
+        }
+        value
+    };
+
+    let mut config: Config = serde_json::from_value(merged_value.clone()).map_err(|e| {
+        anyhow!(
+            "{}: failed to parse the default export as zfb config JSON: {}\n--- received ---\n{}",
+            ts_path.display(),
+            e,
+            merged_value
+        )
+    })?;
+
+    // Resolve any plugin entries that still have `resolved_module = None`
+    // (i.e. those contributed by presets). Mirrors the JSON-load path
+    // resolution so preset plugins load and run on the TS path too. Only
+    // needed when presets actually contributed entries.
+    if had_presets {
         resolve_unresolved_plugin_modules(&mut config, dir).with_context(|| {
             format!(
                 "{}: resolving plugin paths contributed by presets",
@@ -1663,339 +1717,201 @@ fn parse_loaded_config(
     Ok(config)
 }
 
-/// Fold `preset` into `cfg` using additive / default-fill semantics (#1196).
-///
-/// - **Array fields** (`plugins`, `collections`, `extraWatchPaths`,
-///   `allowedHosts`): preset values are prepended so the main config's
-///   explicit entries retain their relative position after the preset's.
-/// - **Plain scalar / optional fields**: a preset value fills in only when
-///   the *user* left the field at its default — the user config is
-///   authoritative, presets act as defaults.
-/// - **Nested config blocks** (`markdown`, `bundle`, `codeHighlight`,
-///   `tailwind`, `prefetch`, `resolveMarkdownLinks`): deep-merged
-///   field-by-field rather than all-or-nothing (#1191 review [11]). A
-///   preset contributing `markdown.features` survives even when the user
-///   set an unrelated `markdown.*` sibling.
-///
-/// ## Precedence model (`baseline` parameter)
-///
-/// `baseline` is a snapshot of the *user's* config taken BEFORE any preset
-/// was folded. Every fill decision is made against `baseline`, not the
-/// running `cfg`. This is what makes precedence consistent across the two
-/// kinds of field when several presets are layered (#1191 review [12]):
-///
-/// - The caller folds presets in REVERSE declared order so the prepend of
-///   additive arrays yields `[a, b, user]` for `presets: [a, b]`.
-/// - Because scalar/nested fills test `baseline` (the immutable user
-///   config) rather than `cfg`, a later fold (= the earlier-declared
-///   preset) is free to overwrite a value an earlier fold (= a
-///   later-declared preset) wrote, but never one the user set. So the
-///   first-declared preset wins for scalars and nested fields too,
-///   matching the array precedence.
-///
-/// `preset.presets` is intentionally ignored (no recursive expansion).
-fn merge_preset_into(cfg: &mut Config, preset: Config, baseline: &Config) {
-    // --- additive array fields: preset values prepend ---
-    if !preset.plugins.is_empty() {
-        let mut merged = preset.plugins;
-        merged.extend(std::mem::take(&mut cfg.plugins));
-        cfg.plugins = merged;
-    }
-    if !preset.collections.is_empty() {
-        let mut merged = preset.collections;
-        merged.extend(std::mem::take(&mut cfg.collections));
-        cfg.collections = merged;
-    }
-    if !preset.extra_watch_paths.is_empty() {
-        let mut merged = preset.extra_watch_paths;
-        merged.extend(std::mem::take(&mut cfg.extra_watch_paths));
-        cfg.extra_watch_paths = merged;
-    }
-    if !preset.allowed_hosts.is_empty() {
-        let mut merged = preset.allowed_hosts;
-        merged.extend(std::mem::take(&mut cfg.allowed_hosts));
-        cfg.allowed_hosts = merged;
-    }
+/// Top-level config keys whose arrays are *additive* across presets and the
+/// user config (#1196): the merged value is `[first preset…, second preset…,
+/// user…]` rather than a single side winning. These are the camelCase JSON
+/// keys (`Config` is `#[serde(rename_all = "camelCase")]`). The rule applies
+/// ONLY at the top level — nested arrays (`bundle.exclude`,
+/// `resolveMarkdownLinks.dirs`, …) are user-wins-if-present, not additive.
+const ADDITIVE_TOP_LEVEL_ARRAY_KEYS: &[&str] =
+    &["plugins", "collections", "extraWatchPaths", "allowedHosts"];
 
-    // --- plain scalar / optional fields: preset fills in only where the
-    //     USER left the default (so the first-declared preset wins; see
-    //     the `baseline` note above) ---
-    let default = Config::default();
-    macro_rules! fill_default {
-        ($field:ident) => {
-            if baseline.$field == default.$field && preset.$field != default.$field {
-                cfg.$field = preset.$field.clone();
+/// Presence-aware deep merge of two `serde_json::Value`s (#1199, #1202).
+///
+/// `low` is the lower-priority side, `over` the higher-priority side. The
+/// merge is driven by key *presence*, not value-equals-default, which is what
+/// lets a user who explicitly sets a scalar to its type default still beat a
+/// preset (#1199):
+///
+/// - Both objects → recurse key-by-key to arbitrary depth (#1202). A key
+///   present only in `over` wins; a key present only in `low` is kept; a key
+///   in both recurses.
+/// - Otherwise the *present* side wins as a whole leaf, with `over` winning a
+///   collision. (An explicit `null` in `over` is "present" and so blocks the
+///   `low` value — the user-opt-out semantics for `adapter: null` etc.)
+///
+/// Additive-array handling for the four top-level keys lives in
+/// [`merge_object`] (its `top_level` branch); this recursive helper always
+/// treats arrays as plain present-side-wins leaves, which is correct for the
+/// nested arrays (`bundle.exclude`, `resolveMarkdownLinks.dirs`, …) it sees.
+fn deep_merge(low: serde_json::Value, over: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match (low, over) {
+        (Value::Object(low_map), Value::Object(over_map)) => {
+            Value::Object(merge_object(low_map, over_map, false))
+        }
+        // `over` is present (any non-recursable value, including `null`) and
+        // therefore wins as a whole leaf.
+        (_, over) => over,
+    }
+}
+
+/// Merge two JSON objects. `over` keys win; keys only in `low` are kept; keys
+/// in both recurse via [`deep_merge`]. When `top_level` is true, the four
+/// [`ADDITIVE_TOP_LEVEL_ARRAY_KEYS`] are concatenated `low ++ over` instead of
+/// `over` winning.
+fn merge_object(
+    mut low: serde_json::Map<String, serde_json::Value>,
+    over: serde_json::Map<String, serde_json::Value>,
+    top_level: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::Value;
+    for (key, over_val) in over {
+        match low.remove(&key) {
+            Some(low_val) => {
+                let merged = if top_level && ADDITIVE_TOP_LEVEL_ARRAY_KEYS.contains(&key.as_str()) {
+                    match (low_val, over_val) {
+                        (Value::Array(mut a), Value::Array(b)) => {
+                            a.extend(b);
+                            Value::Array(a)
+                        }
+                        // Either side isn't an array → fall back to present-side-wins.
+                        (_, over_val) => over_val,
+                    }
+                } else {
+                    deep_merge(low_val, over_val)
+                };
+                low.insert(key, merged);
             }
-        };
+            None => {
+                low.insert(key, over_val);
+            }
+        }
     }
-    fill_default!(out_dir);
-    fill_default!(public_dir);
-    fill_default!(host);
-    fill_default!(port);
-    fill_default!(framework);
-    fill_default!(adapter);
-    fill_default!(strip_md_ext);
-    fill_default!(base);
-    fill_default!(trailing_slash);
-    fill_default!(site);
-    fill_default!(emit_routes_manifest);
-    fill_default!(output);
-    fill_default!(plugin_hook_timeout_secs);
-    fill_default!(copy_public_with_base);
-
-    // --- nested config blocks: deep-merge field-by-field (#1191 [11]) ---
-    //
-    // The whole-block `fill_default!` used to drop a preset's entire
-    // `Option<Struct>` block the moment the user touched ANY sibling field
-    // in the same block (because `cfg.markdown` was then `Some(..)` !=
-    // default). Each helper instead folds the preset's inner fields into
-    // the accumulator one field at a time, filling only inner fields the
-    // user left unset — so a preset `markdown.features` survives a user
-    // `markdown.gfm`. Decisions are made against `baseline` for the same
-    // first-declared-preset-wins reason as the scalars above.
-    merge_markdown_block(&mut cfg.markdown, &preset.markdown, &baseline.markdown);
-    merge_bundle_block(&mut cfg.bundle, &preset.bundle, &baseline.bundle);
-    merge_code_highlight_block(
-        &mut cfg.code_highlight,
-        &preset.code_highlight,
-        &baseline.code_highlight,
-    );
-    merge_tailwind_block(&mut cfg.tailwind, &preset.tailwind, &baseline.tailwind);
-    merge_prefetch_block(&mut cfg.prefetch, &preset.prefetch, &baseline.prefetch);
-    merge_resolve_markdown_links_block(
-        &mut cfg.resolve_markdown_links,
-        &preset.resolve_markdown_links,
-        &baseline.resolve_markdown_links,
-    );
-    // `presets` is never recursively merged.
+    low
 }
 
-/// Field-by-field fill helper for one inner field of a nested config block.
+/// Strip the `presets` key from a preset object — `presets` is never expanded
+/// recursively, so a `presets` key nested inside a preset is dropped (#1196).
+fn strip_presets(mut value: serde_json::Value) -> serde_json::Value {
+    if let serde_json::Value::Object(map) = &mut value {
+        map.remove("presets");
+    }
+    value
+}
+
+/// Remove the top-level `presets` key from the user config Value and return
+/// its entries when present and non-empty (#1196). The key is removed in place
+/// so it never reaches the final `from_value::<Config>` (presets are merged,
+/// not deserialized).
 ///
-/// `acc` is the accumulator's inner field, `preset` / `baseline` the same
-/// field from the preset and the user-baseline block. The preset value is
-/// copied in only when the user left it at `default` (so an earlier-declared
-/// preset, folded last, still wins over a later-declared one without ever
-/// clobbering the user's value — see [`merge_preset_into`]).
-fn fill_inner<T: Clone + PartialEq>(acc: &mut T, preset: &T, baseline: &T, default: &T) {
-    if baseline == default && preset != default {
-        *acc = preset.clone();
+/// - absent or empty array → `Ok(None)` (nothing to merge)
+/// - non-empty array → `Ok(Some(items))`
+/// - any other value (e.g. the malformed TS shape `presets: somePreset()`
+///   instead of `[somePreset()]`, or `presets: null`) → `Err` — a non-array
+///   `presets` is a config error, not a silent no-op. The pre-#1196 typed
+///   deserialization (`presets: Vec<Value>`) rejected these shapes; merging at
+///   the Value layer must preserve that or the malformed config would load with
+///   its presets silently dropped.
+fn take_presets(value: &mut serde_json::Value) -> Result<Option<Vec<serde_json::Value>>, String> {
+    let Some(map) = value.as_object_mut() else {
+        return Ok(None);
+    };
+    let Some(presets) = map.remove("presets") else {
+        return Ok(None);
+    };
+    match presets {
+        serde_json::Value::Array(items) if items.is_empty() => Ok(None),
+        serde_json::Value::Array(items) => Ok(Some(items)),
+        other => Err(format!(
+            "`presets` must be an array of config fragments, got {}",
+            json_type_name(&other)
+        )),
     }
 }
 
-/// Ensure an `Option<Struct>` accumulator is `Some` before folding a
-/// preset's inner fields into it. Returns a mutable ref to the inner struct
-/// when the preset actually carries one (else `None`, signalling "nothing
-/// to merge"). The accumulator is seeded from the user's block if present,
-/// otherwise from `seed_default()` so the preset's inner fields land
-/// somewhere. A `seed_default` closure (rather than a `T: Default` bound) is
-/// used because several nested blocks (`CodeHighlightConfig`,
-/// `PrefetchConfig`, `ResolveMarkdownLinksConfig`) deliberately do not derive
-/// `Default`.
-fn ensure_block<'a, T: Clone>(
-    acc: &'a mut Option<T>,
-    preset: &Option<T>,
-    baseline: &Option<T>,
-    seed_default: impl FnOnce() -> T,
-) -> Option<&'a mut T> {
-    preset.as_ref()?;
-    if acc.is_none() {
-        // Seed from the user's block (so user-set inner fields are present
-        // as the authoritative baseline) or from the all-default block when
-        // the user left the whole block unset.
-        *acc = Some(baseline.clone().unwrap_or_else(seed_default));
-    }
-    acc.as_mut()
-}
-
-fn merge_markdown_block(
-    acc: &mut Option<MarkdownConfig>,
-    preset: &Option<MarkdownConfig>,
-    baseline: &Option<MarkdownConfig>,
-) {
-    let Some(p) = preset else { return };
-    let acc = ensure_block(acc, preset, baseline, MarkdownConfig::default).expect("preset is Some");
-    let base = baseline.clone().unwrap_or_default();
-    let def = MarkdownConfig::default();
-    fill_inner(&mut acc.gfm, &p.gfm, &base.gfm, &def.gfm);
-    fill_inner(&mut acc.toc, &p.toc, &base.toc, &def.toc);
-    fill_inner(
-        &mut acc.external_links,
-        &p.external_links,
-        &base.external_links,
-        &def.external_links,
-    );
-    fill_inner(
-        &mut acc.cjk_friendly,
-        &p.cjk_friendly,
-        &base.cjk_friendly,
-        &def.cjk_friendly,
-    );
-    fill_inner(
-        &mut acc.hard_breaks,
-        &p.hard_breaks,
-        &base.hard_breaks,
-        &def.hard_breaks,
-    );
-    // `features` is itself a bag of independent `Option<>` toggles — recurse
-    // one level deeper so a preset's `features.githubAlerts` survives a user
-    // `features.directives` (and vice-versa), not just a user `markdown.gfm`.
-    merge_markdown_features(&mut acc.features, &p.features, &base.features);
-}
-
-fn merge_markdown_features(
-    acc: &mut Option<MarkdownFeaturesConfig>,
-    preset: &Option<MarkdownFeaturesConfig>,
-    baseline: &Option<MarkdownFeaturesConfig>,
-) {
-    let Some(p) = preset else { return };
-    let acc = ensure_block(acc, preset, baseline, MarkdownFeaturesConfig::default)
-        .expect("preset is Some");
-    let base = baseline.clone().unwrap_or_default();
-    let def = MarkdownFeaturesConfig::default();
-    macro_rules! fill_feature {
-        ($field:ident) => {
-            fill_inner(&mut acc.$field, &p.$field, &base.$field, &def.$field);
+/// Phase 1 of the two-phase preset fold (#1196): build `preset_defaults` by
+/// folding the declared presets in DECLARED order. An already-folded
+/// (earlier-declared) key wins over a later preset, and the four top-level
+/// additive arrays append the next preset's items — so `presets: [a, b]`
+/// yields scalars from `a` and additive arrays `[a…, b…]`.
+///
+/// Each preset is `presets`-stripped first so a nested `presets` key never
+/// leaks into the fold.
+fn build_preset_defaults(presets: Vec<serde_json::Value>) -> serde_json::Value {
+    use serde_json::Value;
+    let mut acc = Value::Object(serde_json::Map::new());
+    for preset in presets {
+        let preset = strip_presets(preset);
+        acc = match (acc, preset) {
+            (Value::Object(acc_map), Value::Object(preset_map)) => {
+                Value::Object(fold_next_preset(acc_map, preset_map))
+            }
+            // A non-object preset is not a valid config fragment; the
+            // per-preset `from_value::<Config>` diagnostic at the call site
+            // catches that. Keep the accumulator unchanged here.
+            (acc, _) => acc,
         };
     }
-    fill_feature!(github_alerts);
-    fill_feature!(reading_time);
-    fill_feature!(github_autolinks);
-    fill_feature!(code_enrichment);
-    fill_feature!(code_tabs);
-    fill_feature!(ruby);
-    fill_feature!(toc_export);
-    fill_feature!(image_dimensions);
-    fill_feature!(link_validation);
-    fill_feature!(transclude);
-    fill_feature!(directives);
-    fill_feature!(mermaid);
-    fill_feature!(heading_marker_toc);
-    fill_feature!(heading_ids);
+    acc
 }
 
-fn merge_bundle_block(
-    acc: &mut Option<BundleConfig>,
-    preset: &Option<BundleConfig>,
-    baseline: &Option<BundleConfig>,
-) {
-    let Some(p) = preset else { return };
-    let acc = ensure_block(acc, preset, baseline, BundleConfig::default).expect("preset is Some");
-    let base = baseline.clone().unwrap_or_default();
-    let def = BundleConfig::default();
-    fill_inner(&mut acc.exclude, &p.exclude, &base.exclude, &def.exclude);
-    fill_inner(
-        &mut acc.main_fields,
-        &p.main_fields,
-        &base.main_fields,
-        &def.main_fields,
-    );
-    fill_inner(
-        &mut acc.external,
-        &p.external,
-        &base.external,
-        &def.external,
-    );
+/// Fold one later preset (`next`) into the accumulator (`acc`, the
+/// earlier-declared presets). Earlier presets win scalars/objects; the four
+/// top-level additive arrays become `acc ++ next` (earlier-declared first).
+fn fold_next_preset(
+    acc: serde_json::Map<String, serde_json::Value>,
+    next: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::Value;
+    // For non-additive keys: `acc` (earlier) must win, so `acc` is the `over`
+    // side. `merge_object(low=next, over=acc, top_level=true)` does that, but
+    // its additive concat would be `next ++ acc`. Pre-empt the additive keys
+    // by merging them ourselves in `acc ++ next` order, then strip them from
+    // both maps before the generic merge.
+    let mut acc = acc;
+    let mut next = next;
+    let mut additive: Vec<(String, Value)> = Vec::new();
+    for key in ADDITIVE_TOP_LEVEL_ARRAY_KEYS {
+        let a = acc.remove(*key);
+        let n = next.remove(*key);
+        match (a, n) {
+            (Some(Value::Array(mut av)), Some(Value::Array(nv))) => {
+                av.extend(nv);
+                additive.push(((*key).to_string(), Value::Array(av)));
+            }
+            (Some(a), None) => additive.push(((*key).to_string(), a)),
+            (None, Some(n)) => additive.push(((*key).to_string(), n)),
+            // Non-array on either side → earlier (acc) wins as a leaf.
+            (Some(a), Some(_)) => additive.push(((*key).to_string(), a)),
+            (None, None) => {}
+        }
+    }
+    // Generic non-additive merge: `acc` (earlier) wins.
+    let mut merged = merge_object(next, acc, false);
+    merged.extend(additive);
+    merged
 }
 
-fn merge_code_highlight_block(
-    acc: &mut Option<CodeHighlightConfig>,
-    preset: &Option<CodeHighlightConfig>,
-    baseline: &Option<CodeHighlightConfig>,
-) {
-    let Some(p) = preset else { return };
-    // `CodeHighlightConfig` has no `Default` impl (no `#[derive(Default)]`);
-    // build a default-equivalent (all `None`) inline for the fill compares
-    // and to seed the accumulator.
-    let def = CodeHighlightConfig {
-        theme: None,
-        themes_dir: None,
-        theme_light: None,
-        theme_dark: None,
-    };
-    let acc = ensure_block(acc, preset, baseline, || def.clone()).expect("preset is Some");
-    let base = baseline.clone().unwrap_or_else(|| def.clone());
-    fill_inner(&mut acc.theme, &p.theme, &base.theme, &def.theme);
-    fill_inner(
-        &mut acc.themes_dir,
-        &p.themes_dir,
-        &base.themes_dir,
-        &def.themes_dir,
-    );
-    fill_inner(
-        &mut acc.theme_light,
-        &p.theme_light,
-        &base.theme_light,
-        &def.theme_light,
-    );
-    fill_inner(
-        &mut acc.theme_dark,
-        &p.theme_dark,
-        &base.theme_dark,
-        &def.theme_dark,
-    );
-}
-
-fn merge_tailwind_block(
-    acc: &mut Option<TailwindConfig>,
-    preset: &Option<TailwindConfig>,
-    baseline: &Option<TailwindConfig>,
-) {
-    let Some(p) = preset else { return };
-    let acc = ensure_block(acc, preset, baseline, TailwindConfig::default).expect("preset is Some");
-    let base = baseline.clone().unwrap_or_default();
-    let def = TailwindConfig::default();
-    fill_inner(&mut acc.enabled, &p.enabled, &base.enabled, &def.enabled);
-}
-
-fn merge_prefetch_block(
-    acc: &mut Option<PrefetchConfig>,
-    preset: &Option<PrefetchConfig>,
-    baseline: &Option<PrefetchConfig>,
-) {
-    let Some(p) = preset else { return };
-    // `PrefetchConfig` has no `Default` impl; its only field defaults to None.
-    let def = PrefetchConfig { disabled: None };
-    let acc = ensure_block(acc, preset, baseline, || def.clone()).expect("preset is Some");
-    let base = baseline.clone().unwrap_or_else(|| def.clone());
-    fill_inner(
-        &mut acc.disabled,
-        &p.disabled,
-        &base.disabled,
-        &def.disabled,
-    );
-}
-
-fn merge_resolve_markdown_links_block(
-    acc: &mut Option<ResolveMarkdownLinksConfig>,
-    preset: &Option<ResolveMarkdownLinksConfig>,
-    baseline: &Option<ResolveMarkdownLinksConfig>,
-) {
-    let Some(p) = preset else { return };
-    // `ResolveMarkdownLinksConfig` has no `Default` impl; build the
-    // all-default equivalent inline for the per-field compares and to seed.
-    let def = ResolveMarkdownLinksConfig {
-        enabled: false,
-        docs_dir: PathBuf::new(),
-        dirs: Vec::new(),
-        on_broken_links: OnBrokenLinks::default(),
-    };
-    let acc = ensure_block(acc, preset, baseline, || def.clone()).expect("preset is Some");
-    let base = baseline.clone().unwrap_or_else(|| def.clone());
-    fill_inner(&mut acc.enabled, &p.enabled, &base.enabled, &def.enabled);
-    fill_inner(
-        &mut acc.docs_dir,
-        &p.docs_dir,
-        &base.docs_dir,
-        &def.docs_dir,
-    );
-    fill_inner(&mut acc.dirs, &p.dirs, &base.dirs, &def.dirs);
-    fill_inner(
-        &mut acc.on_broken_links,
-        &p.on_broken_links,
-        &base.on_broken_links,
-        &def.on_broken_links,
-    );
+/// Phase 2 of the two-phase preset fold (#1196): merge the user config Value
+/// OVER `preset_defaults`. User keys win; the four top-level additive arrays
+/// become `preset_defaults ++ user` (= `[first preset…, second preset…,
+/// user…]`). The user value is `presets`-stripped first (the `presets` key is
+/// never deserialized into the final `Config`).
+fn merge_user_over_presets(
+    preset_defaults: serde_json::Value,
+    user: serde_json::Value,
+) -> serde_json::Value {
+    use serde_json::Value;
+    let user = strip_presets(user);
+    match (preset_defaults, user) {
+        (Value::Object(defaults_map), Value::Object(user_map)) => {
+            Value::Object(merge_object(defaults_map, user_map, true))
+        }
+        // No preset defaults (or a degenerate non-object) → the user value
+        // stands alone.
+        (_, user) => user,
+    }
 }
 
 /// Validate a loaded [`Config`] against the project root `dir`.
@@ -2148,6 +2064,17 @@ fn ensure_path_in_root(path: &Path, dir: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Drive the Value-layer preset merge exactly as the load paths do:
+    /// build `preset_defaults` from the declared presets, merge the user
+    /// Value over it, then deserialize the result into a typed [`Config`].
+    /// Used by the `#1196` / `#1199` / `#1202` unit tests in place of the old
+    /// `merge_preset_into(&mut cfg, preset, &baseline)` direct call.
+    fn merge_presets_to_config(presets: Vec<serde_json::Value>, user: serde_json::Value) -> Config {
+        let preset_defaults = build_preset_defaults(presets);
+        let merged = merge_user_over_presets(preset_defaults, user);
+        serde_json::from_value(merged).expect("merged preset config deserializes")
+    }
 
     // --- JsonSchema newtype tests ---------------------------------------------
 
@@ -4575,26 +4502,17 @@ mod tests {
 
     #[test]
     fn preset_plugins_prepend_to_main_plugins() {
-        // A preset contributes a plugin; the main config has its own plugin.
-        // The preset plugin should appear BEFORE the main config plugin.
-        let preset = Config {
-            plugins: vec![PluginConfig {
-                name: "preset-plugin".into(),
-                options: serde_json::json!({}),
-                resolved_module: None,
-            }],
-            ..Config::default()
-        };
-        let mut cfg = Config {
-            plugins: vec![PluginConfig {
-                name: "user-plugin".into(),
-                options: serde_json::json!({}),
-                resolved_module: None,
-            }],
-            ..Config::default()
-        };
-        let baseline = cfg.clone();
-        merge_preset_into(&mut cfg, preset, &baseline);
+        // A preset contributes a plugin; the user config has its own plugin.
+        // The preset plugin should appear BEFORE the user plugin (additive
+        // top-level array: `[preset…, user…]`).
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "plugins": [{ "name": "preset-plugin", "options": {} }]
+            })],
+            serde_json::json!({
+                "plugins": [{ "name": "user-plugin", "options": {} }]
+            }),
+        );
         assert_eq!(cfg.plugins.len(), 2);
         assert_eq!(cfg.plugins[0].name, "preset-plugin");
         assert_eq!(cfg.plugins[1].name, "user-plugin");
@@ -4602,15 +4520,12 @@ mod tests {
 
     #[test]
     fn preset_scalar_fills_default_only() {
-        // A preset sets `adapter`; the main config leaves it as `None`.
-        // The preset value should fill in.
-        let preset = Config {
-            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
-            ..Config::default()
-        };
-        let mut cfg = Config::default();
-        let baseline = cfg.clone();
-        merge_preset_into(&mut cfg, preset, &baseline);
+        // A preset sets `adapter`; the user config omits it. The preset value
+        // fills in.
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({ "adapter": "@takazudo/zfb-adapter-cloudflare" })],
+            serde_json::json!({}),
+        );
         assert_eq!(
             cfg.adapter.as_deref(),
             Some("@takazudo/zfb-adapter-cloudflare")
@@ -4619,47 +4534,25 @@ mod tests {
 
     #[test]
     fn main_config_wins_over_preset_scalar() {
-        // The main config already sets `adapter`; the preset should NOT
-        // override it.
-        let preset = Config {
-            adapter: Some("preset-adapter".into()),
-            ..Config::default()
-        };
-        let mut cfg = Config {
-            adapter: Some("user-adapter".into()),
-            ..Config::default()
-        };
-        let baseline = cfg.clone();
-        merge_preset_into(&mut cfg, preset, &baseline);
+        // The user config already sets `adapter`; the preset must NOT override
+        // it (user-wins-if-present).
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({ "adapter": "preset-adapter" })],
+            serde_json::json!({ "adapter": "user-adapter" }),
+        );
         assert_eq!(cfg.adapter.as_deref(), Some("user-adapter"));
     }
 
     #[test]
     fn preset_collections_prepend() {
-        let preset = Config {
-            collections: vec![CollectionDef {
-                name: "preset-coll".into(),
-                path: "content/preset".into(),
-                schema: None,
-                include: None,
-                exclude: None,
-                id_strip_suffix: None,
-            }],
-            ..Config::default()
-        };
-        let mut cfg = Config {
-            collections: vec![CollectionDef {
-                name: "user-coll".into(),
-                path: "content/user".into(),
-                schema: None,
-                include: None,
-                exclude: None,
-                id_strip_suffix: None,
-            }],
-            ..Config::default()
-        };
-        let baseline = cfg.clone();
-        merge_preset_into(&mut cfg, preset, &baseline);
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "collections": [{ "name": "preset-coll", "path": "content/preset" }]
+            })],
+            serde_json::json!({
+                "collections": [{ "name": "user-coll", "path": "content/user" }]
+            }),
+        );
         assert_eq!(cfg.collections.len(), 2);
         assert_eq!(cfg.collections[0].name, "preset-coll");
         assert_eq!(cfg.collections[1].name, "user-coll");
@@ -4834,9 +4727,9 @@ mod tests {
     /// user plugin too), the merged plugin order must be the DECLARED order
     /// `a, b, <user plugins>` — NOT the reversed `b, a, user`.
     ///
-    /// Regression guard for codex P2: `merge_preset_into` prepends each
-    /// preset's additive arrays, so folding the presets forward reverses
-    /// declared order. The load loop folds in reverse to compensate.
+    /// Regression guard for codex P2 (now via the Value-layer two-phase
+    /// fold): the four top-level additive arrays concatenate
+    /// `[first preset…, second preset…, user…]`, preserving declared order.
     #[tokio::test]
     async fn json_path_multi_preset_preserves_declared_order() {
         let tmp = TempDir::new().unwrap();
@@ -4919,25 +4812,14 @@ mod tests {
     /// use (a zudo-doc-style markdown preset) and the core of finding [11].
     #[test]
     fn preset_markdown_block_deep_merges_with_user_sibling() {
-        let preset = Config {
-            markdown: Some(MarkdownConfig {
-                features: Some(MarkdownFeaturesConfig {
-                    github_alerts: Some(FeatureToggle::Bool(true)),
-                    ..MarkdownFeaturesConfig::default()
-                }),
-                ..MarkdownConfig::default()
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "markdown": { "features": { "githubAlerts": true } }
+            })],
+            serde_json::json!({
+                "markdown": { "gfm": true }
             }),
-            ..Config::default()
-        };
-        let mut cfg = Config {
-            markdown: Some(MarkdownConfig {
-                gfm: Some(GfmFlag::All(true)),
-                ..MarkdownConfig::default()
-            }),
-            ..Config::default()
-        };
-        let baseline = cfg.clone();
-        merge_preset_into(&mut cfg, preset, &baseline);
+        );
 
         let md = cfg.markdown.expect("markdown block must be present");
         assert_eq!(
@@ -4960,23 +4842,17 @@ mod tests {
     /// fields still fill in.
     #[test]
     fn preset_markdown_inner_field_user_wins_but_others_fill() {
-        let preset = Config {
-            markdown: Some(MarkdownConfig {
-                gfm: Some(GfmFlag::All(false)), // collides with user
-                hard_breaks: Some(true),        // user left unset
-                ..MarkdownConfig::default()
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "markdown": {
+                    "gfm": false,        // collides with user
+                    "hardBreaks": true   // user left unset
+                }
+            })],
+            serde_json::json!({
+                "markdown": { "gfm": true }
             }),
-            ..Config::default()
-        };
-        let mut cfg = Config {
-            markdown: Some(MarkdownConfig {
-                gfm: Some(GfmFlag::All(true)),
-                ..MarkdownConfig::default()
-            }),
-            ..Config::default()
-        };
-        let baseline = cfg.clone();
-        merge_preset_into(&mut cfg, preset, &baseline);
+        );
 
         let md = cfg.markdown.unwrap();
         assert_eq!(
@@ -4995,22 +4871,14 @@ mod tests {
     /// (the same trap as markdown, applied to a different block).
     #[test]
     fn preset_bundle_block_deep_merges_with_user_sibling() {
-        let preset = Config {
-            bundle: Some(BundleConfig {
-                external: Some(vec!["msw".into()]),
-                ..BundleConfig::default()
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "bundle": { "external": ["msw"] }
+            })],
+            serde_json::json!({
+                "bundle": { "exclude": ["**/*.stories.tsx"] }
             }),
-            ..Config::default()
-        };
-        let mut cfg = Config {
-            bundle: Some(BundleConfig {
-                exclude: Some(vec!["**/*.stories.tsx".into()]),
-                ..BundleConfig::default()
-            }),
-            ..Config::default()
-        };
-        let baseline = cfg.clone();
-        merge_preset_into(&mut cfg, preset, &baseline);
+        );
 
         let bundle = cfg.bundle.unwrap();
         assert_eq!(
@@ -5025,8 +4893,349 @@ mod tests {
         );
     }
 
-    /// End-to-end JSON path: the deep-merge holds through the real loader, not
-    /// just the unit `merge_preset_into`.
+    // --- #1202: arbitrary-depth sibling survival ------------------------------
+
+    /// #1202 (3rd level): user sets `markdown.features.{fieldA}` and a preset
+    /// sets a DIFFERENT sibling `markdown.features.{fieldB}` → both survive.
+    /// `markdown.features.codeTabs` (user) vs `markdown.features.ruby`
+    /// (preset) are real sibling fields of `MarkdownFeaturesConfig` — the
+    /// issue's literal example used `headingIds.{fieldA/fieldB}`, but
+    /// `HeadingIdsConfig` has a single field (`strategy`) and
+    /// `deny_unknown_fields`, so two distinct siblings live one level up under
+    /// `features`.
+    #[test]
+    fn preset_markdown_features_third_level_siblings_both_survive() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "markdown": { "features": { "ruby": true } }
+            })],
+            serde_json::json!({
+                "markdown": { "features": { "codeTabs": true } }
+            }),
+        );
+        let features = cfg
+            .markdown
+            .expect("markdown present")
+            .features
+            .expect("features present");
+        assert_eq!(
+            features.code_tabs,
+            Some(FeatureToggle::Bool(true)),
+            "user's features.codeTabs must survive"
+        );
+        assert_eq!(
+            features.ruby,
+            Some(FeatureToggle::Bool(true)),
+            "preset's sibling features.ruby must survive"
+        );
+    }
+
+    /// #1202 (4th level): user sets
+    /// `markdown.features.codeEnrichment.diffMarkers` and a preset sets the
+    /// DIFFERENT sibling `markdown.features.codeEnrichment.lineHighlight` →
+    /// both survive. This is a genuine 4th-level object collision (markdown →
+    /// features → codeEnrichment → {diffMarkers, lineHighlight}).
+    #[test]
+    fn preset_markdown_features_fourth_level_siblings_both_survive() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "markdown": { "features": { "codeEnrichment": { "lineHighlight": false } } }
+            })],
+            serde_json::json!({
+                "markdown": { "features": { "codeEnrichment": { "diffMarkers": false } } }
+            }),
+        );
+        let enrichment = cfg
+            .markdown
+            .expect("markdown present")
+            .features
+            .expect("features present")
+            .code_enrichment
+            .expect("codeEnrichment present");
+        assert_eq!(
+            enrichment.diff_markers,
+            Some(false),
+            "user's codeEnrichment.diffMarkers must survive (presence, not equals-default)"
+        );
+        assert_eq!(
+            enrichment.line_highlight,
+            Some(false),
+            "preset's sibling codeEnrichment.lineHighlight must survive"
+        );
+    }
+
+    // --- #1199: presence vs equals-default ------------------------------------
+
+    /// #1199: the user EXPLICITLY sets a scalar to a value equal to its type
+    /// default (`copyPublicWithBase` defaults to `true`; user sets `true`)
+    /// while a preset sets the opposite (`false`). The user's explicit value
+    /// must win — the merge keys on key PRESENCE, not value-equals-default.
+    /// The old typed fold gave this to the preset.
+    #[test]
+    fn preset_user_explicit_default_value_beats_preset() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({ "copyPublicWithBase": false })],
+            serde_json::json!({ "copyPublicWithBase": true }),
+        );
+        assert!(
+            cfg.copy_public_with_base,
+            "user's explicit `true` (== type default) must beat the preset's `false`"
+        );
+    }
+
+    /// Control for #1199: when the user OMITS the key, the preset fills it.
+    #[test]
+    fn preset_fills_when_user_omits_default_value_key() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({ "copyPublicWithBase": false })],
+            serde_json::json!({}),
+        );
+        assert!(
+            !cfg.copy_public_with_base,
+            "with the key omitted, the preset's `false` fills in"
+        );
+    }
+
+    // --- null blocks the preset -----------------------------------------------
+
+    /// An explicit `null` in the user config blocks the preset value (the user
+    /// opted out). `adapter: null` → the preset's adapter does NOT fill in.
+    #[test]
+    fn preset_user_null_blocks_preset_value() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({ "adapter": "preset-adapter" })],
+            serde_json::json!({ "adapter": null }),
+        );
+        assert_eq!(
+            cfg.adapter, None,
+            "explicit `adapter: null` must block the preset's adapter"
+        );
+    }
+
+    /// `markdown: null` blocks a whole preset block.
+    #[test]
+    fn preset_user_null_blocks_preset_block() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "markdown": { "features": { "githubAlerts": true } }
+            })],
+            serde_json::json!({ "markdown": null }),
+        );
+        assert_eq!(
+            cfg.markdown, None,
+            "explicit `markdown: null` must block the preset's markdown block"
+        );
+    }
+
+    // --- map-like recursion ---------------------------------------------------
+
+    /// Preset and user contribute DIFFERENT sibling entries under a map-like
+    /// object (`markdown.features.directives` is a `HashMap<String,
+    /// DirectiveSpec>`) → both entries survive.
+    #[test]
+    fn preset_map_like_directives_siblings_both_survive() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "markdown": { "features": { "directives": { "tip": "Tip" } } }
+            })],
+            serde_json::json!({
+                "markdown": { "features": { "directives": { "note": "Note" } } }
+            }),
+        );
+        let directives = cfg
+            .markdown
+            .expect("markdown present")
+            .features
+            .expect("features present")
+            .directives
+            .expect("directives present");
+        assert!(
+            directives.contains_key("note"),
+            "user's directive entry `note` must survive"
+        );
+        assert!(
+            directives.contains_key("tip"),
+            "preset's directive entry `tip` must survive"
+        );
+        assert_eq!(directives.len(), 2, "both map entries present");
+    }
+
+    // --- additive-array order across presets + user ---------------------------
+
+    /// `presets: [a, b]` each contributing `plugins` plus a user plugin →
+    /// merged order is `[a, b, user]`.
+    #[test]
+    fn preset_additive_plugins_order_a_b_user() {
+        let cfg = merge_presets_to_config(
+            vec![
+                serde_json::json!({ "plugins": [{ "name": "a", "options": {} }] }),
+                serde_json::json!({ "plugins": [{ "name": "b", "options": {} }] }),
+            ],
+            serde_json::json!({ "plugins": [{ "name": "user", "options": {} }] }),
+        );
+        let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "user"]);
+    }
+
+    /// Same additive `[a, b, user]` order for `collections`.
+    #[test]
+    fn preset_additive_collections_order_a_b_user() {
+        let cfg = merge_presets_to_config(
+            vec![
+                serde_json::json!({ "collections": [{ "name": "a", "path": "content/a" }] }),
+                serde_json::json!({ "collections": [{ "name": "b", "path": "content/b" }] }),
+            ],
+            serde_json::json!({ "collections": [{ "name": "user", "path": "content/user" }] }),
+        );
+        let names: Vec<&str> = cfg.collections.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "user"]);
+    }
+
+    /// Same additive `[a, b, user]` order for the string-valued
+    /// `allowedHosts` (covers an additive array whose items are scalars).
+    #[test]
+    fn preset_additive_allowed_hosts_order_a_b_user() {
+        let cfg = merge_presets_to_config(
+            vec![
+                serde_json::json!({ "allowedHosts": ["a.example.com"] }),
+                serde_json::json!({ "allowedHosts": ["b.example.com"] }),
+            ],
+            serde_json::json!({ "allowedHosts": ["user.example.com"] }),
+        );
+        assert_eq!(
+            cfg.allowed_hosts,
+            vec![
+                "a.example.com".to_string(),
+                "b.example.com".to_string(),
+                "user.example.com".to_string()
+            ]
+        );
+    }
+
+    /// Same additive `[a, b, user]` order for `extraWatchPaths`.
+    #[test]
+    fn preset_additive_extra_watch_paths_order_a_b_user() {
+        let cfg = merge_presets_to_config(
+            vec![
+                serde_json::json!({ "extraWatchPaths": ["/abs/a"] }),
+                serde_json::json!({ "extraWatchPaths": ["/abs/b"] }),
+            ],
+            serde_json::json!({ "extraWatchPaths": ["/abs/user"] }),
+        );
+        let paths: Vec<&str> = cfg
+            .extra_watch_paths
+            .iter()
+            .map(|p| p.to_str().unwrap())
+            .collect();
+        assert_eq!(paths, vec!["/abs/a", "/abs/b", "/abs/user"]);
+    }
+
+    /// A `presets` key nested INSIDE a preset object is stripped — never
+    /// recursively expanded (#1196). The inner preset's scalar must NOT leak.
+    #[test]
+    fn preset_nested_presets_key_is_stripped() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "adapter": "outer-adapter",
+                "presets": [{ "adapter": "should-not-appear", "strip_md_ext": true }]
+            })],
+            serde_json::json!({}),
+        );
+        assert_eq!(
+            cfg.adapter.as_deref(),
+            Some("outer-adapter"),
+            "the outer preset's adapter applies"
+        );
+        assert!(
+            !cfg.strip_md_ext,
+            "a nested `presets` key must be stripped, not expanded"
+        );
+    }
+
+    /// Nested arrays are NOT additive: a user `bundle.exclude` wins WHOLE over
+    /// a preset `bundle.exclude` (no concat) — the additive rule is top-level
+    /// only.
+    #[test]
+    fn preset_nested_array_user_wins_not_additive() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "bundle": { "exclude": ["preset-only.tsx"] }
+            })],
+            serde_json::json!({
+                "bundle": { "exclude": ["user-only.tsx"] }
+            }),
+        );
+        assert_eq!(
+            cfg.bundle.unwrap().exclude,
+            Some(vec!["user-only.tsx".to_string()]),
+            "user's bundle.exclude wins whole; nested arrays are not additive"
+        );
+    }
+
+    /// A non-array `presets` (e.g. the malformed TS shape `presets: somePreset()`
+    /// instead of `[somePreset()]`) must be REJECTED, not silently dropped — the
+    /// pre-#1196 typed `presets: Vec<Value>` deserialization rejected it, and the
+    /// Value-layer merge must preserve that (codex review of #1199/#1202).
+    #[test]
+    fn take_presets_rejects_non_array() {
+        // object value → error
+        let mut obj = serde_json::json!({ "presets": { "adapter": "x" } });
+        assert!(
+            take_presets(&mut obj).is_err(),
+            "a non-array `presets` object must be rejected"
+        );
+        // string value → error
+        let mut s = serde_json::json!({ "presets": "nope" });
+        assert!(
+            take_presets(&mut s).is_err(),
+            "a non-array `presets` string must be rejected"
+        );
+        // absent → Ok(None)
+        let mut absent = serde_json::json!({ "adapter": "x" });
+        assert_eq!(
+            take_presets(&mut absent),
+            Ok(None),
+            "absent presets is fine"
+        );
+        // empty array → Ok(None) and the key is stripped
+        let mut empty = serde_json::json!({ "presets": [] });
+        assert_eq!(
+            take_presets(&mut empty),
+            Ok(None),
+            "an empty presets array is no-op"
+        );
+        assert!(
+            empty.get("presets").is_none(),
+            "the empty presets key is removed in place"
+        );
+        // non-empty array → Ok(Some(..))
+        let mut arr = serde_json::json!({ "presets": [{ "adapter": "p" }] });
+        assert_eq!(
+            take_presets(&mut arr).map(|o| o.map(|v| v.len())),
+            Ok(Some(1)),
+            "a non-empty presets array is returned"
+        );
+    }
+
+    /// First-declared preset wins a shared scalar at the Value layer, matching
+    /// the additive-array precedence (`a` before `b`).
+    #[test]
+    fn preset_multi_preset_scalar_first_declared_wins() {
+        let cfg = merge_presets_to_config(
+            vec![
+                serde_json::json!({ "adapter": "adapter-a" }),
+                serde_json::json!({ "adapter": "adapter-b" }),
+            ],
+            serde_json::json!({}),
+        );
+        assert_eq!(
+            cfg.adapter.as_deref(),
+            Some("adapter-a"),
+            "first-declared preset's adapter wins"
+        );
+    }
+
+    /// End-to-end JSON path: the deep-merge holds through the real loader.
     #[tokio::test]
     async fn json_path_preset_markdown_block_deep_merges() {
         let tmp = TempDir::new().unwrap();
