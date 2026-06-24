@@ -89,8 +89,9 @@ pub use pipeline::{
 };
 pub use plan::{ContentNarrowing, PageSelection, RebuildPlan};
 pub use plugin_registries::{
-    AliasEntry, AliasMap, InjectedRoute, InjectedRouteList, SetupCommand, SetupRegistries,
-    SetupRegistryError, VirtualLoaderId, VirtualModuleEntry, VirtualModuleRegistry,
+    AliasEntry, AliasMap, ClientEntry, ClientEntryList, InjectedRoute, InjectedRouteList,
+    SetupCommand, SetupRegistries, SetupRegistryError, VirtualLoaderId, VirtualModuleEntry,
+    VirtualModuleRegistry,
 };
 pub use plugin_runner::{
     annotate_with_plugin_error, extract_plugin_error, resolve_hook_timeout, BuildHookContext,

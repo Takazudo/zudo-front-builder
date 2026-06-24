@@ -542,6 +542,29 @@ pub struct Config {
     /// the JSON / TS form `copyPublicWithBase` 1:1.
     #[serde(default = "default_true")]
     pub copy_public_with_base: bool,
+
+    /// Config presets to merge before validation (#1196).
+    ///
+    /// Each preset is a partial `ZfbConfig`-shaped object. The merge pass
+    /// in `parse_loaded_config` runs BEFORE `validate()` and folds preset
+    /// contributions into the known fields using additive semantics:
+    ///
+    /// - **Array fields** (`plugins`, `collections`, `extraWatchPaths`):
+    ///   preset values are prepended to the main config's values. Presets
+    ///   listed earlier in the array win position (first preset's plugins
+    ///   come first).
+    /// - **Scalar / optional fields**: a preset value fills in only when
+    ///   the main config leaves the field at its zero / default value
+    ///   (i.e. the main config is authoritative; presets act as defaults).
+    ///
+    /// After merging, `presets` is cleared so downstream consumers never
+    /// see it.
+    ///
+    /// The TS form is `presets: [somePreset()]` where `somePreset()`
+    /// returns a `Partial<ZfbConfig>`. `#[serde(rename_all = "camelCase")]`
+    /// deserialises `presets` 1:1.
+    #[serde(default)]
+    pub presets: Vec<serde_json::Value>,
 }
 
 impl Default for Config {
@@ -571,6 +594,7 @@ impl Default for Config {
             output: OutputMode::default(),
             plugin_hook_timeout_secs: None,
             copy_public_with_base: true,
+            presets: Vec::new(),
         }
     }
 }
@@ -1418,6 +1442,21 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
                 e
             )
         })?;
+        // #1196 — merge presets before plugin resolution so preset-contributed
+        // plugins are included in the resolve pass below.
+        if !cfg.presets.is_empty() {
+            let presets = std::mem::take(&mut cfg.presets);
+            for (i, preset_value) in presets.into_iter().enumerate() {
+                let preset: Config = serde_json::from_value(preset_value).map_err(|e| {
+                    anyhow!(
+                        "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
+                        json_path.display(),
+                        e
+                    )
+                })?;
+                merge_preset_into(&mut cfg, preset);
+            }
+        }
         // Issue #211: the JSON config path used to leave every
         // `PluginConfig.resolved_module` at `None`, which made the
         // downstream plugin-host filter silently drop ALL plugins
@@ -1426,6 +1465,7 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
         // entries that name a path on disk; bare specifiers require Node
         // module resolution (not available on the JSON path) and stay
         // `None` with a user-facing warning so the surprise is visible.
+        // This also resolves any plugins contributed by presets above.
         resolve_json_plugin_modules(&mut cfg, dir)
             .with_context(|| format!("resolving plugin paths for {}", json_path.display()))?;
         validate(&cfg, dir).with_context(|| format!("validating {}", json_path.display()))?;
@@ -1472,7 +1512,27 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
 /// every broken entry at once would just delay the same fix (`pnpm install`
 /// or correct the path) by one iteration of the user's edit-build loop.
 fn resolve_json_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
-    for entry in cfg.plugins.iter_mut() {
+    resolve_plugin_modules_where(cfg, dir, |_| true)
+}
+
+/// Like [`resolve_json_plugin_modules`] but only resolves entries that still
+/// have `resolved_module = None`. Used on the TS-load path after the
+/// evaluator's zip-assignment has already filled in the original (top-level)
+/// plugins; preset-contributed plugins are the remaining `None` entries.
+fn resolve_unresolved_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
+    resolve_plugin_modules_where(cfg, dir, |entry| entry.resolved_module.is_none())
+}
+
+/// Core resolver: calls the path / bare-specifier resolution logic for every
+/// plugin entry that satisfies `pred`. Extracted so
+/// [`resolve_json_plugin_modules`] and [`resolve_unresolved_plugin_modules`]
+/// share one implementation.
+fn resolve_plugin_modules_where(
+    cfg: &mut Config,
+    dir: &Path,
+    pred: impl Fn(&PluginConfig) -> bool,
+) -> Result<()> {
+    for entry in cfg.plugins.iter_mut().filter(|e| pred(e)) {
         let name = entry.name.as_str();
         match zfb_config_loader::resolve_plugin_path_to_file_url(name, dir)? {
             Some(url) => {
@@ -1506,15 +1566,21 @@ fn resolve_json_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
 async fn load_from_ts_file(ts_path: &Path, dir: &Path, opts: &LoadOptions) -> Result<Config> {
     let loaded =
         zfb_config_loader::load_from_ts_file(ts_path, dir, &opts.to_loader_options()).await?;
-    parse_loaded_config(loaded, ts_path)
+    parse_loaded_config(loaded, ts_path, dir)
 }
 
 /// Deserialise the evaluated config value into [`Config`] and apply the
 /// resolved plugin module specifiers (one `file://` URL per `plugins[]`
 /// entry, in declaration order).
+///
+/// `dir` is the project root — needed to resolve plugin specifiers that
+/// presets contribute (the TS evaluator only resolves top-level `config.plugins`;
+/// preset-contributed plugins are resolved Rust-side via the same logic used
+/// on the JSON-load path).
 fn parse_loaded_config(
     loaded: zfb_config_loader::LoadedTsConfig,
     ts_path: &Path,
+    dir: &Path,
 ) -> Result<Config> {
     let zfb_config_loader::LoadedTsConfig {
         config: value,
@@ -1530,6 +1596,10 @@ fn parse_loaded_config(
         )
     })?;
 
+    // Zip the TS evaluator's resolved specifiers onto the top-level plugins
+    // first, BEFORE merging presets. Preset-contributed plugins are not in
+    // `resolved` (the evaluator only sees top-level `config.plugins`), so the
+    // count check and zip must run against the original plugin count. (#1196)
     if !resolved.is_empty() && resolved.len() != config.plugins.len() {
         bail!(
             "{}: plugin resolution count mismatch (config has {} plugins, loader resolved {}); \
@@ -1542,7 +1612,99 @@ fn parse_loaded_config(
     for (entry, resolved_specifier) in config.plugins.iter_mut().zip(resolved) {
         entry.resolved_module = Some(resolved_specifier);
     }
+
+    // #1196 — merge presets AFTER the zip so the count guard above sees only
+    // the original top-level plugins. Preset-contributed plugins arrive with
+    // `resolved_module = None`; resolve them Rust-side below.
+    if !config.presets.is_empty() {
+        let presets = std::mem::take(&mut config.presets);
+        for (i, preset_value) in presets.into_iter().enumerate() {
+            let preset: Config = serde_json::from_value(preset_value).map_err(|e| {
+                anyhow!(
+                    "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
+                    ts_path.display(),
+                    e
+                )
+            })?;
+            merge_preset_into(&mut config, preset);
+        }
+        // Resolve any plugin entries that still have `resolved_module = None`
+        // (i.e. those contributed by presets). Mirrors the JSON-load path
+        // resolution so preset plugins load and run on the TS path too.
+        resolve_unresolved_plugin_modules(&mut config, dir).with_context(|| {
+            format!(
+                "{}: resolving plugin paths contributed by presets",
+                ts_path.display()
+            )
+        })?;
+    }
+
     Ok(config)
+}
+
+/// Fold `preset` into `cfg` using additive / default-fill semantics (#1196).
+///
+/// - **Array fields** (`plugins`, `collections`, `extraWatchPaths`,
+///   `allowedHosts`): preset values are prepended so the main config's
+///   explicit entries retain their relative position after the preset's.
+/// - **Scalar / optional fields**: a preset value fills in only when the
+///   main config currently holds the field's default value — the main
+///   config is authoritative, presets act as defaults.
+///
+/// `preset.presets` is intentionally ignored (no recursive expansion).
+fn merge_preset_into(cfg: &mut Config, preset: Config) {
+    // --- additive array fields: preset values prepend ---
+    if !preset.plugins.is_empty() {
+        let mut merged = preset.plugins;
+        merged.extend(std::mem::take(&mut cfg.plugins));
+        cfg.plugins = merged;
+    }
+    if !preset.collections.is_empty() {
+        let mut merged = preset.collections;
+        merged.extend(std::mem::take(&mut cfg.collections));
+        cfg.collections = merged;
+    }
+    if !preset.extra_watch_paths.is_empty() {
+        let mut merged = preset.extra_watch_paths;
+        merged.extend(std::mem::take(&mut cfg.extra_watch_paths));
+        cfg.extra_watch_paths = merged;
+    }
+    if !preset.allowed_hosts.is_empty() {
+        let mut merged = preset.allowed_hosts;
+        merged.extend(std::mem::take(&mut cfg.allowed_hosts));
+        cfg.allowed_hosts = merged;
+    }
+
+    // --- scalar / optional fields: preset fills in defaults only ---
+    let default = Config::default();
+    macro_rules! fill_default {
+        ($field:ident) => {
+            if cfg.$field == default.$field && preset.$field != default.$field {
+                cfg.$field = preset.$field;
+            }
+        };
+    }
+    fill_default!(out_dir);
+    fill_default!(public_dir);
+    fill_default!(host);
+    fill_default!(port);
+    fill_default!(framework);
+    fill_default!(tailwind);
+    fill_default!(prefetch);
+    fill_default!(bundle);
+    fill_default!(adapter);
+    fill_default!(strip_md_ext);
+    fill_default!(base);
+    fill_default!(code_highlight);
+    fill_default!(resolve_markdown_links);
+    fill_default!(trailing_slash);
+    fill_default!(markdown);
+    fill_default!(site);
+    fill_default!(emit_routes_manifest);
+    fill_default!(output);
+    fill_default!(plugin_hook_timeout_secs);
+    fill_default!(copy_public_with_base);
+    // `presets` is never recursively merged.
 }
 
 /// Validate a loaded [`Config`] against the project root `dir`.
@@ -4116,5 +4278,258 @@ mod tests {
         let def = into_directive_def("my-block", &spec);
         assert_eq!(def.kind, DirectiveKind::Container);
         assert!(def.title_from_label); // default true
+    }
+
+    // --- Preset merge tests (#1196) -------------------------------------------
+
+    #[test]
+    fn preset_plugins_prepend_to_main_plugins() {
+        // A preset contributes a plugin; the main config has its own plugin.
+        // The preset plugin should appear BEFORE the main config plugin.
+        let preset = Config {
+            plugins: vec![PluginConfig {
+                name: "preset-plugin".into(),
+                options: serde_json::json!({}),
+                resolved_module: None,
+            }],
+            ..Config::default()
+        };
+        let mut cfg = Config {
+            plugins: vec![PluginConfig {
+                name: "user-plugin".into(),
+                options: serde_json::json!({}),
+                resolved_module: None,
+            }],
+            ..Config::default()
+        };
+        merge_preset_into(&mut cfg, preset);
+        assert_eq!(cfg.plugins.len(), 2);
+        assert_eq!(cfg.plugins[0].name, "preset-plugin");
+        assert_eq!(cfg.plugins[1].name, "user-plugin");
+    }
+
+    #[test]
+    fn preset_scalar_fills_default_only() {
+        // A preset sets `adapter`; the main config leaves it as `None`.
+        // The preset value should fill in.
+        let preset = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
+        let mut cfg = Config::default();
+        merge_preset_into(&mut cfg, preset);
+        assert_eq!(
+            cfg.adapter.as_deref(),
+            Some("@takazudo/zfb-adapter-cloudflare")
+        );
+    }
+
+    #[test]
+    fn main_config_wins_over_preset_scalar() {
+        // The main config already sets `adapter`; the preset should NOT
+        // override it.
+        let preset = Config {
+            adapter: Some("preset-adapter".into()),
+            ..Config::default()
+        };
+        let mut cfg = Config {
+            adapter: Some("user-adapter".into()),
+            ..Config::default()
+        };
+        merge_preset_into(&mut cfg, preset);
+        assert_eq!(cfg.adapter.as_deref(), Some("user-adapter"));
+    }
+
+    #[test]
+    fn preset_collections_prepend() {
+        let preset = Config {
+            collections: vec![CollectionDef {
+                name: "preset-coll".into(),
+                path: "content/preset".into(),
+                schema: None,
+                include: None,
+                exclude: None,
+                id_strip_suffix: None,
+            }],
+            ..Config::default()
+        };
+        let mut cfg = Config {
+            collections: vec![CollectionDef {
+                name: "user-coll".into(),
+                path: "content/user".into(),
+                schema: None,
+                include: None,
+                exclude: None,
+                id_strip_suffix: None,
+            }],
+            ..Config::default()
+        };
+        merge_preset_into(&mut cfg, preset);
+        assert_eq!(cfg.collections.len(), 2);
+        assert_eq!(cfg.collections[0].name, "preset-coll");
+        assert_eq!(cfg.collections[1].name, "user-coll");
+    }
+
+    #[test]
+    fn preset_deserialization_from_json_value() {
+        // Verify the end-to-end serde roundtrip: a `serde_json::Value`
+        // carrying a preset can be deserialized into `Config` (which is
+        // what `parse_loaded_config` does for each preset entry).
+        let preset_value = serde_json::json!({
+            "plugins": [{ "name": "my-preset-plugin", "options": {} }],
+            "adapter": "@takazudo/zfb-adapter-cloudflare",
+        });
+        let preset: Config = serde_json::from_value(preset_value).unwrap();
+        assert_eq!(preset.plugins.len(), 1);
+        assert_eq!(preset.plugins[0].name, "my-preset-plugin");
+        assert_eq!(
+            preset.adapter.as_deref(),
+            Some("@takazudo/zfb-adapter-cloudflare")
+        );
+    }
+
+    // --- Preset plugin resolution tests (#1196 Bug 1 fix) ---------------------
+
+    /// TS-path preset plugin gets `resolved_module` populated Rust-side.
+    ///
+    /// Regression guard for Bug 1 / Bug 1-residual: the TS evaluator only
+    /// resolves top-level `config.plugins`; preset-contributed plugins must
+    /// be resolved by the Rust side after the preset merge, or they would be
+    /// silently dropped by the plugin-host filter.
+    #[tokio::test]
+    async fn ts_path_preset_plugin_is_resolved() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create the plugin file so the path resolver can find it.
+        let plugin_path = tmp.path().join("preset-plugin.mjs");
+        tokio::fs::write(&plugin_path, "export default {};\n")
+            .await
+            .unwrap();
+
+        tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+
+        // The envelope the TS evaluator (mocked) returns: top-level config has
+        // no plugins of its own; the preset contributes one via `./preset-plugin.mjs`.
+        // The `plugins: []` key in the envelope only lists top-level plugin
+        // resolutions — the preset plugin is not listed there.
+        let opts = LoadOptions {
+            test_default_export_json: Some(
+                serde_json::json!({
+                    "config": {
+                        "presets": [
+                            { "plugins": [{ "name": "./preset-plugin.mjs" }] }
+                        ]
+                    },
+                    "plugins": []
+                })
+                .to_string(),
+            ),
+            ..LoadOptions::default()
+        };
+
+        let cfg = load_from_dir_with_options(tmp.path(), &opts)
+            .await
+            .expect("preset plugin on TS path should resolve without error");
+
+        assert_eq!(
+            cfg.plugins.len(),
+            1,
+            "preset plugin must appear in merged config"
+        );
+        assert_eq!(cfg.plugins[0].name, "./preset-plugin.mjs");
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("preset plugin must have resolved_module populated (not None)");
+        assert!(
+            resolved.starts_with("file://"),
+            "resolved_module must be a file:// URL, got {resolved:?}"
+        );
+    }
+
+    /// JSON-path preset plugin gets `resolved_module` populated.
+    ///
+    /// Regression guard for Bug 2: `presets[]` in `zfb.config.json` were
+    /// previously parsed but never merged — their plugins were silently discarded.
+    #[tokio::test]
+    async fn json_path_preset_plugin_is_resolved() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create the plugin file so the path resolver can find it.
+        let plugin_path = tmp.path().join("preset-plugin.mjs");
+        tokio::fs::write(&plugin_path, "export default {};\n")
+            .await
+            .unwrap();
+
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "presets": [
+                    { "plugins": [{ "name": "./preset-plugin.mjs" }] }
+                ]
+            }"#,
+        )
+        .await
+        .unwrap();
+
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("preset plugin on JSON path should resolve without error");
+
+        assert_eq!(
+            cfg.plugins.len(),
+            1,
+            "preset plugin must appear in merged config"
+        );
+        assert_eq!(cfg.plugins[0].name, "./preset-plugin.mjs");
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("preset plugin must have resolved_module populated (not None)");
+        assert!(
+            resolved.starts_with("file://"),
+            "resolved_module must be a file:// URL, got {resolved:?}"
+        );
+        // Verify the resolved URL actually points at our plugin file.
+        let parsed = url::Url::parse(resolved).expect("valid url");
+        let parsed_path = parsed.to_file_path().expect("file:// URL round-trips");
+        assert_eq!(parsed_path, plugin_path.canonicalize().unwrap());
+    }
+
+    /// TS-path preset scalar field fills in when the main config leaves it default.
+    ///
+    /// Smoke-test that non-plugin preset fields also flow through correctly on
+    /// the TS path (regression guard for Bug 1 ordering — the merge used to run
+    /// before the zip-assignment, corrupting the plugin count check).
+    #[tokio::test]
+    async fn ts_path_preset_scalar_fills_in() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+        let opts = LoadOptions {
+            test_default_export_json: Some(
+                serde_json::json!({
+                    "config": {
+                        "presets": [
+                            { "adapter": "@takazudo/zfb-adapter-cloudflare" }
+                        ]
+                    },
+                    "plugins": []
+                })
+                .to_string(),
+            ),
+            ..LoadOptions::default()
+        };
+        let cfg = load_from_dir_with_options(tmp.path(), &opts)
+            .await
+            .expect("preset scalar on TS path should be applied");
+        assert_eq!(
+            cfg.adapter.as_deref(),
+            Some("@takazudo/zfb-adapter-cloudflare"),
+            "preset adapter must fill in when main config leaves it absent"
+        );
     }
 }

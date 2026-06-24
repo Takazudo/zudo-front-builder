@@ -485,6 +485,26 @@ export type ZfbConfig = {
    * Mirrors `Config::output` in crates/zfb/src/config.rs.
    */
   output?: OutputMode;
+
+  /**
+   * Config presets to merge before validation (#1196).
+   *
+   * Each preset is a partial `ZfbConfig`-shaped object. The merge pass runs
+   * BEFORE field validation and folds preset contributions using additive
+   * semantics:
+   *
+   * - **Array fields** (`plugins`, `collections`, `extraWatchPaths`,
+   *   `allowedHosts`): preset values are prepended so the main config's
+   *   entries retain their relative position after the preset's.
+   * - **Scalar / optional fields**: a preset value fills in only when the
+   *   main config leaves the field at its default — the main config is
+   *   authoritative; presets act as defaults.
+   *
+   * Nested `presets` inside a preset are NOT recursively expanded.
+   *
+   * Mirrors `Config::presets` in crates/zfb/src/config.rs.
+   */
+  presets?: Partial<ZfbConfig>[];
 };
 
 /**

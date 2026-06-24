@@ -266,6 +266,28 @@ export type ZfbSetupContext = {
    * `InjectRouteConflict`.
    */
   injectRoute(pattern: string, entrypoint: string, opts?: { prerender?: boolean }): void;
+
+  /**
+   * Register a package-owned client-side side-effect entry (#1196).
+   *
+   * `entrypoint` must point to a `*.client.{ts,tsx,js,jsx}` file. The
+   * entry name is derived from the filename stem minus `.client`
+   * (e.g. `my-lib.client.ts` → `my-lib`), following the same convention
+   * as user-authored `*.client.*` files.
+   *
+   * The entry is bundled and shipped as
+   * `/assets/client/<name>.js` (stable URL) / `/assets/client/<name>-<hash>.js`
+   * (production, hashed). User-authored files win on name collision —
+   * the registered entry is silently dropped when a user-authored file of
+   * the same name exists in the discovery roots.
+   *
+   * Two plugins registering the same entry name with different entrypoints
+   * raises `ClientEntryConflict` and aborts the build.
+   *
+   * `entrypoint` is resolved relative to the project root if given as a
+   * relative path (same rule as `injectRoute`).
+   */
+  addClientEntry(entrypoint: string): void;
 };
 
 /**
