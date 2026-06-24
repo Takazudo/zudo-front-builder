@@ -70,6 +70,11 @@ pub(crate) struct MaterializedRoute {
     /// Path under the overlay `pages/` dir (`preset-page.tsx`,
     /// `blog/[slug].tsx`).
     pub(crate) pages_rel: PathBuf,
+    /// Absolute path of the package's REAL entrypoint module (#1191 review,
+    /// codex P1). The islands seed walks this real file — not the overlay
+    /// copy — so a `"use client"` component the package page imports resolves
+    /// against the entrypoint's real location and ships in the islands bundle.
+    pub(crate) entrypoint: PathBuf,
 }
 
 /// Result of resolving the build pages root.
@@ -211,6 +216,7 @@ pub(crate) fn resolve_build_pages_root(
         materialized.push(MaterializedRoute {
             pattern: route.pattern.clone(),
             pages_rel: pages_rel.clone(),
+            entrypoint: route.entrypoint.clone(),
         });
     }
 
