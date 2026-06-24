@@ -957,7 +957,7 @@ impl Default for TailwindConfig {
 /// on default builds, `crates/zfb/js/config-loader.mjs` subprocess on
 /// slim builds) emits a `{ config, plugins }` envelope where `plugins[i]`
 /// is the absolute module specifier for `config.plugins[i].name`.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct PluginConfig {
     pub name: String,
     #[serde(default)]
@@ -967,6 +967,20 @@ pub struct PluginConfig {
     /// for JSON-only configs and synthetic test configs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_module: Option<String>,
+    /// Provenance marker: the npm package name of the preset that
+    /// contributed this plugin, stamped at authoring time by
+    /// `definePreset(sourcePackage, config)` (#1215). `None` for
+    /// top-level (non-preset) plugins.
+    ///
+    /// The serde key is verbatim `source_package` (snake_case) — it must
+    /// match the literal `definePreset` stamps onto each preset plugin
+    /// object, and `PluginConfig` carries no `#[serde(rename_all)]`. The
+    /// marker is per-plugin data: it rides the Value-layer preset array
+    /// concat untouched (no merge-code change), then Rust resolves the
+    /// package name to the preset's installed dir and anchors plugin
+    /// resolution preset-dir-first (#1216).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_package: Option<String>,
 }
 
 // --- markdown / GFM config -------------------------------------------------
@@ -1562,6 +1576,49 @@ fn resolve_unresolved_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()>
     resolve_plugin_modules_where(cfg, dir, true, |entry| entry.resolved_module.is_none())
 }
 
+/// Resolve a single plugin entry against the **project root** `dir` and write
+/// the resulting `file://` URL onto `entry.resolved_module`. This is today's
+/// project-root resolution path verbatim, including T2's `from_preset` clearer
+/// error wording — extracted so [`resolve_plugin_modules_where`] can reuse it
+/// both for marker-less plugins and as the graceful-degradation fallback when a
+/// preset package's own dir cannot be resolved (#1216).
+fn resolve_plugin_at_project_root(
+    entry: &mut PluginConfig,
+    dir: &Path,
+    from_preset: bool,
+) -> Result<()> {
+    let name = entry.name.as_str();
+    match zfb_config_loader::resolve_plugin_path_to_file_url(name, dir)? {
+        Some(url) => {
+            entry.resolved_module = Some(url);
+        }
+        None => {
+            // Bare specifier — resolve via oxc_resolver (issue #211 fix).
+            // Hard error if the package is not installed so the user gets
+            // a clear signal rather than silent plugin-drop.
+            let file_url =
+                zfb_config_loader::resolve_node_bare_specifier(name, dir).with_context(|| {
+                    if from_preset {
+                        format!(
+                            "plugin {:?} (contributed by a preset): package not found \
+                             in node_modules under {:?} — add the package to your \
+                             project's dependencies and run `pnpm install`",
+                            name, dir,
+                        )
+                    } else {
+                        format!(
+                            "plugin {:?}: package not found in node_modules \
+                             (did you run `pnpm install`?)",
+                            name
+                        )
+                    }
+                })?;
+            entry.resolved_module = Some(file_url);
+        }
+    }
+    Ok(())
+}
+
 /// Core resolver: calls the path / bare-specifier resolution logic for every
 /// plugin entry that satisfies `pred`. Extracted so
 /// [`resolve_json_plugin_modules`] and [`resolve_unresolved_plugin_modules`]
@@ -1571,6 +1628,11 @@ fn resolve_unresolved_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()>
 /// specifier cannot be found in `node_modules`. Pass `true` on the
 /// preset/unresolved pass (TS path after merge) so the user knows the missing
 /// package was contributed by a preset and knows where to look to fix it.
+///
+/// Provenance-aware (#1216): an entry carrying a `source_package` marker (a
+/// preset packaged as a real npm dependency, stamped by `definePreset`, #1215)
+/// is resolved **preset-dir-first, project-root fallback**. An entry without a
+/// marker keeps today's project-root resolution exactly.
 fn resolve_plugin_modules_where(
     cfg: &mut Config,
     dir: &Path,
@@ -1578,36 +1640,59 @@ fn resolve_plugin_modules_where(
     pred: impl Fn(&PluginConfig) -> bool,
 ) -> Result<()> {
     for entry in cfg.plugins.iter_mut().filter(|e| pred(e)) {
-        let name = entry.name.as_str();
-        match zfb_config_loader::resolve_plugin_path_to_file_url(name, dir)? {
-            Some(url) => {
-                entry.resolved_module = Some(url);
-            }
-            None => {
-                // Bare specifier — resolve via oxc_resolver (issue #211 fix).
-                // Hard error if the package is not installed so the user gets
-                // a clear signal rather than silent plugin-drop.
-                let file_url = zfb_config_loader::resolve_node_bare_specifier(name, dir)
-                    .with_context(|| {
-                        if from_preset {
+        // Owned so the error closures below can capture it while
+        // `resolve_plugin_at_project_root` takes `&mut entry`.
+        let name = entry.name.clone();
+        let name = name.as_str();
+
+        // Provenance-aware path (#1216): a plugin contributed by a preset
+        // packaged as a real npm dependency (`definePreset(sourcePackage, …)`,
+        // #1215) carries the preset's own package name in `source_package`.
+        // Such plugins (relative `./search.js`, or a non-hoisted bare dep of
+        // the preset) must resolve against the **preset's installed dir
+        // first**, falling back to the project root. Resolve the package name
+        // to its dir via T1's `resolve_package_dir`, then anchor-resolve via
+        // T1's two-anchor helper (preset dir preferred, project root fallback).
+        if let Some(pkg) = entry.source_package.clone() {
+            match zfb_config_loader::resolve_package_dir(&pkg, dir) {
+                Ok(preset_dir) => {
+                    let file_url =
+                        zfb_config_loader::resolve_plugin_from_anchors(name, &preset_dir, dir)
+                            .with_context(|| {
+                                format!(
+                                    "plugin {name:?} (contributed by preset {pkg:?}): not found \
+                                     in the preset's package dir ({}) nor in node_modules under \
+                                     {dir:?} — ensure the preset ships the plugin or add the \
+                                     package to your project's dependencies and run `pnpm install`",
+                                    preset_dir.display(),
+                                )
+                            })?;
+                    entry.resolved_module = Some(file_url);
+                }
+                Err(pkg_dir_err) => {
+                    // The preset package itself could not be resolved from the
+                    // project root (e.g. the documented exports-hides-package.json
+                    // edge). Degrade gracefully to today's project-root resolution
+                    // rather than hard-failing on the package-dir step; only if
+                    // THAT also fails do we surface the clearer error, extended
+                    // with the preset package name and the package-dir failure.
+                    resolve_plugin_at_project_root(entry, dir, from_preset).with_context(
+                        || {
                             format!(
-                                "plugin {:?} (contributed by a preset): package not found \
-                                 in node_modules under {:?} — add the package to your \
-                                 project's dependencies and run `pnpm install`",
-                                name,
-                                dir,
+                                "plugin {name:?} (contributed by preset {pkg:?}): the preset's \
+                                 own package dir could not be resolved ({pkg_dir_err:#}), and \
+                                 resolution against the project root failed too"
                             )
-                        } else {
-                            format!(
-                                "plugin {:?}: package not found in node_modules \
-                                 (did you run `pnpm install`?)",
-                                name
-                            )
-                        }
-                    })?;
-                entry.resolved_module = Some(file_url);
+                        },
+                    )?;
+                }
             }
+            continue;
         }
+
+        // No provenance marker — keep today's project-root resolution exactly,
+        // including T2's clearer error on the `from_preset` path.
+        resolve_plugin_at_project_root(entry, dir, from_preset)?;
     }
     Ok(())
 }
@@ -4755,6 +4840,319 @@ mod tests {
         assert!(
             msg.contains("pnpm install"),
             "error must include the recovery hint; got:\n{msg}"
+        );
+    }
+
+    // --- T4 provenance marker (#1216) ----------------------------------------
+
+    /// Step 2: the `source_package` provenance marker is per-plugin data, so it
+    /// must ride the Value-layer preset array concat untouched — through
+    /// `build_preset_defaults` / `fold_next_preset` / `merge_object` (additive
+    /// concat) and the final `from_value::<Config>` — with NO merge-code change.
+    /// `Config` has no `deny_unknown_fields`; once the field exists it
+    /// round-trips cleanly.
+    #[test]
+    fn source_package_marker_survives_value_layer_preset_merge() {
+        // Two presets each contribute a marked plugin; the user adds an
+        // unmarked plugin. The additive concat must yield
+        // [presetA(marked), presetB(marked), user(unmarked)] with every
+        // marker preserved verbatim.
+        let presets = vec![
+            serde_json::json!({
+                "plugins": [
+                    { "name": "./a.mjs", "source_package": "@scope/zfb-preset-a" }
+                ]
+            }),
+            serde_json::json!({
+                "plugins": [
+                    { "name": "b-bare", "source_package": "@scope/zfb-preset-b" }
+                ]
+            }),
+        ];
+        let user = serde_json::json!({
+            "plugins": [{ "name": "./user.mjs" }]
+        });
+
+        let cfg = merge_presets_to_config(presets, user);
+
+        assert_eq!(cfg.plugins.len(), 3, "additive concat keeps all three");
+        // Declared order: presetA, presetB, then user.
+        assert_eq!(cfg.plugins[0].name, "./a.mjs");
+        assert_eq!(
+            cfg.plugins[0].source_package.as_deref(),
+            Some("@scope/zfb-preset-a"),
+            "preset A marker must survive the merge untouched"
+        );
+        assert_eq!(cfg.plugins[1].name, "b-bare");
+        assert_eq!(
+            cfg.plugins[1].source_package.as_deref(),
+            Some("@scope/zfb-preset-b"),
+            "preset B marker must survive the merge untouched"
+        );
+        assert_eq!(cfg.plugins[2].name, "./user.mjs");
+        assert_eq!(
+            cfg.plugins[2].source_package, None,
+            "a top-level (non-preset) plugin carries no marker"
+        );
+    }
+
+    /// Step 3: regression guard for the zip-by-index + count guard
+    /// (parse_loaded_config, ~1653-1665). A config with top-level plugins AND a
+    /// preset contributing plugins must resolve without tripping the
+    /// count-mismatch bail. The new `source_package` field is
+    /// `skip_serializing_if` and only ever set on preset (post-zip) plugins —
+    /// which are not in `resolved` and prepend after the zip — so the guard
+    /// keying on `top_level_plugin_count` is unaffected.
+    #[tokio::test]
+    async fn count_guard_holds_with_presets_present() {
+        let tmp = TempDir::new().unwrap();
+        // Top-level plugin file + preset plugin file both present at project root.
+        for name in ["top.mjs", "from-preset.mjs"] {
+            tokio::fs::write(tmp.path().join(name), "export default {};\n")
+                .await
+                .unwrap();
+        }
+        tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+
+        // Envelope: ONE top-level plugin (so `plugins: [<one resolved url>]`),
+        // plus a preset contributing one more. The count guard anchors on the
+        // ONE top-level plugin; the preset plugin prepends after the zip and is
+        // not in `resolved`.
+        let opts = LoadOptions {
+            test_default_export_json: Some(
+                serde_json::json!({
+                    "config": {
+                        "plugins": [{ "name": "./top.mjs" }],
+                        "presets": [
+                            { "plugins": [{ "name": "./from-preset.mjs" }] }
+                        ]
+                    },
+                    "plugins": ["file:///already/resolved/top.mjs"]
+                })
+                .to_string(),
+            ),
+            ..LoadOptions::default()
+        };
+
+        let cfg = load_from_dir_with_options(tmp.path(), &opts)
+            .await
+            .expect("top-level + preset plugins must resolve without count-mismatch bail");
+
+        // Declared order after additive prepend: [preset…, top-level…].
+        assert_eq!(cfg.plugins.len(), 2, "both plugins present, none dropped");
+        assert_eq!(cfg.plugins[0].name, "./from-preset.mjs");
+        assert_eq!(cfg.plugins[1].name, "./top.mjs");
+        // The top-level plugin kept the evaluator-zipped resolution; the preset
+        // plugin was resolved Rust-side.
+        assert_eq!(
+            cfg.plugins[1].resolved_module.as_deref(),
+            Some("file:///already/resolved/top.mjs"),
+            "top-level plugin keeps its zipped resolved_module"
+        );
+        assert!(
+            cfg.plugins[0]
+                .resolved_module
+                .as_deref()
+                .is_some_and(|u| u.starts_with("file://")),
+            "preset plugin gets resolved Rust-side"
+        );
+    }
+
+    /// Build a minimal `node_modules/` tree mirroring the T1
+    /// `node-modules-nested` fixture, inline, so this crate's tests can prove
+    /// the provenance marker drives preset-dir-first resolution end-to-end.
+    ///
+    /// Layout under `<root>`:
+    /// ```text
+    /// node_modules/@scope/zfb-preset-example/
+    ///     package.json (exports "." conditional + "./package.json")
+    ///     search.js                         ← relative plugin inside preset
+    ///     dist/index.mjs
+    ///     node_modules/zfb-plugin-nested/    ← bare dep nested in the preset
+    ///         package.json, dist/index.mjs
+    /// ```
+    /// Returns the project root (the tmp dir). Caller keeps `TempDir` alive.
+    fn build_inline_preset_node_modules(root: &std::path::Path) {
+        use std::fs;
+        let preset = root
+            .join("node_modules")
+            .join("@scope")
+            .join("zfb-preset-example");
+        fs::create_dir_all(preset.join("dist")).unwrap();
+        fs::write(
+            preset.join("package.json"),
+            r#"{
+              "name": "@scope/zfb-preset-example",
+              "version": "0.1.0",
+              "type": "module",
+              "exports": {
+                ".": { "import": "./dist/index.mjs", "default": "./dist/index.mjs" },
+                "./package.json": "./package.json"
+              },
+              "main": "./dist/index.mjs"
+            }"#,
+        )
+        .unwrap();
+        fs::write(preset.join("dist").join("index.mjs"), "export default {};\n").unwrap();
+        // Relative plugin bundled inside the preset (NOT at the project root).
+        fs::write(preset.join("search.js"), "export default {};\n").unwrap();
+
+        // Bare dep nested inside the preset's own node_modules (NOT hoisted to
+        // the project root).
+        let nested = preset.join("node_modules").join("zfb-plugin-nested");
+        fs::create_dir_all(nested.join("dist")).unwrap();
+        fs::write(
+            nested.join("package.json"),
+            r#"{
+              "name": "zfb-plugin-nested",
+              "version": "0.1.0",
+              "type": "module",
+              "exports": { ".": { "import": "./dist/index.mjs", "default": "./dist/index.mjs" } },
+              "main": "./dist/index.mjs"
+            }"#,
+        )
+        .unwrap();
+        fs::write(nested.join("dist").join("index.mjs"), "export default {};\n").unwrap();
+    }
+
+    /// Step 4 (relative-path case): a preset-contributed plugin whose name is a
+    /// relative path (`./search.js`) and which carries a `source_package`
+    /// marker resolves against the PRESET dir — the file lives only inside the
+    /// preset package, NOT at the project root.
+    #[test]
+    fn marker_anchors_relative_preset_plugin_at_preset_dir() {
+        let tmp = TempDir::new().unwrap();
+        build_inline_preset_node_modules(tmp.path());
+
+        let mut cfg = Config {
+            plugins: vec![PluginConfig {
+                name: "./search.js".into(),
+                source_package: Some("@scope/zfb-preset-example".into()),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
+
+        resolve_unresolved_plugin_modules(&mut cfg, tmp.path())
+            .expect("marked relative preset plugin must resolve from the preset dir");
+
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("resolved_module populated");
+        assert!(
+            resolved.starts_with("file://"),
+            "expected file:// URL, got {resolved}"
+        );
+        assert!(
+            resolved.ends_with("/search.js"),
+            "must resolve to search.js, got {resolved}"
+        );
+        assert!(
+            resolved.contains("zfb-preset-example"),
+            "must resolve INSIDE the preset dir, got {resolved}"
+        );
+    }
+
+    /// Step 4 (bare-dep case): a preset-contributed bare plugin
+    /// (`zfb-plugin-nested`) installed only inside the preset's own
+    /// `node_modules` (not hoisted to the project root) resolves from the
+    /// preset dir because of the `source_package` marker.
+    #[test]
+    fn marker_anchors_bare_preset_plugin_at_preset_node_modules() {
+        let tmp = TempDir::new().unwrap();
+        build_inline_preset_node_modules(tmp.path());
+
+        let mut cfg = Config {
+            plugins: vec![PluginConfig {
+                name: "zfb-plugin-nested".into(),
+                source_package: Some("@scope/zfb-preset-example".into()),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
+
+        resolve_unresolved_plugin_modules(&mut cfg, tmp.path())
+            .expect("marked bare preset plugin must resolve from the preset's node_modules");
+
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("resolved_module populated");
+        assert!(
+            resolved.contains("zfb-plugin-nested"),
+            "must resolve to the nested plugin, got {resolved}"
+        );
+        assert!(
+            resolved.contains("zfb-preset-example"),
+            "nested plugin lives under the preset dir, got {resolved}"
+        );
+    }
+
+    /// Step 4 (graceful degradation): when `source_package` names a package
+    /// that cannot be resolved from the project root, resolution degrades to
+    /// today's project-root path rather than hard-failing on the package-dir
+    /// step. Here the plugin file itself IS present at the project root, so the
+    /// fallback succeeds.
+    #[test]
+    fn marker_degrades_to_project_root_when_package_dir_unresolvable() {
+        let tmp = TempDir::new().unwrap();
+        // Plugin file present at project root; the named source package is NOT
+        // installed (no node_modules entry), so resolve_package_dir errors.
+        std::fs::write(tmp.path().join("local.mjs"), "export default {};\n").unwrap();
+
+        let mut cfg = Config {
+            plugins: vec![PluginConfig {
+                name: "./local.mjs".into(),
+                source_package: Some("@scope/not-installed-preset".into()),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
+
+        resolve_unresolved_plugin_modules(&mut cfg, tmp.path())
+            .expect("must degrade to project-root resolution when preset dir is unresolvable");
+
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("resolved_module populated via project-root fallback");
+        assert!(
+            resolved.ends_with("/local.mjs"),
+            "must resolve the project-root file, got {resolved}"
+        );
+    }
+
+    /// Step 4 (degradation error path): when the preset package dir is
+    /// unresolvable AND project-root resolution also fails, the surfaced error
+    /// names the preset package and states the preset dir could not be
+    /// resolved.
+    #[test]
+    fn marker_degradation_error_names_preset_and_dir_failure() {
+        let tmp = TempDir::new().unwrap();
+        // No plugin file, no installed package — both the package-dir step and
+        // the project-root fallback fail.
+        let mut cfg = Config {
+            plugins: vec![PluginConfig {
+                name: "ghost-plugin".into(),
+                source_package: Some("@scope/missing-preset".into()),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
+
+        let err = resolve_unresolved_plugin_modules(&mut cfg, tmp.path())
+            .expect_err("both package-dir and project-root resolution fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("@scope/missing-preset"),
+            "error must name the preset package, got:\n{msg}"
+        );
+        assert!(
+            msg.contains("package dir could not be resolved"),
+            "error must state the preset dir could not be resolved, got:\n{msg}"
         );
     }
 
