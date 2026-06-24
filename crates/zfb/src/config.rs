@@ -5836,4 +5836,470 @@ mod tests {
             "the user's explicit adapter must beat every preset"
         );
     }
+
+    // --- T5 preset-provenance end-to-end tests (#1217) -----------------------
+
+    /// T5.1 — CONFIRM (real capture-chain): the `definePreset(sourcePackage, …)`
+    /// string literal survives esbuild bundling and V8 evaluation end-to-end.
+    ///
+    /// This is the authoritative proof that provenance flows all the way from
+    /// `zfb.config.ts` (imports a preset that calls `definePreset`) → esbuild
+    /// bundle (alias rewrites `@takazudo/zfb/config` to the stub) → V8 eval
+    /// (stub stamps `source_package`) → Rust resolver (anchors at preset dir).
+    ///
+    /// Gated on `embed_v8` (the default feature). CI has V8 compiled in, so
+    /// this test runs in `cargo test -p zfb` at the PR gate without `#[ignore]`.
+    /// The slim-build path (no V8) uses the node subprocess instead, which has
+    /// the same esbuild alias and identical stub — the capture chain is the same;
+    /// only the evaluator differs. That path is not exercised here (blind spot
+    /// documented below).
+    ///
+    /// **Blind spot:** the slim-build (`--no-default-features`) subprocess path
+    /// is NOT exercised by this test. It shares the same esbuild alias and stub,
+    /// so the capture logic is identical; the only difference is the JS evaluator
+    /// (node vs V8). Coverage would require a node-available test environment
+    /// running without the `embed_v8` feature; that is deferred as a T3 item.
+    #[cfg(feature = "embed_v8")]
+    #[tokio::test]
+    async fn e2e_capture_chain_define_preset_source_package_survives_esbuild_v8() {
+        use std::fs;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // --- Stage the preset package in <root>/node_modules ---
+        //
+        // Package: @scope/zfb-preset-e2e
+        // It contains:
+        //   - package.json   (with exports so resolve_package_dir can find it)
+        //   - e2e-plugin.mjs (the relative plugin contributed by the preset)
+        //   - dist/index.mjs (the preset's main export, imports from
+        //                     @takazudo/zfb/config and calls definePreset)
+        //
+        // esbuild runs with --alias:@takazudo/zfb/config=<stub>, so the preset's
+        // `import { definePreset } from "@takazudo/zfb/config"` is rewritten to
+        // the stub at bundle time. The stub stamps each plugin with
+        // `source_package: "@scope/zfb-preset-e2e"`.
+        let preset_dir = root
+            .join("node_modules")
+            .join("@scope")
+            .join("zfb-preset-e2e");
+        fs::create_dir_all(preset_dir.join("dist")).unwrap();
+
+        // Relative plugin file — only present INSIDE the preset dir, NOT at the
+        // project root. If `source_package` does NOT survive esbuild→V8, the
+        // resolver falls back to project root and fails to find the file (the
+        // file is missing from root), which would cause the load to error.
+        fs::write(
+            preset_dir.join("e2e-plugin.mjs"),
+            "export default {};\n",
+        )
+        .unwrap();
+
+        // preset package.json — needs `exports: { "./package.json" }` so
+        // `resolve_package_dir` (T1) can resolve the package root via oxc_resolver.
+        fs::write(
+            preset_dir.join("package.json"),
+            r#"{
+              "name": "@scope/zfb-preset-e2e",
+              "version": "0.1.0",
+              "type": "module",
+              "exports": {
+                ".": { "import": "./dist/index.mjs", "default": "./dist/index.mjs" },
+                "./package.json": "./package.json"
+              },
+              "main": "./dist/index.mjs"
+            }"#,
+        )
+        .unwrap();
+
+        // Preset entry-point: calls definePreset so the plugin gets stamped.
+        // esbuild will alias `@takazudo/zfb/config` → stub at bundle time.
+        fs::write(
+            preset_dir.join("dist").join("index.mjs"),
+            r#"import { definePreset } from "@takazudo/zfb/config";
+export default definePreset("@scope/zfb-preset-e2e", {
+  plugins: [{ name: "./e2e-plugin.mjs" }],
+});
+"#,
+        )
+        .unwrap();
+
+        // --- User config: imports the preset and spreads it into presets[] ---
+        tokio::fs::write(
+            root.join("zfb.config.ts"),
+            r#"import preset from "@scope/zfb-preset-e2e";
+export default {
+  presets: [preset],
+};
+"#,
+        )
+        .await
+        .unwrap();
+
+        // Load via the REAL esbuild + V8 path (no test_default_export_json override).
+        let cfg = load_from_dir(root)
+            .await
+            .expect("e2e preset-provenance config must load successfully");
+
+        // The preset contributes one plugin. It should be present in the merged config.
+        assert_eq!(
+            cfg.plugins.len(),
+            1,
+            "preset-contributed plugin must appear in merged config"
+        );
+        assert_eq!(
+            cfg.plugins[0].name, "./e2e-plugin.mjs",
+            "plugin name must match the preset's declaration"
+        );
+
+        // The plugin must be resolved — and it must resolve to the PRESET dir,
+        // not the project root (the file only exists inside the preset package).
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("plugin must have resolved_module populated (source_package survived bundling)");
+
+        assert!(
+            resolved.starts_with("file://"),
+            "resolved_module must be a file:// URL, got {resolved:?}"
+        );
+        assert!(
+            resolved.contains("zfb-preset-e2e"),
+            "resolved_module must point into the preset package dir, got {resolved:?}"
+        );
+        assert!(
+            resolved.ends_with("/e2e-plugin.mjs"),
+            "resolved_module must name the plugin file, got {resolved:?}"
+        );
+
+        // Canonicalize to handle macOS /tmp → /private/tmp redirect.
+        let resolved_path = url::Url::parse(resolved)
+            .expect("valid file:// URL")
+            .to_file_path()
+            .expect("file URL round-trips to path");
+        let expected_path = preset_dir
+            .join("e2e-plugin.mjs")
+            .canonicalize()
+            .expect("preset plugin file exists and is canonicalisable");
+        assert_eq!(
+            resolved_path.canonicalize().unwrap_or(resolved_path.clone()),
+            expected_path,
+            "resolved_module must point at the preset's e2e-plugin.mjs, not the project root"
+        );
+    }
+
+    /// T5.2 — Rust-threading via envelope: a `source_package`-stamped preset
+    /// plugin injected through `test_default_export_json` (bypasses esbuild+V8,
+    /// tests only the Rust resolver threading) resolves to the preset dir.
+    ///
+    /// Mirrors `ts_path_preset_plugin_is_resolved` but additionally verifies
+    /// that the `source_package` field routes resolution to the preset package
+    /// dir rather than the project root. The plugin file exists ONLY inside the
+    /// preset package; without the provenance routing it would not be found.
+    #[tokio::test]
+    async fn ts_path_source_package_stamped_plugin_resolves_to_preset_dir() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Stage the preset node_modules tree (same helper used by T4 tests).
+        build_inline_preset_node_modules(root);
+
+        // Write a minimal zfb.config.ts (required for the TS load path).
+        tokio::fs::write(root.join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+
+        // Envelope: a preset contributes a plugin with `source_package` stamped.
+        // The plugin file is ONLY inside the preset dir — not at the project root.
+        let opts = LoadOptions {
+            test_default_export_json: Some(
+                serde_json::json!({
+                    "config": {
+                        "presets": [
+                            {
+                                "plugins": [{
+                                    "name": "./search.js",
+                                    "source_package": "@scope/zfb-preset-example"
+                                }]
+                            }
+                        ]
+                    },
+                    "plugins": []
+                })
+                .to_string(),
+            ),
+            ..LoadOptions::default()
+        };
+
+        let cfg = load_from_dir_with_options(root, &opts)
+            .await
+            .expect("source_package-stamped preset plugin must resolve without error");
+
+        assert_eq!(cfg.plugins.len(), 1, "plugin must appear in merged config");
+        assert_eq!(cfg.plugins[0].name, "./search.js");
+
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("resolved_module must be populated");
+        assert!(
+            resolved.starts_with("file://"),
+            "resolved_module must be a file:// URL, got {resolved:?}"
+        );
+        assert!(
+            resolved.contains("zfb-preset-example"),
+            "must resolve INSIDE the preset package dir, got {resolved:?}"
+        );
+        assert!(
+            resolved.ends_with("/search.js"),
+            "must resolve to search.js, got {resolved:?}"
+        );
+
+        // Canonicalize to handle macOS /tmp → /private/tmp redirect.
+        let preset_dir = root
+            .join("node_modules")
+            .join("@scope")
+            .join("zfb-preset-example");
+        let resolved_path = url::Url::parse(resolved)
+            .expect("valid file:// URL")
+            .to_file_path()
+            .expect("file URL round-trips to path");
+        let expected_path = preset_dir
+            .join("search.js")
+            .canonicalize()
+            .expect("preset search.js exists");
+        assert_eq!(
+            resolved_path.canonicalize().unwrap_or(resolved_path.clone()),
+            expected_path,
+            "resolved_module must point at the preset's search.js, not project root"
+        );
+    }
+
+    /// T5.3 — Precedence: when the same plugin file name exists at BOTH the
+    /// project root AND inside the preset dir, the `source_package` marker
+    /// routes resolution to the PRESET copy (preset-dir-first).
+    ///
+    /// Without the provenance marker the project-root copy would win (it is
+    /// found first by the path resolver). With the marker the preset dir is
+    /// tried first, so the preset's copy wins.
+    #[test]
+    fn preset_dir_wins_over_project_root_when_same_name() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Stage the preset tree (includes search.js at preset dir).
+        build_inline_preset_node_modules(root);
+
+        // Also place a file with the SAME name at the project root. Without the
+        // provenance-first routing this project-root file would be resolved.
+        std::fs::write(root.join("search.js"), "// project-root decoy\n").unwrap();
+
+        let mut cfg = Config {
+            plugins: vec![PluginConfig {
+                name: "./search.js".into(),
+                source_package: Some("@scope/zfb-preset-example".into()),
+                ..Default::default()
+            }],
+            ..Config::default()
+        };
+
+        resolve_unresolved_plugin_modules(&mut cfg, root)
+            .expect("preset-dir-first resolution must succeed");
+
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("resolved_module populated");
+
+        assert!(
+            resolved.contains("zfb-preset-example"),
+            "must resolve to the PRESET copy of search.js (not project root), got {resolved:?}"
+        );
+
+        // Verify via canonical paths: the resolved URL must point into the
+        // preset dir, not the project root (handles /tmp → /private/tmp on macOS).
+        let resolved_path = url::Url::parse(resolved)
+            .expect("valid file:// URL")
+            .to_file_path()
+            .expect("file URL to path");
+        let preset_copy = root
+            .join("node_modules")
+            .join("@scope")
+            .join("zfb-preset-example")
+            .join("search.js")
+            .canonicalize()
+            .expect("preset search.js must exist");
+        let project_root_copy = root.join("search.js").canonicalize().expect("project-root search.js must exist");
+
+        assert_eq!(
+            resolved_path.canonicalize().unwrap_or(resolved_path.clone()),
+            preset_copy,
+            "preset copy must win; got {resolved:?}"
+        );
+        assert_ne!(
+            resolved_path.canonicalize().unwrap_or(resolved_path),
+            project_root_copy,
+            "project-root copy must NOT win when source_package is set"
+        );
+    }
+
+    /// T5.4 — Graceful degradation (backward-compat): a preset plugin with NO
+    /// `source_package` marker (e.g. a preset that was not authored with
+    /// `definePreset`, or a JSON-inline preset object) still resolves against
+    /// the project root — the pre-provenance behavior is preserved.
+    #[tokio::test]
+    async fn ts_path_no_source_package_preset_plugin_resolves_at_project_root() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Plugin file at the PROJECT ROOT (no preset node_modules layout).
+        tokio::fs::write(root.join("legacy-plugin.mjs"), "export default {};\n")
+            .await
+            .unwrap();
+        tokio::fs::write(root.join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+
+        // Envelope: preset plugin has no source_package → must fall back to
+        // project-root resolution (the pre-provenance behavior).
+        let opts = LoadOptions {
+            test_default_export_json: Some(
+                serde_json::json!({
+                    "config": {
+                        "presets": [
+                            { "plugins": [{ "name": "./legacy-plugin.mjs" }] }
+                        ]
+                    },
+                    "plugins": []
+                })
+                .to_string(),
+            ),
+            ..LoadOptions::default()
+        };
+
+        let cfg = load_from_dir_with_options(root, &opts)
+            .await
+            .expect("no-source_package preset plugin must resolve at project root");
+
+        assert_eq!(cfg.plugins.len(), 1);
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("resolved_module populated");
+        assert!(
+            resolved.starts_with("file://"),
+            "must be a file:// URL, got {resolved:?}"
+        );
+
+        // Verify the resolved path is the project-root file.
+        let resolved_path = url::Url::parse(resolved)
+            .expect("valid file:// URL")
+            .to_file_path()
+            .expect("file URL round-trips");
+        let expected = root
+            .join("legacy-plugin.mjs")
+            .canonicalize()
+            .expect("project-root plugin must exist");
+        assert_eq!(
+            resolved_path.canonicalize().unwrap_or(resolved_path),
+            expected,
+            "no-source_package preset plugin must resolve at the project root"
+        );
+    }
+
+    /// T5.4b — Graceful degradation (error path): a preset plugin with NO
+    /// `source_package` and an unresolvable specifier surfaces the clearer
+    /// "contributed by a preset" error message (T2 wording).
+    #[tokio::test]
+    async fn ts_path_no_source_package_unresolvable_preset_plugin_yields_preset_error() {
+        let tmp = TempDir::new().unwrap();
+
+        tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+
+        let opts = LoadOptions {
+            test_default_export_json: Some(
+                serde_json::json!({
+                    "config": {
+                        "presets": [
+                            { "plugins": [{ "name": "no-such-pkg-for-t5" }] }
+                        ]
+                    },
+                    "plugins": []
+                })
+                .to_string(),
+            ),
+            ..LoadOptions::default()
+        };
+
+        let err = load_from_dir_with_options(tmp.path(), &opts)
+            .await
+            .expect_err("unresolvable no-marker preset plugin must fail");
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("contributed by a preset"),
+            "error must flag preset origin (T2 wording); got:\n{msg}"
+        );
+        assert!(
+            msg.contains("no-such-pkg-for-t5"),
+            "error must name the specifier; got:\n{msg}"
+        );
+    }
+
+    /// T5.5 — JSON-path coverage: a JSON config's preset (no `definePreset` call,
+    /// so no `source_package` marker) still anchors plugin resolution at the
+    /// project root (unchanged behavior for JSON configs).
+    #[tokio::test]
+    async fn json_path_no_source_package_preset_plugin_resolves_at_project_root() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Plugin lives at the project root only — no preset node_modules.
+        tokio::fs::write(root.join("json-preset-plugin.mjs"), "export default {};\n")
+            .await
+            .unwrap();
+
+        tokio::fs::write(
+            root.join("zfb.config.json"),
+            r#"{
+                "presets": [
+                    { "plugins": [{ "name": "./json-preset-plugin.mjs" }] }
+                ]
+            }"#,
+        )
+        .await
+        .unwrap();
+
+        let cfg = load_from_dir(root)
+            .await
+            .expect("JSON preset with no source_package must load and resolve at project root");
+
+        assert_eq!(cfg.plugins.len(), 1, "preset plugin must be present");
+        let resolved = cfg.plugins[0]
+            .resolved_module
+            .as_deref()
+            .expect("resolved_module populated");
+        assert!(
+            resolved.starts_with("file://"),
+            "must be a file:// URL, got {resolved:?}"
+        );
+
+        // The resolved path must point at the project-root copy.
+        let resolved_path = url::Url::parse(resolved)
+            .expect("valid file:// URL")
+            .to_file_path()
+            .expect("file URL round-trips");
+        let expected = root
+            .join("json-preset-plugin.mjs")
+            .canonicalize()
+            .expect("project-root plugin must exist");
+        assert_eq!(
+            resolved_path.canonicalize().unwrap_or(resolved_path),
+            expected,
+            "JSON-path preset with no source_package must resolve at project root"
+        );
+    }
 }
