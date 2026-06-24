@@ -346,7 +346,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let dev_plugin_virtual_modules = plugin_setup.plugin_virtual_modules;
     // Keep setup_registries in scope for the lifetime of the dev session —
     // the hook entries hold references into it.
-    let _setup_registries = plugin_setup.setup_registries;
+    let setup_registries = plugin_setup.setup_registries;
+    // #1196 — package-registered client entries from addClientEntry.
+    let registered_client_entries = setup_registries.client_entries.clone();
 
     // Issue #1182 — decide whether the eager dev bundle is DEFERRED past
     // `TcpListener::bind`. Only in boot-lazy mode with a servable prebuilt
@@ -687,6 +689,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &dev_assets_root,
         cfg.framework,
         &std::collections::HashSet::new(),
+        &registered_client_entries,
     ) {
         Ok((_, names)) => {
             if let Ok(mut guard) = live_client_script_names.lock() {
@@ -708,6 +711,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let dev_assets_root_for_cs = dev_assets_root.clone();
         let framework = cfg.framework;
         let entry_names = Arc::clone(&live_client_script_names);
+        // #1196 — capture registered entries for the watcher closure.
+        let registered_for_cs = registered_client_entries.clone();
         Some(Arc::new(move || -> Result<bool> {
             let prev = entry_names
                 .lock()
@@ -724,6 +729,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &dev_assets_root_for_cs,
                 framework,
                 &prev,
+                &registered_for_cs,
             )?;
             let mut guard = entry_names.lock().unwrap_or_else(|p| {
                 tracing::warn!(

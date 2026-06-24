@@ -542,6 +542,29 @@ pub struct Config {
     /// the JSON / TS form `copyPublicWithBase` 1:1.
     #[serde(default = "default_true")]
     pub copy_public_with_base: bool,
+
+    /// Config presets to merge before validation (#1196).
+    ///
+    /// Each preset is a partial `ZfbConfig`-shaped object. The merge pass
+    /// in `parse_loaded_config` runs BEFORE `validate()` and folds preset
+    /// contributions into the known fields using additive semantics:
+    ///
+    /// - **Array fields** (`plugins`, `collections`, `extraWatchPaths`):
+    ///   preset values are prepended to the main config's values. Presets
+    ///   listed earlier in the array win position (first preset's plugins
+    ///   come first).
+    /// - **Scalar / optional fields**: a preset value fills in only when
+    ///   the main config leaves the field at its zero / default value
+    ///   (i.e. the main config is authoritative; presets act as defaults).
+    ///
+    /// After merging, `presets` is cleared so downstream consumers never
+    /// see it.
+    ///
+    /// The TS form is `presets: [somePreset()]` where `somePreset()`
+    /// returns a `Partial<ZfbConfig>`. `#[serde(rename_all = "camelCase")]`
+    /// deserialises `presets` 1:1.
+    #[serde(default)]
+    pub presets: Vec<serde_json::Value>,
 }
 
 impl Default for Config {
@@ -571,6 +594,7 @@ impl Default for Config {
             output: OutputMode::default(),
             plugin_hook_timeout_secs: None,
             copy_public_with_base: true,
+            presets: Vec::new(),
         }
     }
 }
@@ -1530,6 +1554,22 @@ fn parse_loaded_config(
         )
     })?;
 
+    // #1196 — merge presets BEFORE validate() so preset-contributed fields
+    // are visible to all validation rules.
+    if !config.presets.is_empty() {
+        let presets = std::mem::take(&mut config.presets);
+        for (i, preset_value) in presets.into_iter().enumerate() {
+            let preset: Config = serde_json::from_value(preset_value).map_err(|e| {
+                anyhow!(
+                    "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
+                    ts_path.display(),
+                    e
+                )
+            })?;
+            merge_preset_into(&mut config, preset);
+        }
+    }
+
     if !resolved.is_empty() && resolved.len() != config.plugins.len() {
         bail!(
             "{}: plugin resolution count mismatch (config has {} plugins, loader resolved {}); \
@@ -1543,6 +1583,71 @@ fn parse_loaded_config(
         entry.resolved_module = Some(resolved_specifier);
     }
     Ok(config)
+}
+
+/// Fold `preset` into `cfg` using additive / default-fill semantics (#1196).
+///
+/// - **Array fields** (`plugins`, `collections`, `extraWatchPaths`,
+///   `allowedHosts`): preset values are prepended so the main config's
+///   explicit entries retain their relative position after the preset's.
+/// - **Scalar / optional fields**: a preset value fills in only when the
+///   main config currently holds the field's default value — the main
+///   config is authoritative, presets act as defaults.
+///
+/// `preset.presets` is intentionally ignored (no recursive expansion).
+fn merge_preset_into(cfg: &mut Config, preset: Config) {
+    // --- additive array fields: preset values prepend ---
+    if !preset.plugins.is_empty() {
+        let mut merged = preset.plugins;
+        merged.extend(std::mem::take(&mut cfg.plugins));
+        cfg.plugins = merged;
+    }
+    if !preset.collections.is_empty() {
+        let mut merged = preset.collections;
+        merged.extend(std::mem::take(&mut cfg.collections));
+        cfg.collections = merged;
+    }
+    if !preset.extra_watch_paths.is_empty() {
+        let mut merged = preset.extra_watch_paths;
+        merged.extend(std::mem::take(&mut cfg.extra_watch_paths));
+        cfg.extra_watch_paths = merged;
+    }
+    if !preset.allowed_hosts.is_empty() {
+        let mut merged = preset.allowed_hosts;
+        merged.extend(std::mem::take(&mut cfg.allowed_hosts));
+        cfg.allowed_hosts = merged;
+    }
+
+    // --- scalar / optional fields: preset fills in defaults only ---
+    let default = Config::default();
+    macro_rules! fill_default {
+        ($field:ident) => {
+            if cfg.$field == default.$field && preset.$field != default.$field {
+                cfg.$field = preset.$field;
+            }
+        };
+    }
+    fill_default!(out_dir);
+    fill_default!(public_dir);
+    fill_default!(host);
+    fill_default!(port);
+    fill_default!(framework);
+    fill_default!(tailwind);
+    fill_default!(prefetch);
+    fill_default!(bundle);
+    fill_default!(adapter);
+    fill_default!(strip_md_ext);
+    fill_default!(base);
+    fill_default!(code_highlight);
+    fill_default!(resolve_markdown_links);
+    fill_default!(trailing_slash);
+    fill_default!(markdown);
+    fill_default!(site);
+    fill_default!(emit_routes_manifest);
+    fill_default!(output);
+    fill_default!(plugin_hook_timeout_secs);
+    fill_default!(copy_public_with_base);
+    // `presets` is never recursively merged.
 }
 
 /// Validate a loaded [`Config`] against the project root `dir`.
@@ -4116,5 +4221,113 @@ mod tests {
         let def = into_directive_def("my-block", &spec);
         assert_eq!(def.kind, DirectiveKind::Container);
         assert!(def.title_from_label); // default true
+    }
+
+    // --- Preset merge tests (#1196) -------------------------------------------
+
+    #[test]
+    fn preset_plugins_prepend_to_main_plugins() {
+        // A preset contributes a plugin; the main config has its own plugin.
+        // The preset plugin should appear BEFORE the main config plugin.
+        let preset = Config {
+            plugins: vec![PluginConfig {
+                name: "preset-plugin".into(),
+                options: serde_json::json!({}),
+                resolved_module: None,
+            }],
+            ..Config::default()
+        };
+        let mut cfg = Config {
+            plugins: vec![PluginConfig {
+                name: "user-plugin".into(),
+                options: serde_json::json!({}),
+                resolved_module: None,
+            }],
+            ..Config::default()
+        };
+        merge_preset_into(&mut cfg, preset);
+        assert_eq!(cfg.plugins.len(), 2);
+        assert_eq!(cfg.plugins[0].name, "preset-plugin");
+        assert_eq!(cfg.plugins[1].name, "user-plugin");
+    }
+
+    #[test]
+    fn preset_scalar_fills_default_only() {
+        // A preset sets `adapter`; the main config leaves it as `None`.
+        // The preset value should fill in.
+        let preset = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
+        let mut cfg = Config::default();
+        merge_preset_into(&mut cfg, preset);
+        assert_eq!(
+            cfg.adapter.as_deref(),
+            Some("@takazudo/zfb-adapter-cloudflare")
+        );
+    }
+
+    #[test]
+    fn main_config_wins_over_preset_scalar() {
+        // The main config already sets `adapter`; the preset should NOT
+        // override it.
+        let preset = Config {
+            adapter: Some("preset-adapter".into()),
+            ..Config::default()
+        };
+        let mut cfg = Config {
+            adapter: Some("user-adapter".into()),
+            ..Config::default()
+        };
+        merge_preset_into(&mut cfg, preset);
+        assert_eq!(cfg.adapter.as_deref(), Some("user-adapter"));
+    }
+
+    #[test]
+    fn preset_collections_prepend() {
+        let preset = Config {
+            collections: vec![CollectionDef {
+                name: "preset-coll".into(),
+                path: "content/preset".into(),
+                schema: None,
+                include: None,
+                exclude: None,
+                id_strip_suffix: None,
+            }],
+            ..Config::default()
+        };
+        let mut cfg = Config {
+            collections: vec![CollectionDef {
+                name: "user-coll".into(),
+                path: "content/user".into(),
+                schema: None,
+                include: None,
+                exclude: None,
+                id_strip_suffix: None,
+            }],
+            ..Config::default()
+        };
+        merge_preset_into(&mut cfg, preset);
+        assert_eq!(cfg.collections.len(), 2);
+        assert_eq!(cfg.collections[0].name, "preset-coll");
+        assert_eq!(cfg.collections[1].name, "user-coll");
+    }
+
+    #[test]
+    fn preset_deserialization_from_json_value() {
+        // Verify the end-to-end serde roundtrip: a `serde_json::Value`
+        // carrying a preset can be deserialized into `Config` (which is
+        // what `parse_loaded_config` does for each preset entry).
+        let preset_value = serde_json::json!({
+            "plugins": [{ "name": "my-preset-plugin", "options": {} }],
+            "adapter": "@takazudo/zfb-adapter-cloudflare",
+        });
+        let preset: Config = serde_json::from_value(preset_value).unwrap();
+        assert_eq!(preset.plugins.len(), 1);
+        assert_eq!(preset.plugins[0].name, "my-preset-plugin");
+        assert_eq!(
+            preset.adapter.as_deref(),
+            Some("@takazudo/zfb-adapter-cloudflare")
+        );
     }
 }

@@ -296,6 +296,14 @@ async function handleSetup(id, msg) {
         }
         registrations.push({ kind: "injectRoute", pattern, entrypoint, prerender });
       },
+      addClientEntry(entrypoint) {
+        if (typeof entrypoint !== "string" || entrypoint.length === 0) {
+          throw new Error(
+            `addClientEntry: \`entrypoint\` must be a non-empty string (got ${JSON.stringify(entrypoint)})`,
+          );
+        }
+        registrations.push({ kind: "addClientEntry", entrypoint });
+      },
     };
     try {
       await fn.call(p.mod, ctx);

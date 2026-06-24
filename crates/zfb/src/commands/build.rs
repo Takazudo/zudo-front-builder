@@ -228,6 +228,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
             runner: &DefaultRunner {
                 islands_plugin_config,
                 v8_plugin_hooks,
+                registered_client_entries: setup_registries.client_entries.clone(),
             },
             adapter_runner: &DefaultAdapterRunner,
             plugin_alias_entries: main_bundler_alias_entries,
@@ -557,6 +558,10 @@ struct DefaultRunner {
     /// `islands_plugin_config` so islands esbuild and the V8 host agree on
     /// the registered aliases / virtual modules.
     v8_plugin_hooks: zfb_render::PluginRegistryHooks,
+    /// Package-owned client-side side-effect entries registered via
+    /// `addClientEntry` during the plugin `setup` hook (#1196). Merged
+    /// into the discovered `*.client.*` set before bundling.
+    registered_client_entries: zfb_build::ClientEntryList,
 }
 #[cfg(feature = "embed_v8")]
 impl BuildRunner for DefaultRunner {
@@ -654,9 +659,13 @@ impl BuildRunner for DefaultRunner {
             &self.islands_plugin_config,
         )
         .context("islands emitter (DefaultRunner) failed")?;
-        let client_scripts =
-            build_default_client_scripts_payloads(project_root, outdir, config.framework)
-                .context("client-script emitters (DefaultRunner) failed")?;
+        let client_scripts = build_default_client_scripts_payloads(
+            project_root,
+            outdir,
+            config.framework,
+            &self.registered_client_entries,
+        )
+        .context("client-script emitters (DefaultRunner) failed")?;
         Ok((
             ProdAssetEmitterInputs {
                 css,
@@ -1349,8 +1358,9 @@ pub(crate) fn build_default_client_scripts_payloads(
     project_root: &Path,
     outdir: &Path,
     framework: crate::config::Framework,
+    registered: &zfb_build::ClientEntryList,
 ) -> Result<Vec<AssetEmitterPayload>> {
-    let (entries, collisions) =
+    let (mut entries, collisions) =
         discover_client_scripts(project_root).context("client-script discovery failed")?;
 
     // Fail loudly on duplicate entry names — mirrors the islands
@@ -1372,6 +1382,25 @@ pub(crate) fn build_default_client_scripts_payloads(
              discovery roots):\n{}",
             details.join("\n")
         ));
+    }
+
+    // #1196 — merge package-registered client entries (from `addClientEntry`
+    // in the plugin `setup` hook) into the discovered set. User-authored
+    // `*.client.*` files win on name collision (user file is already in
+    // `entries`); a package entry whose name already exists in the
+    // discovered set is silently dropped so presets can be adopted without
+    // requiring users to remove their own copy.
+    {
+        let existing_names: std::collections::HashSet<String> =
+            entries.iter().map(|e| e.entry_name.clone()).collect();
+        for ce in registered.iter() {
+            if !existing_names.contains(&ce.entry_name) {
+                entries.push(zfb_islands::client_scripts::ClientScriptEntry {
+                    entry_name: ce.entry_name.clone(),
+                    source_path: ce.entrypoint.clone(),
+                });
+            }
+        }
     }
 
     if entries.is_empty() {
@@ -1477,9 +1506,25 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     assets_root: &Path,
     framework: crate::config::Framework,
     prev_entry_names: &std::collections::HashSet<String>,
+    registered: &zfb_build::ClientEntryList,
 ) -> Result<(bool, std::collections::HashSet<String>)> {
-    let (entries, collisions) =
+    let (mut entries, collisions) =
         discover_client_scripts(project_root).context("client-script discovery failed")?;
+
+    // #1196 — merge package-registered client entries. User-authored files win
+    // on name collision (silently drop the registered entry if already found).
+    {
+        let existing_names: std::collections::HashSet<String> =
+            entries.iter().map(|e| e.entry_name.clone()).collect();
+        for ce in registered.iter() {
+            if !existing_names.contains(&ce.entry_name) {
+                entries.push(zfb_islands::client_scripts::ClientScriptEntry {
+                    entry_name: ce.entry_name.clone(),
+                    source_path: ce.entrypoint.clone(),
+                });
+            }
+        }
+    }
 
     // Non-fatal collision warning (dev mode is lenient — the user sees
     // the first winning entry rather than a hard build failure, matching
@@ -4526,6 +4571,7 @@ mod tests {
         let runner = DefaultRunner {
             islands_plugin_config: IslandsPluginConfig::default(),
             v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
+            registered_client_entries: zfb_build::ClientEntryList::new(),
         };
         let (inputs, _marker_names) = runner
             .emit_prod_assets(project_root, &project_root.join("pages"), &outdir, &cfg)

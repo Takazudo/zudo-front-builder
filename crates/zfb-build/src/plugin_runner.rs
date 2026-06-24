@@ -600,6 +600,9 @@ impl PluginHost {
                 #[serde(default)]
                 prerender: Option<bool>,
             },
+            /// Client-side side-effect entry (#1196).
+            #[serde(rename = "addClientEntry")]
+            AddClientEntry { entrypoint: String },
         }
 
         #[derive(Deserialize)]
@@ -641,6 +644,9 @@ impl PluginHost {
                         entrypoint,
                         prerender,
                     },
+                    WireRegistration::AddClientEntry { entrypoint } => {
+                        RawSetupRegistration::AddClientEntry { entrypoint }
+                    }
                 })
                 .collect();
             acc.ingest(RawPluginSetupOutput {
@@ -649,11 +655,12 @@ impl PluginHost {
             })
             .map_err(anyhow::Error::from)?;
         }
-        let (aliases, virtual_modules, injected_routes) = acc.finish();
+        let (aliases, virtual_modules, injected_routes, client_entries) = acc.finish();
         Ok(SetupRegistries {
             aliases,
             virtual_modules,
             injected_routes,
+            client_entries,
         })
     }
 

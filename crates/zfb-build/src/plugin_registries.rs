@@ -279,6 +279,70 @@ pub enum SetupRegistryError {
          this route shape is not supported by the build path"
     )]
     InjectRouteInBuildMode { plugin: String, pattern: String },
+
+    #[error(
+        "client entry `{entry_name}` registered by plugin `{first_plugin}` -> `{first_entrypoint}` \
+         conflicts with plugin `{second_plugin}` -> `{second_entrypoint}` — same entry name \
+         (two plugins registering the same named client entry with different source files)"
+    )]
+    ClientEntryConflict {
+        entry_name: String,
+        first_plugin: String,
+        first_entrypoint: String,
+        second_plugin: String,
+        second_entrypoint: String,
+    },
+}
+
+/// One client-side side-effect entry registered by a plugin's `setup` hook
+/// via `addClientEntry(entrypoint)` (#1196).
+///
+/// The entrypoint is a `*.client.{ts,tsx,js,jsx}` module that is bundled
+/// and shipped as `/assets/client/<name>.js` alongside user-authored
+/// `*.client.*` files discovered in the project tree. The entry name is
+/// derived from the filename stem minus `.client` — the same convention as
+/// `discover_client_scripts`. Collisions with user-authored entries of the
+/// same name are a hard error.
+#[derive(Debug, Clone)]
+pub struct ClientEntry {
+    /// Derived entry name (e.g. `"my-lib"` for `my-lib.client.ts`).
+    pub entry_name: String,
+    /// Absolute filesystem path of the source file.
+    pub entrypoint: PathBuf,
+    /// Display name of the registering plugin.
+    pub plugin: String,
+}
+
+/// Ordered list of client-side entries registered via `addClientEntry` (#1196).
+#[derive(Debug, Clone, Default)]
+pub struct ClientEntryList {
+    entries: Vec<ClientEntry>,
+}
+
+impl ClientEntryList {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn push(&mut self, entry: ClientEntry) {
+        self.entries.push(entry);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ClientEntry> {
+        self.entries.iter()
+    }
+
+    pub fn as_slice(&self) -> &[ClientEntry] {
+        &self.entries
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// Raw, unvalidated registration from a single plugin's `setup`
@@ -300,6 +364,11 @@ pub(crate) enum RawSetupRegistration {
         entrypoint: String,
         /// Optional `prerender` hint (#1193). See [`InjectedRoute::prerender`].
         prerender: Option<bool>,
+    },
+    /// Client-side side-effect entry registered via `addClientEntry` (#1196).
+    AddClientEntry {
+        /// Path as supplied by the plugin (may be relative to project root).
+        entrypoint: String,
     },
 }
 
@@ -330,9 +399,11 @@ pub(crate) struct PluginSetupAccumulator<'a> {
     alias_origin: HashMap<String, (String, PathBuf)>, // from -> (plugin, target)
     virtual_origin: HashMap<String, String>,          // specifier -> plugin
     route_origin: HashMap<String, (String, PathBuf)>, // pattern -> (plugin, resolved entrypoint)
+    client_entry_origin: HashMap<String, (String, PathBuf)>, // entry_name -> (plugin, path)
     aliases: AliasMap,
     virtual_modules: VirtualModuleRegistry,
     injected_routes: InjectedRouteList,
+    client_entries: ClientEntryList,
 }
 
 /// The active `zfb` command for this run — `setup` ctx exposes it
@@ -362,9 +433,11 @@ impl<'a> PluginSetupAccumulator<'a> {
             alias_origin: HashMap::new(),
             virtual_origin: HashMap::new(),
             route_origin: HashMap::new(),
+            client_entry_origin: HashMap::new(),
             aliases: AliasMap::new(),
             virtual_modules: VirtualModuleRegistry::new(),
             injected_routes: InjectedRouteList::new(),
+            client_entries: ClientEntryList::new(),
         }
     }
 
@@ -476,13 +549,64 @@ impl<'a> PluginSetupAccumulator<'a> {
                         prerender,
                     });
                 }
+                RawSetupRegistration::AddClientEntry { entrypoint } => {
+                    // #1196: register a package-owned client-side side-effect entry.
+                    // The entry name is derived from the filename (stem minus `.client`)
+                    // using the same convention as `discover_client_scripts`.
+                    let resolved = resolve_against_root(self.project_root, &entrypoint);
+                    let entry_name = resolved
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(|s| {
+                            // Strip the `.client` infix from the stem so
+                            // `search-widget.client.ts` → `search-widget`.
+                            s.strip_suffix(".client").unwrap_or(s).to_string()
+                        })
+                        .unwrap_or_else(|| entrypoint.clone());
+                    if let Some((first_plugin, first_path)) =
+                        self.client_entry_origin.get(&entry_name)
+                    {
+                        if first_path != &resolved {
+                            return Err(SetupRegistryError::ClientEntryConflict {
+                                entry_name: entry_name.clone(),
+                                first_plugin: first_plugin.clone(),
+                                first_entrypoint: first_path.display().to_string(),
+                                second_plugin: output.plugin.clone(),
+                                second_entrypoint: resolved.display().to_string(),
+                            });
+                        }
+                        // Same plugin, same resolved path — idempotent no-op.
+                        continue;
+                    }
+                    self.client_entry_origin.insert(
+                        entry_name.clone(),
+                        (output.plugin.clone(), resolved.clone()),
+                    );
+                    self.client_entries.push(ClientEntry {
+                        entry_name,
+                        entrypoint: resolved,
+                        plugin: output.plugin.clone(),
+                    });
+                }
             }
         }
         Ok(())
     }
 
-    pub(crate) fn finish(self) -> (AliasMap, VirtualModuleRegistry, InjectedRouteList) {
-        (self.aliases, self.virtual_modules, self.injected_routes)
+    pub(crate) fn finish(
+        self,
+    ) -> (
+        AliasMap,
+        VirtualModuleRegistry,
+        InjectedRouteList,
+        ClientEntryList,
+    ) {
+        (
+            self.aliases,
+            self.virtual_modules,
+            self.injected_routes,
+            self.client_entries,
+        )
     }
 }
 
@@ -499,15 +623,18 @@ fn resolve_against_root(project_root: &Path, raw: &str) -> PathBuf {
     }
 }
 
-/// Bundle of the three registries produced by one `setup` round.
+/// Bundle of the registries produced by one `setup` round.
 /// Returned by [`crate::PluginHost::run_setup`] so callers can pass
-/// the whole thing to downstream consumers (Wave 2) without juggling
-/// individual handles.
+/// the whole thing to downstream consumers without juggling individual
+/// handles.
 #[derive(Debug, Clone, Default)]
 pub struct SetupRegistries {
     pub aliases: AliasMap,
     pub virtual_modules: VirtualModuleRegistry,
     pub injected_routes: InjectedRouteList,
+    /// Package-owned client-side side-effect entries registered via
+    /// `addClientEntry` (#1196).
+    pub client_entries: ClientEntryList,
 }
 
 impl SetupRegistries {
@@ -557,7 +684,7 @@ mod tests {
         let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
         acc.ingest(raw_alias("p", "@/foo", "./src/foo.tsx"))
             .unwrap();
-        let (aliases, _, _) = acc.finish();
+        let (aliases, _, _, _) = acc.finish();
         let entry = aliases.get("@/foo").unwrap();
         assert_eq!(entry.target, PathBuf::from("/proj/src/foo.tsx"));
         assert_eq!(entry.plugin, "p");
@@ -569,7 +696,7 @@ mod tests {
         let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
         acc.ingest(raw_alias("p", "@/foo", "./src/foo.tsx"))
             .unwrap();
-        let (aliases, _, _) = acc.finish();
+        let (aliases, _, _, _) = acc.finish();
         // Exact match works.
         assert!(aliases.contains("@/foo"));
         // Prefix-style imports do NOT match.
@@ -621,7 +748,7 @@ mod tests {
         // no-op (keep-first) — mirrors same_plugin_same_alias_is_idempotent.
         acc.ingest(raw_route("a", "/dev/x", "./scripts/x.ts"))
             .unwrap();
-        let (_, _, routes) = acc.finish();
+        let (_, _, routes, _) = acc.finish();
         assert_eq!(routes.len(), 1);
     }
 
@@ -656,7 +783,7 @@ mod tests {
         let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
         acc.ingest(raw_route("a", "/preset-page", "./scripts/x.ts"))
             .expect("injectRoute during build must be accepted (#1193)");
-        let (_, _, routes) = acc.finish();
+        let (_, _, routes, _) = acc.finish();
         assert_eq!(routes.len(), 1);
         let r = &routes.as_slice()[0];
         assert_eq!(r.pattern, "/preset-page");
@@ -682,7 +809,7 @@ mod tests {
             }],
         })
         .expect("injectRoute with prerender hint must be accepted");
-        let (_, _, routes) = acc.finish();
+        let (_, _, routes, _) = acc.finish();
         assert_eq!(routes.as_slice()[0].prerender, Some(false));
     }
 
@@ -692,7 +819,7 @@ mod tests {
         let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Dev);
         acc.ingest(raw_route("a", "/dev/x", "./scripts/x.ts"))
             .unwrap();
-        let (_, _, routes) = acc.finish();
+        let (_, _, routes, _) = acc.finish();
         assert_eq!(routes.len(), 1);
         let r = &routes.as_slice()[0];
         assert_eq!(r.pattern, "/dev/x");
@@ -764,8 +891,69 @@ mod tests {
         acc.ingest(raw_route("a", "/r1", "./a.ts")).unwrap();
         acc.ingest(raw_route("b", "/r2", "./b.ts")).unwrap();
         acc.ingest(raw_route("c", "/r3", "./c.ts")).unwrap();
-        let (_, _, routes) = acc.finish();
+        let (_, _, routes, _) = acc.finish();
         let patterns: Vec<&str> = routes.iter().map(|r| r.pattern.as_str()).collect();
         assert_eq!(patterns, vec!["/r1", "/r2", "/r3"]);
+    }
+
+    // --- addClientEntry tests (#1196) ------------------------------------------
+
+    fn raw_client_entry(plugin: &str, entrypoint: &str) -> RawPluginSetupOutput {
+        RawPluginSetupOutput {
+            plugin: plugin.into(),
+            registrations: vec![RawSetupRegistration::AddClientEntry {
+                entrypoint: entrypoint.into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn add_client_entry_resolves_relative_path() {
+        let root = PathBuf::from("/proj");
+        let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
+        acc.ingest(raw_client_entry("p", "./src/analytics.client.ts"))
+            .unwrap();
+        let (_, _, _, entries) = acc.finish();
+        assert_eq!(entries.len(), 1);
+        let e = &entries.as_slice()[0];
+        assert_eq!(e.entry_name, "analytics");
+        assert_eq!(e.entrypoint, PathBuf::from("/proj/src/analytics.client.ts"));
+        assert_eq!(e.plugin, "p");
+    }
+
+    #[test]
+    fn add_client_entry_same_plugin_same_path_is_idempotent() {
+        let root = PathBuf::from("/proj");
+        let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
+        acc.ingest(raw_client_entry("p", "./widgets/search.client.ts"))
+            .unwrap();
+        acc.ingest(raw_client_entry("p", "./widgets/search.client.ts"))
+            .unwrap();
+        let (_, _, _, entries) = acc.finish();
+        assert_eq!(entries.len(), 1, "duplicate same-path should be a no-op");
+    }
+
+    #[test]
+    fn add_client_entry_conflict_different_entrypoints() {
+        let root = PathBuf::from("/proj");
+        let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
+        acc.ingest(raw_client_entry("a", "./a/search.client.ts"))
+            .unwrap();
+        let err = acc
+            .ingest(raw_client_entry("b", "./b/search.client.ts"))
+            .unwrap_err();
+        match err {
+            SetupRegistryError::ClientEntryConflict {
+                entry_name,
+                first_plugin,
+                second_plugin,
+                ..
+            } => {
+                assert_eq!(entry_name, "search");
+                assert_eq!(first_plugin, "a");
+                assert_eq!(second_plugin, "b");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
     }
 }
