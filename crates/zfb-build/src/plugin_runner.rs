@@ -561,8 +561,10 @@ impl PluginHost {
     /// offending pair named.
     ///
     /// `command` controls the `ctx.command` string visible to plugins
-    /// AND the `injectRoute` guard — calling `injectRoute` from a
-    /// `Build` invocation raises `InjectRouteInBuildMode`.
+    /// AND the JS-side `injectRoute` validation: the `"/"` rejection is
+    /// dev-scoped (#1193), so a `Build` invocation may use `"/"`. As of
+    /// #1193 a build `injectRoute` is accepted into `injected_routes`
+    /// (a package-owned build route) rather than hard-erroring.
     pub async fn run_setup(
         &self,
         project_root: &std::path::Path,
@@ -590,7 +592,14 @@ impl PluginHost {
                 loader_id: String,
             },
             #[serde(rename = "injectRoute")]
-            InjectRoute { pattern: String, entrypoint: String },
+            InjectRoute {
+                pattern: String,
+                entrypoint: String,
+                // Optional `{ prerender }` hint (#1193). Absent in the
+                // JS payload when the plugin omits the options arg.
+                #[serde(default)]
+                prerender: Option<bool>,
+            },
         }
 
         #[derive(Deserialize)]
@@ -626,9 +635,11 @@ impl PluginHost {
                     WireRegistration::InjectRoute {
                         pattern,
                         entrypoint,
+                        prerender,
                     } => RawSetupRegistration::InjectRoute {
                         pattern,
                         entrypoint,
+                        prerender,
                     },
                 })
                 .collect();
@@ -1310,7 +1321,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn setup_hook_rejects_inject_route_in_build_mode() {
+    async fn setup_hook_accepts_inject_route_in_build_mode() {
+        // #1193: `injectRoute` during a build is now ACCEPTED end-to-end
+        // through the JS host (it contributes a package-owned build
+        // route), replacing the pre-#1193 dev-only hard error. The
+        // optional `{ prerender }` arg threads through to the registry.
         if !host_node_available() {
             eprintln!("skipping: node not on PATH");
             return;
@@ -1323,7 +1338,8 @@ mod tests {
             export default {
               name: "builder",
               setup({ injectRoute }) {
-                injectRoute("/dev/x", "./scripts/x.ts");
+                injectRoute("/preset-page", "./scripts/x.ts");
+                injectRoute("/ssr-page", "./scripts/ssr.ts", { prerender: false });
               },
             };
             "#,
@@ -1340,20 +1356,102 @@ mod tests {
         )
         .await
         .expect("host spawns");
-        let err = host
+        let regs = host
             .run_setup(
                 tmp.path(),
                 crate::plugin_registries::SetupCommand::Build,
                 &serde_json::json!({}),
             )
             .await
-            .expect_err("injectRoute during build must error");
+            .expect("injectRoute during build must be accepted (#1193)");
+        assert_eq!(regs.injected_routes.len(), 2);
+        let by_pattern = |p: &str| {
+            regs.injected_routes
+                .as_slice()
+                .iter()
+                .find(|r| r.pattern == p)
+                .unwrap_or_else(|| panic!("missing route {p}"))
+        };
+        // No options → prerender hint absent (build defaults to SSG).
+        assert_eq!(by_pattern("/preset-page").prerender, None);
+        // `{ prerender: false }` threads through to the registry.
+        assert_eq!(by_pattern("/ssr-page").prerender, Some(false));
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn setup_hook_rejects_root_inject_route_in_dev_only() {
+        // The `"/"` guard is scoped to DEV (#1193): a dev `injectRoute("/")`
+        // is still rejected (dev catch-all belongs to devMiddleware), but
+        // a BUILD `"/"` route is allowed (it becomes the overlay index page).
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("rooter.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "rooter",
+              setup({ injectRoute }) {
+                injectRoute("/", "./scripts/home.ts");
+              },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+
+        // Dev: rejected.
+        let dev_host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "rooter".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        let err = dev_host
+            .run_setup(
+                tmp.path(),
+                crate::plugin_registries::SetupCommand::Dev,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect_err("dev injectRoute(\"/\") must error");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("injectRoute") && msg.contains("dev-only"),
-            "expected InjectRouteInBuildMode-style error, got: {msg}",
+            msg.contains("injectRoute") && msg.contains('/'),
+            "expected the dev \"/\" rejection, got: {msg}",
         );
-        host.shutdown().await.ok();
+        dev_host.shutdown().await.ok();
+
+        // Build: accepted.
+        let build_host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "rooter".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        let regs = build_host
+            .run_setup(
+                tmp.path(),
+                crate::plugin_registries::SetupCommand::Build,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect("build injectRoute(\"/\") must be accepted (#1193)");
+        assert_eq!(regs.injected_routes.len(), 1);
+        assert_eq!(regs.injected_routes.as_slice()[0].pattern, "/");
+        build_host.shutdown().await.ok();
     }
 
     #[tokio::test]

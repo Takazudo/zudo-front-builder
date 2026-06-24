@@ -177,10 +177,15 @@ export type ZfbVirtualModuleLoader = () => string | Promise<string>;
  * boot, in `Config.plugins` declaration order, **before** `preBuild`.
  *
  * `ctx.command` tells the plugin which lifecycle is active so it can
- * gate dev-only registrations:
+ * gate per-lifecycle registrations. A dev-only mock route stays gated
+ * to `"dev"`; a package-owned page route is registered unconditionally
+ * (it is prerendered during a build and dev-routed during dev):
  *
  * ```ts
  * setup({ command, injectRoute }) {
+ *   // package-owned page route (prerendered at build, dev-routed in dev)
+ *   injectRoute("/preset-page", "./pages/preset-page.tsx");
+ *   // dev-only mock endpoint
  *   if (command === "dev") {
  *     injectRoute("/api/dev/x", "./scripts/dev-x.ts");
  *   }
@@ -195,8 +200,9 @@ export type ZfbVirtualModuleLoader = () => string | Promise<string>;
 export type ZfbSetupContext = {
   /**
    * Active zfb command. `"build"` during `zfb build`; `"dev"` during
-   * `zfb dev`. Gates `injectRoute` (calling it during `"build"` is an
-   * error — see [`injectRoute`](#injectRoute)).
+   * `zfb dev`. Affects `injectRoute`: in `"dev"`, `"/"` is reserved for
+   * the devMiddleware catch-all and is rejected; in `"build"`, a `"/"`
+   * package route is allowed (see [`injectRoute`](#injectRoute)).
    */
   command: "build" | "dev";
   /** Project root — the directory containing `zfb.config.ts`. */
@@ -233,21 +239,33 @@ export type ZfbSetupContext = {
   addVirtualModule(specifier: string, loader: ZfbVirtualModuleLoader): void;
 
   /**
-   * Register a synthetic page route. The dev server routes the
-   * matched URL into the page rendering pipeline as if `entrypoint`
-   * were a `pages/<...>.tsx` file. `pattern` uses the same grammar
-   * as `pages/` filenames (`/blog/[slug]`, `/api/dev/x`,
+   * Register a synthetic / package-owned page route. `pattern` uses the
+   * same grammar as `pages/` filenames (`/blog/[slug]`, `/api/dev/x`,
    * `/docs/[...rest]`).
    *
-   * **Dev-only.** Calling `injectRoute` when `ctx.command === "build"`
-   * raises `InjectRouteInBuildMode` and aborts the build — synthetic
-   * routes during a static build would invite SSR-shaped pages that
-   * conflict with `output: 'static'`.
+   * - In **dev**, the dev server routes the matched URL into the page
+   *   rendering pipeline as if `entrypoint` were a `pages/<...>.tsx`
+   *   file. `"/"` is reserved for the devMiddleware catch-all and is
+   *   rejected.
+   * - In **build** (package-owned routes), the route is materialised
+   *   into a per-build overlay pages root and **prerendered** through
+   *   the normal scan → bundle → render pipeline, so a preset can own a
+   *   route without the project shipping a `pages/` stub file. A `"/"`
+   *   package route is allowed (it becomes the project's root page,
+   *   enabling a truly empty/absent user `pages/`). A package route
+   *   whose URL shape collides with a user `pages/` route is dropped
+   *   (user `pages/` wins).
    *
-   * Two plugins registering the same `pattern` raises
+   * `opts.prerender` controls the route's prerender shape during a
+   * build: omit it (or `true`) for the SSG default; `false` marks an
+   * SSR-shaped route, which `output: 'static'` rejects. It is build-only
+   * metadata and ignored in dev.
+   *
+   * Two plugins registering the same `pattern` (or one plugin
+   * re-registering it with a different entrypoint) raises
    * `InjectRouteConflict`.
    */
-  injectRoute(pattern: string, entrypoint: string): void;
+  injectRoute(pattern: string, entrypoint: string, opts?: { prerender?: boolean }): void;
 };
 
 /**
