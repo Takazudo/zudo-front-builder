@@ -45,4 +45,21 @@ describe("definePreset", () => {
     expect(original.plugins[0]).toBe(originalPlugin);
     expect((original.plugins[0] as Record<string, unknown>)["source_package"]).toBeUndefined();
   });
+
+  it("preserves an inner preset's source_package when composed by an outer preset", () => {
+    // An outer preset spreads the plugins of an inner definePreset-returned
+    // preset. The inner plugin's provenance must NOT be clobbered by the outer
+    // package name, or the inner preset's relative plugins would resolve
+    // against the wrong package.
+    const inner = definePreset("@scope/inner-preset", {
+      plugins: [{ name: "./inner-plugin.mjs" }],
+    });
+    const outer = definePreset("@scope/outer-preset", {
+      plugins: [{ name: "./outer-plugin.mjs" }, ...(inner.plugins ?? [])],
+    });
+    expect(outer.plugins).toEqual([
+      { name: "./outer-plugin.mjs", source_package: "@scope/outer-preset" },
+      { name: "./inner-plugin.mjs", source_package: "@scope/inner-preset" },
+    ]);
+  });
 });

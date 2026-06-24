@@ -1126,6 +1126,10 @@ export function defineConfig(config: ZfbConfig): ZfbConfig {
  * - Only plain-object plugin entries are stamped; non-object entries pass
  *   through unchanged (defensive — the current schema requires objects,
  *   but this guard keeps the helper safe if the schema is ever relaxed).
+ * - An entry that ALREADY carries a `source_package` is left untouched, so a
+ *   preset composing another `definePreset`-returned preset (by spreading its
+ *   `plugins`) keeps the inner preset's provenance instead of clobbering it
+ *   with the outer package name (the spread below lets the existing marker win).
  * - When `config.plugins` is absent, the config is returned as-is.
  * - All other fields of `config` pass through unchanged.
  *
@@ -1149,7 +1153,9 @@ export function definePreset(
     ...config,
     plugins: config.plugins.map((plugin) => {
       if (plugin !== null && typeof plugin === "object" && !Array.isArray(plugin)) {
-        return { ...plugin, source_package: sourcePackage };
+        // Default first, then spread the plugin so an existing `source_package`
+        // (from a composed inner preset) wins over the outer package name.
+        return { source_package: sourcePackage, ...plugin };
       }
       return plugin;
     }),

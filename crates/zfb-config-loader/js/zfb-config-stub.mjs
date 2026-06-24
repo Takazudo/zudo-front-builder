@@ -30,7 +30,9 @@ export function definePreset(sourcePackage, config) {
     ...config,
     plugins: config.plugins.map((plugin) => {
       if (plugin !== null && typeof plugin === "object" && !Array.isArray(plugin)) {
-        return { ...plugin, source_package: sourcePackage };
+        // Default first, then spread so an existing `source_package` (from a
+        // composed inner preset) wins over the outer package name.
+        return { source_package: sourcePackage, ...plugin };
       }
       return plugin;
     }),
