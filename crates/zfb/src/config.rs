@@ -5857,14 +5857,17 @@ mod tests {
     /// this test runs in `cargo test -p zfb` at the PR gate without `#[ignore]`.
     /// The slim-build path (no V8) uses the node subprocess instead, which has
     /// the same esbuild alias and identical stub — the capture chain is the same;
-    /// only the evaluator differs. That path is not exercised here (blind spot
-    /// documented below).
+    /// only the evaluator differs.
     ///
-    /// **Blind spot:** the slim-build (`--no-default-features`) subprocess path
-    /// is NOT exercised by this test. It shares the same esbuild alias and stub,
-    /// so the capture logic is identical; the only difference is the JS evaluator
-    /// (node vs V8). Coverage would require a node-available test environment
-    /// running without the `embed_v8` feature; that is deferred as a T3 item.
+    /// **Slim-path companion:** the slim-build (`--no-default-features`) node
+    /// subprocess path is exercised by
+    /// `e2e_capture_chain_define_preset_source_package_survives_esbuild_slim`
+    /// (below, gated `cfg(not(feature = "embed_v8"))`). The PR gate's `build-no-v8`
+    /// job compile-checks it via `cargo check --no-default-features -p zfb --tests`,
+    /// and it runs locally under `cargo test --no-default-features -p zfb`.
+    /// **Executing** slim tests in CI (not just compiling them) still needs a T3
+    /// slim-test lane and remains deferred — so the slim path is compile-covered at
+    /// the gate + runnable locally, not yet CI-executed.
     #[cfg(feature = "embed_v8")]
     #[tokio::test]
     async fn e2e_capture_chain_define_preset_source_package_survives_esbuild_v8() {
@@ -5943,6 +5946,177 @@ export default {
         let cfg = load_from_dir(root)
             .await
             .expect("e2e preset-provenance config must load successfully");
+
+        // The preset contributes one plugin. It should be present in the merged config.
+        assert_eq!(
+            cfg.plugins.len(),
+            1,
+            "preset-contributed plugin must appear in merged config"
+        );
+        assert_eq!(
+            cfg.plugins[0].name, "./e2e-plugin.mjs",
+            "plugin name must match the preset's declaration"
+        );
+
+        // The plugin must be resolved — and it must resolve to the PRESET dir,
+        // not the project root (the file only exists inside the preset package).
+        let resolved = cfg.plugins[0].resolved_module.as_deref().expect(
+            "plugin must have resolved_module populated (source_package survived bundling)",
+        );
+
+        assert!(
+            resolved.starts_with("file://"),
+            "resolved_module must be a file:// URL, got {resolved:?}"
+        );
+        assert!(
+            resolved.contains("zfb-preset-e2e"),
+            "resolved_module must point into the preset package dir, got {resolved:?}"
+        );
+        assert!(
+            resolved.ends_with("/e2e-plugin.mjs"),
+            "resolved_module must name the plugin file, got {resolved:?}"
+        );
+
+        // Canonicalize to handle macOS /tmp → /private/tmp redirect.
+        let resolved_path = url::Url::parse(resolved)
+            .expect("valid file:// URL")
+            .to_file_path()
+            .expect("file URL round-trips to path");
+        let expected_path = preset_dir
+            .join("e2e-plugin.mjs")
+            .canonicalize()
+            .expect("preset plugin file exists and is canonicalisable");
+        assert_eq!(
+            resolved_path
+                .canonicalize()
+                .unwrap_or(resolved_path.clone()),
+            expected_path,
+            "resolved_module must point at the preset's e2e-plugin.mjs, not the project root"
+        );
+    }
+
+    /// T5.1-slim — CONFIRM (real capture-chain, slim build): the slim companion to
+    /// `e2e_capture_chain_define_preset_source_package_survives_esbuild_v8`. It proves
+    /// the `definePreset(sourcePackage, …)` provenance survives the **node subprocess**
+    /// evaluator (the `--no-default-features` slim path, `config-loader.mjs`) end-to-end,
+    /// not just the in-process V8 evaluator. The fixture, esbuild alias, `definePreset`
+    /// stub, and Rust-side resolution are identical to the V8 test — only the JS evaluator
+    /// differs — so this is a line-for-line mirror that swaps the evaluator.
+    ///
+    /// **CI coverage:** the `build-no-v8` gate compile-checks this test via
+    /// `cargo check --no-default-features -p zfb --tests`; it is **not executed** in CI
+    /// until a T3 slim-test lane exists. Run it locally with
+    /// `cargo test --no-default-features -p zfb`.
+    ///
+    /// Self-skips (returns) when its toolchain is absent: no esbuild slot /
+    /// `ZFB_ESBUILD_BIN` (mirrors the sibling slim tests), or no runnable `node` on PATH
+    /// (this is the first *positive* slim test that actually spawns node, so it guards on
+    /// node availability rather than hard-fail on a node-less host).
+    #[cfg(not(feature = "embed_v8"))]
+    #[tokio::test]
+    async fn e2e_capture_chain_define_preset_source_package_survives_esbuild_slim() {
+        use std::fs;
+
+        // Skip guard 1 — esbuild slot: without a resolvable esbuild binary the load bails
+        // before reaching the node evaluator. Mirrors the sibling slim tests verbatim.
+        if !PathBuf::from(DEFAULT_ESBUILD_SLOT).exists()
+            && std::env::var_os("ZFB_ESBUILD_BIN").is_none()
+        {
+            return;
+        }
+
+        // Skip guard 2 — node availability: the slim path spawns `node` to evaluate the
+        // bundled config. Probe it (status check, null stdio — catches "spawned but
+        // unusable", avoids captured noise) and skip rather than fail when node is not on
+        // PATH. No race: if node vanishes between probe and load, the test just fails,
+        // which is acceptable.
+        fn host_node_available() -> bool {
+            std::process::Command::new("node")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        if !host_node_available() {
+            return;
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // --- Stage the preset package in <root>/node_modules ---
+        //
+        // Package: @scope/zfb-preset-e2e
+        // It contains:
+        //   - package.json   (with exports so resolve_package_dir can find it)
+        //   - e2e-plugin.mjs (the relative plugin contributed by the preset)
+        //   - dist/index.mjs (the preset's main export, imports from
+        //                     @takazudo/zfb/config and calls definePreset)
+        //
+        // esbuild runs with --alias:@takazudo/zfb/config=<stub>, so the preset's
+        // `import { definePreset } from "@takazudo/zfb/config"` is rewritten to
+        // the stub at bundle time. The stub stamps each plugin with
+        // `source_package: "@scope/zfb-preset-e2e"`.
+        let preset_dir = root
+            .join("node_modules")
+            .join("@scope")
+            .join("zfb-preset-e2e");
+        fs::create_dir_all(preset_dir.join("dist")).unwrap();
+
+        // Relative plugin file — only present INSIDE the preset dir, NOT at the
+        // project root. If `source_package` does NOT survive esbuild→node, the
+        // resolver falls back to project root and fails to find the file (the
+        // file is missing from root), which would cause the load to error.
+        fs::write(preset_dir.join("e2e-plugin.mjs"), "export default {};\n").unwrap();
+
+        // preset package.json — needs `exports: { "./package.json" }` so
+        // `resolve_package_dir` (T1) can resolve the package root via oxc_resolver.
+        fs::write(
+            preset_dir.join("package.json"),
+            r#"{
+              "name": "@scope/zfb-preset-e2e",
+              "version": "0.1.0",
+              "type": "module",
+              "exports": {
+                ".": { "import": "./dist/index.mjs", "default": "./dist/index.mjs" },
+                "./package.json": "./package.json"
+              },
+              "main": "./dist/index.mjs"
+            }"#,
+        )
+        .unwrap();
+
+        // Preset entry-point: calls definePreset so the plugin gets stamped.
+        // esbuild will alias `@takazudo/zfb/config` → stub at bundle time.
+        fs::write(
+            preset_dir.join("dist").join("index.mjs"),
+            r#"import { definePreset } from "@takazudo/zfb/config";
+export default definePreset("@scope/zfb-preset-e2e", {
+  plugins: [{ name: "./e2e-plugin.mjs" }],
+});
+"#,
+        )
+        .unwrap();
+
+        // --- User config: imports the preset and spreads it into presets[] ---
+        tokio::fs::write(
+            root.join("zfb.config.ts"),
+            r#"import preset from "@scope/zfb-preset-e2e";
+export default {
+  presets: [preset],
+};
+"#,
+        )
+        .await
+        .unwrap();
+
+        // Load via the REAL esbuild + node-subprocess path (slim build; no V8, no
+        // test_default_export_json override, no node_binary override).
+        let cfg = load_from_dir(root)
+            .await
+            .expect("e2e preset-provenance config (slim) must load successfully");
 
         // The preset contributes one plugin. It should be present in the merged config.
         assert_eq!(
