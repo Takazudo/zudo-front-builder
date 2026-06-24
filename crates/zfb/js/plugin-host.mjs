@@ -17,7 +17,7 @@
 //   { "id": <number>, "kind": "setup", "ctx": { "projectRoot",
 //        "command": "build" | "dev", "config" } }
 //        -- calls each plugin's `setup(ctx)`. ctx exposes
-//           addAlias, addVirtualModule, injectRoute. The host
+//           addAlias, addVirtualModule, injectRoute, addClientEntry. The host
 //           accumulates raw registrations per plugin and replies
 //           with `{ outputs: [{ plugin, registrations: [...] }] }`
 //           so Rust can run conflict detection against canonical types.
@@ -300,6 +300,24 @@ async function handleSetup(id, msg) {
         if (typeof entrypoint !== "string" || entrypoint.length === 0) {
           throw new Error(
             `addClientEntry: \`entrypoint\` must be a non-empty string (got ${JSON.stringify(entrypoint)})`,
+          );
+        }
+        // #1191 review [9]: enforce the `*.client.{ts,tsx,js,jsx}` convention
+        // up front (the Rust accumulator re-validates via
+        // `zfb_types::is_client_script_file` — these literals mirror
+        // `crates/zfb-types/src/client_scripts.rs`, the contract's home).
+        // Reject early so a preset author's typo surfaces here with the
+        // entrypoint they wrote, not as an invented asset name downstream.
+        const base = entrypoint.split(/[\\/]/).pop() ?? "";
+        const isClientScript = ["ts", "tsx", "js", "jsx"].some((ext) => {
+          const suffix = `.client.${ext}`;
+          return base.endsWith(suffix) && base.length > suffix.length;
+        });
+        if (!isClientScript) {
+          throw new Error(
+            `addClientEntry: \`entrypoint\` must point to a *.client.{ts,tsx,js,jsx} file ` +
+              `(the .client. infix is required and the stem before it must be non-empty); ` +
+              `got ${JSON.stringify(entrypoint)}`,
           );
         }
         registrations.push({ kind: "addClientEntry", entrypoint });

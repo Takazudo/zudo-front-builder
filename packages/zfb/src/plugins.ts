@@ -183,7 +183,8 @@ export type ZfbVirtualModuleLoader = () => string | Promise<string>;
  *
  * ```ts
  * setup({ command, injectRoute }) {
- *   // package-owned page route (prerendered at build, dev-routed in dev)
+ *   // package-owned page route (prerendered at BUILD; see injectRoute for
+ *   // the dev caveat)
  *   injectRoute("/preset-page", "./pages/preset-page.tsx");
  *   // dev-only mock endpoint
  *   if (command === "dev") {
@@ -192,8 +193,8 @@ export type ZfbVirtualModuleLoader = () => string | Promise<string>;
  * }
  * ```
  *
- * The hook's surface is intentionally **closed**: only
- * `injectRoute`, `addVirtualModule`, `addAlias`. There is no
+ * The hook's surface is intentionally **closed**: only `injectRoute`,
+ * `addVirtualModule`, `addAlias`, and `addClientEntry`. There is no
  * `addRemarkPlugin` / `addRehypePlugin` / `addMarkdownVisitor` — by
  * design (see the concept doc for the rationale).
  */
@@ -243,10 +244,6 @@ export type ZfbSetupContext = {
    * same grammar as `pages/` filenames (`/blog/[slug]`, `/api/dev/x`,
    * `/docs/[...rest]`).
    *
-   * - In **dev**, the dev server routes the matched URL into the page
-   *   rendering pipeline as if `entrypoint` were a `pages/<...>.tsx`
-   *   file. `"/"` is reserved for the devMiddleware catch-all and is
-   *   rejected.
    * - In **build** (package-owned routes), the route is materialised
    *   into a per-build overlay pages root and **prerendered** through
    *   the normal scan → bundle → render pipeline, so a preset can own a
@@ -254,7 +251,16 @@ export type ZfbSetupContext = {
    *   package route is allowed (it becomes the project's root page,
    *   enabling a truly empty/absent user `pages/`). A package route
    *   whose URL shape collides with a user `pages/` route is dropped
-   *   (user `pages/` wins).
+   *   (user `pages/` wins). This is the supported, complete path.
+   * - In **dev**, full rendering of injected routes is **not yet
+   *   implemented**. The dev router currently only *logs* a match for an
+   *   injected pattern and then falls through to the dist/public
+   *   fallback (so the URL 404s unless another file claims it). Do NOT
+   *   rely on a `zfb dev` server to render a package route — verify
+   *   package routes via `zfb build`. (`"/"` is still reserved for the
+   *   devMiddleware catch-all and is rejected at registration in dev.)
+   *   Wiring the dev page pipeline to evaluate `entrypoint` is a tracked
+   *   follow-up.
    *
    * `opts.prerender` controls the route's prerender shape during a
    * build: omit it (or `true`) for the SSG default; `false` marks an
@@ -270,10 +276,14 @@ export type ZfbSetupContext = {
   /**
    * Register a package-owned client-side side-effect entry (#1196).
    *
-   * `entrypoint` must point to a `*.client.{ts,tsx,js,jsx}` file. The
-   * entry name is derived from the filename stem minus `.client`
-   * (e.g. `my-lib.client.ts` → `my-lib`), following the same convention
-   * as user-authored `*.client.*` files.
+   * `entrypoint` **must** point to a `*.client.{ts,tsx,js,jsx}` file —
+   * this is enforced (#1191 review [9]): a path missing the `.client.`
+   * infix, or a bare `.client.ts` with an empty stem, throws an error
+   * (`addClientEntry` JS-host validation + Rust `InvalidClientEntry`)
+   * rather than being silently accepted under an invented name. The entry
+   * name is derived from the filename stem minus `.client`
+   * (e.g. `my-lib.client.ts` → `my-lib`), via the same canonical helper
+   * as user-authored `*.client.*` discovery.
    *
    * The entry is bundled and shipped as
    * `/assets/client/<name>.js` (stable URL) / `/assets/client/<name>-<hash>.js`

@@ -1453,6 +1453,11 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
         // `.rev()` so the `presets[i]` index in errors stays the declared one.
         if !cfg.presets.is_empty() {
             let presets = std::mem::take(&mut cfg.presets);
+            // Snapshot the user's config BEFORE folding any preset. Every
+            // scalar / nested fill in `merge_preset_into` decides against
+            // this immutable baseline so the first-declared preset wins
+            // consistently (#1191 review [12]).
+            let baseline = cfg.clone();
             for (i, preset_value) in presets.into_iter().enumerate().rev() {
                 let preset: Config = serde_json::from_value(preset_value).map_err(|e| {
                     anyhow!(
@@ -1461,7 +1466,7 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
                         e
                     )
                 })?;
-                merge_preset_into(&mut cfg, preset);
+                merge_preset_into(&mut cfg, preset, &baseline);
             }
         }
         // Issue #211: the JSON config path used to leave every
@@ -1629,6 +1634,11 @@ fn parse_loaded_config(
         // preserves declared order (`presets: [a, b]` → `a, b, user`, not
         // `b, a, user`). Same fix as the JSON path. `.enumerate()` precedes
         // `.rev()` to keep the declared `presets[i]` index in error messages.
+        //
+        // Snapshot the user's config BEFORE folding (same as the JSON path)
+        // so scalar / nested fills test the immutable user baseline and the
+        // first-declared preset wins consistently (#1191 review [12]).
+        let baseline = config.clone();
         for (i, preset_value) in presets.into_iter().enumerate().rev() {
             let preset: Config = serde_json::from_value(preset_value).map_err(|e| {
                 anyhow!(
@@ -1637,7 +1647,7 @@ fn parse_loaded_config(
                     e
                 )
             })?;
-            merge_preset_into(&mut config, preset);
+            merge_preset_into(&mut config, preset, &baseline);
         }
         // Resolve any plugin entries that still have `resolved_module = None`
         // (i.e. those contributed by presets). Mirrors the JSON-load path
@@ -1658,12 +1668,33 @@ fn parse_loaded_config(
 /// - **Array fields** (`plugins`, `collections`, `extraWatchPaths`,
 ///   `allowedHosts`): preset values are prepended so the main config's
 ///   explicit entries retain their relative position after the preset's.
-/// - **Scalar / optional fields**: a preset value fills in only when the
-///   main config currently holds the field's default value — the main
-///   config is authoritative, presets act as defaults.
+/// - **Plain scalar / optional fields**: a preset value fills in only when
+///   the *user* left the field at its default — the user config is
+///   authoritative, presets act as defaults.
+/// - **Nested config blocks** (`markdown`, `bundle`, `codeHighlight`,
+///   `tailwind`, `prefetch`, `resolveMarkdownLinks`): deep-merged
+///   field-by-field rather than all-or-nothing (#1191 review [11]). A
+///   preset contributing `markdown.features` survives even when the user
+///   set an unrelated `markdown.*` sibling.
+///
+/// ## Precedence model (`baseline` parameter)
+///
+/// `baseline` is a snapshot of the *user's* config taken BEFORE any preset
+/// was folded. Every fill decision is made against `baseline`, not the
+/// running `cfg`. This is what makes precedence consistent across the two
+/// kinds of field when several presets are layered (#1191 review [12]):
+///
+/// - The caller folds presets in REVERSE declared order so the prepend of
+///   additive arrays yields `[a, b, user]` for `presets: [a, b]`.
+/// - Because scalar/nested fills test `baseline` (the immutable user
+///   config) rather than `cfg`, a later fold (= the earlier-declared
+///   preset) is free to overwrite a value an earlier fold (= a
+///   later-declared preset) wrote, but never one the user set. So the
+///   first-declared preset wins for scalars and nested fields too,
+///   matching the array precedence.
 ///
 /// `preset.presets` is intentionally ignored (no recursive expansion).
-fn merge_preset_into(cfg: &mut Config, preset: Config) {
+fn merge_preset_into(cfg: &mut Config, preset: Config, baseline: &Config) {
     // --- additive array fields: preset values prepend ---
     if !preset.plugins.is_empty() {
         let mut merged = preset.plugins;
@@ -1686,12 +1717,14 @@ fn merge_preset_into(cfg: &mut Config, preset: Config) {
         cfg.allowed_hosts = merged;
     }
 
-    // --- scalar / optional fields: preset fills in defaults only ---
+    // --- plain scalar / optional fields: preset fills in only where the
+    //     USER left the default (so the first-declared preset wins; see
+    //     the `baseline` note above) ---
     let default = Config::default();
     macro_rules! fill_default {
         ($field:ident) => {
-            if cfg.$field == default.$field && preset.$field != default.$field {
-                cfg.$field = preset.$field;
+            if baseline.$field == default.$field && preset.$field != default.$field {
+                cfg.$field = preset.$field.clone();
             }
         };
     }
@@ -1700,22 +1733,269 @@ fn merge_preset_into(cfg: &mut Config, preset: Config) {
     fill_default!(host);
     fill_default!(port);
     fill_default!(framework);
-    fill_default!(tailwind);
-    fill_default!(prefetch);
-    fill_default!(bundle);
     fill_default!(adapter);
     fill_default!(strip_md_ext);
     fill_default!(base);
-    fill_default!(code_highlight);
-    fill_default!(resolve_markdown_links);
     fill_default!(trailing_slash);
-    fill_default!(markdown);
     fill_default!(site);
     fill_default!(emit_routes_manifest);
     fill_default!(output);
     fill_default!(plugin_hook_timeout_secs);
     fill_default!(copy_public_with_base);
+
+    // --- nested config blocks: deep-merge field-by-field (#1191 [11]) ---
+    //
+    // The whole-block `fill_default!` used to drop a preset's entire
+    // `Option<Struct>` block the moment the user touched ANY sibling field
+    // in the same block (because `cfg.markdown` was then `Some(..)` !=
+    // default). Each helper instead folds the preset's inner fields into
+    // the accumulator one field at a time, filling only inner fields the
+    // user left unset — so a preset `markdown.features` survives a user
+    // `markdown.gfm`. Decisions are made against `baseline` for the same
+    // first-declared-preset-wins reason as the scalars above.
+    merge_markdown_block(&mut cfg.markdown, &preset.markdown, &baseline.markdown);
+    merge_bundle_block(&mut cfg.bundle, &preset.bundle, &baseline.bundle);
+    merge_code_highlight_block(
+        &mut cfg.code_highlight,
+        &preset.code_highlight,
+        &baseline.code_highlight,
+    );
+    merge_tailwind_block(&mut cfg.tailwind, &preset.tailwind, &baseline.tailwind);
+    merge_prefetch_block(&mut cfg.prefetch, &preset.prefetch, &baseline.prefetch);
+    merge_resolve_markdown_links_block(
+        &mut cfg.resolve_markdown_links,
+        &preset.resolve_markdown_links,
+        &baseline.resolve_markdown_links,
+    );
     // `presets` is never recursively merged.
+}
+
+/// Field-by-field fill helper for one inner field of a nested config block.
+///
+/// `acc` is the accumulator's inner field, `preset` / `baseline` the same
+/// field from the preset and the user-baseline block. The preset value is
+/// copied in only when the user left it at `default` (so an earlier-declared
+/// preset, folded last, still wins over a later-declared one without ever
+/// clobbering the user's value — see [`merge_preset_into`]).
+fn fill_inner<T: Clone + PartialEq>(acc: &mut T, preset: &T, baseline: &T, default: &T) {
+    if baseline == default && preset != default {
+        *acc = preset.clone();
+    }
+}
+
+/// Ensure an `Option<Struct>` accumulator is `Some` before folding a
+/// preset's inner fields into it. Returns a mutable ref to the inner struct
+/// when the preset actually carries one (else `None`, signalling "nothing
+/// to merge"). The accumulator is seeded from the user's block if present,
+/// otherwise from `seed_default()` so the preset's inner fields land
+/// somewhere. A `seed_default` closure (rather than a `T: Default` bound) is
+/// used because several nested blocks (`CodeHighlightConfig`,
+/// `PrefetchConfig`, `ResolveMarkdownLinksConfig`) deliberately do not derive
+/// `Default`.
+fn ensure_block<'a, T: Clone>(
+    acc: &'a mut Option<T>,
+    preset: &Option<T>,
+    baseline: &Option<T>,
+    seed_default: impl FnOnce() -> T,
+) -> Option<&'a mut T> {
+    preset.as_ref()?;
+    if acc.is_none() {
+        // Seed from the user's block (so user-set inner fields are present
+        // as the authoritative baseline) or from the all-default block when
+        // the user left the whole block unset.
+        *acc = Some(baseline.clone().unwrap_or_else(seed_default));
+    }
+    acc.as_mut()
+}
+
+fn merge_markdown_block(
+    acc: &mut Option<MarkdownConfig>,
+    preset: &Option<MarkdownConfig>,
+    baseline: &Option<MarkdownConfig>,
+) {
+    let Some(p) = preset else { return };
+    let acc = ensure_block(acc, preset, baseline, MarkdownConfig::default).expect("preset is Some");
+    let base = baseline.clone().unwrap_or_default();
+    let def = MarkdownConfig::default();
+    fill_inner(&mut acc.gfm, &p.gfm, &base.gfm, &def.gfm);
+    fill_inner(&mut acc.toc, &p.toc, &base.toc, &def.toc);
+    fill_inner(
+        &mut acc.external_links,
+        &p.external_links,
+        &base.external_links,
+        &def.external_links,
+    );
+    fill_inner(
+        &mut acc.cjk_friendly,
+        &p.cjk_friendly,
+        &base.cjk_friendly,
+        &def.cjk_friendly,
+    );
+    fill_inner(
+        &mut acc.hard_breaks,
+        &p.hard_breaks,
+        &base.hard_breaks,
+        &def.hard_breaks,
+    );
+    // `features` is itself a bag of independent `Option<>` toggles — recurse
+    // one level deeper so a preset's `features.githubAlerts` survives a user
+    // `features.directives` (and vice-versa), not just a user `markdown.gfm`.
+    merge_markdown_features(&mut acc.features, &p.features, &base.features);
+}
+
+fn merge_markdown_features(
+    acc: &mut Option<MarkdownFeaturesConfig>,
+    preset: &Option<MarkdownFeaturesConfig>,
+    baseline: &Option<MarkdownFeaturesConfig>,
+) {
+    let Some(p) = preset else { return };
+    let acc = ensure_block(acc, preset, baseline, MarkdownFeaturesConfig::default)
+        .expect("preset is Some");
+    let base = baseline.clone().unwrap_or_default();
+    let def = MarkdownFeaturesConfig::default();
+    macro_rules! fill_feature {
+        ($field:ident) => {
+            fill_inner(&mut acc.$field, &p.$field, &base.$field, &def.$field);
+        };
+    }
+    fill_feature!(github_alerts);
+    fill_feature!(reading_time);
+    fill_feature!(github_autolinks);
+    fill_feature!(code_enrichment);
+    fill_feature!(code_tabs);
+    fill_feature!(ruby);
+    fill_feature!(toc_export);
+    fill_feature!(image_dimensions);
+    fill_feature!(link_validation);
+    fill_feature!(transclude);
+    fill_feature!(directives);
+    fill_feature!(mermaid);
+    fill_feature!(heading_marker_toc);
+    fill_feature!(heading_ids);
+}
+
+fn merge_bundle_block(
+    acc: &mut Option<BundleConfig>,
+    preset: &Option<BundleConfig>,
+    baseline: &Option<BundleConfig>,
+) {
+    let Some(p) = preset else { return };
+    let acc = ensure_block(acc, preset, baseline, BundleConfig::default).expect("preset is Some");
+    let base = baseline.clone().unwrap_or_default();
+    let def = BundleConfig::default();
+    fill_inner(&mut acc.exclude, &p.exclude, &base.exclude, &def.exclude);
+    fill_inner(
+        &mut acc.main_fields,
+        &p.main_fields,
+        &base.main_fields,
+        &def.main_fields,
+    );
+    fill_inner(
+        &mut acc.external,
+        &p.external,
+        &base.external,
+        &def.external,
+    );
+}
+
+fn merge_code_highlight_block(
+    acc: &mut Option<CodeHighlightConfig>,
+    preset: &Option<CodeHighlightConfig>,
+    baseline: &Option<CodeHighlightConfig>,
+) {
+    let Some(p) = preset else { return };
+    // `CodeHighlightConfig` has no `Default` impl (no `#[derive(Default)]`);
+    // build a default-equivalent (all `None`) inline for the fill compares
+    // and to seed the accumulator.
+    let def = CodeHighlightConfig {
+        theme: None,
+        themes_dir: None,
+        theme_light: None,
+        theme_dark: None,
+    };
+    let acc = ensure_block(acc, preset, baseline, || def.clone()).expect("preset is Some");
+    let base = baseline.clone().unwrap_or_else(|| def.clone());
+    fill_inner(&mut acc.theme, &p.theme, &base.theme, &def.theme);
+    fill_inner(
+        &mut acc.themes_dir,
+        &p.themes_dir,
+        &base.themes_dir,
+        &def.themes_dir,
+    );
+    fill_inner(
+        &mut acc.theme_light,
+        &p.theme_light,
+        &base.theme_light,
+        &def.theme_light,
+    );
+    fill_inner(
+        &mut acc.theme_dark,
+        &p.theme_dark,
+        &base.theme_dark,
+        &def.theme_dark,
+    );
+}
+
+fn merge_tailwind_block(
+    acc: &mut Option<TailwindConfig>,
+    preset: &Option<TailwindConfig>,
+    baseline: &Option<TailwindConfig>,
+) {
+    let Some(p) = preset else { return };
+    let acc = ensure_block(acc, preset, baseline, TailwindConfig::default).expect("preset is Some");
+    let base = baseline.clone().unwrap_or_default();
+    let def = TailwindConfig::default();
+    fill_inner(&mut acc.enabled, &p.enabled, &base.enabled, &def.enabled);
+}
+
+fn merge_prefetch_block(
+    acc: &mut Option<PrefetchConfig>,
+    preset: &Option<PrefetchConfig>,
+    baseline: &Option<PrefetchConfig>,
+) {
+    let Some(p) = preset else { return };
+    // `PrefetchConfig` has no `Default` impl; its only field defaults to None.
+    let def = PrefetchConfig { disabled: None };
+    let acc = ensure_block(acc, preset, baseline, || def.clone()).expect("preset is Some");
+    let base = baseline.clone().unwrap_or_else(|| def.clone());
+    fill_inner(
+        &mut acc.disabled,
+        &p.disabled,
+        &base.disabled,
+        &def.disabled,
+    );
+}
+
+fn merge_resolve_markdown_links_block(
+    acc: &mut Option<ResolveMarkdownLinksConfig>,
+    preset: &Option<ResolveMarkdownLinksConfig>,
+    baseline: &Option<ResolveMarkdownLinksConfig>,
+) {
+    let Some(p) = preset else { return };
+    // `ResolveMarkdownLinksConfig` has no `Default` impl; build the
+    // all-default equivalent inline for the per-field compares and to seed.
+    let def = ResolveMarkdownLinksConfig {
+        enabled: false,
+        docs_dir: PathBuf::new(),
+        dirs: Vec::new(),
+        on_broken_links: OnBrokenLinks::default(),
+    };
+    let acc = ensure_block(acc, preset, baseline, || def.clone()).expect("preset is Some");
+    let base = baseline.clone().unwrap_or_else(|| def.clone());
+    fill_inner(&mut acc.enabled, &p.enabled, &base.enabled, &def.enabled);
+    fill_inner(
+        &mut acc.docs_dir,
+        &p.docs_dir,
+        &base.docs_dir,
+        &def.docs_dir,
+    );
+    fill_inner(&mut acc.dirs, &p.dirs, &base.dirs, &def.dirs);
+    fill_inner(
+        &mut acc.on_broken_links,
+        &p.on_broken_links,
+        &base.on_broken_links,
+        &def.on_broken_links,
+    );
 }
 
 /// Validate a loaded [`Config`] against the project root `dir`.
@@ -4313,7 +4593,8 @@ mod tests {
             }],
             ..Config::default()
         };
-        merge_preset_into(&mut cfg, preset);
+        let baseline = cfg.clone();
+        merge_preset_into(&mut cfg, preset, &baseline);
         assert_eq!(cfg.plugins.len(), 2);
         assert_eq!(cfg.plugins[0].name, "preset-plugin");
         assert_eq!(cfg.plugins[1].name, "user-plugin");
@@ -4328,7 +4609,8 @@ mod tests {
             ..Config::default()
         };
         let mut cfg = Config::default();
-        merge_preset_into(&mut cfg, preset);
+        let baseline = cfg.clone();
+        merge_preset_into(&mut cfg, preset, &baseline);
         assert_eq!(
             cfg.adapter.as_deref(),
             Some("@takazudo/zfb-adapter-cloudflare")
@@ -4347,7 +4629,8 @@ mod tests {
             adapter: Some("user-adapter".into()),
             ..Config::default()
         };
-        merge_preset_into(&mut cfg, preset);
+        let baseline = cfg.clone();
+        merge_preset_into(&mut cfg, preset, &baseline);
         assert_eq!(cfg.adapter.as_deref(), Some("user-adapter"));
     }
 
@@ -4375,7 +4658,8 @@ mod tests {
             }],
             ..Config::default()
         };
-        merge_preset_into(&mut cfg, preset);
+        let baseline = cfg.clone();
+        merge_preset_into(&mut cfg, preset, &baseline);
         assert_eq!(cfg.collections.len(), 2);
         assert_eq!(cfg.collections[0].name, "preset-coll");
         assert_eq!(cfg.collections[1].name, "user-coll");
@@ -4623,6 +4907,254 @@ mod tests {
             names,
             vec!["./a-plugin.mjs", "./b-plugin.mjs"],
             "presets[a, b] must yield declared plugin order a, b on the TS path (codex P2); got {names:?}"
+        );
+    }
+
+    // --- Preset nested-block deep merge (#1191 review [11]) --------------------
+
+    /// A preset contributing `markdown.features.githubAlerts` must SURVIVE the
+    /// user setting an unrelated `markdown` sibling (`gfm`). The old
+    /// whole-block `fill_default!` dropped the entire preset markdown block the
+    /// moment the user touched any sibling — this is the documented intended
+    /// use (a zudo-doc-style markdown preset) and the core of finding [11].
+    #[test]
+    fn preset_markdown_block_deep_merges_with_user_sibling() {
+        let preset = Config {
+            markdown: Some(MarkdownConfig {
+                features: Some(MarkdownFeaturesConfig {
+                    github_alerts: Some(FeatureToggle::Bool(true)),
+                    ..MarkdownFeaturesConfig::default()
+                }),
+                ..MarkdownConfig::default()
+            }),
+            ..Config::default()
+        };
+        let mut cfg = Config {
+            markdown: Some(MarkdownConfig {
+                gfm: Some(GfmFlag::All(true)),
+                ..MarkdownConfig::default()
+            }),
+            ..Config::default()
+        };
+        let baseline = cfg.clone();
+        merge_preset_into(&mut cfg, preset, &baseline);
+
+        let md = cfg.markdown.expect("markdown block must be present");
+        assert_eq!(
+            md.gfm,
+            Some(GfmFlag::All(true)),
+            "user's markdown.gfm must survive"
+        );
+        let features = md
+            .features
+            .expect("preset's markdown.features must survive the user's sibling");
+        assert_eq!(
+            features.github_alerts,
+            Some(FeatureToggle::Bool(true)),
+            "preset's markdown.features.githubAlerts must be merged in, not dropped"
+        );
+    }
+
+    /// User-set inner fields win over a preset's value for the SAME inner
+    /// field (per-field user authority), while non-overlapping preset inner
+    /// fields still fill in.
+    #[test]
+    fn preset_markdown_inner_field_user_wins_but_others_fill() {
+        let preset = Config {
+            markdown: Some(MarkdownConfig {
+                gfm: Some(GfmFlag::All(false)), // collides with user
+                hard_breaks: Some(true),        // user left unset
+                ..MarkdownConfig::default()
+            }),
+            ..Config::default()
+        };
+        let mut cfg = Config {
+            markdown: Some(MarkdownConfig {
+                gfm: Some(GfmFlag::All(true)),
+                ..MarkdownConfig::default()
+            }),
+            ..Config::default()
+        };
+        let baseline = cfg.clone();
+        merge_preset_into(&mut cfg, preset, &baseline);
+
+        let md = cfg.markdown.unwrap();
+        assert_eq!(
+            md.gfm,
+            Some(GfmFlag::All(true)),
+            "user's gfm must win the per-field collision"
+        );
+        assert_eq!(
+            md.hard_breaks,
+            Some(true),
+            "preset's non-overlapping hardBreaks must fill in"
+        );
+    }
+
+    /// A preset `bundle` block must deep-merge with a user `bundle` sibling
+    /// (the same trap as markdown, applied to a different block).
+    #[test]
+    fn preset_bundle_block_deep_merges_with_user_sibling() {
+        let preset = Config {
+            bundle: Some(BundleConfig {
+                external: Some(vec!["msw".into()]),
+                ..BundleConfig::default()
+            }),
+            ..Config::default()
+        };
+        let mut cfg = Config {
+            bundle: Some(BundleConfig {
+                exclude: Some(vec!["**/*.stories.tsx".into()]),
+                ..BundleConfig::default()
+            }),
+            ..Config::default()
+        };
+        let baseline = cfg.clone();
+        merge_preset_into(&mut cfg, preset, &baseline);
+
+        let bundle = cfg.bundle.unwrap();
+        assert_eq!(
+            bundle.exclude,
+            Some(vec!["**/*.stories.tsx".into()]),
+            "user's bundle.exclude must survive"
+        );
+        assert_eq!(
+            bundle.external,
+            Some(vec!["msw".into()]),
+            "preset's bundle.external must be merged in, not dropped"
+        );
+    }
+
+    /// End-to-end JSON path: the deep-merge holds through the real loader, not
+    /// just the unit `merge_preset_into`.
+    #[tokio::test]
+    async fn json_path_preset_markdown_block_deep_merges() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "presets": [
+                    { "markdown": { "features": { "githubAlerts": true } } }
+                ],
+                "markdown": { "gfm": true }
+            }"#,
+        )
+        .await
+        .unwrap();
+
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("preset+user markdown JSON config should load");
+        let md = cfg.markdown.expect("markdown block present");
+        assert_eq!(md.gfm, Some(GfmFlag::All(true)), "user gfm survives");
+        let features = md.features.expect("preset features survive");
+        assert_eq!(
+            features.github_alerts,
+            Some(FeatureToggle::Bool(true)),
+            "preset features.githubAlerts merged via the real loader"
+        );
+    }
+
+    // --- Multi-preset scalar precedence (#1191 review [12]) --------------------
+
+    /// JSON path: with `presets: [a, b]` BOTH setting the same scalar
+    /// (`adapter`) AND both contributing a plugin, the first-declared preset
+    /// (`a`) must win the scalar — consistent with the array precedence
+    /// (`a` before `b`). The old reverse fold gave the scalar to `b` (last
+    /// declared) while arrays went to `a`, an inconsistency (finding [12]).
+    #[tokio::test]
+    async fn json_path_multi_preset_scalar_first_declared_wins() {
+        let tmp = TempDir::new().unwrap();
+        for name in ["a-plugin.mjs", "b-plugin.mjs"] {
+            tokio::fs::write(tmp.path().join(name), "export default {};\n")
+                .await
+                .unwrap();
+        }
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "presets": [
+                    { "adapter": "adapter-a", "plugins": [{ "name": "./a-plugin.mjs" }] },
+                    { "adapter": "adapter-b", "plugins": [{ "name": "./b-plugin.mjs" }] }
+                ]
+            }"#,
+        )
+        .await
+        .unwrap();
+
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("multi-preset scalar JSON config should load");
+        assert_eq!(
+            cfg.adapter.as_deref(),
+            Some("adapter-a"),
+            "first-declared preset's adapter must win, consistent with array order"
+        );
+        let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["./a-plugin.mjs", "./b-plugin.mjs"],
+            "plugin order must be a-before-b (first declared first)"
+        );
+    }
+
+    /// TS path: same first-declared-preset-wins invariant for a shared scalar.
+    #[tokio::test]
+    async fn ts_path_multi_preset_scalar_first_declared_wins() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+        let opts = LoadOptions {
+            test_default_export_json: Some(
+                serde_json::json!({
+                    "config": {
+                        "presets": [
+                            { "adapter": "adapter-a" },
+                            { "adapter": "adapter-b" }
+                        ]
+                    },
+                    "plugins": []
+                })
+                .to_string(),
+            ),
+            ..LoadOptions::default()
+        };
+        let cfg = load_from_dir_with_options(tmp.path(), &opts)
+            .await
+            .expect("multi-preset scalar TS config should load");
+        assert_eq!(
+            cfg.adapter.as_deref(),
+            Some("adapter-a"),
+            "first-declared preset's adapter must win on the TS path too"
+        );
+    }
+
+    /// The user always beats BOTH presets on a shared scalar (preset
+    /// precedence must never clobber the user's value).
+    #[tokio::test]
+    async fn json_path_user_scalar_beats_all_presets() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "adapter": "adapter-user",
+                "presets": [
+                    { "adapter": "adapter-a" },
+                    { "adapter": "adapter-b" }
+                ]
+            }"#,
+        )
+        .await
+        .unwrap();
+
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("user-scalar-vs-presets JSON config should load");
+        assert_eq!(
+            cfg.adapter.as_deref(),
+            Some("adapter-user"),
+            "the user's explicit adapter must beat every preset"
         );
     }
 }
