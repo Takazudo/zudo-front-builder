@@ -352,17 +352,20 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     // Issue #1182 — decide whether the eager dev bundle is DEFERRED past
     // `TcpListener::bind`. Only in boot-lazy mode with a servable prebuilt
-    // `dist/`: then the prebuilt `dist/` serves every route until the deferred
-    // boot task publishes the renderer, so first-accept is O(1) regardless of
-    // project size (the residual of #1161 that #1166/#1170 left behind). The
-    // gate matches `run_boot_render`'s boot-lazy gate exactly, so a deferred
-    // boot always takes the boot-lazy branch there. Decided here (before
-    // `boot_dev_renderer`) so the scaffold-vs-eager choice and the deferred
-    // task agree on one value.
+    // `dist/`, and not opted out (#1188): then the prebuilt `dist/` serves every
+    // route until the deferred boot task publishes the renderer, so first-accept
+    // is O(1) regardless of project size (the residual of #1161 that #1166/#1170
+    // left behind). The defer gate is a strict subset of the boot-lazy gate, so a
+    // deferred boot always takes the boot-lazy branch in `run_boot_render`; the
+    // opt-out (`ZFB_DEV_DEFER_BUNDLE=0`, #1188) lets an SSR-heavy project fall back
+    // to the eager pre-bind renderer (no SSR-only 404 window). Decided here (before
+    // `boot_dev_renderer`) so the scaffold-vs-eager choice and the deferred task
+    // agree on one value.
     let defer_dev_bundle = defer_dev_bundle_decision(
         lazy_dev_render_enabled(),
         std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
         dist_is_servable_seed(&dist_root),
+        std::env::var("ZFB_DEV_DEFER_BUNDLE").ok().as_deref(),
     );
 
     // 2. Stand up the long-lived renderer state if the project looks
@@ -1276,6 +1279,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             // pipeline's stale probe uses; the per-route stale map (claimable
             // for request-time render) is untouched — this is the broadcast,
             // not a second one. Empty and inert unless the bundle was deferred.
+            //
+            // Deliberately gated on `defer_dev_bundle`, NOT on boot-lazy: this
+            // reload only matters for the deferred window, where step 0 publishes
+            // the renderer AFTER bind so a tab may have loaded the prebuilt `dist/`
+            // first. When boot-lazy is on but NOT deferred — boot-lazy without a
+            // servable seed, or the #1188 `ZFB_DEV_DEFER_BUNDLE=0` opt-out —
+            // `boot_dev_renderer` built the V8 host + route tables EAGERLY before
+            // bind, so SSR routes render fresh through the live host on first
+            // request and no tab ever served stale/prebuilt content needing a
+            // reload. So the broadcast is correctly inert there (and the always-on
+            // islands reload above still fires regardless of this gate).
             let boot_stale: Vec<PathBuf> = if defer_dev_bundle {
                 dev_session_for_boot
                     .as_ref()
@@ -1894,26 +1908,37 @@ fn boot_lazy_decision(lazy_render_on: bool, boot_lazy_var: Option<&str>) -> bool
 /// 1. boot-lazy is active ([`boot_lazy_decision`]) — so the request-time
 ///    render-on-request hook (#1026) is installed and the prebuilt `dist/` is
 ///    the serving source for every route until the renderer is published, AND
-/// 2. a servable `dist/` seed is present ([`dist_is_servable_seed`]).
+/// 2. a servable `dist/` seed is present ([`dist_is_servable_seed`]), AND
+/// 3. the deferral is not opted out ([`resolve_defer_bundle`], issue #1188).
 ///
-/// Both conditions match [`run_boot_render`]'s boot-lazy gate exactly, so a
-/// deferred boot always takes the boot-lazy branch there (mark-stale, no eager
-/// render). When the gate is off, `boot_dev_renderer` builds the renderer
-/// eagerly before bind exactly as before — the deferral is strictly additive.
+/// The defer gate is a **strict subset** of the boot-lazy gate: deferring always
+/// implies boot-lazy (and a servable seed), so a *deferred* boot always takes
+/// [`run_boot_render`]'s boot-lazy branch there (mark-stale, no eager render).
+/// The opt-out (conjunct 3) and the servable-seed requirement (conjunct 2) only
+/// make *some* boot-lazy boots fall back to building the renderer eagerly before
+/// bind — exactly the pre-#1182 boot-lazy path. So the gate no longer "matches"
+/// the boot-lazy gate one-for-one, but the load-bearing direction (defer ⟹
+/// boot-lazy branch) still holds. When the gate is off, `boot_dev_renderer`
+/// builds the renderer eagerly before bind — the deferral is strictly additive.
 ///
-/// SSR-window trade-off (issue #1182, accepted): the gate only proves SOME
-/// servable `index.html` exists, not that every route is covered during the
-/// deferred-bundle window. SSG routes with a prebuilt `dist/<route>/index.html`
-/// serve from the `read_from_dist` leg (`ServeOpts.dist_root`) the whole window;
-/// SSR-only (`prerender = false`) routes have no static artifact, so they serve
-/// the controlled dev 404 (+ livereload) until the renderer publishes — then the
-/// post-publish `pages_stale` broadcast reloads those tabs and they resolve.
-/// This is the same request-before-render contract #1166 already ships, just
-/// over the bundle window; it does extend the SSR-unavailable window (which was
-/// ~0 in non-deferred boot-lazy, where the renderer was live before bind) to the
-/// bundle duration. Acceptable for the large-SSG projects this targets; a
-/// per-route dist-coverage gate would need the route tables, which need the
-/// bundle we are deferring. Tracked for revisit in issue-raising below.
+/// SSR-window trade-off (issue #1182, accepted; opt-out added in #1188): the gate
+/// only proves SOME servable `index.html` exists, not that every route is covered
+/// during the deferred-bundle window. SSG routes with a prebuilt
+/// `dist/<route>/index.html` serve from the `read_from_dist` leg
+/// (`ServeOpts.dist_root`) the whole window; SSR-only (`prerender = false`) routes
+/// have no static artifact, so they serve the controlled dev 404 (+ livereload)
+/// until the renderer publishes — then the post-publish `pages_stale` broadcast
+/// reloads those tabs and they resolve. This is the same request-before-render
+/// contract #1166 already ships, just over the bundle window; it does extend the
+/// SSR-unavailable window (which was ~0 in non-deferred boot-lazy, where the
+/// renderer was live before bind) to the bundle duration. Acceptable for the
+/// large-SSG projects this targets. An SSR-heavy project that can't tolerate that
+/// window sets `ZFB_DEV_DEFER_BUNDLE=0` (issue #1188) to opt out: the renderer /
+/// route tables are built before bind, removing the SSR-only 404 window, at the
+/// cost of a slower first-accept. (Opting out does NOT disable boot-lazy itself —
+/// the graph/render/islands deferral contracts remain.) A finer per-route
+/// dist-coverage gate would need the route tables, which need the very bundle
+/// being deferred, so it stays out of scope.
 ///
 /// Split out so the gate is unit-testable without process-global env mutation
 /// or a real `dist/` tree.
@@ -1921,8 +1946,11 @@ fn defer_dev_bundle_decision(
     lazy_render_on: bool,
     boot_lazy_var: Option<&str>,
     dist_servable: bool,
+    defer_var: Option<&str>,
 ) -> bool {
-    boot_lazy_decision(lazy_render_on, boot_lazy_var) && dist_servable
+    boot_lazy_decision(lazy_render_on, boot_lazy_var)
+        && dist_servable
+        && resolve_defer_bundle(defer_var)
 }
 
 /// Pure precedence rule for the boot-lazy switch (issue #1057):
@@ -1935,6 +1963,22 @@ fn resolve_boot_lazy(var: Option<&str>) -> bool {
             t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
         }
         None => BOOT_LAZY_DEFAULT,
+    }
+}
+
+/// Pure precedence rule for the #1182 dev-bundle deferral opt-out (issue #1188):
+/// the deferral is ON by default; `ZFB_DEV_DEFER_BUNDLE=0|false` opts OUT so the
+/// renderer is built eagerly before bind (no SSR-only 404 window) at the cost of
+/// a slower first-accept. Unset / `1` / `true` / unrecognized keep the default-on
+/// deferral. Inverted default vs [`resolve_boot_lazy`]: only an explicit falsey
+/// value suppresses the deferral, so a malformed value never silently disables it.
+fn resolve_defer_bundle(var: Option<&str>) -> bool {
+    match var {
+        Some(raw) => {
+            let t = raw.trim();
+            !(t == "0" || t.eq_ignore_ascii_case("false"))
+        }
+        None => true,
     }
 }
 
@@ -6046,26 +6090,66 @@ mod tests {
 
             /// Issue #1182 — the eager dev bundle is deferred past
             /// `TcpListener::bind` ONLY when boot-lazy is active AND a servable
-            /// `dist/` seed is present. Both conjuncts are load-bearing: drop
-            /// boot-lazy and there is no request-time render-on-request hook to
-            /// recover the deferred renderer; drop the servable seed and there
-            /// is nothing to serve during the pre-renderer window. The gate is
-            /// `boot_lazy_decision(..) && dist_servable`.
+            /// `dist/` seed is present AND the #1188 opt-out is not engaged. All
+            /// three conjuncts are load-bearing: drop boot-lazy and there is no
+            /// request-time render-on-request hook to recover the deferred
+            /// renderer; drop the servable seed and there is nothing to serve
+            /// during the pre-renderer window; engage the opt-out and an SSR-heavy
+            /// project asked for the eager pre-bind renderer. The gate is
+            /// `boot_lazy_decision(..) && dist_servable && resolve_defer_bundle(..)`.
+            /// The 4th arg is the `ZFB_DEV_DEFER_BUNDLE` value (`None` = default on).
             #[test]
             fn defer_dev_bundle_requires_boot_lazy_and_servable_dist() {
-                // boot-lazy on (lazy on + env on) + servable dist => defer.
-                assert!(defer_dev_bundle_decision(true, Some("1"), true));
-                assert!(defer_dev_bundle_decision(true, Some("true"), true));
+                // boot-lazy on (lazy on + env on) + servable dist + default opt-in => defer.
+                assert!(defer_dev_bundle_decision(true, Some("1"), true, None));
+                assert!(defer_dev_bundle_decision(true, Some("true"), true, None));
+                // explicit opt-in value is still a defer.
+                assert!(defer_dev_bundle_decision(true, Some("1"), true, Some("1")));
                 // boot-lazy on but NO servable dist => eager (no safe seed).
-                assert!(!defer_dev_bundle_decision(true, Some("1"), false));
+                assert!(!defer_dev_bundle_decision(true, Some("1"), false, None));
                 // servable dist but boot-lazy OFF (env off) => eager.
-                assert!(!defer_dev_bundle_decision(true, None, true));
-                assert!(!defer_dev_bundle_decision(true, Some("0"), true));
+                assert!(!defer_dev_bundle_decision(true, None, true, None));
+                assert!(!defer_dev_bundle_decision(true, Some("0"), true, None));
                 // servable dist + env on but lazy rendering OFF => eager
                 // (no render-on-request hook is installed).
-                assert!(!defer_dev_bundle_decision(false, Some("1"), true));
+                assert!(!defer_dev_bundle_decision(false, Some("1"), true, None));
                 // neither => eager.
-                assert!(!defer_dev_bundle_decision(false, None, false));
+                assert!(!defer_dev_bundle_decision(false, None, false, None));
+
+                // #1188 opt-out: boot-lazy + servable but ZFB_DEV_DEFER_BUNDLE=0|false
+                // => eager pre-bind renderer (no SSR-only 404 window).
+                assert!(!defer_dev_bundle_decision(true, Some("1"), true, Some("0")));
+                assert!(!defer_dev_bundle_decision(
+                    true,
+                    Some("1"),
+                    true,
+                    Some("false")
+                ));
+
+                // The opt-out can only SUPPRESS, never force-enable: with lazy off,
+                // boot-lazy off, or no servable dist, the gate stays false even when
+                // the opt-out is unset/opted-in.
+                assert!(!defer_dev_bundle_decision(false, Some("1"), true, None));
+                assert!(!defer_dev_bundle_decision(true, None, true, Some("true")));
+                assert!(!defer_dev_bundle_decision(true, Some("1"), false, None));
+            }
+
+            /// Issue #1188 — the dev-bundle deferral opt-out resolver is ON by
+            /// default; ONLY an explicit `0`/`false` (trimmed, case-insensitive)
+            /// opts out. Unset and unrecognized values keep the deferral on, so a
+            /// malformed value never silently disables #1182. Inverted default vs
+            /// `resolve_boot_lazy`.
+            #[test]
+            fn defer_bundle_optout_resolution() {
+                // Default-on: unset / truthy / unrecognized all keep deferral on.
+                assert!(resolve_defer_bundle(None));
+                assert!(resolve_defer_bundle(Some("1")));
+                assert!(resolve_defer_bundle(Some("true")));
+                assert!(resolve_defer_bundle(Some("banana")));
+                // Only explicit falsey values opt out (trimmed, case-insensitive).
+                assert!(!resolve_defer_bundle(Some("0")));
+                assert!(!resolve_defer_bundle(Some("false")));
+                assert!(!resolve_defer_bundle(Some(" FALSE ")));
             }
 
             /// Issue #1057 — the freshness gate accepts a `dist/` only when it

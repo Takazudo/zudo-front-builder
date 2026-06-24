@@ -267,6 +267,9 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]
     // must control the mode exclusively through `extra_env`.
     cmd.env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
+        // #1188 — strip any inherited bundle-deferral opt-out so boot-lazy
+        // deferral tests aren't silently disabled by the developer's shell.
+        .env_remove("ZFB_DEV_DEFER_BUNDLE")
         // Test-only boot-window injection knob (#1166 Finding 2) — strip any
         // inherited value so only the test that opts in sees the slow window.
         .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS");

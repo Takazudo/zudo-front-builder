@@ -345,6 +345,7 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]
     cmd.env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_BOOT_LAZY")
+        .env_remove("ZFB_DEV_DEFER_BUNDLE")
         .env_remove("ZFB_DEV_TEST_SLOW_DIGEST_MS")
         .env_remove("ZFB_DEV_TEST_SLOW_ISLANDS_MS")
         .env_remove("ZFB_DEV_TEST_SLOW_BUNDLE_MS");
