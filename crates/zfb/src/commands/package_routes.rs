@@ -29,6 +29,26 @@
 //! comparing route shape keys. Package-vs-package collisions are already
 //! a hard error at registration (`InjectRouteConflict`).
 //!
+//! ### Known precedence limitations (loud failure, narrow intersection)
+//!
+//! Both of these are edge cases that fail LOUDLY (never silent shadowing)
+//! and only with package routes present; the robust fixes thread more
+//! config through the materialiser and belong with Z1b / the Confirm wave:
+//!
+//! - **Optional-catchall cross-length conflict.** The pre-scan drop
+//!   compares EXACT shape keys, so it does not cover the router's
+//!   cross-length optional-catchall rule: a package `/docs/[[...rest]]`
+//!   (shape `/docs/:...`) and a user `pages/docs/index.tsx` (shape `/docs`)
+//!   have different keys, so the package route survives and the merged scan
+//!   raises `OptionalCatchallConflict`. Robust fix: reproduce
+//!   `detect_optional_catchall_conflicts`' prefix/zero-segment logic here.
+//! - **`bundle.exclude` on a user `pages/` file.** Copied user pages live
+//!   at an overlay path outside `project_root`, so `BundleExcludeMatcher`
+//!   (which strips relative to `project_root`) no longer matches them — an
+//!   `bundle.exclude: ["pages/x.tsx"]` entry stops excluding the copied
+//!   `x.tsx`. Robust fix: thread the resolved exclude globs in and skip
+//!   matching pages during the overlay copy.
+//!
 //! ## Lifetime
 //!
 //! The overlay is a [`tempfile::TempDir`] whose handle the caller keeps
@@ -244,6 +264,20 @@ pub(crate) fn pattern_to_pages_rel(pattern: &str) -> Result<PathBuf> {
             ));
         }
         if i == last {
+            // The scanner collapses a final `index` stem to the parent's
+            // route (`pages/index.tsx` → `/`), so materialising
+            // `injectRoute("/index", …)` as `index.tsx` would silently
+            // serve `/` (or collide with the user's root page) rather than
+            // `/index`. There is no non-ambiguous overlay path for a literal
+            // trailing `index` segment, so reject it with a clear error
+            // (the author should use `"/"` for the root route).
+            if *seg == "index" {
+                return Err(anyhow!(
+                    "pattern must not end in a literal `index` segment — the scanner \
+                     collapses it to the parent route; use `\"/\"` for the root route \
+                     (got {pattern:?})"
+                ));
+            }
             rel.push(format!("{seg}.tsx"));
         } else {
             rel.push(seg);
@@ -274,6 +308,27 @@ pub(crate) fn pattern_to_pages_rel(pattern: &str) -> Result<PathBuf> {
 /// The entrypoint is imported by its absolute path; esbuild resolves an
 /// absolute specifier as-is, so this is independent of where the overlay
 /// physically lives.
+///
+/// ## Known limitations (Z1a scope; Z1b sharp edges)
+///
+/// Because the entrypoint is imported by absolute path (re-export of the
+/// default), the package page module itself is bundled from OUTSIDE the
+/// bundler's shadow tree. Two consequences, both edge cases for v1 and
+/// flagged for Z1b to resolve when it makes the overlay a true namespace
+/// proxy:
+///
+/// - **zfb shadow source transforms are skipped for the package page.**
+///   A package page importing a `*.module.css` (CSS-Modules scoping) or
+///   using `import.meta.glob(...)` does NOT get those zfb-specific
+///   rewrites (they run only on files materialised into the shadow). Plain
+///   TSX + relative TS imports + node_modules deps work (verified by the
+///   integration tests); CSS-Modules/glob in a package page do not.
+/// - **Named page exports other than `default` are not proxied.** A
+///   package page's own `export const frontmatter` / `getStaticProps` /
+///   (Z1b) `export const paths` are not re-exported — the overlay owns
+///   `prerender`/`frontmatter` via the `injectRoute` hint instead. Z1b,
+///   which must surface a top-level `paths`, will replace this default-only
+///   re-export with a namespace-preserving proxy.
 pub(crate) fn synthesize_static_overlay_module(
     entrypoint: &Path,
     prerender: Option<bool>,
@@ -387,6 +442,19 @@ mod tests {
         assert!(pattern_to_pages_rel("/a/../b").is_err());
         assert!(pattern_to_pages_rel("/./x").is_err());
         assert!(pattern_to_pages_rel("no-leading-slash").is_err());
+    }
+
+    #[test]
+    fn pattern_to_pages_rel_rejects_trailing_index() {
+        // A final literal `index` segment would collapse to the parent
+        // route, silently serving `/` instead of `/index` — reject it.
+        assert!(pattern_to_pages_rel("/index").is_err());
+        assert!(pattern_to_pages_rel("/docs/index").is_err());
+        // `index` as a NON-final segment is a normal directory name.
+        assert_eq!(
+            pattern_to_pages_rel("/index/x").unwrap(),
+            PathBuf::from("index/x.tsx")
+        );
     }
 
     #[test]

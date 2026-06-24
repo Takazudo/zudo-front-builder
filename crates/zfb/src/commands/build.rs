@@ -138,42 +138,11 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         setup_registries,
     } = plugin_setup;
 
-    // #1193 — package-owned routes. Resolve the build pages root: with no
-    // build routes this is `project_root/pages` and the overlay machinery
-    // is entirely bypassed (byte-identical parity); with build routes it
-    // is a per-build temp overlay that copies the user's real `pages/`
-    // plus the synthesized package modules (user-`pages/`-wins precedence
-    // is enforced inside via a pre-scan shape-key drop). `_overlay_guard`
-    // is the RAII handle for the temp dir — it must outlive the bundle +
-    // render + any `paths()` V8 eval, so it stays in scope to end-of-run.
+    // #1193 — the package-owned build routes registered during setup. The
+    // overlay that materialises them is built AFTER preBuild (below), so a
+    // preBuild hook that generates `pages/` files is reflected in both the
+    // user-wins precedence check and the merged scan.
     let injected_routes = setup_registries.injected_routes.as_slice();
-    let overlay =
-        crate::commands::package_routes::resolve_build_pages_root(&pages_dir, injected_routes)
-            .context("resolving build pages root for package-owned routes")?;
-    let build_pages_root = overlay.build_pages_root.clone();
-    let _overlay_guard = overlay.guard;
-
-    // Surface which package routes were materialised (and at what overlay
-    // path) so the build output is legible when a preset owns routes.
-    for mr in &overlay.materialized {
-        crate::output::info(format!(
-            "package route `{}` → pages/{}",
-            mr.pattern,
-            mr.pages_rel.display()
-        ));
-    }
-
-    // Project-root sanity check, relaxed for package-owned routes (#1193):
-    // a project with build routes may ship an empty/absent `pages/` (the
-    // overlay is built from package routes alone). When there are no build
-    // routes, the conventional `pages/` dir is still required.
-    if !build_pages_root.is_dir() {
-        return Err(anyhow!(
-            "no `pages/` directory found in {}; run `zfb build` from a project root \
-             (or have a plugin contribute build routes via injectRoute)",
-            project_root.display()
-        ));
-    }
 
     // Build the IslandsPluginConfig from the same data — cheap clones since
     // the alias/virtual-module vecs are shared with the main bundler path.
@@ -201,6 +170,44 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
             .await
             .map_err(zfb_build::annotate_with_plugin_error)
             .context("preBuild lifecycle hook")?;
+    }
+
+    // #1193 — package-owned routes. Resolve the build pages root: with no
+    // build routes this is `project_root/pages` and the overlay machinery
+    // is entirely bypassed (byte-identical parity); with build routes it
+    // is a per-build temp overlay that copies the user's real `pages/`
+    // plus the synthesized package modules (user-`pages/`-wins precedence
+    // is enforced inside via a pre-scan shape-key drop). Done AFTER preBuild
+    // so any `pages/` files a preBuild hook generated are copied in and seen
+    // by the precedence check + merged scan. `_overlay_guard` is the RAII
+    // handle for the temp dir — it must outlive the bundle + render + any
+    // `paths()` V8 eval, so it stays in scope to end-of-run.
+    let overlay =
+        crate::commands::package_routes::resolve_build_pages_root(&pages_dir, injected_routes)
+            .context("resolving build pages root for package-owned routes")?;
+    let build_pages_root = overlay.build_pages_root.clone();
+    let _overlay_guard = overlay.guard;
+
+    // Surface which package routes were materialised (and at what overlay
+    // path) so the build output is legible when a preset owns routes.
+    for mr in &overlay.materialized {
+        crate::output::info(format!(
+            "package route `{}` → pages/{}",
+            mr.pattern,
+            mr.pages_rel.display()
+        ));
+    }
+
+    // Project-root sanity check, relaxed for package-owned routes (#1193):
+    // a project with build routes may ship an empty/absent `pages/` (the
+    // overlay is built from package routes alone). When there are no build
+    // routes, the conventional `pages/` dir is still required.
+    if !build_pages_root.is_dir() {
+        return Err(anyhow!(
+            "no `pages/` directory found in {}; run `zfb build` from a project root \
+             (or have a plugin contribute build routes via injectRoute)",
+            project_root.display()
+        ));
     }
 
     // #1193 — scan the build pages root (the overlay when package routes

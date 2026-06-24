@@ -213,6 +213,84 @@ fn static_package_route_prerenders_alongside_user_pages() {
     );
 }
 
+/// Regression guard (codex P2): a USER page that imports a sibling
+/// component via a project-relative path must still resolve when a package
+/// route is also present. The overlay must not relocate user pages such
+/// that `../components/Box` no longer reaches the real project file.
+#[test]
+fn user_page_relative_import_resolves_with_package_route_present() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[user_rel_import] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[user_rel_import] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let _nm = link_embedded_node_modules(root);
+
+    // A real project component the user page imports relatively.
+    fs::create_dir_all(root.join("components")).unwrap();
+    fs::write(
+        root.join("components/box.tsx"),
+        "export function Box() { return <div>BOX_FROM_COMPONENT</div>; }\n",
+    )
+    .unwrap();
+    // User home page imports the sibling component via `../components/box`.
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"import { Box } from "../components/box";
+export default function Page() {
+  return (
+    <html lang="en">
+      <head><title>home</title></head>
+      <body><Box /></body>
+    </html>
+  );
+}
+"#,
+    )
+    .unwrap();
+
+    // An unrelated package route, present so the overlay is materialised.
+    fs::create_dir_all(root.join("pkg")).unwrap();
+    fs::write(root.join("pkg/preset.tsx"), page_module("PRESET")).unwrap();
+    fs::write(
+        root.join("preset.mjs"),
+        r#"export default {
+  name: "rel-user-preset",
+  setup({ injectRoute }) {
+    injectRoute("/preset-page", "./pkg/preset.tsx");
+  },
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+"#,
+    )
+    .unwrap();
+
+    let Some(dist) = build_or_skip(root, &esbuild, "user_rel_import") else {
+        return;
+    };
+
+    let home = dist.join("index.html");
+    assert!(home.is_file(), "expected dist/index.html");
+    let body = fs::read_to_string(&home).unwrap();
+    assert!(
+        body.contains("BOX_FROM_COMPONENT"),
+        "the user page's relative `../components/box` import must resolve even with a \
+         package route present (overlay must not strand user-page relative imports); got: {body}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 2. Empty/absent pages/ + a "/" package route → dist/index.html.
 // ---------------------------------------------------------------------------
