@@ -36,4 +36,6 @@ pub use loader::{
     resolve_plugin_path_to_file_url, AttemptFut, EmbeddedEsbuildGetter, LoadOptions,
     LoadedTsConfig, CONFIG_SUBPROCESS_TIMEOUT, ETXTBSY_MAX_RETRIES, ETXTBSY_RETRY_DELAY,
 };
-pub use node_resolve::resolve_node_bare_specifier;
+pub use node_resolve::{
+    resolve_node_bare_specifier, resolve_package_dir, resolve_plugin_from_anchors,
+};

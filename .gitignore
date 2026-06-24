@@ -29,6 +29,18 @@ node_modules/
 !crates/zfb/tests/fixtures/check-tsc-fail/node_modules/.bin/
 !crates/zfb/tests/fixtures/check-tsc-fail/node_modules/.bin/tsc
 
+# node-modules-nested fixture: the preset package has its own node_modules/
+# (nested install simulating a plugin bundled inside a preset). Whitelist
+# these committed fixture files so the global node_modules/ rule doesn't
+# hide them from git.
+!crates/zfb-config-loader/tests/fixtures/node_resolve/node-modules-nested/src/@takazudo/zfb-preset-example/node_modules/
+!crates/zfb-config-loader/tests/fixtures/node_resolve/node-modules-nested/src/@takazudo/zfb-preset-example/node_modules/zfb-plugin-nested/
+!crates/zfb-config-loader/tests/fixtures/node_resolve/node-modules-nested/src/@takazudo/zfb-preset-example/node_modules/zfb-plugin-nested/package.json
+!crates/zfb-config-loader/tests/fixtures/node_resolve/node-modules-nested/src/@takazudo/zfb-preset-example/node_modules/zfb-plugin-nested/dist/
+!crates/zfb-config-loader/tests/fixtures/node_resolve/node-modules-nested/src/@takazudo/zfb-preset-example/node_modules/zfb-plugin-nested/dist/index.mjs
+!crates/zfb-config-loader/tests/fixtures/node_resolve/node-modules-nested/src/@takazudo/zfb-preset-example/node_modules/zfb-plugin-nested/dist/index.cjs
+!crates/zfb-config-loader/tests/fixtures/node_resolve/node-modules-nested/src/@takazudo/zfb-preset-example/node_modules/zfb-plugin-nested/dist/index.d.ts
+
 # Editors
 .DS_Store
 .vscode/
