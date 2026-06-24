@@ -1146,7 +1146,19 @@ pub fn build_prerender_map(
             // default". Warning on it is misleading (it reads as "your page is
             // broken") and fires on every frontmatter-less page, so stay silent
             // and let the missing-key default of `true` (SSG) apply. See #505.
-            Err(TsxFrontmatterError::MissingFrontmatter { .. }) => {}
+            //
+            // BUT a lone `export const prerender = false` (no `frontmatter`)
+            // must still be honored, or the `output: static` gate
+            // (`resolve_v8_mode`) never sees the SSR route and silently ships
+            // it as SSG (#1198). Record only the non-default `false`; a
+            // `true`/absent prerender stays out of the map and rides the
+            // missing-key SSG default, preserving the sparse map and #505's
+            // "no entry for plain frontmatter-less pages" behavior.
+            Err(TsxFrontmatterError::MissingFrontmatter { prerender, .. }) => {
+                if !prerender {
+                    map.insert(route.template(), prerender);
+                }
+            }
             // Any other extraction error means the frontmatter IS present but
             // malformed (parse error, duplicate/computed/wrong-shape export).
             // That's a real mistake worth surfacing.
@@ -1384,6 +1396,14 @@ mod tests {
             "export default function() { return null; }\n",
         )
         .unwrap();
+        // No frontmatter but a lone `export const prerender = false` — VALID and
+        // must NOT warn (#505), but the SSR flag must still be recorded so the
+        // `output: static` gate can reject it instead of silently shipping SSG (#1198).
+        std::fs::write(
+            pages.join("ssr-nofm.tsx"),
+            "export const prerender = false;\nexport default function() { return null; }\n",
+        )
+        .unwrap();
         // Frontmatter IS present but malformed (non-literal/computed value) —
         // a real mistake that should still surface a warning.
         std::fs::write(
@@ -1396,6 +1416,7 @@ mod tests {
             static_route(vec!["about"], "pages/about.tsx"),
             static_route(vec!["preview"], "pages/preview.tsx"),
             static_route(vec!["nofm"], "pages/nofm.tsx"),
+            static_route(vec!["ssr-nofm"], "pages/ssr-nofm.tsx"),
             static_route(vec!["malformed"], "pages/malformed.tsx"),
         ];
 
@@ -1403,8 +1424,19 @@ mod tests {
         let map = build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.to_string()));
         assert_eq!(map.get("/about"), Some(&true));
         assert_eq!(map.get("/preview"), Some(&false));
-        // Absent frontmatter: no entry (default SSG), and crucially no warning.
+        // Absent frontmatter, no prerender: no entry (default SSG), and crucially no warning.
         assert!(!map.contains_key("/nofm"));
+        assert!(
+            !is_ssr_route(&map, "/nofm"),
+            "plain frontmatter-less page is SSG"
+        );
+        // Absent frontmatter + lone `prerender = false`: the SSR flag IS recorded
+        // (so the output:static gate sees it) but still produces no warning (#1198).
+        assert_eq!(map.get("/ssr-nofm"), Some(&false));
+        assert!(
+            is_ssr_route(&map, "/ssr-nofm"),
+            "lone `prerender = false` on a frontmatter-less page must read as SSR"
+        );
         // Malformed frontmatter: no entry, and exactly one warning naming it.
         assert!(!map.contains_key("/malformed"));
         assert_eq!(

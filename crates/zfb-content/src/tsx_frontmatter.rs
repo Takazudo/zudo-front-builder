@@ -107,8 +107,16 @@ pub enum TsxFrontmatterError {
 
     /// No top-level `export const frontmatter` was found. The engine
     /// requires a frontmatter export on every TSX page.
+    ///
+    /// `prerender` carries the value the loop resolved *before* this
+    /// error was raised — a lone `export const prerender = <bool>` with
+    /// no `frontmatter` sibling is still parsed (default `true`). The
+    /// consumer ([`crate::extract_tsx_frontmatter`] caller
+    /// `build_prerender_map`) reads it so the `output: static` gate can
+    /// reject a frontmatter-less `prerender = false` page instead of
+    /// silently shipping it as SSG (#1198).
     #[error("{file}: missing required `export const frontmatter`")]
-    MissingFrontmatter { file: String },
+    MissingFrontmatter { file: String, prerender: bool },
 
     /// The source declared `export const <name>` more than once at the
     /// top level. We refuse to silently pick one.
@@ -334,6 +342,10 @@ pub fn extract(source: &str, file_name: &str) -> Result<TsxFrontmatter, TsxFront
 
     let frontmatter = frontmatter.ok_or_else(|| TsxFrontmatterError::MissingFrontmatter {
         file: file_name.to_string(),
+        // Surface the loop-resolved `prerender` instead of discarding it:
+        // a lone `export const prerender = false` (no `frontmatter`) must
+        // still reach the `output: static` gate (#1198).
+        prerender,
     })?;
 
     Ok(TsxFrontmatter {
@@ -1032,7 +1044,31 @@ mod tests {
         let src = "export const other = 1;\n";
         let err = extract(src, "no-fm.tsx").expect_err("must fail");
         match err {
-            TsxFrontmatterError::MissingFrontmatter { file } => assert_eq!(file, "no-fm.tsx"),
+            // No `prerender` export → carries the SSG default (`true`).
+            TsxFrontmatterError::MissingFrontmatter { file, prerender } => {
+                assert_eq!(file, "no-fm.tsx");
+                assert!(prerender, "absent prerender defaults to SSG (true)");
+            }
+            other => unreachable!("expected MissingFrontmatter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lone_prerender_false_surfaced_on_missing_frontmatter() {
+        // A page with `export const prerender = false` and NO `frontmatter`
+        // still fails with MissingFrontmatter — but the resolved flag must
+        // ride along so the `output: static` gate can reject it (#1198),
+        // rather than being silently discarded and defaulting to SSG.
+        let src = "export const prerender = false;\nexport default function() { return null; }\n";
+        let err = extract(src, "ssr-only.tsx").expect_err("must fail (no frontmatter)");
+        match err {
+            TsxFrontmatterError::MissingFrontmatter { file, prerender } => {
+                assert_eq!(file, "ssr-only.tsx");
+                assert!(
+                    !prerender,
+                    "lone `prerender = false` must survive on MissingFrontmatter"
+                );
+            }
             other => unreachable!("expected MissingFrontmatter, got {other:?}"),
         }
     }
