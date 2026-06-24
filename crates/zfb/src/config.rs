@@ -1545,7 +1545,10 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
 /// every broken entry at once would just delay the same fix (`pnpm install`
 /// or correct the path) by one iteration of the user's edit-build loop.
 fn resolve_json_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
-    resolve_plugin_modules_where(cfg, dir, |_| true)
+    // JSON path resolves all entries in one pass; the caller cannot distinguish
+    // preset-contributed entries from user entries at this point, so we use
+    // `from_preset: false` and keep the generic recovery hint.
+    resolve_plugin_modules_where(cfg, dir, false, |_| true)
 }
 
 /// Like [`resolve_json_plugin_modules`] but only resolves entries that still
@@ -1553,16 +1556,25 @@ fn resolve_json_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
 /// evaluator's zip-assignment has already filled in the original (top-level)
 /// plugins; preset-contributed plugins are the remaining `None` entries.
 fn resolve_unresolved_plugin_modules(cfg: &mut Config, dir: &Path) -> Result<()> {
-    resolve_plugin_modules_where(cfg, dir, |entry| entry.resolved_module.is_none())
+    // Only entries with `resolved_module = None` at this point are preset-contributed
+    // (the TS evaluator already resolved top-level plugins). Pass `from_preset: true`
+    // so the error message names the preset origin and the directory tried.
+    resolve_plugin_modules_where(cfg, dir, true, |entry| entry.resolved_module.is_none())
 }
 
 /// Core resolver: calls the path / bare-specifier resolution logic for every
 /// plugin entry that satisfies `pred`. Extracted so
 /// [`resolve_json_plugin_modules`] and [`resolve_unresolved_plugin_modules`]
 /// share one implementation.
+///
+/// `from_preset` controls the wording of the error message emitted when a bare
+/// specifier cannot be found in `node_modules`. Pass `true` on the
+/// preset/unresolved pass (TS path after merge) so the user knows the missing
+/// package was contributed by a preset and knows where to look to fix it.
 fn resolve_plugin_modules_where(
     cfg: &mut Config,
     dir: &Path,
+    from_preset: bool,
     pred: impl Fn(&PluginConfig) -> bool,
 ) -> Result<()> {
     for entry in cfg.plugins.iter_mut().filter(|e| pred(e)) {
@@ -1577,11 +1589,21 @@ fn resolve_plugin_modules_where(
                 // a clear signal rather than silent plugin-drop.
                 let file_url = zfb_config_loader::resolve_node_bare_specifier(name, dir)
                     .with_context(|| {
-                        format!(
-                            "plugin {:?}: package not found in node_modules \
-                             (did you run `pnpm install`?)",
-                            name
-                        )
+                        if from_preset {
+                            format!(
+                                "plugin {:?} (contributed by a preset): package not found \
+                                 in node_modules under {:?} — add the package to your \
+                                 project's dependencies and run `pnpm install`",
+                                name,
+                                dir,
+                            )
+                        } else {
+                            format!(
+                                "plugin {:?}: package not found in node_modules \
+                                 (did you run `pnpm install`?)",
+                                name
+                            )
+                        }
                     })?;
                 entry.resolved_module = Some(file_url);
             }
@@ -4684,6 +4706,56 @@ mod tests {
         let parsed = url::Url::parse(resolved).expect("valid url");
         let parsed_path = parsed.to_file_path().expect("file:// URL round-trips");
         assert_eq!(parsed_path, plugin_path.canonicalize().unwrap());
+    }
+
+    /// Error message for an unresolvable preset-contributed plugin names the
+    /// specifier, flags that it came from a preset, and includes the project
+    /// root directory that was searched (#1214).
+    ///
+    /// Uses the TS path (mock envelope) so the plugin goes through
+    /// `resolve_unresolved_plugin_modules` (the preset/unresolved pass).
+    #[tokio::test]
+    async fn ts_path_unresolvable_preset_plugin_names_preset_in_error() {
+        let tmp = TempDir::new().unwrap();
+
+        tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+
+        // The preset contributes a bare specifier that is not installed —
+        // `not-a-real-package-xyz` does not exist in node_modules.
+        let opts = LoadOptions {
+            test_default_export_json: Some(
+                serde_json::json!({
+                    "config": {
+                        "presets": [
+                            { "plugins": [{ "name": "not-a-real-package-xyz" }] }
+                        ]
+                    },
+                    "plugins": []
+                })
+                .to_string(),
+            ),
+            ..LoadOptions::default()
+        };
+
+        let err = load_from_dir_with_options(tmp.path(), &opts)
+            .await
+            .expect_err("loading a preset plugin whose package is not installed must fail");
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("contributed by a preset"),
+            "error must say the plugin came from a preset; got:\n{msg}"
+        );
+        assert!(
+            msg.contains("not-a-real-package-xyz"),
+            "error must name the plugin specifier; got:\n{msg}"
+        );
+        assert!(
+            msg.contains("pnpm install"),
+            "error must include the recovery hint; got:\n{msg}"
+        );
     }
 
     /// TS-path preset scalar field fills in when the main config leaves it default.
