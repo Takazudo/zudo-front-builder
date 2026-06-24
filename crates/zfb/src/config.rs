@@ -1457,7 +1457,9 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
         // the original `text` so a TYPE/schema error keeps the line/column
         // message (`from_value` on a merged Value loses position info). Only
         // the preset path needs the Value-layer merge.
-        let mut cfg: Config = if let Some(presets) = take_presets(&mut user_value) {
+        let presets =
+            take_presets(&mut user_value).map_err(|e| anyhow!("{}: {}", json_path.display(), e))?;
+        let mut cfg: Config = if let Some(presets) = presets {
             // Validate each preset as a `Config` fragment BEFORE merging so an
             // invalid preset field surfaces even when the user also sets that
             // key (all `Config` fields are `#[serde(default)]`, so a partial
@@ -1661,7 +1663,14 @@ fn parse_loaded_config(
     // the resolved top-level plugins keep their `resolved_module` and the
     // count guard saw the original indices.
     let mut had_presets = false;
-    let merged_value = if let Some(presets) = take_presets(&mut value) {
+    let presets = take_presets(&mut value).map_err(|e| {
+        anyhow!(
+            "{}: failed to parse the default export: {}",
+            ts_path.display(),
+            e
+        )
+    })?;
+    let merged_value = if let Some(presets) = presets {
         had_presets = true;
         for (i, preset_value) in presets.iter().enumerate() {
             serde_json::from_value::<Config>(preset_value.clone()).map_err(|e| {
@@ -1791,17 +1800,33 @@ fn strip_presets(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
-/// Remove the top-level `presets` array from the user config Value and return
+/// Remove the top-level `presets` key from the user config Value and return
 /// its entries when present and non-empty (#1196). The key is removed in place
 /// so it never reaches the final `from_value::<Config>` (presets are merged,
-/// not deserialized). A `presets` key that is absent, `null`, or an empty
-/// array yields `None` (nothing to merge).
-fn take_presets(value: &mut serde_json::Value) -> Option<Vec<serde_json::Value>> {
-    let map = value.as_object_mut()?;
-    let presets = map.remove("presets")?;
+/// not deserialized).
+///
+/// - absent or empty array → `Ok(None)` (nothing to merge)
+/// - non-empty array → `Ok(Some(items))`
+/// - any other value (e.g. the malformed TS shape `presets: somePreset()`
+///   instead of `[somePreset()]`, or `presets: null`) → `Err` — a non-array
+///   `presets` is a config error, not a silent no-op. The pre-#1196 typed
+///   deserialization (`presets: Vec<Value>`) rejected these shapes; merging at
+///   the Value layer must preserve that or the malformed config would load with
+///   its presets silently dropped.
+fn take_presets(value: &mut serde_json::Value) -> Result<Option<Vec<serde_json::Value>>, String> {
+    let Some(map) = value.as_object_mut() else {
+        return Ok(None);
+    };
+    let Some(presets) = map.remove("presets") else {
+        return Ok(None);
+    };
     match presets {
-        serde_json::Value::Array(items) if !items.is_empty() => Some(items),
-        _ => None,
+        serde_json::Value::Array(items) if items.is_empty() => Ok(None),
+        serde_json::Value::Array(items) => Ok(Some(items)),
+        other => Err(format!(
+            "`presets` must be an array of config fragments, got {}",
+            json_type_name(&other)
+        )),
     }
 }
 
@@ -5144,6 +5169,51 @@ mod tests {
             cfg.bundle.unwrap().exclude,
             Some(vec!["user-only.tsx".to_string()]),
             "user's bundle.exclude wins whole; nested arrays are not additive"
+        );
+    }
+
+    /// A non-array `presets` (e.g. the malformed TS shape `presets: somePreset()`
+    /// instead of `[somePreset()]`) must be REJECTED, not silently dropped — the
+    /// pre-#1196 typed `presets: Vec<Value>` deserialization rejected it, and the
+    /// Value-layer merge must preserve that (codex review of #1199/#1202).
+    #[test]
+    fn take_presets_rejects_non_array() {
+        // object value → error
+        let mut obj = serde_json::json!({ "presets": { "adapter": "x" } });
+        assert!(
+            take_presets(&mut obj).is_err(),
+            "a non-array `presets` object must be rejected"
+        );
+        // string value → error
+        let mut s = serde_json::json!({ "presets": "nope" });
+        assert!(
+            take_presets(&mut s).is_err(),
+            "a non-array `presets` string must be rejected"
+        );
+        // absent → Ok(None)
+        let mut absent = serde_json::json!({ "adapter": "x" });
+        assert_eq!(
+            take_presets(&mut absent),
+            Ok(None),
+            "absent presets is fine"
+        );
+        // empty array → Ok(None) and the key is stripped
+        let mut empty = serde_json::json!({ "presets": [] });
+        assert_eq!(
+            take_presets(&mut empty),
+            Ok(None),
+            "an empty presets array is no-op"
+        );
+        assert!(
+            empty.get("presets").is_none(),
+            "the empty presets key is removed in place"
+        );
+        // non-empty array → Ok(Some(..))
+        let mut arr = serde_json::json!({ "presets": [{ "adapter": "p" }] });
+        assert_eq!(
+            take_presets(&mut arr).map(|o| o.map(|v| v.len())),
+            Ok(Some(1)),
+            "a non-empty presets array is returned"
         );
     }
 
