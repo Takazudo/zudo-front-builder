@@ -581,7 +581,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // change.
     let dev_css_url_prefix: String =
         zfb_types::dev_mount_prefix(cfg.base.as_deref()).unwrap_or_default();
-    match crate::commands::build::build_default_css_payload(&project_root, &dev_assets_root, &cfg) {
+    match crate::commands::build::build_default_css_payload(
+        &project_root,
+        &dev_assets_root,
+        &cfg,
+        &[],
+    ) {
         Ok(Some(payload)) => {
             // Write the bytes to the isolated dev-assets root (issue #1189)
             // so `GET /assets/styles.css` is immediately serveable (unlike
@@ -634,6 +639,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &project_root_for_css,
                 &dev_assets_root_for_css,
                 &cfg_for_css,
+                &[],
             )?;
             let mut guard = url_handle.write().unwrap_or_else(|p| {
                 tracing::warn!(

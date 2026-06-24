@@ -685,8 +685,9 @@ impl BuildRunner for DefaultRunner {
         // bytes. Either slot independently returns `None` when the
         // project doesn't exercise it (Tailwind disabled, no
         // `"use client"` components, etc.).
-        let css = build_default_css_payload(project_root, outdir, config)
-            .context("CSS emitter (DefaultRunner) failed")?;
+        let css =
+            build_default_css_payload(project_root, outdir, config, package_route_entrypoints)
+                .context("CSS emitter (DefaultRunner) failed")?;
         let (islands, registered_marker_names) = build_default_islands_payload(
             project_root,
             user_pages_dir,
@@ -742,6 +743,13 @@ pub(crate) fn build_default_css_payload(
     project_root: &Path,
     outdir: &Path,
     config: &Config,
+    // fix-A [5] (#1191): absolute paths of materialized package-route
+    // entrypoints. Their parent dirs are appended to the Tailwind `@source`
+    // content globs so utility classes used ONLY in a package-route page
+    // (whose entrypoint lives in node_modules / outside the globbed project
+    // dirs) are scanned and not silently pruned from the emitted stylesheet.
+    // Empty on the no-package-route path (byte-identical parity).
+    package_route_entrypoints: &[PathBuf],
 ) -> Result<Option<AssetEmitterPayload>> {
     // `tailwind: { enabled: false }` disables only the Tailwind layers,
     // not the authored-CSS pipeline. Route to the Tailwind-free path so
@@ -768,10 +776,30 @@ pub(crate) fn build_default_css_payload(
     // onto the project root absolute path so the synthesised entry
     // CSS picks up sources regardless of where the user invoked
     // `zfb build`.
-    let content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
+    let mut content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
         .iter()
         .map(|root| project_root.join(root).to_string_lossy().into_owned())
         .collect::<Vec<_>>();
+
+    // fix-A [5] (#1191): a package-route page's entrypoint lives OUTSIDE the
+    // conventional project content roots (node_modules / a workspace package),
+    // and the overlay re-export module carries no class strings — so Tailwind's
+    // `@source` scan would never see the package page's utility classes and
+    // would prune them from `styles-<hash>.css` (green build, unstyled page).
+    // Add each entrypoint's parent directory as an extra `@source` root so its
+    // classes (and those of files it imports from the same package dir) are
+    // scanned. De-duped to keep the directive list stable.
+    {
+        let mut seen: std::collections::HashSet<String> = content_globs.iter().cloned().collect();
+        for entry in package_route_entrypoints {
+            if let Some(dir) = entry.parent() {
+                let glob = dir.to_string_lossy().into_owned();
+                if seen.insert(glob.clone()) {
+                    content_globs.push(glob);
+                }
+            }
+        }
+    }
 
     let mut tw_cfg = TailwindSubprocessConfig::default()
         .with_working_dir(project_root.to_path_buf())
@@ -4406,11 +4434,12 @@ mod tests {
             tailwind: Some(crate::config::TailwindConfig { enabled: false }),
             ..Config::default()
         };
-        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
-            .expect("should not error")
-            .expect(
-                "expected Some payload: authored CSS + module must ship even with tailwind off",
-            );
+        let payload =
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+                .expect("should not error")
+                .expect(
+                    "expected Some payload: authored CSS + module must ship even with tailwind off",
+                );
 
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
@@ -4467,8 +4496,9 @@ mod tests {
             tailwind: Some(crate::config::TailwindConfig { enabled: false }),
             ..Config::default()
         };
-        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
-            .expect("should not error");
+        let payload =
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+                .expect("should not error");
         assert!(
             payload.is_none(),
             "expected None when tailwind disabled and no authored CSS/modules; got {payload:?}",
@@ -4493,9 +4523,10 @@ mod tests {
             tailwind: Some(crate::config::TailwindConfig { enabled: false }),
             ..Config::default()
         };
-        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
-            .expect("should not error")
-            .expect("authored CSS must still ship");
+        let payload =
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+                .expect("should not error")
+                .expect("authored CSS must still ship");
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
             !css.contains("@import \"tailwindcss\""),
