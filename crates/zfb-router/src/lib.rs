@@ -20,7 +20,7 @@ pub mod scan;
 
 pub use error::RouterError;
 pub use route::{Route, RouteKind, Segment};
-pub use scan::scan_pages;
+pub use scan::{route_shape_key_for_pages_rel, scan_pages, shape_key};
 
 use std::path::{Path, PathBuf};
 

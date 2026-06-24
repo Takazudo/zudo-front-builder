@@ -94,15 +94,12 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
 
     let project_root = env::current_dir().context("failed to read current working directory")?;
 
-    // Project-root sanity check (cheap and matches the watcher's idea
-    // of "is this a zfb project").
+    // The conventional pages root. The `pages/` dir requirement is
+    // relaxed below (#1193): a project with package-owned build routes
+    // may ship a truly empty/absent `pages/`, so the hard requirement is
+    // re-checked AFTER plugin setup, once we know whether any build
+    // routes were registered.
     let pages_dir = project_root.join("pages");
-    if !pages_dir.is_dir() {
-        return Err(anyhow!(
-            "no `pages/` directory found in {}; run `zfb build` from a project root",
-            project_root.display()
-        ));
-    }
 
     let config = crate::config::load_from_dir(&project_root)
         .await
@@ -120,9 +117,10 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // setup → virtual-module prefetch → alias/virtual-module derivation.
     //
     // `SetupCommand::Build` is the per-command difference (dev uses
-    // `SetupCommand::Dev`).  For the build command `injectRoute` is
-    // rejected by the accumulator with `InjectRouteInBuildMode` — see
-    // `crates/zfb-build/src/plugin_registries.rs`.
+    // `SetupCommand::Dev`).  As of #1193, `injectRoute` is ACCEPTED
+    // during a build — a registered route becomes a package-owned build
+    // route the overlay materialiser prerenders (see below) — rather than
+    // the pre-#1193 dev-only hard error.
     let plugin_setup = crate::commands::plugins::run_plugin_setup(
         &plugin_host,
         &project_root,
@@ -137,8 +135,14 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         v8_plugin_hooks,
         plugin_alias_entries: main_bundler_alias_entries,
         plugin_virtual_modules: main_bundler_virtual_modules,
-        setup_registries: _setup_registries,
+        setup_registries,
     } = plugin_setup;
+
+    // #1193 — the package-owned build routes registered during setup. The
+    // overlay that materialises them is built AFTER preBuild (below), so a
+    // preBuild hook that generates `pages/` files is reflected in both the
+    // user-wins precedence check and the merged scan.
+    let injected_routes = setup_registries.injected_routes.as_slice();
 
     // Build the IslandsPluginConfig from the same data — cheap clones since
     // the alias/virtual-module vecs are shared with the main bundler path.
@@ -168,20 +172,79 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
             .context("preBuild lifecycle hook")?;
     }
 
-    let router = Router::scan(&pages_dir)
+    // #1193 — package-owned routes. Resolve the build pages root: with no
+    // build routes this is `project_root/pages` and the overlay machinery
+    // is entirely bypassed (byte-identical parity); with build routes it
+    // is a per-build temp overlay that copies the user's real `pages/`
+    // plus the synthesized package modules (user-`pages/`-wins precedence
+    // is enforced inside via a pre-scan shape-key drop). Done AFTER preBuild
+    // so any `pages/` files a preBuild hook generated are copied in and seen
+    // by the precedence check + merged scan. `_overlay_guard` is the RAII
+    // handle for the temp dir — it must outlive the bundle + render + any
+    // `paths()` V8 eval, so it stays in scope to end-of-run.
+    let overlay =
+        crate::commands::package_routes::resolve_build_pages_root(&pages_dir, injected_routes)
+            .context("resolving build pages root for package-owned routes")?;
+    let build_pages_root = overlay.build_pages_root.clone();
+    let _overlay_guard = overlay.guard;
+
+    // Surface which package routes were materialised (and at what overlay
+    // path) so the build output is legible when a preset owns routes.
+    for mr in &overlay.materialized {
+        crate::output::info(format!(
+            "package route `{}` → pages/{}",
+            mr.pattern,
+            mr.pages_rel.display()
+        ));
+    }
+
+    // codex P1 (#1191 review) — the islands seed must NOT walk the overlay
+    // for user pages (the overlay has no `components/`). Collect the REAL
+    // package-route entrypoints to seed package-route island discovery; user
+    // pages are seeded from the real `pages_dir` below. Empty on the
+    // no-package-route parity path.
+    let package_route_entrypoints: Vec<PathBuf> = overlay
+        .materialized
+        .iter()
+        .map(|mr| mr.entrypoint.clone())
+        .collect();
+
+    // Project-root sanity check, relaxed for package-owned routes (#1193):
+    // a project with build routes may ship an empty/absent `pages/` (the
+    // overlay is built from package routes alone). When there are no build
+    // routes, the conventional `pages/` dir is still required.
+    if !build_pages_root.is_dir() {
+        return Err(anyhow!(
+            "no `pages/` directory found in {}; run `zfb build` from a project root \
+             (or have a plugin contribute build routes via injectRoute)",
+            project_root.display()
+        ));
+    }
+
+    // #1193 — scan the build pages root (the overlay when package routes
+    // are present, else `project_root/pages`), so the merged route table
+    // includes package-owned routes.
+    let router = Router::scan(&build_pages_root)
         .map_err(anyhow::Error::from)
-        .with_context(|| format!("scanning routes under {}", pages_dir.display()))?;
+        .with_context(|| format!("scanning routes under {}", build_pages_root.display()))?;
     let routes = router.routes();
 
     let (pages_built, route_manifest) = tokio::task::block_in_place(|| {
         run_build(BuildArgsResolved {
             project_root: &project_root,
+            build_pages_root: &build_pages_root,
+            // codex P1 — user-page islands resolve against the REAL pages
+            // dir, never the overlay; package-route islands seed from their
+            // real entrypoints.
+            user_pages_dir: &pages_dir,
+            package_route_entrypoints: &package_route_entrypoints,
             outdir: &outdir,
             config: &config,
             routes,
             runner: &DefaultRunner {
                 islands_plugin_config,
                 v8_plugin_hooks,
+                registered_client_entries: setup_registries.client_entries.clone(),
             },
             adapter_runner: &DefaultAdapterRunner,
             plugin_alias_entries: main_bundler_alias_entries,
@@ -350,6 +413,27 @@ pub(crate) fn resolve_v8_mode(
 /// later doesn't ripple into call sites.
 struct BuildArgsResolved<'a, R: BuildRunner, A: AdapterRunner> {
     project_root: &'a Path,
+    /// The pages root the bundler and router scan are pointed at (#1193).
+    /// Equal to `project_root/pages` for a project with no package-owned
+    /// routes; otherwise the per-build overlay temp dir. Threaded so
+    /// `BundlerInput.pages_dir` uses the SAME root the router scan used (the
+    /// overlay IS the single pages root — there is no multi-root merge).
+    ///
+    /// NOTE: the islands seed does NOT use this — see `user_pages_dir` /
+    /// `package_route_entrypoints` below (codex P1).
+    build_pages_root: &'a Path,
+    /// The REAL `project_root/pages` dir (codex P1). The islands seed walks
+    /// THIS for user pages, never `build_pages_root` — when a package route
+    /// makes `build_pages_root` an overlay temp dir, the overlay has no
+    /// `components/`, so seeding from it strands user-page islands reached
+    /// via outside-`pages/` imports. Equal to `build_pages_root` only on the
+    /// no-package-route parity path.
+    user_pages_dir: &'a Path,
+    /// Absolute entrypoints of materialized package routes (codex P1). The
+    /// islands seed adds each as a DFS root so package-route islands are
+    /// discovered via the route's REAL module (whose relative imports resolve
+    /// against its real location). Empty when there are no package routes.
+    package_route_entrypoints: &'a [PathBuf],
     outdir: &'a Path,
     config: &'a Config,
     routes: &'a [zfb_router::Route],
@@ -439,9 +523,19 @@ trait BuildRunner {
     /// scripts) **and** the set of registered island marker names collected by
     /// the islands scanner.  The marker-name set is empty when no islands were
     /// found; callers that only need the pipeline bytes may simply ignore it.
+    ///
+    /// The islands DFS is seeded from TWO sources (codex P1, #1191 review):
+    /// `user_pages_dir` (the REAL `project_root/pages`, so user-page islands
+    /// reached via outside-`pages/` imports resolve against the real tree)
+    /// and `package_route_entrypoints` (each materialized package route's real
+    /// entrypoint, so package-route islands are discovered too). It is
+    /// deliberately NOT seeded from the overlay `build_pages_root` — that
+    /// overlay copies only `pages/` and would strand user-page islands.
     fn emit_prod_assets(
         &self,
         project_root: &Path,
+        user_pages_dir: &Path,
+        package_route_entrypoints: &[PathBuf],
         outdir: &Path,
         config: &Config,
     ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)>;
@@ -499,6 +593,10 @@ struct DefaultRunner {
     /// `islands_plugin_config` so islands esbuild and the V8 host agree on
     /// the registered aliases / virtual modules.
     v8_plugin_hooks: zfb_render::PluginRegistryHooks,
+    /// Package-owned client-side side-effect entries registered via
+    /// `addClientEntry` during the plugin `setup` hook (#1196). Merged
+    /// into the discovered `*.client.*` set before bundling.
+    registered_client_entries: zfb_build::ClientEntryList,
 }
 #[cfg(feature = "embed_v8")]
 impl BuildRunner for DefaultRunner {
@@ -576,6 +674,8 @@ impl BuildRunner for DefaultRunner {
     fn emit_prod_assets(
         &self,
         project_root: &Path,
+        user_pages_dir: &Path,
+        package_route_entrypoints: &[PathBuf],
         outdir: &Path,
         config: &Config,
     ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
@@ -585,18 +685,25 @@ impl BuildRunner for DefaultRunner {
         // bytes. Either slot independently returns `None` when the
         // project doesn't exercise it (Tailwind disabled, no
         // `"use client"` components, etc.).
-        let css = build_default_css_payload(project_root, outdir, config)
-            .context("CSS emitter (DefaultRunner) failed")?;
+        let css =
+            build_default_css_payload(project_root, outdir, config, package_route_entrypoints)
+                .context("CSS emitter (DefaultRunner) failed")?;
         let (islands, registered_marker_names) = build_default_islands_payload(
             project_root,
+            user_pages_dir,
+            package_route_entrypoints,
             outdir,
             config.framework,
             &self.islands_plugin_config,
         )
         .context("islands emitter (DefaultRunner) failed")?;
-        let client_scripts =
-            build_default_client_scripts_payloads(project_root, outdir, config.framework)
-                .context("client-script emitters (DefaultRunner) failed")?;
+        let client_scripts = build_default_client_scripts_payloads(
+            project_root,
+            outdir,
+            config.framework,
+            &self.registered_client_entries,
+        )
+        .context("client-script emitters (DefaultRunner) failed")?;
         Ok((
             ProdAssetEmitterInputs {
                 css,
@@ -636,6 +743,13 @@ pub(crate) fn build_default_css_payload(
     project_root: &Path,
     outdir: &Path,
     config: &Config,
+    // fix-A [5] (#1191): absolute paths of materialized package-route
+    // entrypoints. Their parent dirs are appended to the Tailwind `@source`
+    // content globs so utility classes used ONLY in a package-route page
+    // (whose entrypoint lives in node_modules / outside the globbed project
+    // dirs) are scanned and not silently pruned from the emitted stylesheet.
+    // Empty on the no-package-route path (byte-identical parity).
+    package_route_entrypoints: &[PathBuf],
 ) -> Result<Option<AssetEmitterPayload>> {
     // `tailwind: { enabled: false }` disables only the Tailwind layers,
     // not the authored-CSS pipeline. Route to the Tailwind-free path so
@@ -662,10 +776,30 @@ pub(crate) fn build_default_css_payload(
     // onto the project root absolute path so the synthesised entry
     // CSS picks up sources regardless of where the user invoked
     // `zfb build`.
-    let content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
+    let mut content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
         .iter()
         .map(|root| project_root.join(root).to_string_lossy().into_owned())
         .collect::<Vec<_>>();
+
+    // fix-A [5] (#1191): a package-route page's entrypoint lives OUTSIDE the
+    // conventional project content roots (node_modules / a workspace package),
+    // and the overlay re-export module carries no class strings — so Tailwind's
+    // `@source` scan would never see the package page's utility classes and
+    // would prune them from `styles-<hash>.css` (green build, unstyled page).
+    // Add each entrypoint's parent directory as an extra `@source` root so its
+    // classes (and those of files it imports from the same package dir) are
+    // scanned. De-duped to keep the directive list stable.
+    {
+        let mut seen: std::collections::HashSet<String> = content_globs.iter().cloned().collect();
+        for entry in package_route_entrypoints {
+            if let Some(dir) = entry.parent() {
+                let glob = dir.to_string_lossy().into_owned();
+                if seen.insert(glob.clone()) {
+                    content_globs.push(glob);
+                }
+            }
+        }
+    }
 
     let mut tw_cfg = TailwindSubprocessConfig::default()
         .with_working_dir(project_root.to_path_buf())
@@ -1025,7 +1159,30 @@ pub(crate) fn compute_css_module_class_maps(
 /// the marker-check pass can still warn about rendered markers with zero
 /// registered islands.
 pub(crate) fn build_default_islands_payload(
+    // The project root — used for esbuild's working dir (tsconfig
+    // discovery, entry-tempfile placement) and the node_modules walk.
     project_root: &Path,
+    // #1193 / #1191 review (codex P1) — the REAL `project_root/pages` dir
+    // to seed USER-page island discovery from. This is deliberately the
+    // user's real pages tree, NOT the build pages root: when a package
+    // route is present the build pages root is an OVERLAY temp dir that
+    // copies only `pages/` (plus generated package modules) and has no
+    // `components/`. Seeding the scanner from the overlay strands every
+    // user-page island reached via an outside-`pages/` import (e.g.
+    // `../components/Counter` or a tsconfig alias) → the island silently
+    // vanishes from production whenever ANY package route exists. Seeding
+    // from the REAL pages dir resolves those imports against the real tree.
+    // It is the DFS entry root only; esbuild still resolves against
+    // `project_root`.
+    user_pages_dir: &Path,
+    // #1191 review (codex P1) — the absolute entrypoints of materialized
+    // package routes. Package-route islands are discovered by seeding the
+    // scanner with each route's REAL entrypoint (whose relative imports
+    // resolve against its real location), NOT via the overlay copy. Empty
+    // when there are no package routes. Threading the real entrypoints (vs
+    // walking the overlay) keeps package-route island discovery working
+    // while the user-page seed uses the real pages tree.
+    package_route_entrypoints: &[PathBuf],
     outdir: &Path,
     framework: crate::config::Framework,
     plugin_config: &IslandsPluginConfig,
@@ -1037,11 +1194,10 @@ pub(crate) fn build_default_islands_payload(
     // imports starting from each entry path, so seeding with the
     // pages dir is enough — anything reachable through a
     // page → component import chain gets found.
-    let pages_dir = project_root.join("pages");
     let mut entries: Vec<std::path::PathBuf> = Vec::new();
-    if pages_dir.is_dir() {
+    if user_pages_dir.is_dir() {
         for ext in ["tsx", "ts", "jsx", "js"] {
-            for entry in walkdir::WalkDir::new(&pages_dir)
+            for entry in walkdir::WalkDir::new(user_pages_dir)
                 .into_iter()
                 .filter_map(|r| r.ok())
             {
@@ -1051,6 +1207,18 @@ pub(crate) fn build_default_islands_payload(
                     entries.push(entry.into_path());
                 }
             }
+        }
+    }
+    // Seed package-route islands from each route's REAL entrypoint (codex
+    // P1). The entrypoint's own relative imports resolve against its real
+    // location (same way the bundler/overlay handle package modules), so a
+    // `"use client"` component a package page imports is discovered without
+    // walking the overlay. Skip entries already covered by the user-pages
+    // walk (defensive — a package entrypoint living under `pages/` would be
+    // unusual but the DFS dedups by visited-set anyway).
+    for entry in package_route_entrypoints {
+        if entry.is_file() && !entries.contains(entry) {
+            entries.push(entry.clone());
         }
     }
     if entries.is_empty() {
@@ -1281,8 +1449,9 @@ pub(crate) fn build_default_client_scripts_payloads(
     project_root: &Path,
     outdir: &Path,
     framework: crate::config::Framework,
+    registered: &zfb_build::ClientEntryList,
 ) -> Result<Vec<AssetEmitterPayload>> {
-    let (entries, collisions) =
+    let (mut entries, collisions) =
         discover_client_scripts(project_root).context("client-script discovery failed")?;
 
     // Fail loudly on duplicate entry names — mirrors the islands
@@ -1304,6 +1473,25 @@ pub(crate) fn build_default_client_scripts_payloads(
              discovery roots):\n{}",
             details.join("\n")
         ));
+    }
+
+    // #1196 — merge package-registered client entries (from `addClientEntry`
+    // in the plugin `setup` hook) into the discovered set. User-authored
+    // `*.client.*` files win on name collision (user file is already in
+    // `entries`); a package entry whose name already exists in the
+    // discovered set is silently dropped so presets can be adopted without
+    // requiring users to remove their own copy.
+    {
+        let existing_names: std::collections::HashSet<String> =
+            entries.iter().map(|e| e.entry_name.clone()).collect();
+        for ce in registered.iter() {
+            if !existing_names.contains(&ce.entry_name) {
+                entries.push(zfb_islands::client_scripts::ClientScriptEntry {
+                    entry_name: ce.entry_name.clone(),
+                    source_path: ce.entrypoint.clone(),
+                });
+            }
+        }
     }
 
     if entries.is_empty() {
@@ -1409,9 +1597,25 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     assets_root: &Path,
     framework: crate::config::Framework,
     prev_entry_names: &std::collections::HashSet<String>,
+    registered: &zfb_build::ClientEntryList,
 ) -> Result<(bool, std::collections::HashSet<String>)> {
-    let (entries, collisions) =
+    let (mut entries, collisions) =
         discover_client_scripts(project_root).context("client-script discovery failed")?;
+
+    // #1196 — merge package-registered client entries. User-authored files win
+    // on name collision (silently drop the registered entry if already found).
+    {
+        let existing_names: std::collections::HashSet<String> =
+            entries.iter().map(|e| e.entry_name.clone()).collect();
+        for ce in registered.iter() {
+            if !existing_names.contains(&ce.entry_name) {
+                entries.push(zfb_islands::client_scripts::ClientScriptEntry {
+                    entry_name: ce.entry_name.clone(),
+                    source_path: ce.entrypoint.clone(),
+                });
+            }
+        }
+    }
 
     // Non-fatal collision warning (dev mode is lenient — the user sees
     // the first winning entry rather than a hard build failure, matching
@@ -1561,6 +1765,9 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
 ) -> Result<(usize, zfb_build::PostBuildRouteManifest)> {
     let BuildArgsResolved {
         project_root,
+        build_pages_root,
+        user_pages_dir,
+        package_route_entrypoints,
         outdir,
         config,
         routes,
@@ -1802,6 +2009,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         // one extraction per build; the per-tick reuse (#994 item A) is a
         // dev-only concern.
         None,
+        // #1193 — point the bundler at the SAME pages root the router scan
+        // used (the overlay when package routes are present), so the
+        // bundle's page imports include package-owned routes.
+        Some(build_pages_root),
     )?;
 
     // Snapshot the bundler input before consuming it so the runtime-only
@@ -1851,7 +2062,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     //      URL into shipped HTML (the prod pipeline only rewrites
     //      stable→hashed for slots it actually emits).
     let (mut prod_asset_inputs, registered_marker_names) = runner
-        .emit_prod_assets(project_root, outdir, config)
+        .emit_prod_assets(
+            project_root,
+            user_pages_dir,
+            package_route_entrypoints,
+            outdir,
+            config,
+        )
         .context("production asset emitters failed")?;
     apply_asset_url_base(&mut prod_asset_inputs, config.base.as_deref());
     let prod_head_assets = derive_prod_head_assets(&prod_asset_inputs);
@@ -2051,6 +2268,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     let manifest = build_post_build_manifest(
         routes,
         project_root,
+        build_pages_root,
         &expansion.resolved_with_params,
         &runtime_expansion.resolved_with_params,
         &prerender_map,
@@ -2073,6 +2291,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
 fn build_post_build_manifest(
     routes: &[zfb_router::Route],
     project_root: &Path,
+    // #1193 — the build pages root (the overlay when package routes are
+    // present). Used to report a package route's manifest `source` as a
+    // clean `pages/<rel>` instead of leaking the absolute overlay temp path.
+    build_pages_root: &Path,
     static_expansion_params: &[DynamicResolvedEntry],
     runtime_expansion_params: &[DynamicResolvedEntry],
     prerender_map: &std::collections::BTreeMap<String, bool>,
@@ -2080,6 +2302,21 @@ fn build_post_build_manifest(
     use std::collections::BTreeMap;
     use zfb_build::{PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest};
     use zfb_router::RouteKind;
+
+    // Render a route's `source_path` as a stable, relative manifest string.
+    // Prefer project-relative; for a package route (source under the overlay
+    // pages root, outside project_root) report `pages/<rel>` rather than the
+    // ephemeral absolute temp path (#1193); otherwise fall back to the raw
+    // path (matches the pre-#1193 behaviour for any unexpected shape).
+    let manifest_source = |source_path: &Path| -> String {
+        if let Ok(rel) = source_path.strip_prefix(project_root) {
+            return rel.to_string_lossy().into_owned();
+        }
+        if let Ok(rel) = source_path.strip_prefix(build_pages_root) {
+            return Path::new("pages").join(rel).to_string_lossy().into_owned();
+        }
+        source_path.to_string_lossy().into_owned()
+    };
 
     let mut entries: Vec<PostBuildRouteEntry> = Vec::new();
 
@@ -2095,12 +2332,7 @@ fn build_post_build_manifest(
             .as_deref()
             .unwrap_or("html")
             .to_string();
-        let source = route
-            .source_path
-            .strip_prefix(project_root)
-            .unwrap_or(&route.source_path)
-            .to_string_lossy()
-            .into_owned();
+        let source = manifest_source(&route.source_path);
         // Default to SSG (`prerender = true`) when the map has no entry —
         // matches the rest of the build's interpretation of a missing
         // `export const prerender` (e.g. lines 1001 / 1019 above).
@@ -2120,12 +2352,7 @@ fn build_post_build_manifest(
         .iter()
         .chain(runtime_expansion_params.iter())
     {
-        let source = dyn_entry
-            .source_path
-            .strip_prefix(project_root)
-            .unwrap_or(&dyn_entry.source_path)
-            .to_string_lossy()
-            .into_owned();
+        let source = manifest_source(&dyn_entry.source_path);
 
         // Build the params map only when there are bindings.
         let params = if dyn_entry.params.scalars.is_empty() && dyn_entry.params.arrays.is_empty() {
@@ -2733,6 +2960,7 @@ mod tests {
                         source_path: PathBuf::from("pages/index.tsx"),
                         entry_key: "/".into(),
                         static_html: false,
+                        rel_under_pages: PathBuf::from("index.tsx"),
                     }],
                 },
             })
@@ -2829,6 +3057,8 @@ mod tests {
         fn emit_prod_assets(
             &self,
             _project_root: &Path,
+            _user_pages_dir: &Path,
+            _package_route_entrypoints: &[PathBuf],
             _outdir: &Path,
             _config: &Config,
         ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
@@ -2923,6 +3153,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let (pages, _) = run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -2974,6 +3207,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3029,6 +3265,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let (pages, _) = run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3087,6 +3326,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let (pages, _) = run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3130,6 +3372,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let (pages, _) = run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3199,6 +3444,8 @@ mod tests {
             fn emit_prod_assets(
                 &self,
                 _project_root: &Path,
+                _user_pages_dir: &Path,
+                _package_route_entrypoints: &[PathBuf],
                 _outdir: &Path,
                 _config: &Config,
             ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
@@ -3215,6 +3462,9 @@ mod tests {
         let routes = vec![static_route(vec!["about"], "pages/about.tsx")];
         let err = run_build(BuildArgsResolved {
             project_root: tmp.path(),
+            build_pages_root: tmp.path(),
+            user_pages_dir: tmp.path(),
+            package_route_entrypoints: &[],
             outdir: &tmp.path().join("dist"),
             config: &cfg,
             routes: &routes,
@@ -3253,6 +3503,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3298,6 +3551,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3360,6 +3616,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3399,6 +3658,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3442,6 +3704,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3536,6 +3801,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3619,6 +3887,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3812,6 +4083,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -3912,6 +4186,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -4014,6 +4291,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -4154,11 +4434,12 @@ mod tests {
             tailwind: Some(crate::config::TailwindConfig { enabled: false }),
             ..Config::default()
         };
-        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
-            .expect("should not error")
-            .expect(
-                "expected Some payload: authored CSS + module must ship even with tailwind off",
-            );
+        let payload =
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+                .expect("should not error")
+                .expect(
+                    "expected Some payload: authored CSS + module must ship even with tailwind off",
+                );
 
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
@@ -4215,8 +4496,9 @@ mod tests {
             tailwind: Some(crate::config::TailwindConfig { enabled: false }),
             ..Config::default()
         };
-        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
-            .expect("should not error");
+        let payload =
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+                .expect("should not error");
         assert!(
             payload.is_none(),
             "expected None when tailwind disabled and no authored CSS/modules; got {payload:?}",
@@ -4241,9 +4523,10 @@ mod tests {
             tailwind: Some(crate::config::TailwindConfig { enabled: false }),
             ..Config::default()
         };
-        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg)
-            .expect("should not error")
-            .expect("authored CSS must still ship");
+        let payload =
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+                .expect("should not error")
+                .expect("authored CSS must still ship");
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
             !css.contains("@import \"tailwindcss\""),
@@ -4300,6 +4583,8 @@ mod tests {
         // reach the scanner or esbuild.
         let (payload, names) = build_default_islands_payload(
             project_root,
+            &project_root.join("pages"),
+            &[],
             &project_root.join("dist"),
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
@@ -4331,6 +4616,8 @@ mod tests {
         .unwrap();
         let (payload, names) = build_default_islands_payload(
             project_root,
+            &project_root.join("pages"),
+            &[],
             &project_root.join("dist"),
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
@@ -4376,6 +4663,8 @@ mod tests {
         .unwrap();
         let (payload, names) = build_default_islands_payload(
             project_root,
+            &project_root.join("pages"),
+            &[],
             &project_root.join("dist"),
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
@@ -4421,9 +4710,16 @@ mod tests {
         let runner = DefaultRunner {
             islands_plugin_config: IslandsPluginConfig::default(),
             v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
+            registered_client_entries: zfb_build::ClientEntryList::new(),
         };
         let (inputs, _marker_names) = runner
-            .emit_prod_assets(project_root, &outdir, &cfg)
+            .emit_prod_assets(
+                project_root,
+                &project_root.join("pages"),
+                &[],
+                &outdir,
+                &cfg,
+            )
             .expect("emit_prod_assets must succeed");
         let css = inputs
             .css
@@ -4663,6 +4959,9 @@ mod tests {
 
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -4720,6 +5019,9 @@ mod tests {
 
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -5047,6 +5349,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -5106,6 +5411,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         let err = run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -5180,6 +5488,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -5287,6 +5598,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -5422,6 +5736,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -5494,6 +5811,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,
@@ -5569,6 +5889,9 @@ mod tests {
         let fake_adapter = FakeAdapterRunner::new();
         run_build(BuildArgsResolved {
             project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
             outdir: &outdir,
             config: &cfg,
             routes: &routes,

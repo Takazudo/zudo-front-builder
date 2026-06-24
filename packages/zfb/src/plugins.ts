@@ -177,26 +177,33 @@ export type ZfbVirtualModuleLoader = () => string | Promise<string>;
  * boot, in `Config.plugins` declaration order, **before** `preBuild`.
  *
  * `ctx.command` tells the plugin which lifecycle is active so it can
- * gate dev-only registrations:
+ * gate per-lifecycle registrations. A dev-only mock route stays gated
+ * to `"dev"`; a package-owned page route is registered unconditionally
+ * (it is prerendered during a build and dev-routed during dev):
  *
  * ```ts
  * setup({ command, injectRoute }) {
+ *   // package-owned page route (prerendered at BUILD; see injectRoute for
+ *   // the dev caveat)
+ *   injectRoute("/preset-page", "./pages/preset-page.tsx");
+ *   // dev-only mock endpoint
  *   if (command === "dev") {
  *     injectRoute("/api/dev/x", "./scripts/dev-x.ts");
  *   }
  * }
  * ```
  *
- * The hook's surface is intentionally **closed**: only
- * `injectRoute`, `addVirtualModule`, `addAlias`. There is no
+ * The hook's surface is intentionally **closed**: only `injectRoute`,
+ * `addVirtualModule`, `addAlias`, and `addClientEntry`. There is no
  * `addRemarkPlugin` / `addRehypePlugin` / `addMarkdownVisitor` — by
  * design (see the concept doc for the rationale).
  */
 export type ZfbSetupContext = {
   /**
    * Active zfb command. `"build"` during `zfb build`; `"dev"` during
-   * `zfb dev`. Gates `injectRoute` (calling it during `"build"` is an
-   * error — see [`injectRoute`](#injectRoute)).
+   * `zfb dev`. Affects `injectRoute`: in `"dev"`, `"/"` is reserved for
+   * the devMiddleware catch-all and is rejected; in `"build"`, a `"/"`
+   * package route is allowed (see [`injectRoute`](#injectRoute)).
    */
   command: "build" | "dev";
   /** Project root — the directory containing `zfb.config.ts`. */
@@ -233,21 +240,64 @@ export type ZfbSetupContext = {
   addVirtualModule(specifier: string, loader: ZfbVirtualModuleLoader): void;
 
   /**
-   * Register a synthetic page route. The dev server routes the
-   * matched URL into the page rendering pipeline as if `entrypoint`
-   * were a `pages/<...>.tsx` file. `pattern` uses the same grammar
-   * as `pages/` filenames (`/blog/[slug]`, `/api/dev/x`,
+   * Register a synthetic / package-owned page route. `pattern` uses the
+   * same grammar as `pages/` filenames (`/blog/[slug]`, `/api/dev/x`,
    * `/docs/[...rest]`).
    *
-   * **Dev-only.** Calling `injectRoute` when `ctx.command === "build"`
-   * raises `InjectRouteInBuildMode` and aborts the build — synthetic
-   * routes during a static build would invite SSR-shaped pages that
-   * conflict with `output: 'static'`.
+   * - In **build** (package-owned routes), the route is materialised
+   *   into a per-build overlay pages root and **prerendered** through
+   *   the normal scan → bundle → render pipeline, so a preset can own a
+   *   route without the project shipping a `pages/` stub file. A `"/"`
+   *   package route is allowed (it becomes the project's root page,
+   *   enabling a truly empty/absent user `pages/`). A package route
+   *   whose URL shape collides with a user `pages/` route is dropped
+   *   (user `pages/` wins). This is the supported, complete path.
+   * - In **dev**, full rendering of injected routes is **not yet
+   *   implemented**. The dev router currently only *logs* a match for an
+   *   injected pattern and then falls through to the dist/public
+   *   fallback (so the URL 404s unless another file claims it). Do NOT
+   *   rely on a `zfb dev` server to render a package route — verify
+   *   package routes via `zfb build`. (`"/"` is still reserved for the
+   *   devMiddleware catch-all and is rejected at registration in dev.)
+   *   Wiring the dev page pipeline to evaluate `entrypoint` is a tracked
+   *   follow-up.
    *
-   * Two plugins registering the same `pattern` raises
+   * `opts.prerender` controls the route's prerender shape during a
+   * build: omit it (or `true`) for the SSG default; `false` marks an
+   * SSR-shaped route, which `output: 'static'` rejects. It is build-only
+   * metadata and ignored in dev.
+   *
+   * Two plugins registering the same `pattern` (or one plugin
+   * re-registering it with a different entrypoint) raises
    * `InjectRouteConflict`.
    */
-  injectRoute(pattern: string, entrypoint: string): void;
+  injectRoute(pattern: string, entrypoint: string, opts?: { prerender?: boolean }): void;
+
+  /**
+   * Register a package-owned client-side side-effect entry (#1196).
+   *
+   * `entrypoint` **must** point to a `*.client.{ts,tsx,js,jsx}` file —
+   * this is enforced (#1191 review [9]): a path missing the `.client.`
+   * infix, or a bare `.client.ts` with an empty stem, throws an error
+   * (`addClientEntry` JS-host validation + Rust `InvalidClientEntry`)
+   * rather than being silently accepted under an invented name. The entry
+   * name is derived from the filename stem minus `.client`
+   * (e.g. `my-lib.client.ts` → `my-lib`), via the same canonical helper
+   * as user-authored `*.client.*` discovery.
+   *
+   * The entry is bundled and shipped as
+   * `/assets/client/<name>.js` (stable URL) / `/assets/client/<name>-<hash>.js`
+   * (production, hashed). User-authored files win on name collision —
+   * the registered entry is silently dropped when a user-authored file of
+   * the same name exists in the discovery roots.
+   *
+   * Two plugins registering the same entry name with different entrypoints
+   * raises `ClientEntryConflict` and aborts the build.
+   *
+   * `entrypoint` is resolved relative to the project root if given as a
+   * relative path (same rule as `injectRoute`).
+   */
+  addClientEntry(entrypoint: string): void;
 };
 
 /**

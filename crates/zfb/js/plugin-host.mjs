@@ -17,7 +17,7 @@
 //   { "id": <number>, "kind": "setup", "ctx": { "projectRoot",
 //        "command": "build" | "dev", "config" } }
 //        -- calls each plugin's `setup(ctx)`. ctx exposes
-//           addAlias, addVirtualModule, injectRoute. The host
+//           addAlias, addVirtualModule, injectRoute, addClientEntry. The host
 //           accumulates raw registrations per plugin and replies
 //           with `{ outputs: [{ plugin, registrations: [...] }] }`
 //           so Rust can run conflict detection against canonical types.
@@ -237,20 +237,30 @@ async function handleSetup(id, msg) {
         virtualLoaders.set(loaderId, { plugin: p.name, loader });
         registrations.push({ kind: "virtualModule", specifier, loaderId });
       },
-      injectRoute(pattern, entrypoint) {
+      injectRoute(pattern, entrypoint, opts) {
         if (typeof pattern !== "string" || !pattern.startsWith("/")) {
           throw new Error(
             `injectRoute: \`pattern\` must be a string starting with "/" (got ${JSON.stringify(pattern)})`,
           );
         }
-        // Reject obvious malformed patterns up front so the dev
-        // router doesn't have to: bare "/" is the catch-all
-        // (use devMiddleware for that), consecutive slashes are
-        // almost always a typo, and empty bracket segments
-        // ([] / [...]) are not valid in the pages/ grammar.
-        if (pattern === "/" || pattern.includes("//")) {
+        // Reject obvious malformed patterns up front so the routers
+        // don't have to: consecutive slashes are almost always a typo,
+        // and empty bracket segments ([] / [...]) are not valid in the
+        // pages/ grammar.
+        //
+        // The bare-"/" rejection is DEV-ONLY (#1193): in dev, "/" is the
+        // catch-all owned by devMiddleware, so a dev injectRoute("/") is
+        // a mistake. In a BUILD, a "/" package route is legitimate — it
+        // materialises as the overlay `pages/index.tsx` (the project's
+        // root page), enabling a truly empty/absent user `pages/`.
+        if (command !== "build" && pattern === "/") {
           throw new Error(
-            `injectRoute: \`pattern\` must not be "/" or contain consecutive slashes (got ${JSON.stringify(pattern)})`,
+            `injectRoute: \`pattern\` must not be "/" in dev (use devMiddleware for the catch-all) (got ${JSON.stringify(pattern)})`,
+          );
+        }
+        if (pattern.includes("//")) {
+          throw new Error(
+            `injectRoute: \`pattern\` must not contain consecutive slashes (got ${JSON.stringify(pattern)})`,
           );
         }
         if (/\[\]|\[\.\.\.\]/.test(pattern)) {
@@ -263,7 +273,54 @@ async function handleSetup(id, msg) {
             `injectRoute: \`entrypoint\` must be a non-empty string (got ${JSON.stringify(entrypoint)})`,
           );
         }
-        registrations.push({ kind: "injectRoute", pattern, entrypoint });
+        // Optional third arg: `{ prerender?: boolean }` (#1193). The
+        // prerender hint is build-only metadata (it controls whether the
+        // overlay module inlines `export const prerender = …`); a dev
+        // injectRoute may pass it harmlessly. Anything other than a
+        // boolean (or absent) is rejected so a typo surfaces early.
+        let prerender;
+        if (opts != null) {
+          if (typeof opts !== "object") {
+            throw new Error(
+              `injectRoute: \`opts\` must be an object (got ${JSON.stringify(opts)})`,
+            );
+          }
+          if (opts.prerender !== undefined) {
+            if (typeof opts.prerender !== "boolean") {
+              throw new Error(
+                `injectRoute: \`opts.prerender\` must be a boolean (got ${JSON.stringify(opts.prerender)})`,
+              );
+            }
+            prerender = opts.prerender;
+          }
+        }
+        registrations.push({ kind: "injectRoute", pattern, entrypoint, prerender });
+      },
+      addClientEntry(entrypoint) {
+        if (typeof entrypoint !== "string" || entrypoint.length === 0) {
+          throw new Error(
+            `addClientEntry: \`entrypoint\` must be a non-empty string (got ${JSON.stringify(entrypoint)})`,
+          );
+        }
+        // #1191 review [9]: enforce the `*.client.{ts,tsx,js,jsx}` convention
+        // up front (the Rust accumulator re-validates via
+        // `zfb_types::is_client_script_file` — these literals mirror
+        // `crates/zfb-types/src/client_scripts.rs`, the contract's home).
+        // Reject early so a preset author's typo surfaces here with the
+        // entrypoint they wrote, not as an invented asset name downstream.
+        const base = entrypoint.split(/[\\/]/).pop() ?? "";
+        const isClientScript = ["ts", "tsx", "js", "jsx"].some((ext) => {
+          const suffix = `.client.${ext}`;
+          return base.endsWith(suffix) && base.length > suffix.length;
+        });
+        if (!isClientScript) {
+          throw new Error(
+            `addClientEntry: \`entrypoint\` must point to a *.client.{ts,tsx,js,jsx} file ` +
+              `(the .client. infix is required and the stem before it must be non-empty); ` +
+              `got ${JSON.stringify(entrypoint)}`,
+          );
+        }
+        registrations.push({ kind: "addClientEntry", entrypoint });
       },
     };
     try {

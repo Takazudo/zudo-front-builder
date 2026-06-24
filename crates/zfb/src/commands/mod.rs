@@ -10,6 +10,7 @@ pub mod dev;
 pub mod island_marker_check;
 pub mod link_base_rewrite;
 pub mod new;
+pub mod package_routes;
 pub mod plugins;
 pub mod preview;
 pub mod resolve;

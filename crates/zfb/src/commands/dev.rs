@@ -346,7 +346,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let dev_plugin_virtual_modules = plugin_setup.plugin_virtual_modules;
     // Keep setup_registries in scope for the lifetime of the dev session —
     // the hook entries hold references into it.
-    let _setup_registries = plugin_setup.setup_registries;
+    let setup_registries = plugin_setup.setup_registries;
+    // #1196 — package-registered client entries from addClientEntry.
+    let registered_client_entries = setup_registries.client_entries.clone();
 
     // Issue #1182 — decide whether the eager dev bundle is DEFERRED past
     // `TcpListener::bind`. Only in boot-lazy mode with a servable prebuilt
@@ -579,7 +581,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // change.
     let dev_css_url_prefix: String =
         zfb_types::dev_mount_prefix(cfg.base.as_deref()).unwrap_or_default();
-    match crate::commands::build::build_default_css_payload(&project_root, &dev_assets_root, &cfg) {
+    match crate::commands::build::build_default_css_payload(
+        &project_root,
+        &dev_assets_root,
+        &cfg,
+        &[],
+    ) {
         Ok(Some(payload)) => {
             // Write the bytes to the isolated dev-assets root (issue #1189)
             // so `GET /assets/styles.css` is immediately serveable (unlike
@@ -632,6 +639,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &project_root_for_css,
                 &dev_assets_root_for_css,
                 &cfg_for_css,
+                &[],
             )?;
             let mut guard = url_handle.write().unwrap_or_else(|p| {
                 tracing::warn!(
@@ -687,6 +695,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &dev_assets_root,
         cfg.framework,
         &std::collections::HashSet::new(),
+        &registered_client_entries,
     ) {
         Ok((_, names)) => {
             if let Ok(mut guard) = live_client_script_names.lock() {
@@ -708,6 +717,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let dev_assets_root_for_cs = dev_assets_root.clone();
         let framework = cfg.framework;
         let entry_names = Arc::clone(&live_client_script_names);
+        // #1196 — capture registered entries for the watcher closure.
+        let registered_for_cs = registered_client_entries.clone();
         Some(Arc::new(move || -> Result<bool> {
             let prev = entry_names
                 .lock()
@@ -724,6 +735,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &dev_assets_root_for_cs,
                 framework,
                 &prev,
+                &registered_for_cs,
             )?;
             let mut guard = entry_names.lock().unwrap_or_else(|p| {
                 tracing::warn!(
@@ -1408,8 +1420,14 @@ fn rebundle_islands(
     // Marker names are only needed by the production build pass; dev mode
     // already surfaces unknown-marker warnings in the browser console via
     // the runtime.ts warn path.
+    // Dev seeds the islands scanner from the conventional `pages/` root.
+    // (Package-owned build routes are a build-time concern; dev's
+    // injected routes are served live, not materialised — #1193.) No
+    // package-route entrypoints to seed in dev (codex P1 is build-only).
     let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
         project_root,
+        &project_root.join("pages"),
+        &[],
         assets_root,
         framework,
         plugin_config,
@@ -3262,6 +3280,10 @@ fn assemble_and_bundle_dev(
         plugin_alias_entries,
         plugin_virtual_modules,
         pre_resolved_esbuild,
+        // #1193 — dev keeps the default `pages/` root; package-owned BUILD
+        // routes are materialised only by `zfb build` (dev serves its
+        // injected routes live via the dev router).
+        None,
     )?;
     let assemble_ms = asm_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 

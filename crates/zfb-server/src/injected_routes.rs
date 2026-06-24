@@ -166,6 +166,7 @@ mod tests {
             pattern: pattern.into(),
             entrypoint: PathBuf::from("/tmp/x.ts"),
             plugin: "p".into(),
+            prerender: None,
         }
     }
 
