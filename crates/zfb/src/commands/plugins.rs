@@ -296,11 +296,13 @@ mod tests {
                 name: "a".into(),
                 options: serde_json::json!({}),
                 resolved_module: None,
+                ..Default::default()
             },
             PluginConfig {
                 name: "b".into(),
                 options: serde_json::json!({"x": 1}),
                 resolved_module: Some("file:///abs/b.mjs".into()),
+                ..Default::default()
             },
         ]);
         let specs = build_plugin_specs(&c);

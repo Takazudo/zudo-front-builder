@@ -18,7 +18,7 @@
 //! plugin resolver (via the crate's re-export). It is NOT part of
 //! `crates/zfb-render`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Result};
 use oxc_resolver::{ResolveOptions, Resolver};
@@ -114,6 +114,156 @@ pub fn resolve_node_bare_specifier(name: &str, project_root: &Path) -> Result<St
     Ok(file_url.to_string())
 }
 
+/// Resolve a package's root directory from `project_root`.
+///
+/// Resolves `pkg` (a bare package name, e.g. `"@takazudo/zfb-preset-example"`)
+/// via `oxc_resolver` from `project_root`, then reads the package root off the
+/// resolution:
+///
+/// - **Primary path:** uses `oxc_resolver::Resolution::package_json().directory()`
+///   — robust against nested `package.json` files inside the package.
+/// - **Fallback path:** if the resolution carries no `package_json()` (unusual;
+///   can happen when resolving a bare file outside a package), walks up from the
+///   resolved file to the nearest ancestor directory containing a `package.json`.
+///
+/// Hard-errors if the package is not installed (no `node_modules` entry found).
+///
+/// # Known edge (documented, not fixed here)
+///
+/// A preset whose `exports` map exposes neither `"."` nor `"./package.json"` —
+/// for example only `"@scope/preset/zfb"` — cannot be resolved from its bare
+/// name alone. In that case this function will still succeed for `"."` (it
+/// resolves the default entry), but callers that need to resolve a non-root
+/// subpath will receive a different package dir or an error. The correct fix
+/// (T2/T4) is to anchor resolution at the project root and use a clearer error
+/// message when the preset is not found.
+pub fn resolve_package_dir(pkg: &str, project_root: &Path) -> Result<PathBuf> {
+    if pkg.is_empty() {
+        bail!("resolve_package_dir: package name must be non-empty");
+    }
+
+    let resolver = Resolver::new(ResolveOptions {
+        condition_names: vec![
+            "import".to_string(),
+            "node".to_string(),
+            "default".to_string(),
+        ],
+        ..ResolveOptions::default()
+    });
+
+    let resolution = resolver.resolve(project_root, pkg).map_err(|e| {
+        anyhow!(
+            "package {:?} could not be resolved from {}: {} \
+             (is it installed in node_modules?)",
+            pkg,
+            project_root.display(),
+            e
+        )
+    })?;
+
+    // Primary path: use the package_json attached to the resolution.
+    // oxc_resolver populates this for all normal node_modules resolutions.
+    if let Some(pkg_json) = resolution.package_json() {
+        return Ok(pkg_json.directory().to_path_buf());
+    }
+
+    // Fallback path: walk up from the resolved file to the nearest directory
+    // containing a package.json. This handles the rare case where the
+    // resolution carries no package_json (e.g. a bare file resolved outside
+    // of any package boundary).
+    let resolved_file = resolution.path();
+    let mut dir = resolved_file.parent().ok_or_else(|| {
+        anyhow!(
+            "resolve_package_dir: resolved path {:?} has no parent directory",
+            resolved_file
+        )
+    })?;
+    loop {
+        if dir.join("package.json").exists() {
+            return Ok(dir.to_path_buf());
+        }
+        dir = dir.parent().ok_or_else(|| {
+            anyhow!(
+                "resolve_package_dir: no package.json found while walking up from {:?}",
+                resolved_file
+            )
+        })?;
+    }
+}
+
+/// Resolve a plugin `name` from two anchors: preferred first, then fallback.
+///
+/// Tries both path-relative/absolute resolution ([`crate::loader::resolve_plugin_path_to_file_url`])
+/// and bare-specifier resolution ([`resolve_node_bare_specifier`]) at the
+/// **preferred** anchor first, then the **fallback** anchor. Returns the first
+/// successful `file://` URL.
+///
+/// This helper is anchor-agnostic — it does not assume which anchor is the
+/// preset dir and which is the project root. T4 passes `(preset_dir,
+/// project_root)` as `(preferred, fallback)` to implement the provenance
+/// rule: a plugin that lives inside the preset's own `node_modules` takes
+/// priority over one installed at the project level.
+///
+/// Returns a combined error naming both anchors when neither resolves.
+pub fn resolve_plugin_from_anchors(
+    name: &str,
+    preferred: &Path,
+    fallback: &Path,
+) -> Result<String> {
+    use crate::loader::resolve_plugin_path_to_file_url;
+
+    // --- preferred anchor -------------------------------------------------------
+
+    // Try relative/absolute resolution at preferred anchor.
+    match resolve_plugin_path_to_file_url(name, preferred) {
+        Ok(Some(url)) => return Ok(url),
+        Ok(None) => {} // bare specifier — fall through to bare resolution
+        Err(_) => {}   // file not found at preferred anchor — try fallback
+    }
+
+    // Try bare-specifier resolution at preferred anchor.
+    if !name.starts_with("./")
+        && !name.starts_with("../")
+        && !name.starts_with('/')
+        && !name.starts_with('#')
+        && !name.is_empty()
+    {
+        if let Ok(url) = resolve_node_bare_specifier(name, preferred) {
+            return Ok(url);
+        }
+    }
+
+    // --- fallback anchor --------------------------------------------------------
+
+    // Try relative/absolute resolution at fallback anchor.
+    match resolve_plugin_path_to_file_url(name, fallback) {
+        Ok(Some(url)) => return Ok(url),
+        Ok(None) => {} // bare specifier — fall through to bare resolution
+        Err(_) => {}   // file not found at fallback anchor either
+    }
+
+    // Try bare-specifier resolution at fallback anchor.
+    if !name.starts_with("./")
+        && !name.starts_with("../")
+        && !name.starts_with('/')
+        && !name.starts_with('#')
+        && !name.is_empty()
+    {
+        if let Ok(url) = resolve_node_bare_specifier(name, fallback) {
+            return Ok(url);
+        }
+    }
+
+    // --- combined error ---------------------------------------------------------
+    bail!(
+        "plugin {:?} could not be resolved from preferred anchor {} \
+         or fallback anchor {}",
+        name,
+        preferred.display(),
+        fallback.display()
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -204,6 +354,216 @@ mod tests {
         std::fs::create_dir_all(&child).expect("create child dir");
 
         (tmp, child)
+    }
+
+    /// Build the node-modules-nested fixture.
+    ///
+    /// Layout created in `<tmpdir>`:
+    /// ```text
+    /// node_modules/
+    ///   @takazudo/
+    ///     zfb-preset-example/          ← preset with ./package.json export
+    ///       package.json
+    ///       search.js                  ← relative plugin inside preset dir
+    ///       dist/{index.mjs,.cjs,.d.ts}
+    ///       node_modules/
+    ///         zfb-plugin-nested/       ← bare plugin nested inside preset
+    ///           package.json
+    ///           dist/{index.mjs,.cjs,.d.ts}
+    ///     zfb-preset-no-pkg-export/    ← preset WITHOUT ./package.json export
+    ///       package.json
+    ///       dist/{index.mjs,.cjs,.d.ts}
+    /// ```
+    ///
+    /// Returns `(TempDir, project_root, preset_dir)` where:
+    /// - `project_root` is the tmpdir root (has `node_modules/`)
+    /// - `preset_dir` is the resolved root of `@takazudo/zfb-preset-example`
+    ///   inside the temp tree
+    ///
+    /// The caller must keep `TempDir` alive.
+    fn build_node_modules_nested_fixture() -> (TempDir, PathBuf, PathBuf) {
+        let src_root = fixture_src("node-modules-nested");
+        let tmp = TempDir::new().expect("create TempDir");
+        let node_modules = tmp.path().join("node_modules");
+
+        // Copy the entire src/ tree (preserving scoped dirs and nested
+        // node_modules) into <tmpdir>/node_modules/
+        copy_dir_all(&src_root, &node_modules);
+
+        let preset_dir = node_modules.join("@takazudo").join("zfb-preset-example");
+        let project_root = tmp.path().to_path_buf();
+
+        (tmp, project_root, preset_dir)
+    }
+
+    // -----------------------------------------------------------------------
+    // New acceptance tests for resolve_package_dir + resolve_plugin_from_anchors
+    // -----------------------------------------------------------------------
+
+    // (i) resolve_package_dir — package whose exports expose "./package.json".
+    //     Primary path: package_json().directory() should return the package root.
+    #[test]
+    fn i_resolve_package_dir_with_pkg_json_export() {
+        let (_tmp, project_root, preset_dir) = build_node_modules_nested_fixture();
+        let result = resolve_package_dir("@takazudo/zfb-preset-example", &project_root)
+            .expect("should resolve preset package dir");
+        // The returned dir should contain package.json and match the preset dir.
+        assert!(
+            result.join("package.json").exists(),
+            "returned dir must contain package.json, got: {}",
+            result.display()
+        );
+        assert_eq!(
+            result.canonicalize().unwrap(),
+            preset_dir.canonicalize().unwrap(),
+            "returned dir should be the preset package root"
+        );
+    }
+
+    // (i-b) resolve_package_dir — package WITHOUT a "./package.json" export.
+    //       The primary path (package_json().directory()) still works because
+    //       oxc_resolver always populates package_json for node_modules
+    //       resolutions. This test confirms we get the correct package root
+    //       regardless of whether the exports map includes "./package.json".
+    #[test]
+    fn i_b_resolve_package_dir_without_pkg_json_export() {
+        let (_tmp, project_root, _preset_dir) = build_node_modules_nested_fixture();
+        let result = resolve_package_dir("@takazudo/zfb-preset-no-pkg-export", &project_root)
+            .expect("should resolve preset-no-pkg-export package dir");
+        // The returned dir should contain package.json.
+        assert!(
+            result.join("package.json").exists(),
+            "returned dir must contain package.json, got: {}",
+            result.display()
+        );
+        let expected = project_root
+            .join("node_modules")
+            .join("@takazudo")
+            .join("zfb-preset-no-pkg-export");
+        assert_eq!(
+            result.canonicalize().unwrap(),
+            expected.canonicalize().unwrap(),
+            "returned dir should be the preset-no-pkg-export package root"
+        );
+    }
+
+    // (i-c) resolve_package_dir — missing package errors with a diagnostic message.
+    #[test]
+    fn i_c_resolve_package_dir_missing_package_errors() {
+        let tmp = TempDir::new().expect("create TempDir");
+        let err = resolve_package_dir("@takazudo/zfb-preset-does-not-exist", tmp.path())
+            .expect_err("missing package should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("zfb-preset-does-not-exist"),
+            "error should name the missing package, got: {msg}"
+        );
+        assert!(
+            msg.contains("installed in node_modules"),
+            "error should mention node_modules, got: {msg}"
+        );
+    }
+
+    // (ii) Two-anchor helper — bare plugin (`zfb-plugin-nested`) present ONLY
+    //      inside the preset dir's node_modules resolves from the preferred
+    //      (preset) anchor.
+    #[test]
+    fn ii_resolve_plugin_from_anchors_bare_from_preset_dir() {
+        let (_tmp, project_root, preset_dir) = build_node_modules_nested_fixture();
+
+        // zfb-plugin-nested is nested inside the preset's node_modules —
+        // not installed at the project root.
+        let result = resolve_plugin_from_anchors("zfb-plugin-nested", &preset_dir, &project_root)
+            .expect("should resolve nested bare plugin from preset dir");
+        assert!(
+            result.starts_with("file://"),
+            "expected file:// URL, got: {result}"
+        );
+        assert!(
+            result.contains("zfb-plugin-nested"),
+            "URL should reference zfb-plugin-nested, got: {result}"
+        );
+    }
+
+    // (iii) Two-anchor helper — relative plugin (`./search.js`) present ONLY
+    //       inside the preset dir resolves against the preset anchor, NOT the
+    //       project root.
+    //
+    //       Acceptance criterion (d): `./search.js` exists only inside the
+    //       preset dir — it is NOT found when the preferred anchor is the
+    //       project root (the file isn't there).
+    #[test]
+    fn iii_relative_plugin_resolves_from_preset_dir_only() {
+        let (_tmp, project_root, preset_dir) = build_node_modules_nested_fixture();
+
+        // Preferred = preset dir: should find search.js inside the preset.
+        let result = resolve_plugin_from_anchors("./search.js", &preset_dir, &project_root)
+            .expect("should resolve ./search.js from preset dir");
+        assert!(
+            result.starts_with("file://"),
+            "expected file:// URL, got: {result}"
+        );
+        assert!(
+            result.ends_with("/search.js"),
+            "URL should end with /search.js, got: {result}"
+        );
+        // The resolved file must live inside the preset dir, not the project root.
+        assert!(
+            result.contains("zfb-preset-example"),
+            "URL must point into the preset dir, got: {result}"
+        );
+
+        // Preferred = project root (search.js NOT present there): should fail.
+        let err = resolve_plugin_from_anchors("./search.js", &project_root, &project_root)
+            .expect_err("./search.js absent from project root should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("search.js") || msg.contains("could not be resolved"),
+            "error should mention search.js or resolution failure, got: {msg}"
+        );
+    }
+
+    // (iv) Two-anchor helper — plugin absent from BOTH anchors names both in error.
+    #[test]
+    fn iv_resolve_plugin_from_anchors_names_both_anchors_in_error() {
+        let tmp = TempDir::new().expect("create TempDir");
+        let preferred = tmp.path().join("preferred");
+        let fallback = tmp.path().join("fallback");
+        std::fs::create_dir_all(&preferred).unwrap();
+        std::fs::create_dir_all(&fallback).unwrap();
+
+        let err = resolve_plugin_from_anchors("@absent/zfb-plugin-ghost", &preferred, &fallback)
+            .expect_err("absent plugin should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("preferred") || msg.contains(preferred.to_str().unwrap()),
+            "error should name preferred anchor, got: {msg}"
+        );
+        assert!(
+            msg.contains("fallback") || msg.contains(fallback.to_str().unwrap()),
+            "error should name fallback anchor, got: {msg}"
+        );
+    }
+
+    // (v) Two-anchor helper — bare plugin present at fallback (project root)
+    //     but NOT preferred (preset dir) resolves via fallback.
+    #[test]
+    fn v_resolve_plugin_from_anchors_falls_back_to_project_root() {
+        let (_tmp, project_root, preset_dir) = build_node_modules_nested_fixture();
+
+        // @takazudo/zfb-preset-example is installed at project root but not
+        // inside zfb-preset-example's own node_modules — use it as the test
+        // plugin for the fallback path.
+        let result = resolve_plugin_from_anchors(
+            "@takazudo/zfb-preset-no-pkg-export",
+            &preset_dir,
+            &project_root,
+        )
+        .expect("should fall back to project root for project-level package");
+        assert!(
+            result.starts_with("file://"),
+            "expected file:// URL, got: {result}"
+        );
     }
 
     // -----------------------------------------------------------------------
