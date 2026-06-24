@@ -177,7 +177,7 @@ pub(crate) struct AssembledBundlerInput {
 /// already process-lifetime there). Ignored when an explicit
 /// `esbuild_binary` or `ZFB_ESBUILD_BIN` override is in play — the
 /// existing precedence is preserved.
-#[allow(clippy::too_many_arguments)] // 8 params: #994 item A added pre_resolved_esbuild; a struct would obscure the caller-keeps-alive contract documented above
+#[allow(clippy::too_many_arguments)] // 9 params: #994 added pre_resolved_esbuild, #1193 added build_pages_root; a struct would obscure the caller-keeps-alive contract documented above
 pub(crate) fn assemble_bundler_input(
     project_root: &Path,
     config: &Config,
@@ -187,6 +187,13 @@ pub(crate) fn assemble_bundler_input(
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
     pre_resolved_esbuild: Option<&Path>,
+    // #1193 — the pages root the bundler should walk. `Some(root)` points
+    // the bundle at that root (the package-owned-routes overlay when
+    // build routes are present, or `project_root/pages` when not — passing
+    // the absolute `project_root/pages` is byte-identical to the default
+    // relative `"pages"`). `None` keeps the default (`zfb dev` passes
+    // `None` — package-owned BUILD routes are a build-time concern).
+    build_pages_root: Option<&Path>,
 ) -> Result<AssembledBundlerInput> {
     let mut bundler_input = BundlerInput::for_project(
         project_root.to_path_buf(),
@@ -195,6 +202,15 @@ pub(crate) fn assemble_bundler_input(
         project_root.join(".zfb-build"),
         content_snapshot_json,
     );
+
+    // #1193 — override the default `pages_dir` ("pages", joined against
+    // project_root by the bundler's resolver) with the explicit build
+    // pages root so the bundle's per-page imports include package-owned
+    // routes. The resolver passes absolute paths through unchanged, so an
+    // overlay temp dir works and `project_root/pages` stays byte-identical.
+    if let Some(root) = build_pages_root {
+        bundler_input.pages_dir = root.to_path_buf();
+    }
 
     // Discover the Next-style root `mdx-components.tsx` convention (#616):
     // a project-wide element→component override map applied to every

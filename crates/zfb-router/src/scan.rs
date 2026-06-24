@@ -500,7 +500,7 @@ fn detect_shape_duplicates(routes: &[Route]) -> Result<(), RouterError> {
 /// catchall segments to `:...`. Two routes (or prefixes) with equal shape
 /// keys match exactly the same set of URLs regardless of how their params
 /// are named — `/[id]` and `/[lang]` both render as `/:*`.
-fn shape_key(segments: &[Segment]) -> String {
+pub fn shape_key(segments: &[Segment]) -> String {
     if segments.is_empty() {
         return "/".to_string();
     }
@@ -514,6 +514,28 @@ fn shape_key(segments: &[Segment]) -> String {
         }
     }
     out
+}
+
+/// Compute the param-name-insensitive [`shape_key`] of a route from a
+/// `pages_dir`-relative source path (e.g. `blog/[slug].tsx`,
+/// `index.tsx`).
+///
+/// This parses the path through the SAME grammar [`scan_pages`] uses, so
+/// the resulting key is directly comparable to the keys of scanned
+/// routes. It exists so the build's package-owned-routes materialiser
+/// (#1193) can implement user-`pages/`-wins precedence by a pre-scan
+/// drop: `detect_ambiguity` is origin-blind and shape-keyed, so a
+/// user-vs-package collision must be resolved BEFORE the merged scan or
+/// it hard-errors (`[id]` ≡ `[slug]`).
+///
+/// `rel` must be relative; `_app.tsx`-style private files are not
+/// special-cased here (the caller derives `rel` from a route pattern, so
+/// it never names a private file).
+pub fn route_shape_key_for_pages_rel(rel: &Path) -> Result<String, RouterError> {
+    // `source` is used only for error context inside `parse_route`; the
+    // rel path is what drives segment parsing.
+    let route = parse_route(rel, rel)?;
+    Ok(shape_key(&route.segments))
 }
 
 /// Render the template of a segment-slice prefix (`/docs` for

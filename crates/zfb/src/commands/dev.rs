@@ -1408,8 +1408,12 @@ fn rebundle_islands(
     // Marker names are only needed by the production build pass; dev mode
     // already surfaces unknown-marker warnings in the browser console via
     // the runtime.ts warn path.
+    // Dev seeds the islands scanner from the conventional `pages/` root.
+    // (Package-owned build routes are a build-time concern; dev's
+    // injected routes are served live, not materialised — #1193.)
     let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
         project_root,
+        &project_root.join("pages"),
         assets_root,
         framework,
         plugin_config,
@@ -3262,6 +3266,10 @@ fn assemble_and_bundle_dev(
         plugin_alias_entries,
         plugin_virtual_modules,
         pre_resolved_esbuild,
+        // #1193 — dev keeps the default `pages/` root; package-owned BUILD
+        // routes are materialised only by `zfb build` (dev serves its
+        // injected routes live via the dev router).
+        None,
     )?;
     let assemble_ms = asm_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 

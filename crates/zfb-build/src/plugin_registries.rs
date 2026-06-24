@@ -164,8 +164,13 @@ impl AliasMap {
     }
 }
 
-/// One dev-only synthetic route contributed by a plugin's
-/// `injectRoute(pattern, entrypoint)` call.
+/// One synthetic route contributed by a plugin's
+/// `injectRoute(pattern, entrypoint, opts?)` call.
+///
+/// In `dev` mode these are the dev-router's synthetic routes. In
+/// `build` mode (#1193, package-owned routes) they are materialised
+/// into the per-build overlay pages root and prerendered through the
+/// normal scan → bundle → render pipeline.
 #[derive(Debug, Clone)]
 pub struct InjectedRoute {
     /// URL pattern using the same `pages/` filename grammar
@@ -178,6 +183,14 @@ pub struct InjectedRoute {
     pub entrypoint: PathBuf,
     /// Display name of the registering plugin.
     pub plugin: String,
+    /// Optional `prerender` hint from `injectRoute(pattern, entrypoint,
+    /// { prerender })` (#1193). `None` (the dev path and any caller that
+    /// omits the option) leaves the route's prerender shape to the
+    /// build's default (SSG) — the build materialiser only inlines an
+    /// explicit `export const prerender = …` when this is `Some`. A
+    /// `Some(false)` route is SSR-shaped, which `output: static` rejects
+    /// through the existing `resolve_v8_mode` gate.
+    pub prerender: Option<bool>,
 }
 
 /// Ordered list of injected routes — preserves `Config.plugins`
@@ -254,9 +267,16 @@ pub enum SetupRegistryError {
         second_entrypoint: String,
     },
 
+    /// Retained for a future genuinely-unsupported `injectRoute` shape
+    /// during a build. As of #1193 the build path ACCEPTS prerenderable
+    /// package routes, so this is no longer constructed by `ingest` — the
+    /// old unconditional dev-only rejection is gone. Kept (allowed dead)
+    /// rather than removed so a later wave can reintroduce a scoped
+    /// rejection without re-plumbing the error surface.
+    #[allow(dead_code)]
     #[error(
         "plugin `{plugin}` called `injectRoute(\"{pattern}\", ...)` during a build — \
-         `injectRoute` is dev-only in v1"
+         this route shape is not supported by the build path"
     )]
     InjectRouteInBuildMode { plugin: String, pattern: String },
 }
@@ -278,6 +298,8 @@ pub(crate) enum RawSetupRegistration {
     InjectRoute {
         pattern: String,
         entrypoint: String,
+        /// Optional `prerender` hint (#1193). See [`InjectedRoute::prerender`].
+        prerender: Option<bool>,
     },
 }
 
@@ -296,12 +318,15 @@ pub(crate) struct RawPluginSetupOutput {
 /// The accumulator owns conflict detection: as each registration is
 /// added the existing per-specifier / per-from / per-pattern entry is
 /// checked for a clash, and on first conflict the whole commit
-/// aborts with the offending pair named. The dev-only `injectRoute`
-/// build-mode error is also raised here so callers don't have to
-/// duplicate the guard.
+/// aborts with the offending pair named.
+///
+/// As of #1193 `injectRoute` is accepted in both commands, so the
+/// accumulator no longer needs the active [`SetupCommand`] — the only
+/// command-dependent validation left (the dev-scoped `"/"` rejection)
+/// runs JS-side in `plugin-host.mjs`. `new` still takes the command for
+/// call-site symmetry with `run_setup`; it is intentionally unused here.
 pub(crate) struct PluginSetupAccumulator<'a> {
     project_root: &'a Path,
-    command: SetupCommand,
     alias_origin: HashMap<String, (String, PathBuf)>, // from -> (plugin, target)
     virtual_origin: HashMap<String, String>,          // specifier -> plugin
     route_origin: HashMap<String, (String, PathBuf)>, // pattern -> (plugin, resolved entrypoint)
@@ -328,10 +353,12 @@ impl SetupCommand {
 }
 
 impl<'a> PluginSetupAccumulator<'a> {
-    pub(crate) fn new(project_root: &'a Path, command: SetupCommand) -> Self {
+    // `_command` is retained for call-site symmetry with `run_setup` and
+    // future command-scoped validation; conflict detection no longer
+    // branches on it (#1193 — the dev-scoped `"/"` rejection runs JS-side).
+    pub(crate) fn new(project_root: &'a Path, _command: SetupCommand) -> Self {
         Self {
             project_root,
-            command,
             alias_origin: HashMap::new(),
             virtual_origin: HashMap::new(),
             route_origin: HashMap::new(),
@@ -404,13 +431,17 @@ impl<'a> PluginSetupAccumulator<'a> {
                 RawSetupRegistration::InjectRoute {
                     pattern,
                     entrypoint,
+                    prerender,
                 } => {
-                    if self.command == SetupCommand::Build {
-                        return Err(SetupRegistryError::InjectRouteInBuildMode {
-                            plugin: output.plugin.clone(),
-                            pattern,
-                        });
-                    }
+                    // #1193: `injectRoute` is now accepted in BOTH commands.
+                    // In `dev` it feeds the dev router's synthetic routes
+                    // (unchanged); in `build` it contributes a package-owned
+                    // build route that the build materialiser prerenders. The
+                    // old unconditional `InjectRouteInBuildMode` rejection is
+                    // therefore gone — the variant is retained (see its doc)
+                    // for a genuinely-unsupported shape a future wave may
+                    // reintroduce, but the build path no longer hard-errors on
+                    // a plain prerenderable route.
                     let resolved = resolve_against_root(self.project_root, &entrypoint);
                     if let Some((first_plugin, first_entrypoint)) = self.route_origin.get(&pattern)
                     {
@@ -420,7 +451,10 @@ impl<'a> PluginSetupAccumulator<'a> {
                             // DIFFERENT entrypoint, are both real setup bugs —
                             // surface them rather than silently dropping one.
                             // Mirrors the Alias arm's same-pattern/different-
-                            // target conflict.
+                            // target conflict. This is the package-vs-package
+                            // collision guard (hard error in both modes);
+                            // user-`pages/`-wins precedence is enforced later,
+                            // pre-scan, by the build materialiser.
                             return Err(SetupRegistryError::InjectRouteConflict {
                                 pattern: pattern.clone(),
                                 first_plugin: first_plugin.clone(),
@@ -439,6 +473,7 @@ impl<'a> PluginSetupAccumulator<'a> {
                         pattern,
                         entrypoint: resolved,
                         plugin: output.plugin.clone(),
+                        prerender,
                     });
                 }
             }
@@ -511,6 +546,7 @@ mod tests {
             registrations: vec![RawSetupRegistration::InjectRoute {
                 pattern: pattern.into(),
                 entrypoint: entrypoint.into(),
+                prerender: None,
             }],
         }
     }
@@ -612,19 +648,42 @@ mod tests {
     }
 
     #[test]
-    fn inject_route_in_build_mode_errors() {
+    fn inject_route_in_build_mode_registers() {
+        // #1193: `injectRoute` is now ACCEPTED during a build — it
+        // contributes a package-owned build route the materialiser
+        // prerenders, rather than the pre-#1193 dev-only hard error.
         let root = PathBuf::from("/proj");
         let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
-        let err = acc
-            .ingest(raw_route("a", "/dev/x", "./scripts/x.ts"))
-            .expect_err("injectRoute during build must error");
-        match err {
-            SetupRegistryError::InjectRouteInBuildMode { plugin, pattern } => {
-                assert_eq!(plugin, "a");
-                assert_eq!(pattern, "/dev/x");
-            }
-            other => panic!("wrong error: {other:?}"),
-        }
+        acc.ingest(raw_route("a", "/preset-page", "./scripts/x.ts"))
+            .expect("injectRoute during build must be accepted (#1193)");
+        let (_, _, routes) = acc.finish();
+        assert_eq!(routes.len(), 1);
+        let r = &routes.as_slice()[0];
+        assert_eq!(r.pattern, "/preset-page");
+        assert_eq!(r.entrypoint, PathBuf::from("/proj/scripts/x.ts"));
+        assert_eq!(r.plugin, "a");
+        // No `prerender` option supplied → None → build defaults to SSG.
+        assert_eq!(r.prerender, None);
+    }
+
+    #[test]
+    fn inject_route_carries_prerender_hint() {
+        // The optional `{ prerender }` arg threads through to the
+        // registered route so the build materialiser can inline an
+        // explicit `export const prerender = …`.
+        let root = PathBuf::from("/proj");
+        let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
+        acc.ingest(RawPluginSetupOutput {
+            plugin: "a".into(),
+            registrations: vec![RawSetupRegistration::InjectRoute {
+                pattern: "/ssr-page".into(),
+                entrypoint: "./scripts/ssr.ts".into(),
+                prerender: Some(false),
+            }],
+        })
+        .expect("injectRoute with prerender hint must be accepted");
+        let (_, _, routes) = acc.finish();
+        assert_eq!(routes.as_slice()[0].prerender, Some(false));
     }
 
     #[test]

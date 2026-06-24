@@ -237,20 +237,30 @@ async function handleSetup(id, msg) {
         virtualLoaders.set(loaderId, { plugin: p.name, loader });
         registrations.push({ kind: "virtualModule", specifier, loaderId });
       },
-      injectRoute(pattern, entrypoint) {
+      injectRoute(pattern, entrypoint, opts) {
         if (typeof pattern !== "string" || !pattern.startsWith("/")) {
           throw new Error(
             `injectRoute: \`pattern\` must be a string starting with "/" (got ${JSON.stringify(pattern)})`,
           );
         }
-        // Reject obvious malformed patterns up front so the dev
-        // router doesn't have to: bare "/" is the catch-all
-        // (use devMiddleware for that), consecutive slashes are
-        // almost always a typo, and empty bracket segments
-        // ([] / [...]) are not valid in the pages/ grammar.
-        if (pattern === "/" || pattern.includes("//")) {
+        // Reject obvious malformed patterns up front so the routers
+        // don't have to: consecutive slashes are almost always a typo,
+        // and empty bracket segments ([] / [...]) are not valid in the
+        // pages/ grammar.
+        //
+        // The bare-"/" rejection is DEV-ONLY (#1193): in dev, "/" is the
+        // catch-all owned by devMiddleware, so a dev injectRoute("/") is
+        // a mistake. In a BUILD, a "/" package route is legitimate — it
+        // materialises as the overlay `pages/index.tsx` (the project's
+        // root page), enabling a truly empty/absent user `pages/`.
+        if (command !== "build" && pattern === "/") {
           throw new Error(
-            `injectRoute: \`pattern\` must not be "/" or contain consecutive slashes (got ${JSON.stringify(pattern)})`,
+            `injectRoute: \`pattern\` must not be "/" in dev (use devMiddleware for the catch-all) (got ${JSON.stringify(pattern)})`,
+          );
+        }
+        if (pattern.includes("//")) {
+          throw new Error(
+            `injectRoute: \`pattern\` must not contain consecutive slashes (got ${JSON.stringify(pattern)})`,
           );
         }
         if (/\[\]|\[\.\.\.\]/.test(pattern)) {
@@ -263,7 +273,28 @@ async function handleSetup(id, msg) {
             `injectRoute: \`entrypoint\` must be a non-empty string (got ${JSON.stringify(entrypoint)})`,
           );
         }
-        registrations.push({ kind: "injectRoute", pattern, entrypoint });
+        // Optional third arg: `{ prerender?: boolean }` (#1193). The
+        // prerender hint is build-only metadata (it controls whether the
+        // overlay module inlines `export const prerender = …`); a dev
+        // injectRoute may pass it harmlessly. Anything other than a
+        // boolean (or absent) is rejected so a typo surfaces early.
+        let prerender;
+        if (opts != null) {
+          if (typeof opts !== "object") {
+            throw new Error(
+              `injectRoute: \`opts\` must be an object (got ${JSON.stringify(opts)})`,
+            );
+          }
+          if (opts.prerender !== undefined) {
+            if (typeof opts.prerender !== "boolean") {
+              throw new Error(
+                `injectRoute: \`opts.prerender\` must be a boolean (got ${JSON.stringify(opts.prerender)})`,
+              );
+            }
+            prerender = opts.prerender;
+          }
+        }
+        registrations.push({ kind: "injectRoute", pattern, entrypoint, prerender });
       },
     };
     try {
