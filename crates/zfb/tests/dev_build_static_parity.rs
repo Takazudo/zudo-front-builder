@@ -187,7 +187,8 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, config_override: Option<&s
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     cmd.env_remove("ZFB_DEV_EAGER")
-        .env_remove("ZFB_LAZY_DEV_RENDER");
+        .env_remove("ZFB_LAZY_DEV_RENDER")
+        .env_remove("ZFB_DEV_DEFER_BUNDLE");
     cmd.process_group(0);
 
     let child = cmd.spawn().expect("spawn `zfb dev`");

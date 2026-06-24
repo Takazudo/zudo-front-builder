@@ -66,7 +66,10 @@ pub struct NewArgs {
 /// precise override that wins over `ZFB_DEV_EAGER` when both are set.
 /// `ZFB_DEV_BOOT_LAZY=1` (issue #1057) additionally defers the BOOT
 /// render: a valid prebuilt `dist/` is served immediately and each route
-/// re-renders on its first request.
+/// re-renders on its first request. `ZFB_DEV_DEFER_BUNDLE=0` (issue #1188)
+/// opts out of the #1182 bundle deferral under boot-lazy, so the renderer is
+/// built before bind (no SSR-only 404 window) at the cost of a slower
+/// first-accept.
 #[derive(Debug, Args)]
 #[command(after_help = "Environment variables:
   ZFB_DEV_EAGER=1          Disable lazy dev rendering: re-render every affected
@@ -79,7 +82,11 @@ pub struct NewArgs {
                            present, serve it immediately and defer per-route
                            rendering to the first request, instead of rendering
                            every route at boot. Requires lazy rendering (no-op
-                           when ZFB_DEV_EAGER is set). Off by default.")]
+                           when ZFB_DEV_EAGER is set). Off by default.
+  ZFB_DEV_DEFER_BUNDLE=0   Opt out of the #1182 boot-lazy bundle deferral: build
+                           the renderer before bind (no SSR-only 404 window)
+                           at the cost of a slower first-accept. On by default
+                           when boot-lazy is active.")]
 pub struct DevArgs {
     /// Port to bind the dev server to. Falls back to `port` from
     /// `zfb.config.json`, then to `3000`.
@@ -250,6 +257,21 @@ mod tests {
         assert!(
             help.contains("ZFB_DEV_BOOT_LAZY=1"),
             "dev help must document the ZFB_DEV_BOOT_LAZY opt-in switch:\n{help}"
+        );
+    }
+
+    /// Issue #1188 — `zfb dev --help` documents the bundle-deferral opt-out.
+    #[test]
+    fn dev_help_documents_defer_bundle_optout() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let dev = cmd
+            .find_subcommand_mut("dev")
+            .expect("dev subcommand exists");
+        let help = dev.render_long_help().to_string();
+        assert!(
+            help.contains("ZFB_DEV_DEFER_BUNDLE=0"),
+            "dev help must document the ZFB_DEV_DEFER_BUNDLE opt-out:\n{help}"
         );
     }
 }
