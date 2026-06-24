@@ -1120,6 +1120,26 @@ export default function Page() { return null; }
     }
 
     #[test]
+    fn user_optional_catchall_md_wins_over_bare_url_package_route() {
+        // #1201 (codex review): a user's optional-catchall `.md` page
+        // (`pages/docs/[[...rest]].md`) serves the bare `/docs` URL too. A package
+        // route at the bare `/docs` must be dropped (user-wins), not silently
+        // shadow the zero-segment URL the optional catchall owns.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        let docs = pages.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("[[...rest]].md"), "# user docs\n").unwrap();
+
+        let routes = vec![route("/docs", "/pkg/docs.tsx")];
+        let res = resolve_build_pages_root(&pages, &routes).unwrap();
+        assert!(
+            res.materialized.is_empty(),
+            "package route at the bare URL of a user optional-catchall .md page must be dropped"
+        );
+    }
+
+    #[test]
     fn empty_pages_with_root_package_route() {
         let tmp = tempfile::tempdir().unwrap();
         // No real pages/ dir at all.

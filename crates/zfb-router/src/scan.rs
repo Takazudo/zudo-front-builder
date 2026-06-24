@@ -208,6 +208,15 @@ fn scan_pages_inner(pages_dir: &Path) -> Result<(Vec<Route>, Vec<String>), Route
             // it silently shadow this page. Side data only — never fed to
             // `detect_ambiguity` (see `user_page_shape_keys`).
             skipped_dynamic_md_html_shape_keys.push(shape_key(&route.segments));
+            // An optional catchall (`[[...rest]]`) ALSO owns its zero-segment
+            // prefix URL — `pages/docs/[[...rest]].md` serves `/docs` too. Record
+            // the prefix shape as well, mirroring `detect_optional_catchall_conflicts`,
+            // so a package route at the bare URL can't slip past the exact-key
+            // pre-scan and silently shadow it (codex review).
+            if matches!(route.segments.last(), Some(Segment::OptionalCatchall(_))) {
+                let prefix = &route.segments[..route.segments.len() - 1];
+                skipped_dynamic_md_html_shape_keys.push(shape_key(prefix));
+            }
             continue;
         }
 
@@ -923,6 +932,25 @@ mod tests {
             "census must include the catchall .md shape; got {keys:?}"
         );
         assert!(scan_tree(&["docs/[...rest].md"]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn census_records_optional_catchall_md_zero_segment_prefix() {
+        // An optional-catchall `.md` page (`docs/[[...rest]].md`) owns BOTH its
+        // catchall shape AND its zero-segment prefix URL (`/docs`). Both must be
+        // in the census or a package `/docs` route would silently shadow the bare
+        // URL the user's optional catchall serves (codex review).
+        let keys = census_tree(&["docs/[[...rest]].md"]).unwrap();
+        let catchall_key = route_shape_key_for_pages_rel(Path::new("docs/[[...rest]].md")).unwrap();
+        let bare_key = route_shape_key_for_pages_rel(Path::new("docs/index.tsx")).unwrap();
+        assert!(
+            keys.contains(&catchall_key),
+            "census must include the optional-catchall shape; got {keys:?}"
+        );
+        assert!(
+            keys.contains(&bare_key),
+            "census must include the zero-segment `/docs` prefix shape; got {keys:?}"
+        );
     }
 
     #[test]
