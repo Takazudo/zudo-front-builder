@@ -2117,6 +2117,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     let manifest = build_post_build_manifest(
         routes,
         project_root,
+        build_pages_root,
         &expansion.resolved_with_params,
         &runtime_expansion.resolved_with_params,
         &prerender_map,
@@ -2139,6 +2140,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
 fn build_post_build_manifest(
     routes: &[zfb_router::Route],
     project_root: &Path,
+    // #1193 — the build pages root (the overlay when package routes are
+    // present). Used to report a package route's manifest `source` as a
+    // clean `pages/<rel>` instead of leaking the absolute overlay temp path.
+    build_pages_root: &Path,
     static_expansion_params: &[DynamicResolvedEntry],
     runtime_expansion_params: &[DynamicResolvedEntry],
     prerender_map: &std::collections::BTreeMap<String, bool>,
@@ -2146,6 +2151,21 @@ fn build_post_build_manifest(
     use std::collections::BTreeMap;
     use zfb_build::{PostBuildParamValue, PostBuildRouteEntry, PostBuildRouteManifest};
     use zfb_router::RouteKind;
+
+    // Render a route's `source_path` as a stable, relative manifest string.
+    // Prefer project-relative; for a package route (source under the overlay
+    // pages root, outside project_root) report `pages/<rel>` rather than the
+    // ephemeral absolute temp path (#1193); otherwise fall back to the raw
+    // path (matches the pre-#1193 behaviour for any unexpected shape).
+    let manifest_source = |source_path: &Path| -> String {
+        if let Ok(rel) = source_path.strip_prefix(project_root) {
+            return rel.to_string_lossy().into_owned();
+        }
+        if let Ok(rel) = source_path.strip_prefix(build_pages_root) {
+            return Path::new("pages").join(rel).to_string_lossy().into_owned();
+        }
+        source_path.to_string_lossy().into_owned()
+    };
 
     let mut entries: Vec<PostBuildRouteEntry> = Vec::new();
 
@@ -2161,12 +2181,7 @@ fn build_post_build_manifest(
             .as_deref()
             .unwrap_or("html")
             .to_string();
-        let source = route
-            .source_path
-            .strip_prefix(project_root)
-            .unwrap_or(&route.source_path)
-            .to_string_lossy()
-            .into_owned();
+        let source = manifest_source(&route.source_path);
         // Default to SSG (`prerender = true`) when the map has no entry —
         // matches the rest of the build's interpretation of a missing
         // `export const prerender` (e.g. lines 1001 / 1019 above).
@@ -2186,12 +2201,7 @@ fn build_post_build_manifest(
         .iter()
         .chain(runtime_expansion_params.iter())
     {
-        let source = dyn_entry
-            .source_path
-            .strip_prefix(project_root)
-            .unwrap_or(&dyn_entry.source_path)
-            .to_string_lossy()
-            .into_owned();
+        let source = manifest_source(&dyn_entry.source_path);
 
         // Build the params map only when there are bindings.
         let params = if dyn_entry.params.scalars.is_empty() && dyn_entry.params.arrays.is_empty() {
