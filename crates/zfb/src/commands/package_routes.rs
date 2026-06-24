@@ -188,7 +188,24 @@ pub(crate) fn resolve_build_pages_root(
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating overlay route dir {}", parent.display()))?;
         }
-        let module_src = synthesize_static_overlay_module(&route.entrypoint, route.prerender);
+        let module_src = if is_dynamic_pattern(&route.pattern) {
+            // Dynamic package route (`[param]` / `[...catchall]`): the
+            // overlay must surface a TOP-LEVEL `paths` the syntactic
+            // extractor sees, or the route hits `Missing` → hard error
+            // (#1194). We read + classify the package entrypoint with the
+            // SAME extractor the pipeline uses so literal vs runtime is
+            // decided once, here.
+            synthesize_dynamic_overlay_module(&route.entrypoint, route.prerender).with_context(
+                || {
+                    format!(
+                        "synthesizing dynamic overlay module for package route `{}` (from plugin `{}`)",
+                        route.pattern, route.plugin
+                    )
+                },
+            )?
+        } else {
+            synthesize_static_overlay_module(&route.entrypoint, route.prerender)
+        };
         std::fs::write(&dest, module_src.as_bytes())
             .with_context(|| format!("writing overlay route module {}", dest.display()))?;
         materialized.push(MaterializedRoute {
@@ -339,18 +356,175 @@ pub(crate) fn synthesize_static_overlay_module(
     out.push_str("// Re-exports the package entrypoint's default page component;\n");
     out.push_str("// the build renders this overlay module like any pages/ file.\n");
     out.push_str(&format!("export {{ default }} from {spec};\n"));
-    if let Some(prerender) = prerender {
-        // Inlined top-level (NOT re-exported) so the frontmatter extractor
-        // — and the output:static gate via build_prerender_map — sees the
-        // flag. `frontmatter` must accompany `prerender` or the extractor
-        // returns MissingFrontmatter and the flag is dropped (#1193).
-        out.push_str(
-            "// Inlined (not re-exported) so the AST extractor sees the prerender flag (#1193).\n",
-        );
-        out.push_str("export const frontmatter = {};\n");
-        out.push_str(&format!("export const prerender = {prerender};\n"));
-    }
+    push_inlined_prerender(&mut out, prerender);
     out
+}
+
+/// Inline the `frontmatter` + `prerender` exports top-level when an
+/// explicit `prerender` hint was supplied (shared by the static and
+/// dynamic synthesizers).
+///
+/// Inlined top-level (NOT re-exported) so the frontmatter extractor — and
+/// the `output: static` gate via `build_prerender_map` — sees the flag.
+/// `frontmatter` MUST accompany `prerender` or the extractor returns
+/// `MissingFrontmatter` and the flag is silently dropped (#1193).
+fn push_inlined_prerender(out: &mut String, prerender: Option<bool>) {
+    let Some(prerender) = prerender else { return };
+    out.push_str(
+        "// Inlined (not re-exported) so the AST extractor sees the prerender flag (#1193).\n",
+    );
+    out.push_str("export const frontmatter = {};\n");
+    out.push_str(&format!("export const prerender = {prerender};\n"));
+}
+
+/// `true` when a route pattern has a dynamic (`[param]`) or catchall
+/// (`[...rest]` / `[[...rest]]`) segment — i.e. the scanner will classify
+/// it `RouteKind::Dynamic`/`Catchall` and the renderer requires a
+/// `paths()` export. Keyed on the bracket marker the `pages/` filename
+/// grammar uses; consecutive-slash / malformed patterns were already
+/// rejected JS-side and again in `pattern_to_pages_rel`.
+fn is_dynamic_pattern(pattern: &str) -> bool {
+    pattern.contains('[')
+}
+
+/// Synthesize the overlay module source for a **dynamic** package route
+/// (`[param]` / `[...catchall]`). #1194, epic #1191.
+///
+/// A dynamic route requires a TOP-LEVEL `paths` export the syntactic
+/// extractor (`zfb_render::paths_extract`) can see, or it classifies the
+/// overlay module `Missing` → the `render_pipeline` hard error fires (the
+/// same parity invariant as a `pages/` dynamic route with no `paths()`).
+/// A re-export (`export { paths } from "<pkg>"`) is invisible to the
+/// extractor (it matches only top-level `ExportDecl`), so the `paths` must
+/// be PHYSICALLY top-level here.
+///
+/// We classify the package entrypoint's own `paths` with the **same**
+/// extractor the build pipeline uses, so the literal-vs-runtime decision
+/// is made once and can't drift:
+///
+/// - **Literal** (`extract_paths` → `Literal`): inline a literal-returning
+///   `export function paths() { return <json>; }` carrying the package's
+///   resolved JSON. The pipeline re-extracts `Literal` from the overlay →
+///   `try_expand_one` expands statically, **no V8 round-trip**.
+/// - **Runtime / non-literal** (`NonLiteral`, e.g. `getCollection(...)`, OR
+///   a `PathsExtractError::Parse` the SWC static extractor rejects but
+///   esbuild/V8 can still bundle): import the package's real `paths` under
+///   an alias and re-declare a top-level wrapper `export async function
+///   paths() { return __zfb_pkg_paths(...); }`. The extractor sees a
+///   top-level `paths` whose body is a CALL → `NonLiteral` → deferred to
+///   `eval_deferred_paths_via_worker`, which runs the **bundled** module's
+///   real `paths()` in V8 via `GET /__paths__/<route_key>`. Because the
+///   overlay module IS what the bundler bundles, the imported
+///   `__zfb_pkg_paths` resolves to the real package `paths` inside the
+///   worker. Folding a parse error into the defer path keeps parity with
+///   the user-page flow (`try_expand_one` defers a parse error rather than
+///   hard-erroring — only a genuinely-`Missing` `paths` hard-errors).
+/// - **Missing** (`extract_paths` → `Missing`): the package author shipped
+///   a dynamic route with NO `paths` export. We inline NO `paths` (only the
+///   default re-export), so the pipeline's own `extract_paths` on the
+///   overlay also returns `Missing` → the existing hard error fires with a
+///   clear message. This is deliberate: it keeps the missing-`paths()`
+///   hard-error parity flowing through the single canonical error path
+///   rather than synthesizing a wrapper that would fail later/worse.
+///
+/// The default page component is re-exported (a re-export is fine for the
+/// `default` — it doesn't pass through a syntactic extractor) and the
+/// entrypoint is imported by absolute path (esbuild resolves it as-is, so
+/// this is independent of where the overlay physically lives).
+///
+/// ## Known limitations (shared with the static synthesizer)
+///
+/// The package page is bundled from OUTSIDE the bundler's shadow tree
+/// (imported by absolute path), so zfb's shadow source transforms
+/// (CSS-Modules scoping, `import.meta.glob`) are NOT applied to it. Plain
+/// TSX + relative TS imports + node_modules deps work. This is a Z1a-noted
+/// v1 limitation; do not author CSS-Modules/glob in a package route page.
+pub(crate) fn synthesize_dynamic_overlay_module(
+    entrypoint: &Path,
+    prerender: Option<bool>,
+) -> Result<String> {
+    let spec = json_string(&entrypoint.to_string_lossy());
+
+    // Read + classify the package entrypoint's `paths` with the canonical
+    // extractor. An unreadable entrypoint is a hard error here (the build
+    // could not have rendered the route anyway).
+    let source = std::fs::read_to_string(entrypoint).with_context(|| {
+        format!(
+            "reading package route entrypoint {} to extract its `paths`",
+            entrypoint.display()
+        )
+    })?;
+    let file_name = entrypoint
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| entrypoint.display().to_string());
+    // Classify the entrypoint's `paths`. A PARSE error is NOT a hard
+    // failure here: the user-page dynamic flow (`try_expand_one` →
+    // `expand_dynamic_routes`) treats a `PathsExtractError::Parse` as a
+    // `TryExpandFailure::Other` → DEFERRED to the V8 worker, not a build
+    // error (only a genuinely-`Missing` `paths` hard-errors). For parity
+    // we fold a parse error into the runtime-wrapper path: the SWC static
+    // extractor may reject syntax esbuild/V8 can still bundle, and the
+    // worker re-runs the real `paths()` regardless.
+    let extraction = zfb_render::paths_extract::extract_paths(&source, &file_name);
+
+    let mut out = String::new();
+    out.push_str("// AUTO-GENERATED by zfb (package-owned routes, #1194). Do not edit.\n");
+    out.push_str("// Dynamic package route: re-exports the entrypoint's default page\n");
+    out.push_str("// component and surfaces a TOP-LEVEL `paths` the extractor can see.\n");
+    out.push_str(&format!("export {{ default }} from {spec};\n"));
+
+    match extraction {
+        Ok(zfb_render::paths_extract::PathsExtraction::Literal(json)) => {
+            // Inline the resolved JSON as a literal-returning function so
+            // the pipeline re-classifies it `Literal` and expands with no
+            // V8. `serde_json` emits valid JS-literal syntax (a JSON array
+            // of objects is a valid JS expression).
+            let literal = serde_json::to_string(&json).with_context(|| {
+                format!(
+                    "serializing the literal `paths` extracted from {}",
+                    entrypoint.display()
+                )
+            })?;
+            out.push_str("// Literal paths() inlined top-level (no runtime/V8 needed) (#1194).\n");
+            out.push_str(&format!(
+                "export function paths() {{ return {literal}; }}\n"
+            ));
+        }
+        // NonLiteral OR a parse error the static extractor couldn't handle:
+        // import the package's real `paths` and wrap it top-level. The
+        // extractor sees a CALL body → NonLiteral → deferred to the V8
+        // `__paths__` worker, which runs THIS module (and thus the imported
+        // real `paths`) inside the bundle. A parse error is deferred here
+        // exactly as the user-page flow defers it (parity).
+        Ok(zfb_render::paths_extract::PathsExtraction::NonLiteral { .. }) | Err(_) => {
+            out.push_str(
+                "// Runtime paths() wrapper: imports the package's real `paths` and re-declares\n",
+            );
+            out.push_str(
+                "// it top-level so the extractor defers to the V8 `__paths__` worker (#1194).\n",
+            );
+            out.push_str(&format!(
+                "import {{ paths as __zfb_pkg_paths }} from {spec};\n"
+            ));
+            out.push_str("export async function paths() { return await __zfb_pkg_paths(); }\n");
+        }
+        Ok(zfb_render::paths_extract::PathsExtraction::Missing) => {
+            // No `paths` in the package entrypoint. Inline NONE, so the
+            // pipeline's own extractor returns Missing → the canonical
+            // hard error fires (parity with a pages/ dynamic route that
+            // forgot paths()). A comment records WHY nothing was inlined.
+            out.push_str(
+                "// The package entrypoint exports no top-level `paths`; intentionally inlining\n",
+            );
+            out.push_str(
+                "// none so the build's hard error for a missing paths() fires (parity) (#1194).\n",
+            );
+        }
+    }
+
+    push_inlined_prerender(&mut out, prerender);
+    Ok(out)
 }
 
 /// Recursively copy a directory tree (files + subdirs), following the
@@ -480,6 +654,192 @@ mod tests {
         let m_true = synthesize_static_overlay_module(Path::new("/pkg/p.tsx"), Some(true));
         assert!(m_true.contains("export const prerender = true;"));
         assert!(m_true.contains("export const frontmatter = {}"));
+    }
+
+    #[test]
+    fn is_dynamic_pattern_classifies_bracket_segments() {
+        assert!(!is_dynamic_pattern("/"));
+        assert!(!is_dynamic_pattern("/preset-page"));
+        assert!(!is_dynamic_pattern("/a/b/c"));
+        assert!(is_dynamic_pattern("/blog/[slug]"));
+        assert!(is_dynamic_pattern("/docs/[...slug]"));
+        assert!(is_dynamic_pattern("/docs/[[...slug]]"));
+    }
+
+    /// Write `body` to a temp `.tsx` entrypoint and return its path + the
+    /// owning TempDir (kept alive by the caller).
+    fn entrypoint_with(body: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("entry.tsx");
+        std::fs::write(&p, body).unwrap();
+        (dir, p)
+    }
+
+    /// Re-run the canonical extractor over a synthesized overlay module to
+    /// prove how the build pipeline will classify it. This is the
+    /// load-bearing property: the overlay's `paths` must round-trip to the
+    /// SAME classification the materializer intended.
+    fn classify(module_src: &str) -> zfb_render::paths_extract::PathsExtraction {
+        zfb_render::paths_extract::extract_paths(module_src, "overlay.tsx").unwrap()
+    }
+
+    #[test]
+    fn dynamic_overlay_inlines_literal_paths_no_v8() {
+        // A package entrypoint whose paths() is a literal-returning function.
+        let (_d, entry) = entrypoint_with(
+            r#"export function paths() {
+  return [{ params: { slug: "a" } }, { params: { slug: "b" } }];
+}
+export default function Page() { return null; }
+"#,
+        );
+        let m = synthesize_dynamic_overlay_module(&entry, None).unwrap();
+        // Default re-exported; literal paths() inlined top-level.
+        assert!(m.contains("export { default } from"));
+        assert!(
+            m.contains("export function paths()") && m.contains("return ["),
+            "literal paths must be inlined as a literal-returning function; got:\n{m}"
+        );
+        // The crux: the overlay re-classifies Literal, so the pipeline
+        // expands statically with NO V8 round-trip.
+        match classify(&m) {
+            zfb_render::paths_extract::PathsExtraction::Literal(json) => {
+                let s = serde_json::to_string(&json).unwrap();
+                assert!(s.contains("\"slug\":\"a\"") && s.contains("\"slug\":\"b\""));
+            }
+            other => panic!("expected Literal classification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dynamic_overlay_wraps_runtime_paths_for_v8_defer() {
+        // A runtime paths() (calls getCollection) → NonLiteral in the package.
+        let (_d, entry) = entrypoint_with(
+            r#"import { getCollection } from "@takazudo/zfb-runtime";
+export async function paths() {
+  const items = await getCollection("docs");
+  return items.map((it) => ({ params: { slug: it.slug } }));
+}
+export default function Page() { return null; }
+"#,
+        );
+        let m = synthesize_dynamic_overlay_module(&entry, None).unwrap();
+        // Imports the package's real paths under an alias and re-declares a
+        // top-level wrapper.
+        assert!(
+            m.contains("import { paths as __zfb_pkg_paths } from"),
+            "runtime paths must be imported under an alias; got:\n{m}"
+        );
+        assert!(
+            m.contains("export async function paths()") && m.contains("__zfb_pkg_paths()"),
+            "runtime wrapper must call the imported real paths; got:\n{m}"
+        );
+        // The crux: the overlay re-classifies NonLiteral, so the pipeline
+        // DEFERS it to the V8 `__paths__` worker (which runs the real paths).
+        assert!(
+            matches!(
+                classify(&m),
+                zfb_render::paths_extract::PathsExtraction::NonLiteral { .. }
+            ),
+            "runtime wrapper must classify NonLiteral (deferred to V8); got: {:?}",
+            classify(&m)
+        );
+    }
+
+    #[test]
+    fn dynamic_overlay_missing_paths_yields_missing_for_hard_error() {
+        // A dynamic package route whose entrypoint forgot paths().
+        let (_d, entry) = entrypoint_with("export default function Page() { return null; }\n");
+        let m = synthesize_dynamic_overlay_module(&entry, None).unwrap();
+        // No `paths` inlined → the pipeline's extractor returns Missing →
+        // the canonical hard error fires (parity with a pages/ route).
+        assert!(
+            !m.contains("export function paths") && !m.contains("export async function paths"),
+            "no paths must be inlined when the package omits it; got:\n{m}"
+        );
+        assert!(
+            matches!(
+                classify(&m),
+                zfb_render::paths_extract::PathsExtraction::Missing
+            ),
+            "overlay must classify Missing so the hard error fires; got: {:?}",
+            classify(&m)
+        );
+    }
+
+    #[test]
+    fn dynamic_overlay_defers_on_parse_error_for_parity() {
+        // Syntax the SWC static extractor cannot parse. The user-page flow
+        // (`try_expand_one`) treats a parse error as a DEFER (runtime V8),
+        // NOT a hard error — only a genuinely-Missing paths() hard-errors.
+        // The materializer must match: synthesize the runtime wrapper, not
+        // abort. (codex P2.)
+        let broken = "export function paths( { return [ ;\nexport default function Page() {}\n";
+        // Precondition: this source really IS a parse error for the extractor
+        // (so the test exercises the Err branch, not Missing/NonLiteral).
+        assert!(
+            zfb_render::paths_extract::extract_paths(broken, "broken.tsx").is_err(),
+            "test precondition: the chosen source must be a parse error"
+        );
+        let (_d, entry) = entrypoint_with(broken);
+        // Must NOT return Err — a parse error defers, it does not abort.
+        let m = synthesize_dynamic_overlay_module(&entry, None)
+            .expect("a parse error must defer to the runtime wrapper, not hard-error");
+        assert!(
+            m.contains("import { paths as __zfb_pkg_paths } from")
+                && m.contains("export async function paths()"),
+            "parse error must synthesize the runtime wrapper (deferred to V8); got:\n{m}"
+        );
+        // And the wrapper classifies NonLiteral so the pipeline defers it.
+        assert!(matches!(
+            classify(&m),
+            zfb_render::paths_extract::PathsExtraction::NonLiteral { .. }
+        ));
+    }
+
+    #[test]
+    fn dynamic_overlay_threads_prerender_hint() {
+        let (_d, entry) = entrypoint_with(
+            r#"export function paths() { return [{ params: { slug: "a" } }]; }
+export default function Page() { return null; }
+"#,
+        );
+        let m = synthesize_dynamic_overlay_module(&entry, Some(false)).unwrap();
+        assert!(m.contains("export const prerender = false;"));
+        assert!(m.contains("export const frontmatter = {}"));
+    }
+
+    #[test]
+    fn materializes_dynamic_literal_route_into_overlay() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        // The package's dynamic entrypoint with a literal paths().
+        let pkg_dir = tmp.path().join("pkg");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        let entry = pkg_dir.join("blog.tsx");
+        std::fs::write(
+            &entry,
+            r#"export function paths() { return [{ params: { slug: "hello" } }]; }
+export default function Page() { return null; }
+"#,
+        )
+        .unwrap();
+
+        let r = InjectedRoute {
+            pattern: "/blog/[slug]".into(),
+            entrypoint: entry,
+            plugin: "preset".into(),
+            prerender: None,
+        };
+        let res = resolve_build_pages_root(&pages, std::slice::from_ref(&r)).unwrap();
+        assert!(res.guard.is_some());
+        let overlay = res.build_pages_root.join("blog").join("[slug].tsx");
+        assert!(overlay.is_file(), "dynamic overlay module must be written");
+        let body = std::fs::read_to_string(&overlay).unwrap();
+        assert!(body.contains("export function paths()"));
+        assert!(body.contains("\"hello\""));
     }
 
     #[test]

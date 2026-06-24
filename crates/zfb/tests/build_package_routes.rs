@@ -807,3 +807,359 @@ fn no_package_routes_build_is_unaffected() {
     assert!(fs::read_to_string(&home).unwrap().contains("PARITY_HOME"));
     assert!(fs::read_to_string(&about).unwrap().contains("PARITY_ABOUT"));
 }
+
+// ===========================================================================
+// Z1b (#1194): DYNAMIC package routes — paths() enumeration.
+//
+// A dynamic package route (`[param]` / `[...catchall]`) must enumerate one
+// prerendered HTML per concrete path. Covers both the LITERAL paths() path
+// (static extraction, no V8 round-trip) and the RUNTIME getCollection()
+// path (deferred to the V8 `__paths__` worker), plus catchall route_key
+// round-trip and the missing-paths() hard-error parity.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// 9. Dynamic literal paths() — enumerates statically (no V8).
+// ---------------------------------------------------------------------------
+
+/// A dynamic package route `/blog/[slug]` whose entrypoint exports a
+/// LITERAL-returning `paths()` enumerates one `dist/blog/<slug>/index.html`
+/// per entry — statically, with no V8 round-trip (the overlay re-classifies
+/// the inlined literal `paths()` as `Literal`). Each page carries a
+/// per-`slug` marker proving params reached the render.
+#[test]
+fn dynamic_package_route_literal_paths_enumerates() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dyn_literal] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[dyn_literal] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let _nm = link_embedded_node_modules(root);
+
+    fs::create_dir_all(root.join("pkg")).unwrap();
+    // Literal paths() + a default page that renders the slug param so each
+    // enumerated path gets a distinct marker.
+    fs::write(
+        root.join("pkg/blog.tsx"),
+        r#"export function paths() {
+  return [
+    { params: { slug: "alpha" }, props: { title: "alpha" } },
+    { params: { slug: "beta" }, props: { title: "beta" } },
+  ];
+}
+export default function Page({ title }) {
+  return (
+    <html lang="en">
+      <head><title>{title}</title></head>
+      <body><p>BLOG_MARKER_{title}</p></body>
+    </html>
+  );
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("preset.mjs"),
+        r#"export default {
+  name: "dyn-literal-preset",
+  setup({ injectRoute }) {
+    injectRoute("/blog/[slug]", "./pkg/blog.tsx");
+  },
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
+
+    let Some(dist) = build_or_skip(root, &esbuild, "dyn_literal") else {
+        return;
+    };
+
+    for slug in ["alpha", "beta"] {
+        let html = dist.join(format!("blog/{slug}/index.html"));
+        assert!(
+            html.is_file(),
+            "literal paths() must enumerate dist/blog/{slug}/index.html; dist html: {:#?}",
+            collect_files(&dist, "html")
+        );
+        let body = fs::read_to_string(&html).unwrap();
+        assert!(
+            body.contains(&format!("BLOG_MARKER_{slug}")),
+            "enumerated page for `{slug}` must carry its per-slug marker; got: {body}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 10. Dynamic runtime getCollection() paths() — V8 __paths__ enumeration.
+// ---------------------------------------------------------------------------
+
+/// A dynamic package route `/docs/[slug]` whose entrypoint calls
+/// `getCollection("docs")` in `paths()` is NON-literal → deferred to the V8
+/// `/__paths__/<route-key>` worker. The fixture is self-contained: a real
+/// `docs` collection (config + `content/docs/*.md`). The build must enumerate
+/// ONE `dist/docs/<slug>/index.html` per collection entry, each with the
+/// right per-entry marker. This is "the crux of correctness" — it exercises
+/// the embedded V8 worker running the bundled module's real `paths()`.
+#[test]
+fn dynamic_package_route_runtime_getcollection_paths_enumerates() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dyn_runtime] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[dyn_runtime] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let _nm = link_embedded_node_modules(root);
+
+    // A real content collection backing the runtime paths().
+    fs::create_dir_all(root.join("content/docs")).unwrap();
+    fs::write(
+        root.join("content/docs/intro.md"),
+        "---\ntitle: Intro Doc\n---\n\nintro body.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("content/docs/setup.md"),
+        "---\ntitle: Setup Doc\n---\n\nsetup body.\n",
+    )
+    .unwrap();
+
+    // The package's dynamic entrypoint: runtime paths() via getCollection.
+    fs::create_dir_all(root.join("pkg")).unwrap();
+    fs::write(
+        root.join("pkg/doc.tsx"),
+        r#"type Doc = { slug: string; data: { title: string } };
+export async function paths() {
+  const { getCollection } = await import("@takazudo/zfb/content");
+  const docs = (await getCollection("docs")) as Doc[];
+  return docs.map((d) => ({ params: { slug: d.slug }, props: { slug: d.slug } }));
+}
+export default function Page({ slug }: { slug: string }) {
+  return (
+    <html lang="en">
+      <head><title>{slug}</title></head>
+      <body><p>DOC_MARKER_{slug}</p></body>
+    </html>
+  );
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("preset.mjs"),
+        r#"export default {
+  name: "dyn-runtime-preset",
+  setup({ injectRoute }) {
+    injectRoute("/docs/[slug]", "./pkg/doc.tsx");
+  },
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{
+  "framework": "preact",
+  "collections": [{ "name": "docs", "path": "content/docs" }],
+  "plugins": [{ "name": "./preset.mjs" }]
+}
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
+
+    let Some(dist) = build_or_skip(root, &esbuild, "dyn_runtime") else {
+        return;
+    };
+
+    // One HTML per collection entry (slug derived from the .md filename).
+    for slug in ["intro", "setup"] {
+        let html = dist.join(format!("docs/{slug}/index.html"));
+        assert!(
+            html.is_file(),
+            "runtime getCollection() paths() must enumerate dist/docs/{slug}/index.html via the \
+             V8 __paths__ worker; dist html: {:#?}",
+            collect_files(&dist, "html")
+        );
+        let body = fs::read_to_string(&html).unwrap();
+        assert!(
+            body.contains(&format!("DOC_MARKER_{slug}")),
+            "enumerated runtime page for `{slug}` must carry its per-entry marker; got: {body}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 11. Catchall [...slug] package route — enumerates + route_key round-trips.
+// ---------------------------------------------------------------------------
+
+/// A catchall package route `/docs/[...slug]` enumerates multi-segment URLs.
+/// The literal paths() returns both single- and multi-segment values; each
+/// must prerender at the joined path. This also exercises the route_key
+/// encode/round-trip for a catchall template through the universe → manifest
+/// join (a catchall template `/docs/[...slug]` survives as the route_key).
+#[test]
+fn catchall_package_route_enumerates_multisegment() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[catchall] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[catchall] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let _nm = link_embedded_node_modules(root);
+
+    fs::create_dir_all(root.join("pkg")).unwrap();
+    // Catchall paths(): a one-segment and a two-segment value.
+    fs::write(
+        root.join("pkg/catchall.tsx"),
+        r#"export function paths() {
+  return [
+    { params: { slug: ["guide"] }, props: { label: "guide" } },
+    { params: { slug: ["guide", "deep"] }, props: { label: "guide-deep" } },
+  ];
+}
+export default function Page({ label }) {
+  return (
+    <html lang="en">
+      <head><title>{label}</title></head>
+      <body><p>CATCHALL_MARKER_{label}</p></body>
+    </html>
+  );
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("preset.mjs"),
+        r#"export default {
+  name: "catchall-preset",
+  setup({ injectRoute }) {
+    injectRoute("/docs/[...slug]", "./pkg/catchall.tsx");
+  },
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
+
+    let Some(dist) = build_or_skip(root, &esbuild, "catchall") else {
+        return;
+    };
+
+    let single = dist.join("docs/guide/index.html");
+    let multi = dist.join("docs/guide/deep/index.html");
+    assert!(
+        single.is_file(),
+        "catchall must enumerate the single-segment dist/docs/guide/index.html; dist html: {:#?}",
+        collect_files(&dist, "html")
+    );
+    assert!(
+        multi.is_file(),
+        "catchall must enumerate the multi-segment dist/docs/guide/deep/index.html; dist html: {:#?}",
+        collect_files(&dist, "html")
+    );
+    assert!(fs::read_to_string(&single)
+        .unwrap()
+        .contains("CATCHALL_MARKER_guide"));
+    assert!(fs::read_to_string(&multi)
+        .unwrap()
+        .contains("CATCHALL_MARKER_guide-deep"));
+}
+
+// ---------------------------------------------------------------------------
+// 12. Missing paths() on a dynamic package route → hard build error (parity).
+// ---------------------------------------------------------------------------
+
+/// A dynamic package route whose entrypoint has NO `paths()` export must FAIL
+/// the build with a clear error — the same hard-error invariant a `pages/`
+/// dynamic route gets. The overlay inlines no `paths`, so the pipeline's
+/// extractor returns `Missing` → the canonical `render_pipeline` hard error
+/// fires. (A silent zero-page build would 404 at serve time.)
+#[test]
+fn dynamic_package_route_missing_paths_hard_errors() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dyn_missing] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[dyn_missing] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let _nm = link_embedded_node_modules(root);
+
+    fs::create_dir_all(root.join("pkg")).unwrap();
+    // Dynamic route pattern but NO paths() export.
+    fs::write(root.join("pkg/no-paths.tsx"), page_module("NO_PATHS")).unwrap();
+    fs::write(
+        root.join("preset.mjs"),
+        r#"export default {
+  name: "dyn-missing-preset",
+  setup({ injectRoute }) {
+    injectRoute("/blog/[slug]", "./pkg/no-paths.tsx");
+  },
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
+
+    let output = run_zfb_build(root, &esbuild);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+    if !output.status.success() && is_known_skip(&combined) {
+        eprintln!("[dyn_missing] known-skip indicator; skipping.\n{combined}");
+        return;
+    }
+
+    assert!(
+        !output.status.success(),
+        "a dynamic package route with no paths() must FAIL the build; build succeeded.\n\
+         --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        combined.contains("paths") && combined.to_lowercase().contains("dynamic"),
+        "the rejection must be the missing-paths() hard error (parity with pages/); got:\n{combined}"
+    );
+}
