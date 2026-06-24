@@ -4868,8 +4868,304 @@ mod tests {
         );
     }
 
-    /// End-to-end JSON path: the deep-merge holds through the real loader, not
-    /// just the unit `merge_preset_into`.
+    // --- #1202: arbitrary-depth sibling survival ------------------------------
+
+    /// #1202 (3rd level): user sets `markdown.features.{fieldA}` and a preset
+    /// sets a DIFFERENT sibling `markdown.features.{fieldB}` → both survive.
+    /// `markdown.features.codeTabs` (user) vs `markdown.features.ruby`
+    /// (preset) are real sibling fields of `MarkdownFeaturesConfig` — the
+    /// issue's literal example used `headingIds.{fieldA/fieldB}`, but
+    /// `HeadingIdsConfig` has a single field (`strategy`) and
+    /// `deny_unknown_fields`, so two distinct siblings live one level up under
+    /// `features`.
+    #[test]
+    fn preset_markdown_features_third_level_siblings_both_survive() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "markdown": { "features": { "ruby": true } }
+            })],
+            serde_json::json!({
+                "markdown": { "features": { "codeTabs": true } }
+            }),
+        );
+        let features = cfg
+            .markdown
+            .expect("markdown present")
+            .features
+            .expect("features present");
+        assert_eq!(
+            features.code_tabs,
+            Some(FeatureToggle::Bool(true)),
+            "user's features.codeTabs must survive"
+        );
+        assert_eq!(
+            features.ruby,
+            Some(FeatureToggle::Bool(true)),
+            "preset's sibling features.ruby must survive"
+        );
+    }
+
+    /// #1202 (4th level): user sets
+    /// `markdown.features.codeEnrichment.diffMarkers` and a preset sets the
+    /// DIFFERENT sibling `markdown.features.codeEnrichment.lineHighlight` →
+    /// both survive. This is a genuine 4th-level object collision (markdown →
+    /// features → codeEnrichment → {diffMarkers, lineHighlight}).
+    #[test]
+    fn preset_markdown_features_fourth_level_siblings_both_survive() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "markdown": { "features": { "codeEnrichment": { "lineHighlight": false } } }
+            })],
+            serde_json::json!({
+                "markdown": { "features": { "codeEnrichment": { "diffMarkers": false } } }
+            }),
+        );
+        let enrichment = cfg
+            .markdown
+            .expect("markdown present")
+            .features
+            .expect("features present")
+            .code_enrichment
+            .expect("codeEnrichment present");
+        assert_eq!(
+            enrichment.diff_markers,
+            Some(false),
+            "user's codeEnrichment.diffMarkers must survive (presence, not equals-default)"
+        );
+        assert_eq!(
+            enrichment.line_highlight,
+            Some(false),
+            "preset's sibling codeEnrichment.lineHighlight must survive"
+        );
+    }
+
+    // --- #1199: presence vs equals-default ------------------------------------
+
+    /// #1199: the user EXPLICITLY sets a scalar to a value equal to its type
+    /// default (`copyPublicWithBase` defaults to `true`; user sets `true`)
+    /// while a preset sets the opposite (`false`). The user's explicit value
+    /// must win — the merge keys on key PRESENCE, not value-equals-default.
+    /// The old typed fold gave this to the preset.
+    #[test]
+    fn preset_user_explicit_default_value_beats_preset() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({ "copyPublicWithBase": false })],
+            serde_json::json!({ "copyPublicWithBase": true }),
+        );
+        assert!(
+            cfg.copy_public_with_base,
+            "user's explicit `true` (== type default) must beat the preset's `false`"
+        );
+    }
+
+    /// Control for #1199: when the user OMITS the key, the preset fills it.
+    #[test]
+    fn preset_fills_when_user_omits_default_value_key() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({ "copyPublicWithBase": false })],
+            serde_json::json!({}),
+        );
+        assert!(
+            !cfg.copy_public_with_base,
+            "with the key omitted, the preset's `false` fills in"
+        );
+    }
+
+    // --- null blocks the preset -----------------------------------------------
+
+    /// An explicit `null` in the user config blocks the preset value (the user
+    /// opted out). `adapter: null` → the preset's adapter does NOT fill in.
+    #[test]
+    fn preset_user_null_blocks_preset_value() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({ "adapter": "preset-adapter" })],
+            serde_json::json!({ "adapter": null }),
+        );
+        assert_eq!(
+            cfg.adapter, None,
+            "explicit `adapter: null` must block the preset's adapter"
+        );
+    }
+
+    /// `markdown: null` blocks a whole preset block.
+    #[test]
+    fn preset_user_null_blocks_preset_block() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "markdown": { "features": { "githubAlerts": true } }
+            })],
+            serde_json::json!({ "markdown": null }),
+        );
+        assert_eq!(
+            cfg.markdown, None,
+            "explicit `markdown: null` must block the preset's markdown block"
+        );
+    }
+
+    // --- map-like recursion ---------------------------------------------------
+
+    /// Preset and user contribute DIFFERENT sibling entries under a map-like
+    /// object (`markdown.features.directives` is a `HashMap<String,
+    /// DirectiveSpec>`) → both entries survive.
+    #[test]
+    fn preset_map_like_directives_siblings_both_survive() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "markdown": { "features": { "directives": { "tip": "Tip" } } }
+            })],
+            serde_json::json!({
+                "markdown": { "features": { "directives": { "note": "Note" } } }
+            }),
+        );
+        let directives = cfg
+            .markdown
+            .expect("markdown present")
+            .features
+            .expect("features present")
+            .directives
+            .expect("directives present");
+        assert!(
+            directives.contains_key("note"),
+            "user's directive entry `note` must survive"
+        );
+        assert!(
+            directives.contains_key("tip"),
+            "preset's directive entry `tip` must survive"
+        );
+        assert_eq!(directives.len(), 2, "both map entries present");
+    }
+
+    // --- additive-array order across presets + user ---------------------------
+
+    /// `presets: [a, b]` each contributing `plugins` plus a user plugin →
+    /// merged order is `[a, b, user]`.
+    #[test]
+    fn preset_additive_plugins_order_a_b_user() {
+        let cfg = merge_presets_to_config(
+            vec![
+                serde_json::json!({ "plugins": [{ "name": "a", "options": {} }] }),
+                serde_json::json!({ "plugins": [{ "name": "b", "options": {} }] }),
+            ],
+            serde_json::json!({ "plugins": [{ "name": "user", "options": {} }] }),
+        );
+        let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "user"]);
+    }
+
+    /// Same additive `[a, b, user]` order for `collections`.
+    #[test]
+    fn preset_additive_collections_order_a_b_user() {
+        let cfg = merge_presets_to_config(
+            vec![
+                serde_json::json!({ "collections": [{ "name": "a", "path": "content/a" }] }),
+                serde_json::json!({ "collections": [{ "name": "b", "path": "content/b" }] }),
+            ],
+            serde_json::json!({ "collections": [{ "name": "user", "path": "content/user" }] }),
+        );
+        let names: Vec<&str> = cfg.collections.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "user"]);
+    }
+
+    /// Same additive `[a, b, user]` order for the string-valued
+    /// `allowedHosts` (covers an additive array whose items are scalars).
+    #[test]
+    fn preset_additive_allowed_hosts_order_a_b_user() {
+        let cfg = merge_presets_to_config(
+            vec![
+                serde_json::json!({ "allowedHosts": ["a.example.com"] }),
+                serde_json::json!({ "allowedHosts": ["b.example.com"] }),
+            ],
+            serde_json::json!({ "allowedHosts": ["user.example.com"] }),
+        );
+        assert_eq!(
+            cfg.allowed_hosts,
+            vec![
+                "a.example.com".to_string(),
+                "b.example.com".to_string(),
+                "user.example.com".to_string()
+            ]
+        );
+    }
+
+    /// Same additive `[a, b, user]` order for `extraWatchPaths`.
+    #[test]
+    fn preset_additive_extra_watch_paths_order_a_b_user() {
+        let cfg = merge_presets_to_config(
+            vec![
+                serde_json::json!({ "extraWatchPaths": ["/abs/a"] }),
+                serde_json::json!({ "extraWatchPaths": ["/abs/b"] }),
+            ],
+            serde_json::json!({ "extraWatchPaths": ["/abs/user"] }),
+        );
+        let paths: Vec<&str> = cfg
+            .extra_watch_paths
+            .iter()
+            .map(|p| p.to_str().unwrap())
+            .collect();
+        assert_eq!(paths, vec!["/abs/a", "/abs/b", "/abs/user"]);
+    }
+
+    /// A `presets` key nested INSIDE a preset object is stripped — never
+    /// recursively expanded (#1196). The inner preset's scalar must NOT leak.
+    #[test]
+    fn preset_nested_presets_key_is_stripped() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "adapter": "outer-adapter",
+                "presets": [{ "adapter": "should-not-appear", "strip_md_ext": true }]
+            })],
+            serde_json::json!({}),
+        );
+        assert_eq!(
+            cfg.adapter.as_deref(),
+            Some("outer-adapter"),
+            "the outer preset's adapter applies"
+        );
+        assert!(
+            !cfg.strip_md_ext,
+            "a nested `presets` key must be stripped, not expanded"
+        );
+    }
+
+    /// Nested arrays are NOT additive: a user `bundle.exclude` wins WHOLE over
+    /// a preset `bundle.exclude` (no concat) — the additive rule is top-level
+    /// only.
+    #[test]
+    fn preset_nested_array_user_wins_not_additive() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({
+                "bundle": { "exclude": ["preset-only.tsx"] }
+            })],
+            serde_json::json!({
+                "bundle": { "exclude": ["user-only.tsx"] }
+            }),
+        );
+        assert_eq!(
+            cfg.bundle.unwrap().exclude,
+            Some(vec!["user-only.tsx".to_string()]),
+            "user's bundle.exclude wins whole; nested arrays are not additive"
+        );
+    }
+
+    /// First-declared preset wins a shared scalar at the Value layer, matching
+    /// the additive-array precedence (`a` before `b`).
+    #[test]
+    fn preset_multi_preset_scalar_first_declared_wins() {
+        let cfg = merge_presets_to_config(
+            vec![
+                serde_json::json!({ "adapter": "adapter-a" }),
+                serde_json::json!({ "adapter": "adapter-b" }),
+            ],
+            serde_json::json!({}),
+        );
+        assert_eq!(
+            cfg.adapter.as_deref(),
+            Some("adapter-a"),
+            "first-declared preset's adapter wins"
+        );
+    }
+
+    /// End-to-end JSON path: the deep-merge holds through the real loader.
     #[tokio::test]
     async fn json_path_preset_markdown_block_deep_merges() {
         let tmp = TempDir::new().unwrap();
