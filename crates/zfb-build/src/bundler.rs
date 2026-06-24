@@ -780,6 +780,21 @@ pub struct RouteEntry {
     /// entirely. The build pipeline copies the source body verbatim.
     #[serde(default)]
     pub static_html: bool,
+    /// Path of the page module **relative to `pages_dir`** (the
+    /// materialise walk's `rel`) — e.g. `docs/intro.tsx`, `index.tsx`.
+    /// This is the load-bearing input to the entry-module's per-route
+    /// import (`import … "./pages/<rel>"`, forward-slashed at the emit):
+    /// it is carried straight from the walk so the import is correct
+    /// regardless of where `pages_dir` physically lives (the real
+    /// `project_root/pages` OR a per-build overlay temp dir under
+    /// package-owned routes). Deriving it instead from `source_path` via
+    /// a literal `pages/`-prefix strip silently collapsed nested overlay
+    /// routes to a bare filename (issue #1193) — that path is retired.
+    /// `#[serde(default)]` keeps older manifests deserialisable; an empty
+    /// value falls back to the legacy `source_path` derivation at the
+    /// import site.
+    #[serde(default)]
+    pub rel_under_pages: PathBuf,
 }
 
 const SHADOW_HYDRATE_FILENAME: &str = "__zfb_internal_hydrate.jsx";
@@ -2835,6 +2850,11 @@ fn materialise_shadow(
                     // Hono-form so `worker_only_routes` filter matches.
                     entry_key: bracket_to_hono(&route),
                     static_html: true,
+                    // Path under `pages_dir` (the walk's `rel`) — carried from
+                    // the walk so the entry import is overlay-location-agnostic
+                    // (#1193). Static-HTML routes never enter the JS bundle, so
+                    // this is recorded only for manifest symmetry.
+                    rel_under_pages: rel.to_path_buf(),
                 });
             }
             continue;
@@ -2979,6 +2999,10 @@ fn materialise_shadow(
                     // Hono-form so `worker_only_routes` filter matches.
                     entry_key: bracket_to_hono(&route),
                     static_html: false,
+                    // Path under `pages_dir` (the walk's `rel`) — carried from
+                    // the walk so the entry import is overlay-location-agnostic
+                    // (#1193, load-bearing).
+                    rel_under_pages: rel.to_path_buf(),
                 });
             }
         }
@@ -4872,11 +4896,21 @@ fn write_entry_module(
     // Stable per-route import alias so mangled-letter routes still
     // produce a valid identifier.
     for (idx, route) in js_routes.iter().enumerate() {
-        // Convert source_path back to its position under shadow/pages.
-        // RouteEntry::source_path is project-relative; the shadow page
-        // mirrors the path under shadow/pages, **but** with the `pages/`
-        // prefix replaced. We only need the path *under* pages_dir.
-        let rel_under_pages = route_path_under_pages(&route.source_path);
+        // Import the shadow page module by its path **under `pages_dir`**.
+        // `rel_under_pages` is carried straight from the materialise walk
+        // (#1193), so the import stays correct no matter where `pages_dir`
+        // physically is — the real `project_root/pages` OR a per-build
+        // overlay temp dir (package-owned routes). The old derivation
+        // (`route_path_under_pages(source_path)`, a literal `pages/`-prefix
+        // strip) collapsed nested overlay routes to a bare filename; that
+        // path is retired. The `source_path` fallback only fires for an
+        // empty `rel_under_pages` (a legacy manifest deserialised with the
+        // serde default).
+        let rel_under_pages = if route.rel_under_pages.as_os_str().is_empty() {
+            route_path_under_pages(&route.source_path)
+        } else {
+            rel_to_forward_slash(&route.rel_under_pages)
+        };
         let import_path = format!("./pages/{}", rel_under_pages);
         writeln!(
             &mut src,
@@ -5146,10 +5180,22 @@ fn write_entry_module(
     Ok(())
 }
 
+/// Normalise a `pages_dir`-relative path to forward-slash form for use
+/// in a JS import specifier. Windows back-slashes become `/`; an
+/// already-POSIX path is unchanged.
+fn rel_to_forward_slash(rel: &Path) -> String {
+    rel.to_string_lossy().replace('\\', "/")
+}
+
 /// Heuristic to recover "path under pages/" from a project-relative
 /// page path. We assume `source_path` starts with `pages/` (since the
 /// pages-dir walk pushed RouteEntries with project-relative source
 /// paths). If for some reason it doesn't, fall back to the file name.
+///
+/// Retained only as the legacy fallback for [`RouteEntry`]s deserialised
+/// from an older manifest (empty `rel_under_pages`). New routes carry
+/// `rel_under_pages` from the walk and never reach this — see the import
+/// emit in [`write_entry_module`].
 fn route_path_under_pages(source_path: &Path) -> String {
     for prefix in ["pages/", "pages\\"] {
         let s = source_path.to_string_lossy();
@@ -5919,12 +5965,14 @@ mod tests {
                 source_path: PathBuf::from("pages/index.tsx"),
                 entry_key: "/".to_string(),
                 static_html: false,
+                rel_under_pages: PathBuf::from("index.tsx"),
             },
             RouteEntry {
                 route: "/about".to_string(),
                 source_path: PathBuf::from("pages/about.tsx"),
                 entry_key: "/about".to_string(),
                 static_html: false,
+                rel_under_pages: PathBuf::from("about.tsx"),
             },
         ];
         write_entry_module(
