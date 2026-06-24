@@ -1444,9 +1444,16 @@ pub async fn load_from_dir_with_options(dir: &Path, opts: &LoadOptions) -> Resul
         })?;
         // #1196 — merge presets before plugin resolution so preset-contributed
         // plugins are included in the resolve pass below.
+        //
+        // #1191 review (codex P2): `merge_preset_into` PREPENDS each preset's
+        // additive arrays. Folding forward while each prepends would REVERSE
+        // declared order (`presets: [a, b]` → `b, a, user`). Iterate in
+        // REVERSE so the first declared preset is folded LAST and ends up
+        // first → documented order `a, b, user`. `.enumerate()` runs before
+        // `.rev()` so the `presets[i]` index in errors stays the declared one.
         if !cfg.presets.is_empty() {
             let presets = std::mem::take(&mut cfg.presets);
-            for (i, preset_value) in presets.into_iter().enumerate() {
+            for (i, preset_value) in presets.into_iter().enumerate().rev() {
                 let preset: Config = serde_json::from_value(preset_value).map_err(|e| {
                     anyhow!(
                         "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
@@ -1618,7 +1625,11 @@ fn parse_loaded_config(
     // `resolved_module = None`; resolve them Rust-side below.
     if !config.presets.is_empty() {
         let presets = std::mem::take(&mut config.presets);
-        for (i, preset_value) in presets.into_iter().enumerate() {
+        // #1191 review (codex P2): fold presets in REVERSE so prepend-merge
+        // preserves declared order (`presets: [a, b]` → `a, b, user`, not
+        // `b, a, user`). Same fix as the JSON path. `.enumerate()` precedes
+        // `.rev()` to keep the declared `presets[i]` index in error messages.
+        for (i, preset_value) in presets.into_iter().enumerate().rev() {
             let preset: Config = serde_json::from_value(preset_value).map_err(|e| {
                 anyhow!(
                     "{}: failed to parse presets[{i}] as a zfb config fragment: {}",
@@ -4530,6 +4541,88 @@ mod tests {
             cfg.adapter.as_deref(),
             Some("@takazudo/zfb-adapter-cloudflare"),
             "preset adapter must fill in when main config leaves it absent"
+        );
+    }
+
+    // --- Multi-preset declared-order (#1191 review, codex P2) ------------------
+
+    /// JSON path: with `presets: [a, b]` each contributing a plugin (and a
+    /// user plugin too), the merged plugin order must be the DECLARED order
+    /// `a, b, <user plugins>` — NOT the reversed `b, a, user`.
+    ///
+    /// Regression guard for codex P2: `merge_preset_into` prepends each
+    /// preset's additive arrays, so folding the presets forward reverses
+    /// declared order. The load loop folds in reverse to compensate.
+    #[tokio::test]
+    async fn json_path_multi_preset_preserves_declared_order() {
+        let tmp = TempDir::new().unwrap();
+        for name in ["a-plugin.mjs", "b-plugin.mjs", "user-plugin.mjs"] {
+            tokio::fs::write(tmp.path().join(name), "export default {};\n")
+                .await
+                .unwrap();
+        }
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "presets": [
+                    { "plugins": [{ "name": "./a-plugin.mjs" }] },
+                    { "plugins": [{ "name": "./b-plugin.mjs" }] }
+                ],
+                "plugins": [{ "name": "./user-plugin.mjs" }]
+            }"#,
+        )
+        .await
+        .unwrap();
+
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("multi-preset JSON config should load");
+        let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["./a-plugin.mjs", "./b-plugin.mjs", "./user-plugin.mjs"],
+            "presets[a, b] must yield declared plugin order a, b, user (codex P2); got {names:?}"
+        );
+    }
+
+    /// TS path: same declared-order invariant as the JSON test. The TS load
+    /// loop shares the prepend-merge pattern, so it carries the same reverse
+    /// fold. Plugins are referenced as `.mjs` files so Rust-side resolution
+    /// succeeds for the preset-contributed entries.
+    #[tokio::test]
+    async fn ts_path_multi_preset_preserves_declared_order() {
+        let tmp = TempDir::new().unwrap();
+        for name in ["a-plugin.mjs", "b-plugin.mjs"] {
+            tokio::fs::write(tmp.path().join(name), "export default {};\n")
+                .await
+                .unwrap();
+        }
+        tokio::fs::write(tmp.path().join("zfb.config.ts"), "export default {};\n")
+            .await
+            .unwrap();
+        let opts = LoadOptions {
+            test_default_export_json: Some(
+                serde_json::json!({
+                    "config": {
+                        "presets": [
+                            { "plugins": [{ "name": "./a-plugin.mjs" }] },
+                            { "plugins": [{ "name": "./b-plugin.mjs" }] }
+                        ]
+                    },
+                    "plugins": []
+                })
+                .to_string(),
+            ),
+            ..LoadOptions::default()
+        };
+        let cfg = load_from_dir_with_options(tmp.path(), &opts)
+            .await
+            .expect("multi-preset TS config should load");
+        let names: Vec<&str> = cfg.plugins.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["./a-plugin.mjs", "./b-plugin.mjs"],
+            "presets[a, b] must yield declared plugin order a, b on the TS path (codex P2); got {names:?}"
         );
     }
 }

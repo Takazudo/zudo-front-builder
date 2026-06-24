@@ -1416,10 +1416,12 @@ fn rebundle_islands(
     // the runtime.ts warn path.
     // Dev seeds the islands scanner from the conventional `pages/` root.
     // (Package-owned build routes are a build-time concern; dev's
-    // injected routes are served live, not materialised — #1193.)
+    // injected routes are served live, not materialised — #1193.) No
+    // package-route entrypoints to seed in dev (codex P1 is build-only).
     let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
         project_root,
         &project_root.join("pages"),
+        &[],
         assets_root,
         framework,
         plugin_config,

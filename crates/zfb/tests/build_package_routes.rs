@@ -763,6 +763,133 @@ export default function Page() {
 }
 
 // ---------------------------------------------------------------------------
+// 7b. Island regression (codex P1): a USER page's island reached via an
+//     outside-`pages/` import must still ship when a package route is present.
+// ---------------------------------------------------------------------------
+
+/// Regression guard (codex P1): a USER `pages/` page whose `"use client"`
+/// island lives OUTSIDE `pages/` (e.g. `../components/Widget`) must still be
+/// discovered — and ship in the islands bundle — when ANY package route is
+/// present.
+///
+/// Before the fix the islands scanner was seeded by walking the build pages
+/// root, which is the OVERLAY temp dir when a package route exists. The
+/// overlay copies only `pages/` (plus generated package modules); it has no
+/// `components/`. The copied `pages/index.tsx` lives at `<temp>/pages/`, so
+/// its `../components/Widget` import resolves to `<temp>/components/Widget`
+/// → missing → the user's island is silently dropped from the production
+/// bundle whenever a package route is present (no build error).
+///
+/// The fix seeds user pages from the REAL `project_root/pages` (so their
+/// imports resolve against the real `components/`) while still discovering
+/// package-route islands via each materialized route's real entrypoint. We
+/// assert the islands asset is emitted AND contains the user `Widget`
+/// island's marker name (the scanner-derived `data-zfb-island` value the
+/// runtime registry keys on).
+#[test]
+fn user_page_island_outside_pages_ships_with_package_route_present() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[user_island] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[user_island] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let _nm = link_embedded_node_modules(root);
+
+    // A "use client" island component OUTSIDE pages/ — the case the overlay
+    // strands. SSR-render-safe (no hooks at render time); the assertion is
+    // that the island ships, independent of client interactivity.
+    fs::create_dir_all(root.join("components")).unwrap();
+    fs::write(
+        root.join("components/widget.tsx"),
+        r#""use client";
+export function Widget() {
+  return <button type="button" data-island="widget">UserWidget</button>;
+}
+"#,
+    )
+    .unwrap();
+    // User home page imports the island via the outside-pages/ relative path.
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"import { Widget } from "../components/widget";
+export default function Page() {
+  return (
+    <html lang="en">
+      <head><title>home</title></head>
+      <body><Widget /></body>
+    </html>
+  );
+}
+"#,
+    )
+    .unwrap();
+
+    // An unrelated package route, present so the overlay is materialised.
+    fs::create_dir_all(root.join("pkg")).unwrap();
+    fs::write(root.join("pkg/preset.tsx"), page_module("PRESET")).unwrap();
+    fs::write(
+        root.join("preset.mjs"),
+        r#"export default {
+  name: "user-island-preset",
+  setup({ injectRoute }) {
+    injectRoute("/preset-page", "./pkg/preset.tsx");
+  },
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+"#,
+    )
+    .unwrap();
+
+    let Some(dist) = build_or_skip(root, &esbuild, "user_island") else {
+        return;
+    };
+
+    let js_assets = collect_files(&dist.join("assets"), "js");
+    let island_assets: Vec<PathBuf> = js_assets
+        .iter()
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.starts_with("islands-") && n.ends_with(".js"))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    assert!(
+        !island_assets.is_empty(),
+        "a user page's `\"use client\"` island reached via `../components/widget` must emit \
+         dist/assets/islands-<hash>.js even with a package route present. js assets: {js_assets:#?}"
+    );
+    // The user `Widget` island must actually be registered in the bundle —
+    // proving it was discovered, not just that SOME island shipped. The
+    // scanner-derived marker name (the component name) is emitted into the
+    // bundle's `__zfb_register(...)` call.
+    let any_has_widget = island_assets.iter().any(|p| {
+        fs::read_to_string(p)
+            .map(|s| s.contains("Widget"))
+            .unwrap_or(false)
+    });
+    assert!(
+        any_has_widget,
+        "the user page's `Widget` island (imported from `../components/widget`, OUTSIDE pages/) \
+         must be present in the islands bundle when a package route is present — the overlay seed \
+         must not strand user-page islands. island assets: {island_assets:#?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 8. Parity: a build with NO package routes is unaffected (overlay bypassed).
 // ---------------------------------------------------------------------------
 
