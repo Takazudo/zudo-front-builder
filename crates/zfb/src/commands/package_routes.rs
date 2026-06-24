@@ -26,8 +26,22 @@
 //! (`[id]` ≡ `[slug]`), so a merged scan containing a user-vs-package
 //! collision hard-errors before any precedence logic. We therefore drop
 //! colliding package routes HERE, before the overlay is written, by
-//! comparing route shape keys. Package-vs-package collisions are already
-//! a hard error at registration (`InjectRouteConflict`).
+//! comparing route shape keys.
+//!
+//! Package-vs-package collisions: an EXACT-string pattern duplicate is a
+//! hard error at registration (`InjectRouteConflict`), but two textually
+//! DIFFERENT patterns with the same shape (`/blog/[slug]` vs `/blog/[id]`)
+//! pass registration — so the survivor loop here also dedupes package
+//! shape keys and hard-errors naming both plugins + patterns before any
+//! overlay write (rather than letting the merged scan `AmbiguousShape`
+//! with opaque overlay temp paths).
+//!
+//! On a case-INSENSITIVE filesystem (macOS/Windows) a user `pages/About.tsx`
+//! and a package `/about` have distinct shape keys (`/About` vs `/about`)
+//! but map to the same on-disk file, so the materialiser additionally
+//! guards each overlay write with a `dest.exists()` check: an existing
+//! USER file means user-wins (drop), an existing package OVERLAY file means
+//! a package-vs-package case-only collision (hard error).
 //!
 //! ### Known precedence limitations (loud failure, narrow intersection)
 //!
@@ -126,7 +140,17 @@ pub(crate) fn resolve_build_pages_root(
         .context("scanning user pages/ for package-route precedence")?;
 
     // Build the survivor set, dropping user-shadowed routes.
+    //
+    // `pkg_shape_keys` tracks the shape keys already claimed by a SURVIVING
+    // package route so a package-vs-package shape duplicate (e.g. preset A
+    // `/blog/[slug]` + preset B `/blog/[id]`, both shape `/blog/:*`) is
+    // caught HERE — naming both plugins + patterns — rather than escaping to
+    // the merged scan, which would `AmbiguousShape` with opaque overlay temp
+    // paths. (The registration guard only catches EXACT-string pattern
+    // duplicates, so shape-equal/textually-different patterns reach here.)
     let mut survivors: Vec<(&InjectedRoute, PathBuf, String)> = Vec::new();
+    let mut pkg_shape_keys: std::collections::HashMap<String, (&str, &str)> =
+        std::collections::HashMap::new();
     for route in injected_routes {
         let pages_rel = pattern_to_pages_rel(&route.pattern).with_context(|| {
             format!(
@@ -134,6 +158,24 @@ pub(crate) fn resolve_build_pages_root(
                 route.pattern, route.plugin
             )
         })?;
+        // A pattern whose final segment ends in `.client` (e.g. `/foo.client`)
+        // derives a `foo.client.tsx` overlay path, which `is_client_script_file`
+        // treats as a client-script entry — the scanner SKIPS those (scan.rs),
+        // so the route would be silently dropped (no page) AND, on a
+        // case-insensitive FS, could clobber a copied user `pages/foo.client.tsx`.
+        // Reject loudly instead, naming the plugin + pattern (mirrors the
+        // trailing-`index` rejection in `pattern_to_pages_rel`).
+        if zfb_types::is_client_script_file(&pages_rel) {
+            return Err(anyhow!(
+                "package route `{}` (from plugin `{}`) derives the pages/ path `{}`, which \
+                 matches the `*.client.{{ts,tsx,js,jsx}}` client-script contract — the route \
+                 scanner skips those, so the route would silently produce no page. A package \
+                 page route must not end in a `.client` segment.",
+                route.pattern,
+                route.plugin,
+                pages_rel.display()
+            ));
+        }
         let shape_key = zfb_router::route_shape_key_for_pages_rel(&pages_rel).map_err(|e| {
             anyhow!(
                 "package route `{}` (from plugin `{}`) could not be parsed: {e}",
@@ -148,6 +190,23 @@ pub(crate) fn resolve_build_pages_root(
             ));
             continue;
         }
+        if let Some((first_plugin, first_pattern)) = pkg_shape_keys.get(&shape_key) {
+            return Err(anyhow!(
+                "package routes collide on the same route shape `{}`: `{}` (from plugin `{}`) \
+                 and `{}` (from plugin `{}`). Two package routes may not resolve to the same \
+                 shape (dynamic params like `[slug]`/`[id]` are shape-equal). Rename one pattern \
+                 or have a single plugin own the route.",
+                shape_key,
+                first_pattern,
+                first_plugin,
+                route.pattern,
+                route.plugin
+            ));
+        }
+        pkg_shape_keys.insert(
+            shape_key.clone(),
+            (route.plugin.as_str(), route.pattern.as_str()),
+        );
         survivors.push((route, pages_rel, shape_key));
     }
 
@@ -186,9 +245,53 @@ pub(crate) fn resolve_build_pages_root(
         })?;
     }
 
+    // Track the absolute overlay paths this loop has WRITTEN (lowercased on
+    // case-insensitive comparison) so a package-vs-package case-only path
+    // collision (`/foo` + `/Foo`, distinct shape keys but the same on-disk
+    // file on macOS/Windows) is caught loudly instead of one route silently
+    // truncating the other.
+    let mut written_dests: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut materialized = Vec::with_capacity(survivors.len());
     for (route, pages_rel, _shape_key) in &survivors {
         let dest = overlay_pages.join(pages_rel);
+        // Precedence guard (#1191 fix-A [14]): on a case-INSENSITIVE,
+        // case-preserving filesystem (macOS/Windows) a user `pages/About.tsx`
+        // (shape `/About`) and a package `/about` (shape `/about`) have
+        // DIFFERENT shape keys — so the user-wins pre-scan drop above does not
+        // fire — yet `about.tsx` resolves to the same on-disk inode as the
+        // copied `About.tsx`. A blind `fs::write` would truncate the user's
+        // page and ship the package content under it (silent precedence
+        // INVERSION, divergent across case-sensitive Linux CI). Detect the
+        // collision via `dest.exists()` (which matches case-insensitively on
+        // those filesystems) and:
+        //   - if the existing file was a copied USER page → drop the package
+        //     route, user wins (matches the documented precedence + the
+        //     pre-scan info message);
+        //   - if it was a previously-written package OVERLAY module → hard
+        //     error naming both, since two package routes cannot share a file.
+        let dest_key = dest.to_string_lossy().to_lowercase();
+        if dest.exists() {
+            if let Some(prev_pattern) = written_dests.get(&dest_key) {
+                return Err(anyhow!(
+                    "package routes `{}` and `{}` (from plugin `{}`) resolve to the same overlay \
+                     file `{}` on a case-insensitive filesystem. Rename one pattern so the two \
+                     do not differ only by letter case.",
+                    prev_pattern,
+                    route.pattern,
+                    route.plugin,
+                    pages_rel.display()
+                ));
+            }
+            crate::output::info(format!(
+                "package route `{}` (from plugin `{}`) would overwrite the user pages/ file `{}` \
+                 (case-insensitive filesystem match); a user page wins — skipping",
+                route.pattern,
+                route.plugin,
+                pages_rel.display()
+            ));
+            continue;
+        }
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating overlay route dir {}", parent.display()))?;
@@ -213,6 +316,7 @@ pub(crate) fn resolve_build_pages_root(
         };
         std::fs::write(&dest, module_src.as_bytes())
             .with_context(|| format!("writing overlay route module {}", dest.display()))?;
+        written_dests.insert(dest_key, route.pattern.clone());
         materialized.push(MaterializedRoute {
             pattern: route.pattern.clone(),
             pages_rel: pages_rel.clone(),
@@ -533,34 +637,59 @@ pub(crate) fn synthesize_dynamic_overlay_module(
     Ok(out)
 }
 
-/// Recursively copy a directory tree (files + subdirs), following the
-/// same "real files" semantics esbuild needs in the shadow tree. Symlinks
-/// to files are dereferenced (copied as content); symlinked subdirs are
-/// walked. Used to seed the overlay with the user's real `pages/`.
+/// Recursively copy a directory tree (files only) into the overlay,
+/// mirroring the router/bundler walk policy EXACTLY so the overlay's
+/// routed/bundled set is byte-identical to the no-overlay baseline.
+///
+/// The walk uses [`walkdir::WalkDir`] with `follow_links(false)`, the same
+/// policy as the route scanner (`zfb-router` `scan_pages`) and the
+/// bundler's pages walk. The consequences, all intentional parity with the
+/// baseline (#1191 fix-A):
+///
+/// - **Symlinked subdirs are NOT descended.** `follow_links(false)` yields a
+///   symlinked dir as a symlink entry and does not recurse into it — exactly
+///   what the scanner does, so a `pages/shared -> ../pkg/pages` symlink
+///   contributes no routes whether or not a package route is present. (The
+///   old hand-rolled recursion dereferenced symlinked dirs, silently growing
+///   the route table the moment a preset registered a route, and infinitely
+///   recursing on a symlink cycle.)
+/// - **Dangling / broken symlinks are skipped, not stat-errored.** A broken
+///   symlink is neither a file nor a dir, so it is ignored — matching the
+///   scanner, which simply skips non-file entries. (The old code `stat`'d the
+///   target and hard-failed the whole build on a dangling link.)
+/// - **Symlinked FILES are not dereferenced.** They are non-file entries
+///   under `follow_links(false)`, so they are skipped too — again matching
+///   the scanner's `entry.file_type().is_file()` gate. Real (non-symlink)
+///   files are copied as content, which is all esbuild needs from the
+///   overlay seed.
+///
+/// Used to seed the overlay with the user's real `pages/`.
 fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest).with_context(|| format!("creating dir {}", dest.display()))?;
-    for entry in std::fs::read_dir(src).with_context(|| format!("reading dir {}", src.display()))? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dest.join(entry.file_name());
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else if file_type.is_file() {
-            std::fs::copy(&from, &to)
-                .with_context(|| format!("copying {} -> {}", from.display(), to.display()))?;
-        } else if file_type.is_symlink() {
-            // Resolve the symlink target's type and copy accordingly.
-            let meta = std::fs::metadata(&from)
-                .with_context(|| format!("stat symlink target {}", from.display()))?;
-            if meta.is_dir() {
-                copy_dir_recursive(&from, &to)?;
-            } else if meta.is_file() {
-                std::fs::copy(&from, &to).with_context(|| {
-                    format!("copying symlinked {} -> {}", from.display(), to.display())
-                })?;
-            }
+    for entry in walkdir::WalkDir::new(src).follow_links(false) {
+        let entry = entry
+            .with_context(|| format!("walking user pages/ {} for overlay copy", src.display()))?;
+        // Skip everything that is not a regular file: directories are created
+        // lazily from each file's parent below, and symlinks (dangling,
+        // file-target, or dir-target) are ignored to match the scanner's
+        // `follow_links(false)` + `is_file()` policy.
+        if !entry.file_type().is_file() {
+            continue;
         }
+        let from = entry.path();
+        let rel = from.strip_prefix(src).map_err(|_| {
+            anyhow!(
+                "overlay copy walked outside the user pages/ root: {}",
+                from.display()
+            )
+        })?;
+        let to = dest.join(rel);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating overlay dir {}", parent.display()))?;
+        }
+        std::fs::copy(from, &to)
+            .with_context(|| format!("copying {} -> {}", from.display(), to.display()))?;
     }
     Ok(())
 }
@@ -955,5 +1084,206 @@ export default function Page() { return null; }
         // `/` → overlay index.tsx.
         assert!(res.build_pages_root.join("index.tsx").is_file());
         assert_eq!(res.materialized.len(), 1);
+    }
+
+    // ── fix-A [3][7]: `.client`-suffixed package route is rejected loudly ──
+
+    #[test]
+    fn client_suffixed_package_route_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        // `/foo.client` → `foo.client.tsx`, which the scanner skips as a
+        // client-script entry — it would silently produce no page. Reject.
+        let routes = vec![route("/foo.client", "/pkg/foo.tsx")];
+        let msg = match resolve_build_pages_root(&pages, &routes) {
+            Ok(_) => panic!("a `.client`-suffixed package route must be rejected"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            msg.contains("client-script") && msg.contains("/foo.client"),
+            "error must name the client-script contract and the pattern; got:\n{msg}"
+        );
+    }
+
+    #[test]
+    fn client_suffixed_package_route_does_not_clobber_user_client_script() {
+        // A user `pages/widget.client.tsx` (a real client script) must NOT be
+        // overwritten by a `/widget.client` package route. The route is
+        // rejected before the overlay is even built, so the user file is safe.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        let user_client = pages.join("widget.client.tsx");
+        let user_body = "export default function Widget() { return null; } // USER\n";
+        std::fs::write(&user_client, user_body).unwrap();
+
+        let routes = vec![route("/widget.client", "/pkg/widget.tsx")];
+        assert!(resolve_build_pages_root(&pages, &routes).is_err());
+        // User's real client script untouched.
+        assert_eq!(std::fs::read_to_string(&user_client).unwrap(), user_body);
+    }
+
+    // ── fix-A [16]: package-vs-package shape duplicate hard-errors here ──
+
+    #[test]
+    fn package_vs_package_shape_duplicate_hard_errors_with_attribution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        // Two presets register shape-equal but textually-different patterns.
+        let a = InjectedRoute {
+            pattern: "/blog/[slug]".into(),
+            entrypoint: PathBuf::from("/pkg-a/blog.tsx"),
+            plugin: "preset-a".into(),
+            prerender: None,
+        };
+        let b = InjectedRoute {
+            pattern: "/blog/[id]".into(),
+            entrypoint: PathBuf::from("/pkg-b/blog.tsx"),
+            plugin: "preset-b".into(),
+            prerender: None,
+        };
+        let msg = match resolve_build_pages_root(&pages, &[a, b]) {
+            Ok(_) => panic!("package-vs-package shape duplicate must hard-error"),
+            Err(e) => format!("{e:#}"),
+        };
+        // Both plugins AND both patterns must be named (no opaque temp paths).
+        assert!(
+            msg.contains("preset-a")
+                && msg.contains("preset-b")
+                && msg.contains("/blog/[slug]")
+                && msg.contains("/blog/[id]"),
+            "shape-duplicate error must name both plugins + patterns; got:\n{msg}"
+        );
+    }
+
+    // ── fix-A [14]: case-insensitive user-vs-package precedence ──
+
+    #[cfg(unix)]
+    #[test]
+    fn case_insensitive_user_page_wins_over_package_route() {
+        // On a case-insensitive FS (macOS/Windows) `pages/About.tsx` and a
+        // package `/about` map to the same file. The user page must win
+        // (deterministic: either dropped here, or — on a case-SENSITIVE FS —
+        // both survive as distinct routes). Either outcome must NOT silently
+        // overwrite the user's page content with the package re-export.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        let user_about = pages.join("About.tsx");
+        let user_body = "export default function About() { return null; } // USER\n";
+        std::fs::write(&user_about, user_body).unwrap();
+
+        let routes = vec![route("/about", "/pkg/about.tsx")];
+        let res = resolve_build_pages_root(&pages, &routes).unwrap();
+
+        // The user's About.tsx content (in the overlay copy or the real dir)
+        // must remain the USER page, never the package re-export.
+        let about_in_overlay = res.build_pages_root.join("About.tsx");
+        if about_in_overlay.is_file() {
+            assert_eq!(
+                std::fs::read_to_string(&about_in_overlay).unwrap(),
+                user_body,
+                "user page content must not be replaced by the package re-export"
+            );
+        }
+        // And the lowercased `about.tsx` overlay module must NOT carry the
+        // package re-export on a case-insensitive FS (it would be the same
+        // inode as About.tsx). On a case-sensitive FS a distinct about.tsx may
+        // exist with package content — that is the documented divergence and
+        // both routes ship; what matters is the user file is never destroyed.
+        let lower = res.build_pages_root.join("about.tsx");
+        if lower.is_file() {
+            // Same inode as About.tsx on case-insensitive FS → must be USER.
+            // Distinct file on case-sensitive FS → package content is fine.
+            let body = std::fs::read_to_string(&lower).unwrap();
+            let same_inode = match (
+                std::fs::metadata(&user_about).ok(),
+                std::fs::metadata(&lower).ok(),
+            ) {
+                (Some(a), Some(b)) => {
+                    use std::os::unix::fs::MetadataExt;
+                    a.ino() == b.ino()
+                }
+                _ => false,
+            };
+            if same_inode {
+                assert_eq!(body, user_body, "case-insensitive FS: user page wins");
+            }
+        }
+    }
+
+    // ── fix-A [1][2][4]: copy_dir_recursive symlink policy mirrors scanner ──
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_under_pages_is_skipped_not_errored() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("index.tsx"), "export default () => null;").unwrap();
+        // A dangling symlink (target does not exist).
+        symlink(pages.join("missing-target.tsx"), pages.join("broken.tsx")).unwrap();
+
+        // A package route forces the overlay copy to run over the real pages/.
+        let routes = vec![route("/preset-page", "/pkg/preset-page.tsx")];
+        let res = resolve_build_pages_root(&pages, &routes)
+            .expect("a dangling symlink under pages/ must not fail the overlay copy");
+        // The real file copied; the dangling symlink skipped (parity w/ scanner).
+        assert!(res.build_pages_root.join("index.tsx").is_file());
+        assert!(
+            !res.build_pages_root.join("broken.tsx").exists(),
+            "dangling symlink must be skipped, not materialised"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_subdir_under_pages_is_not_recursed() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("index.tsx"), "export default () => null;").unwrap();
+        // A real dir OUTSIDE pages/ with a page in it, symlinked under pages/.
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("leaked.tsx"), "export default () => null;").unwrap();
+        symlink(&outside, pages.join("shared")).unwrap();
+
+        let routes = vec![route("/preset-page", "/pkg/preset-page.tsx")];
+        let res = resolve_build_pages_root(&pages, &routes).unwrap();
+        // follow_links(false): the symlinked subdir is NOT descended, matching
+        // the scanner — so `leaked.tsx` does NOT appear in the overlay.
+        assert!(res.build_pages_root.join("index.tsx").is_file());
+        assert!(
+            !res.build_pages_root
+                .join("shared")
+                .join("leaked.tsx")
+                .exists(),
+            "symlinked subdir must not be recursed (parity with follow_links(false))"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_cycle_under_pages_does_not_infinitely_recurse() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("index.tsx"), "export default () => null;").unwrap();
+        // A self-referential symlink cycle: pages/loop -> pages (an ancestor).
+        symlink(&pages, pages.join("loop")).unwrap();
+
+        let routes = vec![route("/preset-page", "/pkg/preset-page.tsx")];
+        // Must terminate (follow_links(false) never descends the symlink).
+        let res = resolve_build_pages_root(&pages, &routes)
+            .expect("a symlink cycle must not crash/hang the overlay copy");
+        assert!(res.build_pages_root.join("index.tsx").is_file());
     }
 }
