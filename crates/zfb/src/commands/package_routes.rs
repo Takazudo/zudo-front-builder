@@ -336,17 +336,24 @@ pub(crate) fn resolve_build_pages_root(
 /// collisions possible). Routing errors are surfaced — a broken user
 /// `pages/` would fail the scan anyway, so failing here gives the same
 /// outcome with clearer context.
+///
+/// Uses `zfb_router::user_page_shape_keys`, which — unlike `scan_pages` —
+/// also records the shape keys of DYNAMIC `.md`/`.html` pages the scanner
+/// skips as v1-unsupported. Those are still routes the user authored, so
+/// including them lets the user-wins pre-scan drop a same-shape package
+/// route instead of letting it silently shadow the user's page (#1201).
 fn collect_user_pages_shape_keys(real_pages_dir: &Path) -> Result<HashSet<String>> {
-    let mut keys = HashSet::new();
+    // Package routes intentionally allow an absent user `pages/` — keep the
+    // empty early-return so an absent dir is "no collisions", not an error.
     if !real_pages_dir.is_dir() {
-        return Ok(keys);
+        return Ok(HashSet::new());
     }
-    let routes = zfb_router::scan_pages(real_pages_dir)
-        .map_err(|e| anyhow!("user pages/ scan failed: {e}"))?;
-    for route in routes {
-        keys.insert(zfb_router::shape_key(&route.segments));
-    }
-    Ok(keys)
+    // `user_page_shape_keys` (NOT `scan_pages`) so a user's DYNAMIC `.md`/`.html`
+    // page — which `scan_pages` skips as v1-unsupported — still contributes its
+    // shape key here. Without it, a same-shape package route would NOT be dropped
+    // by the user-wins pre-scan and would silently shadow the user's page (#1201).
+    zfb_router::user_page_shape_keys(real_pages_dir)
+        .map_err(|e| anyhow!("user pages/ scan failed: {e}"))
 }
 
 /// Convert a route pattern (`pages/`-filename grammar, leading `/`) to its
@@ -1073,6 +1080,62 @@ export default function Page() { return null; }
         assert!(
             res.materialized.is_empty(),
             "shape-duplicate package route ([id] vs [slug]) must be dropped"
+        );
+    }
+
+    #[test]
+    fn user_dynamic_md_wins_over_same_shape_package_route() {
+        // #1201: a user's DYNAMIC `.md` page is skipped by `scan_pages` (v1-
+        // unsupported) but still OWNS the `/docs/:*` shape. A same-shape package
+        // route must be dropped (user-wins), not silently shadow the user's page.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        let docs = pages.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("[slug].md"), "# user docs page\n").unwrap();
+
+        let routes = vec![route("/docs/[id]", "/pkg/docs-id.tsx")];
+        let res = resolve_build_pages_root(&pages, &routes).unwrap();
+        assert!(
+            res.materialized.is_empty(),
+            "package route at a user dynamic .md page's shape must be dropped"
+        );
+    }
+
+    #[test]
+    fn user_dynamic_html_wins_over_same_shape_package_route() {
+        // Same as above for a dynamic `.html` page.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        let docs = pages.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("[slug].html"), "<h1>user</h1>\n").unwrap();
+
+        let routes = vec![route("/docs/[id]", "/pkg/docs-id.tsx")];
+        let res = resolve_build_pages_root(&pages, &routes).unwrap();
+        assert!(
+            res.materialized.is_empty(),
+            "package route at a user dynamic .html page's shape must be dropped"
+        );
+    }
+
+    #[test]
+    fn user_optional_catchall_md_wins_over_bare_url_package_route() {
+        // #1201 (codex review): a user's optional-catchall `.md` page
+        // (`pages/docs/[[...rest]].md`) serves the bare `/docs` URL too. A package
+        // route at the bare `/docs` must be dropped (user-wins), not silently
+        // shadow the zero-segment URL the optional catchall owns.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        let docs = pages.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("[[...rest]].md"), "# user docs\n").unwrap();
+
+        let routes = vec![route("/docs", "/pkg/docs.tsx")];
+        let res = resolve_build_pages_root(&pages, &routes).unwrap();
+        assert!(
+            res.materialized.is_empty(),
+            "package route at the bare URL of a user optional-catchall .md page must be dropped"
         );
     }
 

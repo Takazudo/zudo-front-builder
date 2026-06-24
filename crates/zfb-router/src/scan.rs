@@ -41,7 +41,7 @@
 //! `.tsx` if any of those transformations are needed. SSG-only: `.html`
 //! pages are not supported in SSR mode.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 
 use walkdir::WalkDir;
@@ -69,11 +69,49 @@ const INDEX_BONUS: u32 = 1;
 
 /// Walk `pages_dir` and produce the sorted list of routes.
 pub fn scan_pages(pages_dir: &Path) -> Result<Vec<Route>, RouterError> {
+    let (mut routes, _skipped_dynamic) = scan_pages_inner(pages_dir)?;
+    detect_ambiguity(&routes)?;
+    sort_routes(&mut routes);
+    Ok(routes)
+}
+
+/// Shape keys of every page-shaped file under `pages/`, **including** the dynamic
+/// `.md`/`.html` routes that [`scan_pages`] deliberately skips (those are still
+/// routes the user authored, so a package-owned route must not silently shadow
+/// them — this powers the user-wins pre-scan in `zfb`'s package-route resolver,
+/// #1201). Non-page files (`_`-prefixed, `*.client.*`, unrecognised extension)
+/// are excluded, exactly as [`scan_pages`] excludes them.
+///
+/// Buildable-route ambiguity is still surfaced — the buildable set runs through
+/// [`detect_ambiguity`]. The skipped dynamic `.md`/`.html` shapes are unioned in
+/// as **side data only**: they are NOT fed to ambiguity detection, so a
+/// `docs/[id].tsx` + `docs/[slug].md` pair does not become a false hard error
+/// (matching `scan_pages`, which skips the `.md` and succeeds).
+pub fn user_page_shape_keys(pages_dir: &Path) -> Result<HashSet<String>, RouterError> {
+    let (routes, skipped_dynamic) = scan_pages_inner(pages_dir)?;
+    // Run ambiguity detection on the BUILDABLE routes only — preserves the
+    // existing `scan_pages` error behaviour — then union the skipped-dynamic
+    // shapes in afterwards so they cannot manufacture a new ambiguity error.
+    detect_ambiguity(&routes)?;
+    let mut keys: HashSet<String> = routes.iter().map(|r| shape_key(&r.segments)).collect();
+    keys.extend(skipped_dynamic);
+    Ok(keys)
+}
+
+/// Shared directory walk for [`scan_pages`] and [`user_page_shape_keys`].
+///
+/// Returns `(routes, skipped_dynamic_md_html_shape_keys)`: the buildable routes,
+/// plus the shape keys of the dynamic `.md`/`.html` files skipped at the v1 gate
+/// (recorded here so callers can apply user-wins precedence without
+/// re-implementing the walk and drifting from the filename rules). Runs neither
+/// [`detect_ambiguity`] nor [`sort_routes`] — each caller decides.
+fn scan_pages_inner(pages_dir: &Path) -> Result<(Vec<Route>, Vec<String>), RouterError> {
     if !pages_dir.is_dir() {
         return Err(RouterError::PagesDirMissing(pages_dir.to_path_buf()));
     }
 
     let mut routes: Vec<Route> = Vec::new();
+    let mut skipped_dynamic_md_html_shape_keys: Vec<String> = Vec::new();
 
     for entry in WalkDir::new(pages_dir)
         .follow_links(false)
@@ -164,15 +202,28 @@ pub fn scan_pages(pages_dir: &Path) -> Result<Vec<Route>, RouterError> {
                 "dynamic .md / .html page routes are not supported in v1 (no paths() story); \
                  this file will be skipped — author it as .tsx if dynamic paths are needed"
             );
+            // The file is skipped as a buildable route, but the user DID author a
+            // page at this route shape — record its shape key so the user-wins
+            // pre-scan (#1201) drops a same-shape package route instead of letting
+            // it silently shadow this page. Side data only — never fed to
+            // `detect_ambiguity` (see `user_page_shape_keys`).
+            skipped_dynamic_md_html_shape_keys.push(shape_key(&route.segments));
+            // An optional catchall (`[[...rest]]`) ALSO owns its zero-segment
+            // prefix URL — `pages/docs/[[...rest]].md` serves `/docs` too. Record
+            // the prefix shape as well, mirroring `detect_optional_catchall_conflicts`,
+            // so a package route at the bare URL can't slip past the exact-key
+            // pre-scan and silently shadow it (codex review).
+            if matches!(route.segments.last(), Some(Segment::OptionalCatchall(_))) {
+                let prefix = &route.segments[..route.segments.len() - 1];
+                skipped_dynamic_md_html_shape_keys.push(shape_key(prefix));
+            }
             continue;
         }
 
         routes.push(route);
     }
 
-    detect_ambiguity(&routes)?;
-    sort_routes(&mut routes);
-    Ok(routes)
+    Ok((routes, skipped_dynamic_md_html_shape_keys))
 }
 
 /// Parse a single source file into a [`Route`].
@@ -788,6 +839,118 @@ mod tests {
         // TempDir must outlive the scan; routes carry owned PathBufs so
         // returning them after drop is fine.
         scan_pages(tmp.path())
+    }
+
+    /// Like [`scan_tree`] but returns the [`user_page_shape_keys`] census.
+    fn census_tree(files: &[&str]) -> Result<HashSet<String>, RouterError> {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        for rel in files {
+            let abs = tmp.path().join(rel);
+            fs::create_dir_all(abs.parent().unwrap()).unwrap();
+            fs::write(&abs, "export default function P() { return null; }\n").unwrap();
+        }
+        user_page_shape_keys(tmp.path())
+    }
+
+    #[test]
+    fn census_includes_dynamic_md_html_that_scan_pages_skips() {
+        // scan_pages skips a dynamic `.md`/`.html` route (v1-unsupported) → no route.
+        assert!(scan_tree(&["docs/[slug].md"]).unwrap().is_empty());
+        assert!(scan_tree(&["docs/[slug].html"]).unwrap().is_empty());
+
+        // ...but the census MUST record their shape keys so a same-shape package
+        // route can be dropped by the user-wins pre-scan (#1201). Compute the
+        // expected key via the public grammar helper rather than hardcoding it.
+        let md_key = route_shape_key_for_pages_rel(Path::new("docs/[slug].md")).unwrap();
+        let keys = census_tree(&["docs/[slug].md"]).unwrap();
+        assert!(
+            keys.contains(&md_key),
+            "census must include the skipped dynamic .md shape; got {keys:?}"
+        );
+
+        let html_key = route_shape_key_for_pages_rel(Path::new("docs/[slug].html")).unwrap();
+        let keys = census_tree(&["docs/[slug].html"]).unwrap();
+        assert!(
+            keys.contains(&html_key),
+            "census must include the skipped dynamic .html shape; got {keys:?}"
+        );
+    }
+
+    #[test]
+    fn census_excludes_non_page_files() {
+        // `_`-prefixed, `*.client.*`, and unrecognised-extension files are not
+        // page routes — they must be excluded, exactly as scan_pages excludes them.
+        let keys = census_tree(&[
+            "_private/helper.tsx",
+            "_app.tsx",
+            "widget.client.tsx",
+            "notes.txt",
+        ])
+        .unwrap();
+        assert!(
+            keys.is_empty(),
+            "non-page files must be excluded; got {keys:?}"
+        );
+    }
+
+    #[test]
+    fn census_does_not_invent_ambiguity_for_tsx_plus_dynamic_md_sibling() {
+        // `docs/[id].tsx` (buildable) + `docs/[slug].md` (skipped dynamic) share
+        // the shape `/docs/:*`. scan_pages skips the `.md` and succeeds; the census
+        // must likewise NOT hard-error (skipped shapes are side data, never fed to
+        // detect_ambiguity) and must still contain the shape.
+        let key = route_shape_key_for_pages_rel(Path::new("docs/[slug].md")).unwrap();
+        let keys = census_tree(&["docs/[id].tsx", "docs/[slug].md"]).unwrap();
+        assert!(
+            keys.contains(&key),
+            "census should contain the /docs/:* shape; got {keys:?}"
+        );
+    }
+
+    #[test]
+    fn census_still_errors_on_buildable_ambiguity() {
+        // Two BUILDABLE dynamic siblings at the same shape are a genuine ambiguity —
+        // detect_ambiguity must still fire (buildable-route behaviour unchanged).
+        let err = census_tree(&["docs/[id].tsx", "docs/[slug].tsx"]).unwrap_err();
+        assert!(
+            matches!(err, RouterError::AmbiguousShape { .. }),
+            "expected AmbiguousShape, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn census_records_dynamic_catchall_md_shape() {
+        // A catchall `.md` page contributes its catchall shape to the census,
+        // while scan_pages still skips it.
+        let key = route_shape_key_for_pages_rel(Path::new("docs/[...rest].md")).unwrap();
+        let keys = census_tree(&["docs/[...rest].md"]).unwrap();
+        assert!(
+            keys.contains(&key),
+            "census must include the catchall .md shape; got {keys:?}"
+        );
+        assert!(scan_tree(&["docs/[...rest].md"]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn census_records_optional_catchall_md_zero_segment_prefix() {
+        // An optional-catchall `.md` page (`docs/[[...rest]].md`) owns BOTH its
+        // catchall shape AND its zero-segment prefix URL (`/docs`). Both must be
+        // in the census or a package `/docs` route would silently shadow the bare
+        // URL the user's optional catchall serves (codex review).
+        let keys = census_tree(&["docs/[[...rest]].md"]).unwrap();
+        let catchall_key = route_shape_key_for_pages_rel(Path::new("docs/[[...rest]].md")).unwrap();
+        let bare_key = route_shape_key_for_pages_rel(Path::new("docs/index.tsx")).unwrap();
+        assert!(
+            keys.contains(&catchall_key),
+            "census must include the optional-catchall shape; got {keys:?}"
+        );
+        assert!(
+            keys.contains(&bare_key),
+            "census must include the zero-segment `/docs` prefix shape; got {keys:?}"
+        );
     }
 
     #[test]
