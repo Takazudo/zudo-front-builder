@@ -390,9 +390,7 @@ mod tests {
         // node_modules) into <tmpdir>/node_modules/
         copy_dir_all(&src_root, &node_modules);
 
-        let preset_dir = node_modules
-            .join("@takazudo")
-            .join("zfb-preset-example");
+        let preset_dir = node_modules.join("@takazudo").join("zfb-preset-example");
         let project_root = tmp.path().to_path_buf();
 
         (tmp, project_root, preset_dir)
@@ -499,9 +497,8 @@ mod tests {
         let (_tmp, project_root, preset_dir) = build_node_modules_nested_fixture();
 
         // Preferred = preset dir: should find search.js inside the preset.
-        let result =
-            resolve_plugin_from_anchors("./search.js", &preset_dir, &project_root)
-                .expect("should resolve ./search.js from preset dir");
+        let result = resolve_plugin_from_anchors("./search.js", &preset_dir, &project_root)
+            .expect("should resolve ./search.js from preset dir");
         assert!(
             result.starts_with("file://"),
             "expected file:// URL, got: {result}"
@@ -517,9 +514,8 @@ mod tests {
         );
 
         // Preferred = project root (search.js NOT present there): should fail.
-        let err =
-            resolve_plugin_from_anchors("./search.js", &project_root, &project_root)
-                .expect_err("./search.js absent from project root should fail");
+        let err = resolve_plugin_from_anchors("./search.js", &project_root, &project_root)
+            .expect_err("./search.js absent from project root should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("search.js") || msg.contains("could not be resolved"),
@@ -536,9 +532,8 @@ mod tests {
         std::fs::create_dir_all(&preferred).unwrap();
         std::fs::create_dir_all(&fallback).unwrap();
 
-        let err =
-            resolve_plugin_from_anchors("@absent/zfb-plugin-ghost", &preferred, &fallback)
-                .expect_err("absent plugin should fail");
+        let err = resolve_plugin_from_anchors("@absent/zfb-plugin-ghost", &preferred, &fallback)
+            .expect_err("absent plugin should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("preferred") || msg.contains(preferred.to_str().unwrap()),

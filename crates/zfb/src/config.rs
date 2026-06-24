@@ -1676,15 +1676,13 @@ fn resolve_plugin_modules_where(
                     // rather than hard-failing on the package-dir step; only if
                     // THAT also fails do we surface the clearer error, extended
                     // with the preset package name and the package-dir failure.
-                    resolve_plugin_at_project_root(entry, dir, from_preset).with_context(
-                        || {
-                            format!(
-                                "plugin {name:?} (contributed by preset {pkg:?}): the preset's \
+                    resolve_plugin_at_project_root(entry, dir, from_preset).with_context(|| {
+                        format!(
+                            "plugin {name:?} (contributed by preset {pkg:?}): the preset's \
                                  own package dir could not be resolved ({pkg_dir_err:#}), and \
                                  resolution against the project root failed too"
-                            )
-                        },
-                    )?;
+                        )
+                    })?;
                 }
             }
             continue;
@@ -4995,7 +4993,11 @@ mod tests {
             }"#,
         )
         .unwrap();
-        fs::write(preset.join("dist").join("index.mjs"), "export default {};\n").unwrap();
+        fs::write(
+            preset.join("dist").join("index.mjs"),
+            "export default {};\n",
+        )
+        .unwrap();
         // Relative plugin bundled inside the preset (NOT at the project root).
         fs::write(preset.join("search.js"), "export default {};\n").unwrap();
 
@@ -5014,7 +5016,11 @@ mod tests {
             }"#,
         )
         .unwrap();
-        fs::write(nested.join("dist").join("index.mjs"), "export default {};\n").unwrap();
+        fs::write(
+            nested.join("dist").join("index.mjs"),
+            "export default {};\n",
+        )
+        .unwrap();
     }
 
     /// Step 4 (relative-path case): a preset-contributed plugin whose name is a
@@ -5890,11 +5896,7 @@ mod tests {
         // project root. If `source_package` does NOT survive esbuild→V8, the
         // resolver falls back to project root and fails to find the file (the
         // file is missing from root), which would cause the load to error.
-        fs::write(
-            preset_dir.join("e2e-plugin.mjs"),
-            "export default {};\n",
-        )
-        .unwrap();
+        fs::write(preset_dir.join("e2e-plugin.mjs"), "export default {};\n").unwrap();
 
         // preset package.json — needs `exports: { "./package.json" }` so
         // `resolve_package_dir` (T1) can resolve the package root via oxc_resolver.
@@ -5955,10 +5957,9 @@ export default {
 
         // The plugin must be resolved — and it must resolve to the PRESET dir,
         // not the project root (the file only exists inside the preset package).
-        let resolved = cfg.plugins[0]
-            .resolved_module
-            .as_deref()
-            .expect("plugin must have resolved_module populated (source_package survived bundling)");
+        let resolved = cfg.plugins[0].resolved_module.as_deref().expect(
+            "plugin must have resolved_module populated (source_package survived bundling)",
+        );
 
         assert!(
             resolved.starts_with("file://"),
@@ -5983,7 +5984,9 @@ export default {
             .canonicalize()
             .expect("preset plugin file exists and is canonicalisable");
         assert_eq!(
-            resolved_path.canonicalize().unwrap_or(resolved_path.clone()),
+            resolved_path
+                .canonicalize()
+                .unwrap_or(resolved_path.clone()),
             expected_path,
             "resolved_module must point at the preset's e2e-plugin.mjs, not the project root"
         );
@@ -6070,7 +6073,9 @@ export default {
             .canonicalize()
             .expect("preset search.js exists");
         assert_eq!(
-            resolved_path.canonicalize().unwrap_or(resolved_path.clone()),
+            resolved_path
+                .canonicalize()
+                .unwrap_or(resolved_path.clone()),
             expected_path,
             "resolved_module must point at the preset's search.js, not project root"
         );
@@ -6130,10 +6135,15 @@ export default {
             .join("search.js")
             .canonicalize()
             .expect("preset search.js must exist");
-        let project_root_copy = root.join("search.js").canonicalize().expect("project-root search.js must exist");
+        let project_root_copy = root
+            .join("search.js")
+            .canonicalize()
+            .expect("project-root search.js must exist");
 
         assert_eq!(
-            resolved_path.canonicalize().unwrap_or(resolved_path.clone()),
+            resolved_path
+                .canonicalize()
+                .unwrap_or(resolved_path.clone()),
             preset_copy,
             "preset copy must win; got {resolved:?}"
         );
