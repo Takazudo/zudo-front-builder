@@ -292,17 +292,37 @@ pub enum SetupRegistryError {
         second_plugin: String,
         second_entrypoint: String,
     },
+
+    #[error(
+        "plugin `{plugin}` called `addClientEntry(\"{entrypoint}\")` with a path that is not a \
+         `*.client.{{ts,tsx,js,jsx}}` file — client entries must follow the same convention as \
+         user-authored `*.client.*` files (the `.client.` infix is required and the stem before \
+         it must be non-empty)"
+    )]
+    InvalidClientEntry { plugin: String, entrypoint: String },
 }
 
 /// One client-side side-effect entry registered by a plugin's `setup` hook
 /// via `addClientEntry(entrypoint)` (#1196).
 ///
-/// The entrypoint is a `*.client.{ts,tsx,js,jsx}` module that is bundled
-/// and shipped as `/assets/client/<name>.js` alongside user-authored
-/// `*.client.*` files discovered in the project tree. The entry name is
-/// derived from the filename stem minus `.client` — the same convention as
-/// `discover_client_scripts`. Collisions with user-authored entries of the
-/// same name are a hard error.
+/// The entrypoint must be a `*.client.{ts,tsx,js,jsx}` module (enforced at
+/// ingest — a non-conforming path is an `InvalidClientEntry` hard error,
+/// #1191 review [9]). It is bundled and shipped as `/assets/client/<name>.js`
+/// alongside user-authored `*.client.*` files discovered in the project tree.
+/// The entry name is derived via the same canonical helper user files go
+/// through (`zfb_types::client_script_entry_name`).
+///
+/// ## Name-collision precedence
+///
+/// - **Package vs package** — two plugins registering the same entry name
+///   with DIFFERENT source files is a hard error (`ClientEntryConflict`);
+///   the same path twice is an idempotent no-op.
+/// - **User vs package** — a user-authored `<name>.client.*` of the same
+///   name WINS: the package entry is **silently dropped** so a preset can be
+///   adopted without the user removing their own copy. This is enforced at
+///   merge time in `commands::build` (mirroring `injectRoute`'s
+///   user-`pages/`-wins precedence), NOT here — there is no hard error for
+///   the user-vs-package case.
 #[derive(Debug, Clone)]
 pub struct ClientEntry {
     /// Derived entry name (e.g. `"my-lib"` for `my-lib.client.ts`).
@@ -551,18 +571,33 @@ impl<'a> PluginSetupAccumulator<'a> {
                 }
                 RawSetupRegistration::AddClientEntry { entrypoint } => {
                     // #1196: register a package-owned client-side side-effect entry.
-                    // The entry name is derived from the filename (stem minus `.client`)
-                    // using the same convention as `discover_client_scripts`.
+                    // #1191 review [9]: enforce the documented `*.client.*`
+                    // requirement and derive the name with the SAME canonical
+                    // helpers user-authored files go through
+                    // (`zfb_types::{is_client_script_file, client_script_entry_name}`)
+                    // so a malformed path fails fast (plugin-named error) instead
+                    // of silently shipping a broken/invented asset name. The old
+                    // ad-hoc `file_stem().strip_suffix(".client")` derivation
+                    // diverged from the user convention (e.g. a bare `.client.ts`
+                    // yielded an empty name → `/assets/client/.js`; a no-infix
+                    // `widget.ts` was accepted and shipped as `widget`).
                     let resolved = resolve_against_root(self.project_root, &entrypoint);
-                    let entry_name = resolved
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .map(|s| {
-                            // Strip the `.client` infix from the stem so
-                            // `search-widget.client.ts` → `search-widget`.
-                            s.strip_suffix(".client").unwrap_or(s).to_string()
-                        })
-                        .unwrap_or_else(|| entrypoint.clone());
+                    if !zfb_types::is_client_script_file(&resolved) {
+                        return Err(SetupRegistryError::InvalidClientEntry {
+                            plugin: output.plugin.clone(),
+                            entrypoint,
+                        });
+                    }
+                    let Some(entry_name) = zfb_types::client_script_entry_name(&resolved) else {
+                        // `is_client_script_file` already guarantees a non-empty
+                        // stem, so this is unreachable; treat it as the same
+                        // user-facing error rather than panicking on a future
+                        // helper-contract drift.
+                        return Err(SetupRegistryError::InvalidClientEntry {
+                            plugin: output.plugin.clone(),
+                            entrypoint,
+                        });
+                    };
                     if let Some((first_plugin, first_path)) =
                         self.client_entry_origin.get(&entry_name)
                     {
@@ -955,5 +990,57 @@ mod tests {
             }
             other => panic!("wrong error: {other:?}"),
         }
+    }
+
+    // --- addClientEntry `.client.*` enforcement (#1191 review [9]) -------------
+
+    #[test]
+    fn add_client_entry_rejects_path_without_client_infix() {
+        // A path missing the `.client.` infix used to be silently accepted and
+        // shipped under an invented name (`widget`). It must now hard-error.
+        let root = PathBuf::from("/proj");
+        let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
+        let err = acc
+            .ingest(raw_client_entry("p", "./widgets/search.ts"))
+            .expect_err("a non-.client path must be rejected");
+        match err {
+            SetupRegistryError::InvalidClientEntry { plugin, entrypoint } => {
+                assert_eq!(plugin, "p");
+                assert_eq!(entrypoint, "./widgets/search.ts");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_client_entry_rejects_bare_client_dotfile() {
+        // A bare `.client.ts` (empty stem) used to derive an empty name and
+        // ship `/assets/client/.js`. It must now hard-error.
+        let root = PathBuf::from("/proj");
+        let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
+        let err = acc
+            .ingest(raw_client_entry("p", "./.client.ts"))
+            .expect_err("a bare .client.ts (empty stem) must be rejected");
+        match err {
+            SetupRegistryError::InvalidClientEntry { plugin, entrypoint } => {
+                assert_eq!(plugin, "p");
+                assert_eq!(entrypoint, "./.client.ts");
+            }
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_client_entry_accepts_valid_client_path_and_derives_canonical_name() {
+        // The happy path: a valid `*.client.tsx` is accepted and the name is
+        // derived by the canonical helper (`foo` for `foo.client.tsx`),
+        // matching user-authored discovery.
+        let root = PathBuf::from("/proj");
+        let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
+        acc.ingest(raw_client_entry("p", "./pkg/foo.client.tsx"))
+            .expect("a valid .client.tsx path must be accepted");
+        let (_, _, _, entries) = acc.finish();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.as_slice()[0].entry_name, "foo");
     }
 }
