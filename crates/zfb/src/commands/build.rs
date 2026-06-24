@@ -5301,6 +5301,57 @@ mod tests {
         );
     }
 
+    /// #1198 regression: a page with a lone `export const prerender = false`
+    /// and NO `export const frontmatter` must be caught by the `output:
+    /// static` gate, not silently shipped as SSG. Exercises the real chain —
+    /// `build_prerender_map` → `is_ssr_route` → `resolve_v8_mode(Static)` —
+    /// so a regression in any link re-opens the safety hole. No V8 boot.
+    #[test]
+    fn output_static_rejects_frontmatterless_prerender_false_page() {
+        let dir = tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        // Lone `prerender = false`, no `frontmatter` — the exact shape #1198
+        // used to let slip through as SSG.
+        std::fs::write(
+            pages.join("ssr.tsx"),
+            "export const prerender = false;\nexport default function() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![static_route(vec!["ssr"], "pages/ssr.tsx")];
+        let map = build_prerender_map(&routes, dir.path(), |_| {});
+
+        // The frontmatter-less SSR page must now register as SSR (the bug was
+        // it registered as SSG and never reached the gate).
+        let templates: Vec<String> = routes.iter().map(|r| r.template()).collect();
+        let ssr_refs: Vec<SsrRouteRef<'_>> = templates
+            .iter()
+            .filter(|t| is_ssr_route(&map, t))
+            .map(|t| SsrRouteRef {
+                route_key: t,
+                url_path: t,
+            })
+            .collect();
+        assert_eq!(
+            ssr_refs.len(),
+            1,
+            "frontmatter-less `prerender = false` page must be detected as SSR"
+        );
+
+        let err = resolve_v8_mode(OutputMode::Static, &ssr_refs)
+            .expect_err("output: static must reject the frontmatter-less SSR page");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("output: \"static\""),
+            "error must name the config setting; got: {msg}"
+        );
+        assert!(
+            msg.contains("/ssr"),
+            "error must name the offending route; got: {msg}"
+        );
+    }
+
     /// Codex review (4.1b PR) flagged a missing case: a dynamic route
     /// with `prerender = false` AND a non-literal `paths()` lives in
     /// `still_deferred`, not `static_routes`. The detection seam must

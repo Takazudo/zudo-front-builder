@@ -422,15 +422,17 @@ pub(crate) fn pattern_to_pages_rel(pattern: &str) -> Result<PathBuf> {
 /// prerender = …` so the frontmatter extractor and the `output: static`
 /// safety gate actually SEE the prerender flag.
 ///
-/// Why BOTH must be inlined: `extract_tsx_frontmatter` only honours a
-/// top-level `export const prerender` when an `export const frontmatter`
-/// is ALSO present — without `frontmatter` the extractor returns
-/// `MissingFrontmatter`, which `build_prerender_map` swallows, defaulting
-/// the route to SSG and silently dropping the `prerender = false`. So a
-/// `prerender` hint requires the `frontmatter` sibling for the flag to be
-/// effective (re-exports are invisible to the syntactic extractor — both
-/// must be physically present here). With no hint, both are omitted →
-/// SSG default (the desired default for package routes).
+/// Why both are inlined (rather than re-exported): the overlay re-exports
+/// only the package page's `default`, so the page's own `prerender` /
+/// `frontmatter` exports are invisible to the syntactic extractor — to give
+/// the overlay a `prerender` flag at all, it must be physically present
+/// top-level. As of #1198 a lone inlined `export const prerender = false`
+/// (no `frontmatter`) IS surfaced — `build_prerender_map` records it on the
+/// `MissingFrontmatter` path — so the empty `frontmatter` is no longer
+/// strictly required for the flag to reach the gate. We still inline it
+/// alongside `prerender` so the overlay presents a complete, conventional
+/// page shape. With no hint, both are omitted → SSG default (the desired
+/// default for package routes).
 ///
 /// The entrypoint is imported by its absolute path; esbuild resolves an
 /// absolute specifier as-is, so this is independent of where the overlay
@@ -475,9 +477,11 @@ pub(crate) fn synthesize_static_overlay_module(
 /// dynamic synthesizers).
 ///
 /// Inlined top-level (NOT re-exported) so the frontmatter extractor — and
-/// the `output: static` gate via `build_prerender_map` — sees the flag.
-/// `frontmatter` MUST accompany `prerender` or the extractor returns
-/// `MissingFrontmatter` and the flag is silently dropped (#1193).
+/// the `output: static` gate via `build_prerender_map` — sees the flag; a
+/// re-export of the package page's own exports would be invisible to the
+/// syntactic extractor (#1193). The empty `frontmatter` is inlined as a
+/// conventional sibling: as of #1198 a lone `prerender` is honored even
+/// without it, but keeping it presents a complete page shape.
 fn push_inlined_prerender(out: &mut String, prerender: Option<bool>) {
     let Some(prerender) = prerender else { return };
     out.push_str(
