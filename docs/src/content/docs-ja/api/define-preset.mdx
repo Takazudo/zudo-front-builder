@@ -1,0 +1,113 @@
+---
+title: definePreset
+description: プリセットが提供するプラグインにパッケージの出所情報を付与し、zfb が正しいディレクトリを基準に解決できるようにします。
+sidebar_position: 2
+---
+
+## シグネチャ
+
+```ts
+definePreset(sourcePackage: string, config: Partial<ZfbConfig>): Partial<ZfbConfig>
+```
+
+`definePreset` は `@takazudo/zfb/config` からエクスポートされます。プリセットパッケージ向けの [`defineConfig`](./define-config.mdx) の兄弟ヘルパーで、プリセット自身の npm パッケージ名と部分的な設定を受け取り、`config.plugins` の各プラグインエントリに `source_package` フィールドを付与して返します。それ以外のフィールドはすべてそのまま返されます。
+
+## プリセット作者が `definePreset` を必要とする理由
+
+zfb のプリセットは、部分的な設定フラグメントをエクスポートし、自身のパッケージツリー内のプラグインを登録する再利用可能な npm パッケージです。自然なオーサリングパターンは次のようになります。
+
+```ts
+// @scope/zfb-preset-docs/index.ts
+export function docsPreset(): Partial<ZfbConfig> {
+  return {
+    plugins: [
+      { name: "./plugins/search.mjs" },
+      { name: "@scope/zfb-plugin-toc" },
+    ],
+  };
+}
+```
+
+問題は、zfb は `zfb.config.ts` をプリセットパッケージの中ではなく**コンシューマープロジェクト**の中で評価するため、設定値が Rust エンジンに到達する時点では、どこから来たかの痕跡がない匿名の JSON オブジェクトになっていることです。上記の両プラグイン specifier は**コンシューマープロジェクトルート**を基準に解決されます。`@scope/zfb-plugin-toc` がコンシューマーの `node_modules` にホイストされていれば正しく解決されますが、`./plugins/search.mjs` はプリセットパッケージ内の相対パスであるため解決に失敗します。
+
+`definePreset` は各プラグインエントリに `source_package: "@scope/zfb-preset-docs"` を付与することでこの問題を解決します。Rust リゾルバがこのフィールドを読み取り、コンシューマーの `node_modules` 内でそのパッケージ名をプリセットのインストールディレクトリに解決したうえで、各プラグイン specifier を**プリセットディレクトリを優先し、失敗した場合はコンシューマープロジェクトルートにフォールバック**して解決します。
+
+## `source_package` マーカー
+
+`source_package` は `definePreset` が `config.plugins` の各オブジェクトに付与する snake_case フィールドです。値はプリセット自身の npm パッケージ名（`package.json` の `"name"` フィールドに書く文字列、例: `"@scope/zfb-preset-docs"`）です。プレーンな文字列リテラルなので esbuild によるバンドルを経ても保持され、Value 層のプリセットマージを経て Rust ローダーに構造化データとして届きます。
+
+Rust 側のフィールド名は `source_package`（verbatim snake_case）です。`sourcePackage` は**使わないでください** — zfb の `PluginConfig` 構造体には `#[serde(rename_all)]` 属性がないため、JSON キーはフィールド名と完全に一致する必要があります。
+
+## 解決順序
+
+Rust リゾルバが `source_package` を持つプラグインエントリを処理するとき:
+
+1. パッケージ名をプリセットのインストールディレクトリ（例: `node_modules/@scope/zfb-preset-docs/`）に解決する。
+2. そのディレクトリを基準にプラグイン specifier を解決しようとする。
+3. ステップ 2 が失敗した場合（例: コンシューマーツリーにホイストされている npm bare specifier）、コンシューマープロジェクトルートを基準に解決するフォールバックへ進む。
+
+`./plugins/search.mjs` のような相対パスプラグインはステップ 2 でプリセットパッケージ自身のプラグインファイルへの絶対パスが得られます。ホイストされている `@scope/zfb-plugin-toc` のような bare specifier はプロバナンスデータがなくてもステップ 3 で正しく解決されますが、プロバナンスがあっても問題ありません。
+
+## ホイスティングに関する注意
+
+プリセットの bare specifier 依存（`@scope/zfb-plugin-toc` など）のほとんどは pnpm / npm によってコンシューマープロジェクトの `node_modules` にホイストされ、プロジェクトルート基準でも正しく解決されます。`definePreset` が特に重要なのは次のケースです。
+
+- **相対パスプラグイン**（`./plugins/foo.mjs`、`../shared/bar.mjs` など）— プリセットディレクトリを基準にしなければ正しく解決できません。
+- **ホイストされないネストした依存** — プリセット自身の `node_modules` サブツリーに留まり、コンシューマーのトップレベルツリーに昇格しないパッケージ（`pnpm --hoist-pattern=""` や `hoist=false` のワークスペース設定など、isolated レイアウトでは稀に発生します）。
+
+プリセットのプラグインがすべてホイスト済みの bare specifier で相対パスを含まない場合、技術的には `definePreset` は省略可能です。ただし常に呼び出しても安全であり、コストもなく、将来の変更に対してより堅牢なコードになります。
+
+## グレースフルデグラデーション
+
+| パス / ケース | 挙動 |
+| --- | --- |
+| デフォルトのインプロセス V8（一般的なパス） | `source_package` リテラルが esbuild バンドルを経ても保持される → Rust がパッケージ名を解決 → プリセットディレクトリ基準の解決が機能する |
+| スリム node サブプロセス | 同一 — マーカーは同じ Value パイプラインを通過する |
+| `zfb.config.json`（evaluator なし） | インラインのプリセットリテラルに `source_package` が含まれないため、プロジェクトルート基準のまま（変更なし）。プラグインが解決できない場合はより明確なエラーメッセージが表示される |
+| `definePreset` なし / マーカーなしのプラグイン | プロジェクトルート基準のまま（変更なし）。プラグインが解決できない場合はより明確なエラーメッセージが表示される。完全に後方互換 |
+
+## オーサリング例
+
+相対パスプラグインと npm プラグインの両方を持つプリセットパッケージで、`definePreset` で正しくマークされた例:
+
+```ts
+// @scope/zfb-preset-docs/index.ts
+import { definePreset } from "@takazudo/zfb/config";
+import type { ZfbConfig } from "@takazudo/zfb/config";
+
+export function docsPreset(): Partial<ZfbConfig> {
+  return definePreset("@scope/zfb-preset-docs", {
+    plugins: [
+      // 相対パス — Rust ローダーがプリセットパッケージディレクトリを基準に解決する。
+      { name: "./plugins/search.mjs" },
+      // bare specifier — 通常はホイスト済み。非ホイスト環境にはプリセットディレクトリのフォールバックが対応する。
+      { name: "@scope/zfb-plugin-toc" },
+    ],
+  });
+}
+```
+
+コンシューマーは `presets` 経由でプリセットを組み込みます。
+
+```ts
+// コンシューマープロジェクトの zfb.config.ts
+import { defineConfig } from "zfb/config";
+import { docsPreset } from "@scope/zfb-preset-docs";
+
+export default defineConfig({
+  presets: [docsPreset()],
+});
+```
+
+## プリセットパッケージ内での `@takazudo/zfb/config` インポートの型付け
+
+プリセットパッケージは**スコープ付き**サブパス `@takazudo/zfb/config` からインポートします（コンシューマープロジェクトの設定評価時にのみ利用できるベアの `zfb/config` エイリアスとは異なります）。オーサリング時に型が正しく解決されるよう、プリセットパッケージの `devDependencies`（または `peerDependencies`）に `@takazudo/zfb` を追加してください。
+
+## `defineConfig` との関係
+
+`defineConfig` は**コンシューマープロジェクト**向けで、完全な `ZfbConfig` を受け取り、エディタ IntelliSense のために identity 型で返します。`definePreset` は**プリセットパッケージ**向けで、`Partial<ZfbConfig>` を受け取り、プラグインにマーカーを付与して `Partial<ZfbConfig>` を返します。両ヘルパーは補完関係にあります — `definePreset` はプリセットファクトリの内部で呼び出し、`defineConfig` はコンシューマーの `zfb.config.ts` でトップレベルの設定を包むために呼び出します。
+
+## 関連項目
+
+- [`defineConfig`](./define-config.mdx) — コンシューマー側の設定ヘルパー。
+- [Plugins](/ja/docs/concepts/plugins/) — プラグインフックのコントラクト全体。

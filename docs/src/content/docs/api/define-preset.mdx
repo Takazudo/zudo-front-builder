@@ -1,0 +1,113 @@
+---
+title: definePreset
+description: "Stamp preset-contributed plugins with the preset package's provenance so zfb can resolve them against the correct directory."
+sidebar_position: 2
+---
+
+## Signature
+
+```ts
+definePreset(sourcePackage: string, config: Partial<ZfbConfig>): Partial<ZfbConfig>
+```
+
+`definePreset` is exported from `@takazudo/zfb/config`. It is the authoring companion to [`defineConfig`](./define-config.mdx) for preset packages: it takes the preset's own npm package name and a partial config, stamps each plugin entry in `config.plugins` with a `source_package` field, and returns the config unchanged in every other respect.
+
+## Why preset authors need `definePreset`
+
+A zfb preset is a reusable npm package that exports a partial config fragment and registers plugins from within its own package tree. The natural authoring pattern is:
+
+```ts
+// @scope/zfb-preset-docs/index.ts
+export function docsPreset(): Partial<ZfbConfig> {
+  return {
+    plugins: [
+      { name: "./plugins/search.mjs" },
+      { name: "@scope/zfb-plugin-toc" },
+    ],
+  };
+}
+```
+
+The problem is that zfb evaluates `zfb.config.ts` in the **consumer project**, not inside the preset package, and by the time the config value reaches the Rust engine it is an anonymous JSON object with no trace of where it came from. Both plugin specifiers above are therefore resolved against the **consumer project root** — which is correct for `@scope/zfb-plugin-toc` only if that package is hoisted into the consumer's `node_modules`, but is wrong for `./plugins/search.mjs`, which is a relative path inside the preset package.
+
+`definePreset` fixes this by stamping each plugin entry with `source_package: "@scope/zfb-preset-docs"`. The Rust resolver reads that field, resolves the package name to the preset's installed directory in the consumer's `node_modules`, and then resolves each plugin specifier **against the preset directory first, falling back to the consumer project root** if the preset-relative resolution fails.
+
+## The `source_package` marker
+
+`source_package` is a snake_case field that `definePreset` adds to each object in `config.plugins`. Its value is the preset's own npm package name — the string you would write in `package.json`'s `"name"` field (e.g. `"@scope/zfb-preset-docs"`). Because it is a plain string literal it survives esbuild bundling intact, flows through the Value-layer preset merge, and reaches the Rust loader as structured data.
+
+The Rust field name is `source_package` (verbatim snake_case). Do **not** use `sourcePackage` — zfb's `PluginConfig` struct has no `#[serde(rename_all)]` attribute, so the JSON key must match the field name exactly.
+
+## Resolution order
+
+When the Rust resolver sees a plugin entry with `source_package`:
+
+1. Resolve the package name to the preset's installed directory (e.g. `node_modules/@scope/zfb-preset-docs/`).
+2. Try to resolve the plugin specifier relative to that directory.
+3. If step 2 fails (e.g. the specifier is an npm bare specifier that is hoisted into the consumer tree), fall back to resolving against the consumer project root.
+
+For a relative-path plugin like `./plugins/search.mjs`, step 2 produces the absolute path to the preset package's own plugin file. For a bare specifier like `@scope/zfb-plugin-toc` that is hoisted into the consumer's `node_modules`, step 3 resolves it correctly even without provenance data — but having provenance does not hurt.
+
+## Hoisting caveat
+
+Most preset bare-specifier dependencies (`@scope/zfb-plugin-toc`, etc.) are hoisted by pnpm/npm into the consumer project's `node_modules` and already resolve correctly via project-root anchoring. `definePreset` is mainly needed for:
+
+- **Relative-path plugins** (`./plugins/foo.mjs`, `../shared/bar.mjs`) — these can only resolve correctly when anchored to the preset directory.
+- **Non-hoisted nested deps** — packages that end up in the preset's own `node_modules` sub-tree and are not promoted to the top-level consumer tree (rare with hoisting-enabled package managers, but possible with strict/isolated layouts like `pnpm --hoist-pattern=""` or pnpm workspaces with `hoist=false`).
+
+If all of a preset's plugins are hoisted bare specifiers and no relative paths are involved, `definePreset` is technically optional — but calling it is always safe, costs nothing, and makes the config more future-proof.
+
+## Graceful degradation
+
+| Path / case | Behavior |
+| --- | --- |
+| Default in-process V8 (common path) | `source_package` literal survives esbuild bundling → Rust resolves package name → preset-dir anchoring works |
+| Slim node subprocess | Identical — the marker flows through the same Value pipeline |
+| `zfb.config.json` (no evaluator) | Inline preset literals have no `source_package` → project-root anchoring (unchanged) + clearer error message if a plugin is unresolvable |
+| Preset without `definePreset` / no-marker plugin | Project-root anchoring (unchanged) + clearer error message if the plugin is unresolvable; fully backward-compatible |
+
+## Authoring example
+
+A preset package that registers a relative-path plugin and an npm plugin, correctly marked with `definePreset`:
+
+```ts
+// @scope/zfb-preset-docs/index.ts
+import { definePreset } from "@takazudo/zfb/config";
+import type { ZfbConfig } from "@takazudo/zfb/config";
+
+export function docsPreset(): Partial<ZfbConfig> {
+  return definePreset("@scope/zfb-preset-docs", {
+    plugins: [
+      // Relative path — resolved against the preset package dir by the Rust loader.
+      { name: "./plugins/search.mjs" },
+      // Bare specifier — typically hoisted; preset-dir fallback covers non-hoisted installs.
+      { name: "@scope/zfb-plugin-toc" },
+    ],
+  });
+}
+```
+
+The consumer wires the preset through `presets`:
+
+```ts
+// consumer project's zfb.config.ts
+import { defineConfig } from "zfb/config";
+import { docsPreset } from "@scope/zfb-preset-docs";
+
+export default defineConfig({
+  presets: [docsPreset()],
+});
+```
+
+## Typing the `@takazudo/zfb/config` import inside a preset package
+
+Preset packages import from the **scoped** subpath `@takazudo/zfb/config` — not the bare `zfb/config` alias (which is only available inside a consumer project during config evaluation). Add `@takazudo/zfb` to the preset package's `devDependencies` (or `peerDependencies`) so the types resolve correctly at authoring time.
+
+## Relation to `defineConfig`
+
+`defineConfig` is for **consumer projects**: it takes a full `ZfbConfig` and returns it identity-typed for editor IntelliSense. `definePreset` is for **preset packages**: it takes a `Partial<ZfbConfig>`, stamps the plugins, and returns a `Partial<ZfbConfig>`. The two helpers are complementary — `definePreset` is called inside the preset factory; `defineConfig` is called in the consumer's `zfb.config.ts` wrapping the top-level config.
+
+## See also
+
+- [`defineConfig`](./define-config.mdx) — the consumer-side configuration helper.
+- [Plugins](../concepts/plugins.mdx) — the full plugin hook contract.
