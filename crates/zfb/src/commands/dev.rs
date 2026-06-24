@@ -1279,6 +1279,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             // pipeline's stale probe uses; the per-route stale map (claimable
             // for request-time render) is untouched — this is the broadcast,
             // not a second one. Empty and inert unless the bundle was deferred.
+            //
+            // Deliberately gated on `defer_dev_bundle`, NOT on boot-lazy: this
+            // reload only matters for the deferred window, where step 0 publishes
+            // the renderer AFTER bind so a tab may have loaded the prebuilt `dist/`
+            // first. When boot-lazy is on but NOT deferred — boot-lazy without a
+            // servable seed, or the #1188 `ZFB_DEV_DEFER_BUNDLE=0` opt-out —
+            // `boot_dev_renderer` built the V8 host + route tables EAGERLY before
+            // bind, so SSR routes render fresh through the live host on first
+            // request and no tab ever served stale/prebuilt content needing a
+            // reload. So the broadcast is correctly inert there (and the always-on
+            // islands reload above still fires regardless of this gate).
             let boot_stale: Vec<PathBuf> = if defer_dev_bundle {
                 dev_session_for_boot
                     .as_ref()
