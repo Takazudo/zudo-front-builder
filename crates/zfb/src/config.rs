@@ -6008,22 +6008,28 @@ export default {
     /// until a T3 slim-test lane exists. Run it locally with
     /// `cargo test --no-default-features -p zfb`.
     ///
-    /// Self-skips (returns) when its toolchain is absent: no esbuild slot /
-    /// `ZFB_ESBUILD_BIN` (mirrors the sibling slim tests), or no runnable `node` on PATH
-    /// (this is the first *positive* slim test that actually spawns node, so it guards on
-    /// node availability rather than hard-fail on a node-less host).
+    /// Self-skips (returns) when its toolchain is genuinely absent: esbuild not found by
+    /// `zfb_test_utils::locate_esbuild()` (the canonical probe — which *panics* rather than
+    /// skip if the workspace slot binary is present but unresolved, per #1007, so a silent
+    /// no-coverage skip cannot happen), or no runnable `node` on PATH (this is the first
+    /// *positive* slim test that actually spawns node, so it guards on node availability
+    /// rather than hard-fail on a node-less host).
     #[cfg(not(feature = "embed_v8"))]
     #[tokio::test]
     async fn e2e_capture_chain_define_preset_source_package_survives_esbuild_slim() {
         use std::fs;
 
-        // Skip guard 1 — esbuild slot: without a resolvable esbuild binary the load bails
-        // before reaching the node evaluator. Mirrors the sibling slim tests verbatim.
-        if !PathBuf::from(DEFAULT_ESBUILD_SLOT).exists()
-            && std::env::var_os("ZFB_ESBUILD_BIN").is_none()
-        {
+        // Skip guard 1 — esbuild: locate the real binary via the canonical test-utils
+        // probe. Unlike a CWD-relative `DEFAULT_ESBUILD_SLOT` existence check, this walks
+        // absolute candidate workspace roots, so it actually finds the workspace slot
+        // under the documented `cargo test --no-default-features -p zfb` run (cwd is the
+        // crate dir, not the workspace root) instead of silently skipping and providing
+        // zero coverage. It also trips a #1007 panic if the slot binary exists but lookup
+        // fails. The located path is threaded explicitly through `esbuild_binary` below so
+        // the load is deterministic (no reliance on the loader's CWD-relative slot leg).
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
             return;
-        }
+        };
 
         // Skip guard 2 — node availability: the slim path spawns `node` to evaluate the
         // bundled config. Probe it (status check, null stdio — catches "spawned but
@@ -6112,9 +6118,16 @@ export default {
         .await
         .unwrap();
 
-        // Load via the REAL esbuild + node-subprocess path (slim build; no V8, no
-        // test_default_export_json override, no node_binary override).
-        let cfg = load_from_dir(root)
+        // Load via the REAL esbuild + node-subprocess path (slim build). Pass the located
+        // esbuild explicitly (deterministic — no reliance on the loader's CWD-relative slot
+        // resolution), but leave `node_binary` unset so the genuine `node` subprocess
+        // evaluator runs, and `test_default_export_json` unset so esbuild + node really
+        // execute (not the envelope bypass).
+        let opts = LoadOptions {
+            esbuild_binary: Some(esbuild),
+            ..LoadOptions::default()
+        };
+        let cfg = load_from_dir_with_options(root, &opts)
             .await
             .expect("e2e preset-provenance config (slim) must load successfully");
 
