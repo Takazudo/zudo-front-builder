@@ -110,6 +110,151 @@ pub(crate) struct OverlayResolution {
     pub(crate) materialized: Vec<MaterializedRoute>,
 }
 
+/// A **static** injected route (URL == pattern) the dev route universe
+/// must seed (epic #1228, S3 #1231). Built from the POST-precedence
+/// survivor set ([`OverlayResolution::materialized`]) so a user-shadowed
+/// or package-vs-package-dropped pattern never leaks (sharp edges 4/7).
+///
+/// `seed_entry` is the concrete [`RouteUniverseEntry`] the dev session
+/// inserts into `routes_by_source` + `url_index` and marks stale on boot
+/// and on every route-table swap; the lazy render adapter then renders it
+/// through the unchanged `render_one` → guarded-write → `html_root` flow,
+/// exactly like a normal static SSG page. `output_path` is what the dev
+/// session stale-marks.
+#[derive(Debug, Clone)]
+pub(crate) struct StaticInjectedSeed {
+    /// The injected pattern (== the concrete URL for a static route).
+    pub(crate) pattern: String,
+    /// The seed route-universe entry (`url_path`/`route_key` = the
+    /// pattern, `output_path` from
+    /// [`crate::render_pipeline::build_output_path_for_resolved_url`],
+    /// `static_html = false`, `source_path = None`).
+    pub(crate) seed_entry: zfb_build::renderer::RouteUniverseEntry,
+}
+
+impl StaticInjectedSeed {
+    /// Convenience: the relative `output_path` the dev session stale-marks
+    /// (`preset-about/index.html`, `index.html` for `/`).
+    pub(crate) fn output_path(&self) -> &Path {
+        &self.seed_entry.output_path
+    }
+}
+
+/// Build the dev route-universe seeds for the **static, SSG** injected
+/// routes among the post-precedence survivors (epic #1228, S3 #1231,
+/// §2/§3).
+///
+/// A static injected route has a pattern with no bracketed (dynamic)
+/// segment, so the URL equals the pattern and the route is a normal
+/// static SSG page once staged into the dev bundle (S2). This function
+/// derives the concrete [`RouteUniverseEntry`] for each such survivor:
+/// `url_path` = `route_key` = the pattern, `output_path` =
+/// [`crate::render_pipeline::build_output_path_for_resolved_url`] (the
+/// SAME derivation `zfb build` uses, so the dev output layout matches),
+/// `static_html = false` (V8-rendered like any SSG route), `source_path =
+/// None`.
+///
+/// Excluded:
+///
+/// - **Dynamic survivors** (`/preset-docs/[slug]`) — no concrete URL until
+///   the request; handled by the S4 request-time `lazy_render_adapter`
+///   fallback, not seeded here.
+/// - **`prerender: false` survivors** (`injectRoute(pattern, ep, {
+///   prerender: false })`) — these are SSR-only and must NOT be SSG'd to
+///   disk, mirroring a normal `pages/` route that exports `prerender =
+///   false` (which `build_dev_route_tables` keeps OUT of
+///   `routes_by_source`). Seeding one would write a disk artifact that
+///   shadows the request-time SSR behaviour the plugin asked for. The
+///   build path honours this via the inlined `export const prerender =
+///   false` in the synthesized module + the prerender map; the dev seed
+///   bypasses that flow, so the flag is consulted directly here. (Dev does
+///   not yet dispatch injected SSR routes through the V8 host — that is a
+///   later wave; excluding them from the SSG seed is the correct, safe
+///   behaviour for S3 and matches `pages/` parity.)
+///
+/// `prerender` is looked up from the original `injected_routes` (the
+/// survivor records carry it) — `MaterializedRoute` is shared with the
+/// build path and deliberately not widened.
+///
+/// Input is the POST-precedence survivor list
+/// ([`OverlayResolution::materialized`]), so a user-shadowed pattern or a
+/// package-vs-package-dropped pattern is already absent — it never reaches
+/// the route universe (sharp edges 4/7).
+pub(crate) fn static_injected_seeds(
+    injected_routes: &[InjectedRoute],
+    materialized: &[MaterializedRoute],
+) -> Vec<StaticInjectedSeed> {
+    // Map pattern → prerender hint for the survivors (the original records
+    // carry the `prerender` flag `MaterializedRoute` omits).
+    let prerender_of: std::collections::HashMap<&str, Option<bool>> = injected_routes
+        .iter()
+        .map(|r| (r.pattern.as_str(), r.prerender))
+        .collect();
+    materialized
+        .iter()
+        .filter(|mr| !is_dynamic_pattern(&mr.pattern))
+        // SSR-only injected routes (`prerender: false`) are NOT SSG-seeded
+        // — same as a `pages/` page exporting `prerender = false`.
+        .filter(|mr| prerender_of.get(mr.pattern.as_str()).copied().flatten() != Some(false))
+        .map(|mr| {
+            // A static injected route's concrete URL IS its pattern; the
+            // extension is derived from the pattern's final segment exactly
+            // as the normal dynamic-route path does (`/feed.xml` keeps its
+            // bare path; `/preset-about` → `preset-about/index.html`).
+            let extension = url_path_extension(&mr.pattern);
+            let output_path = crate::render_pipeline::build_output_path_for_resolved_url(
+                &mr.pattern,
+                extension.as_deref(),
+            );
+            StaticInjectedSeed {
+                pattern: mr.pattern.clone(),
+                seed_entry: zfb_build::renderer::RouteUniverseEntry {
+                    url_path: mr.pattern.clone(),
+                    output_path,
+                    route_key: mr.pattern.clone(),
+                    static_html: false,
+                    source_path: None,
+                },
+            }
+        })
+        .collect()
+}
+
+/// Filter the original registration list down to the POST-precedence
+/// survivors (epic #1228, S3 #1231, §7). The `InjectedRouteSet` handed to
+/// the dev server (and the future S4 dynamic fallback) MUST be built from
+/// these, not from the raw registration list — otherwise a user-shadowed
+/// (or package-vs-package-dropped) pattern would still match in the
+/// request-time fallback (sharp edges 4/7).
+///
+/// A survivor is identified by its pattern appearing in `materialized`
+/// (the routes actually written into the staged bundle); the returned
+/// records preserve the original `plugin` / `prerender` / `entrypoint`
+/// fields and declaration order, so first-registered-wins tiebreaking in
+/// [`zfb_server::InjectedRouteSet::find_match`] is unchanged.
+pub(crate) fn surviving_injected_routes(
+    injected_routes: &[InjectedRoute],
+    materialized: &[MaterializedRoute],
+) -> Vec<InjectedRoute> {
+    let survivors: HashSet<&str> = materialized.iter().map(|mr| mr.pattern.as_str()).collect();
+    injected_routes
+        .iter()
+        .filter(|r| survivors.contains(r.pattern.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// The explicit file extension carried by a route URL's final segment, if
+/// any (`/feed.xml` → `Some("xml")`, `/preset-about` → `None`). Mirrors
+/// the extension handling in `render_pipeline`'s dynamic-URL output
+/// derivation so a static injected route with a non-HTML extension lands
+/// at the bare path rather than `…/index.html`.
+fn url_path_extension(url: &str) -> Option<String> {
+    let trimmed = url.trim_end_matches('/');
+    let last = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    last.rsplit_once('.').map(|(_, ext)| ext.to_string())
+}
+
 /// Resolve the build pages root, materialising an overlay when there are
 /// package routes.
 ///
@@ -1654,5 +1799,219 @@ export default function Page() { return null; }
             msg.contains("preset-a") && msg.contains("preset-b"),
             "dev shape-duplicate error must name both plugins; got:\n{msg}"
         );
+    }
+
+    // ── S3 (#1231): static-injected seeding + survivor-set precedence ──
+
+    #[test]
+    fn static_seed_derives_url_index_and_output_path() {
+        // A static injected route (`/preset-about`) seeds a RouteUniverseEntry
+        // whose url_path/route_key are the pattern and whose output_path is the
+        // SAME `build_output_path_for_resolved_url` derivation the build uses
+        // (`preset-about/index.html`). static_html=false, source_path=None.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![route("/preset-about", "/pkg/about.tsx")];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+
+        assert_eq!(seeds.len(), 1, "one static survivor → one seed");
+        let s = &seeds[0];
+        assert_eq!(s.pattern, "/preset-about");
+        assert_eq!(s.seed_entry.url_path, "/preset-about");
+        assert_eq!(s.seed_entry.route_key, "/preset-about");
+        assert!(!s.seed_entry.static_html);
+        assert!(s.seed_entry.source_path.is_none());
+        assert_eq!(s.output_path(), Path::new("preset-about/index.html"));
+    }
+
+    #[test]
+    fn static_seed_root_pattern_maps_to_index_html() {
+        // The dev-only `/` reservation aside, a static `/` injected route's
+        // output_path is `index.html` (matches build's root derivation).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        // No user index.tsx so the injected `/` survives precedence here.
+        let routes = vec![route("/", "/pkg/root.tsx")];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].output_path(), Path::new("index.html"));
+    }
+
+    #[test]
+    fn static_seed_non_html_extension_keeps_bare_path() {
+        // A static injected route ending in an explicit extension renders to
+        // the bare URL path, not `…/index.html` (mirrors render_pipeline).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![route("/preset-feed.xml", "/pkg/feed.tsx")];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].output_path(), Path::new("preset-feed.xml"));
+    }
+
+    #[test]
+    fn dynamic_survivor_is_not_seeded_statically() {
+        // A dynamic injected route (`/preset-docs/[slug]`) has no concrete URL
+        // at boot — it is NOT seeded into the static route universe (that's the
+        // S4 request-time fallback's job). Only the static survivor seeds.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        // The dynamic synthesizer reads + classifies the entrypoint's own
+        // `paths`, so the file must exist with a top-level literal `paths()`.
+        let docs = tmp.path().join("docs.tsx");
+        std::fs::write(
+            &docs,
+            "export function paths() { return [{ params: { slug: \"a\" } }]; }\n\
+             export default function Docs() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            route("/preset-about", "/pkg/about.tsx"),
+            InjectedRoute {
+                pattern: "/preset-docs/[slug]".into(),
+                entrypoint: docs,
+                plugin: "preset".into(),
+                prerender: None,
+            },
+        ];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        assert_eq!(
+            seeds.len(),
+            1,
+            "only the static /preset-about seeds; the dynamic route is excluded"
+        );
+        assert_eq!(seeds[0].pattern, "/preset-about");
+    }
+
+    #[test]
+    fn surviving_set_drops_user_shadowed_pattern() {
+        // Sharp edge 4/7: the InjectedRouteSet (and the static seed) must be
+        // built from the POST-precedence survivors. A user `pages/` page that
+        // shadows an injected pattern drops it from BOTH the survivor records
+        // and the static seed — it must NOT leak into the request-time fallback.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        // User owns `/about`.
+        std::fs::write(pages.join("about.tsx"), "export default () => null;").unwrap();
+
+        let routes = vec![
+            route("/about", "/pkg/about.tsx"),
+            route("/preset-extra", "/pkg/extra.tsx"),
+        ];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+
+        let survivors = surviving_injected_routes(&routes, &res.materialized);
+        let patterns: Vec<&str> = survivors.iter().map(|r| r.pattern.as_str()).collect();
+        assert_eq!(
+            patterns,
+            vec!["/preset-extra"],
+            "user-shadowed /about must not appear in the survivor set"
+        );
+
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        let seed_patterns: Vec<&str> = seeds.iter().map(|s| s.pattern.as_str()).collect();
+        assert_eq!(
+            seed_patterns,
+            vec!["/preset-extra"],
+            "the user-shadowed pattern must not be seeded into the route universe"
+        );
+    }
+
+    #[test]
+    fn surviving_set_preserves_records_and_order() {
+        // The survivor records keep the original plugin/prerender/entrypoint
+        // fields and declaration order (first-registered-wins tiebreak).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![
+            route("/preset-a", "/pkg/a.tsx"),
+            route("/preset-b", "/pkg/b.tsx"),
+        ];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let survivors = surviving_injected_routes(&routes, &res.materialized);
+        assert_eq!(survivors.len(), 2);
+        assert_eq!(survivors[0].pattern, "/preset-a");
+        assert_eq!(survivors[0].plugin, "preset");
+        assert_eq!(survivors[1].pattern, "/preset-b");
+    }
+
+    #[test]
+    fn static_seed_excludes_prerender_false_ssr_only_route() {
+        // A static injected route registered with `prerender: false` is
+        // SSR-only and must NOT be SSG-seeded into the dev route universe —
+        // same as a `pages/` page that exports `prerender = false` (kept OUT
+        // of `routes_by_source`). Otherwise dev would write a disk artifact
+        // shadowing the request-time behaviour the plugin asked for. The
+        // survivor STILL survives precedence (it's a real route) — only the
+        // SSG seed excludes it.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![
+            // SSG static injected route → seeded.
+            InjectedRoute {
+                pattern: "/preset-ssg".into(),
+                entrypoint: PathBuf::from("/pkg/ssg.tsx"),
+                plugin: "preset".into(),
+                prerender: None,
+            },
+            // SSR-only static injected route → NOT seeded.
+            InjectedRoute {
+                pattern: "/preset-ssr".into(),
+                entrypoint: PathBuf::from("/pkg/ssr.tsx"),
+                plugin: "preset".into(),
+                prerender: Some(false),
+            },
+        ];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+
+        // Both routes survive precedence (both are real, non-colliding).
+        let survivors = surviving_injected_routes(&routes, &res.materialized);
+        assert_eq!(survivors.len(), 2, "both routes survive precedence");
+
+        // But only the SSG one is SSG-seeded.
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        let seed_patterns: Vec<&str> = seeds.iter().map(|s| s.pattern.as_str()).collect();
+        assert_eq!(
+            seed_patterns,
+            vec!["/preset-ssg"],
+            "prerender:false static injected route must NOT be SSG-seeded"
+        );
+    }
+
+    #[test]
+    fn static_seed_includes_explicit_prerender_true_route() {
+        // `prerender: true` is an explicit SSG opt-in — it must be seeded
+        // (only `Some(false)` is excluded).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![InjectedRoute {
+            pattern: "/preset-about".into(),
+            entrypoint: PathBuf::from("/pkg/about.tsx"),
+            plugin: "preset".into(),
+            prerender: Some(true),
+        }];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].pattern, "/preset-about");
     }
 }
