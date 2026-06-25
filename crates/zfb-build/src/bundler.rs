@@ -265,6 +265,22 @@ pub struct BundlerInput {
     /// Directory of route source files. Every `.tsx`/`.ts`/`.jsx`/`.js`/
     /// `.mdx` file under this directory becomes a route in the bundle.
     pub pages_dir: PathBuf,
+    /// ADDITIVE second pages root for the dev server's package-owned
+    /// **injected** routes (epic #1228, S2 #1230 — the B1 multi-root
+    /// mechanism). When `Some`, the bundler materialises this root into the
+    /// SAME shadow `pages/` tree as [`Self::pages_dir`] (a second
+    /// `materialise_shadow` call), so the bundle contains BOTH the user's
+    /// pages AND the synthesized injected modules. It holds ONLY the injected
+    /// modules — no user-page copy — so `zfb dev` keeps `pages_dir` = the real
+    /// `project_root/pages` for the router scan + watcher (user-page
+    /// `source_path` identity / HMR untouched).
+    ///
+    /// Distinct from the `zfb build` overlay, which instead OVERRIDES
+    /// `pages_dir` with a root that already contains a copy of the user pages.
+    /// `None` for `zfb build` and for `zfb dev` with no injected routes —
+    /// byte-identical to a bundle that never knew this field (the additive
+    /// walk is skipped entirely). Default: `None`.
+    pub injected_pages_root: Option<PathBuf>,
     /// Directory of content collections. `.mdx` files anywhere under
     /// this directory are pre-compiled with
     /// [`compile_mdx_to_jsx_module_cached`] before esbuild sees them.
@@ -678,6 +694,7 @@ impl BundlerInput {
         Self {
             project_root,
             pages_dir: PathBuf::from("pages"),
+            injected_pages_root: None,
             content_dir: PathBuf::from("content"),
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
@@ -1720,6 +1737,48 @@ pub fn bundle_with_session(
         all_markdown_diagnostics.extend(md_diags);
         all_cross_file_links.extend(cfl);
         all_file_headings.extend(fh);
+    }
+
+    // S2 (#1230) — ADDITIVE injected-route root for `zfb dev` (B1 multi-root).
+    // When `injected_pages_root` is set, walk it into the SAME shadow `pages/`
+    // tree as the real `pages_dir` above, appending the synthesized injected
+    // modules to `routes`. This makes the dev bundle contain BOTH the user's
+    // pages and the injected entrypoints (and resolves their `virtual:`
+    // imports) without copying the user's `pages/` (the command layer staged
+    // ONLY the injected modules there). The staging root holds no user pages,
+    // so there is no file collision with the main walk. `None` (every `zfb
+    // build`, and `zfb dev` with no injected routes) skips this entirely —
+    // byte-identical to a bundle that never knew the field.
+    if let Some(injected_root) = input.injected_pages_root.as_ref() {
+        let injected_root = resolver.resolve(injected_root);
+        // A missing/empty staging root is a no-op (the same defensive bias as
+        // `materialise_shadow`'s own missing-src early return).
+        if injected_root.is_dir() {
+            let mut broken = Vec::new();
+            let mut md_diags = Vec::new();
+            let mut cfl = Vec::new();
+            let mut fh = Vec::new();
+            materialise_shadow(
+                &injected_root,
+                &shadow_pages,
+                &mut routes,
+                &mat_ctx,
+                &mut broken,
+                &mut md_diags,
+                &mut cfl,
+                &mut fh,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: failed materialising injected routes from {}",
+                    injected_root.display()
+                )
+            })?;
+            all_broken_links.extend(broken);
+            all_markdown_diagnostics.extend(md_diags);
+            all_cross_file_links.extend(cfl);
+            all_file_headings.extend(fh);
+        }
     }
 
     // Per-collection content materialisation (#506).
@@ -5885,6 +5944,7 @@ mod tests {
         BundlerInput {
             project_root: root.clone(),
             pages_dir: PathBuf::from("pages"),
+            injected_pages_root: None,
             content_dir: PathBuf::from("content"),
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),
@@ -8582,6 +8642,7 @@ mod tests {
         let input = BundlerInput {
             project_root: root.clone(),
             pages_dir: PathBuf::from("pages"),
+            injected_pages_root: None,
             content_dir: PathBuf::from("content"),
             content_collections: Vec::new(),
             components_dir: PathBuf::from("components"),

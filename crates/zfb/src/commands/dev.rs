@@ -379,6 +379,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         v8_plugin_hooks,
         dev_plugin_alias_entries.clone(),
         dev_plugin_virtual_modules.clone(),
+        // S2 (#1230) — the package-owned injected routes registered during
+        // setup. Boot materialises the survivor set into a session-lifetime
+        // staging dir and threads it into the dev bundler so the injected
+        // entrypoints land in the dev bundle. Empty on the parity path.
+        setup_registries.injected_routes.as_slice(),
         defer_dev_bundle,
     ) {
         Ok(s) => Some(s),
@@ -2276,6 +2281,28 @@ struct DevRebuildInputs {
     /// (non-fatal: warn + per-tick fallback) or when `ZFB_ESBUILD_BIN`
     /// overrides the embedded binary.
     esbuild: Option<(tempfile::TempDir, PathBuf)>,
+
+    /// Session-lifetime staging root for package-owned **injected routes**
+    /// (epic #1228, S2 #1230 — the B1 multi-root dev mechanism). When a
+    /// preset registered routes whose POST-precedence survivor set is
+    /// non-empty, boot materialises the synthesized injected-only module set
+    /// ONCE (via [`crate::commands::package_routes::resolve_dev_pages_root`])
+    /// into this temp dir — NOT rebuilt per tick — and threads its `pages`
+    /// root into the dev bundler on every `assemble_and_bundle_dev` call via
+    /// the existing `build_pages_root` seam, so the injected entrypoints (and
+    /// their `virtual:` imports) land in the dev bundle.
+    ///
+    /// `None` (the parity path) when there are no injected routes or every
+    /// injected route was shadowed by a user `pages/` route: dev then passes
+    /// `build_pages_root = None` and is byte-identical to today (sharp edge
+    /// 8). The `TempDir` is held for the whole session so the staged modules
+    /// outlive every `bundle()` call; dropping it deletes the staging dir.
+    /// The `PathBuf` is the staged `pages` dir the bundler walks.
+    ///
+    /// NOTE: this does NOT copy the user's real `pages/` — `pages_dir` stays
+    /// the real `project_root/pages` for the router scan + watcher, so
+    /// user-page HMR / watch-path identity is untouched (sharp edge 1).
+    injected_pages_root: Option<(tempfile::TempDir, PathBuf)>,
 }
 
 #[cfg(feature = "embed_v8")]
@@ -2283,6 +2310,18 @@ impl DevRebuildInputs {
     /// Path of the boot-time extracted esbuild binary (#994 item A), if any.
     fn esbuild_path(&self) -> Option<&Path> {
         self.esbuild.as_ref().map(|(_, path)| path.as_path())
+    }
+
+    /// Staged `pages` root for the injected package routes (S2 #1230), if a
+    /// non-empty survivor set was materialised at boot. Threaded into the dev
+    /// bundler's `build_pages_root` seam on every tick so the injected
+    /// entrypoints + their `virtual:` imports are in the dev bundle. `None`
+    /// on the parity path (no injected routes / all shadowed) — dev then
+    /// passes `build_pages_root = None`, byte-identical to today.
+    fn injected_pages_root(&self) -> Option<&Path> {
+        self.injected_pages_root
+            .as_ref()
+            .map(|(_, path)| path.as_path())
     }
 }
 
@@ -2917,6 +2956,10 @@ impl DevRenderSession {
                 timing_enabled,
                 session_guard.as_mut(),
                 inputs.esbuild_path(),
+                // S2 (#1230) — re-include the injected modules on every tick
+                // from the SAME session-lifetime staging dir (not
+                // re-materialised). `None` on the parity path.
+                inputs.injected_pages_root(),
             )
             .context("dev refresh: re-bundle failed")?
         };
@@ -3263,6 +3306,7 @@ struct AssembledBundleResult {
 /// into the returned [`BundleSubTiming`]. When `false`, no `Instant::now()`
 /// calls are made (zero overhead on the hot path).
 #[cfg(feature = "embed_v8")]
+#[allow(clippy::too_many_arguments)] // 8 params: #1230 added injected_pages_root; these mirror assemble_bundler_input's threaded inputs, a struct would just shuffle the same fields
 fn assemble_and_bundle_dev(
     project_root: &Path,
     cfg: &config::Config,
@@ -3278,6 +3322,16 @@ fn assemble_and_bundle_dev(
     // [`DevRebuildInputs::esbuild`]. Both boot and refresh pass the same
     // path so every tick skips the per-call tempdir extraction.
     pre_resolved_esbuild: Option<&Path>,
+    // S2 (#1230) — the session-lifetime injected-route staging `pages` root
+    // (see [`DevRebuildInputs::injected_pages_root`]). `Some(root)` points
+    // the dev bundler at the staged injected-only modules via the existing
+    // `assemble_bundler_input` `build_pages_root` seam, so the injected
+    // entrypoints + their `virtual:` imports land in the dev bundle. `None`
+    // (no injected routes / all shadowed) keeps the default `pages/` root —
+    // byte-identical to today (sharp edge 8). Both boot and refresh pass the
+    // SAME root from `DevRebuildInputs`, so every tick re-includes the
+    // injected modules without re-materialising them.
+    injected_pages_root: Option<&Path>,
 ) -> Result<AssembledBundleResult> {
     // Embed the content snapshot so a page's `getStaticProps()` (and any
     // runtime `paths()`) sees the same collection data the production
@@ -3324,10 +3378,20 @@ fn assemble_and_bundle_dev(
         plugin_alias_entries,
         plugin_virtual_modules,
         pre_resolved_esbuild,
-        // #1193 — dev keeps the default `pages/` root; package-owned BUILD
-        // routes are materialised only by `zfb build` (dev serves its
-        // injected routes live via the dev router).
+        // #1193's build-route overlay (which OVERRIDES `pages_dir` with a root
+        // that already contains a copy of the user pages) flows through
+        // `zfb build` only — dev keeps the default `pages/` root here.
         None,
+        // S2 (#1230) — the injected-route staging root (B1 multi-root). When a
+        // preset registered routes whose survivor set is non-empty, this is the
+        // session-lifetime staged `pages` dir holding ONLY the synthesized
+        // injected modules. It is ADDITIVE: the bundler walks the real
+        // `pages/` AND this root into the same shadow tree, so user pages stay
+        // in the dev bundle (HMR intact) while the injected entrypoints + their
+        // `virtual:` imports are added. The user's real `pages/` is NOT copied
+        // here — the dev scan + watcher keep the real dir (sharp edge 1).
+        // `None` on the parity path is byte-identical to today (sharp edge 8).
+        injected_pages_root,
     )?;
     let assemble_ms = asm_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
@@ -3911,6 +3975,13 @@ fn boot_dev_renderer(
     // Plugin-registered virtual-module `(specifier, source)` pairs.
     // Threaded into `BundlerInput::plugin_virtual_modules` (#268).
     plugin_virtual_modules: Vec<(String, String)>,
+    // S2 (#1230) — package-owned injected routes registered during setup.
+    // Materialised ONCE here into a session-lifetime staging dir (the B1
+    // multi-root mechanism) whose root is threaded into the dev bundler via
+    // `build_pages_root` so the injected entrypoints + their `virtual:`
+    // imports are in the dev bundle. Empty (or all-shadowed) → no staging
+    // dir, byte-identical to today (sharp edge 8).
+    injected_routes: &[zfb_build::InjectedRoute],
     // Issue #1182 — when `true`, return a SCAFFOLD session (no V8 host, empty
     // route tables) and SKIP `assemble_and_bundle_dev` + host start +
     // route-table build. The deferred boot task runs that expensive work past
@@ -3943,6 +4014,52 @@ fn boot_dev_renderer(
             "no routes to render — dev mode skips renderer boot"
         ));
     }
+
+    // S2 (#1230) — materialise the package-owned injected routes ONCE into a
+    // session-lifetime staging dir (B1 multi-root). `resolve_dev_pages_root`
+    // runs the SAME survivor selection + FULL validation the build uses
+    // (user-precedence drop, package-vs-package shape-key hard-error,
+    // case-insensitive collision guard, `.client`/trailing-`index`
+    // rejection), but stages ONLY the synthesized injected modules — it does
+    // NOT copy the user's real `pages/`, so the dev scan + watcher keep the
+    // real `pages/` identity (HMR untouched, sharp edge 1). On the empty /
+    // all-shadowed path `guard` is `None`, so no staging dir is held and the
+    // dev bundler gets no additive injected root — byte-identical to today
+    // (sharp edge 8). A materialiser error (an invalid pattern, a
+    // package-vs-package collision) is fatal here: the same error `zfb build`
+    // would raise, surfaced at dev boot rather than silently dropping the
+    // route. The synthesized `.tsx` for a pattern is byte-identical to the
+    // build's (the SAME `synthesize_*_overlay_module`), the required parity.
+    //
+    // KNOWN LIMITATION (S3, #1231): the survivor set is computed ONCE at boot
+    // and the staging dir is session-lifetime. If a user CREATES a `pages/`
+    // file during `zfb dev` that shadows an injected route which survived at
+    // boot, the staging dir is not refreshed, so the next rebuild's bundler
+    // walks BOTH the new user page and the staged injected module for the same
+    // route → a clean route-collision error (NOT silent corruption); the user
+    // page wins only after a dev restart. Re-pruning the survivor set on
+    // watch-add/rename events that touch `pages/` is S3's concern (it owns the
+    // route-table refresh path); S2 deliberately stays bundle-inclusion-only.
+    let injected_pages_root: Option<(tempfile::TempDir, PathBuf)> = {
+        let resolution =
+            crate::commands::package_routes::resolve_dev_pages_root(&pages_dir, injected_routes)
+                .context("staging package-owned injected routes for the dev bundle")?;
+        match resolution.guard {
+            Some(guard) => {
+                for mr in &resolution.materialized {
+                    crate::output::info(format!(
+                        "injected route `{}` → dev bundle (staged at pages/{})",
+                        mr.pattern,
+                        mr.pages_rel.display()
+                    ));
+                }
+                Some((guard, resolution.build_pages_root))
+            }
+            // No survivors (no injected routes, or all user-shadowed): parity
+            // path — no staging dir, dev bundler gets `build_pages_root = None`.
+            None => None,
+        }
+    };
 
     // Assemble + run the dev bundle (#659: extracted into
     // `assemble_and_bundle_dev` so the watch-ADD rebuild reuses the exact
@@ -3979,6 +4096,10 @@ fn boot_dev_renderer(
         } else {
             None
         },
+        // S2 (#1230) — the injected-route staging dir materialised above.
+        // `None` on the parity path; `Some` holds the TempDir for the whole
+        // session so the staged modules outlive every `bundle()` call.
+        injected_pages_root,
     };
 
     // Persistent dev shadow-tree session (issue #993) — created once
@@ -4050,6 +4171,9 @@ fn boot_dev_renderer(
             false,
             Some(&mut shadow_session),
             rebuild_inputs.esbuild_path(),
+            // S2 (#1230) — include the injected modules in the BOOT bundle from
+            // the staging dir materialised above. `None` on the parity path.
+            rebuild_inputs.injected_pages_root(),
         )?
         .output;
 
@@ -4959,6 +5083,7 @@ pub(crate) fn stub_session_for_adapter_tests(
                 plugin_alias_entries: Vec::new(),
                 plugin_virtual_modules: Vec::new(),
                 esbuild: None,
+                injected_pages_root: None,
             },
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),
@@ -5034,6 +5159,7 @@ mod tests {
                 plugin_alias_entries: Vec::new(),
                 plugin_virtual_modules: Vec::new(),
                 esbuild: None,
+                injected_pages_root: None,
             },
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),

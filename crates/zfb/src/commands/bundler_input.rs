@@ -177,7 +177,7 @@ pub(crate) struct AssembledBundlerInput {
 /// already process-lifetime there). Ignored when an explicit
 /// `esbuild_binary` or `ZFB_ESBUILD_BIN` override is in play — the
 /// existing precedence is preserved.
-#[allow(clippy::too_many_arguments)] // 9 params: #994 added pre_resolved_esbuild, #1193 added build_pages_root; a struct would obscure the caller-keeps-alive contract documented above
+#[allow(clippy::too_many_arguments)] // 10 params: #994 added pre_resolved_esbuild, #1193 added build_pages_root, #1230 added injected_pages_root; a struct would obscure the caller-keeps-alive contract documented above
 pub(crate) fn assemble_bundler_input(
     project_root: &Path,
     config: &Config,
@@ -192,8 +192,22 @@ pub(crate) fn assemble_bundler_input(
     // build routes are present, or `project_root/pages` when not — passing
     // the absolute `project_root/pages` is byte-identical to the default
     // relative `"pages"`). `None` keeps the default (`zfb dev` passes
-    // `None` — package-owned BUILD routes are a build-time concern).
+    // `None` — package-owned BUILD routes are a build-time concern). This is
+    // a REPLACEMENT seam (it overrides `pages_dir`); the build overlay it
+    // points at already contains a copy of the user pages.
     build_pages_root: Option<&Path>,
+    // S2 (#1230) — an ADDITIVE second pages root for the dev server's
+    // package-owned **injected** routes (B1 multi-root). Unlike
+    // `build_pages_root`, this does NOT override `pages_dir`: the bundler
+    // walks the real `pages/` AND this root into the same shadow tree, so
+    // user pages stay in the bundle (HMR intact) while the injected
+    // entrypoints + their `virtual:` imports are added. It holds ONLY the
+    // synthesized injected modules — no user-page copy (the dev scan +
+    // watcher keep the real `pages/`). `None` (build, and dev with no
+    // injected routes) is byte-identical to today. Mutually compatible with
+    // `build_pages_root` in principle, but in practice exactly one of the two
+    // is ever `Some` (build sets the former, dev the latter).
+    injected_pages_root: Option<&Path>,
 ) -> Result<AssembledBundlerInput> {
     let mut bundler_input = BundlerInput::for_project(
         project_root.to_path_buf(),
@@ -211,6 +225,13 @@ pub(crate) fn assemble_bundler_input(
     if let Some(root) = build_pages_root {
         bundler_input.pages_dir = root.to_path_buf();
     }
+
+    // S2 (#1230) — additive injected-route root for `zfb dev`. The bundler
+    // walks this root into the SAME shadow `pages/` tree as the real
+    // `pages_dir`, so the dev bundle contains BOTH user pages and the
+    // synthesized injected modules (B1 multi-root). `None` for `zfb build`
+    // and for dev with no injected routes — byte-identical to today.
+    bundler_input.injected_pages_root = injected_pages_root.map(|p| p.to_path_buf());
 
     // Discover the Next-style root `mdx-components.tsx` convention (#616):
     // a project-wide element→component override map applied to every

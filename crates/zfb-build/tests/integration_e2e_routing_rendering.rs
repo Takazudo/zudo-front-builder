@@ -305,6 +305,7 @@ fn build_bundle(
         main_fields: Vec::new(),
         project_root: fixture_root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
+        injected_pages_root: None,
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
