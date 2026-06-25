@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb-darwin-arm64",
-  "version": "0.1.0-next.63",
+  "version": "0.1.0-next.64",
   "description": "Platform-specific zfb binary (darwin-arm64)",
   "license": "MIT",
   "os": [
