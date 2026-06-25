@@ -11,11 +11,11 @@
 //! Everything stage-2 and beyond (CSS Modules, hashing, asset emission)
 //! is engine-agnostic.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{anyhow, Context, Result};
 
@@ -615,6 +615,15 @@ impl CssEngine for TailwindSubprocessEngine {
             ));
         }
 
+        // External-tool quirk: make the Bun-embedded oxide `.node` extract
+        // exactly once, serialized, before any parallel invocation can race on
+        // the shared addon file. Without this, concurrent cold spawns (e.g. the
+        // parallel integration tests all driving this one binary) intermittently
+        // load a half-written addon and die with
+        // `undefined is not a constructor (new import_oxide.Scanner(...))`.
+        // See `ensure_oxide_extracted` and zfb#1237 for the full rationale.
+        ensure_oxide_extracted(&self.config.binary_path);
+
         // Self-heal: delete entry temp files stranded by a past abnormal
         // termination (SIGKILL / crash / Ctrl-C skips the RAII `Drop` that
         // normally removes them). Done before we create the new file so the
@@ -692,6 +701,84 @@ impl CssEngine for TailwindSubprocessEngine {
             .context("failed to read tailwind output file")?;
         Ok(css)
     }
+}
+
+/// Force the Tailwind v4 standalone binary to extract its embedded oxide
+/// native addon (`.node`) **once, serialized**, before any concurrent build
+/// invocation can race on it.
+///
+/// ## Why this exists (external-tool quirk — not recoverable from our code)
+///
+/// The `tailwindcss` v4 standalone CLI is a Bun-compiled single-file
+/// executable. Its Rust scanner (`@tailwindcss/oxide`) ships as a native
+/// `.node` addon embedded in that binary. Bun extracts the addon **lazily** —
+/// on the first real scan, NOT on `--help`/`--version` — to a single
+/// content-addressed path under `$TMPDIR` (`$TMPDIR/.<exe-hash>-*.node`) that is
+/// **shared by every invocation of the same binary**. When several `tailwindcss`
+/// processes are spawned concurrently against a cold cache (e.g. the parallel
+/// integration tests under `cargo test`, all driving this one shared binary),
+/// two can race that first extraction and a reader `dlopen`s a half-written
+/// addon, surfacing as:
+///
+/// ```text
+/// TypeError: undefined is not a constructor (evaluating 'new import_oxide.Scanner(...)')
+/// ```
+///
+/// (Observed intermittently — ~1 in 8 — on the `health` CI gate; zfb#1237.)
+///
+/// The fix: run one throwaway minimal build while holding a process-global
+/// lock, so the addon is fully extracted before any parallel invocation
+/// proceeds. Later invocations find the extracted addon on disk and reuse it
+/// (it persists for the life of `$TMPDIR`). Keyed by binary path so an
+/// env/temp-dir override is warmed independently.
+///
+/// Best-effort: a warm-up failure is swallowed — the real invocation that
+/// follows is the source of truth for genuine errors.
+///
+/// Caveat: serialization is per-process. Plain `cargo test` runs test binaries
+/// sequentially, so the first process warms the shared addon and later ones
+/// reuse it; a cross-process runner (`cargo nextest`) sharing one `$TMPDIR`
+/// could still race two cold processes. zfb uses plain `cargo test`.
+///
+/// Returns `true` if this call performed the warm-up, `false` if the binary was
+/// already warmed by an earlier caller. The production call site ignores the
+/// return; tests use it to assert the once-only / serialized contract.
+fn ensure_oxide_extracted(binary_path: &Path) -> bool {
+    static WARMED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let warmed = WARMED.get_or_init(|| Mutex::new(HashSet::new()));
+
+    // Hold the lock ACROSS the warm-up spawn: concurrent callers block on
+    // `.lock()` until the first has fully extracted the addon — that blocking
+    // is the entire point, so the check and the spawn must share one critical
+    // section (do not collapse this into `insert()`'s bool, which would let the
+    // second caller proceed while the first is still extracting).
+    let mut guard = warmed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.contains(binary_path) {
+        return false;
+    }
+
+    // A minimal `@import "tailwindcss";` build makes the CLI construct its
+    // scanner, which triggers the lazy oxide `.node` extraction. `--help` does
+    // not, so the warm-up must be a real build.
+    if let Ok(dir) = tempfile::tempdir() {
+        let in_css = dir.path().join("warmup.css");
+        let out_css = dir.path().join("warmup.out.css");
+        if std::fs::write(&in_css, b"@import \"tailwindcss\";\n").is_ok() {
+            let _ = Command::new(binary_path)
+                .arg("-i")
+                .arg(&in_css)
+                .arg("-o")
+                .arg(&out_css)
+                .output();
+        }
+        // `dir` is cleaned on drop.
+    }
+
+    // Mark warmed regardless of warm-up outcome: a persistent failure is a real
+    // binary problem the next real invocation will report — we must not spin on
+    // the warm-up every call.
+    guard.insert(binary_path.to_path_buf());
+    true
 }
 
 /// Default content roots that the project scans for utility classes.
@@ -1048,5 +1135,46 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("does-not-exist");
         sweep_stale_entry_files_at(&missing, future_now()); // must not panic
+    }
+
+    /// The oxide warm-up must run exactly once per binary path even when many
+    /// callers hit it concurrently — that single serialized extraction is what
+    /// prevents the Bun `.node` race (zfb#1237). Exercised deterministically
+    /// with a non-existent binary: the warm-up spawn fails (best-effort,
+    /// swallowed), but the once-only / serialized bookkeeping is exactly what we
+    /// assert, with no dependency on the real tailwind binary.
+    #[test]
+    fn ensure_oxide_extracted_warms_exactly_once_under_concurrency() {
+        use std::thread;
+
+        // Unique, non-existent path so it is guaranteed absent from the
+        // process-global warmed set at the start of this test.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake_bin = Arc::new(dir.path().join("not-a-real-tailwind"));
+
+        const N: usize = 16;
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                let p = Arc::clone(&fake_bin);
+                thread::spawn(move || ensure_oxide_extracted(&p))
+            })
+            .collect();
+        let warmed_count = handles
+            .into_iter()
+            .map(|h| h.join().expect("warm-up thread panicked"))
+            .filter(|&did_warm| did_warm)
+            .count();
+
+        assert_eq!(
+            warmed_count, 1,
+            "exactly one of {N} concurrent callers must perform the warm-up; \
+             the rest must see it already warmed (serialized first-extraction)"
+        );
+
+        // A later call for the same path is a no-op (stays warmed).
+        assert!(
+            !ensure_oxide_extracted(&fake_bin),
+            "already-warmed path must not warm again"
+        );
     }
 }
