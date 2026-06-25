@@ -214,8 +214,12 @@ impl LazyRenderAdapter {
         //
         // S4 (#1232): on a miss, fall through to the pattern-aware
         // injected-route fallback before giving up with `NoRoute`.
-        let entry = match self.session.lookup_by_url(url_path) {
-            Some(e) => e,
+        //
+        // `needs_stale_check`: `true` for normal concrete entries (the
+        // standard #1025 pre-check), `false` for synthesized dynamic
+        // entries whose stale state was already resolved below.
+        let (entry, needs_stale_check) = match self.session.lookup_by_url(url_path) {
+            Some(e) => (e, true),
             None => {
                 // Dynamic-injected-route fallback (epic #1228, S4 #1232,
                 // design record §2). `lookup_by_url` misses for dynamic
@@ -242,36 +246,38 @@ impl LazyRenderAdapter {
                         // Injected routes are always HTML pages → extension
                         // `None` (defaults to "html").
                         let output_path = build_output_path_for_resolved_url(url_path, None);
-                        // Stale-by-construction for the first request:
-                        // dynamic injected routes are never seeded into the
-                        // stale map at boot (no concrete URL). On the FIRST
-                        // request the output file is absent and no stale
-                        // entry exists — `claim_stale` would return `None`
-                        // and the pre-check below would short-circuit with
-                        // `NotStale`, preventing the render. Fix: when the
-                        // output file does not yet exist in `html_root`,
-                        // insert a stale entry (without touching `tick_stale`
-                        // — the tick channel stays clean) so the claim
-                        // succeeds. Subsequent requests for the SAME URL
-                        // land here again (url_index still misses — dynamic
-                        // routes are never seeded); by that point the file
-                        // exists and either: a content edit re-staled it
-                        // (stale entry exists, renders again), or it is
-                        // fresh (no stale entry, file served from disk by
-                        // the disk leg — pre-check returns `NotStale` as
-                        // intended). (design record §3, "stale-by-construction")
+                        // Stale-by-construction (design record §3): dynamic
+                        // injected routes are never seeded into the stale map
+                        // at boot (no concrete URL at that time). Two cases:
+                        //
+                        // 1. File absent (first-ever request or after prune):
+                        //    `claim_or_mark_stale_for_dynamic_route` inserts a
+                        //    stale entry WITHOUT pushing to `tick_stale` (tick
+                        //    channel stays clean). `needs_stale_check = false`
+                        //    because we just guaranteed the entry is there.
+                        //
+                        // 2. File present: either a content edit re-staled it
+                        //    (stale entry exists — fall through to the normal
+                        //    pre-check), or it is fresh (no stale entry — the
+                        //    pre-check returns `NotStale` and the disk leg
+                        //    serves the on-disk file). `needs_stale_check = true`
+                        //    (normal #1025 pre-check applies).
                         let file_on_disk = self.html_root.join(&output_path);
-                        if !file_on_disk.exists() {
+                        let needs_check = if !file_on_disk.exists() {
                             self.session
                                 .claim_or_mark_stale_for_dynamic_route(&output_path);
-                        }
-                        RouteUniverseEntry {
+                            false // stale entry just inserted; skip the pre-check
+                        } else {
+                            true // file exists; normal pre-check determines freshness
+                        };
+                        let entry = RouteUniverseEntry {
                             url_path: url_path.to_string(),
                             output_path,
                             route_key: rec.pattern.clone(),
                             static_html: false,
                             source_path: None,
-                        }
+                        };
+                        (entry, needs_check)
                     }
                     None => return LazyRenderOutcome::NoRoute,
                 }
@@ -280,8 +286,10 @@ impl LazyRenderAdapter {
 
         // Staleness pre-check (#1025): fresh routes skip the renderer
         // mutex entirely, so a hot route being served while a tick holds
-        // the renderer for seconds is never blocked here.
-        if self.session.claim_stale(&entry.output_path).is_none() {
+        // the renderer for seconds is never blocked here. Skipped for
+        // synthesized absent-file entries (stale state already ensured
+        // above — see `needs_stale_check`).
+        if needs_stale_check && self.session.claim_stale(&entry.output_path).is_none() {
             return LazyRenderOutcome::NotStale;
         }
 

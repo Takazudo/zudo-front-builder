@@ -578,17 +578,18 @@ export default function HelpOptional() {
 /// (epic #1228, S4 #1232).
 ///
 /// Boots `zfb dev` over the `package-routes-consumer` fixture with a preset
-/// that injects `[slug]`, `[...rest]`, and `[[...chapter]]` patterns. The test
+/// that injects `[slug]`, `[...rest]`, and `[[...section]]` patterns. The test
 /// GETs concrete URLs that match each pattern and asserts:
 ///
 /// - The response is 200 with the route's marker — proof Hono resolved params
 ///   inside V8 and the lazy adapter's synthetic entry rendered and was served.
 /// - Different concrete URLs for the same pattern render correctly (slug
 ///   variance).
-/// - The `[[...chapter]]` bare-prefix case (`GET /guide`) matches.
-/// - The root page (`GET /`) is NOT hijacked by the `[[...chapter]]`-rooted
-///   optional-catchall injected at `/guide/[[...chapter]]` — the user home
-///   still wins.
+/// - The `[[...section]]` bare-prefix case (`GET /help`) matches (no user
+///   `pages/help.tsx` exists, so the optional-catchall zero-segment case
+///   goes through the dynamic fallback).
+/// - The root page (`GET /`) is NOT hijacked by the dynamic injected
+///   fallback — the user home still wins.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_dynamic_injected_route_renders() {
     let Some(esbuild) = locate_esbuild() else {
