@@ -252,15 +252,25 @@ export type ZfbSetupContext = {
    *   enabling a truly empty/absent user `pages/`). A package route
    *   whose URL shape collides with a user `pages/` route is dropped
    *   (user `pages/` wins). This is the supported, complete path.
-   * - In **dev**, full rendering of injected routes is **not yet
-   *   implemented**. The dev router currently only *logs* a match for an
-   *   injected pattern and then falls through to the dist/public
-   *   fallback (so the URL 404s unless another file claims it). Do NOT
-   *   rely on a `zfb dev` server to render a package route — verify
-   *   package routes via `zfb build`. (`"/"` is still reserved for the
-   *   devMiddleware catch-all and is rejected at registration in dev.)
-   *   Wiring the dev page pipeline to evaluate `entrypoint` is a tracked
-   *   follow-up.
+   * - In **dev**, both static and dynamic injected routes are rendered
+   *   by `zfb dev`. Static routes (where the URL equals the pattern,
+   *   e.g. `/preset-about`) are seeded into the dev route universe at
+   *   boot; dynamic routes (e.g. `/preset-docs/[slug]`) are rendered
+   *   on first request via a request-time synthetic entry — params are
+   *   extracted from the URL by the Hono router inside the live bundle.
+   *   User `pages/` files take precedence over any injected route of
+   *   the same shape (including the dev-only `"/"` reservation, which
+   *   is still rejected at registration in dev). **HMR:** content the
+   *   route reads from watched collections live-refreshes normally.
+   *   Editing the package's **compiled entrypoint under `node_modules`**
+   *   is NOT watched and requires a `zfb dev` restart (restart-only
+   *   contract — a published package is not project source). **Per-route
+   *   data:** an injected route loads per-route data via a **dynamic
+   *   route's `paths()` export** (which returns `{ params, props }`);
+   *   `getStaticProps` on a package page is not forwarded by the overlay
+   *   (only `default` + the `prerender` hint are forwarded — same as
+   *   `zfb build`). A route that needs per-route data should be a
+   *   dynamic route whose `paths()` reads the data.
    *
    * `opts.prerender` controls the route's prerender shape during a
    * build: omit it (or `true`) for the SSG default; `false` marks an
