@@ -840,6 +840,14 @@ fn tailwind_content_key(binary_path: &Path) -> Option<String> {
 /// for a bare `@import "tailwindcss";` with no `source(...)`) scans only the
 /// empty temp dir — never the user's project/monorepo.
 fn run_oxide_warmup_build(binary_path: &Path) -> bool {
+    // The binary path must be made absolute BEFORE we override the child's cwd:
+    // a relative program path (the default `crates/zfb/binaries/tailwindcss-v4`,
+    // or a relative `ZFB_TAILWIND_BIN`) would otherwise be resolved against the
+    // scratch `current_dir` below — not the caller's cwd — so the spawn would
+    // fail and silently skip the warm-up.
+    let Ok(abs_bin) = binary_path.canonicalize() else {
+        return false;
+    };
     let Ok(dir) = tempfile::tempdir() else {
         return false;
     };
@@ -848,7 +856,7 @@ fn run_oxide_warmup_build(binary_path: &Path) -> bool {
     if std::fs::write(&in_css, b"@import \"tailwindcss\";\n").is_err() {
         return false;
     }
-    Command::new(binary_path)
+    Command::new(&abs_bin)
         .current_dir(dir.path())
         .arg("-i")
         .arg(&in_css)
