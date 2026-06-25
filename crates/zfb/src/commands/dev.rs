@@ -87,8 +87,8 @@ use zfb_build::{
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
 use zfb_server::{
-    outcome_to_events, serve_with_listener, PageCache, ReloadEvent, ServeOpts, SsrDispatcher,
-    SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
+    outcome_to_events, serve_with_listener, InjectedRouteSet, PageCache, ReloadEvent, ServeOpts,
+    SsrDispatcher, SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
 };
 
 use crate::cli::DevArgs;
@@ -326,20 +326,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         None
     };
 
-    // Dev-only: build the InjectedRouteSet from the setup registries.
-    // zfb-server depends on zfb-build (see Cargo.toml), so no translation is
-    // needed — InjectedRoute is the same type on both sides.
-    let injected_route_set = if plugin_setup.setup_registries.injected_routes.is_empty() {
-        None
-    } else {
-        let records: Vec<zfb_build::InjectedRoute> = plugin_setup
-            .setup_registries
-            .injected_routes
-            .iter()
-            .cloned()
-            .collect();
-        Some(zfb_server::InjectedRouteSet::new(records))
-    };
+    // Dev-only: the InjectedRouteSet handed to the dev server is built from
+    // the POST-precedence survivor set, NOT the raw registration list (epic
+    // #1228, S3 #1231, §7 / sharp edges 4/7). The survivor selection runs
+    // inside `boot_dev_renderer` (same function that stages the dev bundle),
+    // so it is read off the dev session below (after the session is built) —
+    // a user-shadowed or package-vs-package-dropped pattern is already absent
+    // and can never match in the request-time fallback. `None` when the
+    // renderer is disabled or no injected route survived (parity).
 
     let v8_plugin_hooks = plugin_setup.v8_plugin_hooks;
     let dev_plugin_alias_entries = plugin_setup.plugin_alias_entries;
@@ -394,6 +388,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             None
         }
     };
+
+    // S3 (#1231) — read the POST-precedence survivor InjectedRouteSet off the
+    // dev session (built inside `boot_dev_renderer` from the same survivor set
+    // that staged the dev bundle and seeded the static routes). `None` when
+    // the renderer is disabled (no session) or no injected route survived
+    // precedence — both keep `serve_page`'s injected-route leg inert.
+    let injected_route_set: Option<zfb_server::InjectedRouteSet> = dev_session
+        .as_ref()
+        .map(|session| session.injected_route_set())
+        .filter(|set| !set.is_empty());
 
     // 3. Build orchestrator setup.
     //
@@ -2426,6 +2430,38 @@ struct DevRenderInner {
     /// Consumed via [`Self::take_boot_render_pending`]; only read on
     /// the lazy branch.
     boot_render_done: std::sync::atomic::AtomicBool,
+
+    /// Static injected-route seeds (epic #1228, S3 #1231). One
+    /// [`RouteUniverseEntry`] per **static, SSG** package-owned injected
+    /// route that survived precedence at boot (URL == pattern, e.g.
+    /// `/preset-about`). Computed ONCE from the post-precedence survivor
+    /// set ([`crate::commands::package_routes::static_injected_seeds`], so
+    /// a user-shadowed or package-vs-package-dropped pattern never leaks —
+    /// sharp edges 4/7) and held for the whole session. A `prerender:
+    /// false` (SSR-only) static injected route is excluded from this set —
+    /// it is not SSG'd to disk, matching `pages/` parity.
+    ///
+    /// These are merged into `routes_by_source` + `url_index` (and
+    /// stale-marked) at boot AND re-merged on EVERY route-table swap
+    /// ([`DevRenderSession::reseed_injected_static_routes`]): the swap
+    /// rebuilds `routes_by_source` from the router scan alone, which does
+    /// NOT walk the staged injected modules (they live outside the real
+    /// `pages/`), so without the re-merge the seeded routes would vanish
+    /// from the universe on the first tick. Empty on the parity path (no
+    /// static injected survivors) — zero behavioural change.
+    injected_static_seeds: Vec<RouteUniverseEntry>,
+
+    /// Post-precedence survivor [`InjectedRouteSet`] (epic #1228, S3
+    /// #1231, §7). Built from the SAME survivor set that backs the static
+    /// seeds and the staged dev bundle, NOT from the raw registration
+    /// list — so a user-shadowed (or package-vs-package-dropped) pattern
+    /// is already absent and can never match in the request-time fallback
+    /// the future S4 wave adds to [`crate::lazy_render_adapter`] (sharp
+    /// edges 4/7). `run` reads this off the session
+    /// ([`DevRenderSession::injected_route_set`]) to populate
+    /// [`zfb_server::ServeOpts::injected_routes`]. Empty (`default`) on
+    /// the parity path.
+    injected_route_set: InjectedRouteSet,
 }
 
 /// Per-source route filter for one narrowed tick (issue #958): which of a
@@ -2699,6 +2735,37 @@ impl DevRenderSession {
     #[cfg(test)]
     pub(crate) fn bump_stale_generation(&self) {
         self.inner.note_table_swap(&[])
+    }
+
+    /// The post-precedence survivor [`InjectedRouteSet`] (epic #1228, S3
+    /// #1231, §7). `run` reads it off the session to populate
+    /// [`zfb_server::ServeOpts::injected_routes`] so the dev server (and
+    /// the future S4 request-time fallback) only ever sees patterns that
+    /// survived precedence — never a user-shadowed or dropped one (sharp
+    /// edges 4/7). Cheap clone (`Arc` bump). Empty (`default`) on the
+    /// parity path.
+    pub(crate) fn injected_route_set(&self) -> InjectedRouteSet {
+        self.inner.injected_route_set.clone()
+    }
+
+    /// Mark every static injected-route seed's `output_path` stale (epic
+    /// #1228, S3 #1231, §3). Called at boot — so the FIRST request for an
+    /// injected URL renders rather than 404s on an absent file — and again
+    /// after EVERY route-table swap, so a content edit that should refresh
+    /// an already-rendered injected page re-claims it on the next request
+    /// (the seed stays present in `routes_by_source` across swaps, so
+    /// without the per-swap re-stale it would never be re-rendered —
+    /// sharp edge 5). No-op on the parity path (no seeds).
+    fn mark_injected_seeds_stale(&self) {
+        if self.inner.injected_static_seeds.is_empty() {
+            return;
+        }
+        self.inner.mark_stale(
+            self.inner
+                .injected_static_seeds
+                .iter()
+                .map(|e| e.output_path.clone()),
+        );
     }
 
     /// Return the URL patterns of every page that exports
@@ -3076,7 +3143,13 @@ impl DevRenderSession {
         // 3. Rebuild the route tables through the reloaded host (re-expands
         //    `paths()`, so the dynamic source now resolves the new URL).
         let p3_start = tick_start.map(|_| std::time::Instant::now());
-        let (new_routes_by_source, new_ssr_routes, new_url_index, p3_cache_hits, p3_cache_misses) = {
+        let (
+            mut new_routes_by_source,
+            new_ssr_routes,
+            mut new_url_index,
+            p3_cache_hits,
+            p3_cache_misses,
+        ) = {
             let mut paths_cache = self.inner.paths_cache.lock().unwrap_or_else(|p| {
                 tracing::warn!(
                     site = "refresh_bundle_and_routes",
@@ -3093,6 +3166,22 @@ impl DevRenderSession {
             )
             .context("dev refresh: route-table rebuild failed")?
         };
+        // S3 (#1231) — the router scan rebuilds `routes_by_source` from the
+        // real `pages/` ONLY; it never walks the staged injected modules
+        // (they live outside `pages/`, node_modules-natured). Re-merge the
+        // static injected-route seeds into the freshly-built tables and
+        // rebuild `url_index` so the seeded URLs keep resolving across the
+        // swap. The seed source key is stable
+        // ([`injected_source_key`]), so [`diff_route_tables`] below sees an
+        // identical entry set on every tick — no spurious `changed`/
+        // `vanished`. No-op on the parity path (no seeds).
+        if !self.inner.injected_static_seeds.is_empty() {
+            seed_injected_static_routes(
+                &mut new_routes_by_source,
+                &self.inner.injected_static_seeds,
+            );
+            new_url_index = build_url_index(&new_routes_by_source);
+        }
         let p3_ms = p3_start.map(|t| t.elapsed().as_millis());
 
         // P4 — diff + RwLock table swap + skip-key commit.
@@ -3118,6 +3207,14 @@ impl DevRenderSession {
         // refresh — including all-lazy ticks with zero eager renders —
         // and never on a Phase-B skip (early return above, #956).
         self.inner.note_table_swap(&vanished_output_paths);
+        // S3 (#1231) — re-stale the static injected-route seeds AFTER the
+        // swap's generation bump (sharp edge 5). The seed stays in
+        // `routes_by_source` across the swap, so the staleness map is the
+        // ONLY thing that makes a content edit refresh an already-rendered
+        // injected page: without this re-stale the route would stay present
+        // but never be re-claimed. The bumped generation defeats the
+        // claim/clear ABA race exactly as the eager-route stale-marking does.
+        self.mark_injected_seeds_stale();
         let p4_ms = p4_start.map(|t| t.elapsed().as_millis());
 
         // Phase B (issue #940) — commit-after-success.
@@ -3713,6 +3810,45 @@ fn build_url_index(
     index
 }
 
+/// Synthetic `routes_by_source` key for a static injected route (epic
+/// #1228, S3 #1231). The staged injected module lives outside the real
+/// `pages/` and is unwatched (node_modules, restart-only — §4), so it has
+/// no project-relative source path the dependency graph would key on.
+/// A dedicated, stable synthetic key keyed on the pattern keeps the seed:
+///
+/// - **distinct** from every real `pages/` source (the `__zfb_injected__`
+///   prefix can never be produced by `Router::scan` over the real tree);
+/// - **stable** across route-table swaps, so [`diff_route_tables`] sees an
+///   identical entry set under the same key on every tick and never
+///   reports the seed as `changed` or `vanished` (the seed's staleness is
+///   driven by the explicit re-stale in
+///   [`DevRenderSession::reseed_injected_static_routes`], not the diff).
+fn injected_source_key(pattern: &str) -> PathBuf {
+    PathBuf::from("__zfb_injected__").join(pattern.trim_start_matches('/'))
+}
+
+/// Merge the static injected-route seeds into a freshly-built
+/// `routes_by_source` (epic #1228, S3 #1231, §2). Each seed is filed under
+/// its [`injected_source_key`] with `params: None` (static routes carry no
+/// `paths()` provenance), exactly like a normal static SSG route. The
+/// caller rebuilds `url_index` afterwards so `lookup_by_url` resolves the
+/// seeded URLs. No-op (and zero allocation beyond the empty-slice walk) on
+/// the parity path.
+fn seed_injected_static_routes(
+    routes_by_source: &mut HashMap<PathBuf, Vec<DevRouteEntry>>,
+    seeds: &[RouteUniverseEntry],
+) {
+    for entry in seeds {
+        routes_by_source
+            .entry(injected_source_key(&entry.route_key))
+            .or_default()
+            .push(DevRouteEntry {
+                entry: entry.clone(),
+                params: None,
+            });
+    }
+}
+
 /// Inner implementation shared by [`build_dev_route_tables`] and
 /// [`build_dev_route_tables_timed`]. Returns the route tables plus this
 /// call's PathsCache hit/miss deltas (#991 instrumentation; the cache is
@@ -4040,11 +4176,49 @@ fn boot_dev_renderer(
     // page wins only after a dev restart. Re-pruning the survivor set on
     // watch-add/rename events that touch `pages/` is S3's concern (it owns the
     // route-table refresh path); S2 deliberately stays bundle-inclusion-only.
-    let injected_pages_root: Option<(tempfile::TempDir, PathBuf)> = {
+    //
+    // S3 (#1231) — the SAME resolution drives the dev route universe: the
+    // post-precedence survivor set seeds the STATIC injected routes into
+    // `routes_by_source` + `url_index` (URL == pattern) and backs the
+    // request-time `InjectedRouteSet` handed to the dev server. Both are
+    // built from the survivors, NOT the raw registration list, so a
+    // user-shadowed or package-vs-package-dropped pattern never reaches the
+    // universe or the fallback (sharp edges 4/7).
+    let (injected_pages_root, injected_static_seeds, injected_route_set): (
+        Option<(tempfile::TempDir, PathBuf)>,
+        Vec<RouteUniverseEntry>,
+        InjectedRouteSet,
+    ) = {
         let resolution =
             crate::commands::package_routes::resolve_dev_pages_root(&pages_dir, injected_routes)
                 .context("staging package-owned injected routes for the dev bundle")?;
-        match resolution.guard {
+        // Build the static seeds + the post-precedence survivor set from the
+        // SAME `materialized` survivor list (sharp edges 4/7). Both are empty
+        // / default on the parity path.
+        let seeds = crate::commands::package_routes::static_injected_seeds(
+            injected_routes,
+            &resolution.materialized,
+        )
+        .into_iter()
+        .map(|s| {
+            crate::output::info(format!(
+                "injected route `{}` → dev route universe (serves at {})",
+                s.pattern,
+                s.output_path().display()
+            ));
+            s.seed_entry
+        })
+        .collect::<Vec<_>>();
+        let survivors = crate::commands::package_routes::surviving_injected_routes(
+            injected_routes,
+            &resolution.materialized,
+        );
+        let route_set = if survivors.is_empty() {
+            InjectedRouteSet::default()
+        } else {
+            InjectedRouteSet::new(survivors)
+        };
+        let pages_root = match resolution.guard {
             Some(guard) => {
                 for mr in &resolution.materialized {
                     crate::output::info(format!(
@@ -4058,7 +4232,8 @@ fn boot_dev_renderer(
             // No survivors (no injected routes, or all user-shadowed): parity
             // path — no staging dir, dev bundler gets `build_pages_root = None`.
             None => None,
-        }
+        };
+        (pages_root, seeds, route_set)
     };
 
     // Assemble + run the dev bundle (#659: extracted into
@@ -4208,8 +4383,20 @@ fn boot_dev_renderer(
         // Build the route tables from the router scan + the live host (#659:
         // extracted into `build_dev_route_tables` so the watch-ADD rebuild
         // reproduces the boot tables exactly).
-        let (routes_by_source, ssr_routes, url_index) =
+        let (mut routes_by_source, ssr_routes, mut url_index) =
             build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
+
+        // S3 (#1231) — seed the STATIC injected routes into the boot tables so
+        // `lookup_by_url` resolves their URLs (URL == pattern). The router scan
+        // above walks the real `pages/` only; the staged injected modules live
+        // outside it, so they must be merged in here (and on every swap, via
+        // `refresh_bundle_and_routes`). Rebuild `url_index` to cover the seeds.
+        // No-op on the parity path. (Boot stale-marking happens after the
+        // session is constructed — see `mark_injected_seeds_stale` below.)
+        if !injected_static_seeds.is_empty() {
+            seed_injected_static_routes(&mut routes_by_source, &injected_static_seeds);
+            url_index = build_url_index(&routes_by_source);
+        }
 
         (renderer, routes_by_source, ssr_routes, url_index)
     };
@@ -4220,7 +4407,7 @@ fn boot_dev_renderer(
     // hash per collection file; trivial against the bundle step above.
     let fm_hashes = seed_frontmatter_hashes(project_root, cfg);
 
-    Ok(DevRenderSession {
+    let session = DevRenderSession {
         inner: Arc::new(DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
                 routes_by_source,
@@ -4239,8 +4426,24 @@ fn boot_dev_renderer(
             lazy_render: lazy_dev_render_enabled(),
             // The next render-callback invocation is the boot build.
             boot_render_done: std::sync::atomic::AtomicBool::new(false),
+            // S3 (#1231) — the static injected-route seeds + post-precedence
+            // survivor set, both built from the same survivor list above.
+            injected_static_seeds,
+            injected_route_set,
         }),
-    })
+    };
+
+    // S3 (#1231) — stale-mark the static injected seeds at boot so the FIRST
+    // request for an injected URL renders through the lazy adapter rather than
+    // 404ing on an absent `html_root` file. (On the deferred-boot scaffold
+    // path the boot tables are empty and the seeds are merged + stale-marked by
+    // the first `refresh_bundle_and_routes` swap instead; this boot mark is the
+    // eager-path counterpart. Marking when the tables are still empty is
+    // harmless — the stale map is keyed by output_path, independent of the
+    // route tables.) No-op on the parity path.
+    session.mark_injected_seeds_stale();
+
+    Ok(session)
 }
 
 /// SHA-256 over the canonical JSON of a file's parsed frontmatter
@@ -5093,6 +5296,10 @@ pub(crate) fn stub_session_for_adapter_tests(
             lazy_render,
             // Stubs model a session mid-flight: boot already rendered.
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
+            // S3 (#1231) — adapter tests inject routes directly; no injected
+            // package routes in the stub universe.
+            injected_static_seeds: Vec::new(),
+            injected_route_set: InjectedRouteSet::default(),
         }),
     }
 }
@@ -5169,6 +5376,9 @@ mod tests {
             lazy_render: false,
             // Stubs model a session mid-flight: boot already rendered.
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
+            // S3 (#1231) — route-plumbing seam tests inject routes directly.
+            injected_static_seeds: Vec::new(),
+            injected_route_set: InjectedRouteSet::default(),
         }
     }
 
@@ -5192,6 +5402,9 @@ mod tests {
             lazy_render: false,
             // Stubs model a session mid-flight: boot already rendered.
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
+            // S3 (#1231) — route-plumbing seam tests inject routes directly.
+            injected_static_seeds: Vec::new(),
+            injected_route_set: InjectedRouteSet::default(),
         }
     }
 
@@ -7561,6 +7774,118 @@ mod tests {
         assert_lookup(&session, "/about/", "/about");
         assert_lookup(&session, "/blog/hello", "/blog/hello");
         assert_lookup(&session, "/blog/hello/index.html", "/blog/hello");
+    }
+
+    // ── Static injected-route seeding (epic #1228, S3 #1231) ─────────────────
+
+    /// A static injected seed merged via [`seed_injected_static_routes`] is
+    /// reachable through `lookup_by_url` under its concrete URL (URL ==
+    /// pattern) and all the normalised candidate keys, exactly like a normal
+    /// static page — proving the seed lands in `url_index` correctly.
+    #[test]
+    fn injected_static_seed_is_reachable_via_url_index() {
+        let seed = RouteUniverseEntry {
+            url_path: "/preset-about".into(),
+            output_path: PathBuf::from("preset-about/index.html"),
+            route_key: "/preset-about".into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        seed_injected_static_routes(&mut routes, std::slice::from_ref(&seed));
+        // Filed under the synthetic injected source key, NOT a real pages/ path.
+        assert!(routes.contains_key(&injected_source_key("/preset-about")));
+        assert!(!routes.keys().any(|k| k.starts_with("pages")));
+
+        let session = DevRenderSession {
+            inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+        };
+        assert_lookup(&session, "/preset-about", "/preset-about");
+        assert_lookup(&session, "/preset-about/", "/preset-about");
+        assert_lookup(&session, "/preset-about/index.html", "/preset-about");
+    }
+
+    /// A user `pages/` route and a static injected route with the SAME URL
+    /// must not BOTH reach the seed stage — precedence is enforced upstream in
+    /// `resolve_dev_pages_root` (the survivor set drops the shadowed pattern),
+    /// so the seed list handed here never contains a user-owned URL. This test
+    /// pins the dev-side contract: when a user route already owns the source
+    /// key namespace, the injected seed lives under a DISTINCT synthetic key,
+    /// so the two never collide in `routes_by_source`, and the user page's own
+    /// entry is the one a real (non-shadowed) lookup resolves. (The actual
+    /// user-wins drop is asserted at the survivor-set level in
+    /// `package_routes::tests::surviving_set_drops_user_shadowed_pattern`.)
+    #[test]
+    fn injected_seed_source_key_never_collides_with_user_pages() {
+        // User owns /guide via a real pages/ source.
+        let user_entry = RouteUniverseEntry {
+            url_path: "/guide".into(),
+            output_path: PathBuf::from("guide/index.html"),
+            route_key: "/guide".into(),
+            static_html: false,
+            source_path: None,
+        };
+        let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        routes.insert(
+            PathBuf::from("pages/guide.tsx"),
+            vec![DevRouteEntry {
+                entry: user_entry,
+                params: None,
+            }],
+        );
+        // A DISTINCT injected static route is seeded alongside.
+        let seed = RouteUniverseEntry {
+            url_path: "/preset-extra".into(),
+            output_path: PathBuf::from("preset-extra/index.html"),
+            route_key: "/preset-extra".into(),
+            static_html: false,
+            source_path: None,
+        };
+        seed_injected_static_routes(&mut routes, std::slice::from_ref(&seed));
+
+        // The synthetic injected key is disjoint from the real pages/ key.
+        assert!(routes.contains_key(Path::new("pages/guide.tsx")));
+        assert!(routes.contains_key(&injected_source_key("/preset-extra")));
+        assert_ne!(
+            injected_source_key("/preset-extra"),
+            PathBuf::from("pages/guide.tsx")
+        );
+
+        let session = DevRenderSession {
+            inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+        };
+        // Both the user page and the injected route resolve independently.
+        assert_lookup(&session, "/guide", "/guide");
+        assert_lookup(&session, "/preset-extra", "/preset-extra");
+    }
+
+    /// Seeding the same static route on a re-built table (simulating a swap)
+    /// produces an identical entry under the SAME synthetic key, so the diff
+    /// is stable — the seed never registers as `changed`/`vanished` on a tick.
+    // `diff_route_tables` is part of the V8-gated refresh path.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn injected_static_seed_is_stable_across_reseed() {
+        let seed = RouteUniverseEntry {
+            url_path: "/preset-about".into(),
+            output_path: PathBuf::from("preset-about/index.html"),
+            route_key: "/preset-about".into(),
+            static_html: false,
+            source_path: None,
+        };
+
+        let mut first: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        seed_injected_static_routes(&mut first, std::slice::from_ref(&seed));
+        let mut second: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+        seed_injected_static_routes(&mut second, std::slice::from_ref(&seed));
+
+        // diff_route_tables must see no churn for the seed source.
+        let (changed, vanished) = diff_route_tables(&first, &second);
+        assert!(
+            changed.is_empty(),
+            "re-seeding the same static route must not churn the diff: {changed:?}"
+        );
+        assert!(vanished.is_empty(), "no output path vanished: {vanished:?}");
     }
 
     /// `url_index_lookup_keys` normalisation edge cases for the root path.
