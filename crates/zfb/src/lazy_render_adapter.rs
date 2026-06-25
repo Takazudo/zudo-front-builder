@@ -240,6 +240,18 @@ impl LazyRenderAdapter {
                 // set — user-shadowed patterns are already absent.
                 match self.injected_routes.find_match(url_path) {
                     Some(rec) => {
+                        // SSR-only injected routes (`prerender: false`) are
+                        // NOT SSG-rendered/cached in dev — mirror S3's
+                        // `static_injected_seeds` exclusion (package_routes.rs)
+                        // and the build half (a `prerender = false` page is
+                        // never prerendered to disk). Without this guard the
+                        // lazy fallback would render one SSG artifact under
+                        // `html_root` and then serve it stale on every later
+                        // request, shadowing the requested SSR / no-disk
+                        // behaviour (codex review, epic #1228).
+                        if rec.prerender == Some(false) {
+                            return LazyRenderOutcome::NoRoute;
+                        }
                         // `output_path` derived by the same function as
                         // normal pages so trailing-slash + base-prefix
                         // parity is automatic (design record §3/§5).
@@ -1134,6 +1146,39 @@ mod tests {
             miss,
             LazyRenderOutcome::NoRoute,
             "/other/path must not match /preset-docs/[slug]"
+        );
+    }
+
+    /// SSR-only injected routes (`prerender: false`) must NOT be SSG-rendered
+    /// by the lazy fallback — they would otherwise write a disk artifact under
+    /// `html_root` and be served stale forever, shadowing the requested
+    /// SSR / no-disk behaviour. Mirrors S3's `static_injected_seeds` exclusion
+    /// for the dynamic fallback path (codex review, epic #1228).
+    #[test]
+    fn dynamic_fallback_skips_prerender_false_injected_route() {
+        let ssr_only = InjectedRoute {
+            pattern: "/preset-ssr/[slug]".into(),
+            entrypoint: PathBuf::from("/tmp/stub.tsx"),
+            plugin: "test-plugin".into(),
+            prerender: Some(false),
+        };
+        let s = InjectedRouteSet::new(vec![ssr_only]);
+        let h = injected_harness(s, html_response("<html><body>ssr</body></html>"));
+
+        // A request matching the pattern must be skipped (NoRoute), NOT
+        // rendered to disk — the fallback honours `prerender: false`.
+        assert_eq!(
+            h.adapter.render_stale_route("/preset-ssr/getting-started"),
+            LazyRenderOutcome::NoRoute,
+            "prerender:false injected route must NOT be SSG-rendered by the lazy fallback"
+        );
+        // It also must not have written a disk artifact.
+        assert!(
+            !h.html_root
+                .path()
+                .join("preset-ssr/getting-started/index.html")
+                .exists(),
+            "no SSG artifact may be written for an SSR-only injected route"
         );
     }
 
