@@ -122,9 +122,15 @@ use zfb_render::paths::PathsCache;
 // a `zfb dev` restart. Content the injected route READS (watched
 // collections under `content/`, custom collection paths, …) DOES
 // live-refresh — a content edit triggers a tick that rebuilds the
-// snapshot, which the route sees via `getCollection(…)`, and the
-// per-swap stale-mark (`mark_injected_seeds_stale`) forces a re-render
-// on the next request.
+// snapshot, which the route sees. The supported data-loading channel for
+// an injected route is a DYNAMIC route whose top-level `paths()` calls
+// `getCollection(…)` (a static injected route's own `getStaticProps` is
+// NOT forwarded by the static overlay synthesizer — see
+// `commands::package_routes::synthesize_static_overlay_module`). The
+// per-swap stale-marks force a re-render on the next request:
+// `mark_injected_seeds_stale` for STATIC injected seeds, and
+// `restale_dynamic_injected` for previously-rendered DYNAMIC injected
+// outputs (S5 #1233 / #1227 item (h)).
 const DEFAULT_WATCH_ROOTS: &[&str] = &[
     "pages",
     "content",
@@ -2074,6 +2080,26 @@ struct StaleRoutes {
     /// drained once per tick into [`zfb_build::BuildOutcome::pages_stale`]
     /// via the pipeline's stale probe.
     tick_stale: Vec<PathBuf>,
+    /// Output paths of DYNAMIC injected routes that have been rendered
+    /// request-time at least once (epic #1228, S5 #1233 / #1227 item (h)).
+    ///
+    /// Why a dedicated set: a dynamic injected route (`/preset-articles/[slug]`)
+    /// has no concrete URL at boot, so it is never in `injected_static_seeds`
+    /// and never enters `routes_by_source` — `diff_route_tables` therefore
+    /// never reports its output_path as `changed`/`vanished`, and
+    /// `mark_injected_seeds_stale` (static-only) never touches it. Without
+    /// this set, the first request renders the file once, its stale entry is
+    /// cleared, and a later content-edit tick leaves it fresh forever → the
+    /// served HTML stays stale (the #1234 confirm-gap). The adapter records
+    /// every resolved dynamic injected output here via
+    /// [`DevRenderInner::note_dynamic_injected`] — UNCONDITIONALLY, so a
+    /// route whose output file already existed on disk (rendered in a prior
+    /// `zfb dev` run) is tracked too, not only the first-render-in-this-run
+    /// case. The per-swap [`DevRenderInner::restale_dynamic_injected`] then
+    /// re-claims them so the next request re-renders against the fresh
+    /// content snapshot. Empty on the parity path and for static-only
+    /// injected presets — zero behavioural change.
+    dynamic_injected: HashSet<PathBuf>,
 }
 
 /// ABA-safe token for one request-time stale-route render (issue #1025).
@@ -2202,6 +2228,51 @@ impl DevRenderInner {
         StaleClaim {
             output_path: output_path.to_path_buf(),
             generation: *gen,
+        }
+    }
+
+    /// Record `output_path` as a DYNAMIC injected route the lazy adapter
+    /// has resolved (epic #1228, S5 #1233 / #1227 item (h)).
+    ///
+    /// Called by the adapter on EVERY dynamic-injected fallback match —
+    /// independent of whether the route is marked stale this request.
+    /// Crucially this includes the "file already on disk" branch (a route
+    /// rendered in a previous `zfb dev` run whose `.zfb-build/dev-pages`
+    /// output persisted across the restart): that branch never calls
+    /// [`Self::claim_or_mark_stale`], so without this unconditional record
+    /// the path would be missing from `dynamic_injected` and a later
+    /// content edit could serve the stale on-disk HTML forever. Idempotent
+    /// `HashSet` insert under the stale mutex.
+    fn note_dynamic_injected(&self, output_path: &Path) {
+        let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+        stale.dynamic_injected.insert(output_path.to_path_buf());
+    }
+
+    /// Re-stale every previously-rendered DYNAMIC injected output at the
+    /// current generation (epic #1228, S5 #1233 / #1227 item (h)).
+    ///
+    /// Called from the P4 route-table swap, right after
+    /// [`Self::note_table_swap`] bumps the generation — the dynamic
+    /// counterpart of [`DevRenderSession::mark_injected_seeds_stale`]
+    /// (which covers only the STATIC seeds). A dynamic injected route's
+    /// output_path is neither a static seed nor a member of
+    /// `routes_by_source`, so nothing else in the swap re-stales it; this
+    /// is the only thing that makes a content edit refresh an already-
+    /// rendered dynamic injected page.
+    ///
+    /// Pure `entries` insert at the current (already-bumped) generation —
+    /// NOT a `tick_stale` push: like the request-time mark, dynamic
+    /// injected routes have no concrete `routes_by_source` entry to fan
+    /// out to, so the eager pages_stale channel would do nothing for them.
+    /// The next request re-renders them lazily against the fresh snapshot.
+    /// The bumped generation defeats the claim/clear ABA race exactly as
+    /// the static seed re-stale does.
+    fn restale_dynamic_injected(&self) {
+        let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+        let generation = stale.generation;
+        let paths: Vec<PathBuf> = stale.dynamic_injected.iter().cloned().collect();
+        for path in paths {
+            stale.entries.insert(path, generation);
         }
     }
 
@@ -2753,6 +2824,16 @@ impl DevRenderSession {
         self.inner.claim_or_mark_stale(output_path)
     }
 
+    /// Forward of [`DevRenderInner::note_dynamic_injected`] for the lazy
+    /// render adapter (epic #1228, S5 #1233 / #1227 item (h)). The adapter
+    /// calls this on every dynamic-injected fallback match so a content
+    /// edit can later re-stale the route — including when its output file
+    /// already existed on disk and `claim_or_mark_stale_for_dynamic_route`
+    /// was therefore skipped.
+    pub(crate) fn note_dynamic_injected_route(&self, output_path: &Path) {
+        self.inner.note_dynamic_injected(output_path)
+    }
+
     /// Forward of [`DevRenderInner::clear_if_current`] for the lazy
     /// render adapter (issue #1026).
     pub(crate) fn clear_stale_claim(&self, claim: &StaleClaim) {
@@ -3268,6 +3349,15 @@ impl DevRenderSession {
         // but never be re-claimed. The bumped generation defeats the
         // claim/clear ABA race exactly as the eager-route stale-marking does.
         self.mark_injected_seeds_stale();
+        // S5 (#1233 / #1227 item (h)) — re-stale every previously-rendered
+        // DYNAMIC injected output too. Static seeds live in `routes_by_source`
+        // and are handled above; dynamic injected routes have no concrete
+        // entry there (their `output_path` is neither a seed nor a member of
+        // the diffed tables), so `mark_injected_seeds_stale` + the
+        // vanished-eviction in `note_table_swap` both miss them. Without this
+        // call a content edit would leave an already-rendered dynamic injected
+        // page fresh forever, serving stale content (the #1234 confirm-gap).
+        self.inner.restale_dynamic_injected();
         let p4_ms = p4_start.map(|t| t.elapsed().as_millis());
 
         // Phase B (issue #940) — commit-after-success.
@@ -6773,6 +6863,124 @@ mod tests {
 
                 assert!(inner.claim(Path::new("a.html")).is_none());
                 assert!(inner.claim(Path::new("b.html")).is_some());
+            }
+
+            /// S5 (#1233 / #1227 item (h)) — the dynamic-injected HMR seam.
+            ///
+            /// A dynamic injected route is resolved request-time: the adapter
+            /// records its output_path via `note_dynamic_injected` and (file
+            /// absent) marks it stale via `claim_or_mark_stale`. The claim is
+            /// then cleared on a successful render. A later content-edit tick
+            /// (`note_table_swap` bumps the generation) must RE-STALE that
+            /// previously-rendered dynamic injected output via
+            /// `restale_dynamic_injected`, so the next request re-renders it
+            /// against the fresh content snapshot. A plain output path that
+            /// was NEVER a dynamic injected route must stay fresh after the
+            /// same swap — proving the re-stale is scoped to the tracked set,
+            /// not a blanket "stale everything".
+            #[test]
+            fn restale_dynamic_injected_refreshes_only_tracked_routes() {
+                let inner = bare_inner();
+
+                // First request resolves a dynamic injected URL: the adapter
+                // records it (`note_dynamic_injected`) and marks it stale
+                // (gen 0) because the file is absent.
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+                let claim =
+                    inner.claim_or_mark_stale(Path::new("preset-articles/feature/index.html"));
+                assert_eq!(claim.generation, 0, "boot generation is 0");
+                // A successful render clears the claim → the route is fresh.
+                inner.clear_if_current(&claim);
+                assert!(
+                    inner
+                        .claim(Path::new("preset-articles/feature/index.html"))
+                        .is_none(),
+                    "after a successful render the dynamic injected route is fresh"
+                );
+
+                // A content-edit tick: the P4 swap bumps the generation, then
+                // re-stales the tracked dynamic injected outputs.
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                let restaled = inner
+                    .claim(Path::new("preset-articles/feature/index.html"))
+                    .expect(
+                        "a previously-rendered dynamic injected route must be re-staled by a \
+                         content-edit tick (#1234 confirm-gap fix)",
+                    );
+                assert_eq!(
+                    restaled.generation, 1,
+                    "the re-stale records the post-swap generation"
+                );
+
+                // A route that was never a dynamic injected render is untouched
+                // by the dynamic re-stale.
+                assert!(
+                    inner.claim(Path::new("some/other/index.html")).is_none(),
+                    "restale_dynamic_injected must only touch tracked dynamic injected outputs"
+                );
+            }
+
+            /// The codex-found gap: a dynamic injected output whose file
+            /// already exists on disk (an output rendered in a PREVIOUS
+            /// `zfb dev` run whose `.zfb-build/dev-pages` persisted across a
+            /// restart) is resolved through the adapter's `file_on_disk.exists()`
+            /// branch, which NEVER calls `claim_or_mark_stale`. The adapter
+            /// records it via `note_dynamic_injected` REGARDLESS, so a later
+            /// content edit can still re-stale it. Without the unconditional
+            /// record the stale on-disk HTML would be served forever.
+            #[test]
+            fn restale_dynamic_injected_covers_preexisting_on_disk_output() {
+                let inner = bare_inner();
+
+                // File already on disk: the adapter records the path but does
+                // NOT mark it stale (the on-disk file is served as fresh).
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+                assert!(
+                    inner
+                        .claim(Path::new("preset-articles/feature/index.html"))
+                        .is_none(),
+                    "an on-disk dynamic injected output is fresh until a tick re-stales it"
+                );
+
+                // Content-edit tick: swap + dynamic re-stale.
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                let restaled = inner
+                    .claim(Path::new("preset-articles/feature/index.html"))
+                    .expect(
+                        "a pre-existing on-disk dynamic injected output must still be re-staled \
+                         by a content edit (codex review P2 — restart staleness)",
+                    );
+                assert_eq!(restaled.generation, 1);
+            }
+
+            /// `restale_dynamic_injected` re-marks at the CURRENT generation,
+            /// so it composes with the claim/clear ABA token exactly like the
+            /// static-seed re-stale: an in-flight render holding the pre-swap
+            /// claim must NOT clear the post-swap re-stale.
+            #[test]
+            fn restale_dynamic_injected_defeats_aba_clear() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+                let old_claim =
+                    inner.claim_or_mark_stale(Path::new("preset-articles/feature/index.html"));
+                assert_eq!(old_claim.generation, 0);
+
+                // Tick swap + dynamic re-stale (generation now 1).
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                // The in-flight render finishes and tries to clear with the
+                // STALE generation-0 claim — it must not clear the re-stale.
+                inner.clear_if_current(&old_claim);
+
+                let still = inner
+                    .claim(Path::new("preset-articles/feature/index.html"))
+                    .expect("the dynamic re-stale at a newer generation must survive an old clear");
+                assert_eq!(still.generation, 1);
             }
 
             /// Vanished routes are also dropped from the CURRENT tick's

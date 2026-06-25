@@ -246,6 +246,18 @@ impl LazyRenderAdapter {
                         // Injected routes are always HTML pages → extension
                         // `None` (defaults to "html").
                         let output_path = build_output_path_for_resolved_url(url_path, None);
+                        // Record this as a known dynamic injected output so a
+                        // later content-edit tick can re-stale it (epic #1228,
+                        // S5 #1233 / #1227 item (h)). Done UNCONDITIONALLY —
+                        // before the file-exists branching below — so the
+                        // "file already on disk" case (an output rendered in a
+                        // previous `zfb dev` run whose dev-pages persisted
+                        // across the restart) is tracked too. That branch
+                        // never calls `claim_or_mark_stale_for_dynamic_route`,
+                        // so without this the route would be missing from the
+                        // re-stale set and a content edit could serve the
+                        // stale on-disk HTML forever.
+                        self.session.note_dynamic_injected_route(&output_path);
                         // Stale-by-construction (design record §3): dynamic
                         // injected routes are never seeded into the stale map
                         // at boot (no concrete URL at that time). Two cases:
