@@ -103,6 +103,7 @@ use crate::render_pipeline::{
 use zfb_render::paths::PathsCache;
 
 /// Default source directories the watcher follows.
+//
 // Issue #1165 — `public/` is served directly from disk by the dev
 // server (static-file middleware) and does NOT feed the dep-graph or
 // the renderer. Watching it caused `compute_manifest_digest` to walk
@@ -113,6 +114,17 @@ use zfb_render::paths::PathsCache;
 // because `derive_watch_roots` adds all configured collection paths
 // and source roots independently — only the literal default `"public"`
 // is excluded here.
+//
+// `node_modules` is deliberately absent (S5 / epic #1228 §4).
+// Injected-route entrypoints live under `node_modules/@takazudo/…` —
+// they are compiled package artifacts, not project source, and are
+// therefore **restart-only**: editing the package's own source requires
+// a `zfb dev` restart. Content the injected route READS (watched
+// collections under `content/`, custom collection paths, …) DOES
+// live-refresh — a content edit triggers a tick that rebuilds the
+// snapshot, which the route sees via `getCollection(…)`, and the
+// per-swap stale-mark (`mark_injected_seeds_stale`) forces a re-render
+// on the next request.
 const DEFAULT_WATCH_ROOTS: &[&str] = &[
     "pages",
     "content",
@@ -5453,6 +5465,57 @@ mod tests {
     fn default_watch_roots_includes_zfb_config_json() {
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.json"));
         assert!(DEFAULT_WATCH_ROOTS.contains(&"zfb.config.ts"));
+    }
+
+    /// S5 (epic #1228, #1233) — node_modules is deliberately excluded from
+    /// the watch roots. Injected-route entrypoints live under
+    /// `node_modules/@takazudo/…` and are **restart-only**: editing the
+    /// package's own source requires a `zfb dev` restart. Content the route
+    /// READS (watched collections) DOES live-refresh via the per-swap
+    /// stale-mark (`mark_injected_seeds_stale`). The negative half of the HMR
+    /// contract is asserted here at the cheapest level (unit-logic) rather than
+    /// via a full dev E2E boot: no watcher event for a `node_modules` change is
+    /// the correct and observable precondition; a live-boot test cannot reliably
+    /// distinguish "no event within N seconds" from "event arrived too late".
+    #[test]
+    fn default_watch_roots_excludes_node_modules() {
+        for root in DEFAULT_WATCH_ROOTS {
+            assert!(
+                !root.contains("node_modules"),
+                "DEFAULT_WATCH_ROOTS must not watch node_modules \
+                 (injected entrypoints are restart-only — S5 / epic #1228 §4); \
+                 found: {root:?}"
+            );
+        }
+    }
+
+    /// S5 (epic #1228, #1233) — `derive_watch_roots` must not introduce
+    /// `node_modules` entries even when collections are configured. Verifies
+    /// the composed list still excludes any node_modules-adjacent path.
+    #[test]
+    fn derive_watch_roots_never_adds_node_modules() {
+        // Use a config with a custom collection path; derive_watch_roots must
+        // not inject node_modules roots even when extending the default set.
+        let cfg = config::Config {
+            collections: vec![config::CollectionDef {
+                name: "posts".into(),
+                path: PathBuf::from("content/posts"),
+                schema: None,
+                include: None,
+                exclude: None,
+                id_strip_suffix: None,
+            }],
+            ..Default::default()
+        };
+        let roots = derive_watch_roots(&cfg);
+        for root in &roots {
+            let s = root.to_string_lossy();
+            assert!(
+                !s.contains("node_modules"),
+                "derive_watch_roots must never emit a node_modules root (restart-only — S5); \
+                 got: {root:?}"
+            );
+        }
     }
 
     /// #994 item B — the PathsCache is caller-owned and persists across

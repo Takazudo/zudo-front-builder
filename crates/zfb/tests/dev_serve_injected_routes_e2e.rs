@@ -47,9 +47,11 @@ use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary};
 
 /// Overall wall-clock watchdog. A clean run is boot (V8 + esbuild, slow in
 /// debug) plus a handful of request-time renders.
@@ -60,6 +62,10 @@ const BOOT_DEADLINE: Duration = Duration::from_secs(120);
 
 /// Per-route deadline for the served marker to appear.
 const ROUTE_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Deadline for SSE live-reload events (watcher-live handshake + per-scenario
+/// tick signals). Mirrors `dev_serve_e2e.rs::SSE_DEADLINE`.
+const SSE_DEADLINE: Duration = Duration::from_secs(30);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -836,6 +842,426 @@ async fn dev_e2e_dynamic_injected_route_renders() {
                 "check logs below",
                 read_log(&stdout_path),
                 read_log(&stderr_path),
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S5 (#1233) — HMR: consumer content edits refresh injected routes
+// ---------------------------------------------------------------------------
+//
+// ## Contract being tested
+//
+// A content edit under a watched collection fires a watcher tick that
+// rebuilds the content snapshot and swaps the route tables.  After the swap
+// `note_table_swap` bumps the stale-tick generation and
+// `mark_injected_seeds_stale` re-claims every static injected route's
+// output_path.  The NEXT request to the injected URL re-renders against the
+// fresh snapshot — so the served HTML reflects the edited content WITHOUT a
+// dev-server restart.
+//
+// ## Negative (node_modules restart-only) — asserted at the unit-logic level
+//
+// Injected-route entrypoints live under `node_modules/@takazudo/…` which is
+// deliberately absent from `DEFAULT_WATCH_ROOTS` (S5 / epic #1228 §4).
+// Editing the package's own compiled source does NOT fire a watcher event
+// and therefore does NOT hot-refresh the injected route — a `zfb dev`
+// restart is required.  The "no event for a node_modules change" precondition
+// is asserted cheaply at the unit-logic level:
+//   `crates/zfb/src/commands/dev.rs::tests::default_watch_roots_excludes_node_modules`
+//   `crates/zfb/src/commands/dev.rs::tests::derive_watch_roots_never_adds_node_modules`
+// A live-boot negative assertion ("wait N seconds, assert NO SSE event") is
+// inherently racy — a timing window too short produces false passes, a
+// window too long makes the suite slow.  The unit assertion that the watcher
+// root set excludes node_modules is the correct and falsifiable precondition.
+
+/// Set up the fixture for the HMR test:
+///
+/// 1. Overwrite `zfb.config.json` to declare an `articles` collection under
+///    `content/articles`.
+/// 2. Create two initial article files.
+/// 3. Write `pkg/articles-page.tsx` — an injected page that calls
+///    `getCollection("articles")` and lists article titles in the body.
+/// 4. Write `preset.mjs` to inject `/preset-articles` backed by that page.
+///
+/// Returns the path to the article used as the HMR edit target.
+fn setup_hmr_fixture(root: &Path) -> PathBuf {
+    // 1. Patch the config to declare the collection.
+    let config_json = r#"
+{
+  "framework": "preact",
+  "plugins": [{ "name": "./preset.mjs" }],
+  "collections": [
+    { "name": "articles", "path": "content/articles" }
+  ]
+}
+"#;
+    fs::write(root.join("zfb.config.json"), config_json.trim_start())
+        .expect("write zfb.config.json with articles collection");
+
+    // 2. Create the collection directory + two initial articles.
+    let articles_dir = root.join("content").join("articles");
+    fs::create_dir_all(&articles_dir).expect("create content/articles");
+    fs::write(
+        articles_dir.join("intro.md"),
+        "---\ntitle: Introduction\n---\n\nIntro body.\n",
+    )
+    .expect("write intro.md");
+    let edit_target = articles_dir.join("feature.md");
+    fs::write(
+        &edit_target,
+        "---\ntitle: V1-HMR-ARTICLE-TITLE\n---\n\nFeature body.\n",
+    )
+    .expect("write feature.md");
+
+    // 3. Write the injected page that lists article titles via getCollection.
+    //    Uses getStaticProps so the collection is read at render time and the
+    //    per-tick content snapshot drives the output.
+    let articles_page = r#"
+type Article = {
+  slug: string;
+  data: { title: string };
+};
+
+export async function getStaticProps() {
+  const { getCollection } = await import("@takazudo/zfb/content");
+  const articles = (await getCollection("articles")) as Article[];
+  const sorted = [...articles].sort((a, b) => a.slug.localeCompare(b.slug));
+  return { props: { articles: sorted } };
+}
+
+type Props = { articles: Article[] };
+
+export default function ArticlesPage({ articles }: Props) {
+  return (
+    <html lang="en">
+      <head><title>Articles</title></head>
+      <body>
+        <h1>INJECTED_ARTICLES_MARKER</h1>
+        <ul>
+          {articles.map((a) => (
+            <li key={a.slug}>{a.data.title}</li>
+          ))}
+        </ul>
+      </body>
+    </html>
+  );
+}
+"#;
+    fs::write(root.join("pkg").join("articles-page.tsx"), articles_page)
+        .expect("write pkg/articles-page.tsx");
+
+    // 4. Write the preset that injects /preset-articles.
+    let preset = r#"
+export default {
+  name: "consumer-preset-s5-hmr",
+  setup({ injectRoute }) {
+    // Static injected route that reads the `articles` collection.
+    // A content edit under content/articles DOES live-refresh this route
+    // via the per-tick snapshot rebuild + per-swap stale-mark (S5 / #1233).
+    injectRoute("/preset-articles", "./pkg/articles-page.tsx");
+  },
+};
+"#;
+    fs::write(root.join("preset.mjs"), preset).expect("write HMR preset.mjs");
+
+    edit_target
+}
+
+/// Subscribe to the dev server's SSE live-reload endpoint.
+/// Must be called BEFORE the edit whose tick it is meant to observe.
+async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
+    let resp = client
+        .get(format!("{base}/__zfb/reload"))
+        .send()
+        .await
+        .expect("subscribe to /__zfb/reload");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "SSE endpoint /__zfb/reload must answer 200"
+    );
+    resp
+}
+
+/// S5 HMR contract: editing a watched collection file (content/articles/…)
+/// causes a static injected route that reads that collection via
+/// `getCollection(…)` to re-render and serve the updated content — without
+/// a `zfb dev` restart.
+///
+/// ## Test level
+///
+/// Level 4 — real `zfb dev` process, real watcher, real V8 render,
+/// real HTTP response.  Required because the HMR seam spans the watcher
+/// tick, the content snapshot, the V8 bundle, and the lazy renderer; a
+/// lower level cannot cover this end-to-end path.
+///
+/// ## Negative (node_modules restart-only)
+///
+/// The node_modules watch-exclusion contract is asserted at the unit-logic
+/// level — see the module-level comment above and the two unit tests in
+/// `crates/zfb/src/commands/dev.rs::tests`.  This test focuses on the
+/// positive path only.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[hmr_injected_e2e] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+    if !node_available() {
+        eprintln!("[hmr_injected_e2e] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("create tempdir for HMR fixture");
+    let root = tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize fixture root");
+    copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
+
+    // Set up the HMR-specific fixture contents (collection + injected page).
+    let edit_target = setup_hmr_fixture(&root);
+
+    // Symlink node_modules (same discipline as S3/S4 tests).
+    let (nm_handle, embedded_nm_path) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    std::os::unix::fs::symlink(&embedded_nm_path, root.join("node_modules"))
+        .expect("symlink node_modules");
+
+    let stdout_path = root.join(".zfb-dev-stdout-s5.log");
+    let stderr_path = root.join(".zfb-dev-stderr-s5.log");
+    let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
+    let stderr_file = fs::File::create(&stderr_path).expect("create stderr log");
+
+    let mut cmd = Command::new(zfb_binary!());
+    cmd.arg("dev")
+        .arg("--port")
+        .arg("0")
+        .current_dir(&root)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
+    cmd.env_remove("ZFB_DEV_EAGER")
+        .env_remove("ZFB_LAZY_DEV_RENDER")
+        .env_remove("ZFB_DEV_DEFER_BUNDLE")
+        .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS");
+    cmd.process_group(0);
+
+    let child = cmd.spawn().expect("spawn `zfb dev`");
+    let pgid = child.id() as libc::pid_t;
+    let mut session = DevSession {
+        guard: DevServerGuard { child, pgid },
+        stdout_path: stdout_path.clone(),
+        stderr_path: stderr_path.clone(),
+    };
+    // Keep the node_modules TempDir alive for the whole test.
+    let _nm = nm_handle;
+
+    let body = async {
+        // ── Phase A: port discovery ──────────────────────────────────────
+        let boot_start = Instant::now();
+        let port = loop {
+            if let Some(status) = session.guard.try_exit_status() {
+                let combined = format!(
+                    "{}{}",
+                    read_log(&session.stdout_path),
+                    read_log(&session.stderr_path)
+                );
+                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                    eprintln!(
+                        "[hmr_injected_e2e] `zfb dev` exited with a known-skip indicator; \
+                         skipping.\n{}",
+                        session.logs(),
+                    );
+                    return Outcome::Skipped;
+                }
+                panic!(
+                    "`zfb dev` exited prematurely (status {status:?}) before the ready banner.\n{}",
+                    session.logs(),
+                );
+            }
+            if let Some(port) = parse_ready_port(&read_log(&session.stdout_path)) {
+                break port;
+            }
+            assert!(
+                boot_start.elapsed() < BOOT_DEADLINE,
+                "`zfb dev` did not print a ready banner within {}s.\n{}",
+                BOOT_DEADLINE.as_secs(),
+                session.logs(),
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
+        let base = format!("http://localhost:{port}");
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(15))
+            .build()
+            .expect("build reqwest client");
+
+        // ── Phase B: HTTP readiness ───────────────────────────────────────
+        {
+            let start = Instant::now();
+            loop {
+                if let Ok(resp) = client.get(format!("{base}/")).send().await {
+                    if resp.status().as_u16() == 200 {
+                        break;
+                    }
+                }
+                assert!(
+                    start.elapsed() < BOOT_DEADLINE,
+                    "GET / never answered 200 within {}s.\n{}",
+                    BOOT_DEADLINE.as_secs(),
+                    session.logs(),
+                );
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+        }
+
+        // ── Phase C: watcher-live handshake ───────────────────────────────
+        //
+        // Subscribe to SSE FIRST, then write fresh-named warmup content files
+        // under `content/articles/` (the watched collection root) until the
+        // first SSE event arrives — proving the watch stream is past its
+        // startup dead window. Mirrors the dev_serve_e2e.rs handshake pattern.
+        //
+        // Warmup slugs (`__warmup-N`) never collide with the asserted article.
+        {
+            let sse = subscribe_sse(&client, &base).await;
+            let stop = Arc::new(AtomicBool::new(false));
+            let articles_dir = root.join("content").join("articles");
+            let writer = {
+                let articles_dir = articles_dir.clone();
+                let stop = Arc::clone(&stop);
+                tokio::spawn(async move {
+                    let mut i = 0u32;
+                    while !stop.load(Ordering::SeqCst) {
+                        let warmup = articles_dir.join(format!("__warmup-{i}.md"));
+                        let _ = fs::write(
+                            &warmup,
+                            format!("---\ntitle: warmup {i}\n---\n\nwarmup body.\n"),
+                        );
+                        i += 1;
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                    }
+                })
+            };
+            let first = next_sse_event_name(sse, SSE_DEADLINE)
+                .await
+                .expect("read SSE stream during watcher-live handshake");
+            stop.store(true, Ordering::SeqCst);
+            let _ = writer.await;
+            assert!(
+                first.is_some(),
+                "watcher never became live: no warmup-induced SSE event within {}s \
+                 (watcher stream failed to start or lazy-stale gate regressed).\n{}",
+                SSE_DEADLINE.as_secs(),
+                session.logs(),
+            );
+        }
+
+        // ── Phase D: baseline — /preset-articles serves V1 title ─────────
+        //
+        // Confirm the injected route renders at all before the HMR edit.
+        poll_until_contains(
+            &client,
+            &format!("{base}/preset-articles"),
+            "INJECTED_ARTICLES_MARKER",
+            ROUTE_DEADLINE,
+            "HMR baseline: /preset-articles serves the injected marker",
+            &session,
+        )
+        .await;
+        poll_until_contains(
+            &client,
+            &format!("{base}/preset-articles"),
+            "V1-HMR-ARTICLE-TITLE",
+            ROUTE_DEADLINE,
+            "HMR baseline: /preset-articles lists the V1 article title",
+            &session,
+        )
+        .await;
+
+        // ── Phase E: HMR positive — content edit refreshes injected route ─
+        //
+        // The mechanism (S3 / S5, epic #1228 §4):
+        //   edit → watcher tick → assemble_and_bundle_dev rebuilds the content
+        //   snapshot → new bundle bytes → Phase-B skip fails → full
+        //   refresh_bundle_and_routes runs → note_table_swap bumps the
+        //   generation → mark_injected_seeds_stale re-stales /preset-articles
+        //   → the next GET re-renders with the fresh snapshot and serves the
+        //   new title.
+        //
+        // The SSE `page` event proves a full tick fired (not just a file
+        // create/warmup aliasing the signal — the V2 marker asserts the edit
+        // actually reached the renderer).
+        {
+            let sse = subscribe_sse(&client, &base).await;
+            fs::write(
+                &edit_target,
+                "---\ntitle: V2-HMR-ARTICLE-TITLE\n---\n\nFeature body updated.\n",
+            )
+            .expect("write V2 article title");
+
+            // Wait for the SSE `page` event that signals the tick completed.
+            let ev = next_sse_event_name(sse, SSE_DEADLINE)
+                .await
+                .expect("read SSE stream after content edit");
+            assert_eq!(
+                ev.as_deref(),
+                Some("page"),
+                "a content edit in a watched collection must broadcast an SSE `page` \
+                 event — the HMR tick did not fire or the stale-gate regressed.\n{}",
+                session.logs(),
+            );
+
+            // The authoritative assertion: the injected route now serves the
+            // V2 title.  Polled (not single-shot) because the lazy renderer
+            // writes on the first request AFTER the tick's stale-mark.
+            poll_until_contains(
+                &client,
+                &format!("{base}/preset-articles"),
+                "V2-HMR-ARTICLE-TITLE",
+                ROUTE_DEADLINE,
+                "HMR positive: /preset-articles must serve the V2 title after content edit",
+                &session,
+            )
+            .await;
+
+            // Belt-and-suspenders: the V1 title must be gone.
+            let body = client
+                .get(format!("{base}/preset-articles"))
+                .send()
+                .await
+                .expect("GET /preset-articles after HMR edit")
+                .text()
+                .await
+                .unwrap_or_default();
+            assert!(
+                !body.contains("V1-HMR-ARTICLE-TITLE"),
+                "V1 article title must NOT appear after the HMR edit; \
+                 the injected route is serving stale content.\nbody:\n{body}\n{}",
+                session.logs(),
+            );
+        }
+
+        Outcome::Completed
+    };
+
+    let outcome = tokio::time::timeout(OVERALL_DEADLINE, body).await;
+    match outcome {
+        Ok(Outcome::Completed) | Ok(Outcome::Skipped) => {}
+        Err(_) => {
+            panic!(
+                "[watchdog] HMR injected-route E2E did not finish within {}s — \
+                 a hang, or the injected route never reflected the content edit. \
+                 Process group {pgid} will be killed.\n{}",
+                OVERALL_DEADLINE.as_secs(),
+                session.logs(),
             );
         }
     }
