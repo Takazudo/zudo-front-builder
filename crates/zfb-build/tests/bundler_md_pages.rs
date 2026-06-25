@@ -24,6 +24,7 @@ fn make_input(root: &std::path::Path, esbuild: PathBuf) -> BundlerInput {
         main_fields: Vec::new(),
         project_root: root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
+        injected_pages_root: None,
         content_dir: PathBuf::from("content"),
         content_collections: Vec::new(),
         components_dir: PathBuf::from("components"),
