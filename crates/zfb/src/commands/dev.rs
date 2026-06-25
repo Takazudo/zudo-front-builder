@@ -942,10 +942,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         .as_ref()
         .filter(|session| session.lazy_render_enabled())
         .map(|session| {
+            // S4 (#1232) — pass the POST-precedence injected-route set into
+            // the adapter so the dynamic-route fallback can match request URLs
+            // against injected patterns at request time (design record §2 /
+            // sharp edges 4/7). `injected_route_set` is `None` on the parity
+            // path (no injected survivors) → `unwrap_or_default()` produces
+            // an empty set, which makes the fallback a no-op.
+            let injected = injected_route_set.clone().unwrap_or_default();
             crate::lazy_render_adapter::make_render_on_request_handle(
                 session.clone(),
                 request_writer.clone(),
                 dev_html_root.clone(),
+                injected,
             )
         });
 
@@ -2162,6 +2170,29 @@ impl DevRenderInner {
         })
     }
 
+    /// Ensure `output_path` has a stale entry, inserting one at the
+    /// current generation if absent. Returns the resulting
+    /// [`StaleClaim`].
+    ///
+    /// Used for dynamic injected routes (epic #1228, S4 #1232) that are
+    /// "stale-by-construction" — no boot seed is possible (no concrete
+    /// URL), so the first request finds no stale entry yet. Marking
+    /// request-time does NOT push to `tick_stale` (only tick-side marks
+    /// do that, to populate [`BuildOutcome::pages_stale`]); this is a
+    /// pure `entries` insert that keeps the tick channel clean.
+    fn claim_or_mark_stale(&self, output_path: &Path) -> StaleClaim {
+        let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+        let generation = stale.generation;
+        let gen = stale
+            .entries
+            .entry(output_path.to_path_buf())
+            .or_insert(generation);
+        StaleClaim {
+            output_path: output_path.to_path_buf(),
+            generation: *gen,
+        }
+    }
+
     /// Clear a claimed stale entry after a successful request-time
     /// render — but ONLY if no later tick re-staled the route: the
     /// entry is removed iff `claim.generation >=` the recorded
@@ -2698,6 +2729,16 @@ impl DevRenderSession {
     /// "capture under the renderer mutex" calling discipline.
     pub(crate) fn claim_stale(&self, output_path: &Path) -> Option<StaleClaim> {
         self.inner.claim(output_path)
+    }
+
+    /// Forward of [`DevRenderInner::claim_or_mark_stale`] for dynamic
+    /// injected routes (epic #1228, S4 #1232). Dynamic injected routes
+    /// are stale-by-construction — no boot seed provides a stale entry,
+    /// so the first request-time render must mark the route stale and
+    /// claim it atomically. Does NOT push to `tick_stale`; the tick
+    /// channel stays clean.
+    pub(crate) fn claim_or_mark_stale_for_dynamic_route(&self, output_path: &Path) -> StaleClaim {
+        self.inner.claim_or_mark_stale(output_path)
     }
 
     /// Forward of [`DevRenderInner::clear_if_current`] for the lazy

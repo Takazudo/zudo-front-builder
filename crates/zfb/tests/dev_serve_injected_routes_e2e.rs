@@ -502,3 +502,341 @@ async fn dev_e2e_static_injected_route_renders() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// S4 (#1232) — dynamic injected-route render E2E
+// ---------------------------------------------------------------------------
+
+/// Write a preset that covers the three dynamic pattern families from S4:
+///
+/// - `/preset-docs/[slug]` — single-segment param (the primary test case).
+/// - `/archive/[...rest]` — required catch-all (one or more segments).
+/// - `/help/[[...section]]` — optional catch-all (zero or more segments).
+///   `/help` has no user `pages/` file, so the bare-prefix zero-segment
+///   case is reachable through the injected fallback.
+///
+/// All entrypoints reflect the matched param in the body so the test can
+/// assert the dynamic dispatch reached the render.
+///
+/// Note on the `[[...chapter]]`-vs-user-page interplay (design record §7):
+/// the user's `pages/guide.tsx` owns `/guide` as a concrete URL in
+/// `url_index`. If the pattern had been `/guide/[[...chapter]]`, the
+/// zero-segment case (`/guide`) would have been answered by the user page
+/// (it wins via `lookup_by_url` before the fallback is tried). We use
+/// `/help/[[...section]]` (no user page at `/help`) to exercise the true
+/// bare-prefix matching path.
+fn write_dynamic_injected_preset(root: &Path) {
+    let preset = r#"
+export default {
+  name: "consumer-preset-s4",
+  setup({ injectRoute }) {
+    // [slug] — primary dynamic case: /preset-docs/[slug]
+    injectRoute("/preset-docs/[slug]", "./pkg/docs.tsx");
+    // [...rest] — required catch-all
+    injectRoute("/archive/[...rest]", "./pkg/archive.tsx");
+    // [[...section]] — optional catch-all, bare prefix + nested
+    // (/help has no user pages/ file so the zero-segment case is reachable)
+    injectRoute("/help/[[...section]]", "./pkg/help-optional.tsx");
+  },
+};
+"#;
+    fs::write(root.join("preset.mjs"), preset).expect("write dynamic preset.mjs");
+
+    // [...rest] entrypoint.
+    let archive = r#"
+export default function ArchivePage() {
+  return (
+    <html lang="en">
+      <head><title>Archive</title></head>
+      <body>
+        <h1>DYNAMIC_ARCHIVE_MARKER</h1>
+      </body>
+    </html>
+  );
+}
+"#;
+    fs::write(root.join("pkg").join("archive.tsx"), archive).expect("write pkg/archive.tsx");
+
+    // [[...section]] entrypoint: optional catch-all.
+    let help_optional = r#"
+export default function HelpOptional() {
+  return (
+    <html lang="en">
+      <head><title>Help</title></head>
+      <body>
+        <h1>DYNAMIC_HELP_OPTIONAL_MARKER</h1>
+      </body>
+    </html>
+  );
+}
+"#;
+    fs::write(root.join("pkg").join("help-optional.tsx"), help_optional)
+        .expect("write pkg/help-optional.tsx");
+}
+
+/// The full dynamic-injected-route render contract against a real `zfb dev`
+/// (epic #1228, S4 #1232).
+///
+/// Boots `zfb dev` over the `package-routes-consumer` fixture with a preset
+/// that injects `[slug]`, `[...rest]`, and `[[...section]]` patterns. The test
+/// GETs concrete URLs that match each pattern and asserts:
+///
+/// - The response is 200 with the route's marker — proof Hono resolved params
+///   inside V8 and the lazy adapter's synthetic entry rendered and was served.
+/// - Different concrete URLs for the same pattern render correctly (slug
+///   variance).
+/// - The `[[...section]]` bare-prefix case (`GET /help`) matches (no user
+///   `pages/help.tsx` exists, so the optional-catchall zero-segment case
+///   goes through the dynamic fallback).
+/// - The root page (`GET /`) is NOT hijacked by the dynamic injected
+///   fallback — the user home still wins.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_e2e_dynamic_injected_route_renders() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[dynamic_injected_e2e] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+    if !node_available() {
+        eprintln!("[dynamic_injected_e2e] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("create tempdir for consumer fixture");
+
+    // Boot with the dynamic preset.
+    let root = tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize fixture root");
+    copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
+    write_dynamic_injected_preset(&root);
+
+    let (nm_handle, embedded_nm_path) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    std::os::unix::fs::symlink(&embedded_nm_path, root.join("node_modules"))
+        .expect("symlink node_modules");
+
+    let stdout_path = root.join(".zfb-dev-stdout-s4.log");
+    let stderr_path = root.join(".zfb-dev-stderr-s4.log");
+    let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
+    let stderr_file = fs::File::create(&stderr_path).expect("create stderr log");
+
+    let mut cmd = Command::new(zfb_binary!());
+    cmd.arg("dev")
+        .arg("--port")
+        .arg("0")
+        .current_dir(&root)
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
+    cmd.env_remove("ZFB_DEV_EAGER")
+        .env_remove("ZFB_LAZY_DEV_RENDER")
+        .env_remove("ZFB_DEV_DEFER_BUNDLE")
+        .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS");
+    cmd.process_group(0);
+
+    let child = cmd.spawn().expect("spawn `zfb dev`");
+    let pgid = child.id() as libc::pid_t;
+    let mut session = DevSession {
+        guard: DevServerGuard { child, pgid },
+        stdout_path: stdout_path.clone(),
+        stderr_path: stderr_path.clone(),
+    };
+    // `nm_handle` must outlive the dev session.
+    let _nm = nm_handle;
+
+    let body = async {
+        // Phase A: discover the port from the ready banner.
+        let boot_start = Instant::now();
+        let port = loop {
+            if let Some(status) = session.guard.try_exit_status() {
+                let combined = format!(
+                    "{}{}",
+                    read_log(&session.stdout_path),
+                    read_log(&session.stderr_path)
+                );
+                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                    eprintln!(
+                        "[dynamic_injected_e2e] `zfb dev` exited with a known-skip indicator; \
+                         skipping.\n{}",
+                        session.logs(),
+                    );
+                    return Outcome::Skipped;
+                }
+                panic!(
+                    "`zfb dev` exited prematurely (status {status:?}) before the ready banner.\n{}",
+                    session.logs(),
+                );
+            }
+            if let Some(port) = parse_ready_port(&read_log(&session.stdout_path)) {
+                break port;
+            }
+            assert!(
+                boot_start.elapsed() < BOOT_DEADLINE,
+                "`zfb dev` did not print a ready banner within {}s.\n{}",
+                BOOT_DEADLINE.as_secs(),
+                session.logs(),
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
+        let base = format!("http://localhost:{port}");
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("build reqwest client");
+
+        // Phase B: readiness — GET / answers 200.
+        {
+            let start = Instant::now();
+            loop {
+                if let Ok(resp) = client.get(format!("{base}/")).send().await {
+                    if resp.status().as_u16() == 200 {
+                        break;
+                    }
+                }
+                assert!(
+                    start.elapsed() < BOOT_DEADLINE,
+                    "GET / never answered 200 within {}s.\n{}",
+                    BOOT_DEADLINE.as_secs(),
+                    session.logs(),
+                );
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+        }
+
+        // --- [slug] dynamic injected route: /preset-docs/[slug] ---
+
+        // /preset-docs/getting-started: primary acceptance case.
+        poll_until_contains(
+            &client,
+            &format!("{base}/preset-docs/getting-started"),
+            "CONSUMER_PRESET_DOCS_MARKER_getting-started",
+            ROUTE_DEADLINE,
+            "[slug] dynamic injected /preset-docs/getting-started renders",
+            &session,
+        )
+        .await;
+        poll_until_contains(
+            &client,
+            &format!("{base}/preset-docs/getting-started"),
+            "Consumer Demo",
+            ROUTE_DEADLINE,
+            "relative import bundled into the dynamic injected [slug] route",
+            &session,
+        )
+        .await;
+
+        // A different slug — same pattern, different concrete URL.
+        poll_until_contains(
+            &client,
+            &format!("{base}/preset-docs/api-reference"),
+            "CONSUMER_PRESET_DOCS_MARKER_api-reference",
+            ROUTE_DEADLINE,
+            "[slug] dynamic injected /preset-docs/api-reference renders",
+            &session,
+        )
+        .await;
+
+        // --- [...rest] required catch-all: /archive/[...rest] ---
+
+        poll_until_contains(
+            &client,
+            &format!("{base}/archive/2024/01"),
+            "DYNAMIC_ARCHIVE_MARKER",
+            ROUTE_DEADLINE,
+            "[...rest] dynamic injected /archive/2024/01 renders",
+            &session,
+        )
+        .await;
+        poll_until_contains(
+            &client,
+            &format!("{base}/archive/deep/a/b/c"),
+            "DYNAMIC_ARCHIVE_MARKER",
+            ROUTE_DEADLINE,
+            "[...rest] dynamic injected /archive/deep/a/b/c renders",
+            &session,
+        )
+        .await;
+
+        // --- [[...section]] optional catch-all: /help/[[...section]] ---
+
+        // Bare prefix (zero-segment case): /help.
+        // `/help` has no user pages/ file, so this exercises the true
+        // zero-segment match through the dynamic fallback.
+        poll_until_contains(
+            &client,
+            &format!("{base}/help"),
+            "DYNAMIC_HELP_OPTIONAL_MARKER",
+            ROUTE_DEADLINE,
+            "[[...section]] bare-prefix /help renders (zero-segment case)",
+            &session,
+        )
+        .await;
+
+        // Nested path (one segment).
+        poll_until_contains(
+            &client,
+            &format!("{base}/help/intro"),
+            "DYNAMIC_HELP_OPTIONAL_MARKER",
+            ROUTE_DEADLINE,
+            "[[...section]] nested /help/intro renders",
+            &session,
+        )
+        .await;
+
+        // Deeply nested (multiple segments).
+        poll_until_contains(
+            &client,
+            &format!("{base}/help/a/b/c"),
+            "DYNAMIC_HELP_OPTIONAL_MARKER",
+            ROUTE_DEADLINE,
+            "[[...section]] deeply nested /help/a/b/c renders",
+            &session,
+        )
+        .await;
+
+        // --- Dev "/" reservation unchanged: root is the USER home ---
+        // A root-scoped optional catchall `/[[...catch]]` would be able to
+        // match `/`, but that pattern is not injected here. We verify the
+        // user's home page is still served — belt-and-suspenders check that
+        // our dynamic fallback does not accidentally capture `/`.
+        {
+            let body = client
+                .get(format!("{base}/"))
+                .send()
+                .await
+                .expect("GET /")
+                .text()
+                .await
+                .unwrap_or_default();
+            assert!(
+                body.contains("CONSUMER_USER_HOME_MARKER"),
+                "GET / must serve the user's home page — the dynamic injected fallback must \
+                 not capture root.\nbody:\n{body}\n{}",
+                session.logs(),
+            );
+        }
+
+        Outcome::Completed
+    };
+
+    let outcome = tokio::time::timeout(OVERALL_DEADLINE, body).await;
+    match outcome {
+        Ok(Outcome::Completed) | Ok(Outcome::Skipped) => {}
+        Err(_) => {
+            panic!(
+                "[watchdog] dynamic-injected-route dev E2E did not finish within {}s — \
+                 a hang, or a dynamic injected route never rendered. Process group {pgid} \
+                 will be killed.\n{}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                OVERALL_DEADLINE.as_secs(),
+                "check logs below",
+                read_log(&stdout_path),
+                read_log(&stderr_path),
+            );
+        }
+    }
+}
