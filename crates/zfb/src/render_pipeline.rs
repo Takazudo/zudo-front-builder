@@ -647,7 +647,7 @@ fn expand_resolved_urls(
 /// - Non-HTML pages render to the bare URL path (so `/feed.xml` →
 ///   `feed.xml`); the URL itself already carries the extension because
 ///   the catchall reassembly preserves it.
-fn build_output_path_for_resolved_url(url: &str, extension: Option<&str>) -> PathBuf {
+pub(crate) fn build_output_path_for_resolved_url(url: &str, extension: Option<&str>) -> PathBuf {
     let ext = extension.unwrap_or("html");
     let trimmed = url.trim_start_matches('/');
     if ext == "html" {

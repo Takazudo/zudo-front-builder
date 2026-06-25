@@ -2013,6 +2013,10 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         // used (the overlay when package routes are present), so the
         // bundle's page imports include package-owned routes.
         Some(build_pages_root),
+        // #1230 — the additive injected-route root is a `zfb dev`-only seam
+        // (the build overlay above already merges package routes into
+        // `build_pages_root`); build passes `None`.
+        None,
     )?;
 
     // Snapshot the bundler input before consuming it so the runtime-only

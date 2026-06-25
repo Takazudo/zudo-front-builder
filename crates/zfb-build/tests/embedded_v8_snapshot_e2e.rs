@@ -78,6 +78,7 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         main_fields: Vec::new(),
         project_root: root.clone(),
         pages_dir: PathBuf::from("pages"),
+        injected_pages_root: None,
         content_dir: PathBuf::from("content"),
         content_collections: Vec::new(),
         components_dir: PathBuf::from("components"),
@@ -622,6 +623,7 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
         main_fields: Vec::new(),
         project_root: project_root.clone(),
         pages_dir: PathBuf::from("pages"),
+        injected_pages_root: None,
         content_dir: PathBuf::from("content"),
         content_collections: vec![ContentCollectionSpec::new(
             "blog",
@@ -804,6 +806,7 @@ async fn embedded_v8_md_page_renders_to_html() {
         main_fields: Vec::new(),
         project_root: project_root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
+        injected_pages_root: None,
         content_dir: PathBuf::from("content"),
         content_collections: Vec::new(),
         components_dir: PathBuf::from("components"),
@@ -1256,6 +1259,7 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
         main_fields: Vec::new(),
         project_root: project_root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
+        injected_pages_root: None,
         content_dir: PathBuf::from("content"),
         content_collections: vec![ContentCollectionSpec::new(
             "blog",

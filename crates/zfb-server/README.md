@@ -15,7 +15,7 @@ listens for `page`, `css`, and `islands` events.
 | `embed` | `Server` / `ServerBuilder` / `ServerHandle` — embed-as-library API |
 | `embed_handlers` | `EmbedHandler` / `EmbedHandlerSet` — Rust-side request handlers |
 | `inject` | Byte-level live-reload `<script>` injector |
-| `injected_routes` | `InjectedRouteSet` — synthetic routes declared by plugins |
+| `injected_routes` | `InjectedRouteSet` — pattern registry + request-time matcher for plugin-owned routes |
 | `livereload` | SSE bridge: `ReloadEvent`, `outcome_to_events`, `sse_response` |
 | `middleware` | Tower middleware for request extensions |
 | `plugin_middleware` | `DevMiddlewareDispatcher` — plugin dev-middleware dispatch |
@@ -88,7 +88,7 @@ All paths must be absolute. Key fields:
 | `pages` | `PageCache` populated by the orchestrator render loop |
 | `broadcast` | `ReloadTx` — broadcast sender for SSE live-reload |
 | `plugins` | Dev-middleware registrations from user plugins |
-| `injected_routes` | Synthetic routes from plugins' `injectRoute` hooks |
+| `injected_routes` | Post-precedence `InjectedRouteSet` from plugins' `injectRoute` hooks; consulted by `lazy_render_adapter` to render static and dynamic injected routes in dev |
 | `ssr_routes` | `SsrRoutesHandle` for `prerender = false` pages |
 | `base` | `zfb.config.ts` `base` value (normalised internally) |
 | `trailing_slash` | `zfb.config.ts` `trailingSlash` value |

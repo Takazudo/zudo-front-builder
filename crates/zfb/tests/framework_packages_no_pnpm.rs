@@ -126,6 +126,7 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
         main_fields: Vec::new(),
         project_root: root.clone(),
         pages_dir: PathBuf::from("pages"),
+        injected_pages_root: None,
         content_dir: PathBuf::from("content"),
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),

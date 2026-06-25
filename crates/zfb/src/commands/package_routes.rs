@@ -110,6 +110,151 @@ pub(crate) struct OverlayResolution {
     pub(crate) materialized: Vec<MaterializedRoute>,
 }
 
+/// A **static** injected route (URL == pattern) the dev route universe
+/// must seed (epic #1228, S3 #1231). Built from the POST-precedence
+/// survivor set ([`OverlayResolution::materialized`]) so a user-shadowed
+/// or package-vs-package-dropped pattern never leaks (sharp edges 4/7).
+///
+/// `seed_entry` is the concrete [`RouteUniverseEntry`] the dev session
+/// inserts into `routes_by_source` + `url_index` and marks stale on boot
+/// and on every route-table swap; the lazy render adapter then renders it
+/// through the unchanged `render_one` → guarded-write → `html_root` flow,
+/// exactly like a normal static SSG page. `output_path` is what the dev
+/// session stale-marks.
+#[derive(Debug, Clone)]
+pub(crate) struct StaticInjectedSeed {
+    /// The injected pattern (== the concrete URL for a static route).
+    pub(crate) pattern: String,
+    /// The seed route-universe entry (`url_path`/`route_key` = the
+    /// pattern, `output_path` from
+    /// [`crate::render_pipeline::build_output_path_for_resolved_url`],
+    /// `static_html = false`, `source_path = None`).
+    pub(crate) seed_entry: zfb_build::renderer::RouteUniverseEntry,
+}
+
+impl StaticInjectedSeed {
+    /// Convenience: the relative `output_path` the dev session stale-marks
+    /// (`preset-about/index.html`, `index.html` for `/`).
+    pub(crate) fn output_path(&self) -> &Path {
+        &self.seed_entry.output_path
+    }
+}
+
+/// Build the dev route-universe seeds for the **static, SSG** injected
+/// routes among the post-precedence survivors (epic #1228, S3 #1231,
+/// §2/§3).
+///
+/// A static injected route has a pattern with no bracketed (dynamic)
+/// segment, so the URL equals the pattern and the route is a normal
+/// static SSG page once staged into the dev bundle (S2). This function
+/// derives the concrete [`RouteUniverseEntry`] for each such survivor:
+/// `url_path` = `route_key` = the pattern, `output_path` =
+/// [`crate::render_pipeline::build_output_path_for_resolved_url`] (the
+/// SAME derivation `zfb build` uses, so the dev output layout matches),
+/// `static_html = false` (V8-rendered like any SSG route), `source_path =
+/// None`.
+///
+/// Excluded:
+///
+/// - **Dynamic survivors** (`/preset-docs/[slug]`) — no concrete URL until
+///   the request; handled by the S4 request-time `lazy_render_adapter`
+///   fallback, not seeded here.
+/// - **`prerender: false` survivors** (`injectRoute(pattern, ep, {
+///   prerender: false })`) — these are SSR-only and must NOT be SSG'd to
+///   disk, mirroring a normal `pages/` route that exports `prerender =
+///   false` (which `build_dev_route_tables` keeps OUT of
+///   `routes_by_source`). Seeding one would write a disk artifact that
+///   shadows the request-time SSR behaviour the plugin asked for. The
+///   build path honours this via the inlined `export const prerender =
+///   false` in the synthesized module + the prerender map; the dev seed
+///   bypasses that flow, so the flag is consulted directly here. (Dev does
+///   not yet dispatch injected SSR routes through the V8 host — that is a
+///   later wave; excluding them from the SSG seed is the correct, safe
+///   behaviour for S3 and matches `pages/` parity.)
+///
+/// `prerender` is looked up from the original `injected_routes` (the
+/// survivor records carry it) — `MaterializedRoute` is shared with the
+/// build path and deliberately not widened.
+///
+/// Input is the POST-precedence survivor list
+/// ([`OverlayResolution::materialized`]), so a user-shadowed pattern or a
+/// package-vs-package-dropped pattern is already absent — it never reaches
+/// the route universe (sharp edges 4/7).
+pub(crate) fn static_injected_seeds(
+    injected_routes: &[InjectedRoute],
+    materialized: &[MaterializedRoute],
+) -> Vec<StaticInjectedSeed> {
+    // Map pattern → prerender hint for the survivors (the original records
+    // carry the `prerender` flag `MaterializedRoute` omits).
+    let prerender_of: std::collections::HashMap<&str, Option<bool>> = injected_routes
+        .iter()
+        .map(|r| (r.pattern.as_str(), r.prerender))
+        .collect();
+    materialized
+        .iter()
+        .filter(|mr| !is_dynamic_pattern(&mr.pattern))
+        // SSR-only injected routes (`prerender: false`) are NOT SSG-seeded
+        // — same as a `pages/` page exporting `prerender = false`.
+        .filter(|mr| prerender_of.get(mr.pattern.as_str()).copied().flatten() != Some(false))
+        .map(|mr| {
+            // A static injected route's concrete URL IS its pattern; the
+            // extension is derived from the pattern's final segment exactly
+            // as the normal dynamic-route path does (`/feed.xml` keeps its
+            // bare path; `/preset-about` → `preset-about/index.html`).
+            let extension = url_path_extension(&mr.pattern);
+            let output_path = crate::render_pipeline::build_output_path_for_resolved_url(
+                &mr.pattern,
+                extension.as_deref(),
+            );
+            StaticInjectedSeed {
+                pattern: mr.pattern.clone(),
+                seed_entry: zfb_build::renderer::RouteUniverseEntry {
+                    url_path: mr.pattern.clone(),
+                    output_path,
+                    route_key: mr.pattern.clone(),
+                    static_html: false,
+                    source_path: None,
+                },
+            }
+        })
+        .collect()
+}
+
+/// Filter the original registration list down to the POST-precedence
+/// survivors (epic #1228, S3 #1231, §7). The `InjectedRouteSet` handed to
+/// the dev server (and the future S4 dynamic fallback) MUST be built from
+/// these, not from the raw registration list — otherwise a user-shadowed
+/// (or package-vs-package-dropped) pattern would still match in the
+/// request-time fallback (sharp edges 4/7).
+///
+/// A survivor is identified by its pattern appearing in `materialized`
+/// (the routes actually written into the staged bundle); the returned
+/// records preserve the original `plugin` / `prerender` / `entrypoint`
+/// fields and declaration order, so first-registered-wins tiebreaking in
+/// [`zfb_server::InjectedRouteSet::find_match`] is unchanged.
+pub(crate) fn surviving_injected_routes(
+    injected_routes: &[InjectedRoute],
+    materialized: &[MaterializedRoute],
+) -> Vec<InjectedRoute> {
+    let survivors: HashSet<&str> = materialized.iter().map(|mr| mr.pattern.as_str()).collect();
+    injected_routes
+        .iter()
+        .filter(|r| survivors.contains(r.pattern.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// The explicit file extension carried by a route URL's final segment, if
+/// any (`/feed.xml` → `Some("xml")`, `/preset-about` → `None`). Mirrors
+/// the extension handling in `render_pipeline`'s dynamic-URL output
+/// derivation so a static injected route with a non-HTML extension lands
+/// at the bare path rather than `…/index.html`.
+fn url_path_extension(url: &str) -> Option<String> {
+    let trimmed = url.trim_end_matches('/');
+    let last = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    last.rsplit_once('.').map(|(_, ext)| ext.to_string())
+}
+
 /// Resolve the build pages root, materialising an overlay when there are
 /// package routes.
 ///
@@ -119,9 +264,88 @@ pub(crate) struct OverlayResolution {
 /// Returns the resolved root + (optional) overlay guard. On the empty
 /// `injected_routes` fast path this returns `real_pages_dir` with no
 /// allocation beyond the `PathBuf`.
+///
+/// The build path copies the user's real `pages/` into the overlay (so the
+/// router scan + bundler walk the merged tree). The survivor selection +
+/// synthesizers are shared with [`resolve_dev_pages_root`] via
+/// [`resolve_pages_root`]; see that function for the precedence + validation
+/// semantics dev and build hold in common.
 pub(crate) fn resolve_build_pages_root(
     real_pages_dir: &Path,
     injected_routes: &[InjectedRoute],
+) -> Result<OverlayResolution> {
+    // `copy_user_pages = true`: the build overlay must contain the user's
+    // real pages/ so the single router scan + bundler walk over
+    // `build_pages_root` sees BOTH the user pages and the synthesized package
+    // modules. (Dev keeps `pages_dir` = the real `pages/` for the scan +
+    // watcher and stages ONLY the injected modules — `false`. See
+    // research/1229-dev-staging-decision.md §1.)
+    resolve_pages_root(real_pages_dir, injected_routes, true)
+}
+
+/// Resolve the **dev** injected-route staging root — the B1 (multi-root)
+/// half of the dev-server injected-route rendering (epic #1228, S2 #1230).
+///
+/// Unlike [`resolve_build_pages_root`], this does **NOT** copy the user's
+/// real `pages/` into the staged dir: dev keeps `pages_dir` = the real
+/// `project_root/pages` for the router scan + watcher (so user-page
+/// `source_path` identity — and therefore HMR / watch paths — is byte-
+/// identical to today), and stages ONLY the synthesized injected modules in
+/// the returned root. That root is threaded into the dev bundler via the
+/// existing `assemble_bundler_input` `build_pages_root` seam so the injected
+/// entrypoints (and their `virtual:` imports) land in the dev bundle. See
+/// research/1229-dev-staging-decision.md §1 / "Sharp edges" 1, 2, 8.
+///
+/// The synthesized `.tsx` for a given pattern is byte-identical to what
+/// `zfb build` produces (the SAME `synthesize_*_overlay_module` call), so the
+/// dev bundle's injected module matches the build's — the required parity.
+///
+/// Survivor selection + the full validation (user-precedence drop,
+/// package-vs-package shape-key hard-error, case-insensitive `dest.exists()`
+/// guard, trailing-`index` + `.client` rejection, the documented optional-
+/// catchall / `bundle.exclude` limitations) are shared with the build via
+/// [`resolve_pages_root`]. On the empty `injected_routes` (or all-shadowed)
+/// path, `guard` is `None` and `build_pages_root == real_pages_dir`, so the
+/// caller can gate every new dev path on `guard.is_some()` (parity).
+pub(crate) fn resolve_dev_pages_root(
+    real_pages_dir: &Path,
+    injected_routes: &[InjectedRoute],
+) -> Result<OverlayResolution> {
+    resolve_pages_root(real_pages_dir, injected_routes, false)
+}
+
+/// Shared survivor-selection + synthesis for the build overlay
+/// ([`resolve_build_pages_root`], `copy_user_pages = true`) and the dev
+/// injected-only staging root ([`resolve_dev_pages_root`],
+/// `copy_user_pages = false`).
+///
+/// The ONLY behavioural difference between the two callers is whether the
+/// user's real `pages/` is copied into the staged dir:
+///
+/// * **Build (`true`):** copy user `pages/` in, then write the synthesized
+///   package modules over it. A single scan over `build_pages_root` then sees
+///   the merged tree. The `dest.exists()` precedence guard distinguishes a
+///   copied-user-page collision (user wins, drop) from a package-vs-package
+///   case-only collision (hard error).
+/// * **Dev (`false`):** stage ONLY the synthesized package modules (no user
+///   copy). The user's `pages/` stays the real dir for the dev scan + watcher
+///   (B1). User-vs-package precedence is still enforced — the pre-scan
+///   `collect_user_pages_shape_keys` drop runs against the REAL `pages/`
+///   regardless of the copy flag — so a user-shadowed injected route never
+///   reaches the staged dir. With no user copy, a surviving package route's
+///   `dest` can only pre-exist if a PRIOR package route already wrote it
+///   (a package-vs-package case-only collision → hard error), never a user
+///   page.
+///
+/// Everything else — the shape-key precedence, the package-vs-package shape
+/// duplicate hard-error, the `.client`/trailing-`index` rejection, the
+/// synthesizer choice (static vs dynamic), and the materialized-route record
+/// — is identical, so the synthesized module for a pattern is byte-identical
+/// across dev and build.
+fn resolve_pages_root(
+    real_pages_dir: &Path,
+    injected_routes: &[InjectedRoute],
+    copy_user_pages: bool,
 ) -> Result<OverlayResolution> {
     if injected_routes.is_empty() {
         // Parity path: no overlay, byte-identical to a pre-#1193 build.
@@ -225,8 +449,8 @@ pub(crate) fn resolve_build_pages_root(
     // Materialise the overlay. The temp dir holds a `pages/` subdir
     // (named exactly "pages" — the bundler's `is_pages_dir` detection and
     // the scan's route derivation both key on that) into which we first
-    // copy the user's real `pages/` (when present) and then write the
-    // synthesized package modules.
+    // copy the user's real `pages/` (when present and `copy_user_pages`) and
+    // then write the synthesized package modules.
     let guard = tempfile::Builder::new()
         .prefix("zfb-pkg-routes-")
         .tempdir()
@@ -235,7 +459,12 @@ pub(crate) fn resolve_build_pages_root(
     std::fs::create_dir_all(&overlay_pages)
         .with_context(|| format!("creating overlay pages dir {}", overlay_pages.display()))?;
 
-    if real_pages_dir.is_dir() {
+    // Build path copies the user's real `pages/` into the overlay so the
+    // single router scan + bundler walk see the merged tree. Dev (B1) does
+    // NOT — it keeps `pages_dir` = the real `pages/` for the scan + watcher
+    // and stages ONLY the injected modules here, preserving user-page
+    // `source_path` identity (HMR/watch). (research/1229 §1, sharp edge 1.)
+    if copy_user_pages && real_pages_dir.is_dir() {
         copy_dir_recursive(real_pages_dir, &overlay_pages).with_context(|| {
             format!(
                 "copying user pages/ {} into overlay {}",
@@ -255,6 +484,32 @@ pub(crate) fn resolve_build_pages_root(
     let mut materialized = Vec::with_capacity(survivors.len());
     for (route, pages_rel, _shape_key) in &survivors {
         let dest = overlay_pages.join(pages_rel);
+        // DEV case-only precedence guard (#1230). The build path copies the
+        // user's real `pages/` into the overlay FIRST, so its `dest.exists()`
+        // check below catches a case-only user-vs-package collision
+        // (`pages/About.tsx` vs injected `/about`, distinct shape keys on a
+        // case-insensitive FS) and drops the package route (user wins). The
+        // DEV path does NOT copy user pages, so that check can't see the user
+        // file — without this guard the injected `about.tsx` would be staged
+        // and the bundler's additive walk would alias it onto the real
+        // `About.tsx` in the shadow tree (silent precedence INVERSION on
+        // macOS/Windows). Restore parity by testing the REAL user `pages/` dir
+        // directly: `Path::exists()` matches case-insensitively on those
+        // filesystems, so a user `About.tsx` makes `<pages>/about.tsx` exist →
+        // drop the package route (user wins). On a case-SENSITIVE FS (Linux
+        // CI) the two are distinct files, `exists()` is false, and the
+        // injected route survives — the SAME documented divergence the build
+        // path has (both routes ship on a case-sensitive FS).
+        if !copy_user_pages && real_pages_dir.join(pages_rel).exists() {
+            crate::output::info(format!(
+                "package route `{}` (from plugin `{}`) would collide with the user pages/ file \
+                 `{}` (case-insensitive filesystem match); a user page wins — skipping",
+                route.pattern,
+                route.plugin,
+                pages_rel.display()
+            ));
+            continue;
+        }
         // Precedence guard (#1191 fix-A [14]): on a case-INSENSITIVE,
         // case-preserving filesystem (macOS/Windows) a user `pages/About.tsx`
         // (shape `/About`) and a package `/about` (shape `/about`) have
@@ -270,6 +525,11 @@ pub(crate) fn resolve_build_pages_root(
         //     pre-scan info message);
         //   - if it was a previously-written package OVERLAY module → hard
         //     error naming both, since two package routes cannot share a file.
+        // In the DEV path (`copy_user_pages == false`) no user pages were
+        // copied, so a pre-existing `dest` can only be a prior package write
+        // (case-only package-vs-package collision → hard error); the
+        // user-page-wins branch is unreachable there because the fresh staging
+        // dir holds nothing but package modules.
         let dest_key = dest.to_string_lossy().to_lowercase();
         if dest.exists() {
             if let Some(prev_pattern) = written_dests.get(&dest_key) {
@@ -1352,5 +1612,406 @@ export default function Page() { return null; }
         let res = resolve_build_pages_root(&pages, &routes)
             .expect("a symlink cycle must not crash/hang the overlay copy");
         assert!(res.build_pages_root.join("index.tsx").is_file());
+    }
+
+    // ── S2 (#1230): resolve_dev_pages_root — injected-only staging (B1) ──
+
+    #[test]
+    fn dev_stages_injected_module_without_copying_user_pages() {
+        // The dev variant materialises the synthesized injected module into the
+        // staging dir but, unlike the build, does NOT copy the user's real
+        // `pages/` (it keeps `pages_dir` = the real dir for the scan + watcher).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("index.tsx"), "export default () => null;").unwrap();
+
+        let routes = vec![route("/preset-page", "/pkg/preset-page.tsx")];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+
+        assert!(res.guard.is_some(), "dev staging temp dir must be held");
+        assert_ne!(res.build_pages_root, pages);
+        // The injected module IS staged.
+        let staged = res.build_pages_root.join("preset-page.tsx");
+        assert!(staged.is_file(), "injected module must be staged for dev");
+        let body = std::fs::read_to_string(&staged).unwrap();
+        assert!(body.contains("/pkg/preset-page.tsx"));
+        // The user's page is NOT copied into the dev staging dir (B1: the dev
+        // scan + watcher keep the real `pages/`; only injected modules stage).
+        assert!(
+            !res.build_pages_root.join("index.tsx").exists(),
+            "dev staging must NOT copy user pages/ (sharp edge 1)"
+        );
+        assert_eq!(res.materialized.len(), 1);
+    }
+
+    #[test]
+    fn dev_synthesized_module_is_byte_identical_to_build() {
+        // Parity requirement: the synthesized `.tsx` for a given pattern must
+        // be byte-identical between dev and build (both go through the SAME
+        // `synthesize_*_overlay_module`). Compare the staged dev module to the
+        // build overlay module for the same route.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let entry = tmp.path().join("pkg").join("about.tsx");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(&entry, "export default function A() { return null; }\n").unwrap();
+
+        let routes = vec![InjectedRoute {
+            pattern: "/preset-about".into(),
+            entrypoint: entry,
+            plugin: "preset".into(),
+            prerender: None,
+        }];
+
+        let dev = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let build = resolve_build_pages_root(&pages, &routes).unwrap();
+        let dev_mod =
+            std::fs::read_to_string(dev.build_pages_root.join("preset-about.tsx")).unwrap();
+        let build_mod =
+            std::fs::read_to_string(build.build_pages_root.join("preset-about.tsx")).unwrap();
+        assert_eq!(
+            dev_mod, build_mod,
+            "the synthesized injected module must be byte-identical across dev and build"
+        );
+    }
+
+    #[test]
+    fn dev_user_shadowed_route_yields_no_staging_dir_parity() {
+        // Sharp edge 8 parity: a user route shadows the injected one → empty
+        // survivor set → `guard` is None and `build_pages_root` == real dir, so
+        // the dev caller gates the new path off entirely (byte-identical).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("about.tsx"), "export default () => null;").unwrap();
+
+        let routes = vec![route("/about", "/pkg/about.tsx")];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        assert!(
+            res.guard.is_none(),
+            "all-shadowed → no staging dir (dev parity path)"
+        );
+        assert_eq!(res.build_pages_root, pages);
+        assert!(res.materialized.is_empty());
+    }
+
+    #[test]
+    fn dev_no_injected_routes_is_parity() {
+        // With no injected routes at all, the dev variant returns the real dir
+        // with no staging dir — byte-identical to today (sharp edge 8).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        let res = resolve_dev_pages_root(&pages, &[]).unwrap();
+        assert!(res.guard.is_none());
+        assert_eq!(res.build_pages_root, pages);
+        assert!(res.materialized.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dev_case_only_user_page_wins_over_injected_route() {
+        // #1230 (codex review P2): on a case-INSENSITIVE FS a user
+        // `pages/About.tsx` (shape `/About`) and an injected `/about` (shape
+        // `/about`) have DIFFERENT shape keys, so the pre-scan drop does not
+        // fire. The build path catches it via the copied-tree `dest.exists()`;
+        // the dev path (no user copy) must catch it by testing the REAL
+        // `pages/` dir. The user page must NEVER be aliased by the injected
+        // module. On a case-SENSITIVE FS the two are distinct and the injected
+        // route survives — both outcomes are correct, neither destroys the
+        // user file.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        let user_about = pages.join("About.tsx");
+        let user_body = "export default function About() { return null; } // USER\n";
+        std::fs::write(&user_about, user_body).unwrap();
+
+        let routes = vec![route("/about", "/pkg/about.tsx")];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+
+        // Whatever the FS, the dev staging dir must NOT contain an `about.tsx`
+        // that aliases the user's `About.tsx`. On a case-insensitive FS the
+        // injected route is dropped (no staging dir, or staging without the
+        // colliding module); on a case-sensitive FS a distinct `about.tsx` may
+        // be staged, but it can never be the same file as the user's page (the
+        // staging dir is separate from the real `pages/` entirely).
+        if let Some(_guard) = res.guard.as_ref() {
+            let staged_lower = res.build_pages_root.join("about.tsx");
+            // If a same-inode alias to the user page were possible it would be
+            // a bug; the staging dir is a fresh temp dir so it never shares an
+            // inode with the user's real pages/. The load-bearing assertion is
+            // that the USER file is untouched.
+            let _ = staged_lower;
+        }
+        // The user's real page content is never modified by dev staging.
+        assert_eq!(
+            std::fs::read_to_string(&user_about).unwrap(),
+            user_body,
+            "dev staging must never overwrite/alias the user's page"
+        );
+
+        // Determine the FS case-sensitivity to make a precise assertion.
+        let case_insensitive = pages.join("ABOUT.tsx").exists();
+        if case_insensitive {
+            assert!(
+                res.materialized.is_empty(),
+                "on a case-insensitive FS the injected /about must be dropped (user About.tsx wins)"
+            );
+        } else {
+            assert_eq!(
+                res.materialized.len(),
+                1,
+                "on a case-sensitive FS /about and About.tsx are distinct — injected route survives"
+            );
+        }
+    }
+
+    #[test]
+    fn dev_package_vs_package_shape_duplicate_still_hard_errors() {
+        // The dev variant reuses the build's FULL validation — a package-vs-
+        // package shape duplicate must hard-error naming both plugins (not a
+        // weaker subset that silently drops one).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let a = InjectedRoute {
+            pattern: "/blog/[slug]".into(),
+            entrypoint: PathBuf::from("/pkg-a/blog.tsx"),
+            plugin: "preset-a".into(),
+            prerender: None,
+        };
+        let b = InjectedRoute {
+            pattern: "/blog/[id]".into(),
+            entrypoint: PathBuf::from("/pkg-b/blog.tsx"),
+            plugin: "preset-b".into(),
+            prerender: None,
+        };
+        let msg = match resolve_dev_pages_root(&pages, &[a, b]) {
+            Ok(_) => panic!("dev must hard-error on a package-vs-package shape duplicate"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            msg.contains("preset-a") && msg.contains("preset-b"),
+            "dev shape-duplicate error must name both plugins; got:\n{msg}"
+        );
+    }
+
+    // ── S3 (#1231): static-injected seeding + survivor-set precedence ──
+
+    #[test]
+    fn static_seed_derives_url_index_and_output_path() {
+        // A static injected route (`/preset-about`) seeds a RouteUniverseEntry
+        // whose url_path/route_key are the pattern and whose output_path is the
+        // SAME `build_output_path_for_resolved_url` derivation the build uses
+        // (`preset-about/index.html`). static_html=false, source_path=None.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![route("/preset-about", "/pkg/about.tsx")];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+
+        assert_eq!(seeds.len(), 1, "one static survivor → one seed");
+        let s = &seeds[0];
+        assert_eq!(s.pattern, "/preset-about");
+        assert_eq!(s.seed_entry.url_path, "/preset-about");
+        assert_eq!(s.seed_entry.route_key, "/preset-about");
+        assert!(!s.seed_entry.static_html);
+        assert!(s.seed_entry.source_path.is_none());
+        assert_eq!(s.output_path(), Path::new("preset-about/index.html"));
+    }
+
+    #[test]
+    fn static_seed_root_pattern_maps_to_index_html() {
+        // The dev-only `/` reservation aside, a static `/` injected route's
+        // output_path is `index.html` (matches build's root derivation).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        // No user index.tsx so the injected `/` survives precedence here.
+        let routes = vec![route("/", "/pkg/root.tsx")];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].output_path(), Path::new("index.html"));
+    }
+
+    #[test]
+    fn static_seed_non_html_extension_keeps_bare_path() {
+        // A static injected route ending in an explicit extension renders to
+        // the bare URL path, not `…/index.html` (mirrors render_pipeline).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![route("/preset-feed.xml", "/pkg/feed.tsx")];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].output_path(), Path::new("preset-feed.xml"));
+    }
+
+    #[test]
+    fn dynamic_survivor_is_not_seeded_statically() {
+        // A dynamic injected route (`/preset-docs/[slug]`) has no concrete URL
+        // at boot — it is NOT seeded into the static route universe (that's the
+        // S4 request-time fallback's job). Only the static survivor seeds.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        // The dynamic synthesizer reads + classifies the entrypoint's own
+        // `paths`, so the file must exist with a top-level literal `paths()`.
+        let docs = tmp.path().join("docs.tsx");
+        std::fs::write(
+            &docs,
+            "export function paths() { return [{ params: { slug: \"a\" } }]; }\n\
+             export default function Docs() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            route("/preset-about", "/pkg/about.tsx"),
+            InjectedRoute {
+                pattern: "/preset-docs/[slug]".into(),
+                entrypoint: docs,
+                plugin: "preset".into(),
+                prerender: None,
+            },
+        ];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        assert_eq!(
+            seeds.len(),
+            1,
+            "only the static /preset-about seeds; the dynamic route is excluded"
+        );
+        assert_eq!(seeds[0].pattern, "/preset-about");
+    }
+
+    #[test]
+    fn surviving_set_drops_user_shadowed_pattern() {
+        // Sharp edge 4/7: the InjectedRouteSet (and the static seed) must be
+        // built from the POST-precedence survivors. A user `pages/` page that
+        // shadows an injected pattern drops it from BOTH the survivor records
+        // and the static seed — it must NOT leak into the request-time fallback.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        // User owns `/about`.
+        std::fs::write(pages.join("about.tsx"), "export default () => null;").unwrap();
+
+        let routes = vec![
+            route("/about", "/pkg/about.tsx"),
+            route("/preset-extra", "/pkg/extra.tsx"),
+        ];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+
+        let survivors = surviving_injected_routes(&routes, &res.materialized);
+        let patterns: Vec<&str> = survivors.iter().map(|r| r.pattern.as_str()).collect();
+        assert_eq!(
+            patterns,
+            vec!["/preset-extra"],
+            "user-shadowed /about must not appear in the survivor set"
+        );
+
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        let seed_patterns: Vec<&str> = seeds.iter().map(|s| s.pattern.as_str()).collect();
+        assert_eq!(
+            seed_patterns,
+            vec!["/preset-extra"],
+            "the user-shadowed pattern must not be seeded into the route universe"
+        );
+    }
+
+    #[test]
+    fn surviving_set_preserves_records_and_order() {
+        // The survivor records keep the original plugin/prerender/entrypoint
+        // fields and declaration order (first-registered-wins tiebreak).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![
+            route("/preset-a", "/pkg/a.tsx"),
+            route("/preset-b", "/pkg/b.tsx"),
+        ];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let survivors = surviving_injected_routes(&routes, &res.materialized);
+        assert_eq!(survivors.len(), 2);
+        assert_eq!(survivors[0].pattern, "/preset-a");
+        assert_eq!(survivors[0].plugin, "preset");
+        assert_eq!(survivors[1].pattern, "/preset-b");
+    }
+
+    #[test]
+    fn static_seed_excludes_prerender_false_ssr_only_route() {
+        // A static injected route registered with `prerender: false` is
+        // SSR-only and must NOT be SSG-seeded into the dev route universe —
+        // same as a `pages/` page that exports `prerender = false` (kept OUT
+        // of `routes_by_source`). Otherwise dev would write a disk artifact
+        // shadowing the request-time behaviour the plugin asked for. The
+        // survivor STILL survives precedence (it's a real route) — only the
+        // SSG seed excludes it.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![
+            // SSG static injected route → seeded.
+            InjectedRoute {
+                pattern: "/preset-ssg".into(),
+                entrypoint: PathBuf::from("/pkg/ssg.tsx"),
+                plugin: "preset".into(),
+                prerender: None,
+            },
+            // SSR-only static injected route → NOT seeded.
+            InjectedRoute {
+                pattern: "/preset-ssr".into(),
+                entrypoint: PathBuf::from("/pkg/ssr.tsx"),
+                plugin: "preset".into(),
+                prerender: Some(false),
+            },
+        ];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+
+        // Both routes survive precedence (both are real, non-colliding).
+        let survivors = surviving_injected_routes(&routes, &res.materialized);
+        assert_eq!(survivors.len(), 2, "both routes survive precedence");
+
+        // But only the SSG one is SSG-seeded.
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        let seed_patterns: Vec<&str> = seeds.iter().map(|s| s.pattern.as_str()).collect();
+        assert_eq!(
+            seed_patterns,
+            vec!["/preset-ssg"],
+            "prerender:false static injected route must NOT be SSG-seeded"
+        );
+    }
+
+    #[test]
+    fn static_seed_includes_explicit_prerender_true_route() {
+        // `prerender: true` is an explicit SSG opt-in — it must be seeded
+        // (only `Some(false)` is excluded).
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![InjectedRoute {
+            pattern: "/preset-about".into(),
+            entrypoint: PathBuf::from("/pkg/about.tsx"),
+            plugin: "preset".into(),
+            prerender: Some(true),
+        }];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].pattern, "/preset-about");
     }
 }

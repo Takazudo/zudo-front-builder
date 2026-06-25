@@ -1,34 +1,48 @@
-//! Dev-only injected-route plumbing (#255).
+//! Dev-injected-route registry and pattern matching (#255, #1228).
 //!
-//! Plugins call `injectRoute(pattern, entrypoint)` from the new
-//! `setup` hook to register a synthetic page route the dev server
-//! evaluates through the page rendering pipeline. The build crate
-//! owns the canonical [`zfb_build::InjectedRoute`] /
-//! [`zfb_build::InjectedRouteList`] types; `zfb-server` already
-//! depends on `zfb-build` (see `Cargo.toml`), so this module uses
-//! them directly — no local mirror needed.
+//! Plugins call `injectRoute(pattern, entrypoint)` from the `setup`
+//! hook to register a synthetic page route. The build crate owns the
+//! canonical [`zfb_build::InjectedRoute`] /
+//! [`zfb_build::InjectedRouteList`] types; `zfb-server` depends on
+//! `zfb-build` (see `Cargo.toml`) and uses them directly.
 //!
-//! ## v1 scope (Wave 1, #255)
+//! ## Shipped behaviour (epic #1228)
 //!
-//! This sub-issue ships the **registry plumbing**: the dev router
-//! can look up an incoming URL against the injected-route patterns
-//! and identify the matching entrypoint. Full evaluation of the
-//! TSX/TS entrypoint through the page renderer is a follow-up — the
-//! renderer's `pages/`-walk machinery already wires through
-//! `zfb-render` and `zfb-router` and integrating a per-route synthetic
-//! entry requires touching both. Today the dev router matches the
-//! pattern and surfaces the matched [`zfb_build::InjectedRoute`] so
-//! the caller can decide what to do (typically: fall through to the
-//! existing page cache pipeline, which is the path Wave 1 leaves
-//! intact, while emitting a structured log so the user can see the
-//! injection landed).
+//! `zfb dev` fully renders package-owned injected routes:
 //!
-//! Once the renderer-side hook is wired up (planned follow-up), the
-//! dev router will route matched patterns into the page pipeline by
-//! evaluating `record.entrypoint` like any other `pages/*.tsx` file
-//! and inserting the result into the cache under the request URL.
-//! The wire shape and the lookup API here are stable so that work
-//! does not need to revisit this module.
+//! - **Static injected routes** (URL == pattern, e.g. `/preset-about`)
+//!   are seeded into `DevRouteTables.url_index` at boot and on every
+//!   route-table swap (`note_table_swap`). `lookup_by_url` hits them
+//!   exactly like a normal static page; the lazy adapter renders them
+//!   through `render_one` and writes the result into `html_root`.
+//!
+//! - **Dynamic injected routes** (e.g. `/preset-docs/[slug]`) have no
+//!   concrete URL at boot. On a `url_index` miss, `lazy_render_adapter`
+//!   calls [`InjectedRouteSet::find_match`] to check whether an injected
+//!   pattern matches the request URL. On a hit it synthesizes a
+//!   `RouteUniverseEntry` on the fly (concrete `url_path`, `route_key`
+//!   = the pattern, `static_html = false`, `source_path = None`) and
+//!   runs it through the unchanged `render_one` → guarded-write →
+//!   `html_root` flow. Params are extracted by the Hono router inside
+//!   the live bundle; no Rust-side `paths()` enumeration is needed.
+//!
+//! - **Precedence:** user `pages/` always wins over any injected route
+//!   of the same shape (enforced at staging time by reusing
+//!   `package_routes::resolve_build_pages_root`'s survivor-selection).
+//!   The post-precedence survivor set backs both the `url_index` seeds
+//!   (static) and the `InjectedRouteSet` consulted at request time
+//!   (dynamic), so the two views never disagree.
+//!
+//! - **HMR:** content the route reads from watched collection roots
+//!   live-refreshes through the existing `with_external_invalidation`
+//!   seam. The injected entrypoint itself lives under `node_modules`
+//!   (not in `DEFAULT_WATCH_ROOTS`) and is restart-only — editing the
+//!   package source requires a `zfb dev` restart.
+//!
+//! This module's public API (`InjectedRouteSet`, `pattern_matches`) is
+//! the lookup layer. The staging, seeding, and render wiring live in
+//! `crates/zfb/src/commands/dev.rs` and
+//! `crates/zfb/src/lazy_render_adapter.rs`.
 
 use std::sync::Arc;
 use zfb_build::InjectedRoute;

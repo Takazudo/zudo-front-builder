@@ -1049,28 +1049,34 @@ async fn serve_page(
         }
     }
 
-    // #255 — plugin-injected synthetic routes. After the page cache
-    // miss but before the dist / public fallbacks we consult the
-    // injected-route registry. A hit means a plugin claimed this URL
-    // pattern via `injectRoute(pattern, entrypoint)`. The registry
-    // plumbing is the deliverable for #255; full evaluation of the
-    // matched entrypoint through the page renderer is a follow-up.
-    // Today we emit a structured log so the user can confirm the
-    // injection landed end-to-end, and fall through to the existing
-    // dist / public fallback (which will 404 if no other file claims
-    // the URL — exactly the same shape as before, plus the log).
+    // #255 / epic #1228 (S3 #1231) — plugin-injected synthetic routes.
+    // The render-on-request hook above (the dev lazy render adapter) is
+    // what actually renders an injected route: a STATIC injected route is
+    // seeded into the dev route universe so `lookup_by_url` hits and the
+    // adapter renders it into `html_root` BEFORE this point, and the
+    // `read_from_dist(html_root, …)` leg just below then serves the fresh
+    // bytes (the dynamic request-time fallback is the S4 follow-up, added
+    // in the adapter — never here, to keep the renderer-mutex → exclusion
+    // -lock ordering single-owned). So this block no longer renders or
+    // implies a pending integration; it stays a pure best-effort
+    // DIAGNOSTIC: reaching it with a matched injected pattern means the
+    // hook ran but produced no servable file (a render failure the hook
+    // already logged, or the renderer being disabled), and we are about to
+    // fall through to the dist/public legs (typically a 404). Logged at
+    // debug so it never adds noise on the happy path.
     let path_for_inject = format!("/{trimmed}");
     if let Some(set) = state.injected_routes.as_ref() {
         if let Some(rec) = set.find_match(&path_for_inject) {
-            // Use the same tracing target the dev middleware uses so
-            // plugin diagnostics cluster together in dev output.
-            tracing::info!(
+            // Same tracing target the dev middleware uses so plugin
+            // diagnostics cluster together in dev output.
+            tracing::debug!(
                 target: "zfb_plugin",
                 plugin = %rec.plugin,
                 pattern = %rec.pattern,
                 entrypoint = %rec.entrypoint.display(),
                 url = %path_for_inject,
-                "injectRoute matched (renderer integration is a follow-up)",
+                "injectRoute matched but no rendered output was found before the disk legs \
+                 (render failed or renderer disabled); falling through",
             );
         }
     }
