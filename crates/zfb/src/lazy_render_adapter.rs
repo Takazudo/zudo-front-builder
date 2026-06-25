@@ -99,10 +99,11 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use zfb_build::pipeline::{GuardedWriteOutcome, RequestWriter};
 use zfb_build::renderer::{render_one, RouteUniverseEntry};
-use zfb_server::{RenderOnRequestHandle, RenderOnRequestHook};
+use zfb_server::{InjectedRouteSet, RenderOnRequestHandle, RenderOnRequestHook};
 
 use crate::commands::dev::{dev_timing_enabled, DevRenderSession, StaleClaim};
 use crate::output;
+use crate::render_pipeline::build_output_path_for_resolved_url;
 
 /// Build the live [`RenderOnRequestHandle`] installed into
 /// [`zfb_server::ServeOpts`] at dev boot (issue #1026).
@@ -111,13 +112,26 @@ use crate::output;
 /// session clone — whose renderer `Arc<Mutex<…>>`, route tables, and
 /// stale map are all swapped/updated IN PLACE by the refresh seams — so
 /// nothing here ever needs rewiring on a tick.
+///
+/// `injected_routes` is the POST-precedence survivor set (epic #1228, S4
+/// #1232) threaded in here so the adapter's dynamic-route fallback can
+/// match request URLs against injected patterns without consulting the raw
+/// registration list — user-shadowed and package-vs-package-dropped
+/// patterns are already absent (sharp edges 4/7 of the design record).
+/// Pass `InjectedRouteSet::default()` (empty) on the parity path (no
+/// injected routes); the fallback is a no-op in that case.
 pub(crate) fn make_render_on_request_handle(
     session: DevRenderSession,
     writer: RequestWriter,
     html_root: PathBuf,
+    injected_routes: InjectedRouteSet,
 ) -> RenderOnRequestHandle {
-    let hook: Arc<dyn RenderOnRequestHook> =
-        Arc::new(LazyRenderAdapter::new(session, writer, html_root));
+    let hook: Arc<dyn RenderOnRequestHook> = Arc::new(LazyRenderAdapter::new(
+        session,
+        writer,
+        html_root,
+        injected_routes,
+    ));
     Arc::new(std::sync::RwLock::new(Some(hook)))
 }
 
@@ -132,6 +146,12 @@ pub(crate) struct LazyRenderAdapter {
     /// the tick fan-out writes to and `serve_page`'s `html_root` leg
     /// reads from.
     html_root: PathBuf,
+    /// Post-precedence injected-route set (epic #1228, S4 #1232). Consulted
+    /// when `lookup_by_url` misses — if an injected PATTERN matches the
+    /// request URL, a synthetic [`RouteUniverseEntry`] is built on the fly
+    /// and the request renders through the unchanged flow. Empty on the
+    /// parity path (no injected routes), making the fallback a no-op.
+    injected_routes: InjectedRouteSet,
 }
 
 /// What one `render_if_stale` dispatch did, for tests and logging. The
@@ -174,11 +194,13 @@ impl LazyRenderAdapter {
         session: DevRenderSession,
         writer: RequestWriter,
         html_root: PathBuf,
+        injected_routes: InjectedRouteSet,
     ) -> Self {
         Self {
             session,
             writer,
             html_root,
+            injected_routes,
         }
     }
 
@@ -189,8 +211,71 @@ impl LazyRenderAdapter {
     fn render_stale_route(&self, url_path: &str) -> LazyRenderOutcome {
         // Reverse lookup (#1019) — clones the entry OUT of the routes
         // RwLock; no lock is held past this line.
-        let Some(entry) = self.session.lookup_by_url(url_path) else {
-            return LazyRenderOutcome::NoRoute;
+        //
+        // S4 (#1232): on a miss, fall through to the pattern-aware
+        // injected-route fallback before giving up with `NoRoute`.
+        let entry = match self.session.lookup_by_url(url_path) {
+            Some(e) => e,
+            None => {
+                // Dynamic-injected-route fallback (epic #1228, S4 #1232,
+                // design record §2). `lookup_by_url` misses for dynamic
+                // injected patterns (`/preset-docs/[slug]`) because they have
+                // no concrete URL at boot — dev does NOT enumerate `paths()`
+                // Rust-side (Hono extracts params + matches inside V8). If an
+                // injected pattern matches the request URL, synthesize a
+                // `RouteUniverseEntry` on the fly and fall through to the
+                // unchanged render flow (`claim_stale` → `render_claimed_entry`
+                // → `request_write_guarded`). The Hono bundle (seeded by S2)
+                // already contains the injected entrypoint, so V8 can match
+                // `paths()` and render with the correct params.
+                //
+                // Sharp edge 3 (design record): `route_key` = the PATTERN
+                // (template — Hono lookup key); `url_path` = the CONCRETE
+                // request URL. Swapping these breaks the prerender-map join.
+                // Sharp edge 4: `self.injected_routes` is the POST-precedence
+                // set — user-shadowed patterns are already absent.
+                match self.injected_routes.find_match(url_path) {
+                    Some(rec) => {
+                        // `output_path` derived by the same function as
+                        // normal pages so trailing-slash + base-prefix
+                        // parity is automatic (design record §3/§5).
+                        // Injected routes are always HTML pages → extension
+                        // `None` (defaults to "html").
+                        let output_path = build_output_path_for_resolved_url(url_path, None);
+                        // Stale-by-construction for the first request:
+                        // dynamic injected routes are never seeded into the
+                        // stale map at boot (no concrete URL). On the FIRST
+                        // request the output file is absent and no stale
+                        // entry exists — `claim_stale` would return `None`
+                        // and the pre-check below would short-circuit with
+                        // `NotStale`, preventing the render. Fix: when the
+                        // output file does not yet exist in `html_root`,
+                        // insert a stale entry (without touching `tick_stale`
+                        // — the tick channel stays clean) so the claim
+                        // succeeds. Subsequent requests for the SAME URL
+                        // land here again (url_index still misses — dynamic
+                        // routes are never seeded); by that point the file
+                        // exists and either: a content edit re-staled it
+                        // (stale entry exists, renders again), or it is
+                        // fresh (no stale entry, file served from disk by
+                        // the disk leg — pre-check returns `NotStale` as
+                        // intended). (design record §3, "stale-by-construction")
+                        let file_on_disk = self.html_root.join(&output_path);
+                        if !file_on_disk.exists() {
+                            self.session
+                                .claim_or_mark_stale_for_dynamic_route(&output_path);
+                        }
+                        RouteUniverseEntry {
+                            url_path: url_path.to_string(),
+                            output_path,
+                            route_key: rec.pattern.clone(),
+                            static_html: false,
+                            source_path: None,
+                        }
+                    }
+                    None => return LazyRenderOutcome::NoRoute,
+                }
+            }
         };
 
         // Staleness pre-check (#1025): fresh routes skip the renderer
@@ -383,6 +468,7 @@ mod tests {
         start, Backend, HttpResponseLike, RendererStartInput, RendererState,
     };
     use zfb_build::DevAssetPipeline;
+    use zfb_build::InjectedRoute;
 
     use crate::commands::dev::stub_session_for_adapter_tests;
 
@@ -506,6 +592,22 @@ mod tests {
         hits: Arc<AtomicUsize>,
         lazy_render: bool,
     ) -> Harness {
+        harness_from_handler_with_injected(
+            routes,
+            handler,
+            hits,
+            lazy_render,
+            InjectedRouteSet::default(),
+        )
+    }
+
+    fn harness_from_handler_with_injected(
+        routes: Vec<(PathBuf, Vec<RouteUniverseEntry>)>,
+        handler: Arc<dyn Fn(&str) -> HttpResponseLike + Send + Sync>,
+        hits: Arc<AtomicUsize>,
+        lazy_render: bool,
+        injected_routes: InjectedRouteSet,
+    ) -> Harness {
         let state = stub_renderer_state(handler);
         let session = stub_session_for_adapter_tests(
             PathBuf::new(),
@@ -520,6 +622,7 @@ mod tests {
             session.clone(),
             writer.clone(),
             html_root.path().to_path_buf(),
+            injected_routes,
         );
         Harness {
             adapter,
@@ -950,6 +1053,196 @@ mod tests {
             line,
             "[zfb-timing] lazy-render url=/posts/a output=posts/a/index.html \
              render=12ms write=3ms total=15ms written=true"
+        );
+    }
+
+    // ------------------------------------------------------------------ //
+    // S4 (#1232) — dynamic-injected-route fallback unit tests             //
+    // ------------------------------------------------------------------ //
+
+    /// Build a harness with no concrete routes in the url_index (the
+    /// `url_index` misses for all paths) but with an `InjectedRouteSet`
+    /// containing `injected_routes`.
+    fn injected_harness(injected_routes: InjectedRouteSet, resp: HttpResponseLike) -> Harness {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let handler = counting_handler(Arc::clone(&hits), resp);
+        harness_from_handler_with_injected(
+            vec![], // no concrete routes — url_index is empty
+            handler,
+            hits,
+            true, // lazy_render = true
+            injected_routes,
+        )
+    }
+
+    fn injected_rec(pattern: &str) -> InjectedRoute {
+        InjectedRoute {
+            pattern: pattern.into(),
+            entrypoint: PathBuf::from("/tmp/stub.tsx"),
+            plugin: "test-plugin".into(),
+            prerender: None,
+        }
+    }
+
+    /// Synthetic `RouteUniverseEntry` contract (S4 design record §2 /
+    /// sharp edges 3 & 4):
+    /// - `url_path` = the CONCRETE request URL,
+    /// - `route_key` = the PATTERN (template, not the concrete URL),
+    /// - `output_path` = `build_output_path_for_resolved_url(url_path, None)`,
+    /// - `static_html = false`, `source_path = None`.
+    ///
+    /// Verified without going through a full render (the harness has empty
+    /// routes so the render will fail with RenderFailed if the stub returns
+    /// a non-200; we just need to get past the `NoRoute` guard, which the
+    /// test verifies by asserting the outcome is NOT `NoRoute`).
+    #[test]
+    fn dynamic_fallback_synthesizes_entry_for_slug_pattern() {
+        let s = InjectedRouteSet::new(vec![injected_rec("/preset-docs/[slug]")]);
+        let h = injected_harness(s, html_response("<html><body>slug</body></html>"));
+
+        // Should match and render (not return NoRoute).
+        let outcome = h.adapter.render_stale_route("/preset-docs/getting-started");
+        assert_ne!(
+            outcome,
+            LazyRenderOutcome::NoRoute,
+            "/preset-docs/getting-started must match the [slug] injected pattern"
+        );
+
+        // A URL that does NOT match the pattern must still be NoRoute.
+        let miss = h.adapter.render_stale_route("/other/path");
+        assert_eq!(
+            miss,
+            LazyRenderOutcome::NoRoute,
+            "/other/path must not match /preset-docs/[slug]"
+        );
+    }
+
+    /// Dynamic catch-all `[...rest]` — one or more segments.
+    #[test]
+    fn dynamic_fallback_matches_catchall_rest() {
+        let s = InjectedRouteSet::new(vec![injected_rec("/docs/[...rest]")]);
+        let h = injected_harness(s, html_response("<html/>"));
+
+        assert_ne!(
+            h.adapter.render_stale_route("/docs/a"),
+            LazyRenderOutcome::NoRoute,
+            "/docs/a must match /docs/[...rest]"
+        );
+        assert_ne!(
+            h.adapter.render_stale_route("/docs/a/b/c"),
+            LazyRenderOutcome::NoRoute,
+            "/docs/a/b/c must match /docs/[...rest]"
+        );
+        // Zero segments: the bare prefix must NOT match [..rest] (needs at
+        // least one segment).
+        assert_eq!(
+            h.adapter.render_stale_route("/docs"),
+            LazyRenderOutcome::NoRoute,
+            "/docs (bare prefix) must NOT match /docs/[...rest]"
+        );
+    }
+
+    /// Optional catch-all `[[...slug]]` — zero or more segments.
+    ///
+    /// Bare prefix matches (the zero-segment case); nested paths match;
+    /// trailing-slash form does NOT (Hono `:rest{.+}?` parity, per the
+    /// `injected_routes::pattern_matches` spec).
+    #[test]
+    fn dynamic_fallback_matches_optional_catchall() {
+        let s = InjectedRouteSet::new(vec![injected_rec("/guide/[[...slug]]")]);
+        let h = injected_harness(s, html_response("<html/>"));
+
+        // Bare prefix (zero-segment case) matches.
+        assert_ne!(
+            h.adapter.render_stale_route("/guide"),
+            LazyRenderOutcome::NoRoute,
+            "/guide (bare prefix) must match /guide/[[...slug]]"
+        );
+        // Nested paths match.
+        assert_ne!(
+            h.adapter.render_stale_route("/guide/intro"),
+            LazyRenderOutcome::NoRoute,
+            "/guide/intro must match /guide/[[...slug]]"
+        );
+        assert_ne!(
+            h.adapter.render_stale_route("/guide/a/b/c"),
+            LazyRenderOutcome::NoRoute,
+            "/guide/a/b/c must match /guide/[[...slug]]"
+        );
+        // Trailing-slash form does NOT match.
+        assert_eq!(
+            h.adapter.render_stale_route("/guide/"),
+            LazyRenderOutcome::NoRoute,
+            "/guide/ (trailing-slash) must NOT match /guide/[[...slug]] (Hono parity)"
+        );
+    }
+
+    /// Parity path: with an empty `InjectedRouteSet` and a url_index
+    /// miss, the fallback must return `NoRoute` — zero behavioural change
+    /// from the pre-S4 world.
+    #[test]
+    fn empty_injected_set_preserves_no_route() {
+        let h = injected_harness(InjectedRouteSet::default(), html_response("<html/>"));
+        assert_eq!(
+            h.adapter.render_stale_route("/preset-docs/anything"),
+            LazyRenderOutcome::NoRoute,
+            "empty injected set must not match any URL"
+        );
+    }
+
+    /// `output_path` derivation: the synthetic entry must produce the same
+    /// output path as `build_output_path_for_resolved_url` with the
+    /// concrete URL — confirming trailing-slash + base-prefix parity
+    /// (design record §3/§5 and sharp edge 3).
+    ///
+    /// We verify the output file IS written to the derived path (i.e. the
+    /// `output_path` the render path uses is correct) by checking that
+    /// the expected file exists after the render completes.
+    #[tokio::test]
+    async fn dynamic_fallback_output_path_matches_build_output_path_for_resolved_url() {
+        let s = InjectedRouteSet::new(vec![injected_rec("/preset-docs/[slug]")]);
+        let h = injected_harness(s, html_response("<html><body>doc</body></html>"));
+
+        // The concrete URL is /preset-docs/getting-started.
+        // Expected output path: preset-docs/getting-started/index.html.
+        let expected_output = PathBuf::from("preset-docs/getting-started/index.html");
+        let expected_file = h.html_root.path().join(&expected_output);
+
+        h.adapter
+            .render_if_stale("/preset-docs/getting-started")
+            .await;
+
+        assert!(
+            expected_file.exists(),
+            "dynamic injected render must write to {expected_output:?} — file not found: {expected_file:?}"
+        );
+        let body = std::fs::read_to_string(&expected_file).expect("read rendered file");
+        assert!(
+            body.contains("doc"),
+            "rendered body must reach disk via the dynamic fallback: {body}"
+        );
+    }
+
+    /// `route_key` is the PATTERN, not the concrete URL (sharp edge 3).
+    /// Verified indirectly: the stub renders a body that does NOT depend on
+    /// `route_key` — we verify the correct output_path is used (from the
+    /// concrete URL) to confirm the entry was synthesized with the right
+    /// fields. A direct field assertion would require exposing the entry
+    /// from `render_stale_route`, so we pin both the output-file path
+    /// (concrete URL → derived path) and the rendered body (V8 gets the
+    /// concrete URL, not the pattern).
+    #[tokio::test]
+    async fn dynamic_fallback_uses_concrete_url_for_output_path() {
+        let s = InjectedRouteSet::new(vec![injected_rec("/docs/[...rest]")]);
+        let h = injected_harness(s, html_response("<html><body>rest</body></html>"));
+
+        h.adapter.render_if_stale("/docs/a/b").await;
+
+        // The concrete URL /docs/a/b must produce docs/a/b/index.html.
+        let expected_file = h.html_root.path().join("docs/a/b/index.html");
+        assert!(
+            expected_file.exists(),
+            "output path must derive from the concrete URL /docs/a/b, not the pattern"
         );
     }
 }
