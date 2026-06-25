@@ -1,30 +1,28 @@
-//! Static injected-route render E2E — real `zfb dev` serving package-owned
-//! `injectRoute(...)` static routes (epic #1228, S3 #1231).
+//! Injected-route dev-render E2E suite — canonical Level-4 confirm gate for
+//! epic #1228 (`inject-route-dev-render`). Boots a real `zfb dev` process
+//! over the `package-routes-consumer` fixture and proves the full contract:
 //!
-//! ## Why this test exists
+//! ## What this suite proves end-to-end
 //!
-//! S2 (#1230) put the synthesized injected-route modules into the dev
-//! bundle; S3 seeds the STATIC injected routes (URL == pattern) into the
-//! dev route universe so they actually render and serve under `zfb dev`.
-//! No crate-level test runs the real `zfb dev` binary against an injected
-//! route — `build_package_routes_consumer.rs` proves only the `zfb build`
-//! path. This harness boots a real `zfb dev` over the
-//! `package-routes-consumer` fixture and asserts the static injected route
-//! serves real HTML over HTTP:
+//! | Test | Wave | Contract |
+//! |---|---|---|
+//! | `dev_e2e_static_injected_route_renders` | S3 #1231 | Static `/preset-about` serves HTML + relative-import content; `virtual:` entrypoint renders; user `pages/` wins on collision; dev `"/"` reservation holds |
+//! | `dev_e2e_dynamic_injected_route_renders` | S4 #1232 | `[slug]` renders two concrete URLs; `[...rest]` renders multi-segment; `[[...section]]` bare prefix AND nested AND deeply nested; root not hijacked |
+//! | `dev_e2e_injected_route_hmr_content_edit_refreshes` | S5 #1233 | Content edit under a watched collection re-renders the injected route (HMR positive); node_modules restart-only contract held at unit level |
+//! | `dev_e2e_trailing_slash_parity` | S6 #1234 | `/preset-about` and `/preset-about/` resolve identically (static); `/preset-docs/getting-started` and `/preset-docs/getting-started/` resolve identically (dynamic) |
 //!
-//! - `GET /preset-about` → 200 with `CONSUMER_PRESET_ABOUT_MARKER` and the
-//!   relative-import content (`Consumer Demo`, from `pkg/site-meta.ts`) —
-//!   proof the static injected route renders through the lazy adapter into
-//!   `html_root` and is served from disk.
-//! - `GET /preset-virtual` → 200 with the marker — proof a `virtual:`
-//!   -importing static injected entrypoint renders too (the preset
-//!   registers the `virtual:` module via `addVirtualModule`).
-//! - **Precedence:** a preset that ALSO injects `/guide` (which the user
-//!   owns via `pages/guide.tsx`) must NOT shadow the user page —
-//!   `GET /guide` serves `CONSUMER_USER_GUIDE_MARKER`, never the injected
-//!   marker (user `pages/` wins).
-//! - **Dev `/` reservation unchanged:** `GET /` serves the user home
-//!   (`CONSUMER_USER_HOME_MARKER`); no injected route claims root in dev.
+//! ## Design decision — fixture reuse
+//!
+//! All four tests run over the `package-routes-consumer` fixture (the same
+//! fixture used by `build_package_routes_consumer.rs` for the build half).
+//! The spec (#1234) mentions a possible `dev-loop-with-preset/` sibling, but
+//! `package-routes-consumer` already carries static + dynamic + optional-
+//! catchall patterns, a colliding user page (`pages/guide.tsx`), and a user
+//! home (`pages/index.tsx`) — everything the confirm bullets need.  Creating
+//! a separate fixture would duplicate the fixture without adding coverage, so
+//! the existing one is kept (minimal change, no churn).  Each test writes its
+//! own `preset.mjs` (and any supporting `pkg/*.tsx`) at runtime into a fresh
+//! `tempdir` copy of the fixture, so the tests are fully isolated.
 //!
 //! ## Determinism / spawn discipline
 //!
@@ -32,8 +30,7 @@
 //! stdout/stderr captured to files (never pipes), `DevServerGuard`
 //! group-kills on Drop, and an overall wall-clock watchdog. Readiness is
 //! an HTTP poll of `GET /` after the ready banner is parsed only to learn
-//! the port. The injected routes are STATIC, so they are seeded + stale-
-//! marked at boot and render on first request — no watcher edit needed.
+//! the port.
 //!
 //! ## Skip conditions
 //!
@@ -317,6 +314,57 @@ async fn poll_until_contains(
 enum Outcome {
     Completed,
     Skipped,
+}
+
+/// Like `poll_until_contains`, but also fails fast (panics immediately) if
+/// the server responds with any 3xx redirect instead of a 200.  Used for
+/// trailing-slash assertions where the test client has `Policy::none()`:
+/// without this guard, a 301/308 regression would silently burn through the
+/// full `ROUTE_DEADLINE` before panicking with a misleading "marker not found"
+/// message.
+async fn poll_until_200_not_redirect(
+    client: &reqwest::Client,
+    url: &str,
+    needle: &str,
+    deadline: Duration,
+    phase: &str,
+    session: &DevSession,
+) {
+    let start = Instant::now();
+    let mut last = String::from("(no response yet)");
+    while start.elapsed() < deadline {
+        match client.get(url).send().await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                if (300..400).contains(&status) {
+                    let location = resp
+                        .headers()
+                        .get("location")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("(none)")
+                        .to_string();
+                    panic!(
+                        "[{phase}] GET {url} returned a {status} redirect to {location:?} — \
+                         trailing-slash normalization regression: the dev server must serve \
+                         a 200 directly for the trailing-slash variant, not redirect.\n{}",
+                        session.logs(),
+                    );
+                }
+                let body = resp.text().await.unwrap_or_default();
+                if status == 200 && body.contains(needle) {
+                    return;
+                }
+                last = format!("status {status}, body:\n{body}");
+            }
+            Err(e) => last = format!("request error: {e}"),
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "[{phase}] GET {url} did not serve {needle:?} within {}s.\nLast: {last}\n{}",
+        deadline.as_secs(),
+        session.logs(),
+    );
 }
 
 /// The full static-injected-route render contract against a real `zfb dev`.
@@ -1262,6 +1310,272 @@ async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
                  Process group {pgid} will be killed.\n{}",
                 OVERALL_DEADLINE.as_secs(),
                 session.logs(),
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S6 (#1234) — CONFIRM gate: trailing-slash parity
+// ---------------------------------------------------------------------------
+//
+// ## Contract being tested
+//
+// The render-on-request hook receives a **prefix-stripped, query-stripped**
+// path (`render_hook.rs:99-104`).  `lookup_by_url` normalizes trailing slash,
+// `index.html` duality, and percent-encoding before consulting `url_index`
+// (`dev.rs:2703-2722`), and `output_path` is derived from the already-
+// normalized URL, so `/preset-about` and `/preset-about/` resolve to the same
+// `preset-about/index.html` — matching a normal static page.  For dynamic
+// injected routes the same normalization runs inside `pattern_matches` /
+// `render_stale_route`'s fallback, so `/preset-docs/a` and `/preset-docs/a/`
+// also resolve identically.  No new normalization code is needed — this test
+// proves the existing paths carry it correctly.
+//
+// ## Why a separate test
+//
+// S3/S4 focus on *presence* of the marker; they don't exercise the trailing-
+// slash variant.  Adding trailing-slash assertions there would interleave
+// concerns into already long test bodies.  A dedicated test with a clear name
+// is easier for the manager to identify and run during the confirm gate.
+
+/// Write a preset that injects both a static and a dynamic route, with no
+/// user-page collision, for trailing-slash parity checks only.
+fn write_trailing_slash_preset(root: &Path) {
+    let preset = r#"
+export default {
+  name: "consumer-preset-s6-trailing-slash",
+  setup({ injectRoute }) {
+    // Static: /preset-about (URL == pattern, seeded into url_index at boot).
+    injectRoute("/preset-about", "./pkg/about.tsx");
+    // Dynamic: /preset-docs/[slug] (request-time synthetic entry).
+    injectRoute("/preset-docs/[slug]", "./pkg/docs.tsx");
+  },
+};
+"#;
+    fs::write(root.join("preset.mjs"), preset).expect("write trailing-slash preset.mjs");
+}
+
+/// S6 CONFIRM gate: trailing-slash parity for both static and dynamic
+/// injected routes under a real `zfb dev` (epic #1228, S6 #1234).
+///
+/// Asserts that a trailing slash is transparent:
+///
+/// - `GET /preset-about` and `GET /preset-about/` both return 200 with
+///   `CONSUMER_PRESET_ABOUT_MARKER` — the static injected route is served
+///   from the same `html_root/preset-about/index.html` for both URL forms.
+/// - `GET /preset-docs/getting-started` and
+///   `GET /preset-docs/getting-started/` both return 200 with the docs
+///   marker — the dynamic injected route's `output_path` derivation runs on
+///   the already-normalized URL, so the trailing-slash variant hits the same
+///   cached render.
+///
+/// ## Test level
+///
+/// Level 4 — real `zfb dev` process, real HTTP requests. Required because
+/// trailing-slash normalization spans the HTTP layer (`lookup_by_url`,
+/// `url_index_lookup_keys`, `output_path` derivation) in a way no lower
+/// level can exercise end-to-end.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_e2e_trailing_slash_parity() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[trailing_slash_e2e] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+    if !node_available() {
+        eprintln!("[trailing_slash_e2e] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("create tempdir for trailing-slash fixture");
+    let root = tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize fixture root");
+    copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
+    write_trailing_slash_preset(&root);
+
+    let (nm_handle, embedded_nm_path) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    std::os::unix::fs::symlink(&embedded_nm_path, root.join("node_modules"))
+        .expect("symlink node_modules");
+
+    let stdout_path = root.join(".zfb-dev-stdout-s6.log");
+    let stderr_path = root.join(".zfb-dev-stderr-s6.log");
+    let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
+    let stderr_file = fs::File::create(&stderr_path).expect("create stderr log");
+
+    let mut cmd = Command::new(zfb_binary!());
+    cmd.arg("dev")
+        .arg("--port")
+        .arg("0")
+        .current_dir(&root)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
+    cmd.env_remove("ZFB_DEV_EAGER")
+        .env_remove("ZFB_LAZY_DEV_RENDER")
+        .env_remove("ZFB_DEV_DEFER_BUNDLE")
+        .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS");
+    cmd.process_group(0);
+
+    let child = cmd.spawn().expect("spawn `zfb dev`");
+    let pgid = child.id() as libc::pid_t;
+    let mut session = DevSession {
+        guard: DevServerGuard { child, pgid },
+        stdout_path: stdout_path.clone(),
+        stderr_path: stderr_path.clone(),
+    };
+    // Keep the node_modules TempDir alive for the whole test.
+    let _nm = nm_handle;
+
+    let body = async {
+        // Phase A: discover the port from the ready banner.
+        let boot_start = Instant::now();
+        let port = loop {
+            if let Some(status) = session.guard.try_exit_status() {
+                let combined = format!(
+                    "{}{}",
+                    read_log(&session.stdout_path),
+                    read_log(&session.stderr_path)
+                );
+                if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                    eprintln!(
+                        "[trailing_slash_e2e] `zfb dev` exited with a known-skip indicator; \
+                         skipping.\n{}",
+                        session.logs(),
+                    );
+                    return Outcome::Skipped;
+                }
+                panic!(
+                    "`zfb dev` exited prematurely (status {status:?}) before the ready banner.\n{}",
+                    session.logs(),
+                );
+            }
+            if let Some(port) = parse_ready_port(&read_log(&session.stdout_path)) {
+                break port;
+            }
+            assert!(
+                boot_start.elapsed() < BOOT_DEADLINE,
+                "`zfb dev` did not print a ready banner within {}s.\n{}",
+                BOOT_DEADLINE.as_secs(),
+                session.logs(),
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
+        let base = format!("http://localhost:{port}");
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            // Do NOT follow redirects: a trailing-slash redirect (301/308)
+            // instead of a 200 would indicate the dev server is not serving
+            // the file at the trailing-slash URL directly, which is a
+            // regression in `lookup_by_url` normalization.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build reqwest client");
+
+        // Phase B: readiness — GET / answers 200.
+        {
+            // Use a separate client that follows redirects for the readiness
+            // check (the root URL itself may redirect or be served directly).
+            let ready_client = reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("build ready client");
+            let start = Instant::now();
+            loop {
+                if let Ok(resp) = ready_client.get(format!("{base}/")).send().await {
+                    if resp.status().as_u16() == 200 {
+                        break;
+                    }
+                }
+                assert!(
+                    start.elapsed() < BOOT_DEADLINE,
+                    "GET / never answered 200 within {}s.\n{}",
+                    BOOT_DEADLINE.as_secs(),
+                    session.logs(),
+                );
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+        }
+
+        // --- Trailing-slash parity: STATIC injected route ---
+
+        // Without trailing slash (canonical form).
+        poll_until_contains(
+            &client,
+            &format!("{base}/preset-about"),
+            "CONSUMER_PRESET_ABOUT_MARKER",
+            ROUTE_DEADLINE,
+            "static injected /preset-about (no trailing slash) renders",
+            &session,
+        )
+        .await;
+
+        // With trailing slash — must serve the same marker, not redirect.
+        // `lookup_by_url` normalizes trailing slash before consulting
+        // `url_index` (`dev.rs:2703-2722`), so this must be a 200 with
+        // the same content, not a 301/308.  The no-redirect `client` makes
+        // a 3xx status bypass the `status == 200` guard below and fall
+        // through to an explicit redirect-regression panic.
+        poll_until_200_not_redirect(
+            &client,
+            &format!("{base}/preset-about/"),
+            "CONSUMER_PRESET_ABOUT_MARKER",
+            ROUTE_DEADLINE,
+            "static injected /preset-about/ (trailing slash)",
+            &session,
+        )
+        .await;
+
+        // --- Trailing-slash parity: DYNAMIC injected route ---
+
+        // Without trailing slash.
+        poll_until_contains(
+            &client,
+            &format!("{base}/preset-docs/getting-started"),
+            "CONSUMER_PRESET_DOCS_MARKER_getting-started",
+            ROUTE_DEADLINE,
+            "dynamic injected /preset-docs/getting-started (no trailing slash) renders",
+            &session,
+        )
+        .await;
+
+        // With trailing slash — the dynamic fallback derives `output_path`
+        // from the normalized URL (`build_output_path_for_resolved_url` runs
+        // on the already-stripped path), so both variants produce the same
+        // `preset-docs/getting-started/index.html` and serve the same HTML.
+        poll_until_200_not_redirect(
+            &client,
+            &format!("{base}/preset-docs/getting-started/"),
+            "CONSUMER_PRESET_DOCS_MARKER_getting-started",
+            ROUTE_DEADLINE,
+            "dynamic injected /preset-docs/getting-started/ (trailing slash)",
+            &session,
+        )
+        .await;
+
+        Outcome::Completed
+    };
+
+    let outcome = tokio::time::timeout(OVERALL_DEADLINE, body).await;
+    match outcome {
+        Ok(Outcome::Completed) | Ok(Outcome::Skipped) => {}
+        Err(_) => {
+            panic!(
+                "[watchdog] trailing-slash parity dev E2E did not finish within {}s — \
+                 a hang, or an injected route did not serve identical content for its \
+                 trailing-slash variant. Process group {pgid} will be killed.\n{}\n\
+                 --- stdout ---\n{}\n--- stderr ---\n{}",
+                OVERALL_DEADLINE.as_secs(),
+                "check logs below",
+                read_log(&stdout_path),
+                read_log(&stderr_path),
             );
         }
     }
