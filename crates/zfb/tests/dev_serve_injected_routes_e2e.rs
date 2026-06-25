@@ -8,7 +8,7 @@
 //! |---|---|---|
 //! | `dev_e2e_static_injected_route_renders` | S3 #1231 | Static `/preset-about` serves HTML + relative-import content; `virtual:` entrypoint renders; user `pages/` wins on collision; dev `"/"` reservation holds |
 //! | `dev_e2e_dynamic_injected_route_renders` | S4 #1232 | `[slug]` renders two concrete URLs; `[...rest]` renders multi-segment; `[[...section]]` bare prefix AND nested AND deeply nested; root not hijacked |
-//! | `dev_e2e_injected_route_hmr_content_edit_refreshes` | S5 #1233 | Content edit under a watched collection re-renders the injected route (HMR positive); node_modules restart-only contract held at unit level |
+//! | `dev_e2e_injected_route_hmr_content_edit_refreshes` | S5 #1233 | Content edit under a watched collection re-renders a DYNAMIC injected route whose `paths()` reads the collection (HMR positive, #1227 item (h)); node_modules restart-only contract held at unit level |
 //! | `dev_e2e_trailing_slash_parity` | S6 #1234 | `/preset-about` and `/preset-about/` resolve identically (static); `/preset-docs/getting-started` and `/preset-docs/getting-started/` resolve identically (dynamic) |
 //!
 //! ## Design decision — fixture reuse
@@ -903,11 +903,21 @@ async fn dev_e2e_dynamic_injected_route_renders() {
 //
 // A content edit under a watched collection fires a watcher tick that
 // rebuilds the content snapshot and swaps the route tables.  After the swap
-// `note_table_swap` bumps the stale-tick generation and
-// `mark_injected_seeds_stale` re-claims every static injected route's
-// output_path.  The NEXT request to the injected URL re-renders against the
-// fresh snapshot — so the served HTML reflects the edited content WITHOUT a
-// dev-server restart.
+// `note_table_swap` bumps the stale-tick generation, `mark_injected_seeds_stale`
+// re-claims every STATIC injected seed's output_path, and
+// `restale_dynamic_injected` re-claims every previously-rendered DYNAMIC
+// injected output_path.  The NEXT request to the injected URL re-renders
+// against the fresh snapshot — so the served HTML reflects the edited content
+// WITHOUT a dev-server restart.
+//
+// This test exercises the DYNAMIC channel (#1227 item (h)): the injected
+// route is `/preset-articles/[slug]` whose top-level `paths()` calls
+// `getCollection("articles")`. That is the supported data-loading path for
+// injected routes — a STATIC injected route's own `getStaticProps` is NOT
+// forwarded by the static overlay synthesizer (see `setup_hmr_fixture` and
+// `commands::package_routes::synthesize_static_overlay_module`), so it could
+// never read the collection in the first place.  The dynamic shape mirrors
+// the real downstream zudo-doc doc routes.
 //
 // ## Negative (node_modules restart-only) — asserted at the unit-logic level
 //
@@ -929,9 +939,28 @@ async fn dev_e2e_dynamic_injected_route_renders() {
 /// 1. Overwrite `zfb.config.json` to declare an `articles` collection under
 ///    `content/articles`.
 /// 2. Create two initial article files.
-/// 3. Write `pkg/articles-page.tsx` — an injected page that calls
-///    `getCollection("articles")` and lists article titles in the body.
-/// 4. Write `preset.mjs` to inject `/preset-articles` backed by that page.
+/// 3. Write `pkg/articles-page.tsx` — a **DYNAMIC** injected page
+///    (`/preset-articles/[slug]`) whose top-level `paths()` calls
+///    `getCollection("articles")` and returns one path per article, each
+///    carrying the article's title as a prop. The default component renders
+///    the per-article title.
+/// 4. Write `preset.mjs` to inject `/preset-articles/[slug]` backed by it.
+///
+/// ## Why a DYNAMIC route with `paths()` (not a static `getStaticProps`)
+///
+/// The static overlay synthesizer
+/// (`commands::package_routes::synthesize_static_overlay_module`) emits only
+/// `export { default } from <spec>` plus the inlined prerender — it does NOT
+/// forward a package page's own `getStaticProps`. So a STATIC injected route
+/// whose page reads a collection via `getStaticProps` never receives its
+/// props (the `articles` prop is `undefined`) — identical behaviour in
+/// `zfb build` and dev (correct parity, not a dev bug). The supported
+/// data-loading channel for injected routes is a **dynamic** route's
+/// top-level `paths()`, which the dynamic overlay synthesizer
+/// (`synthesize_dynamic_overlay_module`) DOES surface. This mirrors the real
+/// downstream shape (zudo-doc's `[[...slug]]` doc routes whose `paths()`
+/// reads `getCollection`) and matches the build-side coverage in
+/// `build_package_routes.rs::dynamic_package_route_runtime_getcollection_paths_enumerates`.
 ///
 /// Returns the path to the article used as the HMR edit target.
 fn setup_hmr_fixture(root: &Path) -> PathBuf {
@@ -963,35 +992,34 @@ fn setup_hmr_fixture(root: &Path) -> PathBuf {
     )
     .expect("write feature.md");
 
-    // 3. Write the injected page that lists article titles via getCollection.
-    //    Uses getStaticProps so the collection is read at render time and the
-    //    per-tick content snapshot drives the output.
+    // 3. Write the dynamic injected page. `paths()` reads the collection at
+    //    request time (runtime getCollection — non-literal, so it is enumerated
+    //    via the V8 `__paths__` worker each tick against the fresh content
+    //    snapshot) and returns one path per article carrying its title prop.
     let articles_page = r#"
 type Article = {
   slug: string;
   data: { title: string };
 };
 
-export async function getStaticProps() {
+export async function paths() {
   const { getCollection } = await import("@takazudo/zfb/content");
   const articles = (await getCollection("articles")) as Article[];
-  const sorted = [...articles].sort((a, b) => a.slug.localeCompare(b.slug));
-  return { props: { articles: sorted } };
+  return articles.map((a) => ({
+    params: { slug: a.slug },
+    props: { slug: a.slug, title: a.data.title },
+  }));
 }
 
-type Props = { articles: Article[] };
+type Props = { slug: string; title: string };
 
-export default function ArticlesPage({ articles }: Props) {
+export default function ArticlePage({ slug, title }: Props) {
   return (
     <html lang="en">
-      <head><title>Articles</title></head>
+      <head><title>{title}</title></head>
       <body>
         <h1>INJECTED_ARTICLES_MARKER</h1>
-        <ul>
-          {articles.map((a) => (
-            <li key={a.slug}>{a.data.title}</li>
-          ))}
-        </ul>
+        <p data-slug={slug}>{title}</p>
       </body>
     </html>
   );
@@ -1000,15 +1028,17 @@ export default function ArticlesPage({ articles }: Props) {
     fs::write(root.join("pkg").join("articles-page.tsx"), articles_page)
         .expect("write pkg/articles-page.tsx");
 
-    // 4. Write the preset that injects /preset-articles.
+    // 4. Write the preset that injects the DYNAMIC /preset-articles/[slug].
     let preset = r#"
 export default {
   name: "consumer-preset-s5-hmr",
   setup({ injectRoute }) {
-    // Static injected route that reads the `articles` collection.
-    // A content edit under content/articles DOES live-refresh this route
-    // via the per-tick snapshot rebuild + per-swap stale-mark (S5 / #1233).
-    injectRoute("/preset-articles", "./pkg/articles-page.tsx");
+    // Dynamic injected route whose paths() reads the `articles` collection.
+    // A content edit under content/articles live-refreshes the already-
+    // rendered concrete URL via the per-tick snapshot rebuild + the per-swap
+    // re-stale of previously-rendered dynamic injected outputs (S5 / #1233,
+    // #1227 item (h)).
+    injectRoute("/preset-articles/[slug]", "./pkg/articles-page.tsx");
   },
 };
 "#;
@@ -1034,9 +1064,10 @@ async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Respons
 }
 
 /// S5 HMR contract: editing a watched collection file (content/articles/…)
-/// causes a static injected route that reads that collection via
-/// `getCollection(…)` to re-render and serve the updated content — without
-/// a `zfb dev` restart.
+/// causes a DYNAMIC injected route (`/preset-articles/[slug]`) whose
+/// `paths()` reads that collection via `getCollection(…)` to re-render and
+/// serve the updated content at the same concrete URL — without a `zfb dev`
+/// restart (#1227 item (h)).
 ///
 /// ## Test level
 ///
@@ -1212,35 +1243,41 @@ async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
             );
         }
 
-        // ── Phase D: baseline — /preset-articles serves V1 title ─────────
+        // ── Phase D: baseline — /preset-articles/feature serves V1 title ──
         //
-        // Confirm the injected route renders at all before the HMR edit.
+        // Confirm the dynamic injected route renders the edit-target article's
+        // concrete URL before the HMR edit. `feature.md` → slug `feature`.
+        // This first request is what writes the dynamic injected output file to
+        // disk (request-time synthetic-entry path, S4) — the route Part B must
+        // re-stale on the content-edit tick.
         poll_until_contains(
             &client,
-            &format!("{base}/preset-articles"),
+            &format!("{base}/preset-articles/feature"),
             "INJECTED_ARTICLES_MARKER",
             ROUTE_DEADLINE,
-            "HMR baseline: /preset-articles serves the injected marker",
+            "HMR baseline: /preset-articles/feature serves the injected marker",
             &session,
         )
         .await;
         poll_until_contains(
             &client,
-            &format!("{base}/preset-articles"),
+            &format!("{base}/preset-articles/feature"),
             "V1-HMR-ARTICLE-TITLE",
             ROUTE_DEADLINE,
-            "HMR baseline: /preset-articles lists the V1 article title",
+            "HMR baseline: /preset-articles/feature renders the V1 article title",
             &session,
         )
         .await;
 
         // ── Phase E: HMR positive — content edit refreshes injected route ─
         //
-        // The mechanism (S3 / S5, epic #1228 §4):
+        // The mechanism (S3 / S5, epic #1228 §4; #1227 item (h)):
         //   edit → watcher tick → assemble_and_bundle_dev rebuilds the content
         //   snapshot → new bundle bytes → Phase-B skip fails → full
         //   refresh_bundle_and_routes runs → note_table_swap bumps the
-        //   generation → mark_injected_seeds_stale re-stales /preset-articles
+        //   generation → mark_injected_seeds_stale re-stales STATIC seeds AND
+        //   restale_dynamic_injected re-stales every previously-rendered
+        //   DYNAMIC injected output (the `feature` URL's file)
         //   → the next GET re-renders with the fresh snapshot and serves the
         //   new title.
         //
@@ -1267,32 +1304,33 @@ async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
                 session.logs(),
             );
 
-            // The authoritative assertion: the injected route now serves the
-            // V2 title.  Polled (not single-shot) because the lazy renderer
-            // writes on the first request AFTER the tick's stale-mark.
+            // The authoritative assertion: the dynamic injected route now
+            // serves the V2 title at the SAME concrete URL.  Polled (not
+            // single-shot) because the lazy renderer writes on the first
+            // request AFTER the tick's re-stale of the dynamic injected output.
             poll_until_contains(
                 &client,
-                &format!("{base}/preset-articles"),
+                &format!("{base}/preset-articles/feature"),
                 "V2-HMR-ARTICLE-TITLE",
                 ROUTE_DEADLINE,
-                "HMR positive: /preset-articles must serve the V2 title after content edit",
+                "HMR positive: /preset-articles/feature must serve the V2 title after content edit",
                 &session,
             )
             .await;
 
             // Belt-and-suspenders: the V1 title must be gone.
             let body = client
-                .get(format!("{base}/preset-articles"))
+                .get(format!("{base}/preset-articles/feature"))
                 .send()
                 .await
-                .expect("GET /preset-articles after HMR edit")
+                .expect("GET /preset-articles/feature after HMR edit")
                 .text()
                 .await
                 .unwrap_or_default();
             assert!(
                 !body.contains("V1-HMR-ARTICLE-TITLE"),
                 "V1 article title must NOT appear after the HMR edit; \
-                 the injected route is serving stale content.\nbody:\n{body}\n{}",
+                 the dynamic injected route is serving stale content.\nbody:\n{body}\n{}",
                 session.logs(),
             );
         }
