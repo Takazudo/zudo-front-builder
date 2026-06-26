@@ -35,7 +35,9 @@ export function withBase(path: string): string {
 /** Strip the base prefix from a URL pathname. */
 export function stripBase(path: string): string {
   if (normalizedBase === "") return path;
-  return path.startsWith(normalizedBase) ? path.slice(normalizedBase.length) || "/" : path;
+  // Require a segment boundary so base "/app" doesn't strip "/application/...".
+  if (path === normalizedBase) return "/";
+  return path.startsWith(`${normalizedBase}/`) ? path.slice(normalizedBase.length) : path;
 }
 
 /**
@@ -51,7 +53,7 @@ export function absoluteUrl(pageUrl: string): string | undefined {
 }
 
 /** Build a docs URL for the given slug and lang. */
-export function docsUrl(slug: string, lang: Locale = defaultLocale): string {
+export function docsUrl(slug: string, lang: Locale | string = defaultLocale): string {
   const path = lang === defaultLocale ? `/docs/${slug}` : `/${lang}/docs/${slug}`;
   return withBase(path);
 }
@@ -149,7 +151,7 @@ export function isDefaultLocaleOnlyPath(path: string): boolean {
 export function versionedDocsUrl(
   slug: string,
   versionSlug: string,
-  lang: Locale = defaultLocale,
+  lang: Locale | string = defaultLocale,
 ): string {
   const path =
     lang === defaultLocale
