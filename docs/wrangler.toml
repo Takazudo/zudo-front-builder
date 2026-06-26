@@ -2,6 +2,8 @@ name = "zfb-docs"
 main = "./dist/_worker.js"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
+# Required for docs-pr-preview.yml preview-alias routing (--preview-alias needs workers.dev enabled);
+# trade-off: prod is also reachable at zfb-docs.<account>.workers.dev (duplicate content).
 workers_dev = true
 preview_urls = true
 

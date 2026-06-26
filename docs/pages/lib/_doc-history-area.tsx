@@ -11,8 +11,8 @@ import { buildGitHubSourceUrl as _buildGitHubSourceUrl } from "@/utils/github";
 import { createDocHistoryArea } from "@takazudo/zudo-doc/doc-history-area";
 import { DocHistory } from "@takazudo/zudo-doc/doc-history";
 // SSR author + date metadata comes from `.zfb/doc-history-meta.json`, a
-// build-time manifest emitted by `scripts/zfb-prebuild.mjs` (step 2:
-// doc-history-meta) before `zfb build` runs. esbuild inlines the JSON
+// build-time manifest emitted by `@takazudo/zudo-doc integrations/doc-history/pre-build`
+// before `zfb build` runs. esbuild inlines the JSON
 // statically so no Node-only `fs` code reaches the client bundle.
 // The `#doc-history-meta` alias is defined in tsconfig.json and resolves
 // to the absolute path of `.zfb/doc-history-meta.json` — this is needed

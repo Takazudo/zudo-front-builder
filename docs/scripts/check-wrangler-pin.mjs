@@ -14,7 +14,8 @@ const actual = pkg.devDependencies?.wrangler;
 if (actual !== EXPECTED) {
   console.error(
     `wrangler pin mismatch: docs/package.json has "${actual}", expected "${EXPECTED}".\n` +
-      `Update the pin in check-wrangler-pin.mjs AND docs-deploy.yml / docs-pr-preview.yml.`,
+      `Update docs/package.json AND the EXPECTED constant in check-wrangler-pin.mjs.\n` +
+      `(docs-deploy.yml and docs-pr-preview.yml both read the version from package.json dynamically.)`,
   );
   process.exit(1);
 }

@@ -109,8 +109,7 @@ export function paths(): Array<{
       };
       result.push({
         params: { locale, slug: item.slugParams },
-        props:
-          item.props.kind === "entry" ? { ...item.props, ...extra } : { ...item.props, ...extra },
+        props: { ...item.props, ...extra },
       });
     }
   }
