@@ -2,20 +2,7 @@
 /** @jsxImportSource preact */
 // Host-side body-end islands helper.
 //
-// Wave 8 (Path A — super-epic #1333 / child epic #1355) drops the local
-// SSR-skip wrapper functions in `@takazudo/zudo-doc/ssr-skip` and uses
-// zfb's native `<Island ssrFallback={...}>` API directly with the real
-// component constructors imported by the host.
-//
-// The previous indirection (page → wrapper → placeholder div) created an
-// orphan-component bug: the real components were `"use client"` modules
-// that no page module ever imported transitively, so zfb's island scanner
-// never walked page → real-component, the manifest never bound the marker
-// to the real constructor, and the bundle never contained the real
-// component body. PR #150 to zfb fixed the marker-name alignment but the
-// orphan problem stayed — see issue zudolab/zudo-doc#1355 Wave 7 report.
-//
-// This helper is the page → real-component import chain the scanner
+// This helper is the page → real-component import chain the island scanner
 // needs. Each island below is composed with zfb's `<Island>` wrapper,
 // which emits `<div data-zfb-island-skip-ssr="<ComponentName>">…</div>`
 // at SSR (zfb's `captureComponentName` derives the marker from

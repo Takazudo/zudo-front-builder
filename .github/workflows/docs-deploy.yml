@@ -9,6 +9,7 @@ name: Production Deploy (Cloudflare Workers)
 on:
   push:
     branches: [main]
+    paths: ["docs/**", ".github/workflows/docs-deploy.yml"]
   workflow_dispatch:
 
 concurrency:
@@ -25,6 +26,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
@@ -38,9 +41,36 @@ jobs:
           path: docs/dist/
           retention-days: 1
 
+  build-history:
+    name: Build Doc History
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Generate doc history
+        # @takazudo/zudo-doc-history-server is a consumed dependency (not a
+        # workspace package here), so invoke its bin via pnpm exec from docs/
+        # so node_modules/.bin resolves correctly.
+        run: cd docs && pnpm exec doc-history-generate --content-dir src/content/docs --locale ja:src/content/docs-ja --out-dir ../doc-history-out
+      - name: Archive doc history output
+        run: tar -cf "$RUNNER_TEMP/doc-history.tar" -C doc-history-out .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: doc-history
+          path: ${{ runner.temp }}/doc-history.tar
+          retention-days: 1
+
   deploy:
     name: Deploy to Cloudflare Workers
-    needs: build
+    needs: [build, build-history]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -55,8 +85,18 @@ jobs:
         with:
           name: docs-dist
           path: docs/dist/
-      - name: Write .assetsignore (exclude worker JS from static-asset serving)
-        run: printf '%s\n' '_worker.js' '_zfb_inner.mjs' > docs/dist/.assetsignore
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: doc-history
+          path: ${{ runner.temp }}
+      - name: Extract doc history output
+        continue-on-error: true
+        run: mkdir -p doc-history-out && tar -xf "$RUNNER_TEMP/doc-history.tar" -C doc-history-out
+      - name: Prepare deploy directory
+        run: |
+          if [ -d doc-history-out ] && [ "$(ls -A doc-history-out 2>/dev/null)" ]; then mkdir -p docs/dist/doc-history && cp -r doc-history-out/. docs/dist/doc-history/; fi
+          printf '%s\n' '_worker.js' '_zfb_inner.mjs' > docs/dist/.assetsignore
       - name: Deploy worker
         run: |
           WRANGLER_VERSION=$(node -p "require('./docs/package.json').devDependencies.wrangler")
@@ -64,7 +104,7 @@ jobs:
       - name: Enable workers.dev subdomain (idempotent)
         continue-on-error: true
         run: |
-          RESPONSE=$(curl -sSf -X POST \
+          RESPONSE=$(curl -sS -X POST \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/zfb-docs/subdomain" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -79,7 +119,7 @@ jobs:
       - name: Attach custom domain (idempotent)
         continue-on-error: true
         run: |
-          RESPONSE=$(curl -sSf -X POST \
+          RESPONSE=$(curl -sS -X POST \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             -H "Content-Type: application/json" \

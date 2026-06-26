@@ -59,7 +59,6 @@
 
 @source "src/components/**/*.{tsx,ts,jsx,js,mdx,md}";
 @source "src/content/**/*.{mdx,md}";
-@source "src/hooks/**/*.{tsx,ts,jsx,js}";
 @source "src/utils/**/*.{tsx,ts,jsx,js}";
 @source "pages/**/*.{tsx,ts,jsx,js}";
 
