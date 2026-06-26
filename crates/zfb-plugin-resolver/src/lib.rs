@@ -231,6 +231,17 @@ pub fn build_resolver_inputs(
         // `merge_into_tsconfig_paths` enforces for `paths_entries` (#1267).
         // Filtering it here keeps the user in control; `paths_entries`
         // (the synthetic-tsconfig entries) is left intact either way.
+        //
+        // ACCEPTED TRADEOFF (#1271 spec): the `--alias` and tsconfig
+        // `paths` are mutually exclusive for one specifier — esbuild
+        // applies `--alias` first, so we cannot have the user's mapping
+        // win AND keep the plugin alias's node_modules reach. Dropping the
+        // alias means a user-claimed `virtual:*` imported from a
+        // node_modules-resident entrypoint no longer resolves (tsconfig
+        // `paths` are gated off under node_modules). This is deliberate:
+        // the user who maps a `virtual:` specifier in their own tsconfig
+        // opts into that tradeoff. tsconfig `paths` still apply for all
+        // non-node_modules importers, which is the common case.
         if !user_claims_specifier(user_tsconfig_paths, specifier) {
             virtual_module_alias_args.push((specifier.clone(), posix_target));
         }
