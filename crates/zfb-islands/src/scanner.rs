@@ -462,9 +462,22 @@ impl FsResolver {
         // when canonicalisation fails (e.g. a synthetic test dir).
         let canon = importer_dir.canonicalize();
         let importer = canon.as_deref().unwrap_or(importer_dir);
-        self.injected_route_roots
-            .iter()
-            .any(|root| importer.starts_with(root))
+        self.injected_route_roots.iter().any(|root| {
+            let Ok(rel) = importer.strip_prefix(root) else {
+                return false;
+            };
+            // Scoped to the route package's OWN subtree: a path that
+            // re-enters a `node_modules` segment BELOW the root is a NESTED
+            // dependency (npm/yarn install a package's deps under
+            // `node_modules/<route-pkg>/node_modules/<dep>`), NOT the route's
+            // own source. Treating it as honorary project source would let
+            // the first allowed bare hop chain into that dependency's OWN
+            // bare imports, defeating the single-hop stop and walking the
+            // transitive framework-dependency graph the gate exists to block.
+            !rel.components().any(|c| {
+                matches!(c, Component::Normal(name) if name == std::ffi::OsStr::new("node_modules"))
+            })
+        })
     }
 
     /// Split a bare specifier into `(package, subpath)` where the
@@ -4793,6 +4806,100 @@ mod tests {
             "without the injected-route exemption, a bare import from inside a \
              node_modules package must not be walked; no island should register: \
              {islands:?}",
+        );
+    }
+
+    /// Build an injected-route fixture in the **npm/yarn NESTED** layout:
+    /// the island package and preact live under the route package's OWN
+    /// `node_modules`, so their dirs `starts_with` the route package root.
+    ///
+    /// ```text
+    /// node_modules/@takazudo/zudo-doc/dist/routes/route.tsx    → ./chrome
+    /// node_modules/@takazudo/zudo-doc/dist/routes/chrome.tsx   → @takazudo/zfb (bare)
+    /// node_modules/@takazudo/zudo-doc/node_modules/@takazudo/zfb/dist/index.js
+    ///                                       ("use client" island; import "preact")
+    /// node_modules/@takazudo/zudo-doc/node_modules/preact/dist/preact.js
+    ///                                       (sneaky island; must NOT surface)
+    /// ```
+    #[cfg(unix)]
+    fn write_nested_node_modules_route_fixture(root: &Path) -> PathBuf {
+        use std::fs;
+        let pkg = root.join("node_modules/@takazudo/zudo-doc");
+        let routes = pkg.join("dist/routes");
+        fs::create_dir_all(&routes).unwrap();
+        let route = routes.join("route.tsx");
+        fs::write(
+            &route,
+            "import { Chrome } from \"./chrome\";\n\
+             export default function Route() { return null; }\n",
+        )
+        .unwrap();
+        fs::write(
+            routes.join("chrome.tsx"),
+            "import { Island } from \"@takazudo/zfb\";\n\
+             export function Chrome() { return null; }\n",
+        )
+        .unwrap();
+
+        // The island package, NESTED under the route package's own node_modules.
+        let zfb = pkg.join("node_modules/@takazudo/zfb");
+        fs::create_dir_all(zfb.join("dist")).unwrap();
+        fs::write(
+            zfb.join("package.json"),
+            r#"{ "name": "@takazudo/zfb", "type": "module",
+                "exports": { ".": { "default": "./dist/index.js" } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            zfb.join("dist/index.js"),
+            "\"use client\";\nimport { signal } from \"preact\";\nexport function Island() {}\n",
+        )
+        .unwrap();
+
+        // preact, also nested under the route package — resolvable from the
+        // island's dir, so the ONLY thing that can stop the second hop is the
+        // closure boundary (not a missing file).
+        let preact = pkg.join("node_modules/preact");
+        fs::create_dir_all(preact.join("dist")).unwrap();
+        fs::write(
+            preact.join("package.json"),
+            r#"{ "name": "preact", "main": "dist/preact.js" }"#,
+        )
+        .unwrap();
+        fs::write(
+            preact.join("dist/preact.js"),
+            "\"use client\";\nexport function PreactSneaksIn() {}\n",
+        )
+        .unwrap();
+
+        route
+    }
+
+    /// **#1268 Symptom 2 — nested-deps single-hop guard (codex review).** In
+    /// the npm/yarn nested layout the island package lives at
+    /// `node_modules/<route-pkg>/node_modules/<island-pkg>`, so its importer
+    /// dir `starts_with` the route package root. The honorary-source exemption
+    /// must still grant exactly ONE hop: the chrome→island hop is allowed, but
+    /// the island's own `import "preact"` is a SECOND hop from a path that
+    /// re-enters `node_modules` below the route root — it is NOT the route's
+    /// own source, so the invariant must re-engage and preact must not surface.
+    /// Without the closure's nested-`node_modules` exclusion, preact's sneaky
+    /// island would be crawled (`["Island", "PreactSneaksIn"]`).
+    #[cfg(unix)]
+    #[test]
+    fn injected_route_nested_node_modules_grants_only_one_hop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let route = write_nested_node_modules_route_fixture(dir.path());
+
+        let resolver = FsResolver::new().with_injected_route_roots([&route]);
+        let islands = scan_islands(&[route], &resolver).unwrap();
+        let names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Island"],
+            "the chrome→island hop registers, but the island's nested-node_modules \
+             `import \"preact\"` is a second hop that must STILL stop — preact's \
+             sneaky island must not surface: {islands:?}",
         );
     }
 

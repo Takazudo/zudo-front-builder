@@ -151,18 +151,20 @@ impl ResolverInputs {
 ///   (matches the islands path's pre-existing fallback for the
 ///   unit-test environment).
 /// - `user_tsconfig_paths`: the user's own `compilerOptions.paths` map
-///   (keyed by pattern). Used ONLY to filter the virtual-module
-///   `--alias` arg set per the user-wins collision policy (#1267) — a
-///   virtual specifier the user already claims (exact key or a wildcard
-///   it falls under) gets NO `--alias`, so the user's synthetic-tsconfig
-///   entry governs instead of being overridden by the earlier-applied
-///   esbuild `--alias`. It does NOT affect `paths_entries`.
+///   (keyed by pattern). Drives the user-wins collision policy (#1267):
+///   a virtual specifier the user already claims (exact key, or a
+///   wildcard it falls under) is dropped from BOTH the `--alias` arg set
+///   AND `paths_entries`, so the user's own mapping governs. Dropping
+///   only the `--alias` is insufficient for a wildcard collision: a
+///   plugin EXACT key (`virtual:foo/bar`) out-specifics a user
+///   `virtual:foo/*` pattern in TS/esbuild path matching, so the plugin
+///   `paths_entry` must be suppressed too.
 ///
 /// On success the returned `ResolverInputs::paths_entries` contains one
-/// entry per alias plus one entry per virtual module, all keyed on the
-/// bare specifier, all targeting a single absolute POSIX path.
-/// `virtual_module_alias_args` carries the same virtual-module entries
-/// MINUS any specifier the user already owns.
+/// entry per alias plus one entry per virtual module the user does NOT
+/// own, all keyed on the bare specifier, all targeting a single absolute
+/// POSIX path. `virtual_module_alias_args` carries the same
+/// user-unclaimed virtual-module entries.
 pub fn build_resolver_inputs(
     aliases: &[(String, String)],
     virtual_modules: &[(String, String)],
@@ -219,30 +221,36 @@ pub fn build_resolver_inputs(
             )
         })?;
         let posix_target = path_to_posix_string(tmp.path());
-        paths_entries.push((specifier.clone(), posix_target.clone()));
-        // Same materialized target ALSO surfaces as an esbuild `--alias`
-        // flag so the import resolves from a node_modules-resident
-        // entrypoint, where `compilerOptions.paths` is gated off (#1263)
-        // — UNLESS the user's own `compilerOptions.paths` already claims
-        // this specifier (exact key, or a wildcard it falls under).
-        // esbuild applies `--alias` BEFORE tsconfig `paths`, so emitting
-        // the plugin alias for a user-owned specifier would override the
-        // user's mapping, inverting the user-wins policy that
-        // `merge_into_tsconfig_paths` enforces for `paths_entries` (#1267).
-        // Filtering it here keeps the user in control; `paths_entries`
-        // (the synthetic-tsconfig entries) is left intact either way.
-        //
-        // ACCEPTED TRADEOFF (#1271 spec): the `--alias` and tsconfig
-        // `paths` are mutually exclusive for one specifier — esbuild
-        // applies `--alias` first, so we cannot have the user's mapping
-        // win AND keep the plugin alias's node_modules reach. Dropping the
-        // alias means a user-claimed `virtual:*` imported from a
-        // node_modules-resident entrypoint no longer resolves (tsconfig
-        // `paths` are gated off under node_modules). This is deliberate:
-        // the user who maps a `virtual:` specifier in their own tsconfig
-        // opts into that tradeoff. tsconfig `paths` still apply for all
-        // non-node_modules importers, which is the common case.
-        if !user_claims_specifier(user_tsconfig_paths, specifier) {
+        if user_claims_specifier(user_tsconfig_paths, specifier) {
+            // The user's own `compilerOptions.paths` already claims this
+            // specifier (exact key, or a wildcard it falls under). Suppress
+            // BOTH the synthetic-tsconfig `paths_entry` AND the esbuild
+            // `--alias` so the user's mapping governs (user-wins, #1267).
+            //
+            // Dropping the alias alone is NOT enough for a WILDCARD
+            // collision: a plugin EXACT key like `virtual:foo/bar`
+            // out-specifics the user's `virtual:foo/*` pattern in TS/esbuild
+            // path matching and would win anyway, so the plugin
+            // `paths_entry` must be dropped too. For an exact-key collision
+            // `merge_into_tsconfig_paths` would already keep the user entry,
+            // but suppressing here is equivalent and keeps the policy uniform.
+            //
+            // ACCEPTED TRADEOFF (#1271 spec): `--alias` and tsconfig `paths`
+            // are mutually exclusive for one specifier (esbuild applies
+            // `--alias` first), so we cannot have the user's mapping win AND
+            // keep the plugin alias's node_modules reach. A user-claimed
+            // `virtual:*` imported from a node_modules-resident entrypoint
+            // therefore no longer resolves (tsconfig `paths` are gated off
+            // under node_modules, #1263) — deliberate: the user who maps a
+            // `virtual:` specifier opts into that. The temp file is still
+            // materialized and retained in `temp_files`; it is simply left
+            // unreferenced so resolution falls through to the user's mapping.
+        } else {
+            paths_entries.push((specifier.clone(), posix_target.clone()));
+            // The same materialized target ALSO surfaces as an esbuild
+            // `--alias` flag so the import resolves from a node_modules-
+            // resident entrypoint, where `compilerOptions.paths` is gated
+            // off (#1263).
             virtual_module_alias_args.push((specifier.clone(), posix_target));
         }
         temp_files.push(tmp);
@@ -1048,10 +1056,12 @@ mod tests {
             vec!["src/user-foo.ts".to_string()],
         );
         let r = build_resolver_inputs(&[], &vms, dir.path(), &user).unwrap();
-        // paths_entries is NOT filtered — only the --alias arg set is.
-        assert_eq!(r.paths_entries.len(), 1);
-        assert_eq!(r.paths_entries[0].0, "virtual:foo");
-        // The colliding alias is suppressed → user wins (#1267).
+        // A user-claimed specifier is dropped from BOTH paths_entries and
+        // the --alias arg set → the user's own mapping governs (#1267).
+        assert!(
+            r.paths_entries.is_empty(),
+            "user-claimed exact specifier must NOT get a plugin paths_entry"
+        );
         assert!(
             r.virtual_module_alias_args.is_empty(),
             "user-claimed exact specifier must NOT get a plugin --alias"
@@ -1081,10 +1091,16 @@ mod tests {
         let mut user = BTreeMap::new();
         user.insert("virtual:foo/*".to_string(), vec!["src/foo/*".to_string()]);
         let r = build_resolver_inputs(&[], &vms, dir.path(), &user).unwrap();
-        // Both VMs still have synthetic-tsconfig entries.
-        assert_eq!(r.paths_entries.len(), 2);
-        // Only `virtual:baz` keeps an alias; `virtual:foo/bar` is under
-        // the user's `virtual:foo/*` wildcard and is filtered.
+        // The wildcard-covered `virtual:foo/bar` is dropped from BOTH
+        // paths_entries and the alias set (a plugin EXACT key would
+        // out-specific the user's `virtual:foo/*` in path matching and win
+        // anyway); only the free `virtual:baz` survives in each.
+        assert_eq!(r.paths_entries.len(), 1);
+        assert_eq!(r.paths_entries[0].0, "virtual:baz");
+        assert!(
+            !r.paths_entries.iter().any(|(s, _)| s == "virtual:foo/bar"),
+            "a specifier under the user's wildcard must NOT get a plugin paths_entry"
+        );
         assert_eq!(r.virtual_module_alias_args.len(), 1);
         assert_eq!(
             r.virtual_module_alias_args[0].0, "virtual:baz",
