@@ -67,12 +67,73 @@ pub struct ResolverInputs {
     /// `compilerOptions.paths`. Paths are POSIX forward-slash.
     pub paths_entries: Vec<(String, String)>,
 
+    /// `(specifier, absolute-POSIX-path)` pairs for **plugin virtual
+    /// modules only**, to ALSO be emitted as esbuild
+    /// `--alias:<specifier>=<path>` CLI flags via
+    /// [`Self::virtual_module_alias_flags`] — a strict subset of
+    /// `paths_entries` (plugin aliases like `@/foo` are NOT included).
+    ///
+    /// ## Why a second mechanism on top of `compilerOptions.paths` (#1263)
+    ///
+    /// esbuild does **not** apply a tsconfig's `compilerOptions.paths` to
+    /// any source file whose (real) directory is inside `node_modules`.
+    /// In esbuild 0.25.x's resolver, `tsConfigForDir` returns `nil` the
+    /// moment `dirInfo.isInsideNodeModules` is true — *before* it ever
+    /// consults the `--tsconfig` / `--tsconfig-raw` override. So a preset
+    /// route entrypoint installed under `node_modules`
+    /// (e.g. `node_modules/@takazudo/zudo-doc/dist/routes/_chrome.js`)
+    /// that does `import x from "virtual:foo"` fails to resolve through
+    /// the synthetic tsconfig alone, with `Could not resolve "virtual:foo"`.
+    /// This is NOT fixable by switching `--tsconfig=<file>` to
+    /// `--tsconfig-raw`: both set the same gated override.
+    ///
+    /// esbuild's `--alias` (`PackageAliases`) is applied earlier in
+    /// resolution and is **not** `node_modules`-gated, so it reaches the
+    /// node_modules entrypoint. We deliberately use it ONLY for virtual
+    /// modules — never for `@/`-style aliases — because:
+    ///
+    /// - A virtual module's target is always a single materialized
+    ///   `.mjs` *file*. esbuild's alias is prefix-with-slash, so
+    ///   `virtual:foo/bar` remaps to `<tmp>.mjs/bar`, which cannot
+    ///   resolve (a file has no children) → it fails, *preserving the
+    ///   exact-match contract* (#269). esbuild even reports the failure
+    ///   as `Could not resolve "<tmp>.mjs/bar" (originally
+    ///   "virtual:foo/bar")`, keeping the original specifier visible.
+    /// - A plugin alias like `@/foo` may point at a *directory*, where
+    ///   prefix-with-slash WOULD silently resolve `@/foo/bar` to a real
+    ///   file — exactly the regression #269 moved aliases off `--alias`
+    ///   to avoid. Those stay `compilerOptions.paths`-only.
+    pub virtual_module_alias_args: Vec<(String, String)>,
+
     /// Held-alive temp-file handles for plugin virtual modules.
     ///
     /// Public so callers can extend the lifetime explicitly; the field
     /// itself is otherwise opaque — the caller does not need to read
     /// it. Underscore prefix discourages incidental use.
     pub _temp_files: Vec<NamedTempFile>,
+}
+
+impl ResolverInputs {
+    /// esbuild `--alias:<specifier>=<absolute-path>` CLI flags for every
+    /// plugin virtual module (see [`Self::virtual_module_alias_args`]).
+    ///
+    /// Both esbuild call sites (`zfb-islands` and `zfb-build`) emit these
+    /// IN ADDITION to the synthetic `--tsconfig` so a `virtual:*` import
+    /// resolves even from a route entrypoint whose realpath is under
+    /// `node_modules` (#1263). Returned as `Vec<String>` so the islands
+    /// path can wrap each in `OsString` and the build path can pass it
+    /// straight to `Command::arg`.
+    ///
+    /// esbuild's CLI splits `--alias:<k>=<v>` on the FIRST `=`
+    /// (`strings.IndexByte`), so a specifier containing a colon
+    /// (`virtual:foo`) is preserved intact as the key. Temp-file targets
+    /// never contain `=`.
+    pub fn virtual_module_alias_flags(&self) -> Vec<String> {
+        self.virtual_module_alias_args
+            .iter()
+            .map(|(specifier, target)| format!("--alias:{specifier}={target}"))
+            .collect()
+    }
 }
 
 /// Build the per-call resolver inputs from plugin-registered aliases
@@ -96,6 +157,7 @@ pub fn build_resolver_inputs(
     working_dir: &Path,
 ) -> Result<ResolverInputs> {
     let mut paths_entries: Vec<(String, String)> = Vec::new();
+    let mut virtual_module_alias_args: Vec<(String, String)> = Vec::new();
     let mut temp_files: Vec<NamedTempFile> = Vec::new();
 
     // Plugin aliases first. The target string already came from the
@@ -143,12 +205,18 @@ pub fn build_resolver_inputs(
                 tmp.path().display()
             )
         })?;
-        paths_entries.push((specifier.clone(), path_to_posix_string(tmp.path())));
+        let posix_target = path_to_posix_string(tmp.path());
+        paths_entries.push((specifier.clone(), posix_target.clone()));
+        // Same materialized target ALSO surfaces as an esbuild `--alias`
+        // flag so the import resolves from a node_modules-resident
+        // entrypoint, where `compilerOptions.paths` is gated off (#1263).
+        virtual_module_alias_args.push((specifier.clone(), posix_target));
         temp_files.push(tmp);
     }
 
     Ok(ResolverInputs {
         paths_entries,
+        virtual_module_alias_args,
         _temp_files: temp_files,
     })
 }
@@ -636,6 +704,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let r = build_resolver_inputs(&[], &[], dir.path()).unwrap();
         assert!(r.paths_entries.is_empty());
+        assert!(r.virtual_module_alias_args.is_empty());
+        assert!(r.virtual_module_alias_flags().is_empty());
         assert!(r._temp_files.is_empty());
     }
 
@@ -653,6 +723,15 @@ mod tests {
         // No wildcard — bare specifier only.
         assert!(!r.paths_entries[0].0.contains('*'));
         assert!(!r.paths_entries[0].1.contains('*'));
+        // Plugin aliases must NOT become `--alias` flags — only virtual
+        // modules do (#1263). `@/`-style aliases can target a directory,
+        // where esbuild's prefix-with-slash `--alias` would regress the
+        // exact-match contract (#269).
+        assert!(
+            r.virtual_module_alias_args.is_empty(),
+            "alias entries must not be emitted as --alias flags"
+        );
+        assert!(r.virtual_module_alias_flags().is_empty());
     }
 
     /// Virtual modules materialize to a `.mjs` temp file under
@@ -685,6 +764,44 @@ mod tests {
         // The source was written to disk.
         let contents = std::fs::read_to_string(&tmp_path).unwrap();
         assert_eq!(contents, "export default { ok: true };");
+        // The virtual module ALSO surfaces as an `--alias` arg pointing at
+        // the same temp file (#1263), so it resolves from a node_modules
+        // entrypoint where `compilerOptions.paths` is gated off.
+        assert_eq!(r.virtual_module_alias_args.len(), 1);
+        assert_eq!(r.virtual_module_alias_args[0].0, "virtual:meta");
+        assert_eq!(
+            r.virtual_module_alias_args[0].1,
+            path_to_posix_string(&tmp_path)
+        );
+        let expected_flag = format!("--alias:virtual:meta={}", path_to_posix_string(&tmp_path));
+        assert_eq!(
+            r.virtual_module_alias_flags(),
+            vec![expected_flag],
+            "virtual module must surface as a single --alias flag"
+        );
+    }
+
+    /// `virtual_module_alias_flags` formats each pair as
+    /// `--alias:<specifier>=<target>`. The specifier keeps its embedded
+    /// colon (`virtual:meta`) — esbuild's CLI splits on the FIRST `=`, so
+    /// the colon stays part of the key. The target is the alias value.
+    #[test]
+    fn virtual_module_alias_flags_format_is_alias_colon_key_equals_value() {
+        let dir = TempDir::new().unwrap();
+        let vms = vec![("virtual:meta".to_string(), "export default 1;".to_string())];
+        let r = build_resolver_inputs(&[], &vms, dir.path()).unwrap();
+        let flags = r.virtual_module_alias_flags();
+        assert_eq!(flags.len(), 1);
+        let flag = &flags[0];
+        assert!(
+            flag.starts_with("--alias:virtual:meta="),
+            "flag must keep the colon in the specifier key: {flag}"
+        );
+        // Exactly one `=` separates the `--alias:<key>` from the value, and
+        // the value is the materialized temp path.
+        let (head, value) = flag.split_once('=').unwrap();
+        assert_eq!(head, "--alias:virtual:meta");
+        assert_eq!(value, r.virtual_module_alias_args[0].1);
     }
 
     /// When `working_dir` does not exist, the helper still succeeds by
@@ -804,6 +921,11 @@ mod tests {
         assert_eq!(r.paths_entries[1].0, "@/bar");
         assert_eq!(r.paths_entries[2].0, "virtual:meta");
         assert_eq!(r._temp_files.len(), 1);
+        // Only the virtual module becomes an `--alias` flag; the two
+        // `@/`-aliases do NOT (#1263 — they stay tsconfig-paths-only).
+        assert_eq!(r.virtual_module_alias_args.len(), 1);
+        assert_eq!(r.virtual_module_alias_args[0].0, "virtual:meta");
+        assert_eq!(r.virtual_module_alias_flags().len(), 1);
     }
 
     // -----------------------------------------------------------------------
