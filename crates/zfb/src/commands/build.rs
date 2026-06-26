@@ -1225,7 +1225,14 @@ pub(crate) fn build_default_islands_payload(
         return Ok((None, std::collections::BTreeSet::new()));
     }
 
-    let resolver = FsResolver::new();
+    // Treat each injected package-route entrypoint as honorary project
+    // source for the bare-specifier descent gate (#1268 Symptom 2): a
+    // route whose realpath is under `node_modules` must still be able to
+    // descend into its `"use client"` island package (directly or through
+    // its package-chrome closure), the same single hop a real `pages/`
+    // entry gets. Entrypoints outside `node_modules` are ignored by the
+    // resolver, so this is a no-op on the conventional-pages path.
+    let resolver = FsResolver::new().with_injected_route_roots(package_route_entrypoints);
     let (islands_set, scan_meta) = match scan_islands_with_meta(&entries, &resolver) {
         Ok(result) => result,
         Err(e) => {

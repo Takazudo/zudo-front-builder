@@ -5541,10 +5541,16 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
     // `(specifier, absolute-path)` pairs. The `NamedTempFile` handles
     // live inside `resolver_inputs._temp_files` and are dropped after
     // the subprocess returns.
+    // `input.tsconfig_paths` carries the user's own `compilerOptions.paths`
+    // (keyed by pattern, pre-rebase — rebasing only rewrites targets). Pass
+    // it so a `virtual:*` specifier the user already claims is NOT also
+    // emitted as a plugin `--alias` (which esbuild applies BEFORE tsconfig
+    // `paths`, overriding the user's mapping). User-wins, #1267.
     let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
         &input.plugin_alias_entries,
         &input.plugin_virtual_modules,
         shadow,
+        &input.tsconfig_paths,
     )
     .context("bundler: failed materializing plugin resolver inputs")?;
 
