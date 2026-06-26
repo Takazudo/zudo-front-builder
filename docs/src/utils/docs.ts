@@ -304,6 +304,20 @@ export function findNode(nodes: NavNode[], slug: string): NavNode | undefined {
   return undefined;
 }
 
+/**
+ * Recursively find the first routed href in a node's subtree.
+ * Used by the category-nav factory when a category has no page of its own
+ * (noPage=true) — the card links to the first reachable child page instead.
+ */
+export function firstRoutedHref(node: NavNode): string | undefined {
+  for (const child of node.children) {
+    if (child.hasPage && child.href) return child.href;
+    const nested = firstRoutedHref(child);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
 export interface BreadcrumbItem {
   label: string;
   href?: string;

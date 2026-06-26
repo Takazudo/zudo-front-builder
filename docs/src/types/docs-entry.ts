@@ -36,6 +36,9 @@ export interface DocsEntry {
     /** Feature tier badge rendered near the page title on Markdown Features
      *  pages. Project-specific frontmatter key (issue #877 step 6). */
     tier?: "Core" | "Opt-in";
+    /** True when this entry is a category placeholder with no content page
+     *  of its own (mirrors the CategoryMeta.noPage flag at the entry level). */
+    category_no_page?: boolean;
   };
   rendered?: RenderedContent;
   filePath?: string;

@@ -2,20 +2,7 @@
 /** @jsxImportSource preact */
 // Host-side body-end islands helper.
 //
-// Wave 8 (Path A — super-epic #1333 / child epic #1355) drops the local
-// SSR-skip wrapper functions in `@takazudo/zudo-doc/ssr-skip` and uses
-// zfb's native `<Island ssrFallback={...}>` API directly with the real
-// component constructors imported by the host.
-//
-// The previous indirection (page → wrapper → placeholder div) created an
-// orphan-component bug: the real components were `"use client"` modules
-// that no page module ever imported transitively, so zfb's island scanner
-// never walked page → real-component, the manifest never bound the marker
-// to the real constructor, and the bundle never contained the real
-// component body. PR #150 to zfb fixed the marker-name alignment but the
-// orphan problem stayed — see issue zudolab/zudo-doc#1355 Wave 7 report.
-//
-// This helper is the page → real-component import chain the scanner
+// This helper is the page → real-component import chain the island scanner
 // needs. Each island below is composed with zfb's `<Island>` wrapper,
 // which emits `<div data-zfb-island-skip-ssr="<ComponentName>">…</div>`
 // at SSR (zfb's `captureComponentName` derives the marker from
@@ -23,6 +10,10 @@
 // file, and this file imports the real components, the scanner walks
 // page → helper → real component and registers the constructor under
 // the SSR marker name.
+//
+// docs-1.0 migration (S5 #1249): the AiChatModal / ImageEnlarge / Mermaid
+// island components now ship from `@takazudo/zudo-doc` instead of local
+// `@/components` copies. The router/design-token bootstraps stay host-side.
 //
 // Pattern mirrors `_header-with-defaults.tsx`: the JSX-shim widens
 // `Island`'s return type to `unknown`, so call-sites cast through
@@ -32,10 +23,11 @@ import type { VNode, JSX } from "preact";
 import { Island } from "@takazudo/zfb";
 import { settings } from "@/config/settings";
 
-import AiChatModal from "@/components/ai-chat-modal";
 import ClientRouterBootstrap from "@/components/client-router-bootstrap";
 import DesignTokenPanelBootstrap from "@/components/design-token-panel-bootstrap";
-import ImageEnlarge, { ImageEnlargeSsrFallback } from "@/components/image-enlarge";
+import { AiChatModal } from "@takazudo/zudo-doc/ai-chat-modal";
+import { ImageEnlarge, ImageEnlargeSsrFallback } from "@takazudo/zudo-doc/image-enlarge";
+import { MermaidEnlarge, MermaidEnlargeSsrFallback } from "@takazudo/zudo-doc/mermaid-enlarge";
 import { PageLoadingOverlay } from "@takazudo/zudo-doc/page-loading";
 
 // Set explicit `displayName` on each default-exported island so zfb's
@@ -45,10 +37,10 @@ import { PageLoadingOverlay } from "@takazudo/zudo-doc/page-loading";
 // for the same source-level identifier (zfb PR #150). esbuild preserves
 // function names by default, but the explicit assignment is a
 // belt-and-braces guard for production minification regressions.
-(AiChatModal as { displayName?: string }).displayName = "AiChatModal";
+// AiChatModal, ImageEnlarge, MermaidEnlarge pin displayName internally in
+// the package (packages/zudo-doc/src/{ai-chat-modal,image-enlarge,mermaid-enlarge}).
 (ClientRouterBootstrap as { displayName?: string }).displayName = "ClientRouterBootstrap";
 (DesignTokenPanelBootstrap as { displayName?: string }).displayName = "DesignTokenPanelBootstrap";
-(ImageEnlarge as { displayName?: string }).displayName = "ImageEnlarge";
 
 /**
  * Default sr-only label rendered as the AiChatModal SSR fallback. This
@@ -105,10 +97,14 @@ export interface BodyEndIslandsProps {
 }
 
 /**
- * The three default body-end islands every doc page mounts: the
- * design-token tweak panel (overlay, fixed-position), the AI chat
- * modal (`<dialog>` overlay), and the image-enlarge dialog (mounted
- * lazily based on viewport scan).
+ * The default body-end islands a doc page may mount: the design-token
+ * tweak panel (overlay, fixed-position), the AI chat modal (`<dialog>`
+ * overlay), and the image-enlarge dialog (mounted lazily based on
+ * viewport scan). Each is feature-gated — the design-token panel on
+ * `settings.designTokenPanel`, the AI chat modal (and its sr-only
+ * landmark heading) on `settings.aiAssistant`, and image-enlarge on
+ * `settings.imageEnlarge` — so a feature-off consumer ships neither the
+ * island marker nor a misleading landmark (zudolab/zudo-doc#2058).
  *
  * Each island is wrapped in `<Island ssrFallback>` so the heavy
  * component is NOT evaluated server-side — they depend on
@@ -116,9 +112,10 @@ export interface BodyEndIslandsProps {
  * fetch, etc. The hydration runtime swaps each placeholder on the
  * client.
  *
- * The `<h2 class="sr-only">AI Assistant</h2>` heading is emitted in
- * the SSG output so screen readers and crawlers can discover the chat
- * section landmark before JS hydration.
+ * When `settings.aiAssistant` is enabled, the
+ * `<h2 class="sr-only">AI Assistant</h2>` heading is emitted in the SSG
+ * output so screen readers and crawlers can discover the chat section
+ * landmark before JS hydration.
  */
 export function BodyEndIslands({
   basePath,
@@ -129,10 +126,16 @@ export function BodyEndIslands({
   // component renders nothing visually — the island bundle's top-level
   // `import "@takazudo/zfb-runtime/client-router"` is what actually
   // wires up the router (zudolab/zudo-doc#1524 W7A fix).
-  const clientRouterBootstrap = Island({
-    when: "load",
-    children: <ClientRouterBootstrap />,
-  }) as unknown as VNode;
+  //
+  // Gated on `settings.dynamicPageTransition` (zudolab/zudo-doc#2266): when
+  // the SPA page-transition feature is off, neither the router bootstrap
+  // island marker nor the page-loading overlay should reach the SSG output.
+  const clientRouterBootstrap = settings.dynamicPageTransition
+    ? (Island({
+        when: "load",
+        children: <ClientRouterBootstrap />,
+      }) as unknown as VNode)
+    : null;
 
   // Hydrates on load so configurePanel() runs as early as possible and
   // the `toggle-design-token-panel` window listener is registered before
@@ -156,41 +159,80 @@ export function BodyEndIslands({
     </>
   ) : null;
 
-  // Use a visually-hidden paragraph as the AiChatModal SSR fallback so
-  // the body label is present in static HTML for screen readers before
-  // JS hydration. sr-only keeps it invisible to sighted users.
-  const aiChat = Island({
-    ssrFallback: <p class="sr-only">{aiChatBodyLabel}</p>,
-    children: <AiChatModal basePath={basePath} />,
-  }) as unknown as VNode;
+  // Gated on `settings.aiAssistant` (zudolab/zudo-doc#2058): when the AI
+  // assistant feature is off, neither the AiChatModal island marker nor the
+  // sr-only "AI Assistant" landmark heading should reach the SSG output —
+  // otherwise feature-off consumers ship a dead island marker plus a
+  // misleading screen-reader landmark for a section that never hydrates.
+  // Mirrors the `designTokenPanel` gating above.
+  //
+  // KNOWN CAVEAT: zfb's island scanner walks the static `"use client"`
+  // import chain, so gating this JSX removes the SSR marker and heading but
+  // may NOT strip the AiChatModal bundle from the build output. Marker
+  // removal is the agreed first fix (#2058); bundle stripping is out of scope.
+  //
+  // The sr-only <p> fallback keeps the body label in static HTML for screen
+  // readers before JS hydration; sr-only keeps it invisible to sighted users.
+  const aiAssistant = settings.aiAssistant ? (
+    <>
+      {/* Emits the "AI Assistant" heading in the SSG output so screen
+          readers can discover the chat section landmark before JS
+          hydration. */}
+      <h2 class="sr-only">AI Assistant</h2>
+      {
+        Island({
+          ssrFallback: <p class="sr-only">{aiChatBodyLabel}</p>,
+          children: <AiChatModal basePath={basePath} />,
+        }) as unknown as VNode
+      }
+    </>
+  ) : null;
 
-  // Wave 11 (zudolab/zudo-doc#1355): the SSR fallback is the empty,
-  // closed `<dialog class="zd-enlarge-dialog ...">` shell so the dist
-  // HTML carries one dialog from the start. Without this the smoke
-  // "exactly one zd-enlarge-dialog element" assertion sees zero
-  // (skip-ssr placeholders are empty divs) and the no-JS path has no
-  // dialog at all. Hydration replaces this shell with the real
-  // ImageEnlarge component when the page goes idle.
-  const imageEnlarge = Island({
-    when: "idle",
-    ssrFallback: <ImageEnlargeSsrFallback />,
-    children: <ImageEnlarge />,
-  }) as unknown as VNode;
+  // Gated on `settings.imageEnlarge` (zudolab/zudo-doc#2058). Same caveat as
+  // the AI assistant gating: removing this JSX drops the SSR dialog shell and
+  // island marker, but the bundle may persist via the static import scan.
+  //
+  // Wave 11 (zudolab/zudo-doc#1355): the SSR fallback is the empty, closed
+  // `<dialog class="zd-enlarge-dialog ...">` shell so the dist HTML carries
+  // one dialog from the start. Without this the smoke "exactly one
+  // zd-enlarge-dialog element" assertion sees zero (skip-ssr placeholders are
+  // empty divs) and the no-JS path has no dialog at all. Hydration replaces
+  // this shell with the real ImageEnlarge component when the page goes idle.
+  const imageEnlarge = settings.imageEnlarge
+    ? (Island({
+        when: "idle",
+        ssrFallback: <ImageEnlargeSsrFallback />,
+        children: <ImageEnlarge />,
+      }) as unknown as VNode)
+    : null;
+
+  // Gated on `settings.mermaid` (issue #2176 / #2178). Mirrors the imageEnlarge
+  // block: the SSR fallback is an empty, closed `<dialog class="zd-mermaid-dialog
+  // ...">` so the dist HTML carries one dialog from the start and hydration
+  // (when="idle") swaps in the real component. Unlike images (SSR-wrapped by the
+  // MDX paragraph override), mermaid renders client-side, so this island injects
+  // the enlarge button into each rendered diagram container itself.
+  const mermaidEnlarge = settings.mermaid
+    ? (Island({
+        when: "idle",
+        ssrFallback: <MermaidEnlargeSsrFallback />,
+        children: <MermaidEnlarge />,
+      }) as unknown as VNode)
+    : null;
 
   return (
     <>
       {/* Pure SSR — no Island wrap. The component emits its overlay div,
           inline styles, and a small inline script that self-wires
-          zfb:before-preparation / zfb:after-swap listeners at runtime. */}
-      <PageLoadingOverlay />
+          zfb:before-preparation / zfb:after-swap listeners at runtime.
+          Gated on `settings.dynamicPageTransition` alongside the router
+          bootstrap above (zudolab/zudo-doc#2266): no transition → no overlay. */}
+      {settings.dynamicPageTransition ? <PageLoadingOverlay /> : null}
       {clientRouterBootstrap}
       {designTokenPanelBootstrap}
-      {/* Emits the "AI Assistant" heading in the SSG output so screen
-          readers can discover the chat section landmark before JS
-          hydration. */}
-      <h2 class="sr-only">AI Assistant</h2>
-      {aiChat}
+      {aiAssistant}
       {imageEnlarge}
+      {mermaidEnlarge}
     </>
   );
 }
