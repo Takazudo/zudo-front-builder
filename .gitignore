@@ -96,3 +96,4 @@ __inbox/
 # are tracked in these packages.
 /packages/zfb-*/zfb
 /packages/zfb-*/zfb.exe
+doc-history-out/
