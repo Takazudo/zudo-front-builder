@@ -560,11 +560,13 @@ impl PluginHost {
     /// against the canonical types so any violation surfaces with the
     /// offending pair named.
     ///
-    /// `command` controls the `ctx.command` string visible to plugins
-    /// AND the JS-side `injectRoute` validation: the `"/"` rejection is
-    /// dev-scoped (#1193), so a `Build` invocation may use `"/"`. As of
-    /// #1193 a build `injectRoute` is accepted into `injected_routes`
-    /// (a package-owned build route) rather than hard-erroring.
+    /// `command` controls the `ctx.command` string visible to plugins.
+    /// `injectRoute` is accepted into `injected_routes` in BOTH dev and
+    /// build (#1193, #1262): a preset that owns the site index calls
+    /// `injectRoute("/")` in either mode, and the host must not crash. The
+    /// dev `"/"` reservation is enforced downstream in the Rust dev route
+    /// resolution (`resolve_dev_pages_root` drops an injected `"/"` so it is
+    /// never rendered in dev), NOT by rejecting it here.
     pub async fn run_setup(
         &self,
         project_root: &std::path::Path,
@@ -1387,10 +1389,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn setup_hook_rejects_root_inject_route_in_dev_only() {
-        // The `"/"` guard is scoped to DEV (#1193): a dev `injectRoute("/")`
-        // is still rejected (dev catch-all belongs to devMiddleware), but
-        // a BUILD `"/"` route is allowed (it becomes the overlay index page).
+    async fn setup_hook_accepts_root_inject_route_in_dev_and_build() {
+        // #1262: a preset's `setup()` runs in BOTH `zfb dev` and `zfb build`,
+        // so a package owning the site index calls `injectRoute("/")` in both.
+        // The host must ACCEPT the `"/"` registration in dev (the pre-#1262
+        // dev-only throw crashed any such preset's dev server — the bug) AND in
+        // build. The dev `"/"` reservation is upheld DOWNSTREAM, in the Rust
+        // dev route resolution (`resolve_dev_pages_root` drops the injected
+        // `"/"` so it is never rendered in dev) — NOT by rejecting it here.
         if !host_node_available() {
             eprintln!("skipping: node not on PATH");
             return;
@@ -1411,7 +1417,8 @@ mod tests {
         .await
         .unwrap();
 
-        // Dev: rejected.
+        // Dev: ACCEPTED (no throw) — the dev server must boot. The "/" drop is
+        // enforced later in `resolve_dev_pages_root`, not by the host.
         let dev_host = PluginHost::spawn(
             vec![PluginSpec {
                 name: "rooter".into(),
@@ -1422,19 +1429,16 @@ mod tests {
         )
         .await
         .expect("host spawns");
-        let err = dev_host
+        let dev_regs = dev_host
             .run_setup(
                 tmp.path(),
                 crate::plugin_registries::SetupCommand::Dev,
                 &serde_json::json!({}),
             )
             .await
-            .expect_err("dev injectRoute(\"/\") must error");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("injectRoute") && msg.contains('/'),
-            "expected the dev \"/\" rejection, got: {msg}",
-        );
+            .expect("dev injectRoute(\"/\") must be ACCEPTED (#1262)");
+        assert_eq!(dev_regs.injected_routes.len(), 1);
+        assert_eq!(dev_regs.injected_routes.as_slice()[0].pattern, "/");
         dev_host.shutdown().await.ok();
 
         // Build: accepted.
