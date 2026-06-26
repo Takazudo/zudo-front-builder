@@ -10,7 +10,8 @@
     "check": "zfb check",
     "check:html": "html-validate \"dist/**/*.html\"",
     "setup:doc-skill": "bash scripts/setup-doc-skill.sh",
-    "b4push": "pnpm check && pnpm build"
+    "b4push": "pnpm check && pnpm build",
+    "check:wrangler-pin": "node scripts/check-wrangler-pin.mjs"
   },
   "dependencies": {
     "@takazudo/zfb": "0.1.0-next.65",
