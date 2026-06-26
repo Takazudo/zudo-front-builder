@@ -12,6 +12,7 @@ export type {
   TagPlacement,
   TagGovernanceMode,
   TagVocabularyEntry,
+  MetaTagsConfig,
 } from "./settings-types";
 import type {
   HeaderNavItem,
@@ -25,6 +26,8 @@ import type {
   BodyFootUtilAreaConfig,
   TagPlacement,
   TagGovernanceMode,
+  MetaTagsConfig,
+  Settings,
 } from "./settings-types";
 
 export const settings = {
@@ -34,16 +37,23 @@ export const settings = {
     lightScheme: "Default Light",
     darkScheme: "Default Dark",
     respectPrefersColorScheme: true,
-  } satisfies ColorModeConfig,
+  } satisfies ColorModeConfig as ColorModeConfig | false,
   siteName: "zfb",
   siteDescription:
     "The Rust engine under your content-site framework — router, renderer, content pipeline. Author in TypeScript/JSX, runs as a single binary." as string,
-  base: "/pj/zudo-front-builder",
+  base: "/",
   trailingSlash: false as boolean,
   noindex: false as boolean,
   editUrl: false as string | false,
   githubUrl: "https://github.com/Takazudo/zudo-front-builder" as string | false,
-  siteUrl: "https://takazudomodular.com" as string,
+  siteUrl: "https://zfb.takazudomodular.com" as string,
+  metaTags: {
+    description: true,
+    keywords: false,
+    ogImage: "/img/ogp.png",
+    ogSiteName: true,
+    twitterCard: "summary_large_image",
+  } satisfies MetaTagsConfig as MetaTagsConfig,
   docsDir: "src/content/docs",
   defaultLocale: "en" as string,
   locales: {
@@ -80,6 +90,7 @@ export const settings = {
   sidebarResizer: true as boolean,
   sidebarToggle: true as boolean,
   imageEnlarge: true as boolean,
+  dynamicPageTransition: false as boolean,
   htmlPreview: undefined as HtmlPreviewConfig | undefined,
   versions: false as VersionConfig[] | false,
   claudeResources: {
@@ -120,4 +131,5 @@ export const settings = {
     { type: "component", component: "search" },
     { type: "component", component: "language-switcher" },
   ] as HeaderRightItem[],
-};
+  packageOwnedRoutes: true,
+} satisfies Settings;
