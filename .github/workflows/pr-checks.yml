@@ -47,13 +47,6 @@ jobs:
       - name: Build docs
         run: pnpm --filter docs build
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: docs-dist
-          path: docs/dist/
-          retention-days: 1
-
   audit:
     name: pnpm audit (prod)
     runs-on: ubuntu-latest
