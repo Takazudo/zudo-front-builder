@@ -81,6 +81,11 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
+          # This job runs only `node`/`npx wrangler` (no pnpm). setup-node@v5
+          # auto-enables package-manager-cache and detects pnpm-lock.yaml, then
+          # fails with "Unable to locate pnpm" because pnpm/action-setup never ran
+          # in this job. Disable the cache — pnpm is not needed here.
+          package-manager-cache: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: docs-dist
