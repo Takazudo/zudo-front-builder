@@ -836,14 +836,24 @@ impl EsbuildSubprocessBundler {
 
         // Plugin-registered aliases + virtual modules (#269). Both
         // surface through a synthetic `compilerOptions.paths` map
-        // esbuild reads via `--tsconfig=<temp tsconfig>`, NOT as
-        // `--alias` flags. esbuild's `--alias:<from>=<to>` is
-        // prefix-with-slash — registering `@/foo` would silently
-        // rewrite `@/foo/bar`, contradicting the embedded V8 host's
-        // exact-match contract
+        // esbuild reads via `--tsconfig=<temp tsconfig>`. Plugin aliases
+        // (`@/foo`) are tsconfig-paths-ONLY: esbuild's
+        // `--alias:<from>=<to>` is prefix-with-slash, so registering
+        // `@/foo` would silently rewrite `@/foo/bar` (which can be a real
+        // file under a directory alias), contradicting the embedded V8
+        // host's exact-match contract
         // (`zfb-render::BundleModuleLoader::resolve_alias`). A
-        // wildcard-free `compilerOptions.paths` entry is a literal
-        // exact match in TS / esbuild's path-mapping pipeline.
+        // wildcard-free `compilerOptions.paths` entry is a literal exact
+        // match in TS / esbuild's path-mapping pipeline.
+        //
+        // Plugin virtual modules additionally surface as
+        // `--alias:<spec>=<tmp.mjs>` flags (#1263) — see where they are
+        // appended to `cmd` below. esbuild does not apply
+        // `compilerOptions.paths` to a source file under `node_modules`,
+        // so a route entrypoint installed there cannot resolve a
+        // `virtual:*` import via the tsconfig alone; `--alias` is not
+        // node_modules-gated and is exact-match-safe for virtual modules
+        // because their target is always a single `.mjs` file.
         //
         // `zfb_plugin_resolver::build_resolver_inputs` materializes
         // each virtual module's source to a `.zfb-virtual-*.mjs` temp
@@ -901,6 +911,14 @@ impl EsbuildSubprocessBundler {
                 "--tsconfig={}",
                 tsconfig_tmp.path().display()
             )));
+        }
+        // Virtual-module `--alias` flags (#1263): make `virtual:*` imports
+        // resolve even from a route entrypoint whose realpath is under
+        // `node_modules` (where esbuild's `compilerOptions.paths` is not
+        // applied). Empty for the zero-virtual-module path, so the argv
+        // stays byte-identical there.
+        for flag in resolver_inputs.virtual_module_alias_flags() {
+            cmd.arg(OsString::from(flag));
         }
         for arg in &args {
             cmd.arg(arg);
@@ -1831,6 +1849,12 @@ impl EsbuildSubprocessBundler {
                 "--tsconfig={}",
                 tsconfig_tmp.path().display()
             )));
+        }
+        // Virtual-module `--alias` flags (#1263) — same rationale as the
+        // shared/per-island path: resolve `virtual:*` imports from an
+        // entrypoint resident under `node_modules`.
+        for flag in resolver_inputs.virtual_module_alias_flags() {
+            cmd.arg(OsString::from(flag));
         }
         for arg in &args {
             cmd.arg(arg);

@@ -5513,16 +5513,26 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
 
     // Plugin-registered aliases + virtual modules (#269). Both surface
     // through the synthetic `compilerOptions.paths` map esbuild reads
-    // via `--tsconfig=<tsconfig.json>` above, NOT as `--alias` flags.
+    // via `--tsconfig=<tsconfig.json>` above. Plugin aliases (`@/foo`)
+    // are tsconfig-paths-ONLY.
     //
-    // Why not `--alias`: esbuild's `--alias:<from>=<to>` is
+    // Why aliases avoid `--alias`: esbuild's `--alias:<from>=<to>` is
     // prefix-with-slash — registering `@/foo` would silently also
-    // rewrite `@/foo/bar`, contradicting the documented exact-match
-    // contract honored by the embedded V8 host
+    // rewrite `@/foo/bar` (which can be a real file under a directory
+    // alias), contradicting the documented exact-match contract honored
+    // by the embedded V8 host
     // (`zfb-render::BundleModuleLoader::resolve_alias`). A
     // `compilerOptions.paths` entry without the wildcard suffix is a
     // literal exact match in the TypeScript / esbuild path-mapping
     // pipeline.
+    //
+    // Virtual modules ADDITIONALLY surface as `--alias` flags — see
+    // `resolver_inputs.virtual_module_alias_flags()` appended to `cmd`
+    // after the tsconfig is rewritten below (#1263). The tsconfig is not
+    // applied to source files under `node_modules`, so the alias is what
+    // resolves a `virtual:*` import from a node_modules route entrypoint;
+    // it is exact-match-safe because each virtual target is a single
+    // `.mjs` file.
     //
     // `zfb_plugin_resolver::build_resolver_inputs` materializes each
     // virtual module to a `.zfb-virtual-*.mjs` temp file inside
@@ -5574,6 +5584,21 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
         .to_string();
     write_synthetic_tsconfig(shadow, &merged_paths, &jsx_import_source)
         .context("bundler: failed rewriting synthetic tsconfig with plugin entries")?;
+
+    // Virtual-module `--alias:<spec>=<tmp.mjs>` flags (#1263). esbuild does
+    // NOT apply the synthetic tsconfig's `compilerOptions.paths` to a source
+    // file resident under `node_modules` (`tsConfigForDir` returns nil for
+    // `isInsideNodeModules` before consulting the `--tsconfig` override). A
+    // preset route entrypoint installed under `node_modules` and pulled in by
+    // `synthesize_static_overlay_module` therefore cannot resolve its
+    // `virtual:*` imports through the tsconfig alone. `--alias` is not
+    // node_modules-gated; it is exact-match-safe here because each virtual
+    // target is a single `.mjs` file, so `virtual:foo/bar` remaps to
+    // `<tmp>.mjs/bar` and fails (preserving #269). Empty for the
+    // zero-virtual-module path, so the argv is unchanged there.
+    for flag in resolver_inputs.virtual_module_alias_flags() {
+        cmd.arg(flag);
+    }
 
     // import.meta.env.{PROD,DEV} — always emitted, driven by mode.
     let prod = input.mode.is_prod();

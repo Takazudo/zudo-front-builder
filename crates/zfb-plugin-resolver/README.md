@@ -15,6 +15,22 @@ produces the inputs needed for exact-match aliases by expressing them as
 `compilerOptions.paths` entries in a synthetic tsconfig instead — a bare specifier in
 `paths` (no `*` wildcard) is a literal exact match in TypeScript / esbuild.
 
+### …but virtual modules ALSO need `--alias` (#1263)
+
+esbuild does **not** apply `compilerOptions.paths` to a source file whose directory is
+under `node_modules` (its resolver's `tsConfigForDir` returns `nil` for
+`isInsideNodeModules` *before* consulting the `--tsconfig` / `--tsconfig-raw` override). So
+a preset route entrypoint installed under `node_modules` (e.g.
+`node_modules/@takazudo/zudo-doc/dist/routes/_chrome.js`) cannot resolve a `virtual:*`
+import through the synthetic tsconfig alone.
+
+`--alias` is *not* node_modules-gated, so virtual modules are emitted as `--alias` flags too
+(`ResolverInputs::virtual_module_alias_flags`). This is exact-match-safe **only for virtual
+modules** because their target is always a single materialized `.mjs` file:
+`virtual:foo/bar` remaps to `<tmp>.mjs/bar`, which cannot resolve, so the prefix-with-slash
+form still fails. Plugin `@/`-style aliases (which may target a directory) stay
+`compilerOptions.paths`-only.
+
 A tiny leaf crate is also necessary to break a dependency cycle: `zfb-build` depends on
 `zfb-render` and `zfb-content`; `zfb-islands` does not depend on `zfb-build` (and
 `zfb-build` re-uses `zfb-islands` through the orchestrator's bundling fan-out). Placing
@@ -38,9 +54,13 @@ Given plugin-registered aliases and virtual modules:
    (held alive in `ResolverInputs::_temp_files`).
 2. Builds `paths_entries` — a `Vec<(specifier, absolute-path)>` with paths
    normalized to POSIX forward-slash form for platform-stable JSON.
+3. Builds `virtual_module_alias_args` — the virtual-module subset of `paths_entries`,
+   surfaced as `--alias:<spec>=<path>` flags by `virtual_module_alias_flags()` (#1263).
 
 Callers write the merged entries into a synthetic tsconfig and pass `--tsconfig=<path>` to
-esbuild. No `--alias` flags are emitted for plugin entries.
+esbuild, AND pass each `virtual_module_alias_flags()` entry so `virtual:*` imports resolve
+from node_modules-resident entrypoints. No `--alias` flags are emitted for plugin `@/`
+aliases — only for virtual modules.
 
 Falls back to the system temp dir when `working_dir` is not an existing directory (matches
 the islands path's existing unit-test convention).
@@ -51,6 +71,9 @@ the islands path's existing unit-test convention).
 pub struct ResolverInputs {
     /// (specifier, absolute-path) pairs for compilerOptions.paths.
     pub paths_entries: Vec<(String, String)>,
+    /// (specifier, absolute-path) pairs for virtual modules ONLY, also
+    /// emitted as `--alias` flags via `virtual_module_alias_flags()` (#1263).
+    pub virtual_module_alias_args: Vec<(String, String)>,
     /// Held-alive temp-file handles for virtual-module .mjs files.
     pub _temp_files: Vec<NamedTempFile>,
 }
