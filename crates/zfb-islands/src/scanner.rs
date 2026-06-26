@@ -248,6 +248,20 @@ pub struct FsResolver {
     /// want the legacy "skip every bare specifier" shape can flip it
     /// off via [`FsResolver::without_workspace_probe`].
     pub workspace_probe_enabled: bool,
+    /// Canonical `node_modules/<pkg>` package roots of the injected-route
+    /// entrypoints this scan was seeded with (issue #1268 Symptom 2).
+    ///
+    /// A preset can `injectRoute` a page whose realpath lives under
+    /// `node_modules` (e.g. `@takazudo/zudo-doc/dist/routes/_chrome.js`).
+    /// esbuild bundles that page as an app entry, so its own bare
+    /// `import { Island } from "@takazudo/zfb"` — directly or through the
+    /// package-chrome closure — must be descended into, the same single
+    /// first hop the descent gate already grants a real page outside
+    /// `node_modules`. Membership in one of these subtrees makes an
+    /// importer *honorary project source*; see the descent policy in
+    /// [`Resolver::resolve`]. Empty for an ordinary scan (no injected
+    /// routes under `node_modules`).
+    injected_route_roots: Vec<PathBuf>,
     /// Cache of `tsconfig_dir → parsed paths` for the nearest
     /// `tsconfig.json` discovered above each importer. Populated on
     /// first lookup; subsequent imports from the same project hit the
@@ -269,6 +283,7 @@ impl Default for FsResolver {
                 ".js".to_string(),
             ],
             workspace_probe_enabled: true,
+            injected_route_roots: Vec::new(),
             tsconfig_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -289,6 +304,25 @@ impl FsResolver {
             workspace_probe_enabled: false,
             ..Self::default()
         }
+    }
+
+    /// Seed the resolver with the injected-route entrypoints this scan
+    /// uses (issue #1268 Symptom 2). Each entrypoint whose realpath lands
+    /// under `node_modules` is reduced to its owning `node_modules/<pkg>`
+    /// package root and recorded as honorary-project-source for the
+    /// bare-specifier descent gate. Entrypoints outside `node_modules`
+    /// (workspace-source routes) are ignored — the gate already lets their
+    /// bare imports descend.
+    pub fn with_injected_route_roots<I, P>(mut self, entrypoints: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        self.injected_route_roots = entrypoints
+            .into_iter()
+            .filter_map(|e| Self::injected_route_pkg_root(e.as_ref()))
+            .collect();
+        self
     }
 
     /// Walk up from `start_dir` looking for the first ancestor that
@@ -367,6 +401,70 @@ impl FsResolver {
         dir.components().any(|comp| {
             matches!(comp, Component::Normal(name) if name == std::ffi::OsStr::new("node_modules"))
         })
+    }
+
+    /// Reduce an injected-route entrypoint path to the canonical
+    /// `node_modules/<pkg>` (or `node_modules/@scope/pkg`) package root
+    /// that owns it (issue #1268 Symptom 2).
+    ///
+    /// Canonicalised so the recorded root matches the symlink-resolved
+    /// importer dirs the DFS produces (relative imports are canonicalised
+    /// the moment they resolve). `None` when the entrypoint can't be
+    /// canonicalised or resolves outside any `node_modules` segment —
+    /// those routes are workspace/project source the descent gate already
+    /// admits, so they need no honorary root.
+    fn injected_route_pkg_root(entrypoint: &Path) -> Option<PathBuf> {
+        let canon = entrypoint.canonicalize().ok()?;
+        let comps: Vec<Component> = canon.components().collect();
+        // The OWNING package is the one named by the LAST `node_modules`
+        // segment — a route installed in the pnpm store canonicalises to
+        // `…/node_modules/.pnpm/<pkg>@<ver>/node_modules/<pkg>/…`, and we
+        // want the innermost `<pkg>`, not `.pnpm`.
+        let nm_idx = comps.iter().rposition(|c| {
+            matches!(c, Component::Normal(name) if *name == std::ffi::OsStr::new("node_modules"))
+        })?;
+        let name = match comps.get(nm_idx + 1) {
+            Some(Component::Normal(n)) => n,
+            _ => return None,
+        };
+        // A scoped package (`@scope/pkg`) spans two path segments.
+        let take = if name.to_string_lossy().starts_with('@') {
+            match comps.get(nm_idx + 2) {
+                Some(Component::Normal(_)) => nm_idx + 3,
+                _ => return None,
+            }
+        } else {
+            nm_idx + 2
+        };
+        let mut root = PathBuf::new();
+        for comp in &comps[..take] {
+            root.push(comp.as_os_str());
+        }
+        Some(root)
+    }
+
+    /// Whether `importer_dir` lives inside an injected-route package's own
+    /// subtree, making it honorary project source for bare-specifier
+    /// descent (issue #1268 Symptom 2; see the gate in
+    /// [`Resolver::resolve`]).
+    ///
+    /// Scoped to the route's OWN package subtree, so the exemption grants
+    /// exactly one bare hop: the first hop lands inside a *different*
+    /// `node_modules` package (the island's), which is not an
+    /// injected-route root, so the hard invariant re-engages there.
+    fn is_within_injected_route_closure(&self, importer_dir: &Path) -> bool {
+        if self.injected_route_roots.is_empty() {
+            return false;
+        }
+        // Canonicalise so a symlinked importer (the seed route's own dir,
+        // pushed onto the DFS before any resolve canonicalises it) still
+        // matches the canonical package roots. Fall back to the raw path
+        // when canonicalisation fails (e.g. a synthetic test dir).
+        let canon = importer_dir.canonicalize();
+        let importer = canon.as_deref().unwrap_or(importer_dir);
+        self.injected_route_roots
+            .iter()
+            .any(|root| importer.starts_with(root))
     }
 
     /// Split a bare specifier into `(package, subpath)` where the
@@ -991,8 +1089,25 @@ impl Resolver for FsResolver {
             // followed. The scan never walks the transitive framework
             // dependency graph; once inside a regular package only its own
             // RELATIVE-import closure is traversed.
+            //
+            // Exemption (issue #1268 Symptom 2): an injected-route
+            // entrypoint whose realpath is under `node_modules` (a preset's
+            // `injectRoute` page + its package-chrome closure) is honorary
+            // project source. esbuild bundles it as an app entry, so its own
+            // `import { Island } from "@takazudo/zfb"` — directly or through
+            // the chrome closure — must reach that island's `"use client"`
+            // module, the SAME single first hop the gate already grants a
+            // real page outside `node_modules`. The exemption is scoped to
+            // the route's OWN package subtree, so it grants exactly that one
+            // hop: once it lands inside the island package (a different
+            // `node_modules` subtree, NOT an injected-route root) the
+            // invariant re-engages and the island package's transitive bare
+            // deps still stop here.
             let is_workspace = Self::is_workspace_package(&pkg_dir);
-            if !is_workspace && Self::is_inside_node_modules(importer_dir) {
+            if !is_workspace
+                && Self::is_inside_node_modules(importer_dir)
+                && !self.is_within_injected_route_closure(importer_dir)
+            {
                 return None;
             }
             return self
@@ -4540,6 +4655,144 @@ mod tests {
             names,
             vec!["Widget", "WsIsland"],
             "peer-dep reached via bare import from inside node_modules must not be crawled: {islands:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Injected-route honorary-source descent (issue #1268 Symptom 2)
+    // ---------------------------------------------------------------
+
+    /// Build the #1268 Symptom 2 fixture: a preset's injected route whose
+    /// realpath is under `node_modules`, reaching a `"use client"` island
+    /// in a SEPARATE regular package THROUGH an intermediate package-chrome
+    /// module — the genuine two-level transitive shape:
+    ///
+    /// ```text
+    /// node_modules/@takazudo/zudo-doc/dist/routes/route.tsx   (injected route seed)
+    ///   → import "./chrome"                                   (relative, same package)
+    /// node_modules/@takazudo/zudo-doc/dist/routes/chrome.tsx  (package chrome)
+    ///   → import { Island } from "@takazudo/zfb"              (BARE hop, different package)
+    /// node_modules/@takazudo/zfb/dist/index.js                ("use client" island)
+    ///   → import { signal } from "preact"                     (BARE hop that MUST stop)
+    /// node_modules/preact/dist/preact.js                      (sneaky island; must NOT surface)
+    /// ```
+    ///
+    /// Returns the absolute path to the injected route entrypoint.
+    #[cfg(unix)]
+    fn write_node_modules_route_chrome_island_fixture(root: &Path) -> PathBuf {
+        use std::fs;
+
+        // The injected-route source package (`@takazudo/zudo-doc`): a real
+        // directory under node_modules (a regular installed package, NOT a
+        // workspace symlink). Route + chrome both live in its `dist/routes`.
+        let routes = root.join("node_modules/@takazudo/zudo-doc/dist/routes");
+        fs::create_dir_all(&routes).unwrap();
+        let route = routes.join("route.tsx");
+        fs::write(
+            &route,
+            "import { Chrome } from \"./chrome\";\n\
+             export default function Route() { return null; }\n",
+        )
+        .unwrap();
+        // The intermediate package-chrome module: it carries no directive
+        // and reaches the island ONLY through a bare `@takazudo/zfb` import.
+        fs::write(
+            routes.join("chrome.tsx"),
+            "import { Island } from \"@takazudo/zfb\";\n\
+             export function Chrome() { return null; }\n",
+        )
+        .unwrap();
+
+        // The island's own package (`@takazudo/zfb`): a separate regular
+        // npm package. Its `exports["."]` entry IS the `"use client"`
+        // module, and it pulls `preact` via a bare import that must NOT be
+        // followed once the scan is inside it.
+        let zfb = root.join("node_modules/@takazudo/zfb");
+        fs::create_dir_all(zfb.join("dist")).unwrap();
+        fs::write(
+            zfb.join("package.json"),
+            r#"{ "name": "@takazudo/zfb", "type": "module",
+                "exports": { ".": { "default": "./dist/index.js" } } }"#,
+        )
+        .unwrap();
+        fs::write(
+            zfb.join("dist/index.js"),
+            "\"use client\";\nimport { signal } from \"preact\";\nexport function Island() {}\n",
+        )
+        .unwrap();
+
+        // preact core, reachable ONLY via the bare import inside
+        // `@takazudo/zfb/dist/index.js`. Its sneaky island must never
+        // surface — that bare hop is from inside a genuine node_modules
+        // package (NOT an injected-route subtree), so the hard invariant
+        // stops it.
+        let preact = root.join("node_modules/preact");
+        fs::create_dir_all(preact.join("dist")).unwrap();
+        fs::write(
+            preact.join("package.json"),
+            r#"{ "name": "preact", "main": "dist/preact.js" }"#,
+        )
+        .unwrap();
+        fs::write(
+            preact.join("dist/preact.js"),
+            "\"use client\";\nexport function PreactSneaksIn() {}\n",
+        )
+        .unwrap();
+
+        route
+    }
+
+    /// **#1268 Symptom 2 — headline fix.** When the scan is told the route
+    /// is an injected entrypoint (honorary project source), the island
+    /// reached two levels deep — `route → ./chrome → @takazudo/zfb` — IS
+    /// registered, AND only that single bare hop is granted: `@takazudo/zfb`'s
+    /// own bare `import "preact"` still stops, so preact's sneaky island
+    /// never surfaces. One assertion proves both the fix and the
+    /// single-hop hard invariant.
+    #[cfg(unix)]
+    #[test]
+    fn injected_route_under_node_modules_registers_transitive_chrome_island() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let route = write_node_modules_route_chrome_island_fixture(dir.path());
+
+        // build.rs threads the injected-route entrypoints into the resolver
+        // exactly like this.
+        let resolver = FsResolver::new().with_injected_route_roots([&route]);
+        let islands = scan_islands(&[route], &resolver).unwrap();
+        let names: Vec<&str> = islands.iter().map(|i| i.component_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Island"],
+            "the transitively-reached `@takazudo/zfb` island must register via the \
+             injected-route honorary-source exemption, and ONLY that single hop — \
+             preact (one further bare hop, from inside node_modules) must not be \
+             crawled: {islands:?}",
+        );
+    }
+
+    /// **#1268 Symptom 2 — hard invariant negative.** The SAME fixture, but
+    /// the route is NOT marked as an injected entrypoint. A bare import made
+    /// from inside a regular node_modules package (`@takazudo/zudo-doc`'s
+    /// chrome) that is not honorary project source must STILL stop, so the
+    /// island is never registered. This is the contrast that guards the
+    /// exemption: it fires only for injected-route subtrees, never for an
+    /// ordinary node_modules importer.
+    #[cfg(unix)]
+    #[test]
+    fn bare_import_from_node_modules_route_does_not_walk_without_injected_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let route = write_node_modules_route_chrome_island_fixture(dir.path());
+
+        // No `with_injected_route_roots` — the route is just another module
+        // under node_modules, so its chrome's bare `@takazudo/zfb` import is
+        // hard-stopped.
+        let resolver = FsResolver::new();
+        let islands = scan_islands(&[route], &resolver).unwrap();
+        assert!(
+            islands.is_empty(),
+            "without the injected-route exemption, a bare import from inside a \
+             node_modules package must not be walked; no island should register: \
+             {islands:?}",
         );
     }
 
