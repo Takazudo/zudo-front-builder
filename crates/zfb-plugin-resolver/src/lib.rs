@@ -71,7 +71,10 @@ pub struct ResolverInputs {
     /// modules only**, to ALSO be emitted as esbuild
     /// `--alias:<specifier>=<path>` CLI flags via
     /// [`Self::virtual_module_alias_flags`] — a strict subset of
-    /// `paths_entries` (plugin aliases like `@/foo` are NOT included).
+    /// `paths_entries`: plugin aliases like `@/foo` are NOT included, and
+    /// neither is any virtual specifier the user's own
+    /// `compilerOptions.paths` already claims (user-wins, #1267 — see
+    /// `build_resolver_inputs`).
     ///
     /// ## Why a second mechanism on top of `compilerOptions.paths` (#1263)
     ///
@@ -147,14 +150,24 @@ impl ResolverInputs {
 ///   back to the system temp dir when the path is not a directory
 ///   (matches the islands path's pre-existing fallback for the
 ///   unit-test environment).
+/// - `user_tsconfig_paths`: the user's own `compilerOptions.paths` map
+///   (keyed by pattern). Used ONLY to filter the virtual-module
+///   `--alias` arg set per the user-wins collision policy (#1267) — a
+///   virtual specifier the user already claims (exact key or a wildcard
+///   it falls under) gets NO `--alias`, so the user's synthetic-tsconfig
+///   entry governs instead of being overridden by the earlier-applied
+///   esbuild `--alias`. It does NOT affect `paths_entries`.
 ///
 /// On success the returned `ResolverInputs::paths_entries` contains one
 /// entry per alias plus one entry per virtual module, all keyed on the
 /// bare specifier, all targeting a single absolute POSIX path.
+/// `virtual_module_alias_args` carries the same virtual-module entries
+/// MINUS any specifier the user already owns.
 pub fn build_resolver_inputs(
     aliases: &[(String, String)],
     virtual_modules: &[(String, String)],
     working_dir: &Path,
+    user_tsconfig_paths: &BTreeMap<String, Vec<String>>,
 ) -> Result<ResolverInputs> {
     let mut paths_entries: Vec<(String, String)> = Vec::new();
     let mut virtual_module_alias_args: Vec<(String, String)> = Vec::new();
@@ -209,8 +222,18 @@ pub fn build_resolver_inputs(
         paths_entries.push((specifier.clone(), posix_target.clone()));
         // Same materialized target ALSO surfaces as an esbuild `--alias`
         // flag so the import resolves from a node_modules-resident
-        // entrypoint, where `compilerOptions.paths` is gated off (#1263).
-        virtual_module_alias_args.push((specifier.clone(), posix_target));
+        // entrypoint, where `compilerOptions.paths` is gated off (#1263)
+        // — UNLESS the user's own `compilerOptions.paths` already claims
+        // this specifier (exact key, or a wildcard it falls under).
+        // esbuild applies `--alias` BEFORE tsconfig `paths`, so emitting
+        // the plugin alias for a user-owned specifier would override the
+        // user's mapping, inverting the user-wins policy that
+        // `merge_into_tsconfig_paths` enforces for `paths_entries` (#1267).
+        // Filtering it here keeps the user in control; `paths_entries`
+        // (the synthetic-tsconfig entries) is left intact either way.
+        if !user_claims_specifier(user_tsconfig_paths, specifier) {
+            virtual_module_alias_args.push((specifier.clone(), posix_target));
+        }
         temp_files.push(tmp);
     }
 
@@ -219,6 +242,39 @@ pub fn build_resolver_inputs(
         virtual_module_alias_args,
         _temp_files: temp_files,
     })
+}
+
+/// True when the user's `compilerOptions.paths` already claims
+/// `specifier` — either as an exact key, or via a wildcard pattern whose
+/// fixed prefix/suffix `specifier` falls under. This is the user-wins
+/// gate for plugin `virtual:*` `--alias` flags (#1267): a specifier the
+/// user owns must NOT get a plugin `--alias` (esbuild applies `--alias`
+/// before tsconfig `paths`, so it would override the user's mapping).
+fn user_claims_specifier(
+    user_tsconfig_paths: &BTreeMap<String, Vec<String>>,
+    specifier: &str,
+) -> bool {
+    user_tsconfig_paths
+        .keys()
+        .any(|pattern| tsconfig_pattern_matches(pattern, specifier))
+}
+
+/// Match a single `compilerOptions.paths` key against a concrete
+/// specifier using TypeScript's path-mapping semantics: a pattern has at
+/// most one `*`, and `prefix*suffix` matches `s` when `s` starts with
+/// `prefix`, ends with `suffix`, and is long enough to fill the `*`
+/// (so `virtual:foo/*` matches `virtual:foo/bar` but NOT the shorter
+/// exact `virtual:foo`). A pattern with no `*` matches only by exact
+/// equality.
+fn tsconfig_pattern_matches(pattern: &str, specifier: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == specifier,
+        Some((prefix, suffix)) => {
+            specifier.len() >= prefix.len() + suffix.len()
+                && specifier.starts_with(prefix)
+                && specifier.ends_with(suffix)
+        }
+    }
 }
 
 /// Merge `entries` (typically `ResolverInputs::paths_entries`) into a
@@ -702,7 +758,7 @@ mod tests {
     #[test]
     fn empty_inputs_produce_empty_outputs() {
         let dir = TempDir::new().unwrap();
-        let r = build_resolver_inputs(&[], &[], dir.path()).unwrap();
+        let r = build_resolver_inputs(&[], &[], dir.path(), &BTreeMap::new()).unwrap();
         assert!(r.paths_entries.is_empty());
         assert!(r.virtual_module_alias_args.is_empty());
         assert!(r.virtual_module_alias_flags().is_empty());
@@ -716,7 +772,7 @@ mod tests {
     fn alias_produces_exact_match_paths_entry() {
         let dir = TempDir::new().unwrap();
         let aliases = vec![("@/foo".to_string(), "/abs/src/foo.tsx".to_string())];
-        let r = build_resolver_inputs(&aliases, &[], dir.path()).unwrap();
+        let r = build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new()).unwrap();
         assert_eq!(r.paths_entries.len(), 1);
         assert_eq!(r.paths_entries[0].0, "@/foo");
         assert_eq!(r.paths_entries[0].1, "/abs/src/foo.tsx");
@@ -745,7 +801,7 @@ mod tests {
             "virtual:meta".to_string(),
             "export default { ok: true };".to_string(),
         )];
-        let r = build_resolver_inputs(&[], &vms, dir.path()).unwrap();
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new()).unwrap();
         assert_eq!(r.paths_entries.len(), 1);
         assert_eq!(r.paths_entries[0].0, "virtual:meta");
         assert_eq!(r._temp_files.len(), 1);
@@ -789,7 +845,7 @@ mod tests {
     fn virtual_module_alias_flags_format_is_alias_colon_key_equals_value() {
         let dir = TempDir::new().unwrap();
         let vms = vec![("virtual:meta".to_string(), "export default 1;".to_string())];
-        let r = build_resolver_inputs(&[], &vms, dir.path()).unwrap();
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new()).unwrap();
         let flags = r.virtual_module_alias_flags();
         assert_eq!(flags.len(), 1);
         let flag = &flags[0];
@@ -812,7 +868,7 @@ mod tests {
     fn virtual_module_falls_back_to_system_tmpdir_when_working_dir_missing() {
         let bogus = std::path::PathBuf::from("/this/path/should/not/exist/zfb-test");
         let vms = vec![("virtual:x".to_string(), "export const x = 1;".to_string())];
-        let r = build_resolver_inputs(&[], &vms, &bogus).unwrap();
+        let r = build_resolver_inputs(&[], &vms, &bogus, &BTreeMap::new()).unwrap();
         assert_eq!(r._temp_files.len(), 1);
         let tmp_path = r._temp_files[0].path();
         assert!(tmp_path.exists(), "temp file must be on disk");
@@ -915,7 +971,7 @@ mod tests {
             "virtual:meta".to_string(),
             "export const meta = 1;".to_string(),
         )];
-        let r = build_resolver_inputs(&aliases, &vms, dir.path()).unwrap();
+        let r = build_resolver_inputs(&aliases, &vms, dir.path(), &BTreeMap::new()).unwrap();
         assert_eq!(r.paths_entries.len(), 3);
         assert_eq!(r.paths_entries[0].0, "@/foo");
         assert_eq!(r.paths_entries[1].0, "@/bar");
@@ -926,6 +982,130 @@ mod tests {
         assert_eq!(r.virtual_module_alias_args.len(), 1);
         assert_eq!(r.virtual_module_alias_args[0].0, "virtual:meta");
         assert_eq!(r.virtual_module_alias_flags().len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // user-wins `--alias` filtering (#1267) — exact + subpath collisions
+    // -----------------------------------------------------------------------
+
+    /// **No user collision** → the virtual module's `--alias` is STILL
+    /// emitted. This is the #1263 / #1268-Symptom-1 path: a `virtual:*`
+    /// import from a node_modules-resident entrypoint resolves via the
+    /// alias, which is NOT node_modules-gated. A user `paths` map that
+    /// claims an UNRELATED key (`@/components/*`) must not suppress it.
+    #[test]
+    fn no_user_collision_keeps_virtual_alias() {
+        let dir = TempDir::new().unwrap();
+        let vms = vec![("virtual:foo".to_string(), "export default 1;".to_string())];
+        let mut user = BTreeMap::new();
+        user.insert(
+            "@/components/*".to_string(),
+            vec!["src/components/*".to_string()],
+        );
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &user).unwrap();
+        // paths_entries is untouched by filtering — the synthetic-tsconfig
+        // entry for the virtual module is always present.
+        assert_eq!(r.paths_entries.len(), 1);
+        assert_eq!(r.paths_entries[0].0, "virtual:foo");
+        // And the alias survives because the user did not claim it.
+        assert_eq!(r.virtual_module_alias_args.len(), 1);
+        assert_eq!(r.virtual_module_alias_args[0].0, "virtual:foo");
+        assert_eq!(
+            r.virtual_module_alias_flags().len(),
+            1,
+            "non-colliding virtual module must keep its --alias (#1268 Symptom 1)"
+        );
+    }
+
+    /// **Exact-key collision.** The user's `compilerOptions.paths` already
+    /// maps `virtual:foo`. esbuild applies `--alias` BEFORE tsconfig
+    /// `paths`, so a plugin `--alias:virtual:foo=...` would override the
+    /// user's mapping — inverting the user-wins policy. The alias is
+    /// filtered out; the user's synthetic-tsconfig entry governs. The
+    /// synthetic `paths_entries` entry for the plugin VM still exists (it
+    /// just loses on merge to the user's pre-seeded key).
+    #[test]
+    fn exact_key_collision_drops_virtual_alias() {
+        let dir = TempDir::new().unwrap();
+        let vms = vec![(
+            "virtual:foo".to_string(),
+            "export default 'plugin';".to_string(),
+        )];
+        let mut user = BTreeMap::new();
+        user.insert(
+            "virtual:foo".to_string(),
+            vec!["src/user-foo.ts".to_string()],
+        );
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &user).unwrap();
+        // paths_entries is NOT filtered — only the --alias arg set is.
+        assert_eq!(r.paths_entries.len(), 1);
+        assert_eq!(r.paths_entries[0].0, "virtual:foo");
+        // The colliding alias is suppressed → user wins (#1267).
+        assert!(
+            r.virtual_module_alias_args.is_empty(),
+            "user-claimed exact specifier must NOT get a plugin --alias"
+        );
+        assert!(r.virtual_module_alias_flags().is_empty());
+    }
+
+    /// **Subpath / wildcard collision.** The user maps `virtual:foo/*`. A
+    /// plugin VM `virtual:foo/bar` falls UNDER that wildcard, so its
+    /// `--alias` is suppressed (user wildcard governs). A non-colliding
+    /// VM `virtual:baz` still gets its alias — prefix-aware matching, not
+    /// a blanket suppression. The bare `virtual:foo` (no slash) would NOT
+    /// fall under `virtual:foo/*`, exercising the length/prefix guard.
+    #[test]
+    fn subpath_collision_drops_only_covered_virtual_alias() {
+        let dir = TempDir::new().unwrap();
+        let vms = vec![
+            (
+                "virtual:foo/bar".to_string(),
+                "export default 'covered';".to_string(),
+            ),
+            (
+                "virtual:baz".to_string(),
+                "export default 'free';".to_string(),
+            ),
+        ];
+        let mut user = BTreeMap::new();
+        user.insert("virtual:foo/*".to_string(), vec!["src/foo/*".to_string()]);
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &user).unwrap();
+        // Both VMs still have synthetic-tsconfig entries.
+        assert_eq!(r.paths_entries.len(), 2);
+        // Only `virtual:baz` keeps an alias; `virtual:foo/bar` is under
+        // the user's `virtual:foo/*` wildcard and is filtered.
+        assert_eq!(r.virtual_module_alias_args.len(), 1);
+        assert_eq!(
+            r.virtual_module_alias_args[0].0, "virtual:baz",
+            "only the non-colliding virtual module keeps its --alias"
+        );
+        assert!(
+            !r.virtual_module_alias_args
+                .iter()
+                .any(|(spec, _)| spec == "virtual:foo/bar"),
+            "a specifier under the user's wildcard must NOT get a plugin --alias"
+        );
+    }
+
+    /// Unit coverage for the TS path-pattern matcher backing the filter:
+    /// exact keys match only themselves; a `prefix/*` wildcard matches
+    /// anything under the prefix but NOT the shorter bare prefix; a
+    /// mid-string `*` honors both prefix and suffix.
+    #[test]
+    fn tsconfig_pattern_matches_semantics() {
+        // Exact (no `*`).
+        assert!(tsconfig_pattern_matches("virtual:foo", "virtual:foo"));
+        assert!(!tsconfig_pattern_matches("virtual:foo", "virtual:foobar"));
+        assert!(!tsconfig_pattern_matches("virtual:foo", "virtual:foo/bar"));
+        // Trailing-slash wildcard.
+        assert!(tsconfig_pattern_matches("virtual:foo/*", "virtual:foo/bar"));
+        assert!(tsconfig_pattern_matches("virtual:foo/*", "virtual:foo/a/b"));
+        assert!(!tsconfig_pattern_matches("virtual:foo/*", "virtual:foo"));
+        assert!(!tsconfig_pattern_matches("virtual:foo/*", "virtual:baz"));
+        // Mid-string `*` respects prefix AND suffix.
+        assert!(tsconfig_pattern_matches("a*c", "abc"));
+        assert!(tsconfig_pattern_matches("a*c", "ac"));
+        assert!(!tsconfig_pattern_matches("a*c", "ab"));
     }
 
     // -----------------------------------------------------------------------
