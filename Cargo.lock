@@ -5581,6 +5581,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zfb-binfetch"
+version = "0.0.0"
+dependencies = [
+ "reqwest",
+ "tempfile",
+]
+
+[[package]]
 name = "zfb-build"
 version = "0.0.0"
 dependencies = [

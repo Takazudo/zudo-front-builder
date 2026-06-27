@@ -1,0 +1,12 @@
+[package]
+name = "zfb-binfetch"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb-binfetch: streaming retry download helper used by zfb build scripts"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
