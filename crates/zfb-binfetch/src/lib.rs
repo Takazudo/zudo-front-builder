@@ -9,7 +9,10 @@ pub struct FetchOpts {
     /// TCP connect timeout per attempt. Default: 15 s.
     pub connect_timeout: Duration,
     /// Overall request timeout (used as a fallback cap because reqwest 0.12's
-    /// blocking client does not expose a per-read idle timeout).  Default: 60 s.
+    /// blocking client does not expose a per-read idle timeout). Kept generous
+    /// — the body is a ~75 MB download that must not be aborted on a slow link;
+    /// this is a stuck-transfer backstop, not a tight per-request limit.
+    /// Default: 300 s.
     pub read_timeout: Duration,
     /// Backoff before the second attempt; doubled each retry. Default: 500 ms.
     pub initial_backoff: Duration,
@@ -20,7 +23,7 @@ impl Default for FetchOpts {
         Self {
             attempts: 3,
             connect_timeout: Duration::from_secs(15),
-            read_timeout: Duration::from_secs(60),
+            read_timeout: Duration::from_secs(300),
             initial_backoff: Duration::from_millis(500),
         }
     }
@@ -36,9 +39,9 @@ pub fn fetch_to_file(url: &str, dest: &Path, opts: &FetchOpts) -> Result<(), Str
         .use_rustls_tls()
         .connect_timeout(opts.connect_timeout)
         // reqwest 0.12 blocking::ClientBuilder does not expose read_timeout, so
-        // we use the overall `.timeout()` as a fallback cap.  This is a generous
-        // deadline (default 60 s) rather than a tight per-request limit, so it
-        // won't abort a legitimately slow large download within that window.
+        // we use the overall `.timeout()` as a fallback cap. This is a generous
+        // deadline (default 300 s) rather than a tight per-request limit, so it
+        // won't abort a legitimately slow ~75 MB download within that window.
         // If a future reqwest version adds blocking read_timeout, swap this for
         // `.read_timeout(opts.read_timeout)` and remove the overall cap.
         .timeout(opts.read_timeout)
