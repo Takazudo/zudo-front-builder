@@ -180,17 +180,14 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let queue: Arc<Mutex<VecDeque<Handler>>> = Arc::new(Mutex::new(VecDeque::from(handlers)));
 
-        std::thread::spawn(move || loop {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    drain_request_headers(&mut stream);
-                    let handler = queue.lock().unwrap().pop_front();
-                    if let Some(h) = handler {
-                        h(&mut stream);
-                    }
-                    // If no handler remains, close the connection silently.
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                drain_request_headers(&mut stream);
+                let handler = queue.lock().unwrap().pop_front();
+                if let Some(h) = handler {
+                    h(&mut stream);
                 }
-                Err(_) => break,
+                // If no handler remains, close the connection silently.
             }
         });
 
