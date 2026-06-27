@@ -1,0 +1,22 @@
+---
+title: v0.1.0-next.69
+sidebar_position: 1069
+---
+
+# v0.1.0-next.69
+
+Released: 2026-06-28
+
+## Features
+
+- feat(binfetch): add streaming retry download helper crate (526a8ba)
+
+## Bug Fixes
+
+- fix(binfetch): make whole-request timeout opt-in (default None) (b867bdd)
+- fix(binfetch): make overall-timeout fallback generous (300s) (f4911be)
+
+## Other Changes
+
+- refactor(build): stream binary downloads via zfb-binfetch, drop buffered fetch_bytes (06f4614)
+- test(binfetch): use while-let in test server accept loop (clippy --all-targets) (701a7c8)
