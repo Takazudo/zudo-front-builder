@@ -5562,6 +5562,7 @@ dependencies = [
  "tracing",
  "url",
  "walkdir",
+ "zfb-binfetch",
  "zfb-build",
  "zfb-config-loader",
  "zfb-content",
@@ -5578,6 +5579,14 @@ dependencies = [
  "zfb-toolchain-pins",
  "zfb-types",
  "zfb-watcher",
+]
+
+[[package]]
+name = "zfb-binfetch"
+version = "0.0.0"
+dependencies = [
+ "reqwest",
+ "tempfile",
 ]
 
 [[package]]

@@ -177,6 +177,24 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
+/// Compute the SHA-256 of the file at `path` by reading it in 64 KiB chunks,
+/// avoiding a full in-memory buffer for large files (e.g. the ~75 MB tailwind
+/// binary).
+fn sha256_hex_file(path: &Path) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path)?;
+    let mut h = Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(hex::encode(h.finalize()))
+}
+
 /// Return `true` if `path` exists and its SHA-256 matches `expected_hex`.
 fn binary_already_correct(path: &Path, expected_hex: &str) -> bool {
     let Ok(bytes) = fs::read(path) else {
@@ -188,40 +206,13 @@ fn binary_already_correct(path: &Path, expected_hex: &str) -> bool {
 // ---------------------------------------------------------------------------
 // HTTP download helper
 // ---------------------------------------------------------------------------
-
-/// Download `url` into a `Vec<u8>`.
-///
-/// On network failure, returns a descriptive error that includes the two
-/// escape-hatch env var names.
-fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let client = reqwest::blocking::Client::builder()
-        .use_rustls_tls()
-        .build()
-        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
-
-    let response = client.get(url).send().map_err(|e| {
-        format!(
-            "network error fetching `{url}`: {e}\n\
-                 Hint: if no network is available, set ZFB_ESBUILD_BIN and \
-                 ZFB_TAILWIND_BIN to paths of manually-downloaded binaries."
-        )
-    })?;
-
-    if !response.status().is_success() {
-        return Err(format!(
-            "GET `{url}` returned HTTP {}: {}\n\
-             Hint: if no network is available, set ZFB_ESBUILD_BIN and \
-             ZFB_TAILWIND_BIN to paths of manually-downloaded binaries.",
-            response.status().as_u16(),
-            response.status().canonical_reason().unwrap_or("unknown")
-        ));
-    }
-
-    response
-        .bytes()
-        .map(|b| b.to_vec())
-        .map_err(|e| format!("failed to read response body from `{url}`: {e}"))
-}
+//
+// Downloads are handled by `zfb_binfetch::fetch_to_file`, which streams each
+// URL directly to a caller-supplied temp path with retry (3 attempts by
+// default), connect + overall timeouts, and automatic cleanup of partial
+// writes on failure. The caller owns SHA-256 verification, chmod, and atomic
+// rename into the final slot. See `crates/zfb-binfetch/src/lib.rs` for the
+// full implementation.
 
 // ---------------------------------------------------------------------------
 // esbuild download
@@ -337,7 +328,30 @@ fn download_esbuild(platform: Platform, slot_path: &Path) -> Result<(), String> 
     let url = esbuild_tarball_url(meta.npm_pkg, EXPECTED_ESBUILD_VERSION);
     println!("cargo:warning=Downloading esbuild {EXPECTED_ESBUILD_VERSION} from {url} ...");
 
-    let tgz_bytes = fetch_bytes(&url)?;
+    // Ensure the slot's parent directory exists before writing the temp file.
+    let slot_parent = slot_path
+        .parent()
+        .ok_or_else(|| format!("slot path {} has no parent directory", slot_path.display()))?;
+    fs::create_dir_all(slot_parent).map_err(|e| {
+        format!(
+            "failed to create esbuild dir {}: {e}",
+            slot_parent.display()
+        )
+    })?;
+
+    // Stream the .tgz to a sibling temp file, then read into memory for
+    // extraction.  The tgz is small (~a few MB) so in-memory extraction is
+    // acceptable; the heavy ~75 MB tailwind binary uses a streaming hash
+    // instead (see `download_tailwindcss`).
+    let tgz_tmp = slot_parent.join("esbuild-download.tgz.tmp");
+    zfb_binfetch::fetch_to_file(&url, &tgz_tmp, &zfb_binfetch::FetchOpts::default())
+        .map_err(|e| format!("download failed for esbuild from `{url}`: {e}"))?;
+
+    let tgz_bytes = fs::read(&tgz_tmp);
+    // Always clean up the temp tgz, even if the read fails.
+    let _ = fs::remove_file(&tgz_tmp);
+    let tgz_bytes = tgz_bytes.map_err(|e| format!("failed to read esbuild tgz temp file: {e}"))?;
+
     let binary_bytes = extract_from_tgz(&tgz_bytes, meta.tarball_binary_path)?;
 
     let actual_sha = sha256_hex(&binary_bytes);
@@ -410,10 +424,33 @@ fn download_tailwindcss(platform: Platform, slot_path: &Path) -> Result<(), Stri
     let url = format!("{release_base}/{asset_name}");
     println!("cargo:warning=Downloading tailwindcss {TAILWIND_VERSION} from {url} ...");
 
-    let binary_bytes = fetch_bytes(&url)?;
+    // Ensure the `binaries/` parent directory exists before writing the temp
+    // file.  `fetch_to_file` requires the dest's parent to exist.
+    if let Some(parent) = slot_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create binaries dir {}: {e}", parent.display()))?;
+    }
 
-    let actual_sha = sha256_hex(&binary_bytes);
+    // Stream directly to a .tmp sibling — avoids buffering the full ~75 MB
+    // tailwind binary in memory.  The hash is computed by reading the on-disk
+    // temp file in chunks (see `sha256_hex_file`).
+    let tmp = slot_path.with_extension("tmp");
+    zfb_binfetch::fetch_to_file(&url, &tmp, &zfb_binfetch::FetchOpts::default())
+        .map_err(|e| format!("download failed for tailwindcss from `{url}`: {e}"))?;
+
+    let actual_sha = match sha256_hex_file(&tmp) {
+        Ok(sha) => sha,
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!(
+                "failed to hash tailwindcss temp file {}: {e}",
+                tmp.display()
+            ));
+        }
+    };
+
     if !actual_sha.eq_ignore_ascii_case(expected_sha) {
+        let _ = fs::remove_file(&tmp);
         return Err(format!(
             "SHA-256 mismatch for tailwindcss binary from `{url}`:\n\
              expected: {expected_sha}\n\
@@ -424,7 +461,10 @@ fn download_tailwindcss(platform: Platform, slot_path: &Path) -> Result<(), Stri
         ));
     }
 
-    stage_binary(slot_path, &binary_bytes).map_err(|e| {
+    stage_binary_from_file(&tmp, slot_path).map_err(|e| {
+        // Best-effort cleanup: if chmod or rename fails, remove the stale temp
+        // file so a subsequent build can retry the fetch cleanly.
+        let _ = fs::remove_file(&tmp);
         format!(
             "failed to stage tailwindcss binary at {}: {e}",
             slot_path.display()
@@ -441,6 +481,27 @@ fn download_tailwindcss(platform: Platform, slot_path: &Path) -> Result<(), Stri
 // ---------------------------------------------------------------------------
 // Binary staging helper
 // ---------------------------------------------------------------------------
+
+/// Promote a fully-downloaded temp file to its final slot path atomically.
+///
+/// Ensures `dest`'s parent directory exists, sets the executable bit (`0o755`)
+/// on Unix, then renames `tmp` into `dest`. The caller must have already
+/// verified the SHA-256 checksum. Used by `download_tailwindcss` to avoid
+/// loading the full binary into memory a second time after streaming to disk.
+fn stage_binary_from_file(tmp: &Path, dest: &Path) -> io::Result<()> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(tmp, fs::Permissions::from_mode(0o755))?;
+    }
+
+    fs::rename(tmp, dest)?;
+    Ok(())
+}
 
 /// Write `bytes` to `dest` atomically (via a `.tmp` sibling) and make the
 /// file executable on Unix.
