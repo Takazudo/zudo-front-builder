@@ -5562,6 +5562,7 @@ dependencies = [
  "tracing",
  "url",
  "walkdir",
+ "zfb-binfetch",
  "zfb-build",
  "zfb-config-loader",
  "zfb-content",
