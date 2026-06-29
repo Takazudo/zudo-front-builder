@@ -19,6 +19,11 @@
 //!
 //! The "current_bug_*" tests assert TODAY's behaviour (not ignored — they lock
 //! the boundary). Fixed-behaviour tests are `#[ignore = "pending fix: #1284"]`.
+//!
+//! NOTE TO FIX AUTHORS (#1288): once your fix lands the `current_bug_*` test
+//! WILL fail — expected. **Replace** it with its fixed-behaviour sibling
+//! (un-ignore `src_root_is_scanned_for_utility_classes`); a failing
+//! `current_bug_*` is a migrate-me signal, not a regression.
 
 use std::path::Path;
 

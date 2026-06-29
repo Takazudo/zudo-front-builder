@@ -25,6 +25,11 @@
 //! The "current_bug_*" tests assert TODAY's behaviour (and are not ignored, to
 //! lock the regression boundary). The fixed-behaviour tests are
 //! `#[ignore = "pending fix: #1284"]`.
+//!
+//! NOTE TO FIX AUTHORS (#1287/#1288): once your fix lands the `current_bug_*`
+//! tests WILL fail — that is expected. **Replace** each with its fixed-behaviour
+//! sibling (un-ignore the matching fixed test); a failing `current_bug_*` is a
+//! migrate-me signal, not a regression.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
