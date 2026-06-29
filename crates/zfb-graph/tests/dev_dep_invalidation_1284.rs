@@ -135,9 +135,8 @@ fn current_bug_transitive_css_maps_to_no_page() {
 /// that CSS file maps to its consuming page via the reverse index — NOT via a
 /// blunt `mark_global`. This asserts the actual D2/D4 mechanism (a per-page
 /// Style edge keyed on the canonicalised real path), so it cannot pass without
-/// the resolver wiring being present. Ignored until the fix lands.
+/// the resolver wiring being present.
 #[test]
-#[ignore = "pending fix: #1284"]
 fn transitively_imported_css_is_tracked() {
     // styles/styles.css @imports a workspace design-system whose real file is
     // /real/design-system/dist/tokens.css (canonicalised symlink target).

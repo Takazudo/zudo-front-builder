@@ -873,7 +873,7 @@ fn run_oxide_warmup_build(binary_path: &Path) -> bool {
 /// `zfb-css` does not enforce a specific scanning strategy — Tailwind v4 has
 /// its own — but exposes this constant so callers (and the tailwind config
 /// generator) agree on a single list.
-pub const DEFAULT_CONTENT_ROOTS: &[&str] = &["pages", "components", "layouts", "content"];
+pub const DEFAULT_CONTENT_ROOTS: &[&str] = &["pages", "components", "layouts", "content", "src"];
 
 /// Build a string `@source` declaration list from the project root, suitable
 /// for emitting into a Tailwind v4 entrypoint CSS file.

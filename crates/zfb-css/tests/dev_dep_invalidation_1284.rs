@@ -17,39 +17,22 @@
 //!   '@scope/design-system'` is left for the Tailwind CLI to resolve invisibly,
 //!   so zfb never learns the real (canonicalised) dependency path to watch.
 //!
-//! The "current_bug_*" tests assert TODAY's behaviour (not ignored — they lock
-//! the boundary). Fixed-behaviour tests are `#[ignore = "pending fix: #1284"]`.
-//!
-//! NOTE TO FIX AUTHORS (#1288): once your fix lands the `current_bug_*` test
-//! WILL fail — expected. **Replace** it with its fixed-behaviour sibling
-//! (un-ignore `src_root_is_scanned_for_utility_classes`); a failing
-//! `current_bug_*` is a migrate-me signal, not a regression.
+//! #1288 has landed: the original `current_bug_*` tests (which locked TODAY's
+//! broken behaviour) were migrated to their fixed-behaviour siblings below —
+//! `src_root_is_scanned_for_utility_classes` and
+//! `local_css_imports_are_resolved_to_real_paths` (now exercising the real D2
+//! `@import` resolver). Both are un-ignored and green.
 
+use std::fs;
 use std::path::Path;
 
 use zfb_css::engine::{default_source_directives, DEFAULT_CONTENT_ROOTS};
+use zfb_css::resolve_css_imports;
 
-/// SYMPTOM C (current) — the scan roots omit `src/`, so a `src/**` component is
-/// never scanned for utility classes. Documents present behaviour; not ignored.
+/// SYMPTOM C (fixed) — `src/` is a scan root so a new utility class authored in
+/// a `src/**` component is emitted. (Migrated from the now-removed
+/// `current_bug_src_root_is_not_a_scan_root`, per the fix-author note above.)
 #[test]
-fn current_bug_src_root_is_not_a_scan_root() {
-    assert!(
-        !DEFAULT_CONTENT_ROOTS.contains(&"src"),
-        "today src/ is NOT a Tailwind scan root, so classes authored under src/ are dropped"
-    );
-    let dirs = default_source_directives(Path::new("/proj"));
-    assert!(
-        !dirs.contains("/proj/src"),
-        "the emitted @source directives do not cover /proj/src today"
-    );
-    // Sanity: the roots it DOES cover are present.
-    assert!(dirs.contains("/proj/components"));
-}
-
-/// SYMPTOM C (fixed) — after the fix, `src/` is a scan root so a new utility
-/// class authored in a `src/**` component is emitted. Ignored until fix lands.
-#[test]
-#[ignore = "pending fix: #1284"]
 fn src_root_is_scanned_for_utility_classes() {
     assert!(
         DEFAULT_CONTENT_ROOTS.contains(&"src"),
@@ -60,27 +43,62 @@ fn src_root_is_scanned_for_utility_classes() {
         dirs.contains("/proj/src"),
         "after the fix the emitted @source directives cover /proj/src"
     );
+    // Sanity: the roots it already covered are still present.
+    assert!(dirs.contains("/proj/components"));
 }
 
-/// SYMPTOM B (engine half, fixed) — after #1288 the entry-CSS build (or a
-/// sibling resolver) must surface the local/workspace `@import` targets so the
-/// dev watcher can register their canonicalised real paths. Today there is no
-/// API that returns the resolved `@import` dep set; this asserts the post-fix
-/// contract and is ignored until it exists.
-///
-/// Marked ignored AND left as a contract placeholder: the exact API shape is
-/// the #1288 author's call (per D2). Re-home/implement this assertion against
-/// the real resolver entry point when it lands.
+/// SYMPTOM B (engine half, fixed) — the `@import` resolver (D2) surfaces the
+/// local/workspace `@import` targets as canonicalised real paths so the dev
+/// layer can register them as watch targets. Exercises the real resolver:
+/// a relative `@import` and a workspace package consumed through a
+/// `node_modules` symlink both resolve to their real on-disk files, recursively.
 #[test]
-#[ignore = "pending fix: #1284 — @import resolver API is owned by #1288 (D2)"]
 fn local_css_imports_are_resolved_to_real_paths() {
-    // Placeholder for the post-fix observable:
-    //   given an entry CSS containing
-    //     @import './tokens.css';
-    //     @import '@scope/design-system';
-    //   the resolver returns the canonicalised real file paths (following the
-    //   workspace symlink) so the dev layer can watch them.
-    //
-    // Once #1288 adds the resolver, replace this with a real call + assertion.
-    panic!("contract placeholder: implement against #1288's @import resolver (D2)");
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+    let proj = base.join("proj");
+    let real_ds = base.join("real/design-system");
+    fs::create_dir_all(proj.join("styles")).unwrap();
+    fs::create_dir_all(proj.join("node_modules/@scope")).unwrap();
+    fs::create_dir_all(real_ds.join("dist")).unwrap();
+
+    fs::write(
+        proj.join("styles/styles.css"),
+        "@import \"tailwindcss\";\n@import './tokens.css';\n@import '@scope/design-system';\n",
+    )
+    .unwrap();
+    fs::write(proj.join("styles/tokens.css"), "body{}\n").unwrap();
+    fs::write(
+        real_ds.join("package.json"),
+        r#"{"name":"@scope/design-system","style":"dist/tokens.css"}"#,
+    )
+    .unwrap();
+    fs::write(real_ds.join("dist/tokens.css"), "body{}\n").unwrap();
+
+    // pnpm/workspace shape: the package is a symlink into node_modules.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&real_ds, proj.join("node_modules/@scope/design-system"))
+            .unwrap();
+
+        let resolved = resolve_css_imports(&proj.join("styles/styles.css"), &proj);
+
+        let tokens_real = fs::canonicalize(proj.join("styles/tokens.css")).unwrap();
+        let ds_real = fs::canonicalize(real_ds.join("dist/tokens.css")).unwrap();
+
+        assert!(
+            resolved.contains(&tokens_real),
+            "relative @import resolves to its real path; got {resolved:?}"
+        );
+        assert!(
+            resolved.contains(&ds_real),
+            "workspace dep resolves through the node_modules symlink to its real path; got {resolved:?}"
+        );
+        // tailwindcss is virtual — never resolved.
+        assert_eq!(
+            resolved.len(),
+            2,
+            "only the two real CSS deps, got {resolved:?}"
+        );
+    }
 }
