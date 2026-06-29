@@ -578,17 +578,26 @@ impl DependencyGraph {
     // Dirty-set queries
     // -------------------------------------------------------------------------
 
-    /// Whether the graph has *any* record of `path` — as a page, as a recorded
-    /// dependency (reverse-index entry), or as a global file.
+    /// Whether the graph has a record of `path` that resolves to a concrete
+    /// dirty set — as a page, as a dep with at least one recorded consumer, or
+    /// as a global file.
     ///
-    /// This lets callers distinguish "tracked but currently has no consumers"
-    /// (a precise empty [`DirtySet`]) from "the graph has never heard of this
-    /// path" (so a conservative whole-site rebuild may be warranted). It is the
+    /// This lets callers distinguish "tracked with a definite (possibly its own
+    /// page) consumer" from "the graph has no actionable record of this path"
+    /// (so a conservative whole-site rebuild may be warranted). It is the
     /// predicate the dev orchestrator uses to decide whether an empty
     /// `dirty_pages` result should fall back to `PageSelection::All` (#1284).
+    ///
+    /// A reverse-index entry with an EMPTY consumer set (a node registered via
+    /// [`Self::add_node`] but never wired to a page) counts as NOT known —
+    /// `dirty_pages` would return an empty set for it, and the safe response is
+    /// the conservative `All` fallback, not "select nothing".
     pub fn knows(&self, path: &Path) -> bool {
         self.globals.contains(path)
-            || self.reverse.contains_key(path)
+            || self
+                .reverse
+                .get(path)
+                .is_some_and(|consumers| !consumers.is_empty())
             || self.pages.contains(&PageId::new(path.to_path_buf()))
     }
 
@@ -747,6 +756,21 @@ mod tests {
         assert!(
             !g.knows(&p("/components/Untracked.tsx")),
             "a path with no page/dep/global record is unknown"
+        );
+
+        // A node registered with NO consumers (e.g. via `add_node`) resolves to
+        // an empty dirty set, so `knows` must report it as NOT known — the dev
+        // orchestrator then keeps its conservative `All` fallback rather than
+        // selecting zero pages.
+        g.add_node("/components/Orphan.tsx");
+        assert_eq!(
+            g.dirty_pages(&p("/components/Orphan.tsx")),
+            DirtySet::Specific(Default::default()),
+            "an add_node entry has no consumers"
+        );
+        assert!(
+            !g.knows(&p("/components/Orphan.tsx")),
+            "a consumer-less reverse entry is not 'known' (would select nothing)"
         );
     }
 
