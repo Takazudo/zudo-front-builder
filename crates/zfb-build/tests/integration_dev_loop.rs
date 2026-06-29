@@ -268,7 +268,14 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
         .expect("non-noop");
 
     assert!(outcome.islands_rerun, "islands must rerun");
-    assert!(!outcome.css_rerun, "css must NOT rerun");
+    // #1288 — a component (`Module`) edit now also re-runs the CSS content
+    // scan: a new Tailwind utility class authored inside the component must be
+    // emitted into `/assets/styles.css` without touching the CSS entry
+    // (symptom C of #1284). This flipped from the previous "css must NOT rerun".
+    assert!(
+        outcome.css_rerun,
+        "css re-runs so a new utility class is emitted"
+    );
     assert_eq!(outcome.pages_rendered, 1, "only page a re-rendered");
 
     let calls = render_calls.lock().unwrap();
@@ -279,8 +286,8 @@ fn editing_a_use_client_component_re_bundles_islands_without_full_rerender() {
 
     assert_eq!(
         css_runs.load(Ordering::SeqCst),
-        0,
-        "css callback not called"
+        1,
+        "css callback runs once for the component edit (#1288 symptom-C re-scan)"
     );
     assert_eq!(islands_runs.load(Ordering::SeqCst), 1);
 }

@@ -476,6 +476,15 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     {
                         plan.mark_islands();
                     }
+                    // #1288 — a component (`.tsx` `Module`) edit may author a
+                    // new Tailwind utility class (symptom C). The CSS content
+                    // scan only re-runs on `rerun_css`, which a `.css` edit
+                    // sets today; a `.tsx` edit did not. Re-run the content
+                    // scan so a newly-introduced class is emitted into
+                    // `/assets/styles.css` without touching the CSS entry.
+                    if matches!(class, PathClass::Module) {
+                        plan.mark_css();
+                    }
                 }
                 PathClass::Style => {
                     plan.mark_css();
@@ -1228,7 +1237,11 @@ mod tests {
         }
         // components/ is in default islands roots -> islands rerun.
         assert!(plan.rerun_islands);
-        assert!(!plan.rerun_css);
+        // #1288 — a component (`Module`) edit now also re-runs the CSS content
+        // scan, because it may author a new Tailwind utility class that must be
+        // emitted into `/assets/styles.css` without touching the CSS entry
+        // (symptom C of #1284). This flipped from the previous `!rerun_css`.
+        assert!(plan.rerun_css);
     }
 
     #[test]

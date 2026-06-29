@@ -110,9 +110,8 @@ fn component_edit_selects_only_consumer_route() {
 /// re-scan, because a new utility class authored inside that component
 /// (symptom C) only reaches `/assets/styles.css` when the CSS pipeline
 /// re-runs. The #1288-owned `mark_css` edit at `orchestrator.rs:~474-478`
-/// makes a Module change set `rerun_css`. Ignored until the fix lands.
+/// makes a Module change set `rerun_css`.
 #[test]
-#[ignore = "pending fix: #1284"]
 fn component_edit_triggers_css_rescan() {
     let project = PathBuf::from("/proj");
     let orch = dev_orch(&project);

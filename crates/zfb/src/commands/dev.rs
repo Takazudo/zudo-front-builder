@@ -484,7 +484,23 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // share the tick path's validate → dedup → atomic-write → commit
     // discipline and its tick-vs-request exclusion (#1024).
     let request_writer = pipeline.request_writer();
-    let extra_watch_paths = resolve_extra_watch_paths(&cfg.extra_watch_paths);
+    let mut extra_watch_paths = resolve_extra_watch_paths(&cfg.extra_watch_paths);
+    // #1288 (D4) — auto-watch the CSS `@import` graph. `notify` does not
+    // follow symlinks, and `node_modules` is excluded, so a transitively
+    // imported / symlinked-workspace-dep CSS file (`@import './tokens.css'`,
+    // `@import '@scope/design-system'`) is never watched and editing it never
+    // refreshes `/assets/styles.css`. Resolve the entry's `@import` graph to
+    // canonicalised real paths and register them as extra watch targets — no
+    // manual `extraWatchPaths` config. The resolver already canonicalises, so
+    // these align with the watcher's canonical event paths. The out-of-root
+    // `.css` real paths classify as `PathClass::Style` (whitelisted extension),
+    // so editing one fires `rerun_css` and refreshes the asset.
+    let resolved_css_imports = resolve_css_import_watch_targets(&project_root);
+    for real in &resolved_css_imports {
+        if !extra_watch_paths.contains(real) {
+            extra_watch_paths.push(real.clone());
+        }
+    }
     // Configured collection roots classify as Content ahead of the
     // standard root-segment walk — without this, a collection under
     // `src/` (e.g. `src/mdx/notes`) classifies as Module and wastefully
@@ -1778,6 +1794,22 @@ fn resolve_extra_watch_paths(raw: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     resolved
+}
+
+/// Resolve the project's CSS `@import` graph to canonicalised real paths the
+/// dev watcher should follow (D4 of #1288).
+///
+/// Anchors on the conventional authored global stylesheet
+/// ([`crate::commands::build::resolve_input_global_css`] — `styles/global.css`
+/// or `src/styles/global.css`); returns an empty set when the project has no
+/// authored global CSS. Delegates the recursive `@import` resolution +
+/// canonicalisation (following workspace symlinks) to
+/// [`zfb_css::resolve_css_imports`].
+fn resolve_css_import_watch_targets(project_root: &Path) -> Vec<PathBuf> {
+    let Some(entry) = crate::commands::build::resolve_input_global_css(project_root) else {
+        return Vec::new();
+    };
+    zfb_css::resolve_css_imports(&entry, project_root)
 }
 
 // ---------------------------------------------------------------------------
