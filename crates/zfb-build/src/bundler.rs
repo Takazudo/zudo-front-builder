@@ -742,6 +742,16 @@ pub struct BundlerOutput {
     /// Routes the bundle serves (also addressable through
     /// `bundle.routes` at runtime).
     pub manifest: BundleManifest,
+    /// Per-route transitive `Module` deps parsed from esbuild's `--metafile`
+    /// (#1284/#1287). Populated only for [`BundleMode::Development`] (the live
+    /// dev graph is the sole consumer); empty for the prod / SSG path, whose
+    /// esbuild arg set and output stay byte-identical to before. Each entry's
+    /// `source_path` is the route's project-relative page source (`PageId`), and
+    /// `module_deps` are the canonicalised real on-disk paths it transitively
+    /// imports — what the dev graph upserts as `DepKind::Module` edges and what
+    /// the watcher registers as extra targets for out-of-root (symlinked
+    /// workspace) deps.
+    pub route_module_deps: Vec<crate::metafile_deps::RouteModuleDeps>,
 }
 
 /// What the bundle exports, in a form a downstream tool can read without
@@ -2364,6 +2374,18 @@ pub fn bundle_with_session(
     let bundle_path = outdir.join(bundle_filename);
     let sourcemap_path = outdir.join(format!("{bundle_filename}.map"));
 
+    // Per-route transitive `Module` deps via esbuild's `--metafile` — dev only
+    // (#1284/#1287). The metafile is written inside the shadow tree and parsed
+    // BEFORE `owned_work` (the shadow) is dropped at the end of this fn; the
+    // resulting edges key on real `project_root` paths, which persist.
+    let want_metafile_deps =
+        matches!(input.mode, BundleMode::Development) && input.mock_subprocess_output.is_none();
+    let metafile_path: Option<PathBuf> = if want_metafile_deps {
+        Some(shadow.join(".zfb-metafile.json"))
+    } else {
+        None
+    };
+
     if let Some(mock) = input.mock_subprocess_output.as_ref() {
         fs::write(&bundle_path, mock).with_context(|| {
             format!(
@@ -2372,9 +2394,39 @@ pub fn bundle_with_session(
             )
         })?;
     } else {
-        run_esbuild(&input, shadow, &bundle_path)?;
+        run_esbuild(&input, shadow, &bundle_path, metafile_path.as_deref())?;
     }
     let esbuild_ms = esbuild_start.map(|t| t.elapsed().as_millis());
+
+    // Parse the metafile into per-route `Module` edges while the shadow tree
+    // still exists. A missing / malformed metafile yields an empty set (the
+    // dev path then falls back to its prior selection) — never a hard error.
+    let route_module_deps: Vec<crate::metafile_deps::RouteModuleDeps> = match metafile_path.as_ref()
+    {
+        Some(meta_path) => match fs::read(meta_path) {
+            Ok(bytes) => {
+                let route_refs: Vec<crate::metafile_deps::RouteEntryRef> = routes
+                    .iter()
+                    .filter(|r| !r.static_html)
+                    .map(|r| crate::metafile_deps::RouteEntryRef {
+                        source_path: r.source_path.clone(),
+                        // The shadow mirrors the project tree by relative path,
+                        // so a route's metafile-input key equals its
+                        // project-relative source path in forward-slash form.
+                        metafile_key: rel_to_forward_slash(&r.source_path),
+                    })
+                    .collect();
+                crate::metafile_deps::route_module_deps(
+                    &bytes,
+                    &route_refs,
+                    shadow,
+                    &input.project_root,
+                )
+            }
+            Err(_) => Vec::new(),
+        },
+        None => Vec::new(),
+    };
 
     let post_start = if timing_enabled {
         Some(std::time::Instant::now())
@@ -2425,6 +2477,7 @@ pub fn bundle_with_session(
         bundle_path,
         sourcemap_path,
         manifest,
+        route_module_deps,
     })
 }
 
@@ -5411,7 +5464,18 @@ fn esbuild_will_preserve_symlinks(input: &BundlerInput) -> bool {
 }
 
 /// Resolve and run the esbuild subprocess.
-fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Result<()> {
+///
+/// When `metafile_path` is `Some`, esbuild also writes its `--metafile` JSON
+/// there. The metafile's `inputs` graph is the canonical *transitive* import
+/// graph esbuild itself resolved — the dev path parses it to populate per-route
+/// `DepKind::Module` edges (#1284/#1287). It is a free by-product of the bundle
+/// pass; the prod path passes `None` and is byte-identical to before.
+fn run_esbuild(
+    input: &BundlerInput,
+    shadow: &Path,
+    bundle_path: &Path,
+    metafile_path: Option<&Path>,
+) -> Result<()> {
     let bin = resolve_esbuild_binary(input.esbuild_binary.as_deref())?;
     let entry = shadow.join(SHADOW_ENTRY_FILENAME);
     let tsconfig = shadow.join(SHADOW_TSCONFIG_FILENAME);
@@ -5436,6 +5500,9 @@ fn run_esbuild(input: &BundlerInput, shadow: &Path, bundle_path: &Path) -> Resul
 
     cmd.arg(format!("--tsconfig={}", tsconfig.display()));
     cmd.arg(format!("--outfile={}", bundle_path.display()));
+    if let Some(meta) = metafile_path {
+        cmd.arg(format!("--metafile={}", meta.display()));
+    }
 
     // MDX modules emitted by `compile_mdx_to_jsx_module_cached` carry a
     // hard-coded `import { Fragment as _Fragment } from "react/jsx-runtime";`

@@ -75,7 +75,6 @@ fn current_component_edit_selects_all_pages_imprecisely() {
 /// SYMPTOM A (fixed) — once Module edges exist, the component edit selects only
 /// its consumer route, NOT All. Ignored until #1287 lands.
 #[test]
-#[ignore = "pending fix: #1284"]
 fn component_edit_selects_only_consumer_route() {
     let project = PathBuf::from("/proj");
     let mut g = DependencyGraph::new();

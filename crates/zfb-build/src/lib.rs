@@ -53,6 +53,7 @@ pub mod atomic;
 pub mod bundler;
 pub mod head_inject;
 pub mod link_base_rewrite;
+pub mod metafile_deps;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod plan;
@@ -75,6 +76,7 @@ pub use head_inject::{
     css_link_tag, inject_prod_head_assets, island_module_script_tag, needs_html5_doctype,
     ProdHeadAssets, HTML5_DOCTYPE_PREFIX,
 };
+pub use metafile_deps::{route_module_deps, RouteEntryRef, RouteModuleDeps};
 pub use orchestrator::{
     BuildOrchestrator, DiscoveryHook, DiscoveryOutcome, ExternalInvalidationHook,
     OrchestratorConfig,

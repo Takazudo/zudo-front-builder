@@ -73,7 +73,6 @@ fn current_bug_component_edit_maps_to_no_page() {
 /// edges, editing a directly-imported component dirties exactly its consumer
 /// route. Ignored until the fix lands.
 #[test]
-#[ignore = "pending fix: #1284"]
 fn component_edit_dirties_consuming_route() {
     // The fix populates Module edges; model the post-fix graph.
     let mut g = DependencyGraph::new();
@@ -95,7 +94,6 @@ fn component_edit_dirties_consuming_route() {
 /// must still dirty the route. The metafile `inputs` map is transitive, so
 /// the fix records the leaf→route edge directly. Ignored until the fix lands.
 #[test]
-#[ignore = "pending fix: #1284"]
 fn transitively_imported_component_dirties_route() {
     // pages/index -> components/Header -> components/Logo
     // The metafile flattens transitive inputs, so Logo is recorded as a

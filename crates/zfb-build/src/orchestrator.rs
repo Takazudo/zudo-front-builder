@@ -451,15 +451,19 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 }
                 PathClass::Page | PathClass::Module | PathClass::Content | PathClass::Data => {
                     let dirty: PageSelection = graph.dirty_pages(&path).into();
-                    // If the graph returned no dirty pages (empty specific set),
-                    // fall back to rebuilding all pages. This handles two cases:
-                    //   1. Cold start: graph seeded with page nodes but has no
-                    //      reverse edges yet (content→page deps not resolved).
-                    //   2. Untracked file: file genuinely isn't in the graph;
-                    //      rebuild everything conservatively.
-                    // `PageSelection::All` is safe here — `resolve_all` will
-                    // expand it to the known page list before the pipeline runs.
-                    let effective = if dirty.is_empty() {
+                    // Precise per-route selection backed by the dev `Module`
+                    // edges populated from esbuild's metafile (#1284/#1287).
+                    // Fall back to `PageSelection::All` ONLY when the path is
+                    // genuinely UNKNOWN to the graph (no page / dep / global
+                    // record) — then a whole-site rebuild is the conservative
+                    // choice (cold start, or a file the graph never resolved).
+                    // When the graph DOES know the path but maps it to an empty
+                    // consumer set, that empty result is authoritative — the
+                    // blunt All-fallback on every component edit was exactly the
+                    // imprecise whole-site re-render the metafile edges remove.
+                    // `PageSelection::All` is still expanded by `resolve_all` to
+                    // the known page list before the pipeline runs.
+                    let effective = if dirty.is_empty() && !graph.knows(&path) {
                         PageSelection::All
                     } else {
                         dirty

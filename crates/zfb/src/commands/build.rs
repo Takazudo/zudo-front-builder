@@ -2974,6 +2974,7 @@ mod tests {
                         rel_under_pages: PathBuf::from("index.tsx"),
                     }],
                 },
+                route_module_deps: Vec::new(),
             })
         }
         fn eval_deferred_paths(
@@ -3420,6 +3421,7 @@ mod tests {
                         bundle_basename: "bundle.mjs".into(),
                         routes: vec![],
                     },
+                    route_module_deps: Vec::new(),
                 })
             }
             fn eval_deferred_paths(

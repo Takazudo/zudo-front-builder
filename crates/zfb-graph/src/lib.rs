@@ -578,6 +578,20 @@ impl DependencyGraph {
     // Dirty-set queries
     // -------------------------------------------------------------------------
 
+    /// Whether the graph has *any* record of `path` — as a page, as a recorded
+    /// dependency (reverse-index entry), or as a global file.
+    ///
+    /// This lets callers distinguish "tracked but currently has no consumers"
+    /// (a precise empty [`DirtySet`]) from "the graph has never heard of this
+    /// path" (so a conservative whole-site rebuild may be warranted). It is the
+    /// predicate the dev orchestrator uses to decide whether an empty
+    /// `dirty_pages` result should fall back to `PageSelection::All` (#1284).
+    pub fn knows(&self, path: &Path) -> bool {
+        self.globals.contains(path)
+            || self.reverse.contains_key(path)
+            || self.pages.contains(&PageId::new(path.to_path_buf()))
+    }
+
     /// The minimal set of pages whose output is affected by changing `path`.
     ///
     /// - For a global file (see [`Self::mark_global`]) → [`DirtySet::All`].
