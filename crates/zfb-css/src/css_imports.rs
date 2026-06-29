@@ -277,23 +277,18 @@ fn extract_import_specifiers(css: &str) -> Vec<String> {
     let bytes = without_comments.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        // Find the next `@import` (case-insensitive on the keyword is overkill;
-        // CSS at-rule names are ASCII-lowercase by convention here).
-        if bytes[i] == b'@'
-            && without_comments[i..]
-                .to_ascii_lowercase()
-                .starts_with("@import")
-        {
+        // Find the next `@import`. Compare on raw bytes (case-insensitive) rather
+        // than slicing the `&str` + allocating a lowercased suffix: the suffix-copy
+        // form was O(n^2) on `@`-dense files, and slicing `without_comments[i..]`
+        // can panic if a stray non-ASCII byte leaves `i` mid-codepoint.
+        if bytes[i] == b'@' && ascii_ci_starts_with(bytes, i, b"@import") {
             let mut j = i + "@import".len();
             // Skip whitespace.
             while j < bytes.len() && bytes[j].is_ascii_whitespace() {
                 j += 1;
             }
             // Optional `url(`.
-            if without_comments[j..]
-                .to_ascii_lowercase()
-                .starts_with("url(")
-            {
+            if ascii_ci_starts_with(bytes, j, b"url(") {
                 j += "url(".len();
                 while j < bytes.len() && bytes[j].is_ascii_whitespace() {
                     j += 1;
@@ -345,11 +340,23 @@ fn read_target(css: &str, start: usize) -> Option<(String, usize)> {
     Some((css[s..k].trim().to_string(), k))
 }
 
+/// ASCII case-insensitive `starts_with` at byte offset `at`, operating purely on
+/// bytes so it never allocates and never slices on a char boundary.
+fn ascii_ci_starts_with(bytes: &[u8], at: usize, needle: &[u8]) -> bool {
+    bytes.len() >= at + needle.len() && bytes[at..at + needle.len()].eq_ignore_ascii_case(needle)
+}
+
 /// Strip `/* … */` block comments, replacing each with a single space so byte
 /// adjacency that mattered (e.g. `@import/* x */"y"`) does not glue tokens.
+///
+/// Copies non-comment bytes verbatim into a byte buffer rather than
+/// `out.push(byte as char)` — the latter reinterprets every UTF-8 continuation
+/// byte (>=0x80) as a Latin-1 code point, corrupting non-ASCII CSS and shifting
+/// the byte offsets the scanner relies on (a single non-ASCII byte near an
+/// `@import` could then panic the resolver).
 fn strip_block_comments(css: &str) -> String {
-    let mut out = String::with_capacity(css.len());
     let bytes = css.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
@@ -358,13 +365,15 @@ fn strip_block_comments(css: &str) -> String {
                 i += 1;
             }
             i += 2;
-            out.push(' ');
+            out.push(b' ');
         } else {
-            out.push(bytes[i] as char);
+            out.push(bytes[i]);
             i += 1;
         }
     }
-    out
+    // Only ASCII comment delimiters were dropped; every other byte is copied
+    // verbatim from a valid `&str`, so the result is still valid UTF-8.
+    String::from_utf8(out).unwrap_or_else(|_| css.to_string())
 }
 
 #[cfg(test)]
@@ -393,6 +402,15 @@ mod tests {
                 "@scope/design-system".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn non_ascii_css_does_not_panic_and_imports_still_extracted() {
+        // A non-ASCII byte near an `@import` previously corrupted the byte
+        // offsets (`byte as char`) and could panic the scanner mid-codepoint.
+        let css = "/* コメント */\n@import \"./café.css\";\nbody::before{content:\"日本語\";}\n";
+        let specs = extract_import_specifiers(css);
+        assert_eq!(specs, vec!["./café.css".to_string()]);
     }
 
     #[test]
