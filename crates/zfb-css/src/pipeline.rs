@@ -541,10 +541,12 @@ fn classify_node(node: &str) -> NodeKind {
         NodeKind::Charset
     } else if starts_with_ascii_ci(rest, "@import") {
         NodeKind::Import
-    } else if starts_with_ascii_ci(rest, "@layer") && !rest.contains('{') {
+    } else if starts_with_ascii_ci(rest, "@layer") && rest.trim_end().ends_with(';') {
         // `@layer a, b;` (no block) is a layer-ordering statement, allowed
-        // before `@import`. A populated `@layer name { … }` contains `{` and
-        // is treated as Other (an insertion ceiling).
+        // before `@import`. A populated `@layer name { … }` ends in `}` and is
+        // treated as Other (an insertion ceiling). Classifying by the
+        // terminating delimiter (the node ends exactly at its `;`/`}`) is
+        // comment-proof — a raw scan for `{` would misread `@layer a /* { */;`.
         NodeKind::LayerStatement
     } else {
         NodeKind::Other
@@ -797,6 +799,31 @@ mod tests {
         assert!(
             offset_of(&out, "@import") < offset_of(&out, "@namespace"),
             "imports must precede @namespace:\n{out}"
+        );
+    }
+
+    #[test]
+    fn hoist_keeps_import_below_layer_statement_bearing_a_comment() {
+        // A leading @layer ordering statement whose node carries a comment
+        // containing `{` must still classify as a layer statement (comment-
+        // aware), so the import lands *after* it, not above it.
+        let css = "@layer a /* sets { scope */;\n.x {}\n@import url(\"z.css\");\n";
+        let out = hoist_external_imports(css);
+        assert!(
+            offset_of(&out, "@layer") < offset_of(&out, "@import"),
+            "import must stay below the @layer statement even with an inline comment:\n{out}"
+        );
+        assert!(offset_of(&out, "@import") < offset_of(&out, ".x"));
+    }
+
+    #[test]
+    fn hoist_treats_populated_layer_block_as_a_ceiling() {
+        // A populated `@layer name { … }` is content the import must sit above.
+        let css = "@layer base { .b { color: red } }\n@import url(\"z.css\");\n";
+        let out = hoist_external_imports(css);
+        assert!(
+            offset_of(&out, "@import") < offset_of(&out, "@layer base"),
+            "import must be hoisted above a populated @layer block:\n{out}"
         );
     }
 
