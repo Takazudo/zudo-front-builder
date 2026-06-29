@@ -751,7 +751,10 @@ mod tests {
         g.mark_global("/zfb.config.ts");
 
         assert!(g.knows(&p("/pages/index.tsx")), "a page is known");
-        assert!(g.knows(&p("/components/Header.tsx")), "a recorded dep is known");
+        assert!(
+            g.knows(&p("/components/Header.tsx")),
+            "a recorded dep is known"
+        );
         assert!(g.knows(&p("/zfb.config.ts")), "a global file is known");
         assert!(
             !g.knows(&p("/components/Untracked.tsx")),
@@ -790,7 +793,9 @@ mod tests {
         ));
 
         assert_eq!(
-            g.dirty_pages(&p("/components/Header.tsx")).as_pages().unwrap(),
+            g.dirty_pages(&p("/components/Header.tsx"))
+                .as_pages()
+                .unwrap(),
             vec![pid("/pages/index.tsx")],
             "a component edit dirties the consuming route"
         );
