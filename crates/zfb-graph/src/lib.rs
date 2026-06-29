@@ -729,6 +729,55 @@ mod tests {
     }
 
     #[test]
+    fn knows_distinguishes_tracked_from_unknown() {
+        // #1284/#1287 — the dev orchestrator falls back to a whole-site
+        // rebuild only when the graph has NEVER heard of a path. `knows` is
+        // that predicate: true for a page, a recorded dep, or a global file;
+        // false for an untracked path.
+        let mut g = DependencyGraph::new();
+        g.upsert(PageDeps::new(
+            pid("/pages/index.tsx"),
+            vec![(p("/components/Header.tsx"), DepKind::Module)],
+        ));
+        g.mark_global("/zfb.config.ts");
+
+        assert!(g.knows(&p("/pages/index.tsx")), "a page is known");
+        assert!(g.knows(&p("/components/Header.tsx")), "a recorded dep is known");
+        assert!(g.knows(&p("/zfb.config.ts")), "a global file is known");
+        assert!(
+            !g.knows(&p("/components/Untracked.tsx")),
+            "a path with no page/dep/global record is unknown"
+        );
+    }
+
+    #[test]
+    fn page_can_hold_both_module_and_content_deps() {
+        // #1284/#1287 — a route that imports a component AND consumes a content
+        // collection must carry both edge kinds at once; the dev merge in
+        // `populate_module_edges` / the discovery hook relies on the graph
+        // resolving either kind back to the page.
+        let mut g = DependencyGraph::new();
+        g.upsert(PageDeps::new(
+            pid("/pages/index.tsx"),
+            vec![
+                (p("/components/Header.tsx"), DepKind::Module),
+                (p("/content/post.md"), DepKind::Content),
+            ],
+        ));
+
+        assert_eq!(
+            g.dirty_pages(&p("/components/Header.tsx")).as_pages().unwrap(),
+            vec![pid("/pages/index.tsx")],
+            "a component edit dirties the consuming route"
+        );
+        assert_eq!(
+            g.dirty_pages(&p("/content/post.md")).as_pages().unwrap(),
+            vec![pid("/pages/index.tsx")],
+            "a content edit on the same page still dirties it (edges coexist)"
+        );
+    }
+
+    #[test]
     fn page_self_dirties_on_change_to_its_own_source() {
         let mut g = DependencyGraph::new();
         g.upsert(PageDeps::new(pid("/pages/index.tsx"), vec![]));

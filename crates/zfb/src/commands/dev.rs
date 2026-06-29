@@ -2898,17 +2898,14 @@ impl DevRenderSession {
     /// route via `dirty_pages`. No-op when the graph handle is not installed
     /// or the bundle carried no metafile deps (e.g. the mock/scaffold path).
     ///
-    /// `upsert` REPLACES a page's prior dep set, so calling this every refresh
-    /// keeps the Module edges in lock-step with the live import graph — a
-    /// removed import drops its edge on the next tick. Content edges added by
-    /// the discovery hook live on different pages' upserts and the page
-    /// self-edge is re-added by `upsert`, so this does not clobber them for
-    /// the routes it owns; a route that imports both content and components
-    /// gets its Content deps via the discovery path and Module deps here on
-    /// the same `PageId`, and the LAST writer wins per tick — Module deps are
-    /// re-derived from the authoritative metafile every tick, so they are the
-    /// safe steady-state. (Content deps are re-asserted by the discovery hook
-    /// whenever a content file is (re)discovered.)
+    /// `upsert` REPLACES a page's entire dep set, so to avoid clobbering the
+    /// `DepKind::Content` edges the discovery hook records for the SAME page
+    /// (a route can import a component AND consume a content collection), this
+    /// MERGES: it reads the page's current non-`Module` deps, drops the stale
+    /// `Module` edges (re-derived fresh from the authoritative metafile every
+    /// refresh, so a removed import drops its edge next tick), and re-upserts
+    /// the preserved Content/Style/Data edges alongside the new Module set. The
+    /// page self-edge is re-added by `upsert` regardless.
     #[cfg(feature = "embed_v8")]
     fn populate_module_edges(&self, deps: &[zfb_build::RouteModuleDeps]) {
         if deps.is_empty() {
@@ -2932,19 +2929,29 @@ impl DevRenderSession {
                 // pages (project-root-joined absolute path — see the boot seed
                 // and the Content upsert path).
                 let page_id = PageId::new(project_root.join(&route.source_path));
-                let edges: Vec<(PathBuf, zfb_graph::DepKind)> = route
-                    .module_deps
-                    .iter()
-                    .map(|p| (p.clone(), zfb_graph::DepKind::Module))
+
+                // Preserve the page's existing NON-Module deps (Content/Style/
+                // Data recorded by the discovery hook); only the Module edges
+                // are replaced from the metafile this tick. The self-edge is
+                // re-added by `upsert`, so drop it here too to avoid a dup.
+                let mut edges: Vec<(PathBuf, zfb_graph::DepKind)> = g
+                    .deps_of(&page_id)
+                    .into_iter()
+                    .filter(|(dep, kind)| {
+                        *kind != zfb_graph::DepKind::Module && dep != page_id.path()
+                    })
                     .collect();
-                // A real dep path that does not live under `project_root` is a
-                // symlinked workspace dep (esbuild canonicalised it). Collect it
-                // so the watcher can register it as an extra target (#1284 D4).
-                for (dep, _) in &edges {
-                    if !dep.starts_with(project_root) {
-                        new_out_of_root.push(dep.clone());
+
+                for real in &route.module_deps {
+                    edges.push((real.clone(), zfb_graph::DepKind::Module));
+                    // A real dep path outside `project_root` is a symlinked
+                    // workspace dep (esbuild canonicalised it). Collect it so
+                    // the watcher can register it as an extra target (#1284 D4).
+                    if !real.starts_with(project_root) {
+                        new_out_of_root.push(real.clone());
                     }
                 }
+
                 g.upsert(PageDeps::new(page_id, edges));
             }
         }
@@ -5425,15 +5432,28 @@ fn make_discovery_hook(
         // Upsert each newly-created content file as a content dep of the
         // rediscovered source pages, so subsequent EDITs of the new file
         // map to their consumer page in the graph (matching how a
-        // pre-existing post behaves). `upsert` merges deps, so this does
-        // not clobber the page's other edges.
+        // pre-existing post behaves). `upsert` REPLACES a page's dep set,
+        // so MERGE: preserve the page's existing non-`Content` deps — in
+        // particular the `DepKind::Module` edges #1287 populates from the
+        // metafile — and re-assert the Content edges alongside them. (The
+        // self-edge is re-added by `upsert`.) Without this merge, a content-
+        // file creation would silently drop a route's component edges until
+        // the next full bundle refresh re-derived them (#1284/#1287).
         if !changed.is_empty() {
             if let Ok(mut g) = graph.lock() {
                 for page in &changed {
-                    let deps: Vec<(PathBuf, zfb_graph::DepKind)> = relevant
-                        .iter()
-                        .map(|c| (c.clone(), zfb_graph::DepKind::Content))
+                    let mut deps: Vec<(PathBuf, zfb_graph::DepKind)> = g
+                        .deps_of(page)
+                        .into_iter()
+                        .filter(|(dep, kind)| {
+                            *kind != zfb_graph::DepKind::Content && dep != page.path()
+                        })
                         .collect();
+                    deps.extend(
+                        relevant
+                            .iter()
+                            .map(|c| (c.clone(), zfb_graph::DepKind::Content)),
+                    );
                     g.upsert(PageDeps::new(page.clone(), deps));
                 }
             }
