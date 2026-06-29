@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use zfb_css::{
-    build_synthesised_entry_css, link_href, scan_css_module_imports, CssEngine, CssModulesOutput,
-    CssModulesProcessor, CssPipeline, CssPipelineConfig, NativeRustEngine,
+    build_synthesised_entry_css, link_href, scan_css_module_imports, AuthoredCssEngine, CssEngine,
+    CssModulesOutput, CssModulesProcessor, CssPipeline, CssPipelineConfig, NativeRustEngine,
     TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 
@@ -624,4 +624,66 @@ fn build_emitter_still_writes_class_map_jsons_when_configured() {
 
     // And the hashed asset is still NOT written.
     assert!(!root.join("dist").join("assets").exists());
+}
+
+// --- Issue #1280: external @import hoisting through the full pipeline -------
+//
+// The bug has two independent manifestations, one per engine. Both produce a
+// combined stylesheet where a consumer's font @import trails the style rules
+// (spec-invalid → silently dropped by browsers). The pipeline must hoist it
+// above the first style rule regardless of which engine produced the bytes.
+
+fn first_rule_offset(css: &str) -> usize {
+    css.find(".x").expect("a style rule must be present")
+}
+
+fn import_offset(css: &str) -> usize {
+    css.find("@import").expect("an @import must be present")
+}
+
+#[test]
+fn acceptance_hoists_font_import_tailwind_engine_half() {
+    // Tailwind half: the (mock) engine emits the inlined-utilities-then-rules
+    // shape with a trailing external font @import, exactly like the real v4
+    // subprocess output that triggered #1280.
+    let mock = "@layer a, b;\n.x { color: red }\n.y { color: blue }\n\
+                @import url(\"https://fonts.googleapis.com/css2?family=Noto+Sans+JP\");\n";
+    let engine =
+        TailwindSubprocessEngine::new(TailwindSubprocessConfig::default().with_mock_output(mock));
+    let cfg = CssPipelineConfig {
+        sources: vec![PathBuf::from("pages/index.tsx")],
+        ..CssPipelineConfig::default()
+    };
+    let combined = CssPipeline::new(engine, cfg)
+        .build_emitter()
+        .expect("build_emitter");
+    let css = String::from_utf8(combined.bytes).expect("utf8");
+    assert!(
+        import_offset(&css) < first_rule_offset(&css),
+        "Tailwind-half: font @import must be hoisted above the first style rule:\n{css}"
+    );
+}
+
+#[test]
+fn acceptance_hoists_font_import_authored_engine_half() {
+    // Authored half (tailwind.enabled = false): global.css is passed verbatim
+    // with no subprocess to inline anything, so a font @import sitting below
+    // other rules reaches combine() in its authored position — a second,
+    // independent manifestation of the same bug.
+    let authored = ".x { color: red }\n.y { color: blue }\n\
+                    @import url(\"https://fonts.googleapis.com/css2?family=Noto+Sans+JP\");\n";
+    let engine = AuthoredCssEngine::new(authored);
+    let cfg = CssPipelineConfig {
+        // No sources scan needed for the authored engine.
+        auto_discover_modules: false,
+        ..CssPipelineConfig::default()
+    };
+    let combined = CssPipeline::new(engine, cfg)
+        .build_emitter()
+        .expect("build_emitter");
+    let css = String::from_utf8(combined.bytes).expect("utf8");
+    assert!(
+        import_offset(&css) < first_rule_offset(&css),
+        "Authored-half: font @import must be hoisted above the first style rule:\n{css}"
+    );
 }

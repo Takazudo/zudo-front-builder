@@ -330,12 +330,267 @@ fn write_class_map_files(
 /// Combine engine output + CSS Modules output exactly as the hashing stage
 /// will see it. Exposed as a free function so tests and the hashing helper
 /// agree on the canonical form.
+///
+/// After concatenation, external `@import` at-rules are hoisted to the top
+/// of the stylesheet via [`hoist_external_imports`] — see that function for
+/// why. The hash (`hash_8`) is computed from the raw `(tailwind, modules)`
+/// halves, not from this combined form, so hoisting does not perturb asset
+/// hashing: it is a deterministic pure function of the same inputs.
 pub(crate) fn combine(tailwind: &str, modules: &str) -> String {
     let mut out = String::with_capacity(tailwind.len() + modules.len() + 1);
     out.push_str(tailwind);
     out.push('\n');
     out.push_str(modules);
+    hoist_external_imports(&out)
+}
+
+/// Move every top-level `@import` at-rule to the top of the stylesheet so it
+/// stays spec-valid regardless of authored position.
+///
+/// **Why this exists (external CSS-spec contract, issue #1280):** the CSS
+/// spec (Cascade & Inheritance) requires `@import` rules to precede all other
+/// at-rules and style rules in a stylesheet — the only things allowed before
+/// them are a leading `@charset` and empty `@layer name, …;` layer-ordering
+/// statements. **An `@import` that follows any style rule is invalid and
+/// silently dropped by every browser.** zfb's Tailwind v4 pipeline inlines
+/// the local `@import "tailwindcss/…"` statements into real style rules *in
+/// place*, so a consumer's external `@import url(<webfont>)` authored *below*
+/// those lines ends up after thousands of emitted rules and is dropped — the
+/// webfont never loads, with every build/lint gate still green because the
+/// string is present but inert. Hoisting here makes the position-sensitivity
+/// trap disappear.
+///
+/// The pass:
+/// - operates on **top-level** statements only (brace depth 0); a nested
+///   `@import` is already invalid and is left untouched;
+/// - is comment-, string-, and `url(<…>)`-aware (a `;` inside `( … )` — e.g.
+///   `url(data:text/css;base64,…)` — does not terminate the statement);
+/// - re-inserts the collected imports, in their original relative order,
+///   after any leading `@charset` and leading `@layer name,…;` statements and
+///   before all other content;
+/// - is a **fixed point on its own output** — running it twice equals running
+///   it once, and a stylesheet whose imports are already correctly positioned
+///   is returned unchanged.
+pub(crate) fn hoist_external_imports(css: &str) -> String {
+    let nodes = split_top_level(css);
+    let kinds: Vec<NodeKind> = nodes
+        .iter()
+        .map(|&(s, e)| classify_node(&css[s..e]))
+        .collect();
+
+    let import_idxs: Vec<usize> = (0..nodes.len())
+        .filter(|&i| kinds[i] == NodeKind::Import)
+        .collect();
+    if import_idxs.is_empty() {
+        return css.to_string();
+    }
+
+    // Leading run of `@charset` / `@layer name,…;` statements the imports
+    // must sit *after* (per the spec). The run stops at the first node that
+    // is an import or anything else.
+    let mut prefix_end = 0;
+    while prefix_end < nodes.len()
+        && matches!(
+            kinds[prefix_end],
+            NodeKind::Charset | NodeKind::LayerStatement
+        )
+    {
+        prefix_end += 1;
+    }
+
+    let mut out = String::with_capacity(css.len());
+    // 1. The leading @charset / @layer-statement prefix, verbatim.
+    for &(s, e) in &nodes[..prefix_end] {
+        out.push_str(&css[s..e]);
+    }
+    // 2. Every import, in original order.
+    for &i in &import_idxs {
+        let (s, e) = nodes[i];
+        out.push_str(&css[s..e]);
+    }
+    // 3. Everything else after the prefix, in original order, imports removed.
+    for i in prefix_end..nodes.len() {
+        if kinds[i] != NodeKind::Import {
+            let (s, e) = nodes[i];
+            out.push_str(&css[s..e]);
+        }
+    }
     out
+}
+
+/// Classification of a top-level stylesheet node for import hoisting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodeKind {
+    /// `@charset "…";` — must stay first; imports go after it.
+    Charset,
+    /// `@layer name, …;` statement form (no block) — allowed before `@import`.
+    LayerStatement,
+    /// `@import …;` — the at-rule being hoisted.
+    Import,
+    /// Any style rule, populated `@layer { … }`, `@media { … }`, declaration,
+    /// or other content — the imports must end up above all of these.
+    Other,
+}
+
+/// Split a stylesheet into contiguous top-level node spans `[start, end)`.
+///
+/// The spans cover the entire string with no gaps (concatenating them in
+/// order reproduces the input), so reordering nodes only permutes the exact
+/// source bytes — preserving content and idempotency. Each node carries the
+/// whitespace/comments that lead up to its statement; the final span is any
+/// trailing remainder after the last terminator.
+///
+/// The scan tracks string literals, block (`/* */`) and line (`//`) comments,
+/// brace depth, and paren depth, so statement terminators are only recognised
+/// outside those contexts. Paren tracking is what makes a `;` inside
+/// `url(data:…;…)` non-terminating without a dedicated `url(` token scanner
+/// (unquoted `url()` cannot contain unescaped parentheses per the CSS spec).
+fn split_top_level(css: &str) -> Vec<(usize, usize)> {
+    let b = css.as_bytes();
+    let n = b.len();
+    let mut nodes: Vec<(usize, usize)> = Vec::new();
+    let mut seg_start = 0usize;
+    let mut i = 0usize;
+    let mut brace: i32 = 0;
+    let mut paren: i32 = 0;
+
+    while i < n {
+        let c = b[i];
+        match c {
+            b'"' | b'\'' | b'`' => {
+                // String literal: skip to the closing quote, honoring `\`
+                // escapes, and bail on a raw newline (matches the rest of the
+                // crate's tolerant scanners).
+                let quote = c;
+                i += 1;
+                while i < n {
+                    let d = b[i];
+                    if d == b'\\' && i + 1 < n {
+                        i += 2;
+                        continue;
+                    }
+                    if d == quote || d == b'\n' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < n && b[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < n && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(n);
+            }
+            b'/' if i + 1 < n && b[i + 1] == b'/' => {
+                i += 2;
+                while i < n && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'(' => {
+                paren += 1;
+                i += 1;
+            }
+            b')' => {
+                if paren > 0 {
+                    paren -= 1;
+                }
+                i += 1;
+            }
+            b'{' => {
+                brace += 1;
+                i += 1;
+            }
+            b'}' => {
+                if brace > 0 {
+                    brace -= 1;
+                }
+                i += 1;
+                if brace == 0 {
+                    nodes.push((seg_start, i));
+                    seg_start = i;
+                }
+            }
+            b';' => {
+                i += 1;
+                if brace == 0 && paren == 0 {
+                    nodes.push((seg_start, i));
+                    seg_start = i;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    if seg_start < n {
+        nodes.push((seg_start, n));
+    }
+    nodes
+}
+
+/// Classify a node by its first significant token (skipping leading
+/// whitespace, a UTF-8 BOM, and comments). At-rule names are ASCII
+/// case-insensitive, so the comparison is too.
+fn classify_node(node: &str) -> NodeKind {
+    let rest = significant_rest(node);
+    if starts_with_ascii_ci(rest, "@charset") {
+        NodeKind::Charset
+    } else if starts_with_ascii_ci(rest, "@import") {
+        NodeKind::Import
+    } else if starts_with_ascii_ci(rest, "@layer") && !rest.contains('{') {
+        // `@layer a, b;` (no block) is a layer-ordering statement, allowed
+        // before `@import`. A populated `@layer name { … }` contains `{` and
+        // is treated as Other (an insertion ceiling).
+        NodeKind::LayerStatement
+    } else {
+        NodeKind::Other
+    }
+}
+
+/// Return the slice of `node` starting at its first significant byte,
+/// skipping leading ASCII whitespace, a leading UTF-8 BOM, and leading
+/// block/line comments.
+fn significant_rest(node: &str) -> &str {
+    let b = node.as_bytes();
+    let n = b.len();
+    let mut i = 0usize;
+    // Optional leading UTF-8 BOM (EF BB BF).
+    if n >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF {
+        i = 3;
+    }
+    loop {
+        while i < n && (b[i] as char).is_ascii_whitespace() {
+            i += 1;
+        }
+        if i + 1 < n && b[i] == b'/' && b[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < n && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(n);
+            continue;
+        }
+        if i + 1 < n && b[i] == b'/' && b[i + 1] == b'/' {
+            i += 2;
+            while i < n && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        break;
+    }
+    &node[i.min(n)..]
+}
+
+/// ASCII-case-insensitive `starts_with` (at-rule keywords are ASCII).
+fn starts_with_ascii_ci(haystack: &str, needle: &str) -> bool {
+    let h = haystack.as_bytes();
+    let nd = needle.as_bytes();
+    h.len() >= nd.len() && h[..nd.len()].eq_ignore_ascii_case(nd)
 }
 
 /// Compute the 8-char hex hash for the given (tailwind, modules) pair.
@@ -436,6 +691,164 @@ fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- hoist_external_imports (issue #1280) ------------------------------
+
+    /// The byte offset of the first occurrence of `needle` in `s`.
+    fn offset_of(s: &str, needle: &str) -> usize {
+        s.find(needle)
+            .unwrap_or_else(|| panic!("expected to find {needle:?} in:\n{s}"))
+    }
+
+    #[test]
+    fn hoist_moves_font_import_above_style_rules() {
+        // The #1280 repro: a font @import authored *after* style rules.
+        let css = "@layer a, b;\n.x { color: red }\n.y { color: blue }\n\
+                   @import url(\"https://fonts.googleapis.com/css2?family=Noto\");\n";
+        let out = hoist_external_imports(css);
+        // After hoist, the @import precedes the first style rule...
+        assert!(
+            offset_of(&out, "@import") < offset_of(&out, ".x"),
+            "import must precede the first style rule:\n{out}"
+        );
+        // ...and follows the @layer ordering statement.
+        assert!(
+            offset_of(&out, "@layer a, b;") < offset_of(&out, "@import"),
+            "import must follow the leading @layer statement:\n{out}"
+        );
+    }
+
+    #[test]
+    fn hoist_preserves_relative_order_of_multiple_imports() {
+        let css = ".x {}\n@import url(\"a.css\");\n@import url(\"b.css\");\n";
+        let out = hoist_external_imports(css);
+        assert!(offset_of(&out, "a.css") < offset_of(&out, "b.css"));
+        assert!(offset_of(&out, "@import") < offset_of(&out, ".x"));
+    }
+
+    #[test]
+    fn hoist_keeps_charset_first() {
+        let css = "@charset \"utf-8\";\n.x {}\n@import url(\"a.css\");\n";
+        let out = hoist_external_imports(css);
+        assert!(
+            out.starts_with("@charset \"utf-8\";"),
+            "charset must stay first:\n{out}"
+        );
+        assert!(offset_of(&out, "@charset") < offset_of(&out, "@import"));
+        assert!(offset_of(&out, "@import") < offset_of(&out, ".x"));
+    }
+
+    #[test]
+    fn hoist_ignores_import_inside_block_comment() {
+        let css = ".x {}\n/* @import url(\"commented.css\"); */\n.y {}\n";
+        let out = hoist_external_imports(css);
+        // Nothing real to hoist → unchanged.
+        assert_eq!(out, css);
+    }
+
+    #[test]
+    fn hoist_ignores_import_inside_line_comment() {
+        let css = ".x {}\n// @import url(\"commented.css\");\n.y {}\n";
+        let out = hoist_external_imports(css);
+        assert_eq!(out, css);
+    }
+
+    #[test]
+    fn hoist_ignores_import_like_text_in_a_string() {
+        // A declaration value that merely contains "@import" text must not
+        // be detected as a statement-level import.
+        let css = ".x { --u: \"@import url(evil)\"; }\n.y {}\n";
+        let out = hoist_external_imports(css);
+        assert_eq!(out, css);
+    }
+
+    #[test]
+    fn hoist_does_not_truncate_data_url_with_semicolon() {
+        // The `;` inside url(data:...;base64,...) is NOT the statement
+        // terminator — paren tracking must carry past it.
+        let css = ".x {}\n@import url(data:text/css;base64,AAA);\n.y {}\n";
+        let out = hoist_external_imports(css);
+        assert!(
+            out.contains("@import url(data:text/css;base64,AAA);"),
+            "data-url import must survive intact:\n{out}"
+        );
+        assert!(offset_of(&out, "@import") < offset_of(&out, ".x"));
+    }
+
+    #[test]
+    fn hoist_preserves_conditional_import_verbatim() {
+        let import =
+            "@import url(x.css) layer(base) supports(display:grid) screen and (min-width:400px);";
+        let css = format!(".x {{}}\n{import}\n");
+        let out = hoist_external_imports(&css);
+        assert!(
+            out.contains(import),
+            "conditional import must be preserved verbatim:\n{out}"
+        );
+        assert!(offset_of(&out, "@import") < offset_of(&out, ".x"));
+    }
+
+    #[test]
+    fn hoist_places_import_above_namespace_but_below_charset() {
+        let css = "@charset \"utf-8\";\n@namespace svg url(http://www.w3.org/2000/svg);\n\
+                   .x {}\n@import url(\"a.css\");\n";
+        let out = hoist_external_imports(css);
+        assert!(out.starts_with("@charset"), "charset stays first:\n{out}");
+        assert!(
+            offset_of(&out, "@import") < offset_of(&out, "@namespace"),
+            "imports must precede @namespace:\n{out}"
+        );
+    }
+
+    #[test]
+    fn hoist_is_idempotent_and_a_fixed_point() {
+        let css =
+            "@layer a, b;\n.x { color: red }\n@import url(\"a.css\");\n@import url(\"b.css\");\n";
+        let once = hoist_external_imports(css);
+        let twice = hoist_external_imports(&once);
+        assert_eq!(
+            once, twice,
+            "the pass must be a fixed point on its own output"
+        );
+    }
+
+    #[test]
+    fn hoist_leaves_already_correct_stylesheet_unchanged() {
+        let css = "@charset \"utf-8\";\n@import url(\"a.css\");\n.x { color: red }\n";
+        let out = hoist_external_imports(css);
+        assert_eq!(
+            out, css,
+            "an already-correct stylesheet is returned unchanged"
+        );
+    }
+
+    #[test]
+    fn hoist_noop_when_no_external_imports() {
+        let css = ".a { color: red }\n.b { color: blue }\n";
+        assert_eq!(hoist_external_imports(css), css);
+    }
+
+    #[test]
+    fn hoist_ignores_nested_import_inside_a_block() {
+        // A non-top-level @import (inside a block) is already invalid; leave
+        // it where it is rather than yanking it out of the block.
+        let css = "@media screen {\n  @import url(\"nested.css\");\n}\n.x {}\n";
+        let out = hoist_external_imports(css);
+        assert_eq!(out, css);
+    }
+
+    #[test]
+    fn combine_hoists_external_import_in_the_tailwind_half() {
+        // End-to-end through the canonical combine() form: a font import that
+        // trails the (inlined) Tailwind rules lands above them.
+        let tailwind = "@layer a, b;\n.tw { color: red }\n\
+                        @import url(\"https://fonts.googleapis.com/css2?family=Noto\");";
+        let combined = combine(tailwind, "");
+        assert!(
+            offset_of(&combined, "@import") < offset_of(&combined, ".tw"),
+            "combine() must hoist the trailing font import:\n{combined}"
+        );
+    }
 
     #[test]
     fn hash_is_stable_for_identical_inputs() {
