@@ -30,7 +30,7 @@
 //!
 //! ## Status — these are STUBS, intentionally `#[ignore]`d
 //!
-//! They are tagged `#[ignore = "pending fix: #1284"]` so they neither block the
+//! They are tagged `#[ignore = "Level-4 e2e: implement+run on a V8 host — #1290"]` so they neither block the
 //! T1 gate nor force a 15-30 min V8 first-compile in this diagnosis wave. The
 //! Wave-3 author un-ignores them and wires them into the shared `dev_serve_e2e`
 //! harness (reusing `spawn_dev` / `boot_and_handshake` / `poll_until_contains`
@@ -54,7 +54,7 @@
 /// selection), no tick fires / the bundle is not refreshed and the route keeps
 /// serving the old marker until timeout.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "pending fix: #1284"]
+#[ignore = "Level-4 e2e: implement+run on a V8 host — #1290"]
 async fn e2e_src_component_edit_rerenders_route() {
     todo!(
         "Wave-3: copy dev-loop-basic fixture, add src/components/Widget.tsx imported \
@@ -72,7 +72,7 @@ async fn e2e_src_component_edit_rerenders_route() {
 /// symlinked dep edit is observed by nobody and `/assets/styles.css` stays
 /// stale until timeout.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "pending fix: #1284"]
+#[ignore = "Level-4 e2e: implement+run on a V8 host — #1290"]
 async fn e2e_transitive_css_import_refreshes_stylesheet() {
     todo!(
         "Wave-3: add styles/styles.css with `@import './tokens.css';` and a symlinked \
@@ -91,7 +91,7 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
 /// roots, the class never enters the content scan and the stylesheet never
 /// gains the rule.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "pending fix: #1284"]
+#[ignore = "Level-4 e2e: implement+run on a V8 host — #1290"]
 async fn e2e_new_utility_class_in_component_is_emitted() {
     todo!(
         "Wave-3: edit a component to add a previously-unused utility class \
