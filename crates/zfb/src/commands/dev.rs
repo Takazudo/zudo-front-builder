@@ -5953,19 +5953,42 @@ mod tests {
     }
 
     /// Regression: a collection configured outside the default watch
-    /// roots (e.g. `src/mdx/notes`) was never watched, so edits there
+    /// roots (e.g. `articles/notes`) was never watched, so edits there
     /// produced no rebuild and the dev server served stale HTML until
     /// restart. Discovered during usage in a consumer project with
     /// custom collection paths.
+    ///
+    /// Uses `articles/*` (outside every default root) because `src` is now
+    /// itself a default watch root (#1284) — a `src/**` collection would be
+    /// collapsed into `src` rather than appended (see
+    /// `derive_watch_roots_collapses_src_collection_into_src_default_root`).
     #[test]
     fn derive_watch_roots_appends_custom_collection_paths() {
-        let cfg = cfg_with_collections(&["src/mdx/notes", "src/mdx/guides"]);
+        let cfg = cfg_with_collections(&["articles/notes", "articles/guides"]);
         let roots = derive_watch_roots(&cfg);
-        assert!(roots.contains(&PathBuf::from("src/mdx/notes")));
-        assert!(roots.contains(&PathBuf::from("src/mdx/guides")));
+        assert!(roots.contains(&PathBuf::from("articles/notes")));
+        assert!(roots.contains(&PathBuf::from("articles/guides")));
         // Defaults are preserved in front.
         assert!(roots.contains(&PathBuf::from("pages")));
         assert!(roots.contains(&PathBuf::from("content")));
+    }
+
+    /// #1284 — `src` is now a default watch root, so a collection declared
+    /// under `src/**` is already covered by the recursive `src` watch and
+    /// must collapse into it rather than register a redundant overlapping
+    /// root (which would deliver duplicate events for the same write).
+    #[test]
+    fn derive_watch_roots_collapses_src_collection_into_src_default_root() {
+        let cfg = cfg_with_collections(&["src/mdx/notes", "src/mdx"]);
+        let roots = derive_watch_roots(&cfg);
+        assert!(roots.contains(&PathBuf::from("src")));
+        assert!(!roots.contains(&PathBuf::from("src/mdx")));
+        assert!(!roots.contains(&PathBuf::from("src/mdx/notes")));
+        assert_eq!(
+            roots.len(),
+            DEFAULT_WATCH_ROOTS.len(),
+            "a src-nested collection adds no watch root — `src` already covers it"
+        );
     }
 
     /// Issue #1165 — `public/` must NOT appear in the default watch roots.
@@ -6002,22 +6025,26 @@ mod tests {
 
     /// Nested collections collapse to the shallowest ancestor regardless
     /// of declaration order, and duplicates dedupe.
+    ///
+    /// Uses `articles/*` (outside every default root) so the nested-collapse
+    /// logic is exercised on a path that is genuinely appended — `src/**`
+    /// would instead collapse into the `src` default root (#1284).
     #[test]
     fn derive_watch_roots_collapses_nested_and_duplicate_collections() {
-        let cfg = cfg_with_collections(&["src/mdx/notes", "src/mdx", "src/mdx/notes"]);
+        let cfg = cfg_with_collections(&["articles/notes", "articles", "articles/notes"]);
         let roots = derive_watch_roots(&cfg);
-        assert!(roots.contains(&PathBuf::from("src/mdx")));
-        assert!(!roots.contains(&PathBuf::from("src/mdx/notes")));
+        assert!(roots.contains(&PathBuf::from("articles")));
+        assert!(!roots.contains(&PathBuf::from("articles/notes")));
         assert_eq!(roots.len(), DEFAULT_WATCH_ROOTS.len() + 1);
     }
 
-    /// Leading `./` is normalized away so `./src/mdx` and `src/mdx`
+    /// Leading `./` is normalized away so `./articles` and `articles`
     /// compare equal in the dedupe/coverage checks.
     #[test]
     fn derive_watch_roots_normalizes_leading_curdir() {
-        let cfg = cfg_with_collections(&["./src/mdx", "src/mdx"]);
+        let cfg = cfg_with_collections(&["./articles", "articles"]);
         let roots = derive_watch_roots(&cfg);
-        assert!(roots.contains(&PathBuf::from("src/mdx")));
+        assert!(roots.contains(&PathBuf::from("articles")));
         assert_eq!(roots.len(), DEFAULT_WATCH_ROOTS.len() + 1);
     }
 
