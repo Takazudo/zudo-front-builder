@@ -138,6 +138,11 @@ const DEFAULT_WATCH_ROOTS: &[&str] = &[
     "layouts",
     "styles",
     "data",
+    // `src` is a classification / islands / client-script root (policy.rs) and
+    // routes commonly import components from `src/components/**`. Without it,
+    // `src/**` edits fire no FS event and no tick at all, so a consuming route
+    // never re-renders (#1284 symptom-A, watch half).
+    "src",
     "zfb.config.json",
     "zfb.config.ts",
 ];
@@ -457,6 +462,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let graph = Arc::new(Mutex::new(DependencyGraph::new()));
     let graph_for_save = Arc::clone(&graph);
 
+    // #1284/#1287 — give the dev session a handle to the same graph so every
+    // bundle refresh populates per-route `DepKind::Module` edges from esbuild's
+    // metafile (`populate_module_edges`). The graph is created here, AFTER
+    // `boot_dev_renderer` returns, so the boot bundle's edges are seeded by the
+    // first post-boot refresh; from then on a component edit maps to its
+    // consuming route via `dirty_pages`.
+    #[cfg(feature = "embed_v8")]
+    if let Some(session) = dev_session.as_ref() {
+        session.set_dep_graph(Arc::clone(&graph));
+        // Seed the eager boot bundle's Module edges now the graph exists, so a
+        // component edit maps to its consuming route from the first edit tick
+        // (#1284/#1287). No-op on the deferred-boot path.
+        session.seed_boot_module_edges();
+    }
+
     // Issue #1166 — the manifest digest is now produced inside the
     // deferred task (it is the expensive walk we moved past bind). The
     // shutdown persistence path (step 8) reads it through this shared
@@ -484,7 +504,40 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // share the tick path's validate → dedup → atomic-write → commit
     // discipline and its tick-vs-request exclusion (#1024).
     let request_writer = pipeline.request_writer();
-    let extra_watch_paths = resolve_extra_watch_paths(&cfg.extra_watch_paths);
+    let mut extra_watch_paths = resolve_extra_watch_paths(&cfg.extra_watch_paths);
+    // #1284/#1287 (D4) — register the eager boot bundle's out-of-root real
+    // Module deps (canonicalised symlink targets of workspace `.tsx` deps
+    // esbuild resolved through `node_modules`) as extra watch targets, so an
+    // edit of the real workspace file fires a tick. `notify` does not follow
+    // symlinks and `node_modules` is excluded from the recursive watch, so
+    // without this a symlinked workspace component edit produces no event. The
+    // in-repo `src/**` case needs none of this — it is covered by
+    // `DEFAULT_WATCH_ROOTS`. Empty on the deferred-boot path (the boot bundle
+    // has not run yet there; that case relies on the in-repo `src` root).
+    #[cfg(feature = "embed_v8")]
+    if let Some(session) = dev_session.as_ref() {
+        for target in session.out_of_root_watch_targets() {
+            if !extra_watch_paths.contains(&target) {
+                extra_watch_paths.push(target);
+            }
+        }
+    }
+    // #1288 (D4) — auto-watch the CSS `@import` graph. `notify` does not
+    // follow symlinks, and `node_modules` is excluded, so a transitively
+    // imported / symlinked-workspace-dep CSS file (`@import './tokens.css'`,
+    // `@import '@scope/design-system'`) is never watched and editing it never
+    // refreshes `/assets/styles.css`. Resolve the entry's `@import` graph to
+    // canonicalised real paths and register them as extra watch targets — no
+    // manual `extraWatchPaths` config. The resolver already canonicalises, so
+    // these align with the watcher's canonical event paths. The out-of-root
+    // `.css` real paths classify as `PathClass::Style` (whitelisted extension),
+    // so editing one fires `rerun_css` and refreshes the asset.
+    let resolved_css_imports = resolve_css_import_watch_targets(&project_root);
+    for real in &resolved_css_imports {
+        if !extra_watch_paths.contains(real) {
+            extra_watch_paths.push(real.clone());
+        }
+    }
     // Configured collection roots classify as Content ahead of the
     // standard root-segment walk — without this, a collection under
     // `src/` (e.g. `src/mdx/notes`) classifies as Module and wastefully
@@ -1219,7 +1272,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             if let Some(ref session) = dev_session_for_boot {
                 if let Ok(mut g) = graph_for_seed.lock() {
                     for page_id in session.page_ids() {
-                        g.upsert(PageDeps::new(page_id, vec![]));
+                        // Non-clobbering seed: `upsert` REPLACES a page's dep
+                        // set, so an unconditional empty-dep upsert here would
+                        // wipe the per-route `DepKind::Module` edges the
+                        // deferred `refresh_bundle_and_routes` above already
+                        // populated from the metafile (#1284/#1287). Only seed
+                        // pages the graph does not yet know, so edge-carrying
+                        // pages keep their edges.
+                        if !g.knows(page_id.path()) {
+                            g.upsert(PageDeps::new(page_id, vec![]));
+                        }
                     }
                 }
             }
@@ -1778,6 +1840,22 @@ fn resolve_extra_watch_paths(raw: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     resolved
+}
+
+/// Resolve the project's CSS `@import` graph to canonicalised real paths the
+/// dev watcher should follow (D4 of #1288).
+///
+/// Anchors on the conventional authored global stylesheet
+/// ([`crate::commands::build::resolve_input_global_css`] — `styles/global.css`
+/// or `src/styles/global.css`); returns an empty set when the project has no
+/// authored global CSS. Delegates the recursive `@import` resolution +
+/// canonicalisation (following workspace symlinks) to
+/// [`zfb_css::resolve_css_imports`].
+fn resolve_css_import_watch_targets(project_root: &Path) -> Vec<PathBuf> {
+    let Some(entry) = crate::commands::build::resolve_input_global_css(project_root) else {
+        return Vec::new();
+    };
+    zfb_css::resolve_css_imports(&entry, project_root)
 }
 
 // ---------------------------------------------------------------------------
@@ -2506,6 +2584,39 @@ struct DevRenderInner {
     #[cfg(feature = "embed_v8")]
     shadow_session: Mutex<Option<ShadowSession>>,
 
+    /// Dependency graph handle for populating per-route `DepKind::Module`
+    /// edges from esbuild's metafile on every bundle refresh (#1284/#1287).
+    /// Installed after boot via [`DevRenderSession::set_dep_graph`] — the
+    /// graph is created by `run` AFTER `boot_dev_renderer` returns, so it is
+    /// `None` until then (and on the test/scaffold constructors that never
+    /// run the real refresh). When present, [`Self::refresh_bundle_and_routes`]
+    /// upserts each route's transitive module deps so a component edit
+    /// (direct or transitive, incl. symlinked workspace `.tsx`) maps to its
+    /// consuming route via `dirty_pages`, instead of falling back to a blunt
+    /// whole-site re-render.
+    #[cfg(feature = "embed_v8")]
+    dep_graph: Mutex<Option<Arc<Mutex<DependencyGraph>>>>,
+
+    /// Real on-disk module-dep paths that live OUTSIDE `project_root` —
+    /// canonicalised symlink targets of workspace `.tsx` deps esbuild resolved
+    /// through `node_modules` (#1284/#1287, D4). `notify` does not follow
+    /// symlinks and `node_modules` is excluded from the recursive watch, so
+    /// these must be registered as `extraWatchPaths`-style targets for an edit
+    /// of the real workspace file to fire a tick. Accumulated by
+    /// [`Self::populate_module_edges`] every refresh; read by `run` to extend
+    /// the watcher's extra targets. A `BTreeSet`-backed dedup keeps it stable.
+    #[cfg(feature = "embed_v8")]
+    out_of_root_watch_targets: Mutex<std::collections::BTreeSet<PathBuf>>,
+
+    /// The eager boot bundle's per-route metafile Module deps (#1284/#1287),
+    /// captured in `boot_dev_renderer` before the graph exists. `run` seeds
+    /// these into the graph via [`Self::populate_module_edges`] right after
+    /// installing the graph handle, so a component edit maps to its consuming
+    /// route from the very first edit tick (not one tick late). Empty on the
+    /// deferred-boot path (its `refresh_bundle_and_routes` seeds edges itself).
+    #[cfg(feature = "embed_v8")]
+    boot_route_module_deps: Vec<zfb_build::RouteModuleDeps>,
+
     /// Cross-tick [`PathsCache`] (#994 item B): seeded at boot and
     /// passed into every route-table build, so a `paths()` JSON output
     /// identical to a previous tick's skips the Rust-side
@@ -2790,6 +2901,111 @@ impl DevRenderSession {
     /// stale routes through the same handle.
     pub(crate) fn renderer_handle(&self) -> Arc<Mutex<Option<RendererState>>> {
         Arc::clone(&self.inner.renderer)
+    }
+
+    /// Install the dependency-graph handle so every bundle refresh can
+    /// populate per-route `DepKind::Module` edges from esbuild's metafile
+    /// (#1284/#1287). Called by `run` once the graph exists (it is created
+    /// after `boot_dev_renderer` returns). Idempotent — a later call replaces
+    /// the handle.
+    #[cfg(feature = "embed_v8")]
+    pub(crate) fn set_dep_graph(&self, graph: Arc<Mutex<DependencyGraph>>) {
+        if let Ok(mut slot) = self.inner.dep_graph.lock() {
+            *slot = Some(graph);
+        }
+    }
+
+    /// Seed the graph with the eager boot bundle's per-route Module edges
+    /// (#1284/#1287), captured before the graph existed. Call once right after
+    /// [`Self::set_dep_graph`]. No-op on the deferred-boot path (its deps are
+    /// empty; the deferred refresh seeds edges itself) and idempotent.
+    #[cfg(feature = "embed_v8")]
+    pub(crate) fn seed_boot_module_edges(&self) {
+        let deps = self.inner.boot_route_module_deps.clone();
+        self.populate_module_edges(&deps);
+    }
+
+    /// Upsert each route's transitive module deps (from esbuild's metafile)
+    /// as `DepKind::Module` edges, so a component edit maps to its consuming
+    /// route via `dirty_pages`. No-op when the graph handle is not installed
+    /// or the bundle carried no metafile deps (e.g. the mock/scaffold path).
+    ///
+    /// `upsert` REPLACES a page's entire dep set, so to avoid clobbering the
+    /// `DepKind::Content` edges the discovery hook records for the SAME page
+    /// (a route can import a component AND consume a content collection), this
+    /// MERGES: it reads the page's current non-`Module` deps, drops the stale
+    /// `Module` edges (re-derived fresh from the authoritative metafile every
+    /// refresh, so a removed import drops its edge next tick), and re-upserts
+    /// the preserved Content/Style/Data edges alongside the new Module set. The
+    /// page self-edge is re-added by `upsert` regardless.
+    #[cfg(feature = "embed_v8")]
+    fn populate_module_edges(&self, deps: &[zfb_build::RouteModuleDeps]) {
+        if deps.is_empty() {
+            return;
+        }
+        let graph = {
+            let slot = match self.inner.dep_graph.lock() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            match slot.as_ref() {
+                Some(g) => Arc::clone(g),
+                None => return,
+            }
+        };
+        let project_root = &self.inner.project_root;
+        let mut new_out_of_root: Vec<PathBuf> = Vec::new();
+        if let Ok(mut g) = graph.lock() {
+            for route in deps {
+                // The page key must match how the rest of the dev graph keys
+                // pages (project-root-joined absolute path — see the boot seed
+                // and the Content upsert path).
+                let page_id = PageId::new(project_root.join(&route.source_path));
+
+                // Preserve the page's existing NON-Module deps (Content/Style/
+                // Data recorded by the discovery hook); only the Module edges
+                // are replaced from the metafile this tick. The self-edge is
+                // re-added by `upsert`, so drop it here too to avoid a dup.
+                let mut edges: Vec<(PathBuf, zfb_graph::DepKind)> = g
+                    .deps_of(&page_id)
+                    .into_iter()
+                    .filter(|(dep, kind)| {
+                        *kind != zfb_graph::DepKind::Module && dep != page_id.path()
+                    })
+                    .collect();
+
+                for real in &route.module_deps {
+                    edges.push((real.clone(), zfb_graph::DepKind::Module));
+                    // A real dep path outside `project_root` is a symlinked
+                    // workspace dep (esbuild canonicalised it). Collect it so
+                    // the watcher can register it as an extra target (#1284 D4).
+                    if !real.starts_with(project_root) {
+                        new_out_of_root.push(real.clone());
+                    }
+                }
+
+                g.upsert(PageDeps::new(page_id, edges));
+            }
+        }
+        if !new_out_of_root.is_empty() {
+            if let Ok(mut set) = self.inner.out_of_root_watch_targets.lock() {
+                set.extend(new_out_of_root);
+            }
+        }
+    }
+
+    /// Snapshot of the out-of-root real Module-dep paths discovered so far
+    /// (#1284/#1287, D4) — canonicalised symlink targets of workspace `.tsx`
+    /// deps that must be registered as extra watch targets. Read by `run`
+    /// after the boot bundle so a symlinked workspace component edit fires a
+    /// tick (the in-repo `src/**` case is covered by `DEFAULT_WATCH_ROOTS`).
+    #[cfg(feature = "embed_v8")]
+    pub(crate) fn out_of_root_watch_targets(&self) -> Vec<PathBuf> {
+        self.inner
+            .out_of_root_watch_targets
+            .lock()
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// The boot-resolved lazy dev-render switch (issue #1025/#1026).
@@ -3171,6 +3387,15 @@ impl DevRenderSession {
         let p1_assemble_ms = bundle_result.sub_timing.as_ref().map(|t| t.assemble_ms);
         let p1_bundle_ms = bundle_result.sub_timing.as_ref().map(|t| t.bundle_ms);
         let bundler_out = bundle_result.output;
+
+        // #1284/#1287 — populate per-route `DepKind::Module` edges from the
+        // bundle's metafile so a component edit (direct or transitive, incl. a
+        // symlinked workspace `.tsx`) maps to its consuming route via
+        // `dirty_pages`. Done on EVERY refresh (before the skip-key early
+        // return below is irrelevant — the edges only change when the bundle
+        // changes, and a byte-identical bundle re-asserts identical edges, a
+        // cheap idempotent upsert). No-op until the graph handle is installed.
+        self.populate_module_edges(&bundler_out.route_module_deps);
 
         // P1b — skip-key compute (SHA-256 over bundle + router + static HTML).
         // Phase B (issue #940) — skip key check.
@@ -4446,6 +4671,12 @@ fn boot_dev_renderer(
     // every route until that publish lands, so first-accept is O(1) regardless
     // of project size. When `defer_bundle` is false, the eager pre-bind path
     // below runs exactly as before.
+    // #1284/#1287 — the eager boot bundle's per-route metafile Module deps,
+    // captured here and seeded into the graph once the session + graph handle
+    // exist (see the `set_dep_graph` + populate call in `run`). On the deferred
+    // path this stays empty; the deferred `refresh_bundle_and_routes` seeds the
+    // edges itself.
+    let mut boot_route_module_deps: Vec<zfb_build::RouteModuleDeps> = Vec::new();
     let (renderer, routes_by_source, ssr_routes, url_index) = if defer_bundle {
         (
             // Scaffold renderer slot — the deferred `refresh_bundle_and_routes`
@@ -4494,6 +4725,9 @@ fn boot_dev_renderer(
             rebuild_inputs.injected_pages_root(),
         )?
         .output;
+        // #1284/#1287 — capture the boot bundle's per-route Module deps for
+        // post-graph seeding (the graph does not exist yet at this point).
+        boot_route_module_deps = bundler_out.route_module_deps.clone();
 
         let state = start(RendererStartInput {
             bundle_path: bundler_out.bundle_path.clone(),
@@ -4564,6 +4798,9 @@ fn boot_dev_renderer(
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(fm_hashes),
             shadow_session: Mutex::new(Some(shadow_session)),
+            dep_graph: Mutex::new(None),
+            out_of_root_watch_targets: Mutex::new(std::collections::BTreeSet::new()),
+            boot_route_module_deps,
             paths_cache: Mutex::new(paths_cache),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render: lazy_dev_render_enabled(),
@@ -5227,15 +5464,28 @@ fn make_discovery_hook(
         // Upsert each newly-created content file as a content dep of the
         // rediscovered source pages, so subsequent EDITs of the new file
         // map to their consumer page in the graph (matching how a
-        // pre-existing post behaves). `upsert` merges deps, so this does
-        // not clobber the page's other edges.
+        // pre-existing post behaves). `upsert` REPLACES a page's dep set,
+        // so MERGE: preserve the page's existing non-`Content` deps — in
+        // particular the `DepKind::Module` edges #1287 populates from the
+        // metafile — and re-assert the Content edges alongside them. (The
+        // self-edge is re-added by `upsert`.) Without this merge, a content-
+        // file creation would silently drop a route's component edges until
+        // the next full bundle refresh re-derived them (#1284/#1287).
         if !changed.is_empty() {
             if let Ok(mut g) = graph.lock() {
                 for page in &changed {
-                    let deps: Vec<(PathBuf, zfb_graph::DepKind)> = relevant
-                        .iter()
-                        .map(|c| (c.clone(), zfb_graph::DepKind::Content))
+                    let mut deps: Vec<(PathBuf, zfb_graph::DepKind)> = g
+                        .deps_of(page)
+                        .into_iter()
+                        .filter(|(dep, kind)| {
+                            *kind != zfb_graph::DepKind::Content && dep != page.path()
+                        })
                         .collect();
+                    deps.extend(
+                        relevant
+                            .iter()
+                            .map(|c| (c.clone(), zfb_graph::DepKind::Content)),
+                    );
                     g.upsert(PageDeps::new(page.clone(), deps));
                 }
             }
@@ -5434,6 +5684,9 @@ pub(crate) fn stub_session_for_adapter_tests(
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),
             shadow_session: Mutex::new(None),
+            dep_graph: Mutex::new(None),
+            out_of_root_watch_targets: Mutex::new(std::collections::BTreeSet::new()),
+            boot_route_module_deps: Vec::new(),
             paths_cache: Mutex::new(PathsCache::new()),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render,
@@ -5514,6 +5767,9 @@ mod tests {
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),
             shadow_session: Mutex::new(None),
+            dep_graph: Mutex::new(None),
+            out_of_root_watch_targets: Mutex::new(std::collections::BTreeSet::new()),
+            boot_route_module_deps: Vec::new(),
             paths_cache: Mutex::new(PathsCache::new()),
             stale: Mutex::new(StaleRoutes::default()),
             lazy_render: false,
@@ -5697,19 +5953,42 @@ mod tests {
     }
 
     /// Regression: a collection configured outside the default watch
-    /// roots (e.g. `src/mdx/notes`) was never watched, so edits there
+    /// roots (e.g. `articles/notes`) was never watched, so edits there
     /// produced no rebuild and the dev server served stale HTML until
     /// restart. Discovered during usage in a consumer project with
     /// custom collection paths.
+    ///
+    /// Uses `articles/*` (outside every default root) because `src` is now
+    /// itself a default watch root (#1284) — a `src/**` collection would be
+    /// collapsed into `src` rather than appended (see
+    /// `derive_watch_roots_collapses_src_collection_into_src_default_root`).
     #[test]
     fn derive_watch_roots_appends_custom_collection_paths() {
-        let cfg = cfg_with_collections(&["src/mdx/notes", "src/mdx/guides"]);
+        let cfg = cfg_with_collections(&["articles/notes", "articles/guides"]);
         let roots = derive_watch_roots(&cfg);
-        assert!(roots.contains(&PathBuf::from("src/mdx/notes")));
-        assert!(roots.contains(&PathBuf::from("src/mdx/guides")));
+        assert!(roots.contains(&PathBuf::from("articles/notes")));
+        assert!(roots.contains(&PathBuf::from("articles/guides")));
         // Defaults are preserved in front.
         assert!(roots.contains(&PathBuf::from("pages")));
         assert!(roots.contains(&PathBuf::from("content")));
+    }
+
+    /// #1284 — `src` is now a default watch root, so a collection declared
+    /// under `src/**` is already covered by the recursive `src` watch and
+    /// must collapse into it rather than register a redundant overlapping
+    /// root (which would deliver duplicate events for the same write).
+    #[test]
+    fn derive_watch_roots_collapses_src_collection_into_src_default_root() {
+        let cfg = cfg_with_collections(&["src/mdx/notes", "src/mdx"]);
+        let roots = derive_watch_roots(&cfg);
+        assert!(roots.contains(&PathBuf::from("src")));
+        assert!(!roots.contains(&PathBuf::from("src/mdx")));
+        assert!(!roots.contains(&PathBuf::from("src/mdx/notes")));
+        assert_eq!(
+            roots.len(),
+            DEFAULT_WATCH_ROOTS.len(),
+            "a src-nested collection adds no watch root — `src` already covers it"
+        );
     }
 
     /// Issue #1165 — `public/` must NOT appear in the default watch roots.
@@ -5746,22 +6025,26 @@ mod tests {
 
     /// Nested collections collapse to the shallowest ancestor regardless
     /// of declaration order, and duplicates dedupe.
+    ///
+    /// Uses `articles/*` (outside every default root) so the nested-collapse
+    /// logic is exercised on a path that is genuinely appended — `src/**`
+    /// would instead collapse into the `src` default root (#1284).
     #[test]
     fn derive_watch_roots_collapses_nested_and_duplicate_collections() {
-        let cfg = cfg_with_collections(&["src/mdx/notes", "src/mdx", "src/mdx/notes"]);
+        let cfg = cfg_with_collections(&["articles/notes", "articles", "articles/notes"]);
         let roots = derive_watch_roots(&cfg);
-        assert!(roots.contains(&PathBuf::from("src/mdx")));
-        assert!(!roots.contains(&PathBuf::from("src/mdx/notes")));
+        assert!(roots.contains(&PathBuf::from("articles")));
+        assert!(!roots.contains(&PathBuf::from("articles/notes")));
         assert_eq!(roots.len(), DEFAULT_WATCH_ROOTS.len() + 1);
     }
 
-    /// Leading `./` is normalized away so `./src/mdx` and `src/mdx`
+    /// Leading `./` is normalized away so `./articles` and `articles`
     /// compare equal in the dedupe/coverage checks.
     #[test]
     fn derive_watch_roots_normalizes_leading_curdir() {
-        let cfg = cfg_with_collections(&["./src/mdx", "src/mdx"]);
+        let cfg = cfg_with_collections(&["./articles", "articles"]);
         let roots = derive_watch_roots(&cfg);
-        assert!(roots.contains(&PathBuf::from("src/mdx")));
+        assert!(roots.contains(&PathBuf::from("articles")));
         assert_eq!(roots.len(), DEFAULT_WATCH_ROOTS.len() + 1);
     }
 
@@ -7594,6 +7877,7 @@ mod tests {
                 bundle_basename: "bundle.js".into(),
                 routes: Vec::new(),
             },
+            route_module_deps: Vec::new(),
         }
     }
 

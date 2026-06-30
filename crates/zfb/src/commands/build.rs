@@ -1017,7 +1017,7 @@ fn strip_tailwind_imports(css: &str) -> String {
 /// Order is deterministic. If both files exist the legacy
 /// `<root>/styles/global.css` wins so existing projects on the
 /// original convention see no behaviour change.
-fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
     const CANDIDATES: &[&[&str]] = &[&["styles", "global.css"], &["src", "styles", "global.css"]];
     for parts in CANDIDATES {
         let mut candidate = project_root.to_path_buf();
@@ -2974,6 +2974,7 @@ mod tests {
                         rel_under_pages: PathBuf::from("index.tsx"),
                     }],
                 },
+                route_module_deps: Vec::new(),
             })
         }
         fn eval_deferred_paths(
@@ -3420,6 +3421,7 @@ mod tests {
                         bundle_basename: "bundle.mjs".into(),
                         routes: vec![],
                     },
+                    route_module_deps: Vec::new(),
                 })
             }
             fn eval_deferred_paths(

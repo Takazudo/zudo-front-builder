@@ -578,6 +578,29 @@ impl DependencyGraph {
     // Dirty-set queries
     // -------------------------------------------------------------------------
 
+    /// Whether the graph has a record of `path` that resolves to a concrete
+    /// dirty set — as a page, as a dep with at least one recorded consumer, or
+    /// as a global file.
+    ///
+    /// This lets callers distinguish "tracked with a definite (possibly its own
+    /// page) consumer" from "the graph has no actionable record of this path"
+    /// (so a conservative whole-site rebuild may be warranted). It is the
+    /// predicate the dev orchestrator uses to decide whether an empty
+    /// `dirty_pages` result should fall back to `PageSelection::All` (#1284).
+    ///
+    /// A reverse-index entry with an EMPTY consumer set (a node registered via
+    /// [`Self::add_node`] but never wired to a page) counts as NOT known —
+    /// `dirty_pages` would return an empty set for it, and the safe response is
+    /// the conservative `All` fallback, not "select nothing".
+    pub fn knows(&self, path: &Path) -> bool {
+        self.globals.contains(path)
+            || self
+                .reverse
+                .get(path)
+                .is_some_and(|consumers| !consumers.is_empty())
+            || self.pages.contains(&PageId::new(path.to_path_buf()))
+    }
+
     /// The minimal set of pages whose output is affected by changing `path`.
     ///
     /// - For a global file (see [`Self::mark_global`]) → [`DirtySet::All`].
@@ -712,6 +735,75 @@ mod tests {
         let d = g.dirty_pages(&p("/x"));
         assert_eq!(d, DirtySet::Specific(BTreeSet::new()));
         assert!(!d.is_all());
+    }
+
+    #[test]
+    fn knows_distinguishes_tracked_from_unknown() {
+        // #1284/#1287 — the dev orchestrator falls back to a whole-site
+        // rebuild only when the graph has NEVER heard of a path. `knows` is
+        // that predicate: true for a page, a recorded dep, or a global file;
+        // false for an untracked path.
+        let mut g = DependencyGraph::new();
+        g.upsert(PageDeps::new(
+            pid("/pages/index.tsx"),
+            vec![(p("/components/Header.tsx"), DepKind::Module)],
+        ));
+        g.mark_global("/zfb.config.ts");
+
+        assert!(g.knows(&p("/pages/index.tsx")), "a page is known");
+        assert!(
+            g.knows(&p("/components/Header.tsx")),
+            "a recorded dep is known"
+        );
+        assert!(g.knows(&p("/zfb.config.ts")), "a global file is known");
+        assert!(
+            !g.knows(&p("/components/Untracked.tsx")),
+            "a path with no page/dep/global record is unknown"
+        );
+
+        // A node registered with NO consumers (e.g. via `add_node`) resolves to
+        // an empty dirty set, so `knows` must report it as NOT known — the dev
+        // orchestrator then keeps its conservative `All` fallback rather than
+        // selecting zero pages.
+        g.add_node("/components/Orphan.tsx");
+        assert_eq!(
+            g.dirty_pages(&p("/components/Orphan.tsx")),
+            DirtySet::Specific(Default::default()),
+            "an add_node entry has no consumers"
+        );
+        assert!(
+            !g.knows(&p("/components/Orphan.tsx")),
+            "a consumer-less reverse entry is not 'known' (would select nothing)"
+        );
+    }
+
+    #[test]
+    fn page_can_hold_both_module_and_content_deps() {
+        // #1284/#1287 — a route that imports a component AND consumes a content
+        // collection must carry both edge kinds at once; the dev merge in
+        // `populate_module_edges` / the discovery hook relies on the graph
+        // resolving either kind back to the page.
+        let mut g = DependencyGraph::new();
+        g.upsert(PageDeps::new(
+            pid("/pages/index.tsx"),
+            vec![
+                (p("/components/Header.tsx"), DepKind::Module),
+                (p("/content/post.md"), DepKind::Content),
+            ],
+        ));
+
+        assert_eq!(
+            g.dirty_pages(&p("/components/Header.tsx"))
+                .as_pages()
+                .unwrap(),
+            vec![pid("/pages/index.tsx")],
+            "a component edit dirties the consuming route"
+        );
+        assert_eq!(
+            g.dirty_pages(&p("/content/post.md")).as_pages().unwrap(),
+            vec![pid("/pages/index.tsx")],
+            "a content edit on the same page still dirties it (edges coexist)"
+        );
     }
 
     #[test]
