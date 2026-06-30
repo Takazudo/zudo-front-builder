@@ -699,6 +699,107 @@ impl DependencyGraph {
         })
     }
 
+    /// Merge edges from a `persisted` graph into `self`, preserving any
+    /// existing `DepKind::Module` edges that `self` already carries.
+    ///
+    /// This is the boot-graph assembly step (#1293): on a digest cache hit the
+    /// dev command loads a persisted graph and wants to blend its
+    /// Content/Style/Data/Other edges (built up over previous sessions) into the
+    /// live graph without clobbering the `DepKind::Module` edges that
+    /// `seed_boot_module_edges` / `refresh_bundle_and_routes` already populated
+    /// from the current session's esbuild metafile.
+    ///
+    /// Rules:
+    ///
+    /// - For every page in `persisted`:
+    ///   - Collect the live graph's existing `DepKind::Module` edges for that
+    ///     page (may be empty when the page is not yet known to `self`).
+    ///   - **Module edges**: if `self` already has Module edges for the page
+    ///     (from `seed_boot_module_edges` / `refresh_bundle_and_routes`), those
+    ///     live edges are used as-is (more current than persisted). When the
+    ///     live graph has NO Module edges for the page (page not yet known to
+    ///     this session), the persisted Module edges are used instead so the
+    ///     page is not left edge-less.
+    ///   - **Non-Module edges** (Content, Style, Data, Asset, Other): always
+    ///     taken from `persisted` (the live graph has not yet accumulated them
+    ///     this session).
+    ///   - `upsert` the combined edge set so the reverse index is consistent.
+    /// - Globals: every path marked global in `persisted` is also marked global
+    ///   in `self` (additive; no globals are removed from `self`).
+    /// - Asset deps: for pages not already tracked in `self`'s asset layer,
+    ///   copy the asset record from `persisted`. Pages already tracked in
+    ///   `self` keep their live asset record (more current).
+    pub fn merge_from_persisted(&mut self, persisted: DependencyGraph) {
+        // Merge globals first: persisted globals cover files the live session
+        // has not yet re-evaluated.
+        for path in persisted.globals {
+            self.globals.insert(path);
+        }
+
+        // Merge per-page source edges.
+        for page in &persisted.pages {
+            // Live Module edges to preserve (from seed_boot_module_edges /
+            // refresh_bundle_and_routes, which ran before the cache load).
+            // The page self-edge is re-added by `upsert`; skip it here.
+            let live_module_edges: Vec<(PathBuf, DepKind)> = self
+                .forward
+                .get(page)
+                .map(|edges| {
+                    edges
+                        .iter()
+                        .filter(|(dep, kind)| *kind == DepKind::Module && dep != page.path())
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Module edges to use: prefer live (more current, derived from the
+            // current session's esbuild metafile) when they exist; fall back to
+            // persisted when the page is not yet known to the live graph.
+            let module_edges = if live_module_edges.is_empty() {
+                persisted
+                    .forward
+                    .get(page)
+                    .map(|edges| {
+                        edges
+                            .iter()
+                            .filter(|(dep, kind)| *kind == DepKind::Module && dep != page.path())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            } else {
+                live_module_edges
+            };
+
+            // Non-Module edges from persisted (Content, Style, Data, Asset,
+            // Other). The self-edge is re-added by `upsert`; skip it here.
+            let persisted_non_module: Vec<(PathBuf, DepKind)> = persisted
+                .forward
+                .get(page)
+                .map(|edges| {
+                    edges
+                        .iter()
+                        .filter(|(dep, kind)| *kind != DepKind::Module && dep != page.path())
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut merged = module_edges;
+            merged.extend(persisted_non_module);
+            self.upsert(PageDeps::new(page.clone(), merged));
+        }
+
+        // Asset layer: copy persisted records for pages the live graph has
+        // not yet tracked. Live records are more current; do not overwrite.
+        for (page, asset_deps) in persisted.assets {
+            if !self.assets.contains_key(&page) {
+                self.set_assets_for_page(page, asset_deps);
+            }
+        }
+    }
+
     /// Snapshot for diagnostics: every (dep -> sorted consumers) pair, keyed
     /// for deterministic ordering. Mostly useful in tests.
     pub fn snapshot(&self) -> BTreeMap<PathBuf, Vec<PageId>> {
