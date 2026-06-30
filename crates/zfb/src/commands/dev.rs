@@ -516,6 +516,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // has not run yet there; that case relies on the in-repo `src` root).
     #[cfg(feature = "embed_v8")]
     if let Some(session) = dev_session.as_ref() {
+        // Boot-time-only limitation (#1293): these targets are resolved once
+        // from the eager boot bundle's metafile and registered before the
+        // `BuildOrchestrator` is constructed.  Any NEW out-of-root dep paths
+        // discovered by later bundle refreshes (tick N+1, N+2, …) are NOT
+        // dynamically added to the watcher — the watcher's watch set is fixed
+        // after `OrchestratorConfig` is built here.  A `zfb dev` restart is
+        // required to pick up a newly-symlinked workspace dep as a watch
+        // target.  On the deferred-boot path this set is always empty (the
+        // boot bundle has not run yet), so this limitation is only relevant
+        // on the eager path.
         for target in session.out_of_root_watch_targets() {
             if !extra_watch_paths.contains(&target) {
                 extra_watch_paths.push(target);
@@ -532,6 +542,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // these align with the watcher's canonical event paths. The out-of-root
     // `.css` real paths classify as `PathClass::Style` (whitelisted extension),
     // so editing one fires `rerun_css` and refreshes the asset.
+    //
+    // Boot-time-only limitation (#1293): `resolve_css_import_watch_targets`
+    // walks the CSS entry's `@import` graph once at boot and the result is
+    // fixed for the lifetime of the `BuildOrchestrator`.  If a new `@import`
+    // is added to the CSS entry during a dev session, that new transitive dep
+    // is NOT registered as a watch target until `zfb dev` is restarted.
     let resolved_css_imports = resolve_css_import_watch_targets(&project_root);
     for real in &resolved_css_imports {
         if !extra_watch_paths.contains(real) {
@@ -1252,37 +1268,34 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             // 1. Manifest digest — the size-bound walk moved past bind.
             let manifest_digest = compute_manifest_digest(&project_root_for_boot, &watch_roots);
 
-            // 2. Load the persisted graph (digest-gated). On a hit, replace
-            //    the orchestrator's (currently empty) graph contents under
-            //    the lock; on a miss leave it empty (built fresh on ticks).
-            if let Some(persisted) =
-                load_persisted_graph(&graph_cache_path_for_boot, manifest_digest.as_ref())
+            // 2+3. Load the persisted graph (digest-gated) and assemble the
+            //      boot graph under a single lock acquisition.
+            //
+            //      On a cache hit, `assemble_boot_graph` MERGES the persisted
+            //      graph into the live graph instead of replacing it (#1293):
+            //      `DepKind::Module` edges already present in the live graph
+            //      (populated by `seed_boot_module_edges` on the eager path, or
+            //      by `refresh_bundle_and_routes` on the deferred path above)
+            //      are preserved; non-Module edges (Content/Style/Data/Other)
+            //      are taken from the persisted graph for pages not yet carrying
+            //      them. Globals from the persisted graph are merged in too.
+            //
+            //      The seed step (formerly step 3) is folded in: pages the
+            //      router scan knows but the graph does not yet have any record
+            //      of are seeded with an empty dep set so `plan_for_changes`
+            //      can resolve `PageSelection::All` before the first watcher
+            //      tick.  Only pages with NO known record are seeded; pages
+            //      that already carry edges (from the merge or from the Module
+            //      seed above) are left untouched.
             {
+                let persisted =
+                    load_persisted_graph(&graph_cache_path_for_boot, manifest_digest.as_ref());
+                let page_ids: Vec<PageId> = dev_session_for_boot
+                    .as_ref()
+                    .map(|s| s.page_ids())
+                    .unwrap_or_default();
                 if let Ok(mut g) = graph_for_seed.lock() {
-                    *g = persisted;
-                }
-            }
-
-            // 3. Seed the graph with all page source paths from the router
-            //    scan so `plan_for_changes` can resolve `PageSelection::All`
-            //    to a concrete page list even before the first file-change
-            //    tick. Without this seeding the graph is empty, `resolve_all`
-            //    produces an empty page set, and every watcher tick is a
-            //    no-op (cold-start bug).
-            if let Some(ref session) = dev_session_for_boot {
-                if let Ok(mut g) = graph_for_seed.lock() {
-                    for page_id in session.page_ids() {
-                        // Non-clobbering seed: `upsert` REPLACES a page's dep
-                        // set, so an unconditional empty-dep upsert here would
-                        // wipe the per-route `DepKind::Module` edges the
-                        // deferred `refresh_bundle_and_routes` above already
-                        // populated from the metafile (#1284/#1287). Only seed
-                        // pages the graph does not yet know, so edge-carrying
-                        // pages keep their edges.
-                        if !g.knows(page_id.path()) {
-                            g.upsert(PageDeps::new(page_id, vec![]));
-                        }
-                    }
+                    assemble_boot_graph(&mut g, persisted, page_ids);
                 }
             }
 
@@ -1802,6 +1815,40 @@ fn load_persisted_graph(
                 graph_cache_path.display()
             ));
             None
+        }
+    }
+}
+
+/// Assemble the boot graph in-place from an optional persisted snapshot and
+/// a list of page ids from the router scan (#1293).
+///
+/// This is a pure function (no I/O, no locks) so it can be unit-tested
+/// directly.  The caller is responsible for acquiring the graph mutex before
+/// calling this.
+///
+/// Behaviour:
+///
+/// 1. **Merge** — when `persisted` is `Some`, call
+///    [`DependencyGraph::merge_from_persisted`] which blends the persisted
+///    graph's non-Module edges and globals into `live` while preserving any
+///    `DepKind::Module` edges already in `live` (populated earlier by
+///    `seed_boot_module_edges` / `refresh_bundle_and_routes`).
+/// 2. **Seed** — for every `PageId` in `page_ids`, if the graph has NO
+///    existing record for that page (neither from the merge above nor from an
+///    earlier `seed_boot_module_edges` call), upsert an empty dep set so
+///    `plan_for_changes` can resolve `PageSelection::All` before the first
+///    watcher tick.  Pages already tracked (with edges) are left untouched.
+pub(crate) fn assemble_boot_graph(
+    live: &mut DependencyGraph,
+    persisted: Option<DependencyGraph>,
+    page_ids: impl IntoIterator<Item = PageId>,
+) {
+    if let Some(p) = persisted {
+        live.merge_from_persisted(p);
+    }
+    for page_id in page_ids {
+        if !live.knows(page_id.path()) {
+            live.upsert(PageDeps::new(page_id, vec![]));
         }
     }
 }
