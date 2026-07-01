@@ -133,7 +133,10 @@ pub struct PreviewArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "0.0.0.0")]
     pub host: Option<String>,
 
-    /// Directory to serve the previously built artifacts from.
+    /// Directory to serve the previously built artifacts from. In adapter
+    /// mode this is only an existence pre-check — `wrangler dev` serves the
+    /// directories named in the project's wrangler config, and a non-default
+    /// value here triggers a warning to that effect.
     #[arg(long, default_value = "dist")]
     pub outdir: PathBuf,
 }

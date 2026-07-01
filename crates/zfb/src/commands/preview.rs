@@ -131,6 +131,18 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
     match adapter {
         AdapterChoice::None => run_static(&outdir, &host, port, &cfg.allowed_hosts).await,
         AdapterChoice::Package(pkg) if pkg == CLOUDFLARE_ADAPTER => {
+            // `wrangler dev` serves whatever the project's wrangler config
+            // names (`main` + `[assets].directory`) — unlike the old
+            // `wrangler pages dev <outdir>`, the CLI outdir cannot override
+            // it. Parsing the wrangler config to verify agreement would need
+            // a TOML/JSONC parser we don't ship, so for a non-default outdir
+            // we warn loudly instead of silently previewing the wrong build.
+            if adapter_outdir_diverges_from_default(&args.outdir) {
+                output::warn(format!(
+                    "preview: adapter mode is driven by your wrangler config (`main` + `[assets].directory`) — `--outdir {}` only pre-checks that the directory exists and does NOT change what wrangler dev serves. Make sure your wrangler config points at the same directory.",
+                    args.outdir.display()
+                ));
+            }
             run_via_wrangler(&project_root, &host, port).await
         }
         AdapterChoice::Package(pkg) => anyhow::bail!(
@@ -426,6 +438,15 @@ fn content_type_for_path(path: &Path) -> String {
 /// [`ensure_wrangler_config_exists`]. Order matches wrangler's own
 /// preference (TOML, then JSONC, then plain JSON).
 const WRANGLER_CONFIG_FILENAMES: [&str; 3] = ["wrangler.toml", "wrangler.jsonc", "wrangler.json"];
+
+/// True when the user asked adapter-mode preview to serve a directory other
+/// than the clap default `dist`. `wrangler dev` cannot honor that request
+/// (the wrangler config decides what is served), so the caller warns. An
+/// explicit `--outdir dist` is indistinguishable from the default and stays
+/// silent — in practice the wrangler config points at `dist` there anyway.
+fn adapter_outdir_diverges_from_default(outdir: &Path) -> bool {
+    outdir != Path::new("dist")
+}
 
 /// Spawn `pnpm exec wrangler dev …` and wait for it. We do not pipe
 /// output — wrangler prints its own ready banner and we want the user
@@ -1202,6 +1223,19 @@ mod tests {
             .position(|a| a == "--ip")
             .expect("--ip must be present for a non-default host");
         assert_eq!(args[ip_idx + 1], "0.0.0.0");
+    }
+
+    // ---- adapter-mode outdir divergence warning ------------------------
+
+    #[test]
+    fn adapter_outdir_default_dist_stays_silent() {
+        assert!(!adapter_outdir_diverges_from_default(Path::new("dist")));
+    }
+
+    #[test]
+    fn adapter_outdir_non_default_triggers_warning() {
+        assert!(adapter_outdir_diverges_from_default(Path::new("build")));
+        assert!(adapter_outdir_diverges_from_default(Path::new("out/dist")));
     }
 
     // ---- wrangler config preflight ------------------------------------
