@@ -358,9 +358,14 @@ export default {
 
   // ---------------------------------------------------------------------------
   // Styled-404 precedence (issue #1322). When the asset probe 404s AND the
-  // inner worker also 404s, the wrapper prefers the earlier asset response iff
-  // it carries a styled 404-page body — otherwise the styled 404.html is lost
-  // and users see the inner's plain-text 404.
+  // inner worker also 404s, the wrapper prefers the earlier styled asset
+  // response ONLY when the inner 404 is the framework's generic default
+  // (Hono's `text/plain` "404 Not Found", or a bare 404 with no content-type)
+  // — otherwise the styled 404.html is lost and users see the inner's
+  // plain-text 404. An inner 404 that declares another content-type is a
+  // deliberate response (a `text/html` rendered not-found page, or a
+  // structured `application/json` API error) and WINS over the static styled
+  // asset page.
   // ---------------------------------------------------------------------------
 
   it('prefers the styled asset 404 over the inner plain 404 (not_found_handling = "404-page")', async () => {
@@ -524,6 +529,44 @@ export default {
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(response.headers.get("x-served-by")).toBeNull();
     expect(await response.json()).toEqual({ error: "not found" });
+  });
+
+  it("keeps an inner text/html 404 (a rendered custom not-found page) over the styled asset 404", async () => {
+    // A prerender=false dynamic route (e.g. a [slug] page) that SSRs its OWN
+    // 404 page: status 404, content-type text/html, a real rendered body.
+    // This is a deliberate response, NOT the framework's generic text/plain
+    // default, so it must WIN over the static site-wide styled asset 404 —
+    // otherwise the route's bespoke not-found page would be silently replaced
+    // by the generic one. (Narrowing from the original #1322 fix, which
+    // classified any non-JSON inner 404 as "generic".)
+    const worker = await emitAndImportWorker(`export default {
+  async fetch() {
+    return new Response(
+      "<!doctype html><html><body><h1>No such product</h1></body></html>",
+      {
+        status: 404,
+        headers: { "content-type": "text/html; charset=utf-8", "x-served-by": "inner" },
+      },
+    );
+  },
+};
+`);
+
+    const env = {
+      ASSETS: {
+        fetch: async () => styledAsset404Response(),
+      },
+    };
+
+    const request = new Request("https://worker.test/products/does-not-exist");
+    const response = await worker.default.fetch(request, env, NOOP_CTX);
+
+    expect(response.status).toBe(404);
+    // The inner's rendered page won, not the site-wide styled asset 404.
+    expect(response.headers.get("x-served-by")).toBe("inner");
+    const body = await response.text();
+    expect(body).toContain("No such product");
+    expect(body).not.toContain("Custom styled 404 page");
   });
 
   it("HEAD: prefers the styled asset 404 headers/status over the inner plain 404 (no body)", async () => {

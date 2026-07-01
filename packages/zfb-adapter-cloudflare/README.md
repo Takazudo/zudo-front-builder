@@ -27,10 +27,10 @@ npm install --save-dev @takazudo/zfb-adapter-cloudflare
 
 In `zfb.config.json`:
 
-```jsonc
+```json
 {
   "framework": "preact",
-  "adapter": "@takazudo/zfb-adapter-cloudflare",
+  "adapter": "@takazudo/zfb-adapter-cloudflare"
 }
 ```
 
@@ -98,12 +98,19 @@ not_found_handling = "404-page"
   `prerender = false` routes, but its **404 precedence** is:
   - inner returns a non-404 (a real dynamic route) → the inner response
     wins;
-  - inner also 404s with only a generic body (the framework's default
-    `text/plain` "404 Not Found") → the **styled `404.html` wins**, so
-    visitors see your designed 404 page instead of plain text;
-  - inner 404s with a structured payload (`application/json`, etc.) → that
-    **intentional API 404 is preserved** — the styled page does not stomp
-    it.
+  - inner also 404s with only the framework default body (Hono's default
+    `text/plain` "404 Not Found", or a bare 404 with no content-type) →
+    the **styled `404.html` wins**, so visitors see your designed 404 page
+    instead of plain text;
+  - inner 404s with any other content-type → that **deliberate response is
+    preserved** and the styled page does not stomp it: a `text/html` 404 is
+    a rendered custom not-found page (e.g. a `prerender = false` route
+    SSRing its own 404), and an `application/json` 404 is an intentional
+    API error.
+
+  A bare `text/plain` API 404 is indistinguishable from the framework
+  default and yields to the styled page — use `application/json` for API
+  errors you want preserved.
 
   Under `not_found_handling = "none"` the asset 404 has no styled body, so
   the inner Worker's plain 404 is always shown. Avoid
