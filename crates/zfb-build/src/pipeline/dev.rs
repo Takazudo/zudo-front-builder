@@ -632,10 +632,16 @@ impl AssetPipeline for DevAssetPipeline {
 
         // True when the reloader reported [`RefreshOutcome::Skipped`]
         // (issue #956): byte-identical bundle + unchanged route universe.
-        // The render fan-out is bypassed for the tick — re-rendering
-        // against an identical bundle would re-emit identical HTML, the
-        // same determinism assumption the `last_bytes` byte-dedup cache
-        // already makes. CSS, islands, and plan prune paths still run.
+        // The V8 host boot + `paths()` re-expansion inside the reloader is
+        // bypassed (the #940/#956 win) — but the render fan-out itself is
+        // NOT (issue #1301): the skip-key carries no page-selection info, so
+        // bypassing render would silently lose a later tick's route staleness
+        // when its selection differs from an earlier byte-identical tick.
+        // Instead only the PRUNE half is skipped here — on a skip the route
+        // table did not move, so nothing vanished. The render half still
+        // runs; redundant re-renders against an identical bundle re-emit
+        // identical HTML and are absorbed by the `last_bytes` byte-dedup
+        // cache (no write, no SSE). CSS, islands, and plan prune paths run.
         let mut renderer_refresh_skipped = false;
 
         // Content-narrowing hint for the render callback (issues #958 /
@@ -710,24 +716,31 @@ impl AssetPipeline for DevAssetPipeline {
             }
         }
 
-        // Prune safety on a skipped tick (issue #956 gate (c) / #727): when
-        // the refresh was skipped, the route table did not move, so nothing
-        // vanished this tick. By bypassing this whole block neither the
-        // stale-output candidates nor the live-dests bookkeeping run — an
-        // unrendered URL can never be mistaken for a vanished one.
-        if !pages.is_empty() && !renderer_refresh_skipped {
+        // Render + write is decoupled from prune (issue #1301): a skipped
+        // tick (issue #956) still re-renders its SELECTED pages so a later
+        // tick whose page-selection differs from an earlier byte-identical
+        // tick does not silently serve stale bytes. The skip-key carries no
+        // page-selection info, so the bypass could drop the second tick's
+        // route staleness entirely. Redundant re-renders against an
+        // identical bundle are absorbed by `WriteCache.last_bytes` byte-dedup
+        // (already-fresh pages produce no write, no SSE), the same
+        // determinism assumption the skip originally relied on.
+        //
+        // Only the render + write half runs unconditionally when `pages` is
+        // non-empty; the prune half stays gated on `!renderer_refresh_skipped`
+        // below — on a skip the route table did not move, so nothing vanished.
+        let mut prune_candidates: Vec<PathBuf> = Vec::new();
+        let mut live_dests: HashSet<PathBuf> = HashSet::new();
+        if !pages.is_empty() {
             let rendered = (ctx.render_pages)(&pages, narrowing.as_ref())?;
             outcome.pages_rendered = rendered.len();
 
             // Collect prune candidates and the live dest set during the
             // write loop; the actual deletes are deferred to after the
-            // loop. This prevents a page's prune from deleting a path
-            // that a sibling page in the same tick has already written
-            // (or will write) to — i.e. the two-page output-path swap
-            // scenario described in issue #727.
-            let mut prune_candidates: Vec<PathBuf> = Vec::new();
-            let mut live_dests: HashSet<PathBuf> = HashSet::new();
-
+            // loop (and gated on `!renderer_refresh_skipped`). This prevents
+            // a page's prune from deleting a path that a sibling page in the
+            // same tick has already written (or will write) to — i.e. the
+            // two-page output-path swap scenario described in issue #727.
             for r in rendered {
                 // Reject any output_path that escapes dist_root via
                 // `..` or absolute roots before we touch the
@@ -751,7 +764,16 @@ impl AssetPipeline for DevAssetPipeline {
                     outcome.pages_written.push(r.page.clone());
                 }
             }
+        }
 
+        // Prune safety on a skipped tick (issue #956 gate (c) / #727): when
+        // the refresh was skipped, the route table did not move, so nothing
+        // vanished this tick. Bypassing the deferred-prune loop means neither
+        // the stale-output candidates nor the vanished-route paths are acted
+        // on — an unrendered URL can never be mistaken for a vanished one. The
+        // render + write half above still ran, keeping the selected pages
+        // fresh (issue #1301).
+        if !pages.is_empty() && !renderer_refresh_skipped {
             // Deferred prune: remove candidates that are no longer live.
             // Skip any path that appears in live_dests — another page in
             // this same tick now owns it, so deleting it would remove
@@ -762,7 +784,10 @@ impl AssetPipeline for DevAssetPipeline {
             // table after this tick's rebuild — e.g. a content file was
             // deleted or a dynamic route's paths() output shrank). Apply
             // the same live_dests guard: if route A lost /x while route B
-            // simultaneously gained /x, /x must NOT be deleted.
+            // simultaneously gained /x, /x must NOT be deleted. `route_vanished`
+            // carries `plan.prune_paths`; on a skip this block does not run,
+            // so those paths are handled once by the plan-prune block (1b)
+            // below instead.
             for prev in prune_candidates.into_iter().chain(route_vanished) {
                 if live_dests.contains(&prev) {
                     continue; // another page now owns this path — skip
@@ -777,12 +802,16 @@ impl AssetPipeline for DevAssetPipeline {
         // supplied by the orchestrator from a discovery refresh that already
         // set renderer_fresh (so reload_renderer was skipped and these paths
         // could not be returned through the normal vanished-routes channel).
-        // Only runs when the render loop above did not — pages empty, or the
-        // renderer refresh was skipped (issue #956; defensive: a discovery
-        // refresh sets renderer_fresh, so a Skipped reload never coincides
-        // with plan prune paths in practice). If the render loop ran,
-        // prune_paths were already included in route_vanished and processed
-        // there.
+        // This block's gate is the exact complement of the deferred-prune
+        // block above (`!pages.is_empty() && !renderer_refresh_skipped`), so
+        // `plan.prune_paths` — carried into `route_vanished` and consumed
+        // there when that block runs — is processed EXACTLY ONCE: it runs
+        // here only when pages are empty or the renderer refresh was skipped
+        // (issue #956; defensive: a discovery refresh sets renderer_fresh, so
+        // a Skipped reload never coincides with plan prune paths in practice).
+        // Note the render+write half (issue #1301) may still have run above on
+        // a skipped tick — that half does not consume `route_vanished`, only
+        // the deferred-prune half does.
         if (pages.is_empty() || renderer_refresh_skipped) && !plan.prune_paths.is_empty() {
             for prev in &plan.prune_paths {
                 let _ = std::fs::remove_file(prev);
@@ -1314,12 +1343,14 @@ mod tests {
         }
     }
 
-    /// A `Skipped` reload must bypass the render fan-out entirely: the
-    /// render callback is never invoked, no HTML is written, and nothing
-    /// already on disk is pruned (gate (c) — an unrendered URL must not
-    /// be mistaken for a vanished one).
+    /// A `Skipped` reload still renders its selected pages (issue #1301 —
+    /// the skip-key carries no page selection, so bypassing render would
+    /// drop a later tick's route staleness), but it must PRUNE NOTHING
+    /// (gate (c) — an unrendered/unmoved URL must not be mistaken for a
+    /// vanished one). Re-rendering the identical bundle re-emits identical
+    /// HTML, absorbed by the `last_bytes` byte-dedup (no write on tick 2).
     #[test]
-    fn skipped_reload_bypasses_render_and_prunes_nothing() {
+    fn skipped_reload_renders_selection_but_prunes_nothing() {
         let dir = tempdir().unwrap();
         let pipeline = DevAssetPipeline::new();
         let rendered = vec![RenderedPage {
@@ -1345,8 +1376,9 @@ mod tests {
         assert_eq!(first.pages_rendered, 1);
         assert!(dir.path().join("a/index.html").exists());
 
-        // Tick 2: byte-identical bundle → Skipped. No render, no write,
-        // no prune; the existing HTML stays on disk.
+        // Tick 2: byte-identical bundle → Skipped. The render half still
+        // runs (issue #1301), but the identical HTML is deduped (no write)
+        // and nothing is pruned; the existing HTML stays on disk.
         let calls2 = Arc::new(AtomicUsize::new(0));
         let ctx2 = ctx_with_reload_outcome(
             dir.path().to_path_buf(),
@@ -1357,14 +1389,17 @@ mod tests {
         let second = pipeline.apply(&plan, &ctx2).unwrap();
         assert_eq!(
             calls2.load(Ordering::SeqCst),
-            0,
-            "Skipped tick must not invoke the render callback"
+            1,
+            "Skipped tick still renders its selected pages (issue #1301)"
         );
-        assert_eq!(second.pages_rendered, 0, "no pages rendered on skip");
-        assert!(second.pages_written.is_empty(), "no HTML written on skip");
+        assert_eq!(second.pages_rendered, 1, "selected page rendered on skip");
+        assert!(
+            second.pages_written.is_empty(),
+            "identical HTML is byte-deduped — no write on skip"
+        );
         assert!(
             second.pages_pruned.is_empty(),
-            "skip must not treat unrendered URLs as vanished; pruned={:?}",
+            "skip must not treat unrendered/unmoved URLs as vanished; pruned={:?}",
             second.pages_pruned,
         );
         assert!(
@@ -1373,8 +1408,8 @@ mod tests {
         );
     }
 
-    /// A `Skipped` reload bypasses only the render loop — CSS and islands
-    /// requested by the plan must still run.
+    /// A `Skipped` reload still runs the render half (issue #1301) as well
+    /// as any CSS and islands requested by the plan.
     #[test]
     fn skipped_reload_still_runs_css_and_islands() {
         let dir = tempdir().unwrap();
@@ -1410,7 +1445,11 @@ mod tests {
         plan.rerun_islands = true;
 
         let outcome = pipeline.apply(&plan, &ctx).unwrap();
-        assert_eq!(render_calls.load(Ordering::SeqCst), 0, "render bypassed");
+        assert_eq!(
+            render_calls.load(Ordering::SeqCst),
+            1,
+            "render half still runs on a skipped tick (issue #1301)"
+        );
         assert!(outcome.css_rerun, "CSS still reruns on a skipped tick");
         assert_eq!(css_calls.load(Ordering::SeqCst), 1);
         assert!(
@@ -1418,6 +1457,116 @@ mod tests {
             "islands still rerun on a skipped tick"
         );
         assert_eq!(islands_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Straddling-tick regression (issue #1301, fixes #1301): tick A
+    /// produces a bundle selecting only route R1; tick B produces a
+    /// BYTE-IDENTICAL bundle (`RefreshOutcome::Skipped`) but the incoming
+    /// plan selects route R2 (the differing selection comes from the plan's
+    /// `pages` — driven by the dirty set — NOT from the route table). R2
+    /// must be rendered and written on tick B; before the fix the skip
+    /// short-circuited the whole render fan-out and R2 stayed silently
+    /// stale until the next real bundle change.
+    #[test]
+    fn skipped_tick_still_renders_differing_page_selection() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+
+        // The render callback maps each selected PageId to its own output
+        // path so the plan's selection genuinely drives what is rendered —
+        // exactly the coupling the skip-key discards.
+        fn render_by_selection(calls: Arc<AtomicUsize>) -> crate::pipeline::PageRenderer {
+            Arc::new(move |pages: &[PageId], _| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(pages
+                    .iter()
+                    .map(|p| {
+                        let name = p.path().file_stem().unwrap().to_string_lossy().into_owned();
+                        RenderedPage {
+                            page: p.clone(),
+                            output_path: RelDistPath::new(format!("{name}/index.html")).unwrap(),
+                            html: format!("<h1>{name}</h1>"),
+                            content_type: None,
+                        }
+                    })
+                    .collect())
+            })
+        }
+
+        fn plan_selecting(page: &str) -> RebuildPlan {
+            let mut sel = BTreeSet::new();
+            sel.insert(pid(page));
+            RebuildPlan {
+                pages: PageSelection::Specific(sel),
+                rerun_css: false,
+                rerun_islands: false,
+                rerun_client_scripts: false,
+                renderer_fresh: false,
+                ssr_reload_needed: false,
+                prune_paths: vec![],
+                triggers: vec![],
+                content_narrowing: None,
+            }
+        }
+
+        // Tick A: real refresh, selection = R1 only.
+        let calls_a = Arc::new(AtomicUsize::new(0));
+        let ctx_a = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: render_by_selection(calls_a.clone()),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: Some(Arc::new(|| {
+                Ok(RefreshOutcome::Refreshed {
+                    vanished: vec![],
+                    changed_sources: vec![],
+                })
+            })),
+        };
+        let plan_a = plan_selecting("/p/r1.tsx");
+        let a = pipeline.apply(&plan_a, &ctx_a).unwrap();
+        assert_eq!(a.pages_rendered, 1);
+        assert!(dir.path().join("r1/index.html").exists());
+        assert!(
+            !dir.path().join("r2/index.html").exists(),
+            "R2 was not selected on tick A"
+        );
+
+        // Tick B: byte-identical bundle → Skipped; selection = R2 only.
+        let calls_b = Arc::new(AtomicUsize::new(0));
+        let ctx_b = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: render_by_selection(calls_b.clone()),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: Some(Arc::new(|| Ok(RefreshOutcome::Skipped))),
+        };
+        let plan_b = plan_selecting("/p/r2.tsx");
+        let b = pipeline.apply(&plan_b, &ctx_b).unwrap();
+
+        assert_eq!(
+            calls_b.load(Ordering::SeqCst),
+            1,
+            "a skipped tick must still render its (differing) selection"
+        );
+        assert_eq!(b.pages_rendered, 1, "R2 rendered on the skipped tick");
+        assert!(
+            b.pages_written.contains(&pid("/p/r2.tsx")),
+            "R2 must be freshly written on tick B, not left stale; written={:?}",
+            b.pages_written,
+        );
+        assert!(
+            dir.path().join("r2/index.html").exists(),
+            "R2 output must exist after the skipped tick (issue #1301)"
+        );
+        // Prune stays gated off on a skip — R1 must survive untouched.
+        assert!(b.pages_pruned.is_empty(), "skip prunes nothing");
+        assert!(
+            dir.path().join("r1/index.html").exists(),
+            "R1 must survive the skipped tick"
+        );
     }
 
     /// Plan-carried prune paths (issue #804 P2) are still processed when
@@ -1442,11 +1591,18 @@ mod tests {
         plan.prune_paths = vec![stale.clone()];
 
         let outcome = pipeline.apply(&plan, &ctx).unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "render bypassed");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "render half still runs on a skipped tick (issue #1301)"
+        );
         assert!(!stale.exists(), "plan prune path must still be deleted");
-        assert!(
-            outcome.pages_pruned.contains(&stale),
-            "pages_pruned must report the plan prune path; got {:?}",
+        // Processed exactly once: the deferred-prune loop is gated off on a
+        // skip, so the plan-prune block (1b) is the sole handler here.
+        assert_eq!(
+            outcome.pages_pruned.iter().filter(|p| **p == stale).count(),
+            1,
+            "plan prune path must be reported exactly once; got {:?}",
             outcome.pages_pruned,
         );
     }
