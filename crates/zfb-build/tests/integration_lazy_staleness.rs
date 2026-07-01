@@ -509,11 +509,14 @@ fn vanished_route_is_evicted_from_stale_set_and_pruned() {
     assert_eq!(outcome.pages_rendered, 0, "zero eager renders on this tick");
 }
 
-/// Skipped tick class (#956): a Phase-B `Skipped` reload bypasses the
-/// render callback entirely — the stale set, the tick generation, the
-/// dist tree, and `pages_stale` are all untouched.
+/// Skipped tick class (#956 + #1301): a Phase-B `Skipped` reload still
+/// bypasses the V8 host boot, the table swap, the generation bump, and
+/// disk pruning — but the render callback now runs for the tick's
+/// SELECTED pages so their staleness is not silently dropped (#1301). An
+/// all-lazy `.tsx` tick renders nothing eagerly yet re-announces its
+/// selected routes as stale.
 #[test]
-fn skipped_tick_touches_neither_stale_state_nor_disk() {
+fn skipped_tick_stales_selection_without_table_swap_or_prune() {
     let dir = tempdir().unwrap();
     let project = dir.path();
     let (graph, session) = matrix_fixture(project);
@@ -545,10 +548,16 @@ fn skipped_tick_touches_neither_stale_state_nor_disk() {
         .expect("tick succeeded")
         .expect("non-noop");
 
+    // #1301: the skipped tick renders nothing eagerly (all-lazy .tsx) but
+    // still re-stales its SELECTED routes rather than dropping them.
     assert_eq!(outcome.pages_rendered, 0);
-    assert!(
-        outcome.pages_stale.is_empty(),
-        "a skipped tick announces nothing as stale"
+    assert_eq!(
+        outcome.pages_stale,
+        vec![
+            PathBuf::from("blog/a/index.html"),
+            PathBuf::from("blog/b/index.html"),
+        ],
+        "a skipped tick re-announces its selected routes as stale (#1301)"
     );
     assert!(outcome.pages_pruned.is_empty());
     assert_eq!(
@@ -558,12 +567,12 @@ fn skipped_tick_touches_neither_stale_state_nor_disk() {
     );
     assert!(
         session.is_stale("blog/a/index.html") && session.is_stale("blog/b/index.html"),
-        "previously-stale entries survive a skipped tick untouched"
+        "the selected routes remain stale after a skipped tick"
     );
     assert_eq!(
         &session.events()[events_before..],
-        &["reload:skipped"],
-        "the render callback must never run on a skipped tick"
+        &["reload:skipped", "render:stale-marked"],
+        "the render callback now runs on a skipped tick (#1301), after the skip"
     );
 }
 
