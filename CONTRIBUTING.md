@@ -108,7 +108,7 @@ The Cloudflare Pages deploy workflow (wired up in a later sub-task) expects the 
 
 ## External tool version pins
 
-zfb shells out to a small set of third-party tools (esbuild for the islands bundler, wrangler/workerd for Cloudflare Pages preview, Tailwind v4 for the CSS engine). Every one of those tools is **exact-pinned** so that the same source tree produces byte-identical output regardless of when or where it is built — this matters for asset-hash stability and for keeping the SSR pipeline from drifting under our feet when upstream cuts a patch release.
+zfb shells out to a small set of third-party tools (esbuild for the islands bundler, wrangler/workerd for Cloudflare Workers preview, Tailwind v4 for the CSS engine). Every one of those tools is **exact-pinned** so that the same source tree produces byte-identical output regardless of when or where it is built — this matters for asset-hash stability and for keeping the SSR pipeline from drifting under our feet when upstream cuts a patch release.
 
 The pin lives in two places that **must move together**:
 

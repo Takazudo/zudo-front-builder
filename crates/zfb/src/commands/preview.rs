@@ -8,7 +8,8 @@
 //!
 //! Serves files from `<project>/dist/` over HTTP at `args.port`.
 //!
-//! Trailing-slash semantics match Cloudflare Pages:
+//! Trailing-slash semantics match Workers Static Assets'
+//! `html_handling = "auto-trailing-slash"`:
 //!
 //! - `GET /` → serve `dist/index.html`.
 //! - `GET /foo` →
@@ -26,12 +27,20 @@
 //! Cache-Control is `no-store` for v0 — preview is local only and we
 //! never want a stale browser cache to mask a real bug.
 //!
+//! Note: this static-mode redirect is zfb's own axum server issuing a
+//! `301`; real Workers Static Assets issues a `307` for the same
+//! trailing-slash case. The status code differs, but the redirect
+//! *target* and *when-to-redirect* rule match, which is what this mode
+//! is for. Adapter mode (below) runs the real Worker via wrangler, so
+//! it gets the real `307` there.
+//!
 //! ## Adapter mode (`adapter: "@takazudo/zfb-adapter-cloudflare"`)
 //!
-//! Defers to `pnpm exec wrangler pages dev <outdir> --port <port>` so
-//! the Worker bundle (`dist/_worker.js`) executes locally. Wrangler is
-//! the canonical CF Pages local-dev tool, and matching its semantics
-//! by deferring is more honest than reimplementing them.
+//! Defers to `pnpm exec wrangler dev --port <port>` so the Worker
+//! bundle (`dist/_worker.js`) executes locally against the project's
+//! own wrangler config. Wrangler is the canonical Workers local-dev
+//! tool, and matching its semantics by deferring is more honest than
+//! reimplementing them.
 //!
 //! ## Config wiring
 //!
@@ -122,7 +131,7 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
     match adapter {
         AdapterChoice::None => run_static(&outdir, &host, port, &cfg.allowed_hosts).await,
         AdapterChoice::Package(pkg) if pkg == CLOUDFLARE_ADAPTER => {
-            run_via_wrangler(&project_root, &outdir, &host, port).await
+            run_via_wrangler(&project_root, &host, port).await
         }
         AdapterChoice::Package(pkg) => anyhow::bail!(
             "preview: adapter {pkg:?} is not supported (only {CLOUDFLARE_ADAPTER:?} today)"
@@ -200,8 +209,8 @@ async fn static_fallback(State(state): State<StaticState>, uri: Uri) -> Response
     serve_static(&state.dist_root, uri.path(), uri.query()).await
 }
 
-/// Apply the Cloudflare-Pages-style routing rule to a request, then
-/// either serve a file, redirect, or 404.
+/// Apply the Workers-Static-Assets-style routing rule to a request,
+/// then either serve a file, redirect, or 404.
 ///
 /// `query` is the raw (already percent-encoded) query string from the
 /// request URI, if any. It is appended verbatim to redirect targets so
@@ -413,24 +422,36 @@ fn content_type_for_path(path: &Path) -> String {
 // Adapter mode (Cloudflare via wrangler)
 // ---------------------------------------------------------------------------
 
-/// Spawn `pnpm exec wrangler pages dev …` and wait for it. We do not
-/// pipe output — wrangler prints its own ready banner and we want the
-/// user to see it directly. Returns non-zero when wrangler exits non-
-/// zero so the parent shell sees the failure.
+/// Wrangler config file names accepted at the project root, checked by
+/// [`ensure_wrangler_config_exists`]. Order matches wrangler's own
+/// preference (TOML, then JSONC, then plain JSON).
+const WRANGLER_CONFIG_FILENAMES: [&str; 3] = ["wrangler.toml", "wrangler.jsonc", "wrangler.json"];
+
+/// Spawn `pnpm exec wrangler dev …` and wait for it. We do not pipe
+/// output — wrangler prints its own ready banner and we want the user
+/// to see it directly. Returns non-zero when wrangler exits non-zero so
+/// the parent shell sees the failure.
 ///
-/// Before handing off, runs a pre-flight `pnpm exec wrangler --version`
-/// gate against [`EXPECTED_WRANGLER_VERSION`]. A mismatch aborts with
-/// an actionable error pointing at the version-pin procedure. The gate
-/// can be bypassed by setting the
-/// [`SKIP_WRANGLER_VERSION_CHECK_ENV`] env var to `1`.
-async fn run_via_wrangler(project_root: &Path, outdir: &Path, host: &str, port: u16) -> Result<()> {
+/// Before handing off, runs two pre-flight checks in order:
+///
+/// 1. [`ensure_wrangler_config_exists`] — `wrangler dev` has no
+///    positional outdir arg and discovers everything from its own
+///    config, so a missing config would otherwise surface as a
+///    confusing wrangler-side error rather than a zfb one.
+/// 2. [`ensure_wrangler_version`] — a pre-flight `pnpm exec wrangler
+///    --version` gate against [`EXPECTED_WRANGLER_VERSION`]. A mismatch
+///    aborts with an actionable error pointing at the version-pin
+///    procedure. Can be bypassed by setting the
+///    [`SKIP_WRANGLER_VERSION_CHECK_ENV`] env var to `1`.
+async fn run_via_wrangler(project_root: &Path, host: &str, port: u16) -> Result<()> {
+    ensure_wrangler_config_exists(project_root)?;
     ensure_wrangler_version(project_root).await?;
 
     output::info(format!(
-        "preview: adapter mode — handing off to wrangler pages dev (host {host}, port {port})"
+        "preview: adapter mode — handing off to wrangler dev (host {host}, port {port})"
     ));
 
-    let mut cmd = build_wrangler_command(project_root, outdir, host, port);
+    let mut cmd = build_wrangler_command(project_root, host, port);
     let mut child = cmd
         .spawn()
         .context("failed to spawn wrangler — make sure it is installed in this project (pnpm add -D wrangler)")?;
@@ -440,9 +461,43 @@ async fn run_via_wrangler(project_root: &Path, outdir: &Path, host: &str, port: 
         .await
         .context("failed to await wrangler subprocess")?;
     if !status.success() {
-        anyhow::bail!("wrangler pages dev exited with status {status}");
+        anyhow::bail!("wrangler dev exited with status {status}");
     }
     Ok(())
+}
+
+/// Verify a wrangler config file exists at `project_root` before handing
+/// off to `wrangler dev`. Unlike `wrangler pages dev <outdir>`, `wrangler
+/// dev` takes no positional outdir and discovers the Worker + assets
+/// binding entirely from its own config file, so a missing config needs
+/// its own clear error here rather than falling through to whatever
+/// wrangler prints for "no config found".
+fn ensure_wrangler_config_exists(project_root: &Path) -> Result<()> {
+    if WRANGLER_CONFIG_FILENAMES
+        .iter()
+        .any(|name| project_root.join(name).is_file())
+    {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "preview: adapter mode requires a wrangler config at the project root \
+         ({names}), but none was found in {root}.\n\
+         \n\
+         Minimal example (wrangler.toml):\n\
+         \n\
+         main = \"./dist/_worker.js\"\n\
+         compatibility_date = \"2024-12-01\"\n\
+         compatibility_flags = [\"nodejs_compat\"]\n\
+         \n\
+         [assets]\n\
+         directory = \"./dist\"\n\
+         \n\
+         See https://github.com/Takazudo/zudo-front-builder/blob/main/docs/src/content/docs/guides/ssr-and-cloudflare-bindings.mdx \
+         for the full SSR & Cloudflare bindings guide.",
+        names = WRANGLER_CONFIG_FILENAMES.join(" | "),
+        root = project_root.display(),
+    );
 }
 
 /// Run `pnpm exec wrangler --version` and abort if the reported
@@ -592,18 +647,16 @@ where
 /// Build the `tokio::process::Command` we'd spawn for wrangler. Pulled
 /// out so unit tests can introspect program name and args without
 /// actually spawning a subprocess.
-fn build_wrangler_command(
-    project_root: &Path,
-    outdir: &Path,
-    host: &str,
-    port: u16,
-) -> tokio::process::Command {
+///
+/// No positional outdir: `wrangler dev` (unlike `wrangler pages dev
+/// <outdir>`) discovers the Worker + assets directory from the
+/// project's own wrangler config, resolved relative to `cwd`
+/// (`project_root`, set below).
+fn build_wrangler_command(project_root: &Path, host: &str, port: u16) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("pnpm");
     cmd.arg("exec")
         .arg("wrangler")
-        .arg("pages")
         .arg("dev")
-        .arg(outdir)
         .arg("--port")
         .arg(port.to_string());
     // Only thread `--ip` when the user asked for a non-default host. wrangler
@@ -1089,27 +1142,29 @@ mod tests {
     // ---- adapter-mode wiring (no actual spawn) -----------------------
 
     #[test]
-    fn wrangler_command_uses_pnpm_exec_with_outdir_and_port() {
+    fn wrangler_command_uses_pnpm_exec_with_port() {
         let project_root = Path::new("/tmp/proj");
-        let outdir = Path::new("/tmp/proj/dist");
         // Default host: no `--ip` is threaded, so the invocation is unchanged.
-        let cmd = build_wrangler_command(project_root, outdir, DEFAULT_PREVIEW_HOST, 8788);
+        let cmd = build_wrangler_command(project_root, DEFAULT_PREVIEW_HOST, 8788);
 
         let std_cmd = cmd.as_std();
         assert_eq!(std_cmd.get_program(), "pnpm");
 
         let args: Vec<&std::ffi::OsStr> = std_cmd.get_args().collect();
-        // Expect: exec wrangler pages dev <outdir> --port <port>
+        // Expect: exec wrangler dev --port <port> — no positional outdir;
+        // wrangler discovers the config from cwd (project_root).
         assert_eq!(args[0], "exec");
         assert_eq!(args[1], "wrangler");
-        assert_eq!(args[2], "pages");
-        assert_eq!(args[3], "dev");
-        assert_eq!(args[4], outdir.as_os_str());
-        assert_eq!(args[5], "--port");
-        assert_eq!(args[6], "8788");
+        assert_eq!(args[2], "dev");
+        assert_eq!(args[3], "--port");
+        assert_eq!(args[4], "8788");
         assert!(
             !args.iter().any(|a| *a == "--ip"),
             "default host must not thread --ip"
+        );
+        assert!(
+            !args.iter().any(|a| *a == "pages"),
+            "must use the Workers `wrangler dev` shape, not `wrangler pages dev`"
         );
 
         assert_eq!(std_cmd.get_current_dir(), Some(project_root));
@@ -1119,12 +1174,7 @@ mod tests {
     fn wrangler_command_threads_user_supplied_port() {
         // `--port` must reflect whatever resolve_port produced — so
         // overriding from the CLI propagates all the way through.
-        let cmd = build_wrangler_command(
-            Path::new("/x"),
-            Path::new("/x/dist"),
-            DEFAULT_PREVIEW_HOST,
-            9000,
-        );
+        let cmd = build_wrangler_command(Path::new("/x"), DEFAULT_PREVIEW_HOST, 9000);
         let args: Vec<String> = cmd
             .as_std()
             .get_args()
@@ -1141,7 +1191,7 @@ mod tests {
     fn wrangler_command_threads_ip_for_non_default_host() {
         // A non-default host (e.g. 0.0.0.0) must thread `--ip <host>` so the
         // adapter preview is reachable on the LAN, matching static-mode --host.
-        let cmd = build_wrangler_command(Path::new("/x"), Path::new("/x/dist"), "0.0.0.0", 9000);
+        let cmd = build_wrangler_command(Path::new("/x"), "0.0.0.0", 9000);
         let args: Vec<String> = cmd
             .as_std()
             .get_args()
@@ -1152,6 +1202,52 @@ mod tests {
             .position(|a| a == "--ip")
             .expect("--ip must be present for a non-default host");
         assert_eq!(args[ip_idx + 1], "0.0.0.0");
+    }
+
+    // ---- wrangler config preflight ------------------------------------
+
+    #[test]
+    fn ensure_wrangler_config_exists_accepts_toml() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("wrangler.toml"),
+            "compatibility_date = \"2024-12-01\"\n",
+        )
+        .unwrap();
+        assert!(ensure_wrangler_config_exists(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn ensure_wrangler_config_exists_accepts_jsonc_and_json() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("wrangler.jsonc"), "{}").unwrap();
+        assert!(ensure_wrangler_config_exists(dir.path()).is_ok());
+
+        let dir2 = TempDir::new().unwrap();
+        fs::write(dir2.path().join("wrangler.json"), "{}").unwrap();
+        assert!(ensure_wrangler_config_exists(dir2.path()).is_ok());
+    }
+
+    #[test]
+    fn ensure_wrangler_config_exists_bails_with_helpful_error_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let err = ensure_wrangler_config_exists(dir.path())
+            .expect_err("must bail when no wrangler config is present");
+        let message = err.to_string();
+        assert!(
+            message.contains("wrangler.toml")
+                && message.contains("wrangler.jsonc")
+                && message.contains("wrangler.json"),
+            "error must name all three accepted config file names, got: {message}"
+        );
+        assert!(
+            message.contains("[assets]") && message.contains("directory = \"./dist\""),
+            "error must include a minimal config snippet, got: {message}"
+        );
+        assert!(
+            message.contains("ssr-and-cloudflare-bindings"),
+            "error must point at the SSR & Cloudflare bindings guide, got: {message}"
+        );
     }
 
     // ---- wrangler version-gate parser --------------------------------
