@@ -141,8 +141,9 @@
   --color-image-overlay-bg: var(--zd-image-overlay-bg);
   --color-image-overlay-fg: var(--zd-image-overlay-fg);
   /* --color-mermaid-* aliases removed: mermaid-init-script reads --zd-mermaid-* directly;
-     these @theme registrations were unused (no Tailwind utility references). --zd-mermaid-*
-     injection in color-scheme-utils is preserved and remains the live source. */
+     these @theme registrations were unused (no Tailwind utility references). Under zudo-doc
+     v2 package-owned routes, --zd-* (incl. --zd-mermaid-*) are injected by the package
+     HeadWithDefaults from the `colorSchemes` passed to zudoDocPreset. */
   --color-matched-keyword-bg: var(--zd-matched-keyword-bg);
   --color-matched-keyword-fg: var(--zd-matched-keyword-fg);
 

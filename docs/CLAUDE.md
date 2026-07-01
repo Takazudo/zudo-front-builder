@@ -28,22 +28,32 @@ All commands run from the **repo root** with the `--filter docs` workspace flag,
 
 ## Key Directories
 
+This site uses **zudo-doc v2 package-owned routes** (`settings.packageOwnedRoutes: true`).
+`@takazudo/zudo-doc/plugins/routes` injects and owns every route — `/docs/[[...slug]]`,
+`/[locale]`, `/[locale]/docs/**`, `/404`, `/sitemap.xml`, `/robots.txt`, tags, versions — and
+renders all page chrome (header/sidebar/TOC/footer) from package defaults, reconstructed from a
+`virtual:zudo-doc-route-context` payload that `zudoDocPreset()` builds out of the host's
+`settings` + `translations` + `colorSchemes` (see `zfb.config.ts`). The host owns only **data**
+(config + content + CSS + assets) plus the one route the package does not inject: `/`.
+
 ```
 docs/
-├── pages/               # File-based routing (zfb page modules)
-│   └── lib/             # Shared page utilities (nav, locale merge, doc props)
-├── plugins/             # zfb integration plugins (doc-history, search-index, llms-txt, etc.)
+├── pages/               # Host owns only the root home + island registration
+│   ├── index.tsx        # "/" — re-exports @takazudo/zudo-doc/routes/index (package default home)
+│   └── _register-islands.ts  # registers the DocHistory client island for package-owned routes
 ├── public/              # Static assets copied flat to dist/ (favicons, img/)
 └── src/
-    ├── components/      # Preact components
-    ├── config/          # settings.ts + i18n config
+    ├── config/          # settings, i18n (+ translations), docs-schema, color-schemes, tag-vocabulary
     ├── content/
     │   ├── docs/        # EN MDX content
     │   └── docs-ja/     # Japanese MDX content (mirrors docs/ structure)
-    ├── hooks/           # zfb lifecycle hooks
-    ├── styles/          # global.css (design tokens + Tailwind config)
-    └── utils/           # Shared utilities (base URL, docs helpers, etc.)
+    └── styles/          # global.css (design tokens + Tailwind config + package CSS imports)
 ```
+
+The former v1 host-owned route/chrome layer (`pages/lib/**`, `pages/docs/**`, `pages/[locale]/**`,
+`src/components/**`, `src/utils/**`, `src/hooks/**`) was **deleted** when this site adopted v2
+package-owned routes — the package now provides all of it. Do not reintroduce those stubs; extend
+via zudo-doc's `hostBindings`/preset seams instead.
 
 ## Content Conventions
 
