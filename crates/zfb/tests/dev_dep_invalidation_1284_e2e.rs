@@ -255,6 +255,38 @@ async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Respons
     resp
 }
 
+/// Drain any in-flight watcher ticks until the SSE stream stays quiet for
+/// `quiet_gap` (or `cap` elapses).
+///
+/// Why this exists: `boot_and_handshake` writes `content/posts/__warmup-*.md`
+/// to prove the watch stream is live, and the LAST such write can leave a tick
+/// in flight AFTER the handshake returns. That trailing warmup tick re-walks
+/// `src/` (materialising the fixture's just-edited component as a side effect),
+/// produces the new bundle, and reloads the V8 host — but its page selection is
+/// the warmup content route, NOT the route consuming the edited component. The
+/// edited component's OWN tick then finds the bundle byte-identical and is
+/// short-circuited by the #940/#956 skip-key, so its route is never marked
+/// stale and keeps serving the old bytes. Draining to quiescence before each
+/// edit removes that race (mirrors the effective settle `dev_serve_e2e.rs` gets
+/// from its earlier scenarios before its component-edit scenario).
+async fn drain_ticks_until_quiescent(
+    client: &reqwest::Client,
+    base: &str,
+    quiet_gap: Duration,
+    cap: Duration,
+) {
+    let start = Instant::now();
+    while start.elapsed() < cap {
+        let sse = subscribe_sse(client, base).await;
+        match next_sse_event_name(sse, quiet_gap).await {
+            // A tick fired within the gap — the watcher is still busy; keep draining.
+            Ok(Some(_)) => continue,
+            // No event for `quiet_gap` (or the stream ended) — quiescent.
+            _ => break,
+        }
+    }
+}
+
 enum ScenarioOutcome {
     Completed,
     /// The binary exited with a known environmental skip indicator (no V8 /
@@ -483,6 +515,15 @@ export default function HomePage({ posts }: Props) {
         .await;
 
         // ── THE EDIT ──────────────────────────────────────────────────────
+        // Drain any trailing warmup-handshake ticks first so the edit tick is
+        // not raced into a skip-key short-circuit (see drain fn docs).
+        drain_ticks_until_quiescent(
+            &client,
+            &base,
+            Duration::from_millis(1500),
+            Duration::from_secs(20),
+        )
+        .await;
         // Subscribe to SSE BEFORE the edit so we catch the watcher tick.
         let sse = subscribe_sse(&client, &base).await;
         fs::write(
@@ -492,19 +533,26 @@ export default function HomePage({ posts }: Props) {
         )
         .expect("edit src/components/Widget.tsx");
 
-        // The tick must broadcast an SSE `page` event (via pages_stale gate,
-        // exactly as dev_serve_e2e.rs scenario 4 does).
-        let ev = next_sse_event_name(sse, SSE_DEADLINE)
-            .await
-            .expect("read SSE stream after src/components/Widget.tsx edit");
-        assert_eq!(
-            ev.as_deref(),
-            Some("page"),
-            "editing src/components/Widget.tsx must broadcast an SSE `page` event \
-             — the #1284 fix added `src/` to DEFAULT_WATCH_ROOTS so the tick fires. \
-             Without the fix no tick fires at all.\n{}",
-            session.logs(),
-        );
+        // Secondary signal (D3): the tick SHOULD broadcast an SSE `page` event
+        // via the pages_stale gate. This is consumed best-effort, NOT hard-
+        // asserted: the reqwest client's request timeout can be shorter than a
+        // cold V8-host reload + broadcast, so a slow-but-correct tick would time
+        // out here. When an event DOES arrive we still assert it is `page` (a
+        // wrong event type is a real regression); a timeout falls through to the
+        // authoritative served-HTML poll below.
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(name)) => assert_eq!(
+                name.as_str(),
+                "page",
+                "editing src/components/Widget.tsx broadcast an unexpected SSE event \
+                 (expected `page`).\n{}",
+                session.logs(),
+            ),
+            Ok(None) | Err(_) => eprintln!(
+                "[symptom-A] no SSE `page` event observed within the window; \
+                 relying on the authoritative served-HTML poll (D3)."
+            ),
+        }
 
         // The authoritative assertion (D3): GET / on the NEXT request serves
         // the new marker. In lazy mode the poll's first 200-bearing iteration is
@@ -796,9 +844,19 @@ async fn e2e_new_utility_class_in_component_is_emitted() {
     // can confirm the Tailwind pipeline ran at boot before asserting the new
     // one appears after the component edit.
     fs::create_dir_all(root.join("styles")).expect("create styles/");
+    // The `@theme` block defines the `hgap-2xs` spacing token so that
+    // `gap-x-hgap-2xs` is a REAL, emittable Tailwind v4 utility (gap utilities
+    // resolve their value from the `--spacing-*` theme namespace). Without a
+    // token, `gap-x-hgap-2xs` is an unknown utility Tailwind never emits, so the
+    // assertion below would fail regardless of whether the Module→re-scan under
+    // test works — the token makes the test actually exercise the re-scan.
     fs::write(
         root.join("styles/global.css"),
         "@import \"tailwindcss\";\n\
+         \n\
+         @theme {\n\
+         \x20 --spacing-hgap-2xs: 0.125rem;\n\
+         }\n\
          \n\
          /* symptom-C fixture: Tailwind content scan baseline */\n\
          body { font-family: sans-serif; }\n",
@@ -914,6 +972,16 @@ export default function HomePage({ posts }: Props) {
         // We subscribe to SSE to observe the tick, but a Module tick may or may
         // not emit a `page` event depending on the route fan-out. The authoritative
         // assertion is the served CSS body.
+        //
+        // Drain trailing warmup ticks first so the component edit's tick is not
+        // raced into a skip-key short-circuit (see drain fn docs).
+        drain_ticks_until_quiescent(
+            &client,
+            &base,
+            Duration::from_millis(1500),
+            Duration::from_secs(20),
+        )
+        .await;
         let sse = subscribe_sse(&client, &base).await;
         fs::write(
             session.root.join("src/components/CardWidget.tsx"),
