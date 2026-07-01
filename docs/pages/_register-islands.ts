@@ -9,6 +9,8 @@
 // no matching registry entry"). Re-exporting it from this pages/-reachable
 // module registers the "DocHistory" client binding; zfb matches the marker by
 // name and the serialized {slug, locale, basePath} props line up with the real
-// component's signature. (Reported upstream: package-owned routes need a seam
-// to register/inject the DocHistory island under docHistory:true.)
+// component's signature.
+// Workaround for https://github.com/zudolab/zudo-doc/issues/2480 (package-owned
+// routes should register/inject the DocHistory island themselves under
+// docHistory:true).
 export { DocHistory } from "@takazudo/zudo-doc/doc-history";
