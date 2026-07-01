@@ -5,10 +5,11 @@
 //! [`crate::routes::PageCache`] and is served byte-for-byte by the
 //! dev router. Pages that opt out of prerendering — `export const
 //! prerender = false` — have no precomputed body. In production those
-//! routes are served by the Cloudflare adapter's `_worker.js` at
-//! request time. Without this module the dev server would 404 them,
-//! drift dev away from prod, and break the "what I see in `zfb dev` is
-//! what Cloudflare ships" parity claim.
+//! routes are served by the Cloudflare adapter's `_worker.js` (Workers
+//! Static Assets, Pages-compatible) at request time. Without this
+//! module the dev server would 404 them, drift dev away from prod, and
+//! break the "what I see in `zfb dev` is what Cloudflare ships" parity
+//! claim.
 //!
 //! ## Wire shape
 //!

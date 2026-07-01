@@ -2199,11 +2199,12 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     //
     // When an adapter is configured, run a SECOND bundle pass narrowed to
     // SSR-only routes (zfb#283) and hand that smaller bundle to the
-    // adapter. Rationale: deploy targets like Cloudflare Pages serve
-    // prerendered routes through a static-asset server (ASSETS first,
-    // inner worker on 404). SSG route code in the inner worker bundle is
-    // dead code on the request path AND counts against the platform's
-    // worker-size cap (CF Pages: 3 MiB free / 10 MiB paid). Trimming the
+    // adapter. Rationale: deploy targets like Cloudflare Workers Static
+    // Assets serve prerendered routes through a static-asset server
+    // (ASSETS first, inner worker on 404). SSG route code in the inner
+    // worker bundle is dead code on the request path AND counts against
+    // the platform's worker-size cap (Cloudflare Workers: 3 MiB free /
+    // 10 MiB paid). Trimming the
     // bundle to SSR-only routes via `BundlerInput::worker_only_routes`
     // makes prerendered routes unreachable from the synthetic entry; the
     // resulting esbuild output is much smaller after tree-shake.

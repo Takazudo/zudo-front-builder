@@ -92,7 +92,7 @@ export default function Feed() {
 }
 ```
 
-上書きはテーブルに勝ち、テーブルは未知の拡張子のフォールバックに勝ちます。静的ファイルホスト（Cloudflare Pages、Netlify、S3）は、代わりにファイル拡張子からレスポンスの `Content-Type` を導出します — エンジン内の `contentType` は純粋に開発サーバーの利便性のためのものです。
+上書きはテーブルに勝ち、テーブルは未知の拡張子のフォールバックに勝ちます。静的ファイルホスト（Cloudflare Workers Static Assets、Netlify、S3）は、代わりにファイル拡張子からレスポンスの `Content-Type` を導出します — エンジン内の `contentType` は純粋に開発サーバーの利便性のためのものです。
 
 ## ビルドをまたいだ古い出力のクリーンアップ
 
