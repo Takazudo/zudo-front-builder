@@ -52,8 +52,14 @@ to the chosen JSX runtime; both `preact-render-to-string` and
 
 ## Public API
 
+`createPageRouter` is **server-only** — it builds a Hono app, so it lives at
+the `@takazudo/zfb-runtime/server` subpath. Keeping it out of the client-safe
+`.` barrel means an island importing the bare `@takazudo/zfb-runtime` never
+drags `hono` into a `--platform=browser` bundle (issue #1298). Its *types*
+remain importable from the root barrel (they carry no runtime).
+
 ```ts
-import { createPageRouter } from "@takazudo/zfb-runtime";
+import { createPageRouter } from "@takazudo/zfb-runtime/server";
 import type {
   CreatePageRouterOptions,
   PageDefinition,

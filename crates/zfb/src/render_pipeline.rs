@@ -1587,6 +1587,26 @@ mod tests {
             "missing @takazudo/zfb-runtime/src/index.ts"
         );
 
+        // Issue #1298: the server-only `createPageRouter` entry moved to
+        // `src/server.ts` (backing the `@takazudo/zfb-runtime/server`
+        // subpath). `build.rs`'s `copy_ts_src` auto-stages every non-test
+        // `.ts` file, so the embedded snapshot must carry it — otherwise the
+        // no-`node_modules` SSR emit (which now imports from `/server`) cannot
+        // resolve the factory.
+        assert!(
+            nm_path.join("@takazudo/zfb-runtime/src/server.ts").exists(),
+            "missing @takazudo/zfb-runtime/src/server.ts in extracted layout \
+             (issue #1298 server subpath)"
+        );
+        let runtime_pkg_json =
+            std::fs::read_to_string(nm_path.join("@takazudo/zfb-runtime/package.json"))
+                .expect("read embedded @takazudo/zfb-runtime/package.json");
+        assert!(
+            runtime_pkg_json.contains("\"./server\""),
+            "embedded @takazudo/zfb-runtime/package.json must declare the `./server` \
+             export condition (issue #1298); got:\n{runtime_pkg_json}"
+        );
+
         // Sub #209 — framework runtime package roots must exist alongside.
         for pkg in ["preact", "preact-render-to-string", "hono"] {
             let pkg_json = nm_path.join(pkg).join("package.json");

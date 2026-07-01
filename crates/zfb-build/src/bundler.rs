@@ -46,7 +46,7 @@
 //! 5. **Emit a synthetic `entry.mjs`** that imports every page module
 //!    found under `pages/`, plus the hydration shim, plus the framework's
 //!    `renderToString`, plus `createPageRouter` from
-//!    `@takazudo/zfb-runtime`, and re-exports a `routes` map of
+//!    `@takazudo/zfb-runtime/server`, and re-exports a `routes` map of
 //!    route-path → page module, a `hydrateIsland` function, and a Workers
 //!    entry shape `default { fetch }`. This is the single load-bearing
 //!    module the embedded V8 host and the runtime SSR adapter consume.
@@ -70,7 +70,7 @@
 //!   is a `(Request) => Promise<Response>` constructed by passing
 //!   `routes`, an embedded `ContentSnapshot` placeholder, and an inline
 //!   framework adapter (the framework's own `renderToString` import) to
-//!   `createPageRouter` from `@takazudo/zfb-runtime`. This is the entry
+//!   `createPageRouter` from `@takazudo/zfb-runtime/server`. This is the entry
 //!   shape the embedded V8 host expects (`export default { fetch }`);
 //!   without it, the host boot fails with a missing-export
 //!   workerd error. Even when the route map is empty the wrapper is
@@ -4929,7 +4929,7 @@ struct EntryModuleInputs<'a> {
 
 /// Generate the `entry.mjs` module that re-exports `routes`,
 /// `hydrateIsland`, and a Workers-style `default { fetch }` wrapper
-/// driven by `createPageRouter` from `@takazudo/zfb-runtime`. This is
+/// driven by `createPageRouter` from `@takazudo/zfb-runtime/server`. This is
 /// the single load-bearing module the embedded V8 host (T6/T7) and the
 /// runtime SSR adapter (T2) consume.
 ///
@@ -4997,7 +4997,11 @@ fn write_entry_module(
     src.push_str(&format!(
         "import {{ hydrateIsland }} from \"./{SHADOW_HYDRATE_FILENAME}\";\n",
     ));
-    src.push_str("import { createPageRouter } from \"@takazudo/zfb-runtime\";\n");
+    // `createPageRouter` lives at the server-only subpath so the client-safe
+    // root barrel (`@takazudo/zfb-runtime`) never pulls Hono into an island's
+    // `--platform=browser` bundle (issue #1298). This SSR entry runs on the
+    // Worker side, where resolving `hono` is expected and correct.
+    src.push_str("import { createPageRouter } from \"@takazudo/zfb-runtime/server\";\n");
     writeln!(
         &mut src,
         "import {{ renderToString as __zfb_renderToString }} from {spec};",
@@ -6152,8 +6156,9 @@ mod tests {
 
         // Imports the runtime factory and the framework's renderToString.
         assert!(
-            body.contains("from \"@takazudo/zfb-runtime\""),
-            "entry.mjs must import createPageRouter from @takazudo/zfb-runtime; got:\n{body}"
+            body.contains("from \"@takazudo/zfb-runtime/server\""),
+            "entry.mjs must import createPageRouter from the server-only subpath \
+             @takazudo/zfb-runtime/server (issue #1298); got:\n{body}"
         );
         assert!(
             body.contains("\"preact-render-to-string\""),
