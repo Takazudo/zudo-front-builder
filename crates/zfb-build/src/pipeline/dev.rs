@@ -637,8 +637,10 @@ impl AssetPipeline for DevAssetPipeline {
         // NOT (issue #1301): the skip-key carries no page-selection info, so
         // bypassing render would silently lose a later tick's route staleness
         // when its selection differs from an earlier byte-identical tick.
-        // Instead only the PRUNE half is skipped here — on a skip the route
-        // table did not move, so nothing vanished. The render half still
+        // Instead only the ROUTE-VANISHED prune half is skipped here (issue
+        // #1317) — on a skip the route table did not move, so nothing vanished
+        // there; the per-page stale-output prune still runs, since a skipped
+        // tick can still move a page's `output_path`. The render half still
         // runs; redundant re-renders against an identical bundle re-emit
         // identical HTML and are absorbed by the `last_bytes` byte-dedup
         // cache (no write, no SSE). CSS, islands, and plan prune paths run.
@@ -726,9 +728,12 @@ impl AssetPipeline for DevAssetPipeline {
         // (already-fresh pages produce no write, no SSE), the same
         // determinism assumption the skip originally relied on.
         //
-        // Only the render + write half runs unconditionally when `pages` is
-        // non-empty; the prune half stays gated on `!renderer_refresh_skipped`
-        // below — on a skip the route table did not move, so nothing vanished.
+        // The render + write half runs unconditionally when `pages` is
+        // non-empty. Pruning below is split by trigger (issue #1317): the
+        // per-page stale-output half runs too (a skipped tick can still move a
+        // page's `output_path`), while the route-vanished half stays gated on
+        // `!renderer_refresh_skipped` — on a skip the route table did not
+        // move, so nothing vanished there.
         let mut prune_candidates: Vec<PathBuf> = Vec::new();
         let mut live_dests: HashSet<PathBuf> = HashSet::new();
         if !pages.is_empty() {
@@ -766,29 +771,41 @@ impl AssetPipeline for DevAssetPipeline {
             }
         }
 
-        // Prune safety on a skipped tick (issue #956 gate (c) / #727): when
-        // the refresh was skipped, the route table did not move, so nothing
-        // vanished this tick. Bypassing the deferred-prune loop means neither
-        // the stale-output candidates nor the vanished-route paths are acted
-        // on — an unrendered URL can never be mistaken for a vanished one. The
-        // render + write half above still ran, keeping the selected pages
-        // fresh (issue #1301).
-        if !pages.is_empty() && !renderer_refresh_skipped {
-            // Deferred prune: remove candidates that are no longer live.
-            // Skip any path that appears in live_dests — another page in
-            // this same tick now owns it, so deleting it would remove
-            // that sibling's freshly-written artifact (the #727 bug).
-            //
-            // Also prune any globally-vanished route output paths returned
-            // by reload_renderer (routes that disappeared from the route
-            // table after this tick's rebuild — e.g. a content file was
-            // deleted or a dynamic route's paths() output shrank). Apply
-            // the same live_dests guard: if route A lost /x while route B
-            // simultaneously gained /x, /x must NOT be deleted. `route_vanished`
-            // carries `plan.prune_paths`; on a skip this block does not run,
-            // so those paths are handled once by the plan-prune block (1b)
-            // below instead.
-            for prev in prune_candidates.into_iter().chain(route_vanished) {
+        // Deferred prune, split by trigger (issue #1317). The two prune
+        // sources fire on DIFFERENT conditions and must NOT share one gate:
+        //
+        //   (a) `prune_candidates` — per-page stale outputs collected by
+        //       `write_page` when a page's SAME `PageId` moved to a new
+        //       `output_path` this tick. Produced by the render loop that
+        //       JUST RAN, so they must be pruned whenever that loop ran —
+        //       INCLUDING a skipped tick (issue #956): the render+write half
+        //       still runs on a skip (issue #1301), so `last_output_path`
+        //       already advanced to the new path. Gating these on
+        //       `!renderer_refresh_skipped` (the pre-#1317 bug) dropped the
+        //       candidate while the cache pointed at the new path, leaking the
+        //       old artifact in dist/ and its `last_bytes` entry forever
+        //       (self-heals only on restart / next real bundle change). So:
+        //       prune candidates whenever `!pages.is_empty()`, skip or not.
+        //
+        //   (b) `route_vanished` — route-table-level vanished output paths
+        //       (globally-vanished routes returned by reload_renderer, plus
+        //       the `plan.prune_paths` clone). These describe route-table
+        //       MOVEMENT, which on a skip did NOT happen — so they stay gated
+        //       on `!renderer_refresh_skipped`. When that gate is off (skip),
+        //       `plan.prune_paths` is left to the plan-prune block (1b) below,
+        //       which consumes it exactly once.
+        //
+        // Both halves keep the #727 `live_dests` guard: skip any path a
+        // sibling page in this same tick now owns, so deleting it would remove
+        // that sibling's freshly-written artifact. Both also `evict_path` the
+        // pruned path (fixes the #1317 `last_bytes` cache-leak half on the
+        // skip path too). NOTE: "exact complement of 1b" (below) applies to
+        // the (b) route-vanished gate specifically, NOT to (a) — the next
+        // reader must not re-derive it for all pruning.
+        if !pages.is_empty() {
+            // (a) Per-page stale outputs — pruned whenever the render loop
+            // ran, skip or not (issue #1317 / #1301).
+            for prev in prune_candidates {
                 if live_dests.contains(&prev) {
                     continue; // another page now owns this path — skip
                 }
@@ -796,22 +813,55 @@ impl AssetPipeline for DevAssetPipeline {
                 self.shared.cache.evict_path(&prev);
                 outcome.pages_pruned.push(prev);
             }
+
+            // (b) Globally-vanished route output paths — only when the route
+            // table actually moved (not on a skip; issue #956). E.g. a content
+            // file was deleted or a dynamic route's paths() output shrank. Same
+            // live_dests guard: if route A lost /x while route B simultaneously
+            // gained /x, /x must NOT be deleted. `route_vanished` carries
+            // `plan.prune_paths`; when this half is gated off (skip), those
+            // paths are handled once by the plan-prune block (1b) below.
+            if !renderer_refresh_skipped {
+                for prev in route_vanished {
+                    if live_dests.contains(&prev) {
+                        continue; // another page now owns this path — skip
+                    }
+                    let _ = std::fs::remove_file(&prev);
+                    self.shared.cache.evict_path(&prev);
+                    outcome.pages_pruned.push(prev);
+                }
+            }
         }
 
         // 1b. Prune paths from the plan (issue #804 P2): paths explicitly
         // supplied by the orchestrator from a discovery refresh that already
         // set renderer_fresh (so reload_renderer was skipped and these paths
         // could not be returned through the normal vanished-routes channel).
-        // This block's gate is the exact complement of the deferred-prune
-        // block above (`!pages.is_empty() && !renderer_refresh_skipped`), so
-        // `plan.prune_paths` — carried into `route_vanished` and consumed
-        // there when that block runs — is processed EXACTLY ONCE: it runs
-        // here only when pages are empty or the renderer refresh was skipped
-        // (issue #956; defensive: a discovery refresh sets renderer_fresh, so
-        // a Skipped reload never coincides with plan prune paths in practice).
+        //
+        // Exactly-once (issue #1317): `plan.prune_paths` is carried into
+        // `route_vanished` and consumed only by the (b) route-vanished half
+        // above, whose gate is `!pages.is_empty() && !renderer_refresh_skipped`.
+        // This block's gate is the EXACT COMPLEMENT of THAT (b) gate
+        // specifically — NOT of all pruning: the (a) per-page half now also
+        // runs on a skip, but it never touches `route_vanished`/
+        // `plan.prune_paths`. So `plan.prune_paths` runs here only when pages
+        // are empty or the renderer refresh was skipped, and is processed
+        // EXACTLY ONCE.
+        //
+        // 1b `live_dests` gap (issue #1317, re-verified): this block consumes
+        // `plan.prune_paths` WITHOUT a live_dests guard. On the
+        // `renderer_refresh_skipped && !pages.is_empty()` path `live_dests` is
+        // non-empty while this runs unguarded — but that combination cannot
+        // occur in production: `plan.prune_paths` only comes from a discovery
+        // refresh, which sets `renderer_fresh`, which skips the reload_renderer
+        // call entirely (so `renderer_refresh_skipped` stays false). The
+        // #1317 split did not change this: the (a) per-page half runs on a
+        // skip but leaves `plan.prune_paths` to this block. Argument still
+        // holds → no guard needed here.
+        //
         // Note the render+write half (issue #1301) may still have run above on
         // a skipped tick — that half does not consume `route_vanished`, only
-        // the deferred-prune half does.
+        // the (b) route-vanished half does.
         if (pages.is_empty() || renderer_refresh_skipped) && !plan.prune_paths.is_empty() {
             for prev in &plan.prune_paths {
                 let _ = std::fs::remove_file(prev);
@@ -1345,12 +1395,20 @@ mod tests {
 
     /// A `Skipped` reload still renders its selected pages (issue #1301 —
     /// the skip-key carries no page selection, so bypassing render would
-    /// drop a later tick's route staleness), but it must PRUNE NOTHING
-    /// (gate (c) — an unrendered/unmoved URL must not be mistaken for a
-    /// vanished one). Re-rendering the identical bundle re-emits identical
-    /// HTML, absorbed by the `last_bytes` byte-dedup (no write on tick 2).
+    /// drop a later tick's route staleness). Here the page re-renders to the
+    /// SAME `output_path`, so there is no per-page stale candidate: the only
+    /// pruning that could fire is the route-vanished half, which is gated off
+    /// on a skip — so nothing is pruned (an unrendered/unmoved URL must not be
+    /// mistaken for a vanished one). Re-rendering the identical bundle
+    /// re-emits identical HTML, absorbed by the `last_bytes` byte-dedup (no
+    /// write on tick 2).
+    ///
+    /// Narrowed claim (issue #1317): "a skip prunes nothing" is only true for
+    /// the route-vanished half AND when no page's `output_path` moved this
+    /// tick. A same-`PageId` output-path MOVE on a skip IS now pruned — see
+    /// `skipped_tick_prunes_moved_per_page_artifact_and_evicts_cache`.
     #[test]
-    fn skipped_reload_renders_selection_but_prunes_nothing() {
+    fn skipped_reload_renders_selection_but_prunes_no_vanished_routes() {
         let dir = tempdir().unwrap();
         let pipeline = DevAssetPipeline::new();
         let rendered = vec![RenderedPage {
@@ -1399,12 +1457,106 @@ mod tests {
         );
         assert!(
             second.pages_pruned.is_empty(),
-            "skip must not treat unrendered/unmoved URLs as vanished; pruned={:?}",
+            "no per-page move + route-vanished half gated off on skip → \
+             nothing pruned (issue #1317); pruned={:?}",
             second.pages_pruned,
         );
         assert!(
             dir.path().join("a/index.html").exists(),
             "existing HTML must survive a skipped tick"
+        );
+    }
+
+    /// Regression for issue #1317: a same-`PageId` output-path MOVE on a
+    /// `RefreshOutcome::Skipped` tick must still prune the old artifact and
+    /// evict its cache entry. The render+write half runs on a skip (#1301),
+    /// so `write_page` advances `last_output_path` to the new path and returns
+    /// the old one as a per-page stale candidate. Before the #1317 fix that
+    /// candidate was dropped (the whole deferred-prune block was gated on
+    /// `!renderer_refresh_skipped`), leaking the old file in dist/ and its
+    /// `last_bytes` entry forever. The per-page prune half now runs on a skip.
+    #[test]
+    fn skipped_tick_prunes_moved_per_page_artifact_and_evicts_cache() {
+        let dir = tempdir().unwrap();
+        let pipeline = DevAssetPipeline::new();
+        let x = dir.path().join("x/index.html");
+        let y = dir.path().join("y/index.html");
+
+        // Tick 1: real refresh, page P → X.
+        let calls1 = Arc::new(AtomicUsize::new(0));
+        let ctx1 = ctx_with_reload_outcome(
+            dir.path().to_path_buf(),
+            vec![RenderedPage {
+                page: pid("/p/a.tsx"),
+                output_path: RelDistPath::new("x/index.html").unwrap(),
+                html: "<h1>X</h1>".into(),
+                content_type: None,
+            }],
+            calls1,
+            RefreshOutcome::Refreshed {
+                vanished: vec![],
+                changed_sources: vec![],
+            },
+        );
+        let first = pipeline.apply(&single_page_plan(), &ctx1).unwrap();
+        assert_eq!(first.pages_written, vec![pid("/p/a.tsx")]);
+        assert!(x.exists(), "X written on tick 1");
+
+        // Tick 2: byte-identical bundle → Skipped, but the SAME page P now
+        // renders to Y (output_path moved while the skip-key stayed fixed).
+        let calls2 = Arc::new(AtomicUsize::new(0));
+        let ctx2 = ctx_with_reload_outcome(
+            dir.path().to_path_buf(),
+            vec![RenderedPage {
+                page: pid("/p/a.tsx"),
+                output_path: RelDistPath::new("y/index.html").unwrap(),
+                html: "<h1>Y</h1>".into(),
+                content_type: None,
+            }],
+            calls2,
+            RefreshOutcome::Skipped,
+        );
+        let second = pipeline.apply(&single_page_plan(), &ctx2).unwrap();
+
+        // Y is freshly written; X is pruned even though this was a skip.
+        assert!(
+            second.pages_written.contains(&pid("/p/a.tsx")),
+            "moved page must be written to its new path Y; written={:?}",
+            second.pages_written,
+        );
+        assert!(
+            y.exists(),
+            "new artifact Y must exist after the skipped move"
+        );
+        assert!(
+            second.pages_pruned.contains(&x),
+            "old artifact X must be pruned on the skipped move (issue #1317); \
+             pruned={:?}",
+            second.pages_pruned,
+        );
+        assert!(!x.exists(), "stale X must be removed from disk");
+
+        // The #1317 cache-leak half: X must no longer sit in either cache.
+        assert!(
+            !pipeline
+                .shared
+                .cache
+                .last_bytes
+                .lock()
+                .unwrap()
+                .contains_key(&x),
+            "pruned X must be evicted from last_bytes",
+        );
+        assert!(
+            !pipeline
+                .shared
+                .cache
+                .last_output_path
+                .lock()
+                .unwrap()
+                .values()
+                .any(|v| v == &x),
+            "no page may still map to pruned X in last_output_path",
         );
     }
 
