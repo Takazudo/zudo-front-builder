@@ -13,10 +13,12 @@
 //    This is the "synthetic Request + env stub" check the task brief
 //    asks for in lieu of a real wrangler dev run.
 
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { emitWorker, WORKER_WRAPPER_SOURCE as TS_WRAPPER } from "../build.js";
@@ -35,8 +37,11 @@ const MJS_WRAPPER: string = MJS_WRAPPER_RAW as string;
 const CLI_EMIT_WORKER: (input: {
   inputBundlePath: string;
   outdir: string;
-}) => Promise<{ workerPath: string; innerBundlePath: string }> =
+}) => Promise<{ workerPath: string; innerBundlePath: string; assetsIgnorePath: string }> =
   cliEmitWorker as typeof CLI_EMIT_WORKER;
+
+const execFileAsync = promisify(execFile);
+const CLI_BIN_PATH = join(dirname(fileURLToPath(import.meta.url)), "../../bin/cli.mjs");
 
 let scratchDirs: string[] = [];
 
@@ -61,7 +66,7 @@ describe("CLI / emitWorker", () => {
     expect(MJS_WRAPPER).toBe(TS_WRAPPER);
   });
 
-  it("emits _worker.js and _zfb_inner.mjs side-by-side", async () => {
+  it("emits _worker.js, _zfb_inner.mjs, and .assetsignore side-by-side", async () => {
     const dir = await scratch();
     const inputPath = join(dir, "bundle.mjs");
     await writeFile(
@@ -77,11 +82,16 @@ describe("CLI / emitWorker", () => {
 
     expect(out.workerPath).toBe(join(dir, "dist", "_worker.js"));
     expect(out.innerBundlePath).toBe(join(dir, "dist", "_zfb_inner.mjs"));
+    expect(out.assetsIgnorePath).toBe(join(dir, "dist", ".assetsignore"));
 
     const wrapperBody = await readFile(out.workerPath, "utf8");
     const innerBody = await readFile(out.innerBundlePath, "utf8");
+    const assetsIgnoreBody = await readFile(out.assetsIgnorePath, "utf8");
     expect(wrapperBody).toBe(TS_WRAPPER);
     expect(innerBody).toContain("hello");
+    // Byte-exact: excludes the wrapper and inner bundle from the asset
+    // upload so only the Worker's module graph can reach them.
+    expect(assetsIgnoreBody).toBe("_worker.js\n_zfb_inner.mjs\n");
   });
 
   it("threads env/ctx from the wrapper into the inner bundle's request scope", async () => {
@@ -176,13 +186,14 @@ export default {
 
   it("serves static assets via env.ASSETS for GET requests (head-injected SSG HTML wins over dynamic SSR)", async () => {
     // Wave 10 / zudo-doc#1355 fix: GET requests probe env.ASSETS FIRST.
-    // CF Pages' asset server resolves no-trailing-slash URLs to their
-    // canonical /index.html form (e.g. "/docs/foo" → "/docs/foo/" via
-    // 308, then to dist/docs/foo/index.html). The static HTML carries
-    // build-time head-injection (<link rel="stylesheet">, <script
-    // type="module" src="/assets/islands-…">) that the dynamic-SSR
-    // path produced by the inner Hono router does NOT carry — so we
-    // must hit ASSETS first, not the inner.
+    // The asset server (Workers Static Assets or Cloudflare Pages)
+    // resolves no-trailing-slash URLs to their canonical /index.html
+    // form (e.g. "/docs/foo" → "/docs/foo/" via a redirect, then to
+    // dist/docs/foo/index.html). The static HTML carries build-time
+    // head-injection (<link rel="stylesheet">, <script type="module"
+    // src="/assets/islands-…">) that the dynamic-SSR path produced by
+    // the inner Hono router does NOT carry — so we must hit ASSETS
+    // first, not the inner.
     const dir = await scratch();
     const inputPath = join(dir, "inner.mjs");
     // Inner bundle that, if reached, would 200 with a body that lacks
@@ -291,9 +302,12 @@ export default {
   });
 
   it("returns the asset response unchanged when ASSETS issues a 308 redirect (CF Pages trailing-slash canonicalisation)", async () => {
-    // CF Pages' asset server returns 308 to canonicalise no-trailing-
-    // slash URLs to their /index.html form. The wrapper must propagate
-    // that 308 verbatim so the browser follows it to the SSG output.
+    // The asset server returns a redirect to canonicalise no-trailing-
+    // slash URLs to their /index.html form — 308 on Cloudflare Pages,
+    // 307 on Workers Static Assets. The wrapper must propagate the
+    // response unchanged so the browser follows it to the SSG output;
+    // this test exercises the Pages 308 case (any non-404 status must
+    // pass through verbatim, regardless of which platform issued it).
     const dir = await scratch();
     const inputPath = join(dir, "inner.mjs");
     await writeFile(
@@ -320,7 +334,8 @@ export default {
     const env = {
       ASSETS: {
         fetch: async (req: Request) => {
-          // CF Pages emits 308 with Location: <path>/.
+          // CF Pages emits 308 with Location: <path>/ (Workers Static
+          // Assets uses 307 for the same canonicalisation).
           const url = new URL(req.url);
           return new Response(null, {
             status: 308,
@@ -391,9 +406,9 @@ export default {
   });
 
   it("works without env.ASSETS bound (e.g. the legacy single-bundle mode)", async () => {
-    // Defensive: if env.ASSETS is absent (e.g. a custom deploy not
-    // using CF Pages), the wrapper must still dispatch GETs to the
-    // inner without crashing.
+    // Defensive: if env.ASSETS is absent (e.g. a custom deploy using
+    // neither Workers Static Assets nor CF Pages), the wrapper must
+    // still dispatch GETs to the inner without crashing.
     const dir = await scratch();
     const inputPath = join(dir, "inner.mjs");
     await writeFile(
@@ -464,5 +479,37 @@ export default {
     // Returned path shapes are correct.
     expect(cliOut.workerPath).toBe(join(cliDir, "_worker.js"));
     expect(cliOut.innerBundlePath).toBe(join(cliDir, "_zfb_inner.mjs"));
+    expect(cliOut.assetsIgnorePath).toBe(join(cliDir, ".assetsignore"));
+  });
+
+  it("running the CLI binary prints three `wrote <path>` lines, the last for .assetsignore", async () => {
+    // Runs the real `bin/cli.mjs` as a subprocess (the shape a consumer's
+    // build step actually invokes) rather than importing its exports, so
+    // this asserts the stdout contract end-to-end.
+    const dir = await scratch();
+    const inputPath = join(dir, "bundle.mjs");
+    await writeFile(
+      inputPath,
+      `export default { fetch: async () => new Response("cli-stdout-test", { status: 200 }) };\n`,
+      "utf8",
+    );
+    const outdir = join(dir, "dist");
+
+    const { stdout } = await execFileAsync("node", [
+      CLI_BIN_PATH,
+      "bundle",
+      inputPath,
+      "--outdir",
+      outdir,
+    ]);
+    const lines = stdout.trim().split("\n");
+
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe(`wrote ${join(outdir, "_worker.js")}`);
+    expect(lines[1]).toBe(`wrote ${join(outdir, "_zfb_inner.mjs")}`);
+    expect(lines[2]).toBe(`wrote ${join(outdir, ".assetsignore")}`);
+
+    const assetsIgnoreBody = await readFile(join(outdir, ".assetsignore"), "utf8");
+    expect(assetsIgnoreBody).toBe("_worker.js\n_zfb_inner.mjs\n");
   });
 });
