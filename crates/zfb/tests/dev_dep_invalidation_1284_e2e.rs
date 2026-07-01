@@ -340,7 +340,8 @@ async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Respons
 /// the warmup content route, NOT the route consuming the edited component. The
 /// edited component's OWN tick then finds the bundle byte-identical and is
 /// short-circuited by the #940/#956 skip-key, so its route is never marked
-/// stale and keeps serving the old bytes. Draining to quiescence before each
+/// stale and keeps serving the old bytes (the product-side edge case behind this
+/// harness workaround is tracked in #1301). Draining to quiescence before each
 /// edit removes that race (mirrors the effective settle `dev_serve_e2e.rs` gets
 /// from its earlier scenarios before its component-edit scenario).
 async fn drain_ticks_until_quiescent(
@@ -690,7 +691,7 @@ export default function HomePage({ posts }: Props) {
 ///
 /// Scope note: the local sibling `@import './tokens.css'` sub-case was dropped —
 /// it is a base-resolution design mismatch, not a fixture bug (see the fixture
-/// setup comment + #1294).
+/// setup comment + #1300).
 ///
 /// Falsifiability: without the resolved-`@import` watch registration, the
 /// symlinked dep edit is observed by nobody and `/assets/styles.css` stays
@@ -770,7 +771,7 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
     // (crates/zfb-css/src/engine.rs) — an irreconcilable base mismatch. Whether
     // a relative sibling `@import` should refresh under `zfb dev` is a design
     // decision to surface to the user, so it is intentionally out of scope for
-    // this acceptance gate (tracked with #1294).
+    // this acceptance gate (spun out of #1294 into #1300).
     fs::create_dir_all(root.join("styles")).expect("create styles/");
     fs::write(
         root.join("styles/global.css"),
