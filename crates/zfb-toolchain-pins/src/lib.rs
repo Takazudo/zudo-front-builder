@@ -16,7 +16,7 @@
 
 /// Pinned `wrangler` CLI version. `zfb preview` runs
 /// `pnpm exec wrangler --version` before handing off to
-/// `wrangler pages dev` and aborts with a clear error if the reported
+/// `wrangler dev` and aborts with a clear error if the reported
 /// version does not match this constant.
 ///
 /// Kept in lock-step with the exact-pinned `wrangler` entry in the root
