@@ -1,9 +1,19 @@
 // Public entry point for `@takazudo/zfb-runtime`.
 //
-// Worker bundles produced by T3 import this module and invoke
+// This is the **client-safe** barrel: everything re-exported here must be
+// bundleable for `--platform=browser` without pulling a server-only
+// dependency. In particular `createPageRouter` (and the Hono server router
+// it builds) is intentionally NOT re-exported here — it lives at the
+// server-only subpath `@takazudo/zfb-runtime/server`. Re-exporting it from
+// this barrel makes any island that does `import ... from "@takazudo/zfb-runtime"`
+// drag `hono` into the browser graph, which esbuild must then resolve
+// (issue #1298). The page-router *types* below are `export type` only, so
+// esbuild strips them and no runtime edge to `./router.js` survives.
+//
+// Worker bundles produced by T3 import the server subpath and invoke
 // `createPageRouter` once, at module top, to obtain the fetch handler:
 //
-//   import { createPageRouter } from "@takazudo/zfb-runtime";
+//   import { createPageRouter } from "@takazudo/zfb-runtime/server";
 //
 //   const router = createPageRouter({
 //     pages: [...],
@@ -15,7 +25,6 @@
 //
 // The README documents the bundle shape T6 (embedded V8 host) consumes.
 
-export { createPageRouter } from "./router.js";
 export type {
   CreatePageRouterOptions,
   PageDefinition,

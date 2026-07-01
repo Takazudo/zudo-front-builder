@@ -152,13 +152,15 @@ fn end_to_end_bundles_aliases_mdx_islands_and_define() {
         // as external so this test doesn't need a node_modules tree
         // adjacent to the (in-tempdir) shadow root. The bundler's
         // entry.mjs now also imports `createPageRouter` from
-        // `@takazudo/zfb-runtime` and `renderToString` from the
-        // framework's render module — see
-        // `bundler::write_entry_module`.
+        // `@takazudo/zfb-runtime/server` (issue #1298 moved it off the
+        // client-safe root barrel) and `renderToString` from the
+        // framework's render module — see `bundler::write_entry_module`.
+        // esbuild `--external:@takazudo/zfb-runtime` does NOT cover the
+        // `/server` subpath, so it is listed explicitly.
         external: vec![
             "preact".into(),
             "preact-render-to-string".into(),
-            "@takazudo/zfb-runtime".into(),
+            "@takazudo/zfb-runtime/server".into(),
         ],
         outdir: root.join("dist"),
         mode: BundleMode::Production,
