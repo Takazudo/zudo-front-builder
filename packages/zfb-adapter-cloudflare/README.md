@@ -2,10 +2,10 @@
 
 > Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary.
 
-The Cloudflare Pages adapter for [zfb][zfb-site]. Wraps the
-`@takazudo/zfb-runtime` page router into a Cloudflare Pages advanced-mode
-`_worker.js` entry, threading `(env, ctx)` through to user code via
-`AsyncLocalStorage`.
+The Cloudflare adapter for [zfb][zfb-site], targeting **Workers Static
+Assets** (also deployable to Cloudflare Pages advanced mode). It wraps the
+`@takazudo/zfb-runtime` page router into a Worker entry (`_worker.js`),
+threading `(env, ctx)` through to user code via `AsyncLocalStorage`.
 
 This package is the Cloudflare half of the SSR adapter contract. Other
 targets (Node, Netlify, …) will land as sibling `@takazudo/zfb-adapter-*`
@@ -68,30 +68,87 @@ lifecycle (`wrangler d1 create`, migrations, preview-vs-prod).
 
 1. Render every SSG page (`prerender !== false`) into static HTML under
    `dist/`.
-2. Hand the SSR bundle to this adapter, which writes
-   `dist/_worker.js` (the wrapper) and `dist/_zfb_inner.mjs` (the
-   bundle) ready to be deployed via Cloudflare Pages advanced mode.
+2. Hand the SSR bundle to this adapter, which writes `dist/_worker.js`
+   (the wrapper), `dist/_zfb_inner.mjs` (the bundle), and
+   `dist/.assetsignore` (see below) — ready to deploy as a Worker with
+   Static Assets, or via Cloudflare Pages advanced mode.
 
-## CLI
+## `wrangler.toml`
 
-The package ships a `zfb-adapter-cloudflare` bin invoked by
-`zfb-build`:
+```toml
+name = "my-site"
+main = "./dist/_worker.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS" # optional — lets the Worker probe assets itself
+not_found_handling = "404-page"
+```
+
+- `compatibility_flags = ["nodejs_compat"]` is **required**. The wrapper
+  imports `node:async_hooks` to thread `(env, ctx)` into your route
+  handlers; without this flag the Worker fails at runtime with
+  `No such module "node:async_hooks"`.
+- `not_found_handling = "404-page"` is recommended so unmatched asset
+  paths fall through to the Worker (which serves your `pages/404.tsx`
+  and any dynamic `prerender = false` routes). Avoid
+  `single-page-application`: it returns `index.html` for every
+  unresolved path *before* the Worker ever sees the request, which
+  breaks dynamic routes like `pages/api/*.tsx`.
+- `[assets] binding = "ASSETS"` is optional but recommended — it lets
+  the `_worker.js` wrapper probe `env.ASSETS.fetch()` directly for
+  GET/HEAD requests, matching the SSG-vs-SSR precedence described
+  below.
+
+## `wrangler dev` / `wrangler deploy`
+
+```sh
+zfb build
+wrangler dev     # local Worker + assets simulation
+wrangler deploy  # ship it
+```
+
+## `.assetsignore`
+
+The adapter emits `dist/.assetsignore` alongside `_worker.js` and
+`_zfb_inner.mjs`:
 
 ```
-zfb-adapter-cloudflare bundle <input.mjs> --outdir dist/
+_worker.js
+_zfb_inner.mjs
 ```
 
-`<input.mjs>` is the ESM bundle `zfb-build`'s bundler emits. The
-output is a single Workers-shaped entry plus a sidecar copy of the
-inner bundle.
+This excludes the wrapper and the inner SSR bundle from the asset
+upload, so they are reachable only through the Worker's own module
+graph — never served as public static files. Without it, a request for
+`/_worker.js` or `/_zfb_inner.mjs` would serve your server code as a
+plain-text download.
 
-## Why two files
+**Precedence:** zfb copies your project's `public/` directory into
+`dist/` *after* running this adapter. If your `public/` directory
+contains its own `.assetsignore`, it overrides the one this adapter
+emits — the adapter's excludes are silently dropped. Only add a
+`public/.assetsignore` if you have additional paths to exclude and
+include the two lines above yourself.
+
+## Cloudflare Pages compatibility
+
+The same `dist/` output is still deployable to Cloudflare Pages
+advanced mode (a `_worker.js` at the root of the Pages output directory
+is Pages' equivalent convention). The `_worker.js` wrapper dispatches
+requests identically on both platforms; the only platform-visible
+difference is that trailing-slash asset redirects come back as `307`
+on Workers Static Assets versus `308` on Pages.
+
+## Why two bundle files instead of one
 
 The wrapper imports the inner bundle by relative path
 (`./_zfb_inner.mjs`) instead of inlining it, so the adapter package
 itself does not need to ship an esbuild binary. Workerd's Module
-loader resolves relative ESM imports inside an advanced-mode
-`_worker.js` directory layout.
+loader resolves relative ESM imports inside the `_worker.js` directory
+layout.
 
 ## Why AsyncLocalStorage on a globalThis registry
 

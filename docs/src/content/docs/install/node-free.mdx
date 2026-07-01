@@ -150,7 +150,7 @@ The following features require Node in `PATH`:
 | Feature | Why |
 | --- | --- |
 | `zfb check` without `--skip-tsc` | TypeScript type-checking delegates to `tsc`, which is a Node package. Pass `--skip-tsc` to run the non-TS checks only. |
-| Cloudflare adapter (`@takazudo/zfb-adapter-cloudflare`) | The adapter depends on Wrangler, which is a Node CLI. SSR deployments to Cloudflare Pages always need Node in the deploy environment. |
+| Cloudflare adapter (`@takazudo/zfb-adapter-cloudflare`) | The adapter depends on Wrangler, which is a Node CLI. SSR deployments to Cloudflare Workers always need Node in the deploy environment. |
 
 Everything else — building, dev server, islands, Tailwind, MDX, content
 collections, and `zfb.config.ts` evaluation — runs Node-free.

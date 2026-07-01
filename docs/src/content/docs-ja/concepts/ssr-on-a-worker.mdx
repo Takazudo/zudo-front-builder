@@ -1,6 +1,6 @@
 ---
 title: Worker 上の SSR（アダプターモード）
-description: prerender = false の zfb ページがプロダクションで実際にどう動くか — 2 層のワーカー出力、ASSETS 優先のディスパッチ、そして getCloudflareContext() を支える AsyncLocalStorage のトリック。
+description: prerender = false の zfb ページがプロダクションで実際にどう動くか — 2 層のワーカー出力、Workers Static Assets が Worker の実行前にマッチするアセットを配信する仕組み、そして getCloudflareContext() を支える AsyncLocalStorage のトリック。
 sidebar_position: 8
 category: Concepts
 ---
@@ -55,30 +55,72 @@ export default async function AccountPage(): Promise<Response> {
 
 `@takazudo/zfb-adapter-cloudflare` を設定した状態で `zfb build` を実行すると、`dist/` 配下に 2 つのファイルが生成されます。
 
-**`dist/_worker.js`** — アダプターが書き出す小さな自動生成のスタブ。これは Cloudflare Pages のアドバンスドモードのエントリです。リクエストが到着したときに Cloudflare がロードするファイルです。その役割は、`(env, ctx, request)` のための `AsyncLocalStorage` スコープをセットアップし、すべてのリクエストを（静的アセットサーバーか内側のバンドルのいずれかへ）ディスパッチすることです。あなたのアプリケーションコードは含みません。
+**`dist/_worker.js`** — アダプターが書き出す小さな自動生成のスタブ。これは Workers Static Assets において wrangler 設定の `main` が指し示す Worker のエントリであり、同時に Cloudflare Pages のアドバンスドモードのエントリとしても有効なままです。つまり同一の出力ファイルが、どちらのターゲットにもそのままデプロイできます（dual-compat）。その役割は、`(env, ctx, request)` のための `AsyncLocalStorage` スコープをセットアップし、実際に受け取ったリクエストを（`env.ASSETS` 経由の静的アセットサーバーか内側のバンドルのいずれかへ）ディスパッチすることです。あなたのアプリケーションコードは含みません。
 
 **`dist/_zfb_inner.mjs`** — 本物のアプリケーションバンドル。すべての `pages/*.tsx` ファイル、レイアウト、コンポーネント、lib ヘルパーを単一の Hono 形の ESM モジュールにコンパイルしたものです。これが実際にページをレンダリングします。
 
-この 2 ファイル構成は、アダプター内での 2 回目の esbuild パスを回避します。Workerd のモジュールローダーは、アドバンスドモードの `_worker.js` ディレクトリ内の相対 ESM インポートを解決するため、`_worker.js` は単純に `import inner from "./_zfb_inner.mjs"` でき、両ファイルは独立したままです。
+この 2 ファイル構成は、アダプター内での 2 回目の esbuild パスを回避します。Workerd のモジュールローダーは、デプロイされたワーカーディレクトリ内の相対 ESM インポートを解決するため、`_worker.js` は単純に `import inner from "./_zfb_inner.mjs"` でき、両ファイルは独立したままです。
 
 より広い 2 バンドルのメンタルモデル（ワーカーバンドル対 islands バンドル）については [Architecture overview](./architecture-overview.mdx) を読んでください。
 
 ## ディスパッチフロー
 
-Cloudflare Pages サイトへのすべてのリクエストは、まず `_worker.js` に到達します。スタブは静的優先・動的が次という規則を適用します。
+Workers Static Assets（zfb のデフォルトのデプロイターゲット）では、プラットフォームのアセットルーターがあなたの Worker の _前に_ 実行されます。`run_worker_first = false`（zfb のデフォルト）では、Cloudflare は到着した各リクエストをまずビルド済みの静的アセットに照合します。リクエストがプリレンダリング済みのファイルにマッチすれば、エッジがそれを直接配信し、`_worker.js` は一切実行されません。あなたの Worker にフォールスルーするのは、マッチするアセットがないリクエスト — つまりミスだけです。「すべてのリクエストがまず `_worker.js` に到達する」という旧来のモデルは反転しています。プラットフォームが先にアセットを配信し、Worker は動的な末端だけを見ます。
 
-| Request method | Dispatch order |
+アセット層は URL の正規化も担います。`html_handling = "auto-trailing-slash"` の場合、プリレンダリング済みルートへのリクエストは、ファイルが配信される前に正規の末尾スラッシュ付きの形へリダイレクトされます。
+
+`/docs/account` → **307** リダイレクト → `/docs/account/` → `dist/docs/account/index.html`
+
+（Cloudflare Pages では相当するリダイレクトは **308** です。後述の dual-compat の注記を参照してください。）つまりプロダクションのメンタルモデルはプラットフォーム優先です。静的なヒットはエッジのアセット層が配信し、あなたの Worker は動的な末端 — `pages/api/*.tsx` のような `prerender = false` のルートと、アセットルーターが解決しなかったもの — だけを見ます。
+
+### 内側の `env.ASSETS` プローブはデッドコードではない
+
+`_worker.js` は _それ自身も_ アセットプローブを持っています。内側のバンドルへ委譲する前に、自ら `env.ASSETS.fetch(request)` を呼ぶことができます。`run_worker_first = false` では、このプローブはアセットヒットに対しては通常バイパスされます（プラットフォームがすでに配信済みだからです）。すると当然の疑問が湧きます。なぜそれを残すのか？ それは、同じ出力ラッパーが、プラットフォームではなく Worker がリクエストの最初の受け口になる状況にも対応しなければならないからです。`worker-wrapper.mjs` はこれを次のように明記しています。
+
+```js
+// Dispatch order is deliberately "ASSETS first, inner on 404" — this
+// holds across both deploy targets, but *why* the ASSETS probe fires
+// differs:
+//
+//   - Workers Static Assets with `run_worker_first = false` (the zfb
+//     default): the platform itself serves asset hits before the
+//     Worker ever runs, so for those requests this in-Worker probe is
+//     normally bypassed — it never had a chance to run. The probe below
+//     is NOT dead code: it is still exercised for Pages (no
+//     `run_worker_first` concept; every request hits the Worker), for
+//     `run_worker_first = true` deployments, and for any request the
+//     platform's asset router itself does not resolve (which still
+//     reaches this Worker as a "miss").
+```
+
+つまりプローブは、次の 3 つのケースで存在意義を持ちます。
+
+1. **Cloudflare Pages（アドバンスドモード）。** Pages には `run_worker_first` の概念がなく、すべてのリクエストがまず `_worker.js` に到達します。したがって内側のプローブ _こそが_ アセット配信の経路です。同一の出力ファイルが dual-compat である理由がこれです。
+2. **`run_worker_first = true`。** アセットルーターより先に Worker を実行するようプラットフォームに指示しているため、すべてのリクエストがプローブに到達します。
+3. **`run_worker_first = false` での、Worker が処理するミス。** プラットフォームのアセットルーターが解決しなかったリクエストは、それでも Worker に到達します。プローブが実行され、`env.ASSETS` に対して解決できることもあれば、404 を返して内側のバンドルへフォールスルーすることもあります。
+
+プローブが実際に発火するのは、`ASSETS` バインディングが実際に設定されているときだけです。ラッパーはそれをガードしています。
+
+```js
+function canDelegateToAssets(env) {
+  return Boolean(env && env.ASSETS && typeof env.ASSETS.fetch === "function");
+}
+```
+
+プローブが実行される場合、Worker 内のディスパッチ規則は静的優先・動的が次です。
+
+| Request method | Dispatch order（Worker が実行される場合） |
 |---|---|
-| GET, HEAD | まず `env.ASSETS` を探る。内側のワーカーが呼ばれるのは、アセットサーバーが 404 を返した場合だけ。それ以外のステータス（200・308 など）はクライアントに直接返される。 |
+| GET, HEAD | まず `env.ASSETS` を探る。内側のワーカーが呼ばれるのは、アセットサーバーが 404 を返した場合だけ。それ以外のステータス（200・307 など）はクライアントに直接返される。 |
 | POST, PUT, PATCH, DELETE | `env.ASSETS` を完全にスキップ。直接内側のワーカーへ進む。 |
 
-フォールスルーの規則は「404 のみ」であり「200 以外のみ」ではありません。これが重要なのは、Cloudflare Pages のアセットサーバーが、プリレンダリングされたルートの末尾スラッシュを正規化するために 308 リダイレクトを出すためです（例: `/docs/account` → 308 → `/docs/account/` → `dist/docs/account/index.html`）。ラッパーはこれらの 308 をクライアントへ届けて、ブラウザがそれを辿って index.html へ到達できるようにしなければなりません。`worker-wrapper.mjs` を見ると、ラッパーは `await env.ASSETS.fetch(request)` を呼び、`assetResponse.status !== 404` のときはレスポンスを手を加えずに返します。
+フォールスルーの規則は「404 のみ」であり「200 以外のみ」ではありません。これが重要なのは、アセットサーバーが、プリレンダリングされたルートの末尾スラッシュを正規化するためにリダイレクト（Workers Static Assets では 307、Cloudflare Pages では 308）を出すためです。ラッパーはこれらをクライアントへ届けて、ブラウザがそれを辿って `index.html` へ到達できるようにしなければなりません。`worker-wrapper.mjs` を見ると、ラッパーは `await env.ASSETS.fetch(request)` を呼び、`assetResponse.status !== 404` のときはレスポンスを手を加えずに返します。
 
 **なぜ GET/HEAD は静的優先なのか:** アセットサーバーは上で説明した末尾スラッシュの正規化を担当し、さらに島のハイドレーションを機能させるビルド時の head 注入（`<link rel="stylesheet">`、`<script type="module" src="/assets/islands-<hash>.js">`）も配信します。もし内側の Hono ルーターがプリレンダリングされたルートを先に処理すると、それらの注入されたアセットなしでリクエスト時に再レンダリングしてしまい、島はハイドレートされません。
 
 **なぜ POST/PUT/PATCH/DELETE は直接通すのか:** アセットサーバーは定義上リードオンリーです。フォーム送信のためにそれを探っても、常に 404 か 405 を返すだけ — 利益のない不要な往復です。フォーム送信、JSON API 呼び出し、あらゆるミューテーションは直接内側のワーカーへ進みます。
 
-その結果、静的ページは SSR のコストを払いません。`prerender = true` のページは `env.ASSETS` だけで配信され、内側のワーカーの `fetch` ハンドラは呼ばれません。（ただし `_worker.js` がモジュールスコープで内側のバンドルをインポートしているため、内側のバンドルはワーカー起動時に依然としてロードされ評価されます。正確な表現は [What is NOT in the worker output](#ワーカー出力に含まれないもの) を参照してください。）
+正味の効果はどちらのターゲットでも同じで、静的ページは SSR のコストを払いません。`prerender = true` のページはアセット層 — Workers Static Assets ではプラットフォームのエッジルーター、Cloudflare Pages では内側の `env.ASSETS` プローブ — が配信し、内側のワーカーの `fetch` ハンドラは呼ばれません。（ただし `_worker.js` がモジュールスコープで内側のバンドルをインポートしているため、内側のバンドルはワーカー起動時に依然としてロードされ評価されます。正確な表現は [What is NOT in the worker output](#ワーカー出力に含まれないもの) を参照してください。）
 
 ## `getCloudflareContext()` のトリック
 
@@ -129,10 +171,12 @@ compatibility_flags = ["nodejs_compat"]
 
 **Islands** — `"use client"` でマークされたコンポーネントは、別の esbuild ステップによって **単一の結合された** ブラウザ配信バンドルへとコンパイルされます。dev ではこのバンドルは `dist/assets/islands.js`（安定したファイル名、ハッシュなし）に出力され、プロダクションでは `ProductionAssetPipeline` がそれを `dist/assets/islands-<hash>.js` として書き出し、レンダリングされた HTML 内のすべての参照をハッシュ付き URL に書き換えます。このバンドルは `dist/_worker.js` の一部でも `dist/_zfb_inner.mjs` の一部でもありません。サーバーで実行される Worker コードではなく、ブラウザ配信の JavaScript です。Worker は静的 HTML のシェルをレンダリングし、ブラウザが islands バンドルをダウンロードして、そのトップレベルのハイドレーションコードがページ上のすべての `[data-zfb-island]` 要素を走査します。完全な仕組みは [Islands](./islands.mdx) を参照してください。
 
-**プリレンダリングされたページ** — `prerender = true` をエクスポートする（またはエクスポートを省略する。デフォルトは true）任意のページは、ビルド時に静的 HTML へレンダリングされます。リクエスト時には、Cloudflare Pages が `.html` ファイルを `env.ASSETS` から直接配信するため、それらのルートに対して内側の Worker の `fetch` ハンドラは **呼ばれません**。ただし、内側のバンドルはワーカー起動時に依然としてロードされ評価されます。`_worker.js` が静的な `import inner from "./_zfb_inner.mjs"` を行うため、最初のリクエストがどのルートに着地するかに関係なく、workerd は内側のモジュールグラフをメモリに引き込みます。この最適化は「静的ヒットは `inner.fetch()` をスキップする」であって、「静的のみのデプロイは内側のバンドルのロードをスキップする」ではありません。
+**プリレンダリングされたページ** — `prerender = true` をエクスポートする（またはエクスポートを省略する。デフォルトは true）任意のページは、ビルド時に静的 HTML へレンダリングされます。リクエスト時には、アセット層が `.html` ファイルを直接配信します — Workers Static Assets（`run_worker_first = false`）ではプラットフォームのエッジアセットルーターが、Cloudflare Pages では内側の `env.ASSETS` プローブが配信します — そのため、それらのルートに対して内側の Worker の `fetch` ハンドラは **呼ばれません**。
+
+内側のバンドルがそもそも _ロードされる_ かどうかは、Worker が起動するかどうかに依存します。`_worker.js` が静的な `import inner from "./_zfb_inner.mjs"` を行うため、いったん Worker が起動すれば、どのルートがその起動を引き起こしたかに関係なく、workerd は内側のモジュールグラフ全体をメモリに引き込みます。静的ヒットは `inner.fetch()` をスキップしますが、workerd が内側のバンドルのロードをスキップするわけではありません。Cloudflare Pages（および `run_worker_first = true`）では、Worker は最初のリクエストで起動するため、これは常に当てはまります。一方、Workers Static Assets の `run_worker_first = false` では、Worker が起動するのはリクエストが初めてアセットルーターをミスしたときだけです。トラフィックがプリレンダリング済みのアセットにしか当たらないデプロイでは、Worker がまったく起動せず — したがって内側のバンドルもロードされない — ということもあり得ます。
 
 ## 関連
 
 - [Architecture overview](./architecture-overview.mdx) — 2 バンドルのモデルと、ワーカーバンドルの形がビルド時とプロダクションの間の安定したコントラクトであること。
 - [Islands](./islands.mdx) — `"use client"` がコンポーネントを Worker の外に存在するブラウザ配信バンドルへどう opt-in させるか。
-- [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — 実際のセットアップ向け: `wrangler.toml`、D1 クエリ、シークレット、`wrangler pages dev` でのローカル開発。
+- [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — 実際のセットアップ向け: `wrangler.toml`、D1 クエリ、シークレット、`wrangler dev` でのローカル開発。

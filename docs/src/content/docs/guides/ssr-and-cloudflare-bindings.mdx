@@ -7,9 +7,10 @@ sidebar_position: 7
 <Info title="What this page covers">
 
 How to opt a route out of build-time static rendering, deploy it as a
-Cloudflare Pages Worker with `@takazudo/zfb-adapter-cloudflare`, and
-read Cloudflare Worker bindings — secrets, environment variables, and a
-**D1 database** — from inside the route's SSR handler.
+**Cloudflare Worker with Static Assets** using
+`@takazudo/zfb-adapter-cloudflare`, and read Cloudflare Worker
+bindings — secrets, environment variables, and a **D1 database** — from
+inside the route's SSR handler.
 
 </Info>
 
@@ -127,12 +128,66 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
 
 `zfb build` then produces, under `dist/`:
 
-- the static HTML for every SSG page, and
-- `_worker.js` + `_zfb_inner.mjs` — a Cloudflare Pages **advanced-mode**
-  Worker entry that serves your `prerender = false` routes.
+- the static HTML for every SSG page,
+- `_worker.js` + `_zfb_inner.mjs` — the Worker entry (a thin wrapper
+  plus the bundled SSR routes) that serves your `prerender = false`
+  routes, and
+- `.assetsignore` — lists `_worker.js` and `_zfb_inner.mjs` so the
+  asset server never serves your server code as a public file (a request
+  for `/_worker.js` would otherwise download it as plain text).
 
-Deploy `dist/` to Cloudflare Pages as usual. The Worker handles dynamic
-routes; the static asset server handles everything else.
+You deploy this `dist/` as a **Cloudflare Worker with Static Assets**
+via `wrangler deploy`, driven by a `wrangler.toml` at your project root
+that points `main` at `dist/_worker.js` and hands the rest of `dist/` to
+the built-in asset server. The Worker handles dynamic routes; the asset
+server handles everything else.
+
+<Note title="Still deployable to Cloudflare Pages">
+
+The same `dist/` output remains deployable to **Cloudflare Pages
+advanced mode** — a root-level `_worker.js` is Pages' equivalent
+convention, and the wrapper dispatches identically on both platforms.
+Workers Static Assets is the primary, recommended target; Pages advanced
+mode stays supported for existing Pages projects. (The only
+platform-visible difference is a trailing-slash asset redirect: `307` on
+Workers Static Assets versus `308` on Pages.)
+
+</Note>
+
+### The `wrangler.toml`
+
+The deploy config lives in a `wrangler.toml` at your project root:
+
+```toml
+# wrangler.toml
+name = "my-site"
+main = "./dist/_worker.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+not_found_handling = "404-page"
+```
+
+- `main` points wrangler at the emitted Worker entry.
+- `compatibility_date` pins the Workers runtime behaviour.
+- `compatibility_flags = ["nodejs_compat"]` is **required** — see the
+  warning below.
+- `[assets] directory = "./dist"` hands your static output to the
+  built-in asset server.
+- `not_found_handling = "404-page"` is **recommended**: unmatched asset
+  paths fall through to the Worker, which serves your `pages/404.tsx`
+  and any dynamic `prerender = false` route.
+
+<Warning title="Do NOT set `not_found_handling = 'single-page-application'`">
+
+`single-page-application` makes the asset server return `index.html` for
+every unresolved path **before the Worker ever sees the request** — which
+silently breaks dynamic routes like `pages/api/*.tsx`. Use `404-page` so
+unmatched paths reach the Worker.
+
+</Warning>
 
 <Warning title="compatibility_flags = ['nodejs_compat'] is mandatory">
 
@@ -244,11 +299,11 @@ await env.DB
 
 ## Wiring up the D1 binding
 
-D1 is bound to your Pages project through `wrangler.toml`. The binding
+D1 is bound to your Worker through the same `wrangler.toml`. The binding
 **name** (`DB` below) is the property you read on `env`:
 
 ```toml
-# wrangler.toml
+# wrangler.toml — add alongside the [assets] block above
 [[d1_databases]]
 binding = "DB"               # → env.DB inside the Worker
 database_name = "webshop"
@@ -264,7 +319,8 @@ The lifecycle, end to end:
 3. **Apply migrations** — `wrangler d1 migrations apply webshop`
    (add `--local` for the local dev database, `--remote` for the
    deployed one).
-4. **Deploy** — `zfb build` then deploy `dist/` to Cloudflare Pages.
+4. **Deploy** — `zfb build`, then `wrangler deploy` to ship `dist/` as
+   your Worker with Static Assets.
 
 For a **preview vs production** split, declare the binding under a
 named environment so each gets its own database:
@@ -280,6 +336,16 @@ binding = "DB"
 database_name = "webshop-preview"
 database_id = "<preview-uuid>"
 ```
+
+<Note title="Named environments are separate Workers">
+
+On Workers, a named environment like `[env.preview]` deploys as a
+**distinct Worker** — `wrangler deploy --env preview` ships a
+`my-site-preview` Worker with its own bindings and its own URL. This is
+not the same as a Cloudflare Pages preview *deployment* on a branch: the
+semantics differ, and the deeper details are out of scope here.
+
+</Note>
 
 ## Local development
 
@@ -305,11 +371,14 @@ There are two ways to run the app locally, and they answer different questions:
   `env`, so any route that reads `env.DB` (or any other binding) cannot work
   here. Use this for layout, styling, and routing iteration on routes that do
   **not** touch bindings.
-- **`wrangler pages dev dist/`** — binding-realistic loop. Runs the built
-  `_worker.js` against a **local** D1 database (a SQLite file under
-  `.wrangler/`), serves your real `compatibility_flags`, and surfaces real
-  binding bugs. Use this whenever you're working on an SSR route that reads
-  `env`.
+- **`wrangler dev`** — binding-realistic loop. Runs the built `_worker.js`
+  against a **local** D1 database (a SQLite file under `.wrangler/`), serves
+  your real `compatibility_flags`, and surfaces real binding bugs. It
+  discovers the Worker entry and asset directory from your `wrangler.toml`
+  (`main` + `[assets]`) — there is no positional `dist/` argument. Use this
+  whenever you're working on an SSR route that reads `env`. (`zfb preview`
+  wraps this same handoff: it runs a couple of pre-flight checks and then
+  execs `wrangler dev` for you.)
 
 The rest of this section covers the binding-realistic loop.
 
@@ -327,10 +396,10 @@ creates `.wrangler/state/v3/d1/...` if it doesn't exist.
 
 ### The edit-refresh loop
 
-Run two processes side-by-side: `wrangler pages dev dist/` (which auto-reloads
-when `dist/` changes) and a watcher that re-runs `zfb build` whenever you edit a
-source file. The cleanest way is `concurrently` + `chokidar-cli` from your
-`devDependencies`:
+Run two processes side-by-side: `wrangler dev` (which auto-reloads when its
+`main` entry or the assets under `dist/` change) and a watcher that re-runs
+`zfb build` whenever you edit a source file. The cleanest way is
+`concurrently` + `chokidar-cli` from your `devDependencies`:
 
 ```sh
 pnpm add -D concurrently chokidar-cli
@@ -343,7 +412,7 @@ match your project layout):
 {
   "scripts": {
     "dev:cf:setup": "wrangler d1 migrations apply webshop --local && pnpm build",
-    "dev:cf": "pnpm dev:cf:setup && concurrently --names 'wrangler,watch' --kill-others 'wrangler pages dev dist/ --port 8788' \"chokidar 'pages/**/*.tsx' 'components/**/*.tsx' 'layouts/**/*.tsx' 'lib/**/*.ts' 'styles/**/*.css' --command 'pnpm build' --initial false --debounce 200\""
+    "dev:cf": "pnpm dev:cf:setup && concurrently --names 'wrangler,watch' --kill-others 'wrangler dev --port 8788' \"chokidar 'pages/**/*.tsx' 'components/**/*.tsx' 'layouts/**/*.tsx' 'lib/**/*.ts' 'styles/**/*.css' --command 'pnpm build' --initial false --debounce 200\""
   }
 }
 ```
@@ -356,14 +425,14 @@ pnpm dev:cf
 
 Edit a TSX or CSS source file and the browser reflects the change in roughly
 1–2 seconds: the watcher debounces for 200 ms, `pnpm build` re-emits `dist/`,
-and `wrangler pages dev` notices the `_zfb_inner.mjs` content change and reloads
-the worker automatically. Ctrl-C kills both processes cleanly.
+and `wrangler dev` notices the `_zfb_inner.mjs` content change and reloads the
+worker automatically. Ctrl-C kills both processes cleanly.
 
 <Warning title="Do NOT run `pnpm dev` and `pnpm dev:cf` at the same time">
 
 `zfb dev`'s `predev` step (`rm -rf dist .zfb .zfb-build`) wipes the `dist/`
-directory that `wrangler pages dev` is actively serving. The wrangler process
-can enter a degraded state where subsequent rebuilds no longer trigger reloads.
+directory that `wrangler dev` is actively serving. The wrangler process can
+enter a degraded state where subsequent rebuilds no longer trigger reloads.
 Pick one loop at a time. If you accidentally ran both, stop everything, re-run
 `pnpm build`, and restart `pnpm dev:cf`.
 
@@ -371,11 +440,34 @@ Pick one loop at a time. If you accidentally ran both, stop everything, re-run
 
 ### Troubleshooting
 
-**`Address already in use` on port 8788.** Another `wrangler pages dev` is still
+**`Address already in use` on port 8788.** Another `wrangler dev` is still
 running. Either kill it (`lsof -ti TCP:8788 -sTCP:LISTEN | xargs kill`) or pass
 `--port 8789` to the wrangler invocation. The `-sTCP:LISTEN` filter is important:
 a bare `lsof -ti TCP:8788` also returns any connected browser/client PIDs, so
 without it `xargs kill` can take down unrelated apps.
+
+**`zfb preview` aborts with "adapter mode requires a wrangler config".** In
+adapter mode `zfb preview` hands off to `wrangler dev`, which discovers the
+Worker entry and asset directory entirely from its own config — so zfb runs a
+pre-flight check that the config exists and bails with a clear error when it is
+missing:
+
+```
+preview: adapter mode requires a wrangler config at the project root
+(wrangler.toml | wrangler.jsonc | wrangler.json), but none was found in <dir>.
+
+Minimal example (wrangler.toml):
+
+main = "./dist/_worker.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+```
+
+Create the `wrangler.toml` shown under [The `wrangler.toml`](#the-wrangler-toml)
+and re-run.
 
 **The Worker fails to boot with an error naming `node:async_hooks`.** You're
 missing `compatibility_flags = ["nodejs_compat"]` in `wrangler.toml`. The adapter
@@ -386,10 +478,11 @@ this page — that flag is a hard prerequisite for the adapter to thread `env`
 into your SSR routes, not an optional opt-in.
 
 **The page renders but `env.DB` is undefined.** The Worker booted (so
-`nodejs_compat` is set), but the D1 binding isn't reaching it. Check that the
-binding name in `wrangler.toml` (`binding = "DB"`) matches the property you read
-on `env`, and that you launched `wrangler pages dev dist/` from the directory
-whose `wrangler.toml` declares the binding.
+`nodejs_compat` is set), but the D1 binding isn't reaching it. `wrangler dev`
+resolves both the Worker entry and its bindings from `wrangler.toml` (`main`,
+`[assets]`, and `[[d1_databases]]`), so check that the binding name there
+(`binding = "DB"`) matches the property you read on `env`, and that you launched
+`wrangler dev` from the project root whose `wrangler.toml` declares the binding.
 
 **The browser shows stale content after an edit.** Usually the previous
 `pnpm build` failed. Check the `[watch]` stream in the `concurrently` output for

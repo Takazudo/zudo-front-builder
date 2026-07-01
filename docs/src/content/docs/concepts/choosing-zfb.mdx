@@ -34,16 +34,18 @@ each page depends on and rebuilds only the affected pages when
 something changes. The dependency graph (`crates/zfb-graph`) is a
 first-class part of the engine, not a bolt-on.
 
-**Workerd-shaped output bundle.** Your target is Cloudflare Workers or
-Pages. zfb's build-time JS host is V8-based (via embedded V8), the
-same engine family as workerd. The content snapshot and island bundles
-are sized for that environment. If you deploy to Workers, you get a
-bundle shape that actually fits.
+**Workerd-shaped output bundle.** Your target is Cloudflare Workers,
+including Workers Static Assets (Pages-compatible). zfb's build-time
+JS host is V8-based (via embedded V8), the same engine family as
+workerd. The content snapshot and island bundles are sized for that
+environment. If you deploy to Workers, you get a bundle shape that
+actually fits.
 
-**Cloudflare Pages–friendly deployment.** Static output from
-`zfb build` drops directly into a Pages deployment. There is no server
-runtime to manage, no serverless function to configure, and no adapter
-layer. The built `dist/` is the deployment artifact.
+**Cloudflare Workers Static Assets–friendly deployment.** Static
+output from `zfb build` drops directly into a Workers Static Assets
+deployment (Pages-compatible). There is no server runtime to manage,
+no serverless function to configure, and no adapter layer. The built
+`dist/` is the deployment artifact.
 
 **Light interactive islands.** Your pages are mostly static documents
 with a small number of interactive components — a search box, a

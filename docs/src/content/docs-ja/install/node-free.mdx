@@ -149,7 +149,7 @@ Node 専用 API は評価器内では利用できません。TypeScript の型�
 | 機能 | 理由 |
 | --- | --- |
 | `--skip-tsc` なしの `zfb check` | TypeScript の型チェックは Node パッケージである `tsc` に委譲されます。TS 以外のチェックだけを実行するには `--skip-tsc` を指定してください。 |
-| Cloudflare アダプタ（`@takazudo/zfb-adapter-cloudflare`） | アダプタは Node CLI である Wrangler に依存します。Cloudflare Pages への SSR デプロイでは、デプロイ環境に常に Node が必要です。 |
+| Cloudflare アダプタ（`@takazudo/zfb-adapter-cloudflare`） | アダプタは Node CLI である Wrangler に依存します。Cloudflare Workers への SSR デプロイでは、デプロイ環境に常に Node が必要です。 |
 
 それ以外 — ビルド、開発サーバー、islands、Tailwind、MDX、コンテンツコレクション、
 `zfb.config.ts` の評価 — はすべて Node なしで動作します。

@@ -7,8 +7,9 @@
 //! deploy target is the SHAPE of the SSR worker entry the build needs
 //! to emit alongside the static HTML:
 //!
-//! - Cloudflare Pages: `dist/_worker.js` (advanced mode) wrapping the
-//!   ESM bundle with `(request, env, ctx) => Response`.
+//! - Cloudflare Workers Static Assets (Pages-compatible):
+//!   `dist/_worker.js` wrapping the ESM bundle with
+//!   `(request, env, ctx) => Response`.
 //! - Node SSR: `dist/server/index.mjs` exporting a Node `http.Server`
 //!   handler.
 //! - Netlify: `.netlify/functions/<name>.mjs` per route.

@@ -170,6 +170,9 @@ export default function Page() {
 OUTDIR="$4"
 mkdir -p "$OUTDIR"
 printf 'export default { fetch(r){return new Response("ok")} }\n' > "$OUTDIR/_worker.js"
+# Written for fidelity with the real adapter's Workers Static Assets output
+# shape; the test only asserts the build terminates, not on filenames.
+printf '_worker.js\n' > "$OUTDIR/.assetsignore"
 # Detach a grandchild that holds inherited stdout/stderr fds open.
 # Pre-fix code (Command::output()) would hang here waiting for this fd to close.
 # Fixed code (temp-file redirect + wait-on-direct-child) is unaffected.

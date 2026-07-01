@@ -39,6 +39,7 @@ jobs:
           name: docs-dist-pr-${{ github.event.pull_request.number }}
           path: docs/dist/
           retention-days: 1
+          include-hidden-files: true
 
   deploy-preview:
     name: Upload preview version to Cloudflare Workers
@@ -62,7 +63,11 @@ jobs:
           name: docs-dist-pr-${{ github.event.pull_request.number }}
           path: docs/dist/
       - name: Write .assetsignore (exclude worker JS from static-asset serving)
-        run: printf '%s\n' '_worker.js' '_zfb_inner.mjs' > docs/dist/.assetsignore
+        # Fallback until docs' @takazudo/zfb-adapter-cloudflare pin is bumped to the
+        # release where the adapter emits .assetsignore itself (epic #1309) — delete
+        # this step after that bump.
+        run: |
+          [ -f docs/dist/.assetsignore ] || printf '%s\n' '_worker.js' '_zfb_inner.mjs' > docs/dist/.assetsignore
       - name: Upload preview version
         id: preview
         # Tolerant by design: `versions upload --preview-alias` requires the

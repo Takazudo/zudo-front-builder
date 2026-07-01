@@ -119,8 +119,8 @@ export default function Feed() {
 ```
 
 The override beats the table; the table beats the unknown-extension
-fallback. Static-file hosts (Cloudflare Pages, Netlify, S3) derive
-the response `Content-Type` from the file extension instead — the
+fallback. Static-file hosts (Cloudflare Workers Static Assets, Netlify,
+S3) derive the response `Content-Type` from the file extension instead — the
 in-engine `contentType` is purely a dev-server convenience.
 
 ## Stale-output cleanup across builds

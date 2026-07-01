@@ -48,7 +48,7 @@ zfb は Rust で構築された静的サイトエンジンです。すでに Ast
 | 静的アセット用の `public/` | `public/` — 同じセマンティクス |
 | ページをラップするレイアウトコンポーネント | ページをラップするレイアウトコンポーネント — 素の TSX 合成 |
 
-異なる点: zfb は **デフォルトで SSG** です。すべてのページはビルド時に計算され、静的 HTML になります。本当にリクエスト時の挙動を必要とするルートは `prerender = false` でオプトアウトし、設定済みのアダプター（例: [`@takazudo/zfb-adapter-cloudflare`](../guides/ssr-and-cloudflare-bindings.mdx) 経由の Cloudflare Pages）が処理します。zfb が目指していないのは、フル機能のアプリフレームワークになることです。App Router も、React Server Components も、ミドルウェア層も、ページ単位の自動 ISR もありません。ランタイムの位置づけは「SSG にアダプター形状の脱出口を加えたもの」であって、「`output: export` だけの Next.js」ではありません。
+異なる点: zfb は **デフォルトで SSG** です。すべてのページはビルド時に計算され、静的 HTML になります。本当にリクエスト時の挙動を必要とするルートは `prerender = false` でオプトアウトし、設定済みのアダプター（例: [`@takazudo/zfb-adapter-cloudflare`](../guides/ssr-and-cloudflare-bindings.mdx) 経由の Cloudflare Workers Static Assets）が処理します。zfb が目指していないのは、フル機能のアプリフレームワークになることです。App Router も、React Server Components も、ミドルウェア層も、ページ単位の自動 ISR もありません。ランタイムの位置づけは「SSG にアダプター形状の脱出口を加えたもの」であって、「`output: export` だけの Next.js」ではありません。
 
 ## クライアントルーターと View Transitions
 

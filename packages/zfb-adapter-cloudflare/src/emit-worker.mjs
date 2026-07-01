@@ -12,16 +12,24 @@
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+// `.assetsignore` tells the Workers Static Assets uploader (and Pages'
+// asset server) to skip these two files, so they are only ever reachable
+// through the Worker's module graph, not served as public static assets.
+const ASSETS_IGNORE_CONTENT = "_worker.js\n_zfb_inner.mjs\n";
+
 /**
- * Emit a Cloudflare Pages `_worker.js` that wraps the zfb input bundle.
+ * Emit a Cloudflare Workers Static Assets (Pages-compatible) `_worker.js`
+ * that wraps the zfb input bundle.
  *
- * Output shape (two files in `outdir`):
+ * Output shape (three files in `outdir`):
  *
- *   _worker.js       — entry imported by Cloudflare Pages advanced mode
+ *   _worker.js       — Worker entry point (`main` in wrangler.toml, or the
+ *                      Pages advanced-mode convention)
  *   _zfb_inner.mjs   — the input bundle, copied verbatim
+ *   .assetsignore    — excludes the two files above from the asset upload
  *
  * @param {{ inputBundlePath: string; outdir: string; workerWrapperSource: string }} input
- * @returns {Promise<{ workerPath: string; innerBundlePath: string }>}
+ * @returns {Promise<{ workerPath: string; innerBundlePath: string; assetsIgnorePath: string }>}
  */
 export async function emitWorker({ inputBundlePath, outdir, workerWrapperSource }) {
   const outdirAbs = resolve(outdir);
@@ -34,5 +42,8 @@ export async function emitWorker({ inputBundlePath, outdir, workerWrapperSource 
   const workerPath = join(outdirAbs, "_worker.js");
   await writeFile(workerPath, workerWrapperSource, "utf8");
 
-  return { workerPath, innerBundlePath };
+  const assetsIgnorePath = join(outdirAbs, ".assetsignore");
+  await writeFile(assetsIgnorePath, ASSETS_IGNORE_CONTENT, "utf8");
+
+  return { workerPath, innerBundlePath, assetsIgnorePath };
 }

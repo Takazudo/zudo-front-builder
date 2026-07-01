@@ -48,7 +48,7 @@ What is different: zfb has no component syntax of its own — everything is TSX.
 | `public/` for static assets | `public/` — same semantics |
 | Layout components wrapping pages | Layout components wrapping pages — plain TSX composition |
 
-What is different: zfb is **SSG by default** — every page is computed at build time into static HTML. Routes that genuinely need request-time behavior opt out with `prerender = false` and are served by a configured adapter (e.g. Cloudflare Pages via [`@takazudo/zfb-adapter-cloudflare`](../guides/ssr-and-cloudflare-bindings.mdx)). What zfb does not aim to be is a full app framework — there is no App Router, no React Server Components, no middleware layer, and no per-page automatic ISR. The runtime story is "SSG plus an adapter-shaped escape hatch," not "Next.js with `output: export` only."
+What is different: zfb is **SSG by default** — every page is computed at build time into static HTML. Routes that genuinely need request-time behavior opt out with `prerender = false` and are served by a configured adapter (e.g. Cloudflare Workers Static Assets via [`@takazudo/zfb-adapter-cloudflare`](../guides/ssr-and-cloudflare-bindings.mdx)). What zfb does not aim to be is a full app framework — there is no App Router, no React Server Components, no middleware layer, and no per-page automatic ISR. The runtime story is "SSG plus an adapter-shaped escape hatch," not "Next.js with `output: export` only."
 
 ## Client router and view transitions
 
