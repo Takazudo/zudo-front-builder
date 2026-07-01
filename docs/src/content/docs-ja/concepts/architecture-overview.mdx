@@ -71,7 +71,7 @@ flowchart TD
         dist_js["dist/assets/\nislands-&lt;hash&gt;.js"]
     end
 
-    deploy["Static host\n(any CDN / Cloudflare Pages)"]
+    deploy["Static host\n(any CDN / Cloudflare Workers Static Assets)"]
     browser["Browser\n(island bundle hydrates via mountIslands())"]
 
     src --> esbuild_worker
@@ -113,7 +113,8 @@ Cloudflare Workers デプロイが期待するのと同じコントラクトで�
 どちらの文脈でも同じです。
 
 `packages/zfb-adapter-cloudflare` は Cloudflare Workers 向けのデプロイアダプタです。
-`zfb build --target=cloudflare` が生成したバンドルを受け取り、`wrangler deploy` が
+プロジェクトの `zfb.config.json` で `adapter: "@takazudo/zfb-adapter-cloudflare"` を
+設定したときに `zfb build` が生成するバンドルを受け取り、`wrangler deploy` が
 期待する薄いシェルで包みます。2 ファイル構成のワーカー出力と、ランタイムでリクエストが
 どうディスパッチされるのかを深掘りするには
 [SSR on a Worker (adapter mode)](./ssr-on-a-worker.mdx) を参照してください。

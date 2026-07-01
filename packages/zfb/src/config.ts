@@ -221,7 +221,7 @@ export type ZfbConfig = {
    * `"@takazudo/zfb-adapter-cloudflare"` selects the matching adapter,
    * and `zfb build` invokes that package's bin to wrap the SSR bundle
    * into a deploy-ready entry (e.g. `dist/_worker.js` for Cloudflare
-   * Pages).
+   * Workers Static Assets, Pages-compatible).
    *
    * Mirrors `Config::adapter` in crates/zfb/src/config.rs.
    */

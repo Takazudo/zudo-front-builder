@@ -300,7 +300,8 @@ pub struct Config {
     /// rejected at build time. A package name like
     /// `"@takazudo/zfb-adapter-cloudflare"` selects the matching
     /// adapter; the build then invokes that package's bin to wrap the
-    /// SSR bundle into a deploy-ready entry (e.g. `dist/_worker.js`).
+    /// SSR bundle into a deploy-ready entry (e.g. `dist/_worker.js` for
+    /// Cloudflare Workers Static Assets, Pages-compatible).
     ///
     /// Accepted shapes: `None`, omitted, the literal string `"none"`,
     /// or any non-empty package name. Empty / whitespace-only strings

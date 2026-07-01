@@ -73,7 +73,7 @@ flowchart TD
         dist_js["dist/assets/\nislands-&lt;hash&gt;.js"]
     end
 
-    deploy["Static host\n(any CDN / Cloudflare Pages)"]
+    deploy["Static host\n(any CDN / Cloudflare Workers Static Assets)"]
     browser["Browser\n(island bundle hydrates via mountIslands())"]
 
     src --> esbuild_worker
@@ -115,7 +115,8 @@ embedded V8 isolate. The production host is workerd. The contract —
 `export default { fetch }` — is the same in both contexts.
 
 `packages/zfb-adapter-cloudflare` is the deployment adapter for Cloudflare
-Workers. It takes the bundle produced by `zfb build --target=cloudflare` and
+Workers. It takes the bundle `zfb build` produces when the project's
+`zfb.config.json` sets `adapter: "@takazudo/zfb-adapter-cloudflare"`, and
 wraps it in the thin shell that `wrangler deploy` expects. For a deep dive into
 the two-file worker output and how requests are dispatched at runtime, see
 [SSR on a Worker (adapter mode)](./ssr-on-a-worker.mdx).

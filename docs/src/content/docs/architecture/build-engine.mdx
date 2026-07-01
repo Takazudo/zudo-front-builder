@@ -120,7 +120,7 @@ The SSR layer is wired via a small `SsrDispatcher` trait in `zfb-server`. The bi
 
 This is what makes "dev matches prod" a real guarantee: the dev preview's `prerender = false` output is **semantically equivalent** (same status, body, content-type — timestamps and request IDs may differ) to what the Cloudflare adapter produces from the same source. The shared V8 host means there is no second renderer to drift.
 
-The server is dev-only. Production emits static files for an edge CDN, plus a `_worker.js` from the Cloudflare adapter for `prerender = false` routes. The same atomic-write guarantee that makes the dev server safe makes any production deploy safe.
+The server is dev-only. Production emits static files for an edge CDN, plus a `_worker.js` from the Cloudflare adapter (Workers Static Assets, Pages-compatible) for `prerender = false` routes. The same atomic-write guarantee that makes the dev server safe makes any production deploy safe.
 
 ### Embed-as-library: host-supplied HTTP handlers
 
