@@ -6,7 +6,7 @@ sidebar_position: 7
 
 <Info title="このページの内容">
 
-ルートをビルド時の静的レンダリングから除外し、`@takazudo/zfb-adapter-cloudflare` で Cloudflare Pages Worker としてデプロイし、ルートの SSR ハンドラ内から Cloudflare Worker バインディング（シークレット、環境変数、**D1 データベース**）を読み取る方法。
+ルートをビルド時の静的レンダリングから除外し、`@takazudo/zfb-adapter-cloudflare` を使って **Static Assets を備えた Cloudflare Worker** としてデプロイし、ルートの SSR ハンドラ内から Cloudflare Worker バインディング（シークレット、環境変数、**D1 データベース**）を読み取る方法。
 
 </Info>
 
@@ -95,10 +95,45 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
 
 すると `zfb build` は `dist/` の下に次を生成します:
 
-- すべての SSG ページの静的 HTML、そして
-- `_worker.js` + `_zfb_inner.mjs` — `prerender = false` のルートを配信する Cloudflare Pages の**アドバンストモード** Worker エントリ。
+- すべての SSG ページの静的 HTML、
+- `_worker.js` + `_zfb_inner.mjs` — `prerender = false` のルートを配信する Worker エントリ（薄いラッパーと、バンドルされた SSR ルート）、そして
+- `.assetsignore` — `_worker.js` と `_zfb_inner.mjs` を列挙し、アセットサーバーがサーバーコードを公開ファイルとして配信しないようにします（これがないと `/_worker.js` へのリクエストがそれをプレーンテキストとしてダウンロードさせてしまいます）。
 
-`dist/` を通常どおり Cloudflare Pages にデプロイします。Worker が動的ルートを処理し、静的アセットサーバーがそれ以外のすべてを処理します。
+この `dist/` は **Static Assets を備えた Cloudflare Worker** として `wrangler deploy` でデプロイします。デプロイはプロジェクトルートの `wrangler.toml` が駆動し、`main` を `dist/_worker.js` に向け、`dist/` の残りを組み込みのアセットサーバーに委ねます。Worker が動的ルートを処理し、アセットサーバーがそれ以外のすべてを処理します。
+
+<Note title="Cloudflare Pages にも引き続きデプロイ可能">
+
+同じ `dist/` 出力は **Cloudflare Pages のアドバンストモード**にも引き続きデプロイできます。ルート直下の `_worker.js` は Pages における同等の慣習であり、ラッパーは両プラットフォームで同一のディスパッチをします。Workers Static Assets が主たる推奨ターゲットであり、Pages のアドバンストモードは既存の Pages プロジェクトのためにサポートが継続されます。（プラットフォームで見える唯一の違いは末尾スラッシュのアセットリダイレクトで、Workers Static Assets では `307`、Pages では `308` になります。）
+
+</Note>
+
+### `wrangler.toml`
+
+デプロイ設定はプロジェクトルートの `wrangler.toml` に置きます:
+
+```toml
+# wrangler.toml
+name = "my-site"
+main = "./dist/_worker.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+not_found_handling = "404-page"
+```
+
+- `main` は wrangler を、生成された Worker エントリに向けます。
+- `compatibility_date` は Workers ランタイムの挙動を固定します。
+- `compatibility_flags = ["nodejs_compat"]` は**必須**です。下の警告を参照してください。
+- `[assets] directory = "./dist"` は静的な出力を組み込みのアセットサーバーに委ねます。
+- `not_found_handling = "404-page"` は**推奨**です。マッチしなかったアセットパスは Worker にフォールスルーし、Worker が `pages/404.tsx` と、あらゆる動的な `prerender = false` ルートを配信します。
+
+<Warning title="`not_found_handling = 'single-page-application'` を設定しないこと">
+
+`single-page-application` は、あらゆる未解決のパスに対して、**Worker がリクエストを見る前に**アセットサーバーが `index.html` を返すようにします。これは `pages/api/*.tsx` のような動的ルートを黙って壊します。未解決のパスが Worker に届くよう `404-page` を使ってください。
+
+</Warning>
 
 <Warning title="compatibility_flags = ['nodejs_compat'] は必須">
 
@@ -195,10 +230,10 @@ await env.DB
 
 ## D1 バインディングの配線
 
-D1 は `wrangler.toml` を通して Pages プロジェクトにバインドされます。バインディングの**名前**（下記の `DB`）が、`env` で読むプロパティになります:
+D1 は同じ `wrangler.toml` を通して Worker にバインドされます。バインディングの**名前**（下記の `DB`）が、`env` で読むプロパティになります:
 
 ```toml
-# wrangler.toml
+# wrangler.toml — add alongside the [assets] block above
 [[d1_databases]]
 binding = "DB"               # → env.DB inside the Worker
 database_name = "webshop"
@@ -210,7 +245,7 @@ database_id = "<uuid>"       # printed by `wrangler d1 create`
 1. **データベースを作成する** — `wrangler d1 create webshop`。これが `database_id` を出力します。`wrangler.toml` に貼り付けてください。
 2. **マイグレーションを書く** — `.sql` ファイルを `migrations/`（wrangler のデフォルト）の下に置きます。各マイグレーションは素の SQL（`CREATE TABLE` など）です。
 3. **マイグレーションを適用する** — `wrangler d1 migrations apply webshop`（ローカルの開発用データベースには `--local`、デプロイ済みのものには `--remote` を追加）。
-4. **デプロイする** — `zfb build` を実行し、`dist/` を Cloudflare Pages にデプロイします。
+4. **デプロイする** — `zfb build` を実行し、`wrangler deploy` で `dist/` を Static Assets を備えた Worker として出荷します。
 
 **プレビューと本番**を分ける場合は、名前付き環境の下にバインディングを宣言し、それぞれが独自のデータベースを持つようにします:
 
@@ -225,6 +260,12 @@ binding = "DB"
 database_name = "webshop-preview"
 database_id = "<preview-uuid>"
 ```
+
+<Note title="名前付き環境は別々の Worker">
+
+Workers では、`[env.preview]` のような名前付き環境は**別個の Worker** としてデプロイされます。`wrangler deploy --env preview` は、独自のバインディングと独自の URL を持つ `my-site-preview` Worker を出荷します。これはブランチ上の Cloudflare Pages のプレビュー*デプロイ*とは異なります。セマンティクスが異なり、より詳しい話はここでは対象外です。
+
+</Note>
 
 ## ローカル開発
 
@@ -251,10 +292,13 @@ package.json スクリプトと README の「ローカル開発」セクショ�
   `env.DB`（または他のバインディング）を読むルートはここでは動作しません。
   バインディングに**触れない**ルートのレイアウト、スタイリング、ルーティングの反復作業に
   使ってください。
-- **`wrangler pages dev dist/`** — バインディングをリアルに再現するループ。ビルドされた
+- **`wrangler dev`** — バインディングをリアルに再現するループ。ビルドされた
   `_worker.js` を**ローカル**の D1 データベース（`.wrangler/` 下の SQLite ファイル）に
   対して動かし、実際の `compatibility_flags` を反映し、本物のバインディングのバグを
-  表面化します。`env` を読む SSR ルートの作業をするときはこちらを使ってください。
+  表面化します。Worker エントリとアセットディレクトリは `wrangler.toml`（`main` +
+  `[assets]`）から発見するため、位置引数の `dist/` はありません。`env` を読む SSR
+  ルートの作業をするときはこちらを使ってください。（`zfb preview` はこの同じ受け渡しを
+  ラップします。いくつかの事前チェックを実行してから `wrangler dev` を exec します。）
 
 このセクションの残りはバインディングをリアルに再現するループについて説明します。
 
@@ -272,10 +316,10 @@ wrangler d1 migrations apply webshop --local
 
 ### 編集→反映のループ
 
-2 つのプロセスを並べて動かします: `wrangler pages dev dist/`（`dist/` が変更されると
-自動リロード）と、ソースファイルを編集するたびに `zfb build` を再実行するウォッチャー
-です。最もきれいな方法は `devDependencies` の `concurrently` + `chokidar-cli` を使う
-ことです:
+2 つのプロセスを並べて動かします: `wrangler dev`（`main` エントリまたは `dist/` 下の
+アセットが変更されると自動リロード）と、ソースファイルを編集するたびに `zfb build` を
+再実行するウォッチャーです。最もきれいな方法は `devDependencies` の `concurrently` +
+`chokidar-cli` を使うことです:
 
 ```sh
 pnpm add -D concurrently chokidar-cli
@@ -288,7 +332,7 @@ pnpm add -D concurrently chokidar-cli
 {
   "scripts": {
     "dev:cf:setup": "wrangler d1 migrations apply webshop --local && pnpm build",
-    "dev:cf": "pnpm dev:cf:setup && concurrently --names 'wrangler,watch' --kill-others 'wrangler pages dev dist/ --port 8788' \"chokidar 'pages/**/*.tsx' 'components/**/*.tsx' 'layouts/**/*.tsx' 'lib/**/*.ts' 'styles/**/*.css' --command 'pnpm build' --initial false --debounce 200\""
+    "dev:cf": "pnpm dev:cf:setup && concurrently --names 'wrangler,watch' --kill-others 'wrangler dev --port 8788' \"chokidar 'pages/**/*.tsx' 'components/**/*.tsx' 'layouts/**/*.tsx' 'lib/**/*.ts' 'styles/**/*.css' --command 'pnpm build' --initial false --debounce 200\""
   }
 }
 ```
@@ -301,12 +345,12 @@ pnpm dev:cf
 
 TSX または CSS ソースファイルを編集すると、おおよそ 1〜2 秒でブラウザに変更が反映されます。
 ウォッチャーが 200 ms デバウンスし、`pnpm build` が `dist/` を再出力し、
-`wrangler pages dev` が `_zfb_inner.mjs` の内容の変更に気づいて Worker を自動リロード
+`wrangler dev` が `_zfb_inner.mjs` の内容の変更に気づいて Worker を自動リロード
 します。Ctrl-C で両プロセスがきれいに終了します。
 
 <Warning title="`pnpm dev` と `pnpm dev:cf` を同時に実行しないこと">
 
-`zfb dev` の `predev` ステップ（`rm -rf dist .zfb .zfb-build`）は、`wrangler pages dev`
+`zfb dev` の `predev` ステップ（`rm -rf dist .zfb .zfb-build`）は、`wrangler dev`
 が現在配信中の `dist/` ディレクトリを消去します。wrangler プロセスは、その後のリビルドが
 リロードをトリガーしなくなる劣化状態に入る可能性があります。一度に一つのループを選んで
 ください。誤って両方を実行してしまった場合は、すべてを停止し、`pnpm build` を再実行して
@@ -316,11 +360,32 @@ TSX または CSS ソースファイルを編集すると、おおよそ 1〜2 �
 
 ### トラブルシューティング
 
-**ポート 8788 で `Address already in use`。** 別の `wrangler pages dev` がまだ動いて
+**ポート 8788 で `Address already in use`。** 別の `wrangler dev` がまだ動いて
 います。`lsof -ti TCP:8788 -sTCP:LISTEN | xargs kill` で終了させるか、wrangler の
 呼び出しに `--port 8789` を渡してください。`-sTCP:LISTEN` フィルタが重要です。素の
 `lsof -ti TCP:8788` は接続中のブラウザ／クライアントの PID も返すため、これがないと
 `xargs kill` が無関係なアプリを巻き添えにする可能性があります。
+
+**`zfb preview` が "adapter mode requires a wrangler config" で中断する。**
+アダプターモードでは `zfb preview` は `wrangler dev` に処理を引き渡し、`wrangler dev`
+は Worker エントリとアセットディレクトリをすべて自身の設定から発見します。そのため zfb
+は設定ファイルの存在を事前チェックし、見つからないときは明確なエラーで中断します:
+
+```
+preview: adapter mode requires a wrangler config at the project root
+(wrangler.toml | wrangler.jsonc | wrangler.json), but none was found in <dir>.
+
+Minimal example (wrangler.toml):
+
+main = "./dist/_worker.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+```
+
+[`wrangler.toml`](#wranglertoml) で示した `wrangler.toml` を作成して再実行してください。
 
 **Worker が `node:async_hooks` を名指しするエラーで起動に失敗する。** `wrangler.toml`
 に `compatibility_flags = ["nodejs_compat"]` がありません。アダプターは
@@ -332,9 +397,11 @@ TSX または CSS ソースファイルを編集すると、おおよそ 1〜2 �
 
 **ページは表示されるが `env.DB` が undefined。** Worker は起動しています（つまり
 `nodejs_compat` は設定済みです）が、D1 バインディングがそこに届いていません。
-`wrangler.toml` のバインディング名（`binding = "DB"`）が `env` で読むプロパティと
-一致していること、そしてそのバインディングを宣言する `wrangler.toml` のあるディレクトリ
-から `wrangler pages dev dist/` を起動したことを確認してください。
+`wrangler dev` は Worker エントリとそのバインディングの両方を `wrangler.toml`（`main`、
+`[assets]`、`[[d1_databases]]`）から解決するため、そこのバインディング名
+（`binding = "DB"`）が `env` で読むプロパティと一致していること、そしてそのバインディングを
+宣言する `wrangler.toml` のあるプロジェクトルートから `wrangler dev` を起動したことを
+確認してください。
 
 **編集後もブラウザに古いコンテンツが表示される。** 通常、直前の `pnpm build` が失敗して
 います。`concurrently` の出力内の `[watch]` ストリームでビルドエラーを確認してください。
