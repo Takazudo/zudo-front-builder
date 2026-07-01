@@ -100,9 +100,9 @@ jobs:
         continue-on-error: true
         run: mkdir -p doc-history-out && tar -xf "$RUNNER_TEMP/doc-history.tar" -C doc-history-out
       - name: Prepare deploy directory
-        # Fallback until docs' @takazudo/zfb-adapter-cloudflare pin is bumped to the
-        # release where the adapter emits .assetsignore itself (epic #1309) — delete
-        # this step after that bump.
+        # The .assetsignore line below is a fallback until docs' @takazudo/zfb-adapter-cloudflare
+        # pin is bumped to the release where the adapter emits .assetsignore itself
+        # (epic #1309) — drop that line (keep the doc-history copy) after the bump.
         run: |
           if [ -d doc-history-out ] && [ "$(ls -A doc-history-out 2>/dev/null)" ]; then mkdir -p docs/dist/doc-history && cp -r doc-history-out/. docs/dist/doc-history/; fi
           [ -f docs/dist/.assetsignore ] || printf '%s\n' '_worker.js' '_zfb_inner.mjs' > docs/dist/.assetsignore
