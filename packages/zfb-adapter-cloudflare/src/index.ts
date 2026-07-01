@@ -1,5 +1,6 @@
-// `@takazudo/zfb-adapter-cloudflare` — Cloudflare Pages adapter for the
-// zfb framework.
+// `@takazudo/zfb-adapter-cloudflare` — Cloudflare Workers Static Assets
+// adapter for the zfb framework (also deployable to Cloudflare Pages
+// advanced mode).
 //
 // This entry (`./`) is the **Workers-runtime** surface. It is safe to
 // bundle into a Cloudflare Worker and does not depend on any Node-only
