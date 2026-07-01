@@ -534,6 +534,45 @@ const ENTRY_TMP_SUFFIX: &str = ".css";
 /// unlinked at all.
 const ENTRY_TMP_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Directory the synthesised Tailwind entry temp file is created in — and
+/// the directory the stale-entry sweep must sweep. The two MUST agree, so
+/// both the create site and the sweep site call this single helper.
+///
+/// Resolution: `input_css`'s contents are inlined verbatim into the
+/// synthesised entry (see [`build_synthesised_entry_css`]), so any relative
+/// `@import "./x.css";` inside it resolves against the entry file's own
+/// directory. That directory must therefore be `input_css`'s parent — not
+/// `working_dir` — for such a sibling import to find `./x.css` (zfb#1300).
+/// When there is no `input_css` (fully synthesised entry, no user file to
+/// inline), there is no relative-import scope to preserve, so the entry
+/// falls back to `working_dir`.
+///
+/// `@source` directives are unaffected either way — they are always emitted
+/// as absolute paths (see `default_source_directives` / the globs built in
+/// `crates/zfb/src/commands/build.rs`).
+///
+/// `input_css` is expected to be absolute in production (the sole caller,
+/// `resolve_input_global_css` in `crates/zfb/src/commands/build.rs`, builds
+/// it by joining onto an absolute `project_root`). Defensively, a *relative*
+/// parent is still resolved against `working_dir` rather than the process's
+/// own cwd, so the temp file always lands next to `input_css` regardless of
+/// how the caller constructed the path.
+fn entry_dir(cfg: &TailwindSubprocessConfig) -> PathBuf {
+    match &cfg.input_css {
+        Some(input_css) => match input_css.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => {
+                if parent.is_absolute() {
+                    parent.to_path_buf()
+                } else {
+                    cfg.working_dir.join(parent)
+                }
+            }
+            _ => cfg.working_dir.clone(),
+        },
+        None => cfg.working_dir.clone(),
+    }
+}
+
 /// Delete `zfb-tailwind-entry-*.css` files left in `dir` by a previous run
 /// that died before its [`tempfile::NamedTempFile`] `Drop` could clean up
 /// (SIGKILL / crash / Ctrl-C). See zfb#821.
@@ -625,25 +664,36 @@ impl CssEngine for TailwindSubprocessEngine {
         // See `ensure_oxide_extracted` and zfb#1237 for the full rationale.
         ensure_oxide_extracted(&self.config.binary_path);
 
+        // Both the sweep and the temp-file create below must agree on the
+        // entry's directory — compute it once via the shared helper.
+        let entry_dir = entry_dir(&self.config);
+
         // Self-heal: delete entry temp files stranded by a past abnormal
         // termination (SIGKILL / crash / Ctrl-C skips the RAII `Drop` that
         // normally removes them). Done before we create the new file so the
-        // project root is clean even if `git add -A` ran since the leak.
-        // See zfb#821.
-        sweep_stale_entry_files(&self.config.working_dir);
+        // entry dir is clean even if `git add -A` ran since the leak. See
+        // zfb#821.
+        sweep_stale_entry_files(&entry_dir);
 
-        // Materialise the synthesised entry CSS into a temp file so
-        // Tailwind's `@source` resolution uses our wrapper. The file lives
-        // in `working_dir` (not a subdir like `.zfb/`) on purpose: the
-        // user's `input_css` is inlined into this entry, so any relative
-        // `@import "./x.css";` in it resolves against the entry file's
-        // directory — which must be `working_dir` for those imports to find
-        // the user's siblings. `@source` paths are already absolute, so they
-        // are unaffected by the location.
+        // Materialise the synthesised entry CSS into a temp file. There are
+        // two distinct resolution scopes at play here:
+        //
+        // - `@source` directives are always absolute (built in
+        //   `crates/zfb/src/commands/build.rs` / `default_source_directives`),
+        //   so they resolve correctly regardless of where the entry file
+        //   lives.
+        // - The user's `input_css` (e.g. `styles/global.css`) is inlined
+        //   verbatim into this entry (see `build_synthesised_entry_css`), so
+        //   any relative `@import "./x.css";` it contains resolves against
+        //   the entry file's OWN directory. The entry must therefore live
+        //   next to `input_css` (its parent dir) — not `working_dir` — for
+        //   such sibling imports to find `./x.css` (zfb#1300). When there is
+        //   no `input_css`, there is no relative-import scope to preserve,
+        //   so we fall back to `working_dir`. See [`entry_dir`].
         let mut entry_tmp = tempfile::Builder::new()
             .prefix(ENTRY_TMP_PREFIX)
             .suffix(ENTRY_TMP_SUFFIX)
-            .tempfile_in(&self.config.working_dir)
+            .tempfile_in(&entry_dir)
             .context("failed to allocate temp file for tailwind entry CSS")?;
         {
             use std::io::Write;
@@ -1136,6 +1186,57 @@ mod tests {
             stripped.contains("@import \"tailwindcss\";"),
             "active import after block comment must survive stripping; got:\n{stripped}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // zfb#1300 — entry dir must follow input_css so relative sibling
+    // `@import`s in the user's CSS resolve correctly
+    // -----------------------------------------------------------------------
+
+    /// When `input_css` is set, the synthesised entry must be created in
+    /// its parent directory — not `working_dir` — so an inlined relative
+    /// sibling `@import "./tokens.css";` resolves against the entry's own
+    /// location (zfb#1300).
+    #[test]
+    fn entry_dir_follows_input_css_parent_when_set() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_working_dir("/project/root")
+            .with_input_css("/project/root/styles/global.css");
+        assert_eq!(entry_dir(&cfg), PathBuf::from("/project/root/styles"));
+    }
+
+    /// When `input_css` is `None` (fully synthesised entry, nothing to
+    /// inline), there is no relative-import scope to preserve, so the entry
+    /// falls back to `working_dir`.
+    #[test]
+    fn entry_dir_falls_back_to_working_dir_when_input_css_is_none() {
+        let cfg = TailwindSubprocessConfig::default().with_working_dir("/project/root");
+        assert_eq!(entry_dir(&cfg), PathBuf::from("/project/root"));
+    }
+
+    /// A bare filename `input_css` (no directory component) has an empty
+    /// `parent()` — fall back to `working_dir` rather than resolving
+    /// against an empty path.
+    #[test]
+    fn entry_dir_falls_back_to_working_dir_when_input_css_has_no_parent() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_working_dir("/project/root")
+            .with_input_css("global.css");
+        assert_eq!(entry_dir(&cfg), PathBuf::from("/project/root"));
+    }
+
+    /// Defensive case: production always passes an absolute `input_css`
+    /// (built by joining onto an absolute `project_root`), but a
+    /// *relative* `input_css` with a relative parent must still resolve
+    /// against `working_dir` — not the process's own cwd — so the temp
+    /// file lands next to `input_css` regardless of how the caller built
+    /// the path.
+    #[test]
+    fn entry_dir_resolves_relative_input_css_parent_against_working_dir() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_working_dir("/project/root")
+            .with_input_css("styles/global.css");
+        assert_eq!(entry_dir(&cfg), PathBuf::from("/project/root/styles"));
     }
 
     // -----------------------------------------------------------------------
