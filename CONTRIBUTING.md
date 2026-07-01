@@ -100,10 +100,10 @@ To keep the foundation conservative we ship Prettier today and revisit the swap 
 
 ## CI secrets
 
-The Cloudflare Pages deploy workflow (wired up in a later sub-task) expects the following GitHub Actions secrets to be present on the repository:
+The Cloudflare Workers deploy workflows expect the following GitHub Actions secrets to be present on the repository:
 
-- **`CLOUDFLARE_API_TOKEN`** (required) — API token with `Pages:Edit` permission, used by `wrangler pages deploy`.
-- **`CLOUDFLARE_ACCOUNT_ID`** (required) — the Cloudflare account ID that owns the Pages project.
+- **`CLOUDFLARE_API_TOKEN`** (required) — API token with Workers-scoped permissions, used by `wrangler deploy`.
+- **`CLOUDFLARE_ACCOUNT_ID`** (required) — the Cloudflare account ID that owns the `zfb-docs` Worker.
 - **`IFTTT_PROD_NOTIFY`** (optional) — IFTTT webhook key used to push a notification when a production deploy lands. Omit to skip notifications.
 
 ## External tool version pins
