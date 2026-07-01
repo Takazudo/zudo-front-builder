@@ -36,8 +36,8 @@ export interface EmitWorkerInput {
   readonly inputBundlePath: string;
   /**
    * Absolute path to the output directory. The emitter creates it if
-   * missing and writes `_worker.js` plus `_zfb_inner.mjs` (the copied
-   * input bundle) into it.
+   * missing and writes `_worker.js`, `_zfb_inner.mjs` (the copied input
+   * bundle), and `.assetsignore` into it.
    */
   readonly outdir: string;
 }
@@ -49,25 +49,31 @@ export interface EmitWorkerInput {
 export interface EmitWorkerOutput {
   readonly workerPath: string;
   readonly innerBundlePath: string;
+  readonly assetsIgnorePath: string;
 }
 
 /**
- * Emit a Cloudflare Pages `_worker.js` that wraps the zfb input bundle.
+ * Emit a Cloudflare Workers Static Assets (Pages-compatible) `_worker.js`
+ * that wraps the zfb input bundle.
  *
- * Output shape (two files in `outdir`):
+ * Output shape (three files in `outdir`):
  *
- *   _worker.js       — entry imported by Cloudflare Pages advanced mode
+ *   _worker.js       — Worker entry point (`main` in wrangler.toml, or the
+ *                      Pages advanced-mode convention)
  *   _zfb_inner.mjs   — the input bundle, copied verbatim
+ *   .assetsignore    — excludes the two files above from the asset upload
+ *                      so they are only reachable through the Worker's
+ *                      module graph, never served as a public static file
  *
  * The wrapper imports the inner bundle via the relative path
  * `./_zfb_inner.mjs`. Workerd's Module loader resolves relative ESM
- * imports inside an advanced-mode `_worker.js` directory, so this layout
- * works without re-bundling.
+ * imports inside the `_worker.js` directory, so this layout works
+ * without re-bundling.
  *
- * Why two files instead of one: re-bundling here would require a second
- * esbuild pass and would force the adapter to ship its own esbuild
- * binary slot. The two-file layout keeps the adapter dependency-free at
- * runtime — it is just `node:fs` glue.
+ * Why two bundle files instead of one: re-bundling here would require a
+ * second esbuild pass and would force the adapter to ship its own
+ * esbuild binary slot. The two-file layout keeps the adapter
+ * dependency-free at runtime — it is just `node:fs` glue.
  */
 export async function emitWorker(input: EmitWorkerInput): Promise<EmitWorkerOutput> {
   return _emitWorker({
