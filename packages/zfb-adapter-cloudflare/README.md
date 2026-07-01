@@ -30,7 +30,7 @@ In `zfb.config.json`:
 ```jsonc
 {
   "framework": "preact",
-  "adapter": "@takazudo/zfb-adapter-cloudflare"
+  "adapter": "@takazudo/zfb-adapter-cloudflare",
 }
 ```
 
@@ -91,12 +91,26 @@ not_found_handling = "404-page"
   imports `node:async_hooks` to thread `(env, ctx)` into your route
   handlers; without this flag the Worker fails at runtime with
   `No such module "node:async_hooks"`.
-- `not_found_handling = "404-page"` is recommended so unmatched asset
-  paths fall through to the Worker (which serves your `pages/404.tsx`
-  and any dynamic `prerender = false` routes). Avoid
-  `single-page-application`: it returns `index.html` for every
-  unresolved path *before* the Worker ever sees the request, which
-  breaks dynamic routes like `pages/api/*.tsx`.
+- `not_found_handling = "404-page"` is recommended. With it, an
+  unmatched path makes the asset layer serve your styled `dist/404.html`
+  (built from `pages/404.tsx`) with a `404` status. The `_worker.js`
+  wrapper still probes the inner Worker for genuinely dynamic
+  `prerender = false` routes, but its **404 precedence** is:
+  - inner returns a non-404 (a real dynamic route) → the inner response
+    wins;
+  - inner also 404s with only a generic body (the framework's default
+    `text/plain` "404 Not Found") → the **styled `404.html` wins**, so
+    visitors see your designed 404 page instead of plain text;
+  - inner 404s with a structured payload (`application/json`, etc.) → that
+    **intentional API 404 is preserved** — the styled page does not stomp
+    it.
+
+  Under `not_found_handling = "none"` the asset 404 has no styled body, so
+  the inner Worker's plain 404 is always shown. Avoid
+  `single-page-application`: it returns `index.html` for every unresolved
+  path _before_ the Worker ever sees the request, which breaks dynamic
+  routes like `pages/api/*.tsx`.
+
 - `[assets] binding = "ASSETS"` is optional but recommended — it lets
   the `_worker.js` wrapper probe `env.ASSETS.fetch()` directly for
   GET/HEAD requests, matching the SSG-vs-SSR precedence described
@@ -127,7 +141,7 @@ graph — never served as public static files. Without it, a request for
 plain-text download.
 
 **Precedence:** zfb copies your project's `public/` directory into
-`dist/` *after* running this adapter. If your `public/` directory
+`dist/` _after_ running this adapter. If your `public/` directory
 contains its own `.assetsignore`, it overrides the one this adapter
 emits — the adapter's excludes are silently dropped. Only add a
 `public/.assetsignore` if you have additional paths to exclude and

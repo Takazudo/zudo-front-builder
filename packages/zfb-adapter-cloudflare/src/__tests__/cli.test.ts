@@ -58,6 +58,61 @@ async function scratch(): Promise<string> {
   return d;
 }
 
+type EmittedWorker = {
+  default: {
+    fetch: (request: Request, env: Record<string, unknown>, ctx: unknown) => Promise<Response>;
+  };
+};
+
+// Emit a `_worker.js` around a synthetic inner bundle and import it as ESM.
+// Each call uses a fresh mkdtemp dir, so the emitted worker path is unique
+// per test and the dynamic-import cache never collides across cases.
+async function emitAndImportWorker(innerSource: string): Promise<EmittedWorker> {
+  const dir = await scratch();
+  const inputPath = join(dir, "inner.mjs");
+  await writeFile(inputPath, innerSource, "utf8");
+  const out = await emitWorker({ inputBundlePath: inputPath, outdir: join(dir, "dist") });
+  return (await import(pathToFileURL(out.workerPath).href)) as EmittedWorker;
+}
+
+const NOOP_CTX = {
+  waitUntil: () => undefined,
+  passThroughOnException: () => undefined,
+};
+
+// A synthetic inner bundle that mimics the real zfb inner router's default
+// not-found: Hono's `c.notFound()` → `text/plain` "404 Not Found". Used by
+// the styled-asset-404 precedence tests below.
+const INNER_PLAIN_404 = `export default {
+  async fetch() {
+    return new Response("404 Not Found", {
+      status: 404,
+      headers: { "content-type": "text/plain; charset=UTF-8" },
+    });
+  },
+};
+`;
+
+// The styled 404.html body the asset layer serves under
+// not_found_handling = "404-page" (or the Pages 404.html convention).
+const STYLED_404_HTML =
+  '<!doctype html><html><head><link rel="stylesheet" href="/assets/s.css"></head><body>Custom styled 404 page</body></html>';
+
+// Model the asset server's styled-404 response: 404 + text/html + a real
+// Content-Length (a static file). new Response(string) does NOT auto-set
+// content-length in this runtime, so we set it explicitly to match the
+// platform (verified: workerd/CF serve 404.html with Content-Length).
+function styledAsset404Response(body: string | null = STYLED_404_HTML): Response {
+  return new Response(body, {
+    status: 404,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": String(STYLED_404_HTML.length),
+      "x-served-by": "asset-404-page",
+    },
+  });
+}
+
 describe("CLI / emitWorker", () => {
   it("WORKER_WRAPPER_SOURCE re-exported by bin/cli.mjs matches the build.ts constant", () => {
     // Both src/build.ts and bin/cli.mjs import from the canonical
@@ -299,6 +354,207 @@ export default {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("dynamic: /api/ai-chat");
     expect(assetsCalls).toBe(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Styled-404 precedence (issue #1322). When the asset probe 404s AND the
+  // inner worker also 404s, the wrapper prefers the earlier asset response iff
+  // it carries a styled 404-page body — otherwise the styled 404.html is lost
+  // and users see the inner's plain-text 404.
+  // ---------------------------------------------------------------------------
+
+  it('prefers the styled asset 404 over the inner plain 404 (not_found_handling = "404-page")', async () => {
+    // Asset layer returns 404 WITH the styled 404.html body; the inner router
+    // returns its generic text/plain 404. The styled page must win.
+    const worker = await emitAndImportWorker(INNER_PLAIN_404);
+
+    let assetsCalls = 0;
+    const env = {
+      ASSETS: {
+        fetch: async () => {
+          assetsCalls += 1;
+          return styledAsset404Response();
+        },
+      },
+    };
+
+    const request = new Request("https://worker.test/no-such-page-xyz");
+    const response = await worker.default.fetch(request, env, NOOP_CTX);
+
+    expect(response.status).toBe(404);
+    expect(assetsCalls).toBe(1);
+    expect(response.headers.get("x-served-by")).toBe("asset-404-page");
+    const body = await response.text();
+    expect(body).toContain("Custom styled 404 page");
+    expect(body).toContain('rel="stylesheet"');
+    // The inner's plain-text 404 must NOT leak through.
+    expect(body).not.toBe("404 Not Found");
+  });
+
+  it('keeps the inner 404 when the asset 404 has an empty/non-HTML body (not_found_handling = "none")', async () => {
+    // "none" is Cloudflare's default 404 — no styled body. The predicate
+    // (text/html + Content-Length) is false, so the inner 404 wins, exactly
+    // as before this fix.
+    const worker = await emitAndImportWorker(`export default {
+  async fetch() {
+    return new Response("inner plain 404", {
+      status: 404,
+      headers: { "content-type": "text/plain; charset=UTF-8" },
+    });
+  },
+};
+`);
+
+    const env = {
+      ASSETS: {
+        // not_found_handling = "none": null body, no content-type/length.
+        fetch: async () => new Response(null, { status: 404 }),
+      },
+    };
+
+    const request = new Request("https://worker.test/no-such-page");
+    const response = await worker.default.fetch(request, env, NOOP_CTX);
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("inner plain 404");
+  });
+
+  it("keeps the inner 404 for a bare Pages advanced-mode asset 404 (no styled body)", async () => {
+    // Pages advanced mode without the 404.html convention: the asset 404 is a
+    // plain-text "Not Found" with no HTML body. Predicate false → inner wins.
+    const worker = await emitAndImportWorker(`export default {
+  async fetch() {
+    return new Response("inner dynamic 404", {
+      status: 404,
+      headers: { "content-type": "text/plain; charset=UTF-8" },
+    });
+  },
+};
+`);
+
+    const env = {
+      ASSETS: {
+        fetch: async () =>
+          new Response("Not Found", {
+            status: 404,
+            headers: { "content-type": "text/plain; charset=utf-8", "content-length": "9" },
+          }),
+      },
+    };
+
+    const request = new Request("https://worker.test/missing");
+    const response = await worker.default.fetch(request, env, NOOP_CTX);
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("inner dynamic 404");
+  });
+
+  it("prefers the styled asset 404 for the Pages 404.html convention (styled html body)", async () => {
+    // Pages advanced mode WITH the 404.html convention: the asset 404 carries
+    // the styled html page, same shape as the Workers "404-page" case → asset
+    // wins over the inner's generic 404.
+    const worker = await emitAndImportWorker(INNER_PLAIN_404);
+
+    const env = {
+      ASSETS: {
+        fetch: async () => styledAsset404Response(),
+      },
+    };
+
+    const request = new Request("https://worker.test/nope");
+    const response = await worker.default.fetch(request, env, NOOP_CTX);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-served-by")).toBe("asset-404-page");
+    expect(await response.text()).toContain("Custom styled 404 page");
+  });
+
+  it("keeps the inner response when it is non-404, even if the asset 404 is styled (dynamic route wins)", async () => {
+    // A prerender=false route that the asset layer does not resolve: the asset
+    // returns a styled 404, but the inner serves the route with a 200. The
+    // styled-404 preference only fires when the inner ALSO 404s.
+    const worker = await emitAndImportWorker(`export default {
+  async fetch(request) {
+    return new Response("dynamic ok: " + new URL(request.url).pathname, {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    });
+  },
+};
+`);
+
+    const env = {
+      ASSETS: {
+        fetch: async () => styledAsset404Response(),
+      },
+    };
+
+    const request = new Request("https://worker.test/api/live-data");
+    const response = await worker.default.fetch(request, env, NOOP_CTX);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("dynamic ok: /api/live-data");
+    expect(response.headers.get("x-served-by")).toBeNull();
+  });
+
+  it("does NOT stomp an intentional inner JSON API 404 with the styled asset 404", async () => {
+    // An API route that deliberately 404s with a machine-readable payload
+    // (application/json). Even though the asset layer offers a styled 404
+    // page, the inner's structured 404 is the API contract and must survive.
+    const worker = await emitAndImportWorker(`export default {
+  async fetch() {
+    return new Response(JSON.stringify({ error: "not found" }), {
+      status: 404,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  },
+};
+`);
+
+    const env = {
+      ASSETS: {
+        fetch: async () => styledAsset404Response(),
+      },
+    };
+
+    const request = new Request("https://worker.test/api/widgets/999");
+    const response = await worker.default.fetch(request, env, NOOP_CTX);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("x-served-by")).toBeNull();
+    expect(await response.json()).toEqual({ error: "not found" });
+  });
+
+  it("HEAD: prefers the styled asset 404 headers/status over the inner plain 404 (no body)", async () => {
+    // A HEAD asset 404 carries no body but the same content-type/Content-Length
+    // headers a GET would. The header-only predicate fires symmetrically, so
+    // the styled asset response (status + headers) wins for HEAD too.
+    const worker = await emitAndImportWorker(`export default {
+  async fetch() {
+    return new Response(null, {
+      status: 404,
+      headers: { "content-type": "text/plain; charset=UTF-8", "x-served-by": "inner" },
+    });
+  },
+};
+`);
+
+    const env = {
+      ASSETS: {
+        // HEAD: null body, but content-type + Content-Length present.
+        fetch: async () => styledAsset404Response(null),
+      },
+    };
+
+    const request = new Request("https://worker.test/no-such-page", { method: "HEAD" });
+    const response = await worker.default.fetch(request, env, NOOP_CTX);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(response.headers.get("content-length")).toBe(String(STYLED_404_HTML.length));
+    // The asset response won, not the inner.
+    expect(response.headers.get("x-served-by")).toBe("asset-404-page");
   });
 
   it("returns the asset response unchanged when ASSETS issues a 308 redirect (CF Pages trailing-slash canonicalisation)", async () => {
