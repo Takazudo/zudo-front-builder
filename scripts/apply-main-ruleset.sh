@@ -7,14 +7,22 @@ set -euo pipefail
 #
 # What this requires (only checks that run on EVERY PR, unconditionally —
 # no path filters, no workflow_run/tag-only triggers):
-#   - health                              (.github/workflows/health.yml)
-#   - build (no-v8)                       (.github/workflows/health.yml)
-#   - Build binary (ubuntu-22.04)         (.github/workflows/node-free-smoke.yml)
-#   - Smoke amd64 (local mode)            (.github/workflows/node-free-smoke.yml)
-#   - Smoke amd64 TS-config (local mode)  (.github/workflows/node-free-smoke.yml)
-#   - Smoke arm64 (local mode)            (.github/workflows/node-free-smoke.yml)
-#   - Smoke arm64 TS-config (local mode)  (.github/workflows/node-free-smoke.yml)
-#   - pnpm audit (prod)                   (.github/workflows/pr-checks.yml)
+#   - health                                        (.github/workflows/health.yml)
+#   - build (no-v8)                                 (.github/workflows/health.yml)
+#   - Build binary (x86_64-unknown-linux-gnu)       (.github/workflows/node-free-smoke.yml)
+#   - Build binary (aarch64-unknown-linux-gnu)      (.github/workflows/node-free-smoke.yml)
+#   - Smoke amd64 (local mode)                      (.github/workflows/node-free-smoke.yml)
+#   - Smoke amd64 TS-config (local mode)            (.github/workflows/node-free-smoke.yml)
+#   - Smoke arm64 (local mode)                      (.github/workflows/node-free-smoke.yml)
+#   - Smoke arm64 TS-config (local mode)            (.github/workflows/node-free-smoke.yml)
+#   - pnpm audit (prod)                             (.github/workflows/pr-checks.yml)
+#
+# Build binary's two matrix legs both build on the ubuntu-22.04 runner (the
+# GLIBC 2.35 floor host, and the arm64 leg cross-compiles rather than using a
+# native arm64 runner — see node-free-smoke.yml comments), so the check name
+# is derived from matrix.platform.target rather than matrix.platform.runner —
+# otherwise both legs would render the identical check context "Build binary
+# (ubuntu-22.04)" and a ruleset couldn't require them independently.
 #
 # Deliberately NOT required:
 #   - "Build docs site" (.github/workflows/pr-checks.yml) — sibling issue
@@ -43,11 +51,17 @@ set -euo pipefail
 # described in issue #1333 / the PR description has NOT been performed as
 # part of this change — see that verification note before relying on this.
 #
+# Idempotency: this script looks up the ruleset by name before writing. If
+# "main-required-status-checks" already exists, it PUTs an update to that
+# ruleset's id instead of POSTing a new one — re-running this script is safe
+# and does not create duplicate rulesets or fail on a name collision.
+#
 # Usage:
 #   scripts/apply-main-ruleset.sh            # create/update against the real repo
-#   scripts/apply-main-ruleset.sh --dry-run  # print the JSON body only
+#   scripts/apply-main-ruleset.sh --dry-run  # print the JSON body only (no API calls)
 
 REPO="Takazudo/zudo-front-builder"
+RULESET_NAME="main-required-status-checks"
 
 BODY=$(cat <<'JSON'
 {
@@ -67,7 +81,8 @@ BODY=$(cat <<'JSON'
         "required_status_checks": [
           { "context": "health" },
           { "context": "build (no-v8)" },
-          { "context": "Build binary (ubuntu-22.04)" },
+          { "context": "Build binary (x86_64-unknown-linux-gnu)" },
+          { "context": "Build binary (aarch64-unknown-linux-gnu)" },
           { "context": "Smoke amd64 (local mode)" },
           { "context": "Smoke amd64 TS-config (local mode)" },
           { "context": "Smoke arm64 (local mode)" },
@@ -94,4 +109,12 @@ if [ "${1:-}" = "--dry-run" ]; then
   exit 0
 fi
 
-echo "$BODY" | gh api --method POST "repos/${REPO}/rulesets" --input -
+EXISTING_ID=$(gh api "repos/${REPO}/rulesets" --jq ".[] | select(.name == \"${RULESET_NAME}\") | .id" | head -n1)
+
+if [ -n "$EXISTING_ID" ]; then
+  echo "Ruleset '${RULESET_NAME}' already exists (id ${EXISTING_ID}) — updating in place." >&2
+  echo "$BODY" | gh api --method PUT "repos/${REPO}/rulesets/${EXISTING_ID}" --input -
+else
+  echo "Ruleset '${RULESET_NAME}' not found — creating." >&2
+  echo "$BODY" | gh api --method POST "repos/${REPO}/rulesets" --input -
+fi

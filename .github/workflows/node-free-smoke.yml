@@ -53,7 +53,12 @@ on:
 jobs:
   # ── Linux binary build (one job per platform) ──────────────────────────────
   build-binary:
-    name: Build binary (${{ matrix.platform.runner }})
+    # Named after matrix.platform.target (not .runner) so each leg produces a
+    # unique GitHub check context — both legs run on the same runner
+    # (ubuntu-22.04, see comments below), so naming after .runner would make
+    # both legs report the identical check name and branch-protection
+    # rulesets couldn't require them independently.
+    name: Build binary (${{ matrix.platform.target }})
     # Only run on PR and main push triggers, not on workflow_run.
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
     strategy:
