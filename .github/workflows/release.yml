@@ -874,3 +874,66 @@ jobs:
           fi
           FILE_COUNT=$(find "$SMOKE_DIR/smoke-site/dist" -type f | wc -l)
           echo "dist/ OK: ${FILE_COUNT} file(s) found. First: $DIST_FILE"
+
+  notify:
+    # Alerting guard: a red build/release-assets/publish/smoke-clean-room leg
+    # otherwise sits unseen in the Actions tab once the release skill's watch
+    # ends. `needs` lists every upstream job (not just build/publish/
+    # smoke-clean-room) with `if: always()` + bash-computed FAILED_JOB —
+    # gating on a bare `if: failure()` over only 3 jobs would stay silent if
+    # an earlier job (e.g. detect-mac-local) fails and cascades a *skip*
+    # (not a failure) into its dependents. Same IFTTT pattern as
+    # docs-deploy.yml's notify job (status-computed, reuses IFTTT_PROD_NOTIFY).
+    needs: [detect-mac-local, prepare-matrix, build, release-assets, publish, smoke-clean-room]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
+    steps:
+      - name: Notify via IFTTT on failure
+        if: env.IFTTT_PROD_NOTIFY != ''
+        env:
+          DETECT_MAC_LOCAL_RESULT: ${{ needs.detect-mac-local.result }}
+          PREPARE_MATRIX_RESULT: ${{ needs.prepare-matrix.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          RELEASE_ASSETS_RESULT: ${{ needs.release-assets.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          SMOKE_CLEAN_ROOM_RESULT: ${{ needs.smoke-clean-room.result }}
+          RAW_TAG: ${{ github.event.release.tag_name }}
+          GITHUB_SHA_VAL: ${{ github.sha }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          FAILED_JOB=""
+          if [ "$DETECT_MAC_LOCAL_RESULT" = "failure" ]; then
+            FAILED_JOB="detect-mac-local"
+          elif [ "$PREPARE_MATRIX_RESULT" = "failure" ]; then
+            FAILED_JOB="prepare-matrix"
+          elif [ "$BUILD_RESULT" = "failure" ]; then
+            FAILED_JOB="build"
+          elif [ "$RELEASE_ASSETS_RESULT" = "failure" ]; then
+            FAILED_JOB="release-assets"
+          elif [ "$PUBLISH_RESULT" = "failure" ]; then
+            FAILED_JOB="publish"
+          elif [ "$SMOKE_CLEAN_ROOM_RESULT" = "failure" ]; then
+            FAILED_JOB="smoke-clean-room"
+          fi
+
+          if [ -z "$FAILED_JOB" ]; then
+            echo "No failed job among detect-mac-local/prepare-matrix/build/release-assets/publish/smoke-clean-room — skipping notification."
+            exit 0
+          fi
+
+          SHORT_SHA=$(echo "$GITHUB_SHA_VAL" | cut -c1-7)
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+          TAG_LABEL="${RAW_TAG:-$SHORT_SHA}"
+
+          curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"value1\": \"Release failed (${FAILED_JOB})\",
+              \"value2\": \"${TAG_LABEL}\",
+              \"value3\": \"${RUN_URL}\"
+            }" || echo "::warning::IFTTT notification failed"
