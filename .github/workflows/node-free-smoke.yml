@@ -305,3 +305,36 @@ jobs:
 
       - name: Run smoke container (released mode)
         run: docker run --rm zfb-smoke:released
+
+  notify-smoke-released:
+    # Alerting guard: smoke-released fires via workflow_run AFTER release.yml
+    # (and the release skill's watch) has already finished, so a red run here
+    # otherwise sits unseen in the Actions tab. Same IFTTT pattern as
+    # docs-deploy.yml's notify job (reuses IFTTT_PROD_NOTIFY, no new secret).
+    name: Notify on smoke-released failure
+    needs: smoke-released
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
+    steps:
+      - name: Notify via IFTTT
+        if: env.IFTTT_PROD_NOTIFY != ''
+        env:
+          RAW_TAG: ${{ github.event.workflow_run.head_branch }}
+          GITHUB_SHA_VAL: ${{ github.event.workflow_run.head_sha }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          SHORT_SHA=$(echo "$GITHUB_SHA_VAL" | cut -c1-7)
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+
+          curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"value1\": \"Node-free smoke (released) failed\",
+              \"value2\": \"${RAW_TAG} (${SHORT_SHA})\",
+              \"value3\": \"${RUN_URL}\"
+            }" || echo "::warning::IFTTT notification failed"
