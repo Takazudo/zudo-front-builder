@@ -5,8 +5,12 @@
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
     "declaration": true,
-    "declarationMap": true,
+    // Published tarball ships dist/ but not src/ (see package.json "files"), so maps that point at
+    // ../src/*.ts dangle in consumers (issue #1325). inlineSources embeds the .ts into .js.map so JS
+    // maps are self-contained; declarationMap is off because .d.ts.map can't inline sources.
+    "declarationMap": false,
     "sourceMap": true,
+    "inlineSources": true,
     "jsx": "react-jsx",
     "jsxImportSource": "react",
     "types": ["node"],
