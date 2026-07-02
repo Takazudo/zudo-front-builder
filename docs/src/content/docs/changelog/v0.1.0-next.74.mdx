@@ -1,0 +1,39 @@
+---
+title: v0.1.0-next.74
+sidebar_position: 1074
+---
+
+# v0.1.0-next.74
+
+Released: 2026-07-02
+
+## Features
+
+- feat(preview): switch adapter mode from wrangler pages dev to wrangler dev (35649e1)
+- feat(adapter-cloudflare): emit .assetsignore as a third build output (f46e65c)
+
+## Bug Fixes
+
+- fix(adapter-cloudflare): narrow 404 styled-asset precedence to framework-default only (3b321c1)
+- fix(adapter-cloudflare): prefer styled asset 404 over inner plain 404 (#1322) (182d369)
+- fix(dev): prune moved per-page artifacts on skipped ticks (#1317) (8570e6c)
+- fix(preview): warn when adapter mode gets a non-default --outdir (eb7cb1e)
+- fix(zfb-build): render selected pages on skipped dev tick (#1307, fixes #1301) (0d736b6)
+- fix(css): resolve synthesised tailwind entry next to input_css (#1300) (50f3c8b)
+- fix(runtime): move createPageRouter to @takazudo/zfb-runtime/server; make root barrel client-safe (#1298) (95bd4d7)
+
+## Other Changes
+
+- docs(concepts): invert ssr-on-a-worker dispatch model for Workers Static Assets (#1315) (c6d3219)
+- docs(cf-static-assets): sweep long-tail Cloudflare Pages one-liners to Workers Static Assets (9622128)
+- docs(guides): fix in-page wrangler.toml anchor links (#1314) (f77de81)
+- docs(guides): rewrite SSR & Cloudflare bindings guide for Workers Static Assets (#1314) (3b26035)
+- docs(adapter-cloudflare): rebrand for Workers Static Assets (Pages-compatible) (ceb0d2e)
+- docs(test): link spun-out issues #1300/#1301 in dev-dep-invalidation fixtures (f5b15b9)
+- ci(docs): adapter-aware .assetsignore handling in deploy workflows (76fbfc6)
+- ci(docs): preserve hidden .assetsignore across upload-artifact and fallback idempotently (704d774)
+- test(adapter-cloudflare): assert .assetsignore emission + CLI stdout lines (b58621d)
+- test(zfb-build): update skipped-tick staleness guard for #1301 (dd3a8c3)
+- test(islands): guard server-router exclusion from the client bundle (#1298) (f5dbd4c)
+- test(dev): implement symptom-B dev-dep-invalidation e2e fixture (#1294) (ef265d8)
+- test(dev): fix symptom-A + symptom-C dev-dep-invalidation e2e fixtures (#1294) (b8cd686)
