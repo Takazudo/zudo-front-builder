@@ -1,0 +1,68 @@
+# pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
+# commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
+# release for human readability. To bump: resolve the new tag's SHA via
+# `gh api repos/<org>/<repo>/git/refs/tags/<tag> --jq .object.sha` and replace
+# both the SHA and the version comment.
+
+name: Docs Checks
+
+# Split out of pr-checks.yml (issue #1336): the docs build + `zfb check` +
+# `check:html` used to run unconditionally on every PR, including pure-Rust
+# changes that never touch docs/. A workflow-level `paths:` filter can't be
+# added to pr-checks.yml itself because that workflow also carries the
+# `pnpm audit (prod)` job, which is a required status check on every PR
+# (#1333's branch ruleset) — path-filtering the whole workflow would hang
+# non-docs PRs. This workflow only ever carries docs-scoped jobs, so a
+# workflow-level path filter here is safe: it is not (and must not become) a
+# required check, since it legitimately does not run on non-docs PRs.
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - "docs/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+      - ".github/workflows/docs-checks.yml"
+
+concurrency:
+  group: docs-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build docs site
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build docs
+        run: pnpm --filter docs build
+
+      - name: Type-check docs
+        run: pnpm --filter docs check
+
+      - name: Validate emitted HTML
+        run: pnpm --filter docs check:html
