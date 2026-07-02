@@ -76,6 +76,10 @@ The axes are independent. "Too heavy for the PR gate" is a **tier** question, ne
 
 **Do not scaffold unused tiers.** zfb needs T0 + T1 now; T4 is the new `b4push`; T3 is documented-but-deferred.
 
+### Branch ruleset on `main` (T1 enforcement)
+
+T1's "mergeable when required checks are green" is now enforced by a GitHub **ruleset** on `main` (id `18452968`, `main-required-status-checks`; created via `scripts/apply-main-ruleset.sh`, checked in for reproducibility — rerun it to recreate/update if the ruleset is ever deleted). It requires the `required_status_checks` rule with only the checks that run on **every** PR unconditionally (no path filters, no tag/workflow_run-only triggers): `health`, `build (no-v8)`, `Build binary (ubuntu-22.04)`, the 4 `Smoke * (local mode)` jobs, and `pnpm audit (prod)`. `Build docs site` is deliberately excluded because a sibling change (#1336) makes it path-filtered to `docs/**` — a required check that stops running on non-docs PRs would hang them forever. A `RepositoryRole` (`admin`, `actor_id: 5`) bypass actor with `bypass_mode: always` is configured so `/l-make-release`'s direct version-bump push to `main` keeps working — `required_status_checks` also blocks direct pushes (a directly-pushed commit has no passing checks recorded against it), so without this bypass entry releases would break. **Pending manual verification:** the bypass actor has not yet been proven with a live test push (see issue #1333 / the PR that introduced this ruleset for the exact verification command) — treat `/l-make-release`'s direct-push step as unverified against this ruleset until a repo owner confirms it.
+
 ### Required behavior (agents)
 
 1. **Declare the test plan first** — *what* you're testing, *which level*, *why* that level.
