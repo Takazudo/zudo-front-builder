@@ -108,6 +108,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # TypeScript typecheck gate (issue #1332): b4push has run this since its
+      # inception, but CI never did — `pnpm -r test` below only runs vitest,
+      # which transpiles (via esbuild/swc) without type-checking, so a type
+      # error could merge green. `--if-present` mirrors b4push's invocation:
+      # packages without a `typecheck` script are skipped rather than failing.
+      - run: pnpm -r --if-present typecheck
+
       # Run the JS/TS test suites across all packages (@takazudo/zfb and
       # @takazudo/zfb-runtime). Includes the slugify parity tests that
       # consume the shared fixture in crates/zfb-content/tests/fixtures/
