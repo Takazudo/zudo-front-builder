@@ -260,6 +260,14 @@ impl TailwindSubprocessConfig {
 /// value — escaping them would break pattern expansion.
 fn push_escaped_source(out: &mut String, value: &str) {
     out.push_str("@source \"");
+    push_escaped_css_string_value(out, value);
+    out.push_str("\";\n");
+}
+
+/// Append `value` to `out` escaped for use inside a double-quoted CSS
+/// string literal (`"` and `\` are the only bytes that need escaping;
+/// glob metacharacters must pass through — see [`push_escaped_source`]).
+fn push_escaped_css_string_value(out: &mut String, value: &str) {
     for c in value.chars() {
         match c {
             '"' => out.push_str("\\\""),
@@ -267,7 +275,106 @@ fn push_escaped_source(out: &mut String, value: &str) {
             _ => out.push(c),
         }
     }
-    out.push_str("\";\n");
+}
+
+/// Rewrite relative `@source` globs in the user's inlined CSS to absolute
+/// paths anchored at `base` (the engine's `working_dir`, i.e. the project
+/// root).
+///
+/// Tailwind v4 resolves a relative `@source` path against the directory of
+/// the stylesheet *containing* the directive. The user authored their
+/// `@source` lines in `input_css`, but zfb inlines that text into a
+/// synthesised entry whose on-disk location is an implementation detail —
+/// `working_dir` before zfb#1300, `input_css`'s parent after. That
+/// relocation silently rebased every relative glob and broke consumers who
+/// authored project-root-relative `@source` lines: all their component /
+/// package classes vanished from the emitted stylesheet (zfb#1327,
+/// zudolab/zudo-doc#2511). Rewriting the globs to absolute paths pins the
+/// contract the pre-#1300 releases established — "a relative `@source` in
+/// `input_css` is project-root-relative" — no matter where the entry temp
+/// file is created.
+///
+/// Scope: only single-line `@source "<path>";` / `@source not "<path>";`
+/// forms (either quote style) are rewritten. `@source inline(...)`,
+/// absolute paths, empty values, and anything unparsable pass through
+/// byte-for-byte. Scanning is line-based like [`is_tailwind_import_line`];
+/// a commented-out `@source` line may still be rewritten, which is
+/// harmless — the rewritten bytes stay inside the comment.
+fn rebase_relative_source_globs(text: &str, base: &Path) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (idx, line) in text.split('\n').enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        match rebase_source_line(line, base) {
+            Some(rewritten) => out.push_str(&rewritten),
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
+/// Rewrite a single line when it is a relative `@source` directive.
+/// Returns `None` (caller emits the original line unchanged) for anything
+/// else. See [`rebase_relative_source_globs`] for the contract.
+fn rebase_source_line(line: &str, base: &Path) -> Option<String> {
+    let indent_len = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent_len);
+    let after_keyword = rest.strip_prefix("@source")?;
+    // Require whitespace after the keyword so e.g. `@source-map` (a
+    // hypothetical future at-rule) is never touched.
+    if !after_keyword.starts_with([' ', '\t']) {
+        return None;
+    }
+    let mut body = after_keyword.trim_start_matches([' ', '\t']);
+    let mut negated = false;
+    if let Some(after_not) = body.strip_prefix("not") {
+        if after_not.starts_with([' ', '\t']) {
+            negated = true;
+            body = after_not.trim_start_matches([' ', '\t']);
+        }
+    }
+    let quote = body.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        // `inline(...)` sources (and malformed directives) — not a path.
+        return None;
+    }
+    let inner = &body[quote.len_utf8()..];
+    // Find the closing quote with CSS backslash-escape awareness,
+    // collecting the unescaped value as we go.
+    let mut value = String::new();
+    let mut close = None;
+    let mut chars = inner.char_indices();
+    while let Some((i, c)) = chars.next() {
+        if c == '\\' {
+            let (_, escaped) = chars.next()?; // dangling escape → unparsable
+            value.push(escaped);
+        } else if c == quote {
+            close = Some(i);
+            break;
+        } else {
+            value.push(c);
+        }
+    }
+    let close = close?; // no closing quote on this line → leave unchanged
+    let suffix = &inner[close + quote.len_utf8()..];
+    // An empty value is meaningless as authored; rebasing it would turn it
+    // into "scan the whole project root" — leave it alone.
+    if value.is_empty() || Path::new(&value).is_absolute() {
+        return None;
+    }
+    let joined = base.join(&value);
+    let mut rewritten = String::with_capacity(line.len() + 32);
+    rewritten.push_str(indent);
+    rewritten.push_str("@source ");
+    if negated {
+        rewritten.push_str("not ");
+    }
+    rewritten.push('"');
+    push_escaped_css_string_value(&mut rewritten, &joined.display().to_string());
+    rewritten.push('"');
+    rewritten.push_str(suffix);
+    Some(rewritten)
 }
 
 /// Strip CSS block comments (`/* … */`) and line comments (`//…`) from
@@ -382,7 +489,10 @@ pub fn is_tailwind_import_line(line: &str) -> bool {
 ///    and authored CSS rules). When the file already starts with
 ///    `@import "tailwindcss";`, the synthesiser drops the duplicate
 ///    import we added in step 1 — Tailwind v4 errors on a doubled
-///    import.
+///    import. Relative `@source` globs in this text are rebased to
+///    absolute paths anchored at `working_dir` so the entry temp file's
+///    location cannot change what they match (zfb#1327) — see
+///    [`rebase_relative_source_globs`].
 /// 5. The inline `theme_block`, if any.
 ///
 /// The returned `String` is what the engine writes to a temp file and
@@ -427,7 +537,12 @@ pub fn build_synthesised_entry_css(
     }
 
     if let Some(text) = input_css_text {
-        out.push_str(text);
+        // Inline the user's CSS with relative `@source` globs rebased onto
+        // `working_dir` — the entry temp file's location must not decide
+        // what those globs match (zfb#1327). See
+        // [`rebase_relative_source_globs`].
+        let text = rebase_relative_source_globs(text, &cfg.working_dir);
+        out.push_str(&text);
         if !text.ends_with('\n') {
             out.push('\n');
         }
@@ -547,9 +662,11 @@ const ENTRY_TMP_STALE_AFTER: std::time::Duration = std::time::Duration::from_sec
 /// inline), there is no relative-import scope to preserve, so the entry
 /// falls back to `working_dir`.
 ///
-/// `@source` directives are unaffected either way — they are always emitted
-/// as absolute paths (see `default_source_directives` / the globs built in
-/// `crates/zfb/src/commands/build.rs`).
+/// `@source` directives are unaffected either way — zfb's own globs are
+/// always emitted as absolute paths (see `default_source_directives` / the
+/// globs built in `crates/zfb/src/commands/build.rs`), and relative globs
+/// authored inside `input_css` are rebased to absolute paths at inline time
+/// (zfb#1327 — see [`rebase_relative_source_globs`]).
 ///
 /// `input_css` is expected to be absolute in production (the sole caller,
 /// `resolve_input_global_css` in `crates/zfb/src/commands/build.rs`, builds
@@ -678,12 +795,15 @@ impl CssEngine for TailwindSubprocessEngine {
         // Materialise the synthesised entry CSS into a temp file. There are
         // two distinct resolution scopes at play here:
         //
-        // - `@source` directives are always absolute (built in
-        //   `crates/zfb/src/commands/build.rs` / `default_source_directives`),
-        //   so they resolve correctly regardless of where the entry file
-        //   lives.
+        // - `@source` directives are always absolute by the time they land
+        //   in the entry: zfb's own globs are built absolute
+        //   (`crates/zfb/src/commands/build.rs` / `default_source_directives`)
+        //   and relative globs authored in `input_css` are rebased onto
+        //   `working_dir` at inline time (zfb#1327,
+        //   `rebase_relative_source_globs`). So they resolve correctly
+        //   regardless of where the entry file lives.
         // - The user's `input_css` (e.g. `styles/global.css`) is inlined
-        //   verbatim into this entry (see `build_synthesised_entry_css`), so
+        //   into this entry (see `build_synthesised_entry_css`), so
         //   any relative `@import "./x.css";` it contains resolves against
         //   the entry file's OWN directory. The entry must therefore live
         //   next to `input_css` (its parent dir) — not `working_dir` — for
@@ -1083,6 +1203,135 @@ mod tests {
         let mut out = String::new();
         push_escaped_source(&mut out, "pages/**/*.{tsx,jsx}");
         assert_eq!(out, "@source \"pages/**/*.{tsx,jsx}\";\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // zfb#1327 — relative `@source` globs in inlined input CSS must be
+    // rebased onto working_dir so the entry temp file's location cannot
+    // change what they match (Tailwind v4 resolves relative `@source`
+    // against the containing stylesheet's directory)
+    // -----------------------------------------------------------------------
+
+    /// A relative `@source` glob is rewritten to an absolute path anchored
+    /// at `base`, preserving the terminating `;`.
+    #[test]
+    fn rebase_rewrites_relative_source_to_absolute() {
+        let out = rebase_relative_source_globs(
+            "@source \"src/components/**/*.{tsx,ts}\";\n",
+            Path::new("/project/root"),
+        );
+        assert_eq!(
+            out,
+            "@source \"/project/root/src/components/**/*.{tsx,ts}\";\n"
+        );
+    }
+
+    /// Single-quoted relative globs are rewritten too (re-emitted in the
+    /// canonical double-quote style).
+    #[test]
+    fn rebase_rewrites_single_quoted_relative_source() {
+        let out =
+            rebase_relative_source_globs("@source 'pages/**/*.tsx';\n", Path::new("/project/root"));
+        assert_eq!(out, "@source \"/project/root/pages/**/*.tsx\";\n");
+    }
+
+    /// The `@source not "<path>";` negation form keeps its `not` keyword
+    /// across the rewrite.
+    #[test]
+    fn rebase_preserves_not_keyword() {
+        let out = rebase_relative_source_globs(
+            "@source not \"legacy/**\";\n",
+            Path::new("/project/root"),
+        );
+        assert_eq!(out, "@source not \"/project/root/legacy/**\";\n");
+    }
+
+    /// Absolute globs are already immune to the entry file's location —
+    /// they must pass through byte-for-byte.
+    #[test]
+    fn rebase_leaves_absolute_source_untouched() {
+        let line = "@source \"/already/absolute/pages/**\";\n";
+        let out = rebase_relative_source_globs(line, Path::new("/project/root"));
+        assert_eq!(out, line);
+    }
+
+    /// `@source inline("...")` carries class names, not a path — it must
+    /// never be rewritten (nor its `not` variant).
+    #[test]
+    fn rebase_leaves_inline_source_untouched() {
+        let text = "@source inline(\"lg:flex\");\n@source not inline(\"lg:hidden\");\n";
+        let out = rebase_relative_source_globs(text, Path::new("/project/root"));
+        assert_eq!(out, text);
+    }
+
+    /// An empty `@source "";` is meaningless as authored; rebasing it would
+    /// turn it into "scan the whole project root" — leave it alone.
+    #[test]
+    fn rebase_leaves_empty_value_untouched() {
+        let line = "@source \"\";\n";
+        let out = rebase_relative_source_globs(line, Path::new("/project/root"));
+        assert_eq!(out, line);
+    }
+
+    /// A directive with no closing quote on the line is unparsable —
+    /// pass it through unchanged rather than guessing.
+    #[test]
+    fn rebase_leaves_unclosed_quote_untouched() {
+        let line = "@source \"src/components\n";
+        let out = rebase_relative_source_globs(line, Path::new("/project/root"));
+        assert_eq!(out, line);
+    }
+
+    /// Everything that is not an `@source` directive — imports, rules,
+    /// `@theme` blocks — must survive byte-for-byte, including
+    /// trailing-newline structure.
+    #[test]
+    fn rebase_leaves_non_source_lines_untouched() {
+        let text = "@import \"tailwindcss\";\n@theme {\n  --color-x: #fff;\n}\nbody { margin: 0; }";
+        let out = rebase_relative_source_globs(text, Path::new("/project/root"));
+        assert_eq!(out, text);
+    }
+
+    /// Indentation before the directive and trailing content after the
+    /// closing quote (the `;`, comments) are preserved verbatim.
+    #[test]
+    fn rebase_preserves_indent_and_suffix() {
+        let out = rebase_relative_source_globs(
+            "  @source \"pages/**\"; /* keep me */\n",
+            Path::new("/project/root"),
+        );
+        assert_eq!(out, "  @source \"/project/root/pages/**\"; /* keep me */\n");
+    }
+
+    /// A `"` in the base path (legal on Linux/macOS) must be escaped in the
+    /// rewritten directive so the emitted CSS string stays well-formed —
+    /// same contract as [`push_escaped_source`].
+    #[test]
+    fn rebase_escapes_quotes_in_base() {
+        let out = rebase_relative_source_globs("@source \"pages/**\";\n", Path::new("/odd\"root"));
+        assert_eq!(out, "@source \"/odd\\\"root/pages/**\";\n");
+    }
+
+    /// End-to-end through the synthesiser: relative `@source` globs inside
+    /// the inlined user CSS come out absolute (anchored at `working_dir`),
+    /// while the rest of the user's text is inlined verbatim (zfb#1327).
+    #[test]
+    fn synthesised_entry_rebases_relative_source_from_input_css() {
+        let cfg = TailwindSubprocessConfig::default().with_working_dir("/project/root");
+        let input_css = "@source \"src/components/**/*.tsx\";\nbody { margin: 0; }\n";
+        let css = build_synthesised_entry_css(&cfg, Some(input_css));
+        assert!(
+            css.contains("@source \"/project/root/src/components/**/*.tsx\";"),
+            "relative @source from input CSS must be rebased onto working_dir; got:\n{css}"
+        );
+        assert!(
+            !css.contains("@source \"src/components/**/*.tsx\";"),
+            "the original relative directive must not survive; got:\n{css}"
+        );
+        assert!(
+            css.contains("body { margin: 0; }"),
+            "non-@source user CSS must be inlined verbatim; got:\n{css}"
+        );
     }
 
     /// `build_synthesised_entry_css` must escape `"` in content_globs and
