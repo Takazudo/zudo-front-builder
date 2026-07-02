@@ -23,30 +23,14 @@ permissions:
   contents: read
   pull-requests: write
 
+# The docs build (+ docs/check + docs/check:html) previously lived here as
+# an unconditional job, rebuilding the docs site on every PR including
+# pure-Rust changes. It now lives in the path-filtered docs-checks.yml
+# workflow (issue #1336) so it only runs when docs-affecting files change.
+# `pnpm audit (prod)` below stays here, unfiltered — it is a required
+# status check on every PR per #1333's branch ruleset, and moving it behind
+# a path filter would hang non-docs PRs forever.
 jobs:
-  build:
-    name: Build docs site
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
-
-      - name: Setup Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build docs
-        run: pnpm --filter docs build
-
   audit:
     name: pnpm audit (prod)
     runs-on: ubuntu-latest

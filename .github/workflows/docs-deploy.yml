@@ -35,6 +35,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter docs build
+      # Deploy must not ship HTML that fails validation (issue #1336) — gate
+      # the artifact upload (and therefore the deploy job that consumes it)
+      # behind the same two checks required on the PR-side docs build.
+      - run: pnpm --filter docs check
+      - run: pnpm --filter docs check:html
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docs-dist
