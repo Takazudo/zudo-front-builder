@@ -1212,17 +1212,39 @@ mod tests {
     // against the containing stylesheet's directory)
     // -----------------------------------------------------------------------
 
+    /// Platform-absolute base for the rebase tests — a drive-prefixed path
+    /// on Windows so `is_absolute()` holds there too (a bare `/project/root`
+    /// is NOT absolute on Windows and would flip the rewrite decision).
+    fn rebase_test_base() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from("C:\\project\\root")
+        } else {
+            PathBuf::from("/project/root")
+        }
+    }
+
+    /// The escaped CSS-string form of `base.join(rel)` — how a rewritten
+    /// directive's value must appear in the output on the host platform
+    /// (Windows joins with `\`, which the CSS string then escapes).
+    fn rebased_value(base: &Path, rel: &str) -> String {
+        let mut out = String::new();
+        push_escaped_css_string_value(&mut out, &base.join(rel).display().to_string());
+        out
+    }
+
     /// A relative `@source` glob is rewritten to an absolute path anchored
     /// at `base`, preserving the terminating `;`.
     #[test]
     fn rebase_rewrites_relative_source_to_absolute() {
-        let out = rebase_relative_source_globs(
-            "@source \"src/components/**/*.{tsx,ts}\";\n",
-            Path::new("/project/root"),
-        );
+        let base = rebase_test_base();
+        let out =
+            rebase_relative_source_globs("@source \"src/components/**/*.{tsx,ts}\";\n", &base);
         assert_eq!(
             out,
-            "@source \"/project/root/src/components/**/*.{tsx,ts}\";\n"
+            format!(
+                "@source \"{}\";\n",
+                rebased_value(&base, "src/components/**/*.{tsx,ts}")
+            )
         );
     }
 
@@ -1230,28 +1252,36 @@ mod tests {
     /// canonical double-quote style).
     #[test]
     fn rebase_rewrites_single_quoted_relative_source() {
-        let out =
-            rebase_relative_source_globs("@source 'pages/**/*.tsx';\n", Path::new("/project/root"));
-        assert_eq!(out, "@source \"/project/root/pages/**/*.tsx\";\n");
+        let base = rebase_test_base();
+        let out = rebase_relative_source_globs("@source 'pages/**/*.tsx';\n", &base);
+        assert_eq!(
+            out,
+            format!("@source \"{}\";\n", rebased_value(&base, "pages/**/*.tsx"))
+        );
     }
 
     /// The `@source not "<path>";` negation form keeps its `not` keyword
     /// across the rewrite.
     #[test]
     fn rebase_preserves_not_keyword() {
-        let out = rebase_relative_source_globs(
-            "@source not \"legacy/**\";\n",
-            Path::new("/project/root"),
+        let base = rebase_test_base();
+        let out = rebase_relative_source_globs("@source not \"legacy/**\";\n", &base);
+        assert_eq!(
+            out,
+            format!("@source not \"{}\";\n", rebased_value(&base, "legacy/**"))
         );
-        assert_eq!(out, "@source not \"/project/root/legacy/**\";\n");
     }
 
     /// Absolute globs are already immune to the entry file's location —
     /// they must pass through byte-for-byte.
     #[test]
     fn rebase_leaves_absolute_source_untouched() {
-        let line = "@source \"/already/absolute/pages/**\";\n";
-        let out = rebase_relative_source_globs(line, Path::new("/project/root"));
+        let line = if cfg!(windows) {
+            "@source \"C:/already/absolute/pages/**\";\n"
+        } else {
+            "@source \"/already/absolute/pages/**\";\n"
+        };
+        let out = rebase_relative_source_globs(line, &rebase_test_base());
         assert_eq!(out, line);
     }
 
@@ -1296,19 +1326,31 @@ mod tests {
     /// closing quote (the `;`, comments) are preserved verbatim.
     #[test]
     fn rebase_preserves_indent_and_suffix() {
-        let out = rebase_relative_source_globs(
-            "  @source \"pages/**\"; /* keep me */\n",
-            Path::new("/project/root"),
+        let base = rebase_test_base();
+        let out = rebase_relative_source_globs("  @source \"pages/**\"; /* keep me */\n", &base);
+        assert_eq!(
+            out,
+            format!(
+                "  @source \"{}\"; /* keep me */\n",
+                rebased_value(&base, "pages/**")
+            )
         );
-        assert_eq!(out, "  @source \"/project/root/pages/**\"; /* keep me */\n");
     }
 
     /// A `"` in the base path (legal on Linux/macOS) must be escaped in the
     /// rewritten directive so the emitted CSS string stays well-formed —
-    /// same contract as [`push_escaped_source`].
+    /// same contract as [`push_escaped_source`]. The expected value is
+    /// derived via [`rebased_value`] (join + escape), so on Unix this pins
+    /// `/odd\"root/pages/**` exactly.
     #[test]
     fn rebase_escapes_quotes_in_base() {
-        let out = rebase_relative_source_globs("@source \"pages/**\";\n", Path::new("/odd\"root"));
+        let base = PathBuf::from("/odd\"root");
+        let out = rebase_relative_source_globs("@source \"pages/**\";\n", &base);
+        assert_eq!(
+            out,
+            format!("@source \"{}\";\n", rebased_value(&base, "pages/**"))
+        );
+        #[cfg(unix)]
         assert_eq!(out, "@source \"/odd\\\"root/pages/**\";\n");
     }
 
@@ -1317,11 +1359,16 @@ mod tests {
     /// while the rest of the user's text is inlined verbatim (zfb#1327).
     #[test]
     fn synthesised_entry_rebases_relative_source_from_input_css() {
-        let cfg = TailwindSubprocessConfig::default().with_working_dir("/project/root");
+        let base = rebase_test_base();
+        let cfg = TailwindSubprocessConfig::default().with_working_dir(base.clone());
         let input_css = "@source \"src/components/**/*.tsx\";\nbody { margin: 0; }\n";
         let css = build_synthesised_entry_css(&cfg, Some(input_css));
+        let rebased = format!(
+            "@source \"{}\";",
+            rebased_value(&base, "src/components/**/*.tsx")
+        );
         assert!(
-            css.contains("@source \"/project/root/src/components/**/*.tsx\";"),
+            css.contains(&rebased),
             "relative @source from input CSS must be rebased onto working_dir; got:\n{css}"
         );
         assert!(
