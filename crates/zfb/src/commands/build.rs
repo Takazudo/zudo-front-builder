@@ -2891,7 +2891,6 @@ fn copy_public_dir(
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use tempfile::tempdir;
     use zfb_build::bundler::{BundleManifest, BundlerOutput, RouteEntry};
@@ -4757,32 +4756,11 @@ mod tests {
         );
     }
 
-    /// Ignored end-to-end test: runs `cargo run -p zfb -- build` on a
-    /// basic-blog project and asserts the post pages, paginated
-    /// indexes, and tag pages exist with non-empty `<main>`. Heavy:
-    /// shells out to cargo + esbuild + embedded V8. Gated behind
-    /// `--ignored` so day-to-day `cargo test` stays fast.
-    ///
-    /// Status: the "T7-sibling worker-wrapping sub-task" this test
-    /// originally waited on HAS landed — the bundler's synthetic
-    /// entry.mjs now emits a `default { fetch }` Worker entry, pinned by
-    /// `entry_module_emits_default_fetch_wrapper_with_routes` in
-    /// `crates/zfb-build/src/bundler.rs`. What's still missing is the
-    /// test BODY itself: it is an intentionally-empty stub (no
-    /// assertions) and needs the real `cargo run` + fixture wiring
-    /// described above. Tracked in issue #1354. The standalone demo
-    /// (https://github.com/Takazudo/zfb-example-blog) is the intended
-    /// target once a local checkout is wired in.
-    #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1354"]
-    fn end_to_end_basic_blog_build() {
-        // Intentionally minimal — the assertions are described in the
-        // doc-comment above; the test body is sketched so the
-        // follow-up sub-task can wire it without rewriting it from
-        // scratch.
-        let _ = BTreeMap::<String, bool>::new(); // keep the import live
-        eprintln!("[end_to_end_basic_blog_build] gated; see doc-comment.");
-    }
+    // `end_to_end_basic_blog_build` moved out of this lib unit-test module —
+    // `CARGO_BIN_EXE_zfb` / `zfb_binary!()` is only set for integration
+    // tests, so a lib unit test here could never spawn the real binary. The
+    // real test now lives at `crates/zfb/tests/end_to_end_basic_blog_build.rs`
+    // (issue #1361, Test B of #1354).
 
     // -------------------------------------------------------------------------
     // copy_public_dir unit tests
