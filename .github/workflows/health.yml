@@ -166,10 +166,15 @@ jobs:
       # `cargo test` runs each test binary with its CWD set to the package
       # directory (`crates/zfb-islands`), not the workspace root, so the
       # relative default never resolves.
+      # --tests scopes this to integration-test binaries only (where the 5
+      # target tests live, in tests/integration.rs) — the unscoped `-p
+      # zfb-islands` form also compiles+runs the crate's doctests, and 3 of
+      # those are pre-existing broken/illustrative examples never meant to
+      # run (issue found while wiring this step; see #1337 follow-up).
       - name: Run zfb-islands esbuild-gated integration suite
         env:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: cargo test -p zfb-islands -- --ignored
+        run: cargo test -p zfb-islands --tests -- --ignored
 
       # Run the workspace test suite. CI previously only *compiled* the test code
       # (the cargo build --all-targets step above) but never executed it, so unit
