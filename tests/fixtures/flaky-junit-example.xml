@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="zfb-nextest-ci" tests="15" failures="0" errors="0" uuid="f1f47fbd-e564-4a10-8045-db661ca20dad" timestamp="2026-07-03T11:40:03.287+09:00" time="0.044">
+    <testsuite name="zfb-diagnostics" tests="15" disabled="0" errors="0" failures="0">
+        <testcase name="tests::render_framed_clamps_window_at_file_start" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.287+09:00" time="0.016">
+        </testcase>
+        <testcase name="tests::locate_export_ident_finds_named_re_export_single_member" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.287+09:00" time="0.016">
+        </testcase>
+        <testcase name="tests::locate_export_ident_finds_export_function" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.287+09:00" time="0.018">
+        </testcase>
+        <testcase name="tests::absolute_sourcemap_path_is_stripped_against_project_root" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.287+09:00" time="0.018">
+        </testcase>
+        <testcase name="tests::locate_export_ident_named_re_export_does_not_match_alias_target" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.287+09:00" time="0.020">
+        </testcase>
+        <testcase name="tests::render_framed_header_only_when_line_one_past_end" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.287+09:00" time="0.021">
+        </testcase>
+        <testcase name="tests::locate_export_ident_returns_none_when_absent" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.287+09:00" time="0.020">
+        </testcase>
+        <testcase name="tests::locate_export_ident_finds_named_re_export_multi_member" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.287+09:00" time="0.021">
+        </testcase>
+        <testcase name="tests::project_relative_falls_back_when_not_child" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.287+09:00" time="0.022">
+        </testcase>
+        <testcase name="tests::project_relative_strips_prefix_when_child" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.287+09:00" time="0.024">
+        </testcase>
+        <testcase name="tests::render_framed_header_only_when_line_past_end" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.303+09:00" time="0.014">
+        </testcase>
+        <testcase name="tests::render_framed_last_line_no_blank_after_context" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.305+09:00" time="0.013">
+        </testcase>
+        <testcase name="tests::render_framed_includes_path_line_col_and_caret" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.304+09:00" time="0.014">
+        </testcase>
+        <testcase name="tests::render_framed_without_source_emits_header_only" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.307+09:00" time="0.013">
+        </testcase>
+        <testcase name="tests::zzz_temp_flaky_capture_for_fixture" classname="zfb-diagnostics" timestamp="2026-07-03T11:40:03.322+09:00" time="0.008">
+            <flakyFailure timestamp="2026-07-03T11:40:03.308+09:00" time="0.013" message="thread &apos;tests::zzz_temp_flaky_capture_for_fixture&apos; (60199946) panicked at crates/zfb-diagnostics/src/lib.rs:685:13" type="test failure with exit code 101">thread &apos;tests::zzz_temp_flaky_capture_for_fixture&apos; (60199946) panicked at crates/zfb-diagnostics/src/lib.rs:685:13:
+intentional first-run failure to capture a nextest retry-pass JUnit fixture
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+                <system-out>
+running 1 test
+test tests::zzz_temp_flaky_capture_for_fixture ... FAILED
+
+failures:
+
+failures:
+    tests::zzz_temp_flaky_capture_for_fixture
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+</system-out>
+                <system-err>
+thread &apos;tests::zzz_temp_flaky_capture_for_fixture&apos; (60199946) panicked at crates/zfb-diagnostics/src/lib.rs:685:13:
+intentional first-run failure to capture a nextest retry-pass JUnit fixture
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+</system-err>
+            </flakyFailure>
+        </testcase>
+    </testsuite>
+</testsuites>
