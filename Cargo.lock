@@ -5853,6 +5853,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "zfb-test-utils",
 ]
 
 [[package]]

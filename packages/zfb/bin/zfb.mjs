@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { constants as osConstants } from "node:os";
 import { join } from "node:path";
+import { detectMuslLinux } from "./detect-musl.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -29,6 +30,18 @@ const pkg = platformPackages[key];
 
 if (!pkg) {
   console.error(`[zfb] unsupported platform: ${key}`);
+  process.exit(1);
+}
+
+// The gnu-built binary above matches on os/cpu but not on libc: an
+// Alpine/musl-libc Linux install passes the os/cpu check yet would still
+// fail to exec, with a raw, confusing dynamic-loader error. Detect and fail
+// with a clear message before attempting to resolve/spawn the binary.
+if (detectMuslLinux()) {
+  console.error(
+    "[zfb] musl/Alpine is not supported yet — no @takazudo/zfb-linux-*-musl package exists.\n" +
+      "      Use a glibc-based Linux image (e.g. Debian/Ubuntu) instead of Alpine.",
+  );
   process.exit(1);
 }
 

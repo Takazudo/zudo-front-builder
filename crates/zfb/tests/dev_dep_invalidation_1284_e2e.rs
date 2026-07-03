@@ -28,15 +28,18 @@
 //! `pages_stale` gate), exactly as `dev_serve_e2e.rs` scenario 4 does. For the
 //! CSS symptoms the observable is the body of `GET /assets/styles.css`.
 //!
-//! ## Status — these are STUBS, intentionally `#[ignore]`d
+//! ## Status — fully implemented, gated `heavy:` (issue #1290 is closed)
 //!
-//! They are tagged `#[ignore = "Level-4 e2e: implement+run on a V8 host — #1290"]` so they neither block the
-//! T1 gate nor force a 15-30 min V8 first-compile in this diagnosis wave. The
-//! Wave-3 author un-ignores them and wires them into the shared `dev_serve_e2e`
-//! harness (reusing `spawn_dev` / `boot_and_handshake` / `poll_until_contains`
-//! / `subscribe_sse`), OR fills in the `todo!()` bodies below against a local
-//! copy of those helpers. They are kept as a separate file so the acceptance
-//! contract is reviewable independently of the fix.
+//! The Wave-3 author wired all three scenarios into a local copy of the
+//! `dev_serve_e2e` harness (`spawn_dev` / `boot_and_handshake` /
+//! `poll_until_contains` / `subscribe_sse`) — these are no longer stubs.
+//! They stay `#[ignore]`d (tagged `heavy:`, see CLAUDE.md's taxonomy)
+//! because each scenario boots a real `zfb dev` server (esbuild + embedded
+//! V8 + Tailwind for symptom C) and polls it over HTTP: too slow, and too
+//! reliant on a free port, for the T1 PR gate. Run locally with
+//! `cargo test -p zfb --test dev_dep_invalidation_1284_e2e -- --ignored`.
+//! They are kept as a separate file so the acceptance contract is
+//! reviewable independently of the fix.
 //!
 //! Falsifiability is noted per scenario: revert the corresponding fix and the
 //! served-on-next-request assertion times out on the OLD marker.
@@ -59,11 +62,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary};
+use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 // Serialise the three tests: each boots a full V8 + esbuild + Tailwind dev
 // session; running them concurrently would double/triple memory and produce
-// flaky boot deadlines.
+// flaky boot deadlines. Each test also acquires `CrossBinaryE2eLock` BEFORE
+// this mutex to serialize against sibling e2e binaries (issue #1339) — see
+// `zfb-test-utils/src/cross_binary_lock.rs` for the lock-ordering rationale.
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// Overall wall-clock watchdog for each test.
@@ -489,8 +494,9 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
 /// selection), no tick fires / the bundle is not refreshed and the route keeps
 /// serving the old marker until timeout.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Level-4 e2e: implement+run on a V8 host — #1290"]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (symptom C also needs Tailwind); too slow / port-bound for the T1 gate"]
 async fn e2e_src_component_edit_rerenders_route() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -697,8 +703,9 @@ export default function HomePage({ posts }: Props) {
 /// symlinked dep edit is observed by nobody and `/assets/styles.css` stays
 /// stale until timeout.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Level-4 e2e: implement+run on a V8 host — #1290"]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (symptom C also needs Tailwind); too slow / port-bound for the T1 gate"]
 async fn e2e_transitive_css_import_refreshes_stylesheet() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -897,8 +904,9 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
 /// roots, the class never enters the content scan and the stylesheet never
 /// gains the rule.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Level-4 e2e: implement+run on a V8 host — #1290"]
+#[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (symptom C also needs Tailwind); too slow / port-bound for the T1 gate"]
 async fn e2e_new_utility_class_in_component_is_emitted() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(

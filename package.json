@@ -32,6 +32,8 @@
     "format:check:mdx": "pnpm dlx @takazudo/mdx-formatter@1.2.1 --check '**/*.{md,mdx}'",
     "//// === VALIDATION ===": "",
     "b4push": "bash scripts/run-b4push.sh",
+    "//// === CLIENT-ROUTER L4 (Chromium, runs in CI) ===": "",
+    "test:router-chromium": "pnpm -C packages/zfb-runtime build && pnpm exec playwright test --config tests/router-chromium/playwright.config.mjs",
     "//// === LOCAL-HEAVY (T4, Mac only, NOT CI) ===": "",
     "test:webkit-back": "pnpm -C packages/zfb-runtime build && pnpm exec playwright test --config tests/webkit-back-history/playwright.config.mjs"
   },

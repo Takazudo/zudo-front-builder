@@ -328,7 +328,15 @@ fn request_write_never_interleaves_with_a_tick_prune_window() {
     let write_done = Arc::new(AtomicBool::new(false));
     let write_done_w = write_done.clone();
     let dist_w = dist.clone();
+    // Positive handshake: the writer thread announces it is about to call
+    // request_write, whose very first action is to take the exclusion lock.
+    // Receiving this proves the competing thread is scheduled and has
+    // reached the blocking point — without it, `!write_done` could pass
+    // vacuously simply because the thread never ran (scheduler starvation
+    // under `cargo test --workspace`).
+    let (attempt_tx, attempt_rx) = mpsc::channel::<()>();
     let writer_thread = std::thread::spawn(move || {
+        attempt_tx.send(()).unwrap();
         let out = writer
             .request_write(
                 &dist_w,
@@ -339,7 +347,15 @@ fn request_write_never_interleaves_with_a_tick_prune_window() {
         write_done_w.store(true, Ordering::SeqCst);
         out
     });
+    attempt_rx.recv().unwrap();
 
+    // wait-ok: absence-window — the exclusion is a std `Mutex` with no
+    // observable waiter state, so the sub-instruction gap between the
+    // attempt handshake above and the thread actually parking in
+    // `lock_exclusion` cannot be positively synchronized on. This window
+    // bounds only that gap: with the thread proven live and inside the
+    // API, a broken exclusion would let the (fast, non-blocking) write
+    // complete and flip `write_done` within it.
     std::thread::sleep(Duration::from_millis(150));
     assert!(
         !write_done.load(Ordering::SeqCst),
@@ -512,7 +528,14 @@ fn guarded_revalidation_runs_only_after_in_flight_tick_completes() {
     let revalidated = Arc::new(AtomicBool::new(false));
     let revalidated_w = revalidated.clone();
     let dist_w = dist.clone();
+    // Positive handshake: the writer thread announces it is about to call
+    // request_write_guarded, whose first action is to take the exclusion
+    // lock (the revalidation closure runs strictly under it). Receiving
+    // this proves the competing thread reached the blocking point, so the
+    // `!revalidated` assertion below is not a vacuous scheduler artifact.
+    let (attempt_tx, attempt_rx) = mpsc::channel::<()>();
     let writer_thread = std::thread::spawn(move || {
+        attempt_tx.send(()).unwrap();
         writer
             .request_write_guarded(
                 &dist_w,
@@ -525,7 +548,14 @@ fn guarded_revalidation_runs_only_after_in_flight_tick_completes() {
             )
             .unwrap()
     });
+    attempt_rx.recv().unwrap();
 
+    // wait-ok: absence-window — the exclusion is a std `Mutex` with no
+    // observable waiter state, so the gap between the attempt handshake
+    // and the thread parking in `lock_exclusion` cannot be positively
+    // synchronized on. This window bounds only that gap: with the thread
+    // proven live and inside the API, a broken exclusion would run the
+    // revalidation closure against mid-tick state and flip `revalidated`.
     std::thread::sleep(Duration::from_millis(150));
     assert!(
         !revalidated.load(Ordering::SeqCst),

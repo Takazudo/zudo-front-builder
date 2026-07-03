@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Required by ClientRouter: enables SPA mode + real View Transitions on this page. -->
+    <meta name="zfb-view-transitions-enabled" content="" />
+    <meta name="zfb-view-transitions-fallback" content="animate" />
+    <title>Home</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 0;
+      }
+      nav {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        display: flex;
+        gap: 1rem;
+        padding: 0.75rem 1rem;
+        background: #fff;
+        border-bottom: 1px solid #ccc;
+        z-index: 10;
+      }
+      main {
+        padding: 4rem 1rem 1rem;
+      }
+      /* Tall spacer so real scrolling has somewhere to go (scroll-restoration spec). */
+      .spacer {
+        height: 4000px;
+      }
+    </style>
+    <!--
+      Import map: re-maps the bare specifier @takazudo/zfb/runtime to the no-op
+      island stubs. The built dist/client-router/router.js imports this specifier
+      at runtime; without the map the browser throws a resolution error. A real
+      zfb site resolves it to the island manager via the bundler.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@takazudo/zfb/runtime": "/island-stubs.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <!--
+      Fixed nav keeps every link inside the viewport at any scroll offset, so
+      Playwright's click never auto-scrolls the page — critical for the
+      scroll-restoration spec, which asserts on the exact scrollY at click time.
+    -->
+    <nav>
+      <a href="/index.html" id="to-home">Home</a>
+      <a href="/page-a.html" id="to-page-a">Page A</a>
+      <a href="/page-b.html" id="to-page-b">Page B</a>
+      <!-- tap-strategy prefetch: mousedown fires prefetch() synchronously (no rIC). -->
+      <a href="/prefetch-target.html" id="prefetch-link" data-zfb-prefetch="tap">Prefetch target</a>
+    </nav>
+    <main>
+      <h1>Home</h1>
+      <p>This is the home page.</p>
+      <div class="spacer"></div>
+      <p>Bottom of home.</p>
+    </main>
+    <script type="module">
+      import { init } from "/dist/client-router/router.js";
+      import { init as prefetchInit } from "/dist/client-router/prefetch.js";
+      init();
+      prefetchInit();
+    </script>
+  </body>
+</html>

@@ -23,10 +23,12 @@
 //!   re-renders no page (symptom B at the planner).
 //!
 //! The "current_bug_*" tests assert TODAY's behaviour (and are not ignored, to
-//! lock the regression boundary). The fixed-behaviour tests are
-//! `#[ignore = "pending fix: #1284"]`.
+//! lock the regression boundary). The fixed-behaviour tests were originally
+//! `#[ignore]`d pending #1287/#1288; both landed and are now CLOSED, so none
+//! of the tests in this file carry `#[ignore]` any more — all four pass
+//! unconditionally (confirmed during the #1337 audit).
 //!
-//! NOTE TO FIX AUTHORS (#1287/#1288): once your fix lands the `current_bug_*`
+//! NOTE TO FIX AUTHORS (#1287/#1288, both closed): once your fix lands the `current_bug_*`
 //! tests WILL fail — that is expected. **Replace** each with its fixed-behaviour
 //! sibling (un-ignore the matching fixed test); a failing `current_bug_*` is a
 //! migrate-me signal, not a regression.

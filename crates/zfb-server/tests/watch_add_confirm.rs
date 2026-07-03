@@ -87,12 +87,23 @@ use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
 use zfb_server::livereload::ReloadEvent;
 use zfb_server::{serve_with_listener, PageCache, ServeOpts};
 
-/// Serialize the two real-watcher tests. Each stands up a live notify watcher
+/// Serialize the real-watcher tests. Each stands up a live notify watcher
 /// plus an in-process dev server; cargo runs tests in a file concurrently by
 /// default, and under full-suite load (`cargo test --workspace`) that
 /// contention pushed the HTTP poll past its deadline (both passed when run
 /// alone or with --test-threads=1). A shared async lock forces them to run
 /// one at a time regardless of cargo's thread count.
+///
+/// Audited for issue #1339 (cross-binary e2e flock) and deliberately NOT
+/// given `zfb_test_utils::CrossBinaryE2eLock`: unlike `dev_serve_e2e.rs`
+/// and friends, these tests never spawn the real `zfb` binary or an
+/// embedded V8 host — the discovery hook here is a fake stand-in (see the
+/// module docs' "What is real vs stubbed" section), and the dev server is
+/// an in-process `tokio::spawn` bound to an ephemeral port, not a
+/// subprocess. The resource this file's `SERIAL` guards against is CPU
+/// contention on the HTTP-poll deadline under full-suite load, not the
+/// V8+esbuild memory/CPU blowup the cross-binary lock exists for, so
+/// cross-binary serialization is unnecessary here.
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 // ---------------------------------------------------------------------------
@@ -360,35 +371,32 @@ async fn real_watcher_add_content_file_serves_new_route_as_200() {
     // regression. Warmup files create `/blog/__warmup_*` routes, never
     // `/blog/foo`, so the baseline 404 assertion below still holds.
     {
-        let warmup_deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let mut warmup_idx = 0u32;
-        let mut watcher_live = false;
-        while std::time::Instant::now() < warmup_deadline {
-            let warmup = project.join(format!("content/blog/__warmup_{warmup_idx}.mdx"));
-            std::fs::write(&warmup, "---\ntitle: warmup\n---\nwarmup\n")
+        let hook = hook_invocations.clone();
+        let handshake = zfb_test_utils::watcher_live_handshake(
+            zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
+            |idx| {
+                std::fs::write(
+                    project.join(format!("content/blog/__warmup_{idx}.mdx")),
+                    "---\ntitle: warmup\n---\nwarmup\n",
+                )
                 .expect("write warmup content file");
-            warmup_idx += 1;
-
-            // Give this warmup's event a beat to propagate through
-            // FSEvents → debounce (200ms) → hook.
-            tokio::time::sleep(Duration::from_millis(400)).await;
-
-            let saw_warmup = hook_invocations.lock().unwrap().iter().flatten().any(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| n.starts_with("__warmup_"))
-                    .unwrap_or(false)
-            });
-            if saw_warmup {
-                watcher_live = true;
-                break;
-            }
-        }
+            },
+            || {
+                hook.lock().unwrap().iter().flatten().any(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.starts_with("__warmup_"))
+                        .unwrap_or(false)
+                })
+            },
+        )
+        .await;
         assert!(
-            watcher_live,
-            "watcher never became live: no warmup create reached the discovery hook within 10s \
-             (the FSEvents stream never started delivering events — a watcher-layer problem, \
-             not a discovery regression)",
+            handshake.live,
+            "watcher never became live: no warmup create reached the discovery hook within \
+             {:?} ({} markers) — the FSEvents stream never started delivering events, a \
+             watcher-layer problem, not a discovery regression",
+            handshake.elapsed, handshake.markers_written,
         );
     }
 
@@ -588,7 +596,40 @@ async fn real_watcher_edit_existing_file_still_hot_reloads() {
     // ----------------------------------------------------------------
     let orch_task = tokio::spawn(async move { orch.run(ctx, Some(discover), |_outcome| {}).await });
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Watcher-live handshake (same FSEvents dead-window mitigation as the
+    // ADD test): write fresh-named warmup files under content/blog until
+    // one reaches the discovery hook, proving the watcher → orchestrator →
+    // hook path is live before the real edit (#1338 shared helper). Warmup
+    // routes are `/blog/__warmup_*`, never `/blog/hello`, so the assertions
+    // below are unaffected.
+    {
+        let hook = hook_invocations.clone();
+        let handshake = zfb_test_utils::watcher_live_handshake(
+            zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
+            |idx| {
+                std::fs::write(
+                    project.join(format!("content/blog/__warmup_{idx}.mdx")),
+                    "---\ntitle: warmup\n---\nwarmup\n",
+                )
+                .expect("write warmup content file");
+            },
+            || {
+                hook.lock().unwrap().iter().flatten().any(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.starts_with("__warmup_"))
+                        .unwrap_or(false)
+                })
+            },
+        )
+        .await;
+        assert!(
+            handshake.live,
+            "watcher never became live: no warmup create reached the discovery hook \
+             within {:?} ({} markers) — a watcher-layer problem, not a discovery regression",
+            handshake.elapsed, handshake.markers_written,
+        );
+    }
 
     // ----------------------------------------------------------------
     // 3. Edit the EXISTING hello.mdx. The orchestrator should re-render
@@ -794,21 +835,24 @@ async fn real_watcher_inplace_edit_reaches_served_html_via_reload() {
     // discovery hook here): write fresh-named throwaway files under
     // content/blog/ until a tick lands.
     {
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        let mut i = 0;
-        while reload_count.load(std::sync::atomic::Ordering::SeqCst) == 0 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "watcher-live handshake timed out (no tick within 15s)"
-            );
-            std::fs::write(
-                project.join(format!("content/blog/.warmup-{i}.md")),
-                "warmup\n",
-            )
-            .unwrap();
-            i += 1;
-            tokio::time::sleep(Duration::from_millis(300)).await;
-        }
+        let counter = reload_count.clone();
+        let handshake = zfb_test_utils::watcher_live_handshake(
+            zfb_test_utils::HandshakeOpts::new(Duration::from_secs(15)),
+            |idx| {
+                std::fs::write(
+                    project.join(format!("content/blog/.warmup-{idx}.md")),
+                    "warmup\n",
+                )
+                .expect("write warmup file");
+            },
+            || counter.load(std::sync::atomic::Ordering::SeqCst) != 0,
+        )
+        .await;
+        assert!(
+            handshake.live,
+            "watcher-live handshake timed out: no tick within {:?} ({} markers)",
+            handshake.elapsed, handshake.markers_written,
+        );
     }
 
     // The actual in-place EDIT: same path, same inode, truncate + write.

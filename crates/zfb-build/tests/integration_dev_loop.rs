@@ -368,26 +368,72 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
     let (watcher, mut rx) =
         Watcher::start_with_debounce(project, ["content"], debounce).expect("watcher start");
 
-    // Wait for the watcher's debouncer task to be polled at least once
-    // before mutating the file. See the timing notes at the top of the
-    // test for the rationale.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Prove the watcher is live before mutating the real file, instead of
+    // a fixed settle sleep that races the notify startup dead window under
+    // load. Write fresh-named markers under the watched `content/` dir
+    // until one lands on the channel (#1338 shared helper), then drain the
+    // leftover warmup events so the recv below observes the post.md edit.
+    let handshake = zfb_test_utils::watcher_live_handshake(
+        zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
+        |idx| {
+            std::fs::write(
+                project.join(format!("content/__warmup_{idx}.md")),
+                b"# warmup\n",
+            )
+            .expect("write warmup file");
+        },
+        || rx.try_recv().is_ok(),
+    )
+    .await;
+    assert!(
+        handshake.live,
+        "watcher never delivered a warmup event within {:?} ({} markers) — \
+         the notify stream never started delivering events",
+        handshake.elapsed, handshake.markers_written,
+    );
+    while rx.try_recv().is_ok() {}
+
     std::fs::write(&md_path, "# v2\n").unwrap();
 
-    // Wait for the change to propagate. 2s is far longer than the
-    // worst-case debounce latency (~300ms) but short enough that a
-    // genuinely-broken watcher will fail the test instead of hanging
-    // CI.
-    let first = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-        .await
-        .expect("watcher emitted within 2s")
-        .expect("channel still open");
+    // Wait for the change that corresponds to the post.md edit
+    // SPECIFICALLY — not merely the first event delivered on the channel.
+    // A warmup marker's (#1338 handshake) debounced event can still be
+    // in flight when the drain above runs and land here instead, which
+    // would let the test proceed without ever observing the real edit.
+    // This is the same race class already fixed in
+    // `crates/zfb-server/tests/combined_gap_integration.rs` — loop and
+    // filter on the canonicalized path until the post.md event
+    // specifically arrives, within the same 2s deadline used before.
+    // Every event seen along the way (including any stray warmup event)
+    // is still collected into `paths` so the orchestrator exercises the
+    // same batching path that `BuildOrchestrator::run` uses in
+    // production.
+    let md_path_canon = std::fs::canonicalize(&md_path).expect("canonicalize md_path");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut paths: Vec<PathBuf> = Vec::new();
+    loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("timed out waiting for the post.md change event");
+        let change = tokio::time::timeout(remaining, rx.recv())
+            .await
+            .expect("watcher emitted within 2s")
+            .expect("channel still open");
+        // canonicalize can fail for a transient/removed path; treat that
+        // as "not our file" and keep draining.
+        let is_target = std::fs::canonicalize(&change.path)
+            .map(|canon| canon == md_path_canon)
+            .unwrap_or(false);
+        paths.push(change.path);
+        if is_target {
+            break;
+        }
+    }
 
     // Drain any further events the platform happened to coalesce into
     // a separate emit. We feed all of them to the orchestrator so the
     // test exercises the same batching path that `BuildOrchestrator::run`
     // uses in production.
-    let mut paths: Vec<PathBuf> = vec![first.path];
     while let Ok(extra) = rx.try_recv() {
         paths.push(extra.path);
     }

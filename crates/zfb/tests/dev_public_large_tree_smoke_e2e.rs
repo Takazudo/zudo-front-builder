@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
 /// Generous wall-clock boot deadline reused from `dev_serve_e2e.rs`. Boot
 /// involves V8 + esbuild bundling and an initial render — generous cap so
@@ -213,6 +213,12 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path) -> DevSession {
 /// path from fix B, together.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_boots_and_serves_under_large_public_tree() {
+    // Only one test in this binary boots a dev server, so no in-binary
+    // SERIAL mutex is needed — but sibling e2e binaries (dev_serve_e2e,
+    // dev_bind_before_walk_e2e, etc.) also boot V8/esbuild, so the
+    // cross-binary lock still applies (issue #1339). See
+    // zfb-test-utils/src/cross_binary_lock.rs.
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[dev_public_large_tree_smoke_e2e] no esbuild binary available; skipping. \

@@ -334,7 +334,7 @@ fn paths_param_with_wrong_type_names_param_and_route() {
 //   - what was expected (e.g. `framework: "preact" | "react"`)
 // ---------------------------------------------------------------------------
 #[test]
-#[ignore = "zfb-render does not yet call the in-process TS config evaluator"]
+#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1353"]
 fn invalid_zfb_config_ts_points_at_field_and_file() {
     // Once zfb-render calls through to the in-process V8 evaluator in
     // zfb::config, build a tmp config with a missing `framework` field

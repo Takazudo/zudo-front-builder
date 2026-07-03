@@ -2,10 +2,15 @@
 //!
 //! These exercise the bundler trait, the subprocess engine, and the URL
 //! helper. Tests that need the real esbuild binary are gated by `#[ignore]`
-//! and a comment — they will be enabled in a release-engineering follow-up
-//! once the binary is materialised at
-//! `crates/zfb/binaries/esbuild/esbuild` (Sub 2 reserves the slot but does
-//! not download the binary).
+//! (`env-gate:`, see CLAUDE.md's taxonomy) — `crates/zfb/build.rs` stages
+//! the pinned esbuild binary at `crates/zfb/binaries/esbuild/esbuild` as a
+//! side effect of building the `zfb` crate, and `.github/workflows/health.yml`
+//! runs this suite with `--ignored` right after asserting that staging step
+//! (issue #1337 / #638). Run locally with
+//! `ZFB_ESBUILD_BIN=<absolute path to esbuild 0.25.12> cargo test -p \
+//! zfb-islands -- --ignored` (the default relative binary_path only
+//! resolves when the test process's CWD is the workspace root — it is not,
+//! `cargo test` runs test binaries from the package directory).
 
 use std::path::{Path, PathBuf};
 
@@ -214,11 +219,19 @@ fn bundle_output_bytes_carries_js_in_memory() {
 }
 
 #[test]
-#[ignore = "Requires the real esbuild binary at crates/zfb/binaries/esbuild/esbuild. \
-            Will be enabled in a release-engineering follow-up."]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn subprocess_bundler_against_real_binary() {
-    let bundler = EsbuildSubprocessBundler::with_default_config();
     let tmp = tempfile::tempdir().expect("tempdir");
+    // Production mode wraps every island in the shared-bundle entry, which
+    // imports `mountIslands` from `@takazudo/zfb/runtime` and `h`/`hydrate`/
+    // `render` from `preact` (see `shared_bundle_keeps_islands_with_no_top_level_side_effect`
+    // below) — esbuild needs those specifiers resolvable via node_modules.
+    stage_minimal_node_modules(tmp.path());
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
+    );
 
     // The caller would normally pass real island source paths here. For
     // the gated smoke test we ship a one-line ESM file in a temp dir.
@@ -269,11 +282,19 @@ fn subprocess_bundler_against_real_binary() {
 /// Pre-fix this test would have the second island missing from the
 /// bundle.
 #[test]
-#[ignore = "Requires the real esbuild binary at crates/zfb/binaries/esbuild/esbuild. \
-            Will be enabled in a release-engineering follow-up."]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn shared_bundle_keeps_islands_with_no_top_level_side_effect() {
-    let bundler = EsbuildSubprocessBundler::with_default_config();
     let tmp = tempfile::tempdir().expect("tempdir");
+    // Production mode wraps every island in the shared-bundle entry, which
+    // imports `mountIslands` from `@takazudo/zfb/runtime` and `h`/`hydrate`/
+    // `render` from `preact` — esbuild needs those specifiers resolvable via
+    // node_modules.
+    stage_minimal_node_modules(tmp.path());
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
+    );
 
     // Island A: v2 shape — a top-level `Inner.displayName = "Foo"`
     // assignment. Pre-fix this survived tree-shaking and was the
@@ -370,8 +391,9 @@ fn stage_minimal_node_modules(root: &Path) {
 /// lives in the chunk, NOT in the entry. Determinism: an identical rebuild
 /// produces the same chunk filename(s).
 #[test]
-#[ignore = "Requires the real esbuild binary. Run locally with \
-            ZFB_ESBUILD_BIN=<platform esbuild 0.25.12> cargo test -p zfb-islands -- --ignored"]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn splitting_emits_chunk_for_dynamic_import() {
     let tmp = tempfile::tempdir().expect("tempdir");
     stage_minimal_node_modules(tmp.path());
@@ -483,8 +505,9 @@ fn splitting_emits_chunk_for_dynamic_import() {
 /// exactly one output file — the entry, zero chunks — so non-splitting
 /// projects carry zero new complexity.
 #[test]
-#[ignore = "Requires the real esbuild binary. Run locally with \
-            ZFB_ESBUILD_BIN=<platform esbuild 0.25.12> cargo test -p zfb-islands -- --ignored"]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn no_dynamic_import_yields_single_file() {
     let tmp = tempfile::tempdir().expect("tempdir");
     stage_minimal_node_modules(tmp.path());
@@ -527,8 +550,9 @@ fn no_dynamic_import_yields_single_file() {
 /// carries the stable URL/relative-path shape with every dynamic import
 /// inlined (`--splitting=false` — no chunk shipping in v1).
 #[test]
-#[ignore = "Requires the real esbuild binary. Run locally with \
-            ZFB_ESBUILD_BIN=<platform esbuild 0.25.12> cargo test -p zfb-islands -- --ignored"]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn client_script_real_esbuild_bundles_discovered_entry() {
     use zfb_islands::{build_production_client_scripts, discover_client_scripts};
 

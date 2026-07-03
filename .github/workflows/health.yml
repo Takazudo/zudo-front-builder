@@ -23,6 +23,17 @@ concurrency:
 jobs:
   health:
     runs-on: ubuntu-latest
+    # Job-level permissions override (issue #1341): the "Detect and report
+    # flaky tests" step near the end of this job calls `gh issue create`/
+    # `gh issue comment`, which needs issues:write. Scoped to THIS job only —
+    # the workflow-level `permissions:` above stays contents:read, and
+    # build-no-v8 below is unaffected. A job-level `permissions:` block
+    # REPLACES (not merges with) the workflow default, so contents:read must
+    # be restated here or this job would lose read access to check out the
+    # repo.
+    permissions:
+      contents: read
+      issues: write
     # V8 first compile costs 15-30 min; subsequent runs hit the Swatinem cache
     # and typically complete well within this budget. Headroom bumped 45 -> 60
     # when this job started *running* the test suite (issue #638), not just
@@ -84,6 +95,17 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # cargo-nextest (issue #1340) — the CI Rust test runner. Pinned via
+      # taiki-e/install-action to match the cargo-deny install in
+      # security-audit.yml: a SHA-pinned action that fetches a checksum-verified
+      # prebuilt binary (no compile cost). nextest gives the CI retry budget
+      # (retries = 1), per-test timeouts, and JUnit output; the profile,
+      # e2e test-group serialization, and timeouts live in .config/nextest.toml.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: nextest
+
       # Fmt gate (issue #988): near-free fail-fast check before the expensive
       # rust-cache restore + V8 build. Note: cargo fmt --check on the stable
       # toolchain can change behaviour on a future toolchain bump — accepted
@@ -107,6 +129,13 @@ jobs:
           prefix-key: "v2-zfb"
 
       - run: pnpm install --frozen-lockfile
+
+      # TypeScript typecheck gate (issue #1332): b4push has run this since its
+      # inception, but CI never did — `pnpm -r test` below only runs vitest,
+      # which transpiles (via esbuild/swc) without type-checking, so a type
+      # error could merge green. `--if-present` mirrors b4push's invocation:
+      # packages without a `typecheck` script are skipped rather than failing.
+      - run: pnpm -r --if-present typecheck
 
       # Run the JS/TS test suites across all packages (@takazudo/zfb and
       # @takazudo/zfb-runtime). Includes the slugify parity tests that
@@ -149,20 +178,86 @@ jobs:
           fi
           "$SLOT" --version
 
-      # Run the workspace test suite. CI previously only *compiled* the test code
-      # (the cargo build --all-targets step above) but never executed it, so unit
-      # and integration regression guards — including the #633 react/jsx-runtime ->
-      # preact/jsx-runtime islands alias guards — were local-only (issue #638).
-      - run: cargo test --workspace
+      # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 5
+      # `#[ignore]`d tests (tagged `env-gate:` per CLAUDE.md's taxonomy) were
+      # staged by the assert step above but never actually executed by any CI
+      # step — `cargo test --workspace` below does not pass `--ignored`, so a
+      # green run proved nothing about them. `ZFB_ESBUILD_BIN` must be an
+      # ABSOLUTE path: `EsbuildSubprocessConfig`'s default binary_path is the
+      # literal relative string `crates/zfb/binaries/esbuild/esbuild`, but
+      # `cargo test` runs each test binary with its CWD set to the package
+      # directory (`crates/zfb-islands`), not the workspace root, so the
+      # relative default never resolves.
+      # --tests scopes this to integration-test binaries only (where the 5
+      # target tests live, in tests/integration.rs) — the unscoped `-p
+      # zfb-islands` form also compiles+runs the crate's doctests, and 3 of
+      # those are pre-existing broken/illustrative examples never meant to
+      # run (issue found while wiring this step; see #1337 follow-up).
+      - name: Run zfb-islands esbuild-gated integration suite
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb-islands --tests -- --ignored
+
+      # Run the workspace test suite under cargo-nextest (issue #1340). CI
+      # previously only *compiled* the test code (the cargo build --all-targets
+      # step above) then ran it under plain `cargo test`; nextest adds a CI retry
+      # budget (retries = 1, pass-on-retry RECORDED not hidden — #1341 consumes
+      # it), per-test timeouts, and JUnit output. The `ci` profile
+      # (.config/nextest.toml) also serializes the 7 heavy V8/esbuild e2e
+      # binaries via a `max-threads = 1` test-group (complementing #1339's
+      # cross-binary flock). Per-binary inventory was reconciled against
+      # `cargo test --workspace -- --list`: identical apart from doctests, which
+      # nextest does not run — hence the separate doc-test step below.
+      #
+      # Output is teed to a log file (issue #1341) so the "Upload nextest
+      # diagnostics" step below can attach it on failure — the raw stdout
+      # (per-test TRY/PASS/FAIL lines, panic messages) that the JUnit report
+      # alone doesn't carry.
+      - name: cargo nextest run --workspace --profile ci
+        shell: bash
+        run: |
+          mkdir -p target/nextest-logs
+          cargo nextest run --workspace --profile ci 2>&1 | tee target/nextest-logs/workspace.log
+
+      # nextest writes JUnit to a fixed per-profile path
+      # (target/nextest/ci/junit.xml). Stash the workspace report before the
+      # zfb-md-extras nextest run (same profile) overwrites it, so BOTH feed the
+      # uploaded artifact. `if: always()` + the existence guard capture the
+      # report even when the run above failed (nextest still emits JUnit on
+      # failure — that is the telemetry #1341 wants most).
+      - name: Stash workspace JUnit before the md-extras nextest run overwrites it
+        if: always()
+        run: |
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/nextest/ci/junit-workspace.xml
+          fi
+
+      # Doctests (issue #1340): nextest does NOT run doctests, so `cargo nextest
+      # run` above cannot cover them. This separate step keeps that coverage.
+      # Current baseline: 5 doctests execute + pass (zfb-css 2, zfb-islands 3),
+      # plus 6 example blocks the harness lists but marks ignored/no_run
+      # (zfb-islands 3, zfb-server 2, zfb-test-utils 1) — 11 total across 4
+      # crates. Must not regress below this.
+      - run: cargo test --workspace --doc
 
       # Run the zfb-md-extras integration suite gated behind the `test-utils`
       # feature (issue #1091). The `test-utils` feature is not in the default
-      # feature set, so `cargo test --workspace` above silently skips every
+      # feature set, so `cargo nextest run --workspace` above silently skips every
       # [[test]] target carrying `required-features = ["test-utils"]`. Using the
       # scoped `-p zfb-md-extras` form because `test-utils` exists only on this
       # crate — `--workspace --features test-utils` would error on other members
-      # that have no such feature.
-      - run: cargo test -p zfb-md-extras --features test-utils
+      # that have no such feature. Migrated to nextest (issue #1340): verified
+      # `cargo nextest run -p zfb-md-extras --features test-utils` DOES pick up
+      # the required-features-gated targets (all 10 gated integration binaries +
+      # the lib unit tests run — 421 tests), so this lane gets the same retry/
+      # timeout/JUnit treatment as the workspace run.
+      #
+      # Output is teed to a log file (issue #1341) for the same reason as the
+      # workspace run above.
+      - name: cargo nextest run -p zfb-md-extras --features test-utils --profile ci
+        shell: bash
+        run: |
+          cargo nextest run -p zfb-md-extras --features test-utils --profile ci 2>&1 | tee target/nextest-logs/md-extras.log
 
       # Lint the test-utils-gated targets (they are excluded from the workspace
       # clippy step above for the same reason as cargo test).
@@ -170,6 +265,63 @@ jobs:
 
       - name: actionlint
         uses: docker://rhysd/actionlint:1.7.12
+
+      # Upload nextest JUnit reports (issue #1340) so retry/flaky telemetry
+      # survives the run — the machine-readable feed issue #1341 consumes
+      # below. `if: always()` uploads on EVERY run, not just failures (nextest
+      # emits JUnit on failure too) — this is deliberately trend data, not
+      # just failure diagnostics: a pass-on-retry only shows up in a run that
+      # otherwise went green. junit-workspace.xml is the stashed
+      # full-workspace run; junit.xml is the last writer (the zfb-md-extras
+      # lane). `if-no-files-found: warn` tolerates an early failure (e.g. a
+      # compile error) that produced no report. `retention-days: 7` — short
+      # retention is fine since #1341's flaky-detection step below consumes
+      # these reports within the same run; the 7 days exists for a human to
+      # download and inspect a specific run's report after the fact.
+      - name: Upload nextest JUnit reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-junit-ci
+          path: |
+            target/nextest/ci/junit-workspace.xml
+            target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Failure-only diagnostics (issue #1341): the raw nextest stdout (teed
+      # by the two nextest run steps above) — per-test TRY/PASS/FAIL lines and
+      # panic messages that the JUnit report's structured fields don't fully
+      # carry. Only uploaded `if: failure()` — a healthy run has nothing
+      # worth attaching beyond the JUnit trend data already uploaded above.
+      - name: Upload nextest diagnostics (on failure)
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-diagnostics
+          path: |
+            target/nextest-logs/workspace.log
+            target/nextest-logs/md-extras.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Flaky-test telemetry (issue #1341): consumes the JUnit reports above
+      # to make CLAUDE.md's "pass-on-retry is a triage signal, not a
+      # success — record it and schedule the fix" policy mechanically real.
+      # `if: always()` so a flaky test is still reported even when a
+      # DIFFERENT, genuine failure elsewhere makes this run red overall.
+      # GH_TOKEN is required here: this job's `permissions:` above grants
+      # issues:write, but `gh` still needs an explicit token when the
+      # workflow's own default (`contents: read`, no write scopes) doesn't
+      # cover it. `scripts/report-flaky-tests.sh` treats every `gh issue`
+      # call as best-effort — a fork PR's read-only GITHUB_TOKEN degrades to
+      # a `::warning::`, never a failed step.
+      - name: Detect and report flaky tests
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/report-flaky-tests.sh target/nextest/ci/junit-workspace.xml target/nextest/ci/junit.xml
 
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #
@@ -181,7 +333,9 @@ jobs:
   # We build the `zfb` binary with --no-default-features here as the
   # primary V8-off acceptance check. zfb-render --no-default-features
   # is implied by the propagation chain (default-features = false on
-  # every consumer), so building zfb alone proves both ends.
+  # every consumer), so building zfb alone proves both ends. A curated
+  # `cargo test --no-default-features` leg (issue #1337, below) also
+  # EXECUTES the no-v8 fallback code paths, not just compiles them.
   build-no-v8:
     name: build (no-v8)
     runs-on: ubuntu-latest
@@ -217,3 +371,24 @@ jobs:
 
       - name: cargo check (zfb --no-default-features --tests)
         run: cargo check --no-default-features -p zfb --tests
+
+      # V8-off EXECUTION leg (issue #1337): the two steps above only build/
+      # check the no-v8 code paths, they never ran the test bodies, so a
+      # `cfg(feature = "embed_v8")` gate could silently rot on the V8-off
+      # side without any CI signal. `zfb-render`'s full suite (unit +
+      # integration) passes cleanly with V8 off, so it runs unrestricted.
+      # `zfb`'s integration tests under `crates/zfb/tests/` all shell out to
+      # the `zfb build`/`zfb dev` subcommands, which correctly refuse to run
+      # without the embedded V8 host (see the guard in
+      # `crates/zfb/src/commands/build.rs`) — that refusal is CORRECT
+      # no-v8 behaviour, but it means those integration tests are not
+      # written to run in a V8-off environment. `zfb` is therefore scoped to
+      # `--lib` here (unit tests only, including the render_pipeline/config
+      # coverage that exercises the no-v8 fallback paths); the workspace's
+      # full integration coverage for those subcommands still runs under V8
+      # in the `health` job above.
+      - name: cargo test (zfb-render --no-default-features)
+        run: cargo test --no-default-features -p zfb-render
+
+      - name: cargo test (zfb --no-default-features --lib)
+        run: cargo test --no-default-features -p zfb --lib

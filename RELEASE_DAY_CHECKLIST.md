@@ -1,5 +1,9 @@
 # Release process
 
+## Router regression check (added by issue #1349)
+
+If the release touches `packages/zfb-runtime` router code (client router, view transitions, scroll restoration, bfcache), run `pnpm test:webkit-back` (WebKit back-nav, T4 local-heavy, Mac only, never runs in CI — `pnpm test:router-chromium` already runs in `router-chromium.yml`) before publishing.
+
 ## Release channels and GitHub Release assets (added by issue #381, updated by issue #455)
 
 ### Release trigger (X9)

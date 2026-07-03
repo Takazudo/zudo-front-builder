@@ -35,6 +35,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter docs build
+      # Deploy must not ship HTML that fails validation (issue #1336) — gate
+      # the artifact upload (and therefore the deploy job that consumes it)
+      # behind the same two checks required on the PR-side docs build.
+      - run: pnpm --filter docs check
+      - run: pnpm --filter docs check:html
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docs-dist
@@ -141,8 +146,43 @@ jobs:
             exit 1
           fi
 
+  health-check:
+    # Post-deploy alerting guard: confirms the live site is actually serving
+    # the newly-deployed worker, not just that `wrangler deploy` exited 0.
+    # Runs only when deploy succeeded (default needs-gating); its result feeds
+    # the notify job below so a non-200 or missing marker flips the alert.
+    name: Post-deploy health check
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify live site is serving
+        shell: bash
+        run: |
+          URL="https://zfb.takazudomodular.com"
+          # "zudo-front-builder" is the GitHub repo name/link rendered in the
+          # docs header/footer — specific enough to avoid false positives from
+          # a generic error page, and stable (unlikely to change wording).
+          MARKER="zudo-front-builder"
+          BODY_FILE="$RUNNER_TEMP/health-check-body.html"
+          max_attempts=6
+          delay=10
+          for attempt in $(seq 1 $max_attempts); do
+            HTTP_CODE=$(curl -sS --max-time 15 -o "$BODY_FILE" -w '%{http_code}' "$URL" || echo "000")
+            if [ "$HTTP_CODE" = "200" ] && grep -q "$MARKER" "$BODY_FILE"; then
+              echo "Health check passed on attempt ${attempt}: HTTP ${HTTP_CODE}, marker '${MARKER}' found."
+              exit 0
+            fi
+            echo "Attempt ${attempt}/${max_attempts}: HTTP ${HTTP_CODE}, marker present: $(grep -q "$MARKER" "$BODY_FILE" 2>/dev/null && echo yes || echo no)"
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "::error::Health check failed after ${max_attempts} attempts — ${URL} did not return HTTP 200 with marker '${MARKER}'."
+              exit 1
+            fi
+            sleep "$delay"
+          done
+
   notify:
-    needs: [build, deploy]
+    needs: [build, deploy, health-check]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -155,17 +195,20 @@ jobs:
           RAW_COMMIT_MSG: ${{ github.event.head_commit.message }}
           BUILD_RESULT: ${{ needs.build.result }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
+          HEALTH_CHECK_RESULT: ${{ needs.health-check.result }}
           GITHUB_SHA_VAL: ${{ github.sha }}
           SERVER_URL: ${{ github.server_url }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          if [ "$DEPLOY_RESULT" = "success" ]; then
+          if [ "$DEPLOY_RESULT" = "success" ] && [ "$HEALTH_CHECK_RESULT" = "success" ]; then
             STATUS="succeeded"
           elif [ "$BUILD_RESULT" = "failure" ]; then
             STATUS="failed (build)"
           elif [ "$DEPLOY_RESULT" = "failure" ]; then
             STATUS="failed (deploy)"
+          elif [ "$HEALTH_CHECK_RESULT" = "failure" ]; then
+            STATUS="failed (health check)"
           else
             STATUS="cancelled"
           fi

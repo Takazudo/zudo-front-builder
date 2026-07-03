@@ -230,6 +230,8 @@ If anything fails, stop and tell the user. Do not proceed.
 
 If you used `--lockfile-only` in 4c (so `node_modules` is still "stale" per pnpm), the TS test's pre-run deps check will try to auto-install and hit the same no-TTY purge abort. Either run `CI=1 pnpm install` once first, or skip the check for this run: `pnpm --config.verify-deps-before-run=false --filter @takazudo/zfb test` (the bump changes only internal version numbers, not external deps, so the existing `node_modules` is valid for the test — and CI re-validates with a clean install at Step 7 regardless). The `cargo test` leg is unaffected.
 
+If this release touches `packages/zfb-runtime` router code, also run `pnpm test:webkit-back` (T4 local-heavy, Mac only — not covered by Step 7's CI wait; `pnpm test:router-chromium` already runs in CI via `router-chromium.yml`).
+
 Note: the Rust CLI binary is built by `.github/workflows/release.yml` — do not attempt to build it here.
 
 ## Step 6: Atomic Commit + Push

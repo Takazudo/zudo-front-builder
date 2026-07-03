@@ -70,13 +70,20 @@
 //!
 //! ## Concurrency
 //!
-//! This file contains TWO spawning tests (lazy default + eager escape
-//! hatch), serialized through the `SERIAL` mutex per the
-//! watch_add_confirm.rs:96 pattern — two concurrent `zfb dev` boots
-//! (V8 + esbuild) would starve each other on CI. The external
-//! `flock`-based lock used by the workspace test runner serializes the
-//! test binary against other E2E suites; `SERIAL` serializes the tests
-//! within this binary.
+//! This file contains THREE spawning tests (lazy default, eager escape
+//! hatch, and the boot-render-window regression test), serialized through
+//! the `SERIAL` mutex per the watch_add_confirm.rs:96 pattern — two
+//! concurrent `zfb dev` boots (V8 + esbuild) would starve each other on
+//! CI. Against OTHER e2e test binaries, each spawning test also acquires
+//! `zfb_test_utils::CrossBinaryE2eLock` (issue #1339) — a real OS-level
+//! advisory file lock (`target/.e2e-serialize.lock`, `flock`/`LockFileEx`
+//! via `std::fs::File`) — BEFORE the `SERIAL` guard; see
+//! `zfb-test-utils/src/cross_binary_lock.rs` for the full mechanism and
+//! the lock-ordering rationale. `cargo test --workspace`'s default
+//! sequential binary execution already serializes this binary against its
+//! siblings today, but a parallel runner (`cargo nextest`) would not — the
+//! cross-binary lock makes that guarantee explicit and real instead of an
+//! implicit side effect of `cargo test`'s scheduling.
 
 #![cfg(unix)]
 
@@ -88,7 +95,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary};
+use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 /// Serializes the spawning tests in this file (each boots a full V8 +
 /// esbuild dev session; running them concurrently would double memory
@@ -457,6 +464,9 @@ enum DevMode {
 /// assertion with another's.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_edit_to_serve_loop() {
+    // Cross-binary lock acquired BEFORE the in-binary SERIAL guard — see
+    // the lock-ordering note in zfb-test-utils/src/cross_binary_lock.rs.
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -503,6 +513,9 @@ async fn dev_e2e_edit_to_serve_loop() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_eager_escape_hatch() {
+    // Cross-binary lock acquired BEFORE the in-binary SERIAL guard — see
+    // the lock-ordering note in zfb-test-utils/src/cross_binary_lock.rs.
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -570,6 +583,9 @@ const BOOT_RENDER_WINDOW_MS: u64 = 5_000;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_edit_during_boot_render_window_is_observed() {
+    // Cross-binary lock acquired BEFORE the in-binary SERIAL guard — see
+    // the lock-ordering note in zfb-test-utils/src/cross_binary_lock.rs.
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
