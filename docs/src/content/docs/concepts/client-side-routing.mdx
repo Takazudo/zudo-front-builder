@@ -156,7 +156,7 @@ Some viewers deep-link to a real path segment instead of a hash — a photo ligh
 ```ts
 import { syncHistoryEntry } from "@takazudo/zfb-runtime/client-router";
 
-function openPhoto(slug: string) {
+function openPhotoLightbox(slug: string) {
   syncHistoryEntry(`/photos/${slug}/`);
 }
 ```
