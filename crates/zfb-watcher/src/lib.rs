@@ -1029,6 +1029,21 @@ mod tests {
     /// `CONSUMER_FAILSAFE`.
     const PRODUCER_FAILSAFE_CAP: Duration = Duration::from_secs(60);
 
+    /// Bound on the producers' raw channel in the two sustained-burst tests
+    /// below (`std_mpsc::sync_channel`, which hands `debouncer_task` the same
+    /// `Receiver` type as the unbounded `channel` production uses). Without a
+    /// bound, a regressed/stalled consumer would let the no-sleep producer
+    /// enqueue up to `PRODUCER_FAILSAFE_CAP` worth of events — memory
+    /// exhaustion instead of a clean timeout. Backpressure does NOT weaken
+    /// the saturation property: a full channel means events are always
+    /// buffered ahead of the bridge, which is exactly what keeps the
+    /// `biased` recv arm winning. If the whole pipeline stalls, the
+    /// producer blocks in `send` (without re-checking its failsafe cap)
+    /// rather than allocating; the consumer failsafe then fails the test,
+    /// and the unwind closes the channel, which errors the blocked `send`
+    /// and lets the producer thread exit.
+    const PRODUCER_CHANNEL_BOUND: usize = 4096;
+
     /// Build a synthetic `notify` modify event for a single path (mirrors what
     /// the recommended watcher hands us for a content edit).
     fn modify_event(path: &Path) -> notify::Result<Event> {
@@ -1050,7 +1065,10 @@ mod tests {
     async fn sustained_hot_file_stream_flushes_mid_burst() {
         let hot = PathBuf::from("/synthetic/hot.txt");
 
-        let (raw_tx, raw_rx) = std_mpsc::channel::<notify::Result<Event>>();
+        // Bounded: see `PRODUCER_CHANNEL_BOUND` — caps producer backlog
+        // without weakening recv-arm saturation.
+        let (raw_tx, raw_rx) =
+            std_mpsc::sync_channel::<notify::Result<Event>>(PRODUCER_CHANNEL_BOUND);
         let (out_tx, mut out_rx) = mpsc::channel::<Change>(256);
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -1120,7 +1138,10 @@ mod tests {
     /// single flush.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sustained_many_paths_stream_drains_mid_burst() {
-        let (raw_tx, raw_rx) = std_mpsc::channel::<notify::Result<Event>>();
+        // Bounded: see `PRODUCER_CHANNEL_BOUND` — caps producer backlog
+        // without weakening recv-arm saturation.
+        let (raw_tx, raw_rx) =
+            std_mpsc::sync_channel::<notify::Result<Event>>(PRODUCER_CHANNEL_BOUND);
         let (out_tx, mut out_rx) = mpsc::channel::<Change>(256);
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
 
