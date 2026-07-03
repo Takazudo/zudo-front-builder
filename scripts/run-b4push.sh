@@ -23,15 +23,20 @@ set -uo pipefail
 #   6. pnpm -r test (vitest)                      — fast
 #   7. cargo clippy -D warnings                   — fast on a WARM tree
 #   8. cargo nextest run --workspace (or cargo test)       — opt-in (B4PUSH_FULL=1)
-#   9. cargo nextest run -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
-#  10. cargo clippy -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
-#  11. cargo check --no-default-features -p zfb --tests    — opt-in (B4PUSH_FULL=1)
+#   9. cargo test --workspace --doc (nextest branch only)  — opt-in (B4PUSH_FULL=1)
+#  10. cargo nextest run -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
+#  11. cargo clippy -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
+#  12. cargo check --no-default-features -p zfb --tests    — opt-in (B4PUSH_FULL=1)
 #
-# Steps 8-9 use cargo-nextest (nextest's DEFAULT profile, retries = 0) when it
-# is installed, matching CI's runner; they fall back to plain `cargo test` when
-# nextest is absent (issue #1340).
+# Steps 8 and 10 use cargo-nextest (nextest's DEFAULT profile, retries = 0) when
+# it is installed, matching CI's runner; they fall back to plain `cargo test`
+# when nextest is absent (issue #1340). Step 9 exists ONLY in the nextest branch:
+# nextest does NOT run doctests, so — mirroring health.yml's separate doc step —
+# a `cargo test --workspace --doc` follows the nextest workspace run to keep
+# doctest coverage. The plain-`cargo test --workspace` fallback already runs
+# doctests as part of that same command, so it needs no separate step.
 #
-# Steps 9-11 mirror the health.yml lanes that steps 1-8 alone cannot reproduce
+# Steps 10-12 mirror the health.yml lanes that steps 1-8 alone cannot reproduce
 # (issue #1332): the zfb-md-extras `test-utils`-gated suite + its scoped clippy
 # (health.yml:165,169), and the V8-off `build-no-v8` job's cargo check
 # (health.yml:219). Without them, "B4PUSH_FULL=1 pnpm b4push passed" did not
@@ -192,6 +197,27 @@ if [ "${B4PUSH_FULL:-}" = "1" ]; then
   fi
 else
   skip "${WS_TEST_CMD[*]} (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
+fi
+
+# ── Rust doctests (opt-in, nextest branch only) ────────
+# cargo-nextest does NOT run doctests, so when the workspace lane above used
+# `cargo nextest run` it left doctest examples uncovered. Mirror health.yml's
+# separate `cargo test --workspace --doc` step (issue #1340) so a local
+# B4PUSH_FULL pass can't go green while a doctest is broken — only to fail later
+# in CI. This step is emitted ONLY in the nextest branch: the plain
+# `cargo test --workspace` fallback already runs doctests as part of that same
+# command, so a second doc-only run there would be redundant.
+if [ "$HAVE_NEXTEST" = "1" ]; then
+  step "Rust doctests (cargo test --workspace --doc)"
+  if [ "${B4PUSH_FULL:-}" = "1" ]; then
+    if cargo test --workspace --doc; then
+      pass "cargo test --workspace --doc"
+    else
+      fail "cargo test --workspace --doc"
+    fi
+  else
+    skip "cargo test --workspace --doc (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
+  fi
 fi
 
 # ── zfb-md-extras test-utils suite (opt-in) ────────────

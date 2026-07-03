@@ -192,24 +192,41 @@ async fn gap1_ssr_and_gap2_watcher_work_together() {
     // 5. Edit the file
     // ----------------------------------------------------------------
     // Drain any warmup events still queued from the liveness handshake so
-    // the assertion below observes the real example.md edit, not a warmup.
+    // the loop below has fewer stale events to skip before the real edit.
     while watch_rx.try_recv().is_ok() {}
-    std::fs::write(extra_canonical.join("example.md"), "v2 content\n")
-        .expect("write updated example.md");
+    let target = extra_canonical.join("example.md");
+    std::fs::write(&target, "v2 content\n").expect("write updated example.md");
 
     // ----------------------------------------------------------------
-    // 6. Assert watcher fires a change for the extra path (Gap 2 proof)
+    // 6. Assert the watcher fires a change FOR example.md (Gap 2 proof)
     // ----------------------------------------------------------------
-    let change = timeout(Duration::from_secs(2), watch_rx.recv())
-        .await
-        .expect("watcher change arrives within 2s")
-        .expect("watcher channel open");
-    assert!(
-        change.path.starts_with(&extra_canonical),
-        "expected change path {:?} to be under extra root {:?}",
-        change.path,
-        extra_canonical
-    );
+    // Wait for the change that corresponds to the example.md edit
+    // SPECIFICALLY — not merely any change under the extra root. A warmup
+    // marker (`__warmup_*.md`) can still land after the drain above and
+    // before/during the write; a plain `starts_with(&extra_canonical)`
+    // assertion would accept that late warmup and report success without
+    // ever proving the real edit was observed. Loop-and-filter on the
+    // canonical path is the same race-hardening `zfb-watcher`'s smoke.rs
+    // uses (the #1338 handshake's companion drain pattern); it also skips
+    // the parent-directory event macOS FSEvents may fire alongside the file.
+    let target_canon = std::fs::canonicalize(&target).expect("canonicalize target");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("timed out waiting for the example.md change event");
+        let change = timeout(remaining, watch_rx.recv())
+            .await
+            .expect("watcher change arrives before deadline")
+            .expect("watcher channel open");
+        // canonicalize can fail for a transient/removed path; treat that as
+        // "not our file" and keep draining.
+        if let Ok(canon) = std::fs::canonicalize(&change.path) {
+            if canon == target_canon {
+                break;
+            }
+        }
+    }
 
     // ----------------------------------------------------------------
     // 7. Second curl: assert body now contains "v2 content" (Gap 1
