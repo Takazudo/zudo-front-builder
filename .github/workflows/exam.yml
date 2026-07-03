@@ -23,9 +23,12 @@
 #   - quarantine-heavy (ubuntu-latest) — runs exactly the env-gate + heavy
 #     tagged tests from #1337's manifest table under
 #     `cargo nextest run --run-ignored ignored-only`, scoped via an exact-name
-#     filterset (`-E`) so the pending-feature-tagged #[ignore]d tests (blocked
-#     on #1352/#1353/#1354, not this issue's scope) are NOT swept in. Every
-#     test name below was verified workspace-unique
+#     filterset (`-E`) so any pending-feature-tagged #[ignore]d tests would be
+#     excluded. As of #1363's reconciliation, none remain: the former #1354
+#     pending-feature tests were either activated (un-ignored) or, for the
+#     render_pipeline case, retagged `heavy` and folded into this filterset —
+#     see CLAUDE.md's manifest table. Every test name below was verified
+#     workspace-unique
 #     (`grep -rln 'fn <name>' crates/` → exactly one file each), so the
 #     exact-match filterset alone is sufficient scoping — no `-p`/package
 #     qualifier is needed for correctness. `test(=NAME)` matches nextest's
@@ -33,7 +36,10 @@
 #     name — the 11 top-level integration-test functions need no prefix, but
 #     `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project`
 #     lives inside `#[cfg(test)] mod tests` in crates/zfb/src/commands/build.rs
-#     and so is filtered as `commands::build::tests::<name>`; verify with
+#     (filtered as `commands::build::tests::<name>`) and
+#     `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` likewise
+#     lives inside `#[cfg(test)] mod tests` in crates/zfb/src/render_pipeline.rs
+#     (filtered as `render_pipeline::tests::<name>`); verify with
 #     `cargo nextest list --workspace --run-ignored ignored-only -E '<filterset>'`
 #     after touching this list — a bare fn name for a nested test silently
 #     matches zero tests instead of erroring.
@@ -165,12 +171,13 @@ jobs:
           "$ESBUILD_SLOT" --version
           "$TAILWIND_SLOT" --version
 
-      # The #1337 manifest, env-gate + heavy tags only (12 tests — see
+      # The #1337 manifest, env-gate + heavy tags only (13 tests — see
       # CLAUDE.md's "`#[ignore]` manifest (Rust)" table for the authoritative
-      # list). pending-feature-tagged tests are deliberately excluded: they
-      # are blocked on unimplemented product features (#1352/#1353/#1354),
-      # not covered by this issue, and would just fail every single run with
-      # no new information.
+      # list). No pending-feature-tagged tests exist as of #1363's
+      # reconciliation, so there is nothing left to deliberately exclude here
+      # — a future pending-feature #[ignore] would still be left out of this
+      # filterset (it would just fail every run with no new information)
+      # until its blocking issue resolves.
       #
       # ZFB_ESBUILD_BIN / ZFB_TAILWIND_BIN must be ABSOLUTE paths: nextest
       # (like plain `cargo test`) runs each test binary with its CWD set to
@@ -198,6 +205,7 @@ jobs:
               | test(=subprocess_engine_against_real_binary)
               | test(=prod_asset_graph_with_real_tailwind_binary_against_fixture)
               | test(=commands::build::tests::default_runner_emit_prod_assets_returns_non_empty_css_for_real_project)
+              | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths)
               | test(=version_stamp_from_env)
               | test(=e2e_src_component_edit_rerenders_route)
               | test(=e2e_transitive_css_import_refreshes_stylesheet)

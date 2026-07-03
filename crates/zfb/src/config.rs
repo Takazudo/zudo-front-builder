@@ -1798,14 +1798,19 @@ fn parse_loaded_config(
         value
     };
 
-    let mut config: Config = serde_json::from_value(merged_value.clone()).map_err(|e| {
-        anyhow!(
+    // serde_path_to_error wraps the deserialize with the field path that
+    // failed (e.g. `framework`), so the error names the offending key
+    // instead of only echoing the raw JSON below (issue #1359). Its
+    // `Display` impl already renders as `{path}: {inner}`.
+    let mut config: Config =
+        serde_path_to_error::deserialize(merged_value.clone()).map_err(|e| {
+            anyhow!(
             "{}: failed to parse the default export as zfb config JSON: {}\n--- received ---\n{}",
             ts_path.display(),
             e,
             merged_value
         )
-    })?;
+        })?;
 
     // Resolve any plugin entries that still have `resolved_module = None`
     // (i.e. those contributed by presets). Mirrors the JSON-load path
@@ -4232,6 +4237,93 @@ mod tests {
         assert!(
             !msg.contains("embedded V8 evaluator failed"),
             "error must not come from V8 eval (must be bundle-time), got: {msg}"
+        );
+    }
+
+    /// Real-pipeline error-quality test for a `zfb.config.ts` with a wrong
+    /// enum value (issue #1353 / #1359). Relocated here from
+    /// `zfb-render/tests/error_messages.rs` — see that file's pointer comment
+    /// for why the real pipeline is only reachable from this crate.
+    ///
+    /// Goes through the FULL real pipeline: embedded esbuild bundles the
+    /// file, the in-process V8 isolate evaluates it, and
+    /// `serde_path_to_error` (adopted by this issue) turns the resulting
+    /// `serde_json` error into a field-path diagnostic. No
+    /// `test_default_export_json` mock — this is Level 3 (executes the
+    /// emitted bundle in real V8), not a logic-only test.
+    ///
+    /// `framework` is deliberately given a WRONG VALUE, not omitted:
+    /// `Config.framework` is `#[serde(default)]` (defaults to `Preact`), so a
+    /// missing field loads cleanly and could never make this test fail.
+    #[cfg(feature = "embed_v8")]
+    #[tokio::test]
+    async fn invalid_zfb_config_ts_points_at_field_and_file() {
+        let tmp = TempDir::new().unwrap();
+        let ts_path = tmp.path().join("zfb.config.ts");
+        tokio::fs::write(&ts_path, "export default { framework: \"vue\" };\n")
+            .await
+            .unwrap();
+
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("unknown framework variant should be rejected");
+        let msg = format!("{err:#}");
+
+        assert!(
+            msg.contains(ts_path.to_str().unwrap()),
+            "error should name the absolute zfb.config.ts path: {msg}"
+        );
+        // The `framework: unknown variant` shape is serde_path_to_error's
+        // `{path}: {inner}` rendering — a bare `contains("framework")` would
+        // also pass via the `--- received ---` JSON echo, which is exactly
+        // the failure mode this test exists to rule out.
+        assert!(
+            msg.contains("framework: unknown variant"),
+            "error should name the bad field via its serde path: {msg}"
+        );
+        assert!(
+            msg.contains("preact") && msg.contains("react"),
+            "error should list the expected union values: {msg}"
+        );
+    }
+
+    /// Second real-pipeline error-quality case (issue #1359): a collection
+    /// entry missing its required `path` field. `CollectionDef.path` has no
+    /// `#[serde(default)]`, so — unlike `framework` — omitting it is a
+    /// genuine schema error, letting this case exercise the missing-field
+    /// branch of `serde_path_to_error` rather than the unknown-variant
+    /// branch the sibling test above covers.
+    #[cfg(feature = "embed_v8")]
+    #[tokio::test]
+    async fn invalid_zfb_config_ts_collection_missing_path_field() {
+        let tmp = TempDir::new().unwrap();
+        let ts_path = tmp.path().join("zfb.config.ts");
+        tokio::fs::write(
+            &ts_path,
+            "export default { collections: [{ name: \"blog\" }] };\n",
+        )
+        .await
+        .unwrap();
+
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("collection missing `path` should be rejected");
+        let msg = format!("{err:#}");
+
+        assert!(
+            msg.contains(ts_path.to_str().unwrap()),
+            "error should name the absolute zfb.config.ts path: {msg}"
+        );
+        // `collections[0]` is serde_path_to_error's indexed path to the
+        // offending entry — the JSON echo renders the array without indices,
+        // so this substring can only come from the path diagnostic.
+        assert!(
+            msg.contains("collections[0]"),
+            "error should point at the offending collection entry: {msg}"
+        );
+        assert!(
+            msg.contains("missing field `path`"),
+            "error should name the missing field: {msg}"
         );
     }
 

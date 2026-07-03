@@ -582,6 +582,8 @@ async fn drain_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn classify_create_is_created() {
@@ -983,7 +985,64 @@ mod tests {
     // real-FS writer cannot reliably reproduce the saturating stream the bug
     // needs. Feeding the sync `raw_rx` channel ourselves gives a deterministic,
     // platform-independent reproduction of the exact `select!` pathology.
+    //
+    // Mid-burst proof, BY CONSTRUCTION (issue #1357 ← source #1355): the two
+    // tests below used to prove "flushed while still streaming" with a
+    // timing ratio — a fixed 2s producer vs. a 1s consumer deadline. Under
+    // CPU pressure that 1s deadline is a bare-timing-wait flake (deflaking
+    // root cause #1 in CLAUDE.md's Testing section) even though the
+    // debouncer behaved correctly. Nothing in the product contract (the
+    // starvation guard at lines 507-525 above) promises a 1s max latency —
+    // that number was test convenience, not spec.
+    //
+    // Instead, each producer streams with no sleep (load-bearing: keeping an
+    // event always buffered is what makes the `biased` recv arm win every
+    // `select!` and starve `tick`, per the comment above) until the CONSUMER
+    // sets a shared `done` flag once it has observed its per-test condition
+    // (see each test below), bounded by `PRODUCER_FAILSAFE_CAP` as a
+    // give-up-only backstop. Because the producer only stops when told to
+    // (or the cap is hit), any condition the consumer observes was
+    // necessarily satisfied WHILE the producer was still streaming — no
+    // timing ratio needed. Every remaining timeout below (the consumer's
+    // `tokio::time::timeout` and the producer's cap) is a give-up failsafe
+    // that bounds worst-case test runtime on a regression, never a proof
+    // deadline — same framing as the `drive()` helper's 5s timeout below and
+    // `zfb_test_utils::watcher_live_handshake`'s deadline
+    // (crates/zfb-test-utils/src/watcher_handshake.rs:135-198).
     // ---------------------------------------------------------------------------
+
+    /// Give-up failsafe for the consumer's `tokio::time::timeout` in the two
+    /// sustained-burst tests below — bounds worst-case test runtime if a
+    /// regression starves the debouncer forever. NOT a proof deadline: the
+    /// mid-burst proof comes from the `done`-flag construction described
+    /// above, not from this number. Kept strictly less than
+    /// `PRODUCER_FAILSAFE_CAP` so a regressed debouncer times out the
+    /// consumer (a clean test failure) instead of the producer thread
+    /// outliving it.
+    const CONSUMER_FAILSAFE: Duration = Duration::from_secs(30);
+
+    /// Give-up cap on the producer thread's streaming loop in the two
+    /// sustained-burst tests below. Normally the loop exits promptly once
+    /// the consumer sets `done`; this cap only matters if that never
+    /// happens (i.e. the same regression `CONSUMER_FAILSAFE` guards
+    /// against), so it just needs to stay strictly greater than
+    /// `CONSUMER_FAILSAFE`.
+    const PRODUCER_FAILSAFE_CAP: Duration = Duration::from_secs(60);
+
+    /// Bound on the producers' raw channel in the two sustained-burst tests
+    /// below (`std_mpsc::sync_channel`, which hands `debouncer_task` the same
+    /// `Receiver` type as the unbounded `channel` production uses). Without a
+    /// bound, a regressed/stalled consumer would let the no-sleep producer
+    /// enqueue up to `PRODUCER_FAILSAFE_CAP` worth of events — memory
+    /// exhaustion instead of a clean timeout. Backpressure does NOT weaken
+    /// the saturation property: a full channel means events are always
+    /// buffered ahead of the bridge, which is exactly what keeps the
+    /// `biased` recv arm winning. If the whole pipeline stalls, the
+    /// producer blocks in `send` (without re-checking its failsafe cap)
+    /// rather than allocating; the consumer failsafe then fails the test,
+    /// and the unwind closes the channel, which errors the blocked `send`
+    /// and lets the producer thread exit.
+    const PRODUCER_CHANNEL_BOUND: usize = 4096;
 
     /// Build a synthetic `notify` modify event for a single path (mirrors what
     /// the recommended watcher hands us for a content edit).
@@ -998,13 +1057,18 @@ mod tests {
 
     /// A continuous single-hot-file stream must flush MID-STREAM. Against the
     /// pre-fix loop the `recv` arm starves `tick` and the hot file never goes
-    /// quiet, so nothing is emitted until the producer stops; the deadline
-    /// (well under the producer's lifetime) makes that failure observable.
+    /// quiet, so nothing is emitted until the producer stops. The condition
+    /// here — the first flush for `hot`, observed while the producer is
+    /// still streaming (by construction, see the section header above) —
+    /// makes that failure observable without any timing ratio.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sustained_hot_file_stream_flushes_mid_burst() {
         let hot = PathBuf::from("/synthetic/hot.txt");
 
-        let (raw_tx, raw_rx) = std_mpsc::channel::<notify::Result<Event>>();
+        // Bounded: see `PRODUCER_CHANNEL_BOUND` — caps producer backlog
+        // without weakening recv-arm saturation.
+        let (raw_tx, raw_rx) =
+            std_mpsc::sync_channel::<notify::Result<Event>>(PRODUCER_CHANNEL_BOUND);
         let (out_tx, mut out_rx) = mpsc::channel::<Change>(256);
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -1012,14 +1076,21 @@ mod tests {
         let task = tokio::spawn(debouncer_task(raw_rx, out_tx, debounce, shutdown_rx));
 
         // Producer: hammer the SAME path as fast as the bounded bridge will
-        // accept, for ~2s. No sleep — keeping an event always buffered is what
-        // makes the `biased` recv arm win every `select!` and starve `tick`.
-        // `raw_tx` is moved in and dropped when the loop ends, which closes the
-        // channel and lets the task exit cleanly.
+        // accept, until the consumer below sets `done` (its mid-burst proof
+        // landed) or `PRODUCER_FAILSAFE_CAP` gives up. No sleep — keeping an
+        // event always buffered is what makes the `biased` recv arm win
+        // every `select!` and starve `tick`; that starvation IS the product
+        // path under test (see the section header above), so do not add a
+        // sleep here. `raw_tx` is moved in and dropped when the loop ends,
+        // which closes the channel and lets the task exit cleanly.
+        let done = Arc::new(AtomicBool::new(false));
+        let producer_done = Arc::clone(&done);
         let producer_path = hot.clone();
         let producer = std::thread::spawn(move || {
             let started = Instant::now();
-            while started.elapsed() < Duration::from_secs(2) {
+            while !producer_done.load(Ordering::Relaxed)
+                && started.elapsed() < PRODUCER_FAILSAFE_CAP
+            {
                 if raw_tx.send(modify_event(&producer_path)).is_err() {
                     break; // debouncer task gone
                 }
@@ -1027,11 +1098,14 @@ mod tests {
         });
 
         // Must observe a flush for the hot file WHILE the producer is still
-        // running. 1s << the producer's 2s lifetime, so a pass proves the
-        // forced flush fired mid-stream and not after the stream ended.
-        let flushed = tokio::time::timeout(Duration::from_secs(1), async {
+        // running — it only stops once we set `done` below (or the failsafe
+        // cap is hit), so a pass here proves the forced flush fired
+        // mid-stream BY CONSTRUCTION, not via a timing ratio.
+        // `CONSUMER_FAILSAFE` is a give-up failsafe, not a proof deadline.
+        let flushed = tokio::time::timeout(CONSUMER_FAILSAFE, async {
             while let Some(change) = out_rx.recv().await {
                 if change.path == hot {
+                    done.store(true, Ordering::Relaxed);
                     return true;
                 }
             }
@@ -1058,22 +1132,34 @@ mod tests {
     /// A continuous stream across MANY distinct paths must also drain mid-burst
     /// — exercising the `pending.len() >= MAX_PENDING_BEFORE_FORCED_FLUSH`
     /// branch (a `git checkout` of a huge tree), not just the elapsed-window
-    /// branch. We assert a steady flow of distinct paths arrives while the
-    /// producer is still running, so `pending` cannot grow without bound.
+    /// branch. We keep the STRONGER condition here (≥50 distinct paths
+    /// drained while the producer is still running, by construction) so this
+    /// still clearly proves the forced-flush-on-size branch, not just any
+    /// single flush.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sustained_many_paths_stream_drains_mid_burst() {
-        let (raw_tx, raw_rx) = std_mpsc::channel::<notify::Result<Event>>();
+        // Bounded: see `PRODUCER_CHANNEL_BOUND` — caps producer backlog
+        // without weakening recv-arm saturation.
+        let (raw_tx, raw_rx) =
+            std_mpsc::sync_channel::<notify::Result<Event>>(PRODUCER_CHANNEL_BOUND);
         let (out_tx, mut out_rx) = mpsc::channel::<Change>(256);
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
 
         let debounce = Duration::from_millis(100);
         let task = tokio::spawn(debouncer_task(raw_rx, out_tx, debounce, shutdown_rx));
 
-        // Producer: a flood of DISTINCT paths (like a bulk checkout) for ~2s.
+        // Producer: a flood of DISTINCT paths (like a bulk checkout) until the
+        // consumer below sets `done` (its 50-path mid-burst proof landed) or
+        // `PRODUCER_FAILSAFE_CAP` gives up. See the hot-file test above for
+        // why the loop has no sleep.
+        let done = Arc::new(AtomicBool::new(false));
+        let producer_done = Arc::clone(&done);
         let producer = std::thread::spawn(move || {
             let started = Instant::now();
             let mut n: u64 = 0;
-            while started.elapsed() < Duration::from_secs(2) {
+            while !producer_done.load(Ordering::Relaxed)
+                && started.elapsed() < PRODUCER_FAILSAFE_CAP
+            {
                 let p = PathBuf::from(format!("/synthetic/tree/file_{n}.txt"));
                 if raw_tx.send(modify_event(&p)).is_err() {
                     break;
@@ -1082,14 +1168,17 @@ mod tests {
             }
         });
 
-        // Expect a healthy number of distinct emitted changes WHILE the
-        // producer runs. Any positive flow proves `pending` is draining under a
-        // continuous stream rather than starving `tick` and growing unbounded.
-        let drained = tokio::time::timeout(Duration::from_secs(1), async {
+        // Expect >=50 distinct emitted changes WHILE the producer is still
+        // running — it only stops once we set `done` below (or the failsafe
+        // cap is hit), so reaching 50 here proves `pending` is draining
+        // under a continuous stream BY CONSTRUCTION, not via a timing ratio.
+        // `CONSUMER_FAILSAFE` is a give-up failsafe, not a proof deadline.
+        let drained = tokio::time::timeout(CONSUMER_FAILSAFE, async {
             let mut count = 0usize;
             while let Some(_change) = out_rx.recv().await {
                 count += 1;
                 if count >= 50 {
+                    done.store(true, Ordering::Relaxed);
                     return count;
                 }
             }
@@ -1101,7 +1190,7 @@ mod tests {
         assert!(
             drained >= 50,
             "a continuous many-path stream must drain mid-burst (got {drained} \
-             changes in 1s); pending was starving `tick` (sub #1138)",
+             changes); pending was starving `tick` (sub #1138)",
         );
 
         // See the note in the hot-file test: drop the receiver before awaiting

@@ -9,15 +9,16 @@
 //! - what was expected
 //!
 //! Companion to `zfb-render/tests/error_messages.rs`. The
-//! `getCollection("doesnotexist")` failure mode and the `zfb.config.ts`
-//! failure mode are tracked separately — see the Sub 4 log for the
-//! "no surface yet" follow-up.
+//! `getCollection("doesnotexist")` failure mode is covered below; the
+//! `zfb.config.ts` failure mode is tracked separately (see
+//! `zfb-render/tests/error_messages.rs`).
 
 use std::path::PathBuf;
 
 use serde::Deserialize;
 
 use zfb_content::collection::{walk_collection, CollectionError, Entry};
+use zfb_content::{build_snapshot, BridgeError, CollectionConfig};
 
 #[derive(Debug, Deserialize, garde::Validate)]
 #[allow(dead_code)]
@@ -81,28 +82,66 @@ fn malformed_frontmatter_error_points_at_file_and_yaml_location() {
 }
 
 // ---------------------------------------------------------------------------
-// Failure mode 4 — getCollection("doesnotexist"): SKIPPED.
+// Failure mode 4 — getCollection("doesnotexist").
 //
-// `zfb-content` exposes the static `walk_collection<T>` API and
-// `emit_types_dts` for the TypeScript surface; there is no runtime
-// `getCollection(name)` lookup that takes a name string and validates it
-// against the registered collections yet. When that surface lands, this
-// test should call it with an unknown name and assert the error includes
-// the call site, the requested name, and the list of available names.
-// Tracked in the Sub 4 log as a follow-up.
+// `ContentSnapshot::get_collection(name, call_site)` (crate root:
+// `content_bridge.rs`) is the runtime lookup surface for a name string
+// against the registered collections. This test pins its error message.
 // ---------------------------------------------------------------------------
 
-/// Mark the gap explicitly so a future regression — i.e. someone *adds* the
-/// surface but forgets to wire the file-pointing error — is at least
-/// surfaced as a failing-but-`#[ignore]`d test that future work flips on.
+/// `ContentSnapshot::get_collection` with an unregistered name must surface
+/// an error that includes the call site (file path), the requested name,
+/// and the list of names that *are* registered.
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1352"]
 fn unknown_collection_name_lists_available_collections() {
-    // Once a `get_collection(name: &str)` (or equivalent) surface exists,
-    // call it with `"doesnotexist"` and assert that:
-    //   - the error mentions the call site (file path)
-    //   - the error mentions the bad name
-    //   - the error lists the names that *are* registered
+    let tmp = mk_tmp("unknown-collection");
+    let blog_dir = tmp.path.join("blog");
+    let docs_dir = tmp.path.join("docs");
+    std::fs::create_dir_all(&blog_dir).unwrap();
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    std::fs::write(
+        blog_dir.join("post.md"),
+        "---\ntitle: \"Post\"\n---\nbody for post\n",
+    )
+    .unwrap();
+    std::fs::write(
+        docs_dir.join("intro.md"),
+        "---\ntitle: \"Intro\"\n---\nbody for intro\n",
+    )
+    .unwrap();
+
+    let snap = build_snapshot(&[
+        CollectionConfig::new("blog", &blog_dir),
+        CollectionConfig::new("docs", &docs_dir),
+    ])
+    .expect("snapshot must build");
+
+    let call_site = tmp.path.join("pages/index.tsx");
+    let err = snap
+        .get_collection("doesnotexist", &call_site)
+        .expect_err("unknown collection name must fail");
+
+    let BridgeError::UnknownCollection { .. } = &err else {
+        unreachable!("expected UnknownCollection variant, got {err:?}");
+    };
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains(&call_site.to_string_lossy().to_string()),
+        "error must mention the call site, got: {msg}",
+    );
+    assert!(
+        msg.contains("doesnotexist"),
+        "error must mention the requested name, got: {msg}",
+    );
+    assert!(msg.contains("blog"), "error must list `blog`, got: {msg}");
+    assert!(msg.contains("docs"), "error must list `docs`, got: {msg}");
+
+    // Positive path: a registered name resolves.
+    let blog = snap
+        .get_collection("blog", &call_site)
+        .expect("blog collection must be found");
+    assert_eq!(blog.len(), 1);
 }
 
 // ---------------------------------------------------------------------------

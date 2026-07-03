@@ -31,7 +31,7 @@
 //! frontmatter parsing, and `module_specifier` generation.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -74,6 +74,37 @@ pub struct EntrySnapshot {
 pub struct ContentSnapshot {
     /// Sorted map of collection name → entries.
     pub collections: BTreeMap<String, Vec<EntrySnapshot>>,
+}
+
+impl ContentSnapshot {
+    /// Look up a collection by name, the runtime counterpart of the JS
+    /// `getCollection(name)` call.
+    ///
+    /// `call_site` is caller-supplied (e.g. the TSX page module path) so
+    /// the error can point back at the code that asked for a bad name.
+    /// zfb-content has no JS stack and no config knowledge, so it cannot
+    /// recover this itself — pass it in.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BridgeError::UnknownCollection`] when `name` is not a
+    /// key in [`ContentSnapshot::collections`]. The error lists every
+    /// registered collection name, sorted (the `BTreeMap` iteration
+    /// order is already sorted, so this is deterministic for free).
+    pub fn get_collection(
+        &self,
+        name: &str,
+        call_site: &Path,
+    ) -> Result<&[EntrySnapshot], BridgeError> {
+        self.collections
+            .get(name)
+            .map(Vec::as_slice)
+            .ok_or_else(|| BridgeError::UnknownCollection {
+                call_site: call_site.to_path_buf(),
+                name: name.to_string(),
+                available: self.collections.keys().cloned().collect(),
+            })
+    }
 }
 
 /// Configuration for one content collection in the snapshot.
@@ -159,6 +190,26 @@ pub enum BridgeError {
     /// walk starts).
     #[error("{0}")]
     PipelineConfig(String),
+    /// [`ContentSnapshot::get_collection`] was asked for a name that
+    /// isn't a key in [`ContentSnapshot::collections`]. Mirrors the
+    /// `getCollection(name)` failure mode on the JS side, but as a Rust
+    /// `Result` (the JS surface returns `[]` instead — see ADR-004 /
+    /// `packages/zfb-runtime/src/__tests__/router.test.ts:253`).
+    #[error(
+        "unknown collection `{name}` requested from {call_site}: available collections are: {available}",
+        call_site = call_site.display(),
+        available = available.join(", ")
+    )]
+    UnknownCollection {
+        /// Caller-supplied path pointing at the code that requested `name`
+        /// (e.g. the TSX page module). Not recoverable inside
+        /// zfb-content — passed in by the caller.
+        call_site: PathBuf,
+        /// The collection name that was requested and not found.
+        name: String,
+        /// Every registered collection name, sorted ascending.
+        available: Vec<String>,
+    },
 }
 
 /// Build a deterministic [`ContentSnapshot`] from the configured
@@ -661,6 +712,71 @@ mod tests {
         match err {
             BridgeError::Walk { collection, .. } => assert_eq!(collection, "blog"),
             other => panic!("expected BridgeError::Walk, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_collection_hit_returns_entry_slice() {
+        let tmp = TmpDir::new("get-collection-hit");
+        tmp.write("blog/post.md", &md("Hello"));
+        let snap = build_snapshot(&[CollectionConfig::new("blog", tmp.path.join("blog"))])
+            .expect("snapshot ok");
+
+        let call_site = tmp.path.join("pages/index.tsx");
+        let entries = snap
+            .get_collection("blog", &call_site)
+            .expect("blog collection must be found");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].slug, "post");
+    }
+
+    #[test]
+    fn get_collection_miss_lists_sorted_available_names() {
+        let tmp = TmpDir::new("get-collection-miss");
+        tmp.write("blog/post.md", &md("Hello"));
+        tmp.write("docs/intro.md", &md("Intro"));
+        let snap = build_snapshot(&[
+            CollectionConfig::new("blog", tmp.path.join("blog")),
+            CollectionConfig::new("docs", tmp.path.join("docs")),
+        ])
+        .expect("snapshot ok");
+
+        let call_site = tmp.path.join("pages/index.tsx");
+        let err = snap
+            .get_collection("doesnotexist", &call_site)
+            .expect_err("unknown collection must error");
+        match err {
+            BridgeError::UnknownCollection {
+                call_site: got_call_site,
+                name,
+                available,
+            } => {
+                assert_eq!(got_call_site, call_site);
+                assert_eq!(name, "doesnotexist");
+                // BTreeMap keys, already sorted ascending.
+                assert_eq!(available, vec!["blog".to_string(), "docs".to_string()]);
+            }
+            other => panic!("expected BridgeError::UnknownCollection, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_collection_miss_on_empty_snapshot_lists_no_names() {
+        let snap = ContentSnapshot {
+            collections: BTreeMap::new(),
+        };
+        let call_site = PathBuf::from("pages/index.tsx");
+        let err = snap
+            .get_collection("anything", &call_site)
+            .expect_err("empty snapshot must error on any name");
+        match err {
+            BridgeError::UnknownCollection { available, .. } => {
+                assert!(
+                    available.is_empty(),
+                    "expected no available collections, got: {available:?}"
+                );
+            }
+            other => panic!("expected BridgeError::UnknownCollection, got: {other:?}"),
         }
     }
 

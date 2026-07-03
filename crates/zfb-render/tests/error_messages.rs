@@ -322,25 +322,24 @@ fn paths_param_with_wrong_type_names_param_and_route() {
 }
 
 // ---------------------------------------------------------------------------
-// Failure mode 5 — invalid `zfb.config.ts`: SKIPPED.
+// Failure mode 5 — invalid `zfb.config.ts`: relocated to `crates/zfb`.
 //
-// `zfb::config` now evaluates `zfb.config.ts` in-process via the embedded
-// V8 isolate (epic #414 / Sub 3 #417), but `zfb-render` does not yet call
-// through to that evaluator. When zfb-render gains direct TS-config
-// support, this test should produce a config file with a missing required
-// field / wrong type and assert the error includes:
-//   - the absolute path to `zfb.config.ts`
-//   - the bad field name
-//   - what was expected (e.g. `framework: "preact" | "react"`)
+// The original plan for this test (issue #1353) was "wire zfb-render to call
+// the in-process TS config evaluator". That premise is stale: the V8
+// evaluator *core* (`ThreadedConfigEvaluator::eval_bundle`) already lives
+// inside zfb-render (`src/config_eval/mod.rs`, covered by
+// `tests/config_eval.rs`), but the esbuild-bundling orchestration around it
+// was hoisted into `zfb-config-loader` (issue #1037), which normally-depends
+// on zfb-render — so "zfb-render calls the full TS-config pipeline" is a
+// dependency cycle in every direction. The path/field/expected error quality
+// this test wants to assert is also owned entirely by the `zfb` bin crate
+// (`crates/zfb/src/config.rs`), not by zfb-render.
+//
+// The real-pipeline test now lives in `crates/zfb/src/config.rs` mod tests
+// as `invalid_zfb_config_ts_points_at_field_and_file` (wrong `framework`
+// value) and `invalid_zfb_config_ts_collection_missing_path_field` (missing
+// `collections[].path`), issue #1359.
 // ---------------------------------------------------------------------------
-#[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1353"]
-fn invalid_zfb_config_ts_points_at_field_and_file() {
-    // Once zfb-render calls through to the in-process V8 evaluator in
-    // zfb::config, build a tmp config with a missing `framework` field
-    // and assert the error mentions the path, the field name, and the
-    // expected union type.
-}
 
 // ---------------------------------------------------------------------------
 // helpers
