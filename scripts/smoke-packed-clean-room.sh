@@ -126,13 +126,22 @@ pass "packed zfb, zfb-runtime, zfb-adapter-cloudflare, create-zfb"
 CLEAN_ROOM_DIR="$(mktemp -d)"
 echo "Clean room: $CLEAN_ROOM_DIR"
 
-# pnpm.overrides forces every occurrence of these package names anywhere in
+# `overrides` forces every occurrence of these package names anywhere in
 # the dependency graph to resolve to the local tarball, REGARDLESS of the
 # version range originally declared (create-zfb's packed manifest pins an
 # exact version; a locally-built dev binary that stamps `zfb new` scaffolds
 # with the `0.0.0` placeholder version would otherwise mismatch it). This is
 # what makes the test prove the LOCAL build works, rather than silently
 # falling back to whatever the registry already has at that version number.
+#
+# pnpm 11 ignores `pnpm.overrides` in package.json (see this repo's own
+# pnpm-workspace.yaml header comment) — overrides must live in
+# pnpm-workspace.yaml instead, one per install root. Also set
+# minimumReleaseAge: 0 here: without a working override this install would
+# otherwise fall through to the real registry and could get blocked by that
+# same-day-publish policy, masking the override bug as an unrelated
+# supply-chain failure instead of the "did not install from local tarball"
+# assertion below.
 ZFB_TARBALL="$ZFB_TARBALL" \
 ZFB_RUNTIME_TARBALL="$ZFB_RUNTIME_TARBALL" \
 ZFB_ADAPTER_CF_TARBALL="$ZFB_ADAPTER_CF_TARBALL" \
@@ -154,11 +163,20 @@ const pkg = {
   private: true,
   version: "0.0.0",
   dependencies: { "create-zfb": `file:${env.CREATE_ZFB_TARBALL}` },
-  pnpm: { overrides },
 };
 fs.writeFileSync(
   path.join(env.CLEAN_ROOM_DIR, "package.json"),
   JSON.stringify(pkg, null, 2) + "\n",
+);
+const workspaceYaml = [
+  "minimumReleaseAge: 0",
+  "overrides:",
+  ...Object.entries(overrides).map(([name, spec]) => `  "${name}": "${spec}"`),
+  "",
+].join("\n");
+fs.writeFileSync(
+  path.join(env.CLEAN_ROOM_DIR, "pnpm-workspace.yaml"),
+  workspaceYaml,
 );
 '
 
@@ -208,9 +226,9 @@ pass "scaffold produced $SITE_DIR"
 rm -rf "$SITE_DIR/node_modules" "$SITE_DIR/pnpm-lock.yaml"
 
 # Same override set as Stage 3, re-applied to the SCAFFOLDED project's own
-# package.json: it is its own independent pnpm project root (no
-# pnpm-workspace.yaml links it back to the clean-room dir), so pnpm.overrides
-# must be declared here too, not just in the clean-room root.
+# install root (no pnpm-workspace.yaml links it back to the clean-room dir,
+# so it needs its own). As in Stage 3, pnpm 11 only reads `overrides` from
+# pnpm-workspace.yaml, not package.json's `pnpm` field — write it there.
 ZFB_TARBALL="$ZFB_TARBALL" \
 ZFB_RUNTIME_TARBALL="$ZFB_RUNTIME_TARBALL" \
 PLATFORM_TARBALL_PATH="$PLATFORM_TARBALL_PATH" \
@@ -219,16 +237,21 @@ node -e '
 const fs = require("node:fs");
 const path = require("node:path");
 const env = process.env;
-const pkgPath = path.join(env.SITE_DIR, "package.json");
-const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-pkg.pnpm = pkg.pnpm || {};
-pkg.pnpm.overrides = {
-  ...(pkg.pnpm.overrides || {}),
+const overrides = {
   "@takazudo/zfb": `file:${env.ZFB_TARBALL}`,
   "@takazudo/zfb-runtime": `file:${env.ZFB_RUNTIME_TARBALL}`,
   "@takazudo/zfb-linux-x64-gnu": `file:${env.PLATFORM_TARBALL_PATH}`,
 };
-fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+const workspaceYaml = [
+  "minimumReleaseAge: 0",
+  "overrides:",
+  ...Object.entries(overrides).map(([name, spec]) => `  "${name}": "${spec}"`),
+  "",
+].join("\n");
+fs.writeFileSync(
+  path.join(env.SITE_DIR, "pnpm-workspace.yaml"),
+  workspaceYaml,
+);
 '
 
 (cd "$SITE_DIR" && pnpm install)
