@@ -124,8 +124,11 @@ fn is_verbatim(dir: &Path) -> bool {
 mod tests {
     use super::*;
     /// Helper: create a temporary fixture directory with given files.
-    fn make_fixture_dir(files: &[(&str, &str)]) -> tempdir::TempDir {
-        let dir = tempdir::TempDir::new("zfb_fixture_test").expect("tempdir");
+    fn make_fixture_dir(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::Builder::new()
+            .prefix("zfb_fixture_test")
+            .tempdir()
+            .expect("tempdir");
         for (name, content) in files {
             let path = dir.path().join(name);
             std::fs::write(&path, content).expect("write fixture file");

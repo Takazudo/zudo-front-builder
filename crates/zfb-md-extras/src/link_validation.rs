@@ -631,10 +631,12 @@ mod tests {
     /// BrokenLink diagnostic even when `icon-x` is not a heading in any registry.
     #[test]
     fn img_src_with_svg_sprite_fragment_no_broken_link() {
-        use tempdir::TempDir;
         use zfb_md_ast::{diagnostics::CollectingSink, HastVisitor};
 
-        let dir = TempDir::new("link_val_img_fragment").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("link_val_img_fragment")
+            .tempdir()
+            .unwrap();
         let sprite_path = dir.path().join("sprite.svg");
         // File must exist so validate_file_exists passes.
         std::fs::write(&sprite_path, "<svg/>").unwrap();
@@ -707,8 +709,10 @@ mod tests {
 
     #[test]
     fn linked_file_probe_records_full_content_hash() {
-        use tempdir::TempDir;
-        let dir = TempDir::new("linkval_rec_ok").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("linkval_rec_ok")
+            .tempdir()
+            .unwrap();
         std::fs::write(dir.path().join("other.md"), b"# Other\n").unwrap();
         let source = dir.path().join("page.md");
 
@@ -722,8 +726,10 @@ mod tests {
 
     #[test]
     fn missing_link_target_records_missing_outcome() {
-        use tempdir::TempDir;
-        let dir = TempDir::new("linkval_rec_missing").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("linkval_rec_missing")
+            .tempdir()
+            .unwrap();
         let source = dir.path().join("page.md");
 
         let reads = record_reads_for_href("./absent.md", dir.path(), &source);
@@ -737,8 +743,10 @@ mod tests {
 
     #[test]
     fn file_with_fragment_records_the_target_file() {
-        use tempdir::TempDir;
-        let dir = TempDir::new("linkval_rec_frag").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("linkval_rec_frag")
+            .tempdir()
+            .unwrap();
         std::fs::write(dir.path().join("other.md"), b"# Heading\n").unwrap();
         let source = dir.path().join("page.md");
 
@@ -752,8 +760,10 @@ mod tests {
 
     #[test]
     fn non_filesystem_hrefs_record_nothing() {
-        use tempdir::TempDir;
-        let dir = TempDir::new("linkval_rec_none").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("linkval_rec_none")
+            .tempdir()
+            .unwrap();
         let source = dir.path().join("page.md");
 
         for href in [
@@ -804,10 +814,12 @@ mod tests {
     /// MUST report when the target is missing.
     #[test]
     fn cross_file_fragment_with_none_registry_checks_existence_only() {
-        use tempdir::TempDir;
         use zfb_md_ast::{diagnostics::CollectingSink, HastVisitor};
 
-        let dir = TempDir::new("lv_none_reg").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("lv_none_reg")
+            .tempdir()
+            .unwrap();
         let source_path = dir.path().join("page.md");
         std::fs::write(&source_path, "").unwrap();
         let other_path = dir.path().join("other.md");
@@ -926,8 +938,10 @@ mod tests {
     /// must emit NO diagnostic (the verdict is deferred, not broken).
     #[test]
     fn degrade_branch_records_cross_file_candidate() {
-        use tempdir::TempDir;
-        let dir = TempDir::new("cand_degrade").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("cand_degrade")
+            .tempdir()
+            .unwrap();
         std::fs::write(dir.path().join("other.md"), b"## Target\n").unwrap();
         // `sub/..` in the source spelling collapses lexically during
         // target resolution — the candidate target key must come out in
@@ -964,8 +978,10 @@ mod tests {
     /// an in-compile verdict would have.
     #[test]
     fn fail_on_broken_candidate_carries_error_severity() {
-        use tempdir::TempDir;
-        let dir = TempDir::new("cand_severity").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("cand_severity")
+            .tempdir()
+            .unwrap();
         std::fs::write(dir.path().join("other.md"), b"x\n").unwrap();
         let source = dir.path().join("page.md");
 
@@ -987,8 +1003,10 @@ mod tests {
     /// the target) must not record a candidate — valid and broken alike.
     #[test]
     fn locally_settled_fragment_records_no_candidate() {
-        use tempdir::TempDir;
-        let dir = TempDir::new("cand_local").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("cand_local")
+            .tempdir()
+            .unwrap();
         std::fs::write(dir.path().join("other.md"), b"## Target\n").unwrap();
         let source = dir.path().join("page.md");
 
@@ -1033,8 +1051,10 @@ mod tests {
     /// empty / percent-encoded fragments.
     #[test]
     fn non_degrading_hrefs_record_no_candidate() {
-        use tempdir::TempDir;
-        let dir = TempDir::new("cand_none").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("cand_none")
+            .tempdir()
+            .unwrap();
         std::fs::write(dir.path().join("other.md"), b"x\n").unwrap();
         std::fs::write(dir.path().join("sprite.svg"), b"<svg/>").unwrap();
         let source = dir.path().join("page.md");
@@ -1068,10 +1088,12 @@ mod tests {
     /// pre-#977 unarmed behaviour, byte-for-byte.
     #[test]
     fn missing_channel_keeps_degrade_branch_silent() {
-        use tempdir::TempDir;
         use zfb_md_ast::{diagnostics::CollectingSink, HastVisitor};
 
-        let dir = TempDir::new("cand_no_channel").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("cand_no_channel")
+            .tempdir()
+            .unwrap();
         std::fs::write(dir.path().join("other.md"), b"x\n").unwrap();
         let source = dir.path().join("page.md");
 

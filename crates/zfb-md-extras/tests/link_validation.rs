@@ -153,7 +153,10 @@ fn bare_anchor_missing_heading_emits_warning() {
 #[test]
 fn cross_file_known_anchor_no_diagnostic() {
     // Create a real tempdir so the filesystem-existence and project-root checks pass.
-    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-link-val-test")
+        .tempdir()
+        .expect("tempdir");
     let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     let other_path = tmpdir.path().join("other.md");
@@ -190,7 +193,10 @@ fn cross_file_known_anchor_no_diagnostic() {
 /// `[foo](./other.md#missing-heading)` → warning.
 #[test]
 fn cross_file_missing_anchor_emits_warning() {
-    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-link-val-test")
+        .tempdir()
+        .expect("tempdir");
     let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     let other_path = tmpdir.path().join("other.md");
@@ -230,7 +236,10 @@ fn cross_file_missing_anchor_emits_warning() {
 /// `[foo](./missing.md)` where the file does not exist → warning.
 #[test]
 fn missing_file_emits_warning() {
-    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-link-val-test")
+        .tempdir()
+        .expect("tempdir");
     let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     std::fs::write(&source_path, "").expect("write page.md");
@@ -352,7 +361,10 @@ fn multiple_broken_links_all_emitted() {
 /// `[foo](./existing.md)` where the file exists → no diagnostic.
 #[test]
 fn existing_file_no_anchor_no_diagnostic() {
-    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-link-val-test")
+        .tempdir()
+        .expect("tempdir");
     let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     let target_path = tmpdir.path().join("existing.md");
@@ -380,7 +392,10 @@ fn existing_file_no_anchor_no_diagnostic() {
 /// the file happens to exist on disk.
 #[test]
 fn path_traversal_outside_project_root_emits_diagnostic() {
-    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-link-val-test")
+        .tempdir()
+        .expect("tempdir");
     // Create a sub-directory as the project root; source is inside it.
     let project_root = tmpdir.path().join("project");
     std::fs::create_dir_all(&project_root).expect("create project dir");
@@ -439,7 +454,10 @@ fn site_absolute_href_skipped() {
 /// absent → one BrokenLink.
 #[test]
 fn cross_file_fragment_without_target_entry_degrades_to_existence_only() {
-    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-link-val-test")
+        .tempdir()
+        .expect("tempdir");
     let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     let other_path = tmpdir.path().join("other.md");
@@ -581,7 +599,10 @@ fn empty_and_percent_encoded_fragments_skipped() {
 /// `[x](./other.md?x=1)`, target on disk → no diagnostic (query stripped).
 #[test]
 fn query_string_file_link_validates_path_only() {
-    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-link-val-test")
+        .tempdir()
+        .expect("tempdir");
     let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     let other_path = tmpdir.path().join("other.md");
@@ -820,7 +841,10 @@ fn heading_file_with_element_id_both_accepted() {
 /// validation, not just bare same-file fragments.
 #[test]
 fn cross_file_link_to_explicit_element_id_no_diagnostic() {
-    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-link-val-test")
+        .tempdir()
+        .expect("tempdir");
     let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     let other_path = tmpdir.path().join("other.md");
@@ -851,7 +875,10 @@ fn cross_file_link_to_explicit_element_id_no_diagnostic() {
 /// anchor in a headingless file must still emit `BrokenLink`.
 #[test]
 fn cross_file_link_broken_anchor_in_headingless_file_emits_diagnostic() {
-    let tmpdir = tempdir::TempDir::new("zfb-link-val-test").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-link-val-test")
+        .tempdir()
+        .expect("tempdir");
     let project_root = tmpdir.path().to_path_buf();
     let source_path = tmpdir.path().join("page.md");
     let other_path = tmpdir.path().join("other.md");
