@@ -23,10 +23,32 @@ async fn touching_file_emits_change() {
     let (_watcher, mut rx) =
         Watcher::start(root.path(), ["content", "data"]).expect("start watcher");
 
-    // Give notify a beat to register its OS-level watch before we start
-    // poking the filesystem. Otherwise on slower CI machines the very
-    // first event can race the kernel-side registration.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Prove the watch stream is live before writing the real file rather
+    // than guessing a fixed warmup duration. macOS FSEvents can drop a
+    // brand-new file's create if it lands in the per-stream startup dead
+    // window; a fixed `sleep` races that window under load. Instead, write
+    // fresh-named marker files under the watched `content/` dir until one
+    // is delivered on the channel (#1338 shared helper). The `hello.md`
+    // drain loop below skips the leftover warmup events (they don't match
+    // the target path), so they don't perturb the assertion.
+    let handshake = zfb_test_utils::watcher_live_handshake(
+        zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
+        |idx| {
+            fs::write(
+                content_dir.join(format!("__warmup_{idx}.md")),
+                b"# warmup\n",
+            )
+            .expect("write warmup file");
+        },
+        || rx.try_recv().is_ok(),
+    )
+    .await;
+    assert!(
+        handshake.live,
+        "watcher never delivered a warmup event within {:?} ({} markers written) — \
+         the notify stream never started delivering events",
+        handshake.elapsed, handshake.markers_written,
+    );
 
     let target = content_dir.join("hello.md");
     fs::write(&target, b"# hi\n").expect("write file");
