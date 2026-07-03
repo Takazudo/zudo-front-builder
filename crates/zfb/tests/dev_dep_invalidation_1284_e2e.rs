@@ -62,11 +62,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary};
+use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 // Serialise the three tests: each boots a full V8 + esbuild + Tailwind dev
 // session; running them concurrently would double/triple memory and produce
-// flaky boot deadlines.
+// flaky boot deadlines. Each test also acquires `CrossBinaryE2eLock` BEFORE
+// this mutex to serialize against sibling e2e binaries (issue #1339) — see
+// `zfb-test-utils/src/cross_binary_lock.rs` for the lock-ordering rationale.
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// Overall wall-clock watchdog for each test.
@@ -494,6 +496,7 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (symptom C also needs Tailwind); too slow / port-bound for the T1 gate"]
 async fn e2e_src_component_edit_rerenders_route() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -702,6 +705,7 @@ export default function HomePage({ posts }: Props) {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (symptom C also needs Tailwind); too slow / port-bound for the T1 gate"]
 async fn e2e_transitive_css_import_refreshes_stylesheet() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -902,6 +906,7 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "heavy: run with --ignored — Level-4 e2e; spawns a full `zfb dev` server + esbuild + embedded V8 (symptom C also needs Tailwind); too slow / port-bound for the T1 gate"]
 async fn e2e_new_utility_class_in_component_is_emitted() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(

@@ -1,6 +1,8 @@
+mod cross_binary_lock;
 mod html_normalize;
 mod sse;
 mod watcher_handshake;
+pub use cross_binary_lock::CrossBinaryE2eLock;
 pub use html_normalize::normalize_html;
 pub use sse::{
     decode_utf8_incremental, next_sse_event_name, wait_for_subscribers, wait_for_subscribers_polled,

@@ -38,6 +38,20 @@
 //! Skips (does not fail) when esbuild or `node` is unavailable, or when
 //! `zfb dev` exits with a known V8/esbuild skip indicator — matching the
 //! `build_package_routes_consumer.rs` and `dev_serve_e2e.rs` conventions.
+//!
+//! ## Concurrency
+//!
+//! Unlike `dev_serve_e2e.rs` and friends, this file has no file-local
+//! `SERIAL` mutex — its 5 spawning tests were not previously serialized
+//! against EACH OTHER within this binary at all. Each now acquires
+//! `zfb_test_utils::CrossBinaryE2eLock` (issue #1339), which — being a
+//! real OS-level advisory file lock rather than an in-process mutex —
+//! incidentally also serializes these 5 tests against each other (every
+//! `acquire()` call opens its own fd on the shared lock file, and
+//! `flock`/`LockFileEx` exclusion applies per open file description,
+//! not per process), in addition to its primary purpose of serializing
+//! against sibling e2e binaries. See
+//! `zfb-test-utils/src/cross_binary_lock.rs` for the full mechanism.
 
 #![cfg(unix)]
 
@@ -49,7 +63,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary};
+use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 /// Overall wall-clock watchdog. A clean run is boot (V8 + esbuild, slow in
 /// debug) plus a handful of request-time renders.
@@ -371,6 +385,7 @@ async fn poll_until_200_not_redirect(
 /// The full static-injected-route render contract against a real `zfb dev`.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_static_injected_route_renders() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[injected_e2e] no esbuild binary available; skipping. \
@@ -647,6 +662,7 @@ export default function HelpOptional() {
 ///   fallback — the user home still wins.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_dynamic_injected_route_renders() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[dynamic_injected_e2e] no esbuild binary available; skipping. \
@@ -1085,6 +1101,7 @@ async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Respons
 /// positive path only.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[hmr_injected_e2e] no esbuild binary available; skipping. \
@@ -1417,6 +1434,7 @@ export default {
 /// level can exercise end-to-end.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_trailing_slash_parity() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[trailing_slash_e2e] no esbuild binary available; skipping. \
@@ -1690,6 +1708,7 @@ export default function RootShadow() {
 ///   did not break the rest of plugin setup.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_injected_root_boots_and_reservation_holds() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[injected_root_e2e] no esbuild binary available; skipping. \
