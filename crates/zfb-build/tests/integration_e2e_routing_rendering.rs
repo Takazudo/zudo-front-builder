@@ -1,7 +1,7 @@
 //! End-to-end routing + rendering integration test for `zfb-build`.
 //!
-//! Exercises the full pipeline from bundler through the embedded V8 host
-//! across every routing pattern the framework supports:
+//! Exercises the full pipeline from bundler through the in-process
+//! embedded V8 host across every routing pattern the framework supports:
 //!
 //!   - static index (`/`)
 //!   - static named (`/about`)
@@ -13,37 +13,36 @@
 //!   - optional catchall (`/manual/[[...slug]]` — bare `/manual` + nested; #812)
 //!
 //! Fixture source lives at
-//! `crates/zfb-render/tests/fixtures/routing-rendering/`. The test
-//! bundles it with Preact (and optionally React when available), renders
-//! every concrete URL through the embedded V8 host, captures or
-//! compares HTML snapshots under
-//! `tests/snapshots/e2e_routing_rendering/`, and (for the portable-
-//! component contract) asserts that the Preact and React
-//! outputs are byte-identical.
+//! `crates/zfb-render/tests/fixtures/routing-rendering/`. The test bundles
+//! it with Preact via real esbuild, renders every concrete URL through an
+//! in-process `Backend::EmbeddedV8` host, and compares (or, under
+//! `INSANE_UPDATE_SNAPSHOTS=1`, rewrites) HTML snapshots under
+//! `tests/snapshots/e2e_routing_rendering/`. All routes are SSG.
+//!
+//! The whole file is gated on the `embed_v8` feature: `Backend::EmbeddedV8`
+//! and the thread-pinned host adapter below do not exist on the V8-off path.
 //!
 //! ## Skip conditions
 //!
 //! The test skips (prints a note, returns early) when:
 //!
 //! - No esbuild binary is available (resolves via `ZFB_ESBUILD_BIN`,
-//!   `crates/zfb/binaries/esbuild/esbuild`, or `which esbuild`).
+//!   `crates/zfb/binaries/esbuild/esbuild`, or the pnpm store).
+//! - The pnpm store is missing the runtime deps the bundle needs
+//!   (`preact`, `preact-render-to-string`, `hono`) — run `pnpm install`
+//!   at the repo root.
 //!
 //! ## Snapshot bootstrap
 //!
 //! Run with `INSANE_UPDATE_SNAPSHOTS=1` to (re-)write the snapshots.
 //! Without it, the test compares rendered HTML against the stored
 //! snapshots and fails if they differ.
-//!
-//! ## React byte-equality
-//!
-//! When `react` and `react-dom` are available in the pnpm store, the
-//! test runs the same bundle under the React adapter and asserts
-//! byte-identical output for every page. React is optional: if the
-//! packages are absent the equality check is skipped with a note.
+#![cfg(feature = "embed_v8")]
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use zfb_build::{
     bundle, render_all, Backend, BundleMode, BundlerInput, BundlerOutput, RendererInput,
@@ -240,6 +239,34 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
 // Bundler helper
 // ---------------------------------------------------------------------------
 
+/// Locate a `node_modules/.pnpm/node_modules` directory that contains the
+/// runtime deps (`preact`, `hono`, …) the bundle needs.
+///
+/// First tries the worktree root (where `pnpm install` drops it). If that
+/// path is missing — common in a fresh `/x-wt-teams` worktree that has not
+/// been `pnpm install`-ed because the manager session shares the main
+/// repo's `node_modules` — walks upwards looking for a sibling main-repo
+/// checkout. Returns `None` when no candidate exists; the test skips in
+/// that case. Mirrors `embedded_v8_snapshot_e2e::locate_pnpm_node_modules`.
+fn locate_pnpm_node_modules() -> Option<PathBuf> {
+    let primary = workspace_root().join("node_modules/.pnpm/node_modules");
+    if primary.exists() {
+        return Some(primary);
+    }
+    let mut cursor = workspace_root();
+    for _ in 0..4 {
+        let candidate = cursor.join("node_modules/.pnpm/node_modules");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        let Some(parent) = cursor.parent() else {
+            break;
+        };
+        cursor = parent.to_path_buf();
+    }
+    None
+}
+
 /// Build a `node_modules` directory suitable for the fixture project.
 ///
 /// The bundler runs from a shadow tempdir that has no `node_modules` of its
@@ -248,29 +275,33 @@ fn route_universe() -> Vec<RouteUniverseEntry> {
 /// copy so the router.ts changes under test are included in the bundle.
 /// Using the main-repo copy (through the pnpm symlink) would give the old
 /// code and make dynamic routes fail.
-fn make_test_node_modules() -> tempfile::TempDir {
+///
+/// Returns `None` (graceful skip) when a required pnpm-store package is
+/// missing, so a store that was never `pnpm install`-ed skips the test
+/// instead of failing opaquely inside `bundle()`.
+fn make_test_node_modules() -> Option<tempfile::TempDir> {
     let worktree_root = workspace_root();
-    let pnpm_store = worktree_root.join("node_modules/.pnpm/node_modules");
+    let pnpm_store = locate_pnpm_node_modules()?;
 
     let tmp = tempfile::tempdir().expect("tempdir for test node_modules");
     let nm = tmp.path();
 
     // Packages we need from the pnpm virtual store.
-    let from_store: &[&str] = &[
-        "preact",
-        "preact-render-to-string",
-        "hono",
-        // The `zfb` package is also imported by fixtures; point it at the
-        // worktree's packages/zfb so its content.ts etc. use the worktree code.
-    ];
+    let from_store: &[&str] = &["preact", "preact-render-to-string", "hono"];
     for pkg in from_store {
         let src = pnpm_store.join(pkg);
-        if src.exists() {
-            let dst = nm.join(pkg);
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&src, &dst)
-                .unwrap_or_else(|e| panic!("symlink {}: {e}", src.display()));
+        if !src.exists() {
+            eprintln!(
+                "[e2e_routing_rendering] missing runtime dep `{pkg}` at {} — \
+                 skipping test (run `pnpm install` at the repo root).",
+                src.display(),
+            );
+            return None;
         }
+        let dst = nm.join(pkg);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&src, &dst)
+            .unwrap_or_else(|e| panic!("symlink {}: {e}", src.display()));
     }
 
     // `@takazudo/zfb-runtime` — MUST come from the worktree so our router.ts
@@ -289,7 +320,7 @@ fn make_test_node_modules() -> tempfile::TempDir {
     #[cfg(unix)]
     std::os::unix::fs::symlink(&zfb_src, &zfb_dst).unwrap_or_else(|e| panic!("symlink zfb: {e}"));
 
-    tmp
+    Some(tmp)
 }
 
 fn build_bundle(
@@ -297,10 +328,8 @@ fn build_bundle(
     framework: Framework,
     esbuild: &Path,
     dist: &Path,
-) -> (BundlerOutput, tempfile::TempDir) {
-    // Build a custom node_modules that uses the worktree's packages.
-    let node_modules = make_test_node_modules();
-
+    node_modules: &Path,
+) -> BundlerOutput {
     let input = BundlerInput {
         main_fields: Vec::new(),
         project_root: fixture_root.to_path_buf(),
@@ -319,7 +348,7 @@ fn build_bundle(
         esbuild_binary: Some(esbuild.to_path_buf()),
         mock_subprocess_output: None,
         content_snapshot_json: None,
-        node_modules_dir: Some(node_modules.path().to_path_buf()),
+        node_modules_dir: Some(node_modules.to_path_buf()),
         node_modules_preserve_symlinks: true,
         content_collections: Vec::new(),
         pipeline_spec: zfb_content::PipelineSpec::default(),
@@ -336,35 +365,27 @@ fn build_bundle(
         base_prefix: None,
     };
 
-    let output = bundle(input).expect("bundle should succeed for fixture project");
-    // Return the tempdir so the caller can keep it alive (dropping it would
-    // delete the node_modules symlink while the bundle is still referencing it).
-    (output, node_modules)
+    bundle(input).expect("bundle should succeed for fixture project")
 }
 
 // ---------------------------------------------------------------------------
 // Main test
 // ---------------------------------------------------------------------------
 
-/// End-to-end routing + rendering test using the embedded V8 host.
+/// End-to-end routing + rendering test using the in-process embedded V8 host.
 ///
-/// This test bundles the routing-rendering fixture with Preact and renders
-/// every route through the embedded V8 host. Requires esbuild and a running
-/// embedded V8 host wired via `ZFB_E2E_BASE_URL`.
+/// Bundles the routing-rendering fixture with Preact (real esbuild) and
+/// renders every route through an in-process `Backend::EmbeddedV8` host,
+/// constructed by the thread-pinned `TestThreadedHost` adapter below. All
+/// routes are SSG. Kick with:
 ///
-/// `EmbeddedV8RenderHost` merged (issue #162) and `embed_v8` is now
-/// default-on, so the original "requires embedded V8 host" gate is stale —
-/// but this test still hardcodes `Backend::Existing { base_url }` (the
-/// legacy pre-running-HTTP-server backend) instead of constructing an
-/// in-process `Backend::EmbeddedV8` host, so it still needs an externally
-/// booted host wired via `ZFB_E2E_BASE_URL`. Tracked for rewiring in
-/// issue #1354. Kick with:
+///     cargo test -p zfb-build --test integration_e2e_routing_rendering
 ///
-///     ZFB_E2E_BASE_URL=http://127.0.0.1:PORT \
-///       cargo test --package zfb-build -- --include-ignored \
-///         e2e_routing_rendering_with_embedded_host
+/// or, to (re-)bootstrap the snapshots:
+///
+///     INSANE_UPDATE_SNAPSHOTS=1 \
+///       cargo test -p zfb-build --test integration_e2e_routing_rendering
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1354"]
 fn e2e_routing_rendering_with_embedded_host() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -373,10 +394,6 @@ fn e2e_routing_rendering_with_embedded_host() {
         );
         return;
     };
-
-    let base_url = std::env::var("ZFB_E2E_BASE_URL").unwrap_or_else(|_| {
-        panic!("ZFB_E2E_BASE_URL not set; start the embedded V8 host and export its URL");
-    });
 
     let fixture = fixture_root();
     assert!(
@@ -389,11 +406,23 @@ fn e2e_routing_rendering_with_embedded_host() {
 
     // --- Preact pass ---
     eprintln!("[e2e_routing_rendering] bundling with Preact…");
+    let Some(node_modules) = make_test_node_modules() else {
+        eprintln!(
+            "[e2e_routing_rendering] missing runtime deps in pnpm store; \
+             skipping test (run `pnpm install` at the repo root)."
+        );
+        return;
+    };
     let dist_preact = tempfile::tempdir().expect("tempdir");
-    let (bundle_preact, _nm_preact) =
-        build_bundle(&fixture, Framework::Preact, &esbuild, dist_preact.path());
+    let bundle_preact = build_bundle(
+        &fixture,
+        Framework::Preact,
+        &esbuild,
+        dist_preact.path(),
+        node_modules.path(),
+    );
 
-    eprintln!("[e2e_routing_rendering] rendering all routes with Preact…");
+    eprintln!("[e2e_routing_rendering] rendering all routes with the embedded V8 host…");
     let renderer_out = render_all(RendererInput {
         bundle_path: bundle_preact.bundle_path.clone(),
         sourcemap_path: bundle_preact.sourcemap_path.clone(),
@@ -401,14 +430,14 @@ fn e2e_routing_rendering_with_embedded_host() {
         dist_dir: dist_preact.path().join("html"),
         route_universe: universe.clone(),
         prerender_map: BTreeMap::new(), // all SSG
-        backend: Backend::Existing {
-            base_url: base_url.clone(),
+        backend: Backend::EmbeddedV8 {
+            host_factory: Arc::new(test_v8_host::TestThreadedHost::new),
         },
         request_timeout: None,
         prod_head_assets: None,
         project_root: PathBuf::new(),
     })
-    .expect("render_all with Preact should succeed");
+    .expect("render_all with the embedded V8 host should succeed");
 
     assert_eq!(
         renderer_out.ssg_files_written.len(),
@@ -508,4 +537,198 @@ fn check_rendered_html(pages: &[(String, Vec<u8>)]) {
     // Manual optional catchall (#812) — bare directory URL + nested path
     has("/manual", "Manual home");
     has("/manual/setup/quick", "Quick setup");
+}
+
+// ---------------------------------------------------------------------------
+// Test-local thread-pinned embedded-V8 host adapter
+// ---------------------------------------------------------------------------
+//
+// `Backend::EmbeddedV8` needs a `Box<dyn EmbeddedV8Host + Send>`, but
+// `zfb_render::EmbeddedV8RenderHost` is `!Send` — it owns a V8 isolate, which
+// deno_core pins to its creating thread. The production adapter that bridges
+// this gap (`ThreadedV8Host` in `crates/zfb/src/v8_host_adapter.rs`) lives in
+// the downstream `zfb` bin crate, so depending on it from `zfb-build` would
+// form a dependency cycle (documented in `embedded_v8_snapshot_e2e.rs`).
+//
+// This is a minimal replica of `v8_host_adapter.rs:125-311`: it parks the
+// isolate on a dedicated OS thread with its own current-thread tokio runtime
+// and forwards each `dispatch_fetch` over an mpsc rendezvous channel (bound 0
+// so the loop can never get more than one request ahead). It drops everything
+// the production version carries that this SSG-only test does not need:
+// plugin-registry hooks, the `DrainConsoleLogs` request kind, and the
+// full-fidelity `dispatch_fetch_full` override (its trait default forwards to
+// `dispatch_fetch`, which is all SSG GETs use).
+mod test_v8_host {
+    use std::path::Path;
+    use std::sync::mpsc;
+    use std::thread;
+
+    use zfb_build::renderer::{EmbeddedV8Host, HttpResponseLike, RendererError};
+    use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike};
+
+    /// A single SSG GET forwarded to the pinned V8 thread, plus a one-shot
+    /// reply channel the thread answers on.
+    struct DispatchRequest {
+        url_path: String,
+        reply: mpsc::SyncSender<Result<HttpResponseLike, RendererError>>,
+    }
+
+    /// Minimal thread-pinned [`EmbeddedV8Host`] used only by this test.
+    ///
+    /// `tx`/`thread` are wrapped in `Option` so `Drop` can `take()` them:
+    /// dropping the sender closes the channel, which breaks the V8 thread's
+    /// `for req in rx` loop, after which the join completes.
+    pub struct TestThreadedHost {
+        tx: Option<mpsc::SyncSender<DispatchRequest>>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl TestThreadedHost {
+        /// Boot a V8 host for the bundle at `bundle_path` on a dedicated
+        /// thread and load the bundle. Returns a boxed trait object so it
+        /// slots straight into `Backend::EmbeddedV8`'s factory signature.
+        ///
+        /// Blocks until the host signals boot success or failure over a
+        /// rendezvous boot channel.
+        #[allow(clippy::new_ret_no_self)]
+        pub fn new(bundle_path: &Path) -> Result<Box<dyn EmbeddedV8Host>, RendererError> {
+            let (tx, rx) = mpsc::sync_channel::<DispatchRequest>(0);
+            let (boot_tx, boot_rx) = mpsc::sync_channel::<Result<(), String>>(0);
+            let bundle_path = bundle_path.to_path_buf();
+
+            let thread = thread::Builder::new()
+                .name("zfb-build-test-v8-host".into())
+                .spawn(move || {
+                    // A current-thread runtime keeps the isolate on this OS
+                    // thread — deno_core's `JsRuntime` must never migrate.
+                    let rt = match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(rt) => rt,
+                        Err(e) => {
+                            let _ = boot_tx.send(Err(format!("tokio runtime build failed: {e}")));
+                            return;
+                        }
+                    };
+                    rt.block_on(async move {
+                        use zfb_render::RenderHost as _;
+                        let mut host = match EmbeddedV8RenderHost::new() {
+                            Ok(h) => h,
+                            Err(e) => {
+                                let _ = boot_tx.send(Err(format!("V8 host init failed: {e}")));
+                                return;
+                            }
+                        };
+                        let src = match std::fs::read_to_string(&bundle_path) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let _ = boot_tx.send(Err(format!(
+                                    "could not read bundle {}: {e}",
+                                    bundle_path.display()
+                                )));
+                                return;
+                            }
+                        };
+                        let name = bundle_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("bundle.mjs");
+                        if let Err(e) = host.execute_module(name, &src).await {
+                            // Surface any worker console output produced
+                            // before the throw — the host dies with this
+                            // thread, so embedding it in the boot error is
+                            // the only way it reaches the caller.
+                            let logs = host.drain_console_logs();
+                            let msg = if logs.trim().is_empty() {
+                                format!("bundle load failed: {e}")
+                            } else {
+                                format!("bundle load failed: {e}\nworker console output:\n{logs}")
+                            };
+                            let _ = boot_tx.send(Err(msg));
+                            return;
+                        }
+                        let _ = boot_tx.send(Ok(()));
+                        drop(boot_tx);
+
+                        // Request loop: serve one SSG GET at a time.
+                        for req in rx {
+                            let http_req =
+                                HttpRequestLike::get(format!("http://localhost{}", req.url_path));
+                            let result = host
+                                .dispatch_fetch(http_req)
+                                .await
+                                .map(|resp| {
+                                    let content_type = resp
+                                        .headers
+                                        .get("content-type")
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    HttpResponseLike {
+                                        status: resp.status,
+                                        content_type,
+                                        headers: resp.headers.into_iter().collect(),
+                                        body: resp.body,
+                                    }
+                                })
+                                .map_err(|e| RendererError::EmbeddedV8(e.to_string()));
+                            // The caller may have already gone away; ignore
+                            // send errors.
+                            let _ = req.reply.send(result);
+                        }
+                    });
+                })
+                .map_err(|e| {
+                    RendererError::EmbeddedV8(format!("could not spawn V8 host thread: {e}"))
+                })?;
+
+            match boot_rx.recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(msg)) => {
+                    let _ = thread.join();
+                    return Err(RendererError::EmbeddedV8(msg));
+                }
+                Err(_) => {
+                    let _ = thread.join();
+                    return Err(RendererError::EmbeddedV8(
+                        "V8 host thread exited during boot without signalling".into(),
+                    ));
+                }
+            }
+
+            Ok(Box::new(TestThreadedHost {
+                tx: Some(tx),
+                thread: Some(thread),
+            }))
+        }
+    }
+
+    impl EmbeddedV8Host for TestThreadedHost {
+        fn dispatch_fetch(&mut self, url_path: &str) -> Result<HttpResponseLike, RendererError> {
+            let tx = self
+                .tx
+                .as_ref()
+                .ok_or_else(|| RendererError::EmbeddedV8("V8 host already shut down".into()))?;
+            let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+            tx.send(DispatchRequest {
+                url_path: url_path.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| RendererError::EmbeddedV8("V8 host thread exited unexpectedly".into()))?;
+            reply_rx.recv().map_err(|_| {
+                RendererError::EmbeddedV8("V8 host thread closed reply channel".into())
+            })?
+        }
+    }
+
+    impl Drop for TestThreadedHost {
+        fn drop(&mut self) {
+            // Close the channel first so the V8 thread's receive loop exits,
+            // then join it.
+            drop(self.tx.take());
+            if let Some(handle) = self.thread.take() {
+                let _ = handle.join();
+            }
+        }
+    }
 }
