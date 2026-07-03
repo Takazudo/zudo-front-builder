@@ -22,10 +22,14 @@ set -uo pipefail
 #   5. pnpm typecheck (TS, --if-present)          — fast
 #   6. pnpm -r test (vitest)                      — fast
 #   7. cargo clippy -D warnings                   — fast on a WARM tree
-#   8. cargo test --workspace                     — opt-in only (B4PUSH_FULL=1)
-#   9. cargo test -p zfb-md-extras --features test-utils   — opt-in (B4PUSH_FULL=1)
+#   8. cargo nextest run --workspace (or cargo test)       — opt-in (B4PUSH_FULL=1)
+#   9. cargo nextest run -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
 #  10. cargo clippy -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
 #  11. cargo check --no-default-features -p zfb --tests    — opt-in (B4PUSH_FULL=1)
+#
+# Steps 8-9 use cargo-nextest (nextest's DEFAULT profile, retries = 0) when it
+# is installed, matching CI's runner; they fall back to plain `cargo test` when
+# nextest is absent (issue #1340).
 #
 # Steps 9-11 mirror the health.yml lanes that steps 1-8 alone cannot reproduce
 # (issue #1332): the zfb-md-extras `test-utils`-gated suite + its scoped clippy
@@ -74,6 +78,19 @@ skip() { record_duration; echo "⏭  $1 (skipped, ${LAST_DURATION}s)"; }
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
+
+# Prefer cargo-nextest for the B4PUSH_FULL Rust lanes (issue #1340): it matches
+# what CI runs and serializes the heavy V8/esbuild e2e binaries via the
+# `e2e-heavy` test-group in .config/nextest.toml. We use nextest's DEFAULT
+# profile locally (retries = 0 — local dev does not want CI's retry budget
+# masking a genuine failure), unlike CI's `--profile ci` (retries = 1). If
+# nextest is not installed we fall back to plain `cargo test`, so this stays
+# tolerant of a dev box without nextest.
+if command -v cargo-nextest >/dev/null 2>&1; then
+  HAVE_NEXTEST=1
+else
+  HAVE_NEXTEST=0
+fi
 
 # ── Step 1: Shell-script syntax check ─────────────────
 # Mirrors health.yml: parse-check install.sh, scripts/*.sh, tests/unit/*.sh.
@@ -159,29 +176,42 @@ fi
 
 # ── Full Rust test suite (opt-in) ──────────────────────
 # Off by default — this is what CI's health.yml exists to run. Turn it on for a
-# thorough local pass when you have a warm tree and time to spare.
-step "Full Rust test suite (cargo test --workspace)"
+# thorough local pass when you have a warm tree and time to spare. Uses nextest
+# (default profile, retries = 0) when installed, else plain cargo test.
+if [ "$HAVE_NEXTEST" = "1" ]; then
+  WS_TEST_CMD=(cargo nextest run --workspace)
+else
+  WS_TEST_CMD=(cargo test --workspace)
+fi
+step "Full Rust test suite (${WS_TEST_CMD[*]})"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then
-  if cargo test --workspace; then
-    pass "cargo test --workspace"
+  if "${WS_TEST_CMD[@]}"; then
+    pass "${WS_TEST_CMD[*]}"
   else
-    fail "cargo test --workspace"
+    fail "${WS_TEST_CMD[*]}"
   fi
 else
-  skip "cargo test --workspace (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
+  skip "${WS_TEST_CMD[*]} (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
 fi
 
 # ── zfb-md-extras test-utils suite (opt-in) ────────────
-# `test-utils` is not in the default feature set, so `cargo test --workspace`
+# `test-utils` is not in the default feature set, so the workspace test lane
 # above silently skips every [[test]] target that requires it (issue #1091,
-# mirrored at health.yml:165). Without this step, B4PUSH_FULL=1 could pass
-# locally while health.yml still fails on this lane (issue #1332).
-step "zfb-md-extras test-utils suite (cargo test -p zfb-md-extras --features test-utils)"
+# mirrored in health.yml). Without this step, B4PUSH_FULL=1 could pass locally
+# while health.yml still fails on this lane (issue #1332). nextest picks up the
+# required-features-gated targets when the feature is enabled (verified in
+# #1340), so this uses the same runner as the workspace lane above.
+if [ "$HAVE_NEXTEST" = "1" ]; then
+  MDX_TEST_CMD=(cargo nextest run -p zfb-md-extras --features test-utils)
+else
+  MDX_TEST_CMD=(cargo test -p zfb-md-extras --features test-utils)
+fi
+step "zfb-md-extras test-utils suite (${MDX_TEST_CMD[*]})"
 if [ "${B4PUSH_FULL:-}" = "1" ]; then
-  if cargo test -p zfb-md-extras --features test-utils; then
-    pass "cargo test -p zfb-md-extras --features test-utils"
+  if "${MDX_TEST_CMD[@]}"; then
+    pass "${MDX_TEST_CMD[*]}"
   else
-    fail "cargo test -p zfb-md-extras --features test-utils"
+    fail "${MDX_TEST_CMD[*]}"
   fi
 else
   skip "zfb-md-extras test-utils suite (set B4PUSH_FULL=1 to run; CI runs it on every PR)"

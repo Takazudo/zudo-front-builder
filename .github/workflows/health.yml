@@ -84,6 +84,17 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # cargo-nextest (issue #1340) — the CI Rust test runner. Pinned via
+      # taiki-e/install-action to match the cargo-deny install in
+      # security-audit.yml: a SHA-pinned action that fetches a checksum-verified
+      # prebuilt binary (no compile cost). nextest gives the CI retry budget
+      # (retries = 1), per-test timeouts, and JUnit output; the profile,
+      # e2e test-group serialization, and timeouts live in .config/nextest.toml.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: nextest
+
       # Fmt gate (issue #988): near-free fail-fast check before the expensive
       # rust-cache restore + V8 build. Note: cargo fmt --check on the stable
       # toolchain can change behaviour on a future toolchain bump — accepted
@@ -176,20 +187,51 @@ jobs:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
         run: cargo test -p zfb-islands --tests -- --ignored
 
-      # Run the workspace test suite. CI previously only *compiled* the test code
-      # (the cargo build --all-targets step above) but never executed it, so unit
-      # and integration regression guards — including the #633 react/jsx-runtime ->
-      # preact/jsx-runtime islands alias guards — were local-only (issue #638).
-      - run: cargo test --workspace
+      # Run the workspace test suite under cargo-nextest (issue #1340). CI
+      # previously only *compiled* the test code (the cargo build --all-targets
+      # step above) then ran it under plain `cargo test`; nextest adds a CI retry
+      # budget (retries = 1, pass-on-retry RECORDED not hidden — #1341 consumes
+      # it), per-test timeouts, and JUnit output. The `ci` profile
+      # (.config/nextest.toml) also serializes the 7 heavy V8/esbuild e2e
+      # binaries via a `max-threads = 1` test-group (complementing #1339's
+      # cross-binary flock). Per-binary inventory was reconciled against
+      # `cargo test --workspace -- --list`: identical apart from doctests, which
+      # nextest does not run — hence the separate doc-test step below.
+      - run: cargo nextest run --workspace --profile ci
+
+      # nextest writes JUnit to a fixed per-profile path
+      # (target/nextest/ci/junit.xml). Stash the workspace report before the
+      # zfb-md-extras nextest run (same profile) overwrites it, so BOTH feed the
+      # uploaded artifact. `if: always()` + the existence guard capture the
+      # report even when the run above failed (nextest still emits JUnit on
+      # failure — that is the telemetry #1341 wants most).
+      - name: Stash workspace JUnit before the md-extras nextest run overwrites it
+        if: always()
+        run: |
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/nextest/ci/junit-workspace.xml
+          fi
+
+      # Doctests (issue #1340): nextest does NOT run doctests, so `cargo nextest
+      # run` above cannot cover them. This separate step keeps that coverage.
+      # Current baseline: 5 doctests execute + pass (zfb-css 2, zfb-islands 3),
+      # plus 6 example blocks the harness lists but marks ignored/no_run
+      # (zfb-islands 3, zfb-server 2, zfb-test-utils 1) — 11 total across 4
+      # crates. Must not regress below this.
+      - run: cargo test --workspace --doc
 
       # Run the zfb-md-extras integration suite gated behind the `test-utils`
       # feature (issue #1091). The `test-utils` feature is not in the default
-      # feature set, so `cargo test --workspace` above silently skips every
+      # feature set, so `cargo nextest run --workspace` above silently skips every
       # [[test]] target carrying `required-features = ["test-utils"]`. Using the
       # scoped `-p zfb-md-extras` form because `test-utils` exists only on this
       # crate — `--workspace --features test-utils` would error on other members
-      # that have no such feature.
-      - run: cargo test -p zfb-md-extras --features test-utils
+      # that have no such feature. Migrated to nextest (issue #1340): verified
+      # `cargo nextest run -p zfb-md-extras --features test-utils` DOES pick up
+      # the required-features-gated targets (all 10 gated integration binaries +
+      # the lib unit tests run — 421 tests), so this lane gets the same retry/
+      # timeout/JUnit treatment as the workspace run.
+      - run: cargo nextest run -p zfb-md-extras --features test-utils --profile ci
 
       # Lint the test-utils-gated targets (they are excluded from the workspace
       # clippy step above for the same reason as cargo test).
@@ -197,6 +239,23 @@ jobs:
 
       - name: actionlint
         uses: docker://rhysd/actionlint:1.7.12
+
+      # Upload nextest JUnit reports (issue #1340) so retry/flaky telemetry
+      # survives the run — the machine-readable feed a future sub-task (#1341)
+      # consumes. `if: always()` captures reports even when a test lane above
+      # failed (nextest emits JUnit on failure too). junit-workspace.xml is the
+      # stashed full-workspace run; junit.xml is the last writer (the
+      # zfb-md-extras lane). `if-no-files-found: warn` tolerates an early
+      # failure (e.g. a compile error) that produced no report.
+      - name: Upload nextest JUnit reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-junit-ci
+          path: |
+            target/nextest/ci/junit-workspace.xml
+            target/nextest/ci/junit.xml
+          if-no-files-found: warn
 
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #

@@ -1,0 +1,62 @@
+# cargo-nextest configuration — https://nexte.st/docs/configuration/
+#
+# zfb adopts cargo-nextest for CI Rust test execution (issue #1340). Two
+# profiles matter:
+#   • `ci`      — health.yml runs `cargo nextest run --workspace --profile ci`
+#   • `default` — local runs (b4push's B4PUSH_FULL path) use the default profile
+#
+# IMPORTANT: nextest does NOT run doctests. health.yml keeps a SEPARATE
+# `cargo test --workspace --doc` step; this config governs everything EXCEPT
+# doctests. Do not assume a green nextest run covers doctest examples.
+
+# ── Cross-binary serialization of the heavy V8/esbuild e2e binaries ──────────
+# These 7 integration-test binaries (all in package `zfb`) each spawn a real
+# `zfb dev` / `zfb build` process embedding a V8 host and shelling out to
+# esbuild. Booting two at once starves CPU/memory and turns their generous
+# boot-deadline watchdogs flaky. Issue #1339 added an OS advisory flock
+# (crates/zfb-test-utils/src/cross_binary_lock.rs) as the primary serialization
+# mechanism; this nextest `test-group` is the COMPLEMENTARY scheduler-level
+# guard (defense in depth, per #1339's design intent): `cargo test` serialized
+# these implicitly by running one binary at a time, but nextest schedules test
+# binaries concurrently by default, so the group makes the serialization
+# explicit at the runner level — at most ONE test from this group runs at a
+# time across all 7 binaries.
+[test-groups.e2e-heavy]
+max-threads = 1
+
+# The override that assigns the 7 heavy binaries to the e2e-heavy group AND
+# grants them a long per-test timeout lives in the `default` profile so BOTH
+# local (default profile) and CI (`ci` profile, which inherits default's
+# overrides) get identical serialization + timeout treatment. Exact binary
+# matches (`=name`) keep this list in lockstep with #1339's flock adoption set.
+[[profile.default.overrides]]
+filter = 'package(zfb) & (binary(=build_terminates) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e))'
+test-group = 'e2e-heavy'
+# The longest LEGITIMATE e2e watchdog is 280s (dev_serve_e2e's lazy scenario
+# and dev_serve_injected_routes_e2e), 300s for the #[ignore]d heavy
+# dev_dep_invalidation_1284_e2e tests. Warn at 120s but do NOT kill until
+# 600s (5 × 120s) so a healthy-but-slow e2e is never reaped — comfortably
+# above the ≥400s headroom the issue asks for, and above the flock's own 360s
+# acquire deadline.
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+# ── CI profile: the authoritative T1 gate (health.yml) ───────────────────────
+[profile.ci]
+# One retry. A pass-on-retry is a TRIAGE SIGNAL, not a success: nextest records
+# it (terminal "FLAKY" line + JUnit `<flakyFailure>` / retry count) rather than
+# hiding it, so a future sub-task (#1341) can consume that telemetry. Retries
+# are deliberately NOT suppressed. Local runs keep retries = 0 (default profile).
+retries = 1
+# Non-e2e tests: warn at 60s, terminate after 5 × 60s = 300s. A unit or
+# ordinary integration test still running after 5 minutes is wedged, not slow.
+# The e2e override above supersedes this for the heavy group.
+slow-timeout = { period = "60s", terminate-after = 5 }
+# Show failures inline as they happen AND re-print them in the final summary.
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+# Emitted to target/nextest/ci/junit.xml. health.yml uploads it as an artifact
+# (if: always()) so retry/flaky telemetry survives even a failed run — this is
+# the machine-readable feed #1341 will consume.
+path = "junit.xml"
+report-name = "zfb-nextest-ci"
