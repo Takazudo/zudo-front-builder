@@ -7,18 +7,22 @@ set -euo pipefail
 # registry in a temp dir (no workspace context), scaffolds a project, runs
 # `pnpm build` (which calls `zfb build`), and asserts dist/ is populated.
 #
-# Extracted verbatim from release.yml's `smoke-clean-room` job (issue #1342,
-# stage 1 — pure refactor, no logic change) so the same shell logic can be
-# reused by both the release-time smoke and a future scheduled drift-net exam.
+# Extracted from release.yml's `smoke-clean-room` job (issue #1342) so the
+# same shell logic is reused by both the release-time smoke (via
+# reusable-smoke-clean-room.yml) and the weekly drift-net.yml off-release
+# exam.
 #
 # This is an ALERTING GUARD, not a gate — when invoked from release.yml,
 # publish has already happened. Catches the #481-class (broken dist-tag
 # pointing at a bad binary — the smoke downloads and runs the just-published
-# binary) and the #482-class (missing scaffold dependencies such as
-# @takazudo/zfb-runtime). Does NOT catch the #463-class (undeclared esbuild
-# peer-dep) because esbuild reaches the build transitively via
-# @takazudo/zfb-runtime, so a clean-room pnpm install still resolves it
-# through the dependency tree.
+# binary), the #482-class (missing scaffold dependencies such as
+# @takazudo/zfb-runtime), and the #1325-class (a platform's optionalDependency
+# tarball not yet propagated to the registry — npm SILENTLY SKIPS an
+# optionalDep whose tarball 404s, so on any given platform the failure only
+# shows up as a broken `zfb` launcher at install time, not as an install
+# error). Does NOT catch the #463-class (undeclared esbuild peer-dep) because
+# esbuild reaches the build transitively via @takazudo/zfb-runtime, so a
+# clean-room pnpm install still resolves it through the dependency tree.
 #
 # Usage:
 #   DIST_TAG=next scripts/smoke-clean-room.sh
@@ -48,28 +52,43 @@ for attempt in $(seq 1 $max_attempts); do
   delay=$(( delay * 2 ))
 done
 
-# Wait until the runner-arch platform tarball is actually fetchable.
-# npm metadata propagates faster than the ~78 MB binary tarballs; when
-# a tarball hasn't propagated yet, npm SILENTLY SKIPS the optionalDep
-# install and the `zfb` launcher fails at runtime.  `npm pack --dry-run`
-# forces npm to resolve and fetch the actual tarball (not just metadata),
-# confirming it is available before we invoke `npx create-zfb`.
-# The runner for this job is ubuntu-latest (linux x64).
-echo "Waiting for @takazudo/zfb-linux-x64-gnu@${DIST_TAG} tarball to be fetchable..."
-max_attempts=6
-delay=10
-for attempt in $(seq 1 $max_attempts); do
-  if npm pack --dry-run "@takazudo/zfb-linux-x64-gnu@${DIST_TAG}" > /dev/null 2>&1; then
-    echo "Registry resolved @takazudo/zfb-linux-x64-gnu@${DIST_TAG} tarball (attempt ${attempt})"
-    break
-  fi
-  if [[ "$attempt" -eq "$max_attempts" ]]; then
-    echo "::error::@takazudo/zfb-linux-x64-gnu@${DIST_TAG} tarball did not become fetchable after ${max_attempts} attempts."
-    exit 1
-  fi
-  echo "  Not yet available (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..."
-  sleep "$delay"
-  delay=$(( delay * 2 ))
+# Wait until EVERY platform's optionalDependency tarball is actually
+# fetchable — not just the tarball the current runner needs. npm metadata
+# propagates faster than the ~78 MB binary tarballs; when a tarball hasn't
+# propagated yet, npm SILENTLY SKIPS the optionalDep install and the `zfb`
+# launcher fails at runtime on THAT platform (the #1325 incident class).
+# `npm pack --dry-run` forces npm to resolve and fetch the actual tarball
+# (not just metadata), confirming it is available.
+#
+# `npm pack --dry-run` only touches the registry (no OS-specific behavior),
+# so this loop probes all 5 platforms from a single runner regardless of
+# which OS is executing this script — that's the whole point: today's job
+# only ever ran on ubuntu-latest, so nothing ever probed whether e.g. the
+# darwin-arm64 or win32 tarball had propagated. This loop closes that gap.
+PLATFORM_PACKAGES=(
+  "@takazudo/zfb-darwin-arm64"
+  "@takazudo/zfb-darwin-x64"
+  "@takazudo/zfb-linux-arm64-gnu"
+  "@takazudo/zfb-linux-x64-gnu"
+  "@takazudo/zfb-win32-x64-msvc"
+)
+for pkg in "${PLATFORM_PACKAGES[@]}"; do
+  echo "Waiting for ${pkg}@${DIST_TAG} tarball to be fetchable..."
+  max_attempts=6
+  delay=10
+  for attempt in $(seq 1 $max_attempts); do
+    if npm pack --dry-run "${pkg}@${DIST_TAG}" > /dev/null 2>&1; then
+      echo "Registry resolved ${pkg}@${DIST_TAG} tarball (attempt ${attempt})"
+      break
+    fi
+    if [[ "$attempt" -eq "$max_attempts" ]]; then
+      echo "::error::${pkg}@${DIST_TAG} tarball did not become fetchable after ${max_attempts} attempts."
+      exit 1
+    fi
+    echo "  Not yet available (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..."
+    sleep "$delay"
+    delay=$(( delay * 2 ))
+  done
 done
 
 # ── Scaffold project with create-zfb@<dist-tag> ─────────────────────────────
@@ -109,13 +128,42 @@ pnpm install
 cd "$SMOKE_DIR/smoke-site"
 pnpm build
 
-# ── Assert dist/ is populated ───────────────────────────────────────────────
+# ── Assert dist/ is populated and contains expected template content ───────
+#
+# Mirrors the assertion style used by tests/smoke/node-free/run.sh: beyond
+# "dist/ is non-empty", grep the rendered HTML for markers that can only be
+# present if the content pipeline actually ran (not just that some file
+# happened to be written). `create-zfb <name>` (no --template) scaffolds the
+# "basic-blog" template (crates/zfb/src/cli.rs default_value), whose
+# pages/index.tsx renders `<h1>basic-blog</h1>` and lists every post in the
+# `blog` content collection, including the seed post's frontmatter title
+# "Hello, zfb" (content/blog/hello-zfb.mdx) — so both markers only appear if
+# getCollection("blog") resolved AND the page template rendered correctly.
+
+pass() { printf '[PASS] %s\n' "$1"; }
+fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }
+
+DIST_INDEX="$SMOKE_DIR/smoke-site/dist/index.html"
 
 # find -type f is more robust than `ls -A` (handles dotfile-only outputs).
 DIST_FILE=$(find "$SMOKE_DIR/smoke-site/dist" -type f | head -1)
 if [[ -z "$DIST_FILE" ]]; then
-  echo "::error::smoke-clean-room: dist/ is empty after zfb build — scaffold or build is broken."
-  exit 1
+  fail "smoke-clean-room: dist/ is empty after zfb build — scaffold or build is broken."
 fi
 FILE_COUNT=$(find "$SMOKE_DIR/smoke-site/dist" -type f | wc -l)
-echo "dist/ OK: ${FILE_COUNT} file(s) found. First: $DIST_FILE"
+pass "dist/ is populated (${FILE_COUNT} file(s) found, first: $DIST_FILE)"
+
+if [[ ! -f "$DIST_INDEX" ]]; then
+  fail "smoke-clean-room: dist/index.html not found after build."
+fi
+pass "dist/index.html exists"
+
+if ! grep -q "basic-blog" "$DIST_INDEX"; then
+  fail "smoke-clean-room: dist/index.html does not contain expected content: basic-blog"
+fi
+pass "dist/index.html contains expected content (basic-blog)"
+
+if ! grep -q "Hello, zfb" "$DIST_INDEX"; then
+  fail "smoke-clean-room: dist/index.html does not list the seed post title: Hello, zfb"
+fi
+pass "dist/index.html lists the seed post (Hello, zfb)"
