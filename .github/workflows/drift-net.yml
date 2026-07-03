@@ -1,0 +1,146 @@
+# drift-net.yml
+#
+# Weekly registry-integration drift net (issue #1342, zudo-test-wisdom T3
+# scheduled exam). release.yml's smoke-clean-room job is a strong
+# registry-integration guard, but it only fires per-release — between
+# releases, registry-side drift (e.g. a platform tarball that silently
+# stopped propagating) is invisible. This workflow runs the exact same
+# clean-room smoke (scripts/smoke-clean-room.sh via
+# reusable-smoke-clean-room.yml) against the LIVE `next` dist-tag on a
+# schedule, independent of any release.
+#
+# Two legs:
+#   - ubuntu-latest — matches what release.yml already runs every release.
+#   - macos-15 (PINNED, not macos-latest — that label drifts unpredictably
+#     across major OS versions without notice) — darwin-arm64 is what users
+#     actually install on and nothing else exercises it between releases.
+#
+# On failure, files/comments on a single deduped tracking issue per workflow
+# (scripts/file-exam-issue.sh) and sends an IFTTT notification, reusing the
+# exact pattern from release.yml's `notify` job (issue #1335).
+#
+# pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
+# commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
+# release for human readability. To bump: resolve the new tag's SHA via
+# `gh api repos/<org>/<repo>/git/refs/tags/<tag> --jq .object.sha` and replace
+# both the SHA and the version comment.
+
+name: Drift net
+
+on:
+  schedule:
+    # Weekly, Wednesday 03:43 UTC — an off-minute quiet hour, deliberately not
+    # a round number (":00"/":30") to avoid the load spike every workflow
+    # scheduled on the hour collides into on GitHub's shared cron fleet.
+    - cron: "43 3 * * 3"
+  workflow_dispatch:
+
+concurrency:
+  group: drift-net-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default to least privilege; the file-or-close-issue job opts into
+# issues: write below.
+permissions:
+  contents: read
+
+jobs:
+  smoke-ubuntu:
+    name: Smoke (ubuntu-latest)
+    uses: ./.github/workflows/reusable-smoke-clean-room.yml
+    with:
+      dist_tag: next
+      runner: ubuntu-latest
+
+  smoke-macos:
+    name: Smoke (macos-15, darwin-arm64)
+    uses: ./.github/workflows/reusable-smoke-clean-room.yml
+    with:
+      dist_tag: next
+      runner: macos-15
+
+  file-or-close-issue:
+    # Single deduped tracking issue per workflow (not per run): stays open
+    # while the workflow is red, gets a comment on each subsequent red run,
+    # and is closed automatically on the next green run. See
+    # scripts/file-exam-issue.sh and the zudo-test-wisdom T3 exam pattern.
+    name: File/close exam tracking issue
+    needs: [smoke-ubuntu, smoke-macos]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: File or comment on tracking issue (failure)
+        if: ${{ needs.smoke-ubuntu.result == 'failure' || needs.smoke-macos.result == 'failure' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LEG: >-
+            ${{
+              (needs.smoke-ubuntu.result == 'failure' && needs.smoke-macos.result == 'failure') && 'ubuntu-latest AND macos-15 (both failed)' ||
+              (needs.smoke-ubuntu.result == 'failure' && 'ubuntu-latest') ||
+              'macos-15'
+            }}
+        run: bash scripts/file-exam-issue.sh "Drift net"
+
+      - name: Close tracking issue (green)
+        if: ${{ needs.smoke-ubuntu.result == 'success' && needs.smoke-macos.result == 'success' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/file-exam-issue.sh "Drift net" --green
+
+  notify:
+    # Alerting guard: a red smoke leg otherwise sits unseen in the Actions
+    # tab between releases (nobody is watching a scheduled run the way a
+    # release is watched live). Same IFTTT pattern as release.yml's notify
+    # job (status-computed via needs.*.result, reuses IFTTT_PROD_NOTIFY) —
+    # established in issue #1335.
+    name: Notify via IFTTT on failure
+    needs: [smoke-ubuntu, smoke-macos]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
+    steps:
+      - name: Notify via IFTTT on failure
+        if: env.IFTTT_PROD_NOTIFY != ''
+        env:
+          SMOKE_UBUNTU_RESULT: ${{ needs.smoke-ubuntu.result }}
+          SMOKE_MACOS_RESULT: ${{ needs.smoke-macos.result }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          FAILED_JOB=""
+          if [ "$SMOKE_UBUNTU_RESULT" = "failure" ]; then
+            FAILED_JOB="smoke-ubuntu"
+          fi
+          if [ "$SMOKE_MACOS_RESULT" = "failure" ]; then
+            if [ -n "$FAILED_JOB" ]; then
+              FAILED_JOB="${FAILED_JOB}, smoke-macos"
+            else
+              FAILED_JOB="smoke-macos"
+            fi
+          fi
+
+          if [ -z "$FAILED_JOB" ]; then
+            echo "No failed job among smoke-ubuntu/smoke-macos — skipping notification."
+            exit 0
+          fi
+
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+
+          curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"value1\": \"Drift net failed (${FAILED_JOB})\",
+              \"value2\": \"dist_tag=next\",
+              \"value3\": \"${RUN_URL}\"
+            }" || echo "::warning::IFTTT notification failed"
