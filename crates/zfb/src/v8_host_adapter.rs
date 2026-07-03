@@ -110,9 +110,7 @@ impl ThreadedV8Host {
     /// Boots the V8 isolate on a dedicated thread and loads the bundle.
     /// Returns an error if the V8 runtime fails to initialise or if the
     /// bundle fails to load.
-    // Convenience wrapper without hooks; callers currently use new_with_hooks directly.
     // Returns Box<dyn EmbeddedV8Host> (not Self) so callers hold an opaque trait object.
-    #[allow(dead_code)]
     #[allow(clippy::new_ret_no_self)]
     pub fn new(bundle_path: &Path) -> Result<Box<dyn EmbeddedV8Host>, RendererError> {
         Self::new_with_hooks(bundle_path, PluginRegistryHooks::default())

@@ -2118,43 +2118,193 @@ mod tests {
     // WorkerDispatch::EmbeddedV8 integration test
     //
     // This test exercises a page whose `paths()` export is non-literal (reads
-    // a content collection at runtime). `EmbeddedV8RenderHost` (Sub 2 —
-    // embed-v8/sub-162, issue #162) merged and `embed_v8` is now default-on,
-    // so the original "not yet merged" gate is stale — but the test body
-    // below is still an empty skeleton (tracked in issue #1354). Run once
-    // filled in with:
-    //
-    //     cargo test -p zfb -- \
-    //         --include-ignored \
-    //         eval_deferred_paths_via_worker_embedded_v8_non_literal_paths
+    // a content collection at runtime), driven through the zfb crate's own
+    // `ThreadedV8Host` adapter (`crate::v8_host_adapter::ThreadedV8Host`) —
+    // NOT `EmbeddedV8RenderHost::new(&bundle_path)` directly, which takes no
+    // arguments and is `!Send` + async (unusable from this sync test). See
+    // issue #1360 for the API correction over the original #1354 sketch.
     //
     // The test proves that the `__paths__` synthetic endpoint in the bundle
     // keeps working unchanged: only the dispatch mechanism differs (no HTTP).
     // -------------------------------------------------------------------------
 
-    /// Integration test: `eval_deferred_paths_via_worker` drives the embedded
-    /// V8 host's `dispatch_fetch` for a page whose `paths()` is non-literal.
+    /// Integration test: `eval_deferred_paths_via_worker` drives
+    /// `crate::v8_host_adapter::ThreadedV8Host`'s `dispatch_fetch` for a page
+    /// whose `paths()` is non-literal (reads a content collection at
+    /// runtime). Boots a real esbuild subprocess and a real embedded V8
+    /// isolate — heavy, `#[ignore]`d by default (see the tag below).
     ///
-    /// `EmbeddedV8RenderHost` (Sub 2, issue #162) is merged; the test body is
-    /// still an empty skeleton. Gated with `#[ignore]` — see module-level
-    /// comment above and issue #1354.
+    /// Route-key trap: the fixture page lives at `pages/blog/[slug].tsx`, so
+    /// the bundler's Hono-form route key is `/blog/:slug` (NOT the bare
+    /// `/:slug` a top-level `pages/[slug].tsx` fixture would produce). The
+    /// `DeferredDynamicRoute::template` below MUST match exactly — a
+    /// mismatch 404s from `/__paths__/` and silently lands every route in
+    /// `expansion.deferred` instead of `expansion.resolved`, which is why
+    /// the assertions below print the deferred reasons on failure.
+    #[cfg(feature = "embed_v8")]
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1354"]
+    #[ignore = "heavy: run with --ignored — boots real esbuild + V8"]
     fn eval_deferred_paths_via_worker_embedded_v8_non_literal_paths() {
-        // This test intentionally left as a skeleton to be filled in by the
-        // integration manager after Sub 2 is merged. The shape is:
-        //
-        //   1. Build a basic-blog bundle from a fixture or the standalone demo
-        //      (https://github.com/Takazudo/zfb-example-blog).
-        //   2. Construct EmbeddedV8RenderHost::new(&bundle_path).
-        //   3. Build a DeferredDynamicRoute for `/blog/:slug` (non-literal
-        //      paths() that reads the blog content collection).
-        //   4. Call eval_deferred_paths_via_worker with
-        //      WorkerDispatch::EmbeddedV8 { host: &mut host }.
-        //   5. Assert the resolved entries match the blog posts in the
-        //      fixture content collection.
-        //
-        // Skeleton test — fill in after EmbeddedV8RenderHost (Sub 2) is merged.
-        // (assert!(true) removed; test body will be added in a follow-up.)
+        // Self-skip only when the toolchain is genuinely absent would be a
+        // pass-by-skip — the acceptance criteria require a genuine PASS, so
+        // panic loudly instead (mirrors the #1007 "slot binary present but
+        // unresolved must panic, not skip" rule already applied elsewhere in
+        // this crate, e.g. `config.rs`'s `zfb_test_utils::locate_esbuild()`
+        // callers).
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            panic!(
+                "eval_deferred_paths_via_worker_embedded_v8_non_literal_paths requires a \
+                 real esbuild binary to genuinely PASS (not pass-by-skip) — set \
+                 ZFB_ESBUILD_BIN or stage the workspace slot binary before running with \
+                 --ignored"
+            );
+        };
+
+        let project_tmp = tempdir().unwrap();
+        let project_root = project_tmp.path();
+        std::fs::create_dir_all(project_root.join("pages/blog")).unwrap();
+        std::fs::create_dir_all(project_root.join("content/blog")).unwrap();
+        std::fs::create_dir_all(project_root.join("components")).unwrap();
+        std::fs::create_dir_all(project_root.join("layouts")).unwrap();
+
+        std::fs::write(
+            project_root.join("pages/blog/[slug].tsx"),
+            r#"import { getCollection } from "@takazudo/zfb/content";
+
+type Post = { slug: string; data: { title: string } };
+
+export async function paths() {
+  const posts = getCollection("blog") as Post[];
+  return posts.map((p) => ({ params: { slug: p.slug }, props: { title: p.data.title } }));
+}
+
+type Props = { title: string; params: { slug: string } };
+
+export default function PostPage({ title, params }: Props) {
+  return (
+    <html lang="en">
+      <head><title>{title}</title></head>
+      <body><h1>{title}</h1><p>slug: {params.slug}</p></body>
+    </html>
+  );
+}
+"#,
+        )
+        .unwrap();
+
+        let posts = [
+            ("alpha", "Alpha Post"),
+            ("bravo", "Bravo Post"),
+            ("charlie", "Charlie Post"),
+        ];
+        for (slug, title) in posts {
+            std::fs::write(
+                project_root.join(format!("content/blog/{slug}.md")),
+                format!("---\ntitle: \"{title}\"\n---\n{title} body.\n"),
+            )
+            .unwrap();
+        }
+
+        let blog_dir = project_root.join("content/blog");
+        let snap =
+            zfb_content::build_snapshot(&[zfb_content::CollectionConfig::new("blog", &blog_dir)])
+                .expect("build_snapshot from fixture");
+        let snap_json = serde_json::to_string(&snap).expect("serialise snapshot");
+
+        let (_node_modules_handle, node_modules_path) =
+            embedded_node_modules().expect("embedded_node_modules should extract vendor tree");
+
+        let dist_tmp = tempdir().unwrap();
+
+        let input = zfb_build::BundlerInput {
+            project_root: project_root.to_path_buf(),
+            pages_dir: PathBuf::from("pages"),
+            injected_pages_root: None,
+            content_dir: PathBuf::from("content"),
+            content_collections: vec![zfb_build::ContentCollectionSpec::new("blog", &blog_dir)],
+            components_dir: PathBuf::from("components"),
+            layouts_dir: PathBuf::from("layouts"),
+            framework: zfb_render::adapters::Framework::Preact,
+            define_vars: std::collections::HashMap::new(),
+            tsconfig_paths: BTreeMap::new(),
+            external: vec![],
+            main_fields: Vec::new(),
+            outdir: dist_tmp.path().to_path_buf(),
+            mode: zfb_build::BundleMode::Production,
+            minify: false,
+            esbuild_binary: Some(esbuild),
+            mock_subprocess_output: None,
+            content_snapshot_json: Some(snap_json),
+            node_modules_dir: Some(node_modules_path),
+            node_modules_preserve_symlinks: true,
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            resolve_markdown_links: None,
+            site: None,
+            prefetch_disabled: false,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            worker_only_routes: None,
+            bundle_basename: None,
+            css_module_class_maps: std::collections::HashMap::new(),
+            mdx_components_file: None,
+            bundle_exclude: Vec::new(),
+            base_prefix: None,
+        };
+
+        let out = zfb_build::bundle(input).expect("bundle should succeed for fixture");
+
+        let mut host = crate::v8_host_adapter::ThreadedV8Host::new(&out.bundle_path)
+            .expect("ThreadedV8Host boot should succeed against the fixture bundle");
+
+        // Route key MUST be exactly `/blog/:slug` — see the route-key trap
+        // note in the doc-comment above.
+        let route = DeferredDynamicRoute {
+            source_path: project_root.join("pages/blog/[slug].tsx"),
+            template: "/blog/:slug".to_string(),
+            segments: vec![
+                Segment::Static("blog".to_string()),
+                Segment::Dynamic("slug".to_string()),
+            ],
+            output_extension: None,
+            reason: String::new(),
+        };
+
+        let mut dispatch = WorkerDispatch::EmbeddedV8 { host: &mut *host };
+        let expansion = eval_deferred_paths_via_worker(
+            &[route],
+            &mut dispatch,
+            &mut PathsCache::default(),
+            None,
+        );
+
+        assert!(
+            expansion.deferred.is_empty(),
+            "expected no deferred routes; reasons: {:?}",
+            expansion
+                .deferred
+                .iter()
+                .map(|d| &d.reason)
+                .collect::<Vec<_>>()
+        );
+
+        let mut url_paths: Vec<&str> = expansion
+            .resolved
+            .iter()
+            .map(|e| e.url_path.as_str())
+            .collect();
+        url_paths.sort();
+        assert_eq!(
+            url_paths,
+            vec!["/blog/alpha", "/blog/bravo", "/blog/charlie"],
+            "resolved url_paths did not match the fixture's blog posts; got: {:?}",
+            expansion.resolved,
+        );
+        for entry in &expansion.resolved {
+            assert_eq!(
+                entry.route_key, "/blog/:slug",
+                "resolved entry route_key must be the dynamic template, not the resolved URL; \
+                 got {entry:?}"
+            );
+        }
     }
 }
