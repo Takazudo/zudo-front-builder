@@ -59,7 +59,7 @@ The axes are independent. "Too heavy for the PR gate" is a **tier** question, ne
 | 1 — Unit/logic | pure functions, transforms | `cargo test` unit tests; vitest unit tests |
 | 2 — DOM component | DOM structure, no CSS engine | `zfb-runtime` happy-dom vitest (the client router) |
 | 3 — Build output | emitted files **and emitted code that runs** | reading built `dist/`; the *dynamic-import-the-emitted-`_worker.js`* pattern in `zfb-adapter-cloudflare` (zfb is a code generator — string-equality proves the template was written, executing the artifact proves it threads `env`/`ctx`) |
-| 4 — E2E browser | real process / browser | `crates/zfb/tests/dev_serve_e2e.rs` (dev server). No Playwright browser E2E yet |
+| 4 — E2E browser | real process / browser | `crates/zfb/tests/dev_serve_e2e.rs` (dev server, Rust process-level e2e); `pnpm test:router-chromium` (`tests/router-chromium/`, real Chromium via Playwright — CI-gated by `.github/workflows/router-chromium.yml`, path-filtered to `packages/zfb-runtime/**` so it is NOT a required check); `pnpm test:webkit-back` (`tests/webkit-back-history/`, real WebKit back/forward-cache nav via Playwright — T4 local-heavy, Mac only, never runs in CI; see the release-day hook in RELEASE_DAY_CHECKLIST.md) |
 | 5 — Visual | computed styles + pixels | the docs site / any UI — use `/verify-ui` + `/headless-browser` |
 | 6 — AI-based | final resort, **not for CI** | not used; only for canvas/zoom surfaces L4+L5 cannot reach |
 
@@ -71,10 +71,10 @@ The axes are independent. "Too heavy for the PR gate" is a **tier** question, ne
 |---|---|---|
 | **T0 — inner loop** | `cargo check`/`clippy` + scoped `cargo test -p <crate>` (affected), `pnpm -r --if-present typecheck`, `pnpm -r test`. Retries 0. | run constantly while coding |
 | **T1 — PR gate** | `.github/workflows/health.yml` — fmt, `clippy -D warnings`, build, `cargo nextest run --workspace --profile ci` + a separate `cargo test --workspace --doc`, `pnpm -r test`, `format:check`, actionlint, build-no-v8. | **the authoritative gate.** A PR is mergeable when its required checks are green |
-| **T3 — scheduled re-exam** | heavy/platform-bound lanes on a schedule | **DEFERRED until release.** zfb is pre-release WIP; standing up a nightly runner is not cost-justified yet. This is a **public repo** — no blacksmith, no self-hosted runners. Adopt at cutover |
+| **T3 — scheduled re-exam** | heavy/platform-bound lanes on a schedule | **Thin pre-release lane is LIVE; the full nightly upgrade is still deferred.** `.github/workflows/exam.yml` (issue #1344, weekly Saturday 04:17 UTC) runs the `#[ignore]`d env-gate + heavy manifest below allowed-to-fail, plus a full `cargo nextest run --workspace` + doctest re-exam on macOS (the one FSEvents-vs-inotify coverage gap `health.yml` can't cover, since it's ubuntu-only). `.github/workflows/drift-net.yml` (issue #1342, weekly Wednesday 03:43 UTC) re-runs the release clean-room smoke against the live `next` dist-tag on ubuntu + macOS between releases. Neither gates a PR (schedule + `workflow_dispatch` only); both file/close one deduped tracking issue per workflow (`scripts/file-exam-issue.sh`) and IFTTT-notify on failure. See "T3 cutover manifest" below for exactly what upgrades (nightly cadence, Windows leg, etc.) and its trigger |
 | **T4 — local heavy lane** | `pnpm b4push` (below) | convenience, not enforcement |
 
-**Do not scaffold unused tiers.** zfb needs T0 + T1 now; T4 is the new `b4push`; T3 is documented-but-deferred.
+**Do not scaffold unused tiers.** zfb needs T0 + T1 now; T4 is the new `b4push`; T3 has a thin weekly stand-in (`exam.yml` + `drift-net.yml`) — the full nightly upgrade stays documented-but-deferred until cutover (see the manifest below).
 
 ### Branch ruleset on `main` (T1 enforcement)
 
@@ -88,7 +88,7 @@ T1's "mergeable when required checks are green" is now enforced by a GitHub **ru
 4. **Default to Level 5 for any UI/CSS/visibility work.**
 5. **Report what was NOT tested** — state the blind spots.
 6. **Verification specs don't self-graduate.** A one-time "it was done" proof is tagged `#[ignore = "verification: <why>"]` (Rust) / `@verification` (TS) and excluded from gates. Propose promotion to a tier in the PR description; never self-promote.
-7. **Red checks block the author.** Any red check on a PR you authored blocks you, *even if it is not a required check* — the only exception is a test carrying `@flaky`/`flaky:` with a linked open issue.
+7. **Red checks block the author.** Any red check on a PR you authored blocks you, *even if it is not a required check* — the only exception is a test carrying a `flaky: <issue-url>` quarantine tag (Rust `#[ignore = "flaky: <url>"]`; TS `// flaky: <url>` above `it.skip(...)`, see the TS-side idiom below) with a linked open issue.
 8. **Never game the gate.** Do not add `#[ignore]` / `test.skip`, a flaky tag, a loosened tolerance, or a deleted assertion **without a linked open issue**. Making a gate pass by editing existing assertions needs a fresh-context review — not the same session that wrote the change.
 9. **Scoped heavy verification.** When a change touches code covered only by a heavy/quarantined lane, run those tests on a capable host before declaring the work done.
 
@@ -97,10 +97,10 @@ T1's "mergeable when required checks are green" is now enforced by a GitHub **ru
 zfb hits flakiness often (mostly **Rust timing/ordering** in the dev-server, SSE, and plugin-runner paths). Handle it as a pipeline, not a shrug.
 
 - **Retry budget:** local **0**; CI **1–2** with artifacts. **Pass-on-retry is a triage signal, not a success** — record it and schedule the fix. **More than 2 retries is a smell.**
-- **The `@flaky` quarantine pipeline (Rust):**
+- **The `flaky:` quarantine pipeline (Rust):**
   - **Step 0 — prove it ever genuinely passed** (not pass-by-skip) on some host. A test that can pass *nowhere* is **broken, not flaky** → fix or delete it now, no quarantine.
   - **Quarantine requires a paper trail** — mark it `#[ignore = "flaky: <issue-url>"]` (the inline issue URL is mandatory). `cargo test` skips `#[ignore]`d tests, so it no longer blocks the gate.
-  - **It must still run somewhere, allowed-to-fail** — today, locally via `cargo test -- --ignored` (or `--include-ignored`); post-cutover, the T3 scheduled exam runs the quarantined set allowed-to-fail so failure data keeps flowing into the tracking issue.
+  - **It must still run somewhere, allowed-to-fail** — locally via `cargo test -- --ignored` (or `--include-ignored`), AND weekly in CI: `.github/workflows/exam.yml`'s `quarantine-heavy` job runs the exact env-gate + heavy subset of the manifest below (`--run-ignored ignored-only` with an exact-name filterset; `pending-feature`-tagged tests are deliberately excluded — they're blocked on unimplemented features, not flakiness) allowed-to-fail, filing/closing a deduped tracking issue so failure data keeps flowing without gating a PR. This is the thin pre-release stand-in (issue #1344) — see "T3 cutover manifest" below for what the full nightly upgrade still needs.
   - **Quarantine has an exit with a deadline — fix, demote, or delete.** It is not a parking lot. **Quarantine suspends *product* coverage, not just test coverage:** the behavior is unguarded until the test is fixed.
 - **The 5 deflaking root causes** (fix the cause, don't add a sleep): bare timing waits, `networkidle` on no-request SPA navs, animations in flight, shared/order-coupled state, hydration races. zfb's Rust flakes are mostly timing/ordering — prefer event/condition-keyed waits and deterministic scheduling over fixed `sleep`s (as `zfb-test-utils`'s SSE helpers and the `plugin_runner` timeouts already do).
 - **`cargo-nextest` (ADOPTED — issue #1340):** CI runs the Rust test suite under `cargo nextest run --workspace --profile ci` (health.yml), configured in `.config/nextest.toml`. This gives the CI retry budget, per-test timeouts, and JUnit output — the mechanisms below are now real, not aspirational.
@@ -129,13 +129,13 @@ Audited and retagged in full during issue #1337 (2026-07). Table below lists eve
 | `crates/zfb-islands/tests/integration.rs:394` `splitting_emits_chunk_for_dynamic_import` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs:508` `no_dynamic_import_yields_single_file` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs:553` `client_script_real_esbuild_bundles_discovered_entry` | `env-gate` (esbuild) | Same as above. |
-| `crates/zfb-css/tests/integration.rs:48` `subprocess_engine_against_real_binary` | `env-gate` (tailwindcss v4) | Local only today: `cargo test -p zfb-css --test integration -- --include-ignored`. The binary IS staged in CI as a side effect of `crates/zfb/build.rs`, but no CI step passes `--ignored`/`--include-ignored` for it yet — candidate for a future health.yml step (T1 gate) mirroring the zfb-islands wiring above. |
-| `crates/zfb-build/tests/prod_asset_graph_e2e.rs:795` `prod_asset_graph_with_real_tailwind_binary_against_fixture` | `env-gate` (tailwindcss v4) | Local only today: `cargo test -p zfb-build --test prod_asset_graph_e2e -- --include-ignored`. Same CI gap as above. |
-| `crates/zfb/src/commands/build.rs:4712` `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project` | `env-gate` (tailwindcss v4) | Local only today: `cargo test -p zfb --lib commands::build:: -- --include-ignored`. Same CI gap as above. |
-| `crates/zfb/tests/version_stamp.rs:22` `version_stamp_from_env` | `heavy` | Local only (T4): `cargo test -p zfb --test version_stamp -- --ignored`. Performs a full isolated `cargo run` recompile. |
-| `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:495` `e2e_src_component_edit_rerenders_route` | `heavy` | Local only (T4): `cargo test -p zfb --test dev_dep_invalidation_1284_e2e -- --ignored`. Level-4 e2e, spawns a real `zfb dev` server. |
-| `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:703` `e2e_transitive_css_import_refreshes_stylesheet` | `heavy` | Same as above. |
-| `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:903` `e2e_new_utility_class_in_component_is_emitted` | `heavy` | Same as above. |
+| `crates/zfb-css/tests/integration.rs:48` `subprocess_engine_against_real_binary` | `env-gate` (tailwindcss v4) | Local: `cargo test -p zfb-css --test integration -- --include-ignored`. **CI (weekly, T3 only)**: `exam.yml`'s `quarantine-heavy` job runs it via the exact-name filterset (issue #1344). Not yet wired into `health.yml` (T1) — the binary IS staged there as a side effect of `crates/zfb/build.rs`, but no T1 step passes `--ignored`/`--include-ignored` for it — candidate for a future health.yml step mirroring the zfb-islands wiring above. |
+| `crates/zfb-build/tests/prod_asset_graph_e2e.rs:795` `prod_asset_graph_with_real_tailwind_binary_against_fixture` | `env-gate` (tailwindcss v4) | Local: `cargo test -p zfb-build --test prod_asset_graph_e2e -- --include-ignored`. Same weekly-T3-only CI coverage (via `exam.yml`) and same T1 gap as above. |
+| `crates/zfb/src/commands/build.rs:4712` `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project` | `env-gate` (tailwindcss v4) | Local: `cargo test -p zfb --lib commands::build:: -- --include-ignored`. Same weekly-T3-only CI coverage (via `exam.yml`) and same T1 gap as above. |
+| `crates/zfb/tests/version_stamp.rs:22` `version_stamp_from_env` | `heavy` | Local (T4): `cargo test -p zfb --test version_stamp -- --ignored`. Performs a full isolated `cargo run` recompile. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job (issue #1344), allowed-to-fail. |
+| `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:497` `e2e_src_component_edit_rerenders_route` | `heavy` | Local (T4): `cargo test -p zfb --test dev_dep_invalidation_1284_e2e -- --ignored`. Level-4 e2e, spawns a real `zfb dev` server. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job, allowed-to-fail. |
+| `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:706` `e2e_transitive_css_import_refreshes_stylesheet` | `heavy` | Same as above. |
+| `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:907` `e2e_new_utility_class_in_component_is_emitted` | `heavy` | Same as above. |
 | `crates/zfb-content/tests/error_messages.rs:99` `unknown_collection_name_lists_available_collections` | `pending-feature` | Blocked on [#1352](https://github.com/Takazudo/zudo-front-builder/issues/1352) — no runtime `getCollection(name)` lookup surface in `zfb-content` yet. |
 | `crates/zfb-render/tests/error_messages.rs:337` `invalid_zfb_config_ts_points_at_field_and_file` | `pending-feature` | Blocked on [#1353](https://github.com/Takazudo/zudo-front-builder/issues/1353) — `zfb-render` doesn't yet call the in-process TS config evaluator. |
 | `crates/zfb/src/render_pipeline.rs:2142` `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` | `pending-feature` | Blocked on [#1354](https://github.com/Takazudo/zudo-front-builder/issues/1354) — empty skeleton, `EmbeddedV8RenderHost` merged but the test body was never filled in. |
@@ -144,10 +144,51 @@ Audited and retagged in full during issue #1337 (2026-07). Table below lists eve
 
 No `flaky:` or `verification:` tagged tests exist as of this audit.
 
+### TS-side flaky/verification idiom (vitest)
+
+No TypeScript/vitest test in this repo has ever needed quarantine — `grep -rn '// flaky:\|// @verification:' --include='*.test.ts' packages/ crates/*/npm` returns nothing as of this writing (issue #1349 confirmed there is nothing to retrofit). This section establishes the convention for the day one does, mirroring the Rust `#[ignore]` taxonomy above. vitest has no first-class "ignore with a machine-readable reason" attribute like Rust's `#[ignore = "..."]`, so the reason lives in a comment directly above `it.skip(...)`:
+
+- **Quarantine a flaky test** — `it.skip(...)` with a `// flaky: <issue-url>` comment immediately above (issue URL mandatory, same rule as Rust's `flaky:`):
+
+  ```ts
+  // flaky: https://github.com/Takazudo/zudo-front-builder/issues/9999
+  it.skip("retries the SSE reconnect within the 3-attempt budget", async () => {
+    // ...
+  });
+  ```
+
+- **One-time "it was done" proof, not a regression guard** — `it.skip(...)` with a `// @verification: <why>` comment immediately above, mirroring Rust's `verification:` tag (no issue URL needed):
+
+  ```ts
+  // @verification: one-time proof the v0.1 -> v0.2 content-schema migration
+  // script produced the expected fixture snapshot; not a regression guard.
+  it.skip("migrates the v0.1 fixture to the v0.2 schema", async () => {
+    // ...
+  });
+  ```
+
+- The other 3 Rust prefixes (`env-gate:`, `heavy:`, `pending-feature: <issue-url>`) follow the same comment-directly-above-`it.skip(...)` shape if a TS test ever needs them — no precedent yet, so no worked example here.
+- **Audit**: `grep -rn '// flaky:\|// @verification:' --include='*.test.ts' packages/ crates/*/npm` — the TS mirror of the Rust manifest's `grep -rn '#\[ignore = "' crates/` rule above.
+- Same rules as Rust apply: **never game the gate** (no `it.skip` for `flaky:` without a linked open issue), **quarantine has an exit with a deadline**, and a red check still blocks the author unless it carries a valid `// flaky: <issue-url>` tag (see "Required behavior" item 7 above).
+- The first time a real TS test is quarantined or tagged `@verification`, add a manifest table entry here (mirroring the Rust `#[ignore]` manifest table above) so this section stops being purely aspirational.
+
+### T3 cutover manifest (post-release)
+
+What upgrades when zfb ships a stable release, each with an explicit trigger — do not implement any row speculatively; wait for its trigger, then treat this table (not the epic that wrote it) as the up-to-date starting point. The "do not scaffold unused tiers" rule above applies to every row here.
+
+| Item | Current state | Trigger to upgrade |
+|---|---|---|
+| Weekly → nightly cadence | `exam.yml` (Sat 04:17 UTC) + `drift-net.yml` (Wed 03:43 UTC) run weekly on GitHub-hosted runners only | A stable (non-prerelease) release ships, or external adoption is high enough that a week of undetected drift is unacceptable. Bump both crons to nightly; re-check whether GitHub-hosted runners still fit the budget — still a public repo, so no blacksmith/self-hosted runners are planned by default |
+| Windows exam leg | `@takazudo/zfb-win32-x64-msvc` already ships — `release.yml` natively builds it on `windows-latest` every release — but **no CI job ever executes the Rust test suite on Windows**. `health.yml`, `exam.yml`, and `drift-net.yml` are all ubuntu/macOS only | A deliberate commitment to Windows as a *tested* (not just built) platform — e.g. a Windows-specific bug report, or Windows graduating from "we ship a binary" to "we support it." Add a `windows-latest` leg to `exam.yml` mirroring `macos-exam` (full `cargo nextest run --workspace` + doctest re-exam); expect path-separator / file-locking friction the dev-server watcher has never been exercised against |
+| wrangler/workerd adapter heavy lane | `packages/zfb-adapter-cloudflare/src/__tests__/d1-binding.test.ts`'s own header comment documents the gap: it uses a synthetic in-memory `D1Database` stub instead of real miniflare/`wrangler dev` because "a real miniflare D1 would test miniflare's SQLite, not this adapter's threading" — the test proves env/binding passthrough, not real D1 SQL semantics or the real Workers runtime lifecycle | The Cloudflare adapter becomes a primary supported deploy target (vs. today's acceptance-test-only confidence level), or a bug surfaces that the stub provably cannot catch. Add a `wrangler dev`/miniflare-backed integration lane — almost certainly T3/T4 (it boots a real Workers runtime), not T1 |
+| Homebrew automation + verify | `scripts/update-homebrew-formula.sh vX.Y.Z --push` exists and works against `Takazudo/homebrew-tap`, but is a **manual** step run by hand after a stable release publishes (see `RELEASE_DAY_CHECKLIST.md` and `l-make-release` SKILL.md Step 11) — no CI automation, no post-update `brew install` verification | Homebrew installs are used often enough in practice to justify automating the tap push at the end of `release.yml` (stable releases only), plus a smoke step that actually `brew install`s and runs `zfb --version` against the freshly-pushed formula |
+| linux-musl decision | `packages/zfb/bin/detect-musl.mjs` (wired into `packages/zfb/bin/zfb.mjs`) actively detects Alpine/musl and fails with a friendly "musl/Alpine is not supported yet — no `@takazudo/zfb-linux-*-musl` package exists" error rather than crashing opaquely on a glibc-only binary. No musl package exists under `packages/`, and `release.yml` has no musl build leg | Real demand surfaces (e.g. an issue asking for Alpine/musl support). Then decide whether to add `@takazudo/zfb-linux-x64-musl` (cross-compiled, a new `release.yml` matrix leg, a new `optionalDependencies` entry) or keep the friendly-error posture permanently — this is a product decision, not just a CI one |
+| vitest coverage reporting | No `vitest.config.ts`/`.mjs` in the workspace (`packages/zfb`, `packages/zfb-runtime`, `packages/zfb-adapter-cloudflare`, `packages/create-zfb`, `crates/zfb-islands/npm`) configures a `coverage:` block — `pnpm -r test` runs vitest with zero coverage instrumentation today | Coverage becomes a stated release-readiness gate (e.g. a pre-1.0 checklist item). Add `@vitest/coverage-v8` per package and a `coverage: { provider: "v8", ... }` block to each `vitest.config.*`, and explicitly decide whether thresholds gate T1 (`health.yml`) or stay a T4/local-only signal — do not wire a hard coverage-% gate into `health.yml` without that decision being made on purpose |
+
 ### `b4push` — local pre-push pass (T4)
 
-`pnpm b4push` runs a **bounded** fast pass before pushing: shell-script syntax, `cargo fmt --check`, `pnpm format:check`, `pnpm -r --if-present typecheck`, `pnpm -r test`, and `cargo clippy` (warm tree). It is **not** the authoritative gate — `health.yml` is. b4push is the *fast subset*; the full Rust test suite (`cargo nextest run --workspace`, or plain `cargo test` when nextest is absent) runs in CI (V8 first-compile is 15–30 min, too heavy for a pre-push loop).
+`pnpm b4push` (`scripts/run-b4push.sh`) runs a **bounded** fast pass before pushing, cheap → expensive: shell-script syntax (`bash -n`), the offline `tests/unit/*.sh` unit tests (actually executed — one step per file, not just parsed), `cargo fmt --check`, `pnpm format:check`, `pnpm -r --if-present typecheck`, `pnpm -r test`, and `cargo clippy -D warnings` (warm tree). It prints a per-step duration summary at the end. It is **not** the authoritative gate — `health.yml` is. b4push is the *fast subset*; the full Rust test suite is too heavy for a pre-push loop by default (V8 first-compile is 15–30 min).
 
 - Escapes: `B4PUSH_SKIP_CLIPPY=1`, `B4PUSH_SKIP_JS_TEST=1`.
-- Heavy opt-in: `B4PUSH_FULL=1 pnpm b4push` adds the full Rust test suite (`cargo nextest run --workspace` when nextest is installed — default profile, `retries = 0` — else `cargo test --workspace`) for a thorough local run.
+- Heavy opt-in: `B4PUSH_FULL=1 pnpm b4push` additionally runs the **full health.yml parity set** (issue #1332) — not just the workspace test suite: `cargo nextest run --workspace` (or `cargo test --workspace` when nextest is absent) using nextest's **default** profile (`retries = 0`, unlike CI's `--profile ci`); `cargo test --workspace --doc` (nextest branch only — nextest doesn't run doctests); the `zfb-md-extras` `test-utils`-gated suite (`cargo nextest run -p zfb-md-extras --features test-utils`) plus its scoped `cargo clippy`; and `cargo check --no-default-features -p zfb --tests` (the V8-off build). Before #1332 those last three lanes had no local parity — a green `B4PUSH_FULL=1` run did not imply `health.yml` would pass.
 - It is **not** wired into the git `pre-push` hook (that hook only enforces the worktree-push policy above) — run it manually before pushing.
