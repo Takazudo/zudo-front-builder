@@ -10,9 +10,13 @@
 //! without misreading bytes as a graph. The digest is checked against
 //! the caller's freshly-computed [`ManifestDigest`] before any
 //! deserialisation work happens; if they disagree, the file is
-//! discarded. Bincode (1.x) is used because it's already tiny, fast,
-//! and serde-native — no extra ceremony needed for the graph types
-//! that already derive `Serialize`/`Deserialize`.
+//! discarded. Bincode is used because it's already tiny, fast, and
+//! serde-native — no extra ceremony needed for the graph types that
+//! already derive `Serialize`/`Deserialize`. The codec was migrated
+//! from bincode 1 to bincode 2's serde integration (`bincode::serde`)
+//! since bincode 1 is unmaintained (RUSTSEC-2025-0141); [`VERSION`]
+//! was bumped alongside so old on-disk caches are a graceful
+//! cache-miss rather than a decode error.
 //!
 //! ## Manifest digest — what invalidates the graph
 //!
@@ -56,7 +60,17 @@ const MAGIC: &[u8; 4] = b"ZFBG";
 
 /// On-disk format version. Bump on any backwards-incompatible
 /// change to the wire format or to fields that bincode round-trips.
-const VERSION: u16 = 1;
+/// Bumped 1 -> 2 for the bincode 1 -> bincode 2 codec migration (the
+/// wire encoding differs even though the Rust types didn't change);
+/// see [`bincode_config`].
+const VERSION: u16 = 2;
+
+/// Shared bincode 2 configuration for both [`save_to_disk`] and
+/// [`load_from_disk`] — encode and decode must agree on this or
+/// round-trips silently corrupt.
+fn bincode_config() -> impl bincode::config::Config {
+    bincode::config::standard()
+}
 
 /// Stable hash over the inputs that determine graph identity.
 ///
@@ -284,7 +298,7 @@ pub fn save_to_disk(
         }
     }
 
-    let body = bincode::serialize(graph)?;
+    let body = bincode::serde::encode_to_vec(graph, bincode_config())?;
     let mut buf: Vec<u8> = Vec::with_capacity(4 + 2 + 32 + body.len());
     buf.extend_from_slice(MAGIC);
     buf.extend_from_slice(&VERSION.to_le_bytes());
@@ -360,7 +374,8 @@ pub fn load_from_disk(
 
     let mut body = Vec::new();
     f.read_to_end(&mut body)?;
-    let graph: DependencyGraph = bincode::deserialize(&body)?;
+    let (graph, _): (DependencyGraph, usize) =
+        bincode::serde::decode_from_slice(&body, bincode_config())?;
     Ok(Some(graph))
 }
 
@@ -426,6 +441,27 @@ mod tests {
         assert!(load_from_disk(&path, &written_digest).unwrap().is_some());
         // Wrong digest → discarded; caller will rebuild.
         assert!(load_from_disk(&path, &other_digest).unwrap().is_none());
+    }
+
+    #[test]
+    fn old_version_cache_is_a_graceful_miss_not_an_error() {
+        // Regression for the bincode 1 -> 2 migration: a cache file
+        // written by the old VERSION (1, bincode-1-encoded body)
+        // must be rejected as a cache-miss (Ok(None)) rather than
+        // failing to decode as bincode 2, since the version check
+        // happens before the body is ever touched.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.bin");
+        let digest = ManifestDigest::from_bytes([9u8; 32]);
+
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(&1u16.to_le_bytes()); // old, pre-migration VERSION
+        buf.extend_from_slice(digest.as_bytes());
+        buf.extend_from_slice(b"stale bincode-1-encoded body, never read");
+        std::fs::write(&path, &buf).unwrap();
+
+        assert!(load_from_disk(&path, &digest).unwrap().is_none());
     }
 
     #[test]
