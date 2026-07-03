@@ -97,3 +97,10 @@ __inbox/
 /packages/zfb-*/zfb
 /packages/zfb-*/zfb.exe
 doc-history-out/
+
+# Playwright test artifacts (traces, screenshots, videos) — regenerated on every
+# run, uploaded as CI artifacts on failure, never committed. Covers both the
+# router-chromium suite (outputDir = repo-root/test-results) and the WebKit T4
+# harness (default outputDir).
+/test-results/
+/playwright-report/

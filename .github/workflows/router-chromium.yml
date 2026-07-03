@@ -1,0 +1,97 @@
+# pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
+# commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
+# release for human readability. To bump: resolve the new tag's SHA via
+# `gh api repos/<org>/<repo>/git/refs/tags/<tag> --jq .object.sha` and replace
+# both the SHA and the version comment.
+
+name: router-chromium
+
+# Level-4 (real Chromium) smoke suite for the client router (issue #1346). It
+# closes the happy-dom blind spots the L2 vitest suite documents in-file — real
+# View Transitions, real scroll restoration, real popstate direction, the
+# aria-live route announcer, and real <link rel=prefetch> insertion.
+#
+# Path-filtered: this only runs when the router runtime or its L4 suite changes,
+# so pure-Rust / docs PRs never pay for it. Like docs-checks.yml, that means this
+# workflow is NOT — and must not become — a required status check: a required
+# check that legitimately does not run on unrelated PRs would hang them forever
+# (see the #1333 branch-ruleset note in CLAUDE.md). `base/**` covers the
+# long-lived integration branches used by /x-wt-teams epics.
+on:
+  pull_request:
+    branches:
+      - main
+      - "base/**"
+    types:
+      - opened
+      - synchronize
+      - reopened
+    paths:
+      - "packages/zfb-runtime/**"
+      - "tests/router-chromium/**"
+      - ".github/workflows/router-chromium.yml"
+      - "pnpm-lock.yaml"
+      - "package.json"
+  push:
+    branches:
+      - main
+      - "base/**"
+    paths:
+      - "packages/zfb-runtime/**"
+      - "tests/router-chromium/**"
+      - ".github/workflows/router-chromium.yml"
+      - "pnpm-lock.yaml"
+      - "package.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: router-chromium-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  router-chromium:
+    name: router-chromium (L4)
+    runs-on: ubuntu-latest
+    # The suite itself runs in ~7s; the budget is dominated by the pnpm install,
+    # the zfb-runtime tsc build, and the Chromium download. 10 min is generous
+    # headroom — the whole job targets < 3 min.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Chromium only — no WebKit/Firefox. `--with-deps` pulls the system
+      # libraries the browser needs on a bare ubuntu runner.
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      # `pnpm test:router-chromium` builds the zfb-runtime ESM (the artifact the
+      # suite drives) and then runs Playwright. GitHub sets CI=true, so the
+      # config uses retries: 1 + trace-on-first-retry.
+      - name: Run router-chromium suite
+        run: pnpm test:router-chromium
+
+      # Traces live in test-results/ (NOT playwright-report/). Uploaded only on
+      # failure so a red run always ships the trace for the first retry.
+      - name: Upload Playwright traces
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: router-chromium-traces
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
