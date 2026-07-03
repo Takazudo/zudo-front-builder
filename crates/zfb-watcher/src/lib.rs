@@ -1110,4 +1110,395 @@ mod tests {
         let _ = producer.join();
         let _ = task.await;
     }
+
+    // =========================================================================
+    // Part A (issue #1348) — deterministic coalescing / dedup / dispatch tests.
+    //
+    // These drive `debouncer_task` DIRECTLY through the same synthetic `raw_rx`
+    // seam the two starvation tests above already use. No real `notify` watcher
+    // and no dependence on OS event timing: we feed a fixed list of synthetic
+    // events, then CLOSE the raw channel to force the deterministic `flush_all`
+    // path (bridge closes → `bridge_rx.recv()` returns `None` → every pending
+    // entry drains regardless of the quiet window).
+    //
+    // Determinism guarantee: the debounce is set to an hour, so NEITHER the
+    // `tick` arm NOR the recv-arm forced flush (`now - last_drain >= debounce`
+    // or `pending.len() >= 1024`) can fire within a test. The interval's
+    // immediate first `tick` drains nothing (no entry is an hour old). So the
+    // ONLY non-empty emission path is the channel-close `flush_all`, making the
+    // emitted set a pure function of the fed events — exactly the Level-1 seam
+    // #1348 asks for: coalescing/dedup proven in sub-second unit tests instead
+    // of a 200s e2e harness. No refactor of production code was needed; this
+    // seam already existed.
+    // =========================================================================
+
+    fn create_event(path: &Path) -> notify::Result<Event> {
+        use notify::event::{CreateKind, EventKind};
+        Ok(Event {
+            kind: EventKind::Create(CreateKind::File),
+            paths: vec![path.to_path_buf()],
+            attrs: Default::default(),
+        })
+    }
+
+    fn remove_event(path: &Path) -> notify::Result<Event> {
+        use notify::event::{EventKind, RemoveKind};
+        Ok(Event {
+            kind: EventKind::Remove(RemoveKind::File),
+            paths: vec![path.to_path_buf()],
+            attrs: Default::default(),
+        })
+    }
+
+    fn access_open_event(path: &Path) -> notify::Result<Event> {
+        use notify::event::{AccessKind, AccessMode, EventKind};
+        Ok(Event {
+            kind: EventKind::Access(AccessKind::Open(AccessMode::Any)),
+            paths: vec![path.to_path_buf()],
+            attrs: Default::default(),
+        })
+    }
+
+    fn access_close_write_event(path: &Path) -> notify::Result<Event> {
+        use notify::event::{AccessKind, AccessMode, EventKind};
+        Ok(Event {
+            kind: EventKind::Access(AccessKind::Close(AccessMode::Write)),
+            paths: vec![path.to_path_buf()],
+            attrs: Default::default(),
+        })
+    }
+
+    /// A single synthetic modify event carrying an arbitrary set of paths
+    /// (notify delivers multi-path events for renames; an empty vec models the
+    /// pathless events some backends emit).
+    fn modify_event_with_paths(paths: Vec<PathBuf>) -> notify::Result<Event> {
+        use notify::event::{EventKind, ModifyKind};
+        Ok(Event {
+            kind: EventKind::Modify(ModifyKind::Any),
+            paths,
+            attrs: Default::default(),
+        })
+    }
+
+    /// Drive `debouncer_task` with a fixed list of synthetic raw events, then
+    /// close the raw channel to force the deterministic `flush_all`, and
+    /// collect every emitted `Change`. See the section header for why this is
+    /// timing-independent. The 5s timeout is a failsafe against a regression
+    /// that fails to flush/close — the normal path completes in microseconds
+    /// once the channel is closed; it is NOT a fixed warmup wait.
+    async fn drive(events: Vec<notify::Result<Event>>) -> Vec<Change> {
+        let (raw_tx, raw_rx) = std_mpsc::channel::<notify::Result<Event>>();
+        let (out_tx, mut out_rx) = mpsc::channel::<Change>(256);
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        // One hour: no time-based flush can fire mid-test (see header).
+        let debounce = Duration::from_secs(3600);
+        let task = tokio::spawn(debouncer_task(raw_rx, out_tx, debounce, shutdown_rx));
+
+        for evt in events {
+            raw_tx.send(evt).expect("feed synthetic event");
+        }
+        // Closing the raw channel is the flush trigger.
+        drop(raw_tx);
+
+        let mut collected = Vec::new();
+        let drained = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(change) = out_rx.recv().await {
+                collected.push(change);
+            }
+        })
+        .await;
+        assert!(
+            drained.is_ok(),
+            "debouncer_task must flush and close its output channel promptly \
+             after the raw channel closes",
+        );
+        let _ = task.await;
+        collected
+    }
+
+    /// Return the single collected change for `path`, asserting exactly one exists.
+    fn one_for<'a>(changes: &'a [Change], path: &Path) -> &'a Change {
+        let matches: Vec<&Change> = changes
+            .iter()
+            .filter(|c| c.path.as_path() == path)
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected exactly one emitted change for {path:?}, got {changes:#?}",
+        );
+        matches[0]
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn coalesce_five_events_same_path_emits_once() {
+        // The core debounce coalescing contract: N rapid events on ONE path
+        // collapse to a single emission. A real file backs the path so the
+        // flush-time existence reconciliation passes the kind through unchanged.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("hot.txt");
+        std::fs::write(&p, b"x").expect("seed");
+        let changes = drive(vec![
+            modify_event(&p),
+            modify_event(&p),
+            modify_event(&p),
+            modify_event(&p),
+            modify_event(&p),
+        ])
+        .await;
+        assert_eq!(changes.len(), 1, "5 events on one path must coalesce to 1");
+        assert_eq!(one_for(&changes, &p).kind, ChangeKind::Modified);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn three_distinct_paths_each_emit_once() {
+        // Distinct paths in one window batch out separately (one emit each).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let a = tmp.path().join("a.txt");
+        let b = tmp.path().join("b.txt");
+        let c = tmp.path().join("c.txt");
+        for p in [&a, &b, &c] {
+            std::fs::write(p, b"x").expect("seed");
+        }
+        let changes = drive(vec![modify_event(&a), modify_event(&b), modify_event(&c)]).await;
+        assert_eq!(changes.len(), 3, "three distinct paths must each emit once");
+        for p in [&a, &b, &c] {
+            assert_eq!(one_for(&changes, p).kind, ChangeKind::Modified);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interleaved_mixed_burst_coalesces_per_path() {
+        // a×3, b×2, c×1 interleaved → exactly 3 emissions (one per path). Proves
+        // per-path coalescing holds across an interleaved multi-path burst.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let a = tmp.path().join("a.txt");
+        let b = tmp.path().join("b.txt");
+        let c = tmp.path().join("c.txt");
+        for p in [&a, &b, &c] {
+            std::fs::write(p, b"x").expect("seed");
+        }
+        let changes = drive(vec![
+            modify_event(&a),
+            modify_event(&b),
+            modify_event(&a),
+            modify_event(&c),
+            modify_event(&b),
+            modify_event(&a),
+        ])
+        .await;
+        assert_eq!(changes.len(), 3, "interleaved burst must coalesce per path");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn created_then_modified_same_path_emits_created() {
+        // merge_kind's sticky-Created (#660) threaded through the task: a Create
+        // followed by a Modify in one burst surfaces as Created so the watch-ADD
+        // discovery hook fires. Proves the wiring, not just the pure helper.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("new.txt");
+        std::fs::write(&p, b"x").expect("seed");
+        let changes = drive(vec![create_event(&p), modify_event(&p)]).await;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(one_for(&changes, &p).kind, ChangeKind::Created);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_then_create_same_path_emits_non_removed() {
+        // git-restore shape (#823): Remove then Create on the same path must NOT
+        // stay Removed. File exists at flush so reconciliation passes the merged
+        // (non-Removed) kind through. Deterministic reproduction of a bug that
+        // otherwise only surfaces in a real-FS e2e.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("restored.txt");
+        std::fs::write(&p, b"x").expect("seed");
+        let changes = drive(vec![remove_event(&p), create_event(&p)]).await;
+        assert_eq!(changes.len(), 1);
+        assert!(
+            matches!(
+                one_for(&changes, &p).kind,
+                ChangeKind::Created | ChangeKind::Modified
+            ),
+            "remove+create must surface a non-Removed change",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn modify_event_for_absent_path_downgrades_to_removed() {
+        // resolve_emit_kind (#823 defense-in-depth) threaded through flush: a
+        // Modify whose path is absent on disk is really a deletion → Removed.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("ghost.txt"); // never created
+        let changes = drive(vec![modify_event(&p)]).await;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(one_for(&changes, &p).kind, ChangeKind::Removed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_event_for_present_path_upgrades_to_modified() {
+        // A bare Remove for a path that exists at flush = a restore → Modified.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("present.txt");
+        std::fs::write(&p, b"x").expect("seed");
+        let changes = drive(vec![remove_event(&p)]).await;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(one_for(&changes, &p).kind, ChangeKind::Modified);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pure_read_open_access_event_emits_nothing() {
+        // classify() drops IN_OPEN so the inotify Access→tick churn loop can't
+        // form; proven at the task level (zero emissions from a read-only event).
+        let p = PathBuf::from("/synthetic/opened.txt");
+        let changes = drive(vec![access_open_event(&p)]).await;
+        assert!(
+            changes.is_empty(),
+            "pure-read Open access must emit nothing, got {changes:#?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn access_close_write_event_emits_modified() {
+        // IN_CLOSE_WRITE is a completed write → Modified (not dropped like the
+        // pure-read Access variants).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("written.txt");
+        std::fs::write(&p, b"x").expect("seed");
+        let changes = drive(vec![access_close_write_event(&p)]).await;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(one_for(&changes, &p).kind, ChangeKind::Modified);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_event_for_absent_path_emits_removed() {
+        // Control case for the two reconciliation tests above: a genuine
+        // deletion (Remove + absent) stays Removed.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("deleted.txt"); // never created
+        let changes = drive(vec![remove_event(&p)]).await;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(one_for(&changes, &p).kind, ChangeKind::Removed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn single_event_multiple_paths_fans_out_per_path() {
+        // notify can carry >1 path in one Event (a rename delivers from+to). The
+        // `for path in evt.paths` loop must coalesce each path independently.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let a = tmp.path().join("from.txt");
+        let b = tmp.path().join("to.txt");
+        for p in [&a, &b] {
+            std::fs::write(p, b"x").expect("seed");
+        }
+        let changes = drive(vec![modify_event_with_paths(vec![a.clone(), b.clone()])]).await;
+        assert_eq!(changes.len(), 2, "a 2-path event must fan out to 2 changes");
+        one_for(&changes, &a);
+        one_for(&changes, &b);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn notify_error_event_is_skipped_valid_event_still_emits() {
+        // The `Err(_) => warn` arm must not abort the loop: a valid event after
+        // an error event is still delivered.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("ok.txt");
+        std::fs::write(&p, b"x").expect("seed");
+        let changes = drive(vec![
+            Err(notify::Error::generic("synthetic watcher error")),
+            modify_event(&p),
+        ])
+        .await;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(one_for(&changes, &p).kind, ChangeKind::Modified);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn event_with_no_paths_emits_nothing() {
+        // A pathless event (some backends emit these) is a safe no-op: the
+        // `for path in evt.paths` loop runs zero times.
+        let changes = drive(vec![modify_event_with_paths(vec![])]).await;
+        assert!(
+            changes.is_empty(),
+            "pathless event must emit nothing, got {changes:#?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn created_then_removed_same_path_emits_removed_when_absent() {
+        // Create then Remove in one burst, path absent at flush → deletion.
+        // Distinct from the remove-then-create restore shape above.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("ephemeral.txt"); // never created on disk
+        let changes = drive(vec![create_event(&p), remove_event(&p)]).await;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(one_for(&changes, &p).kind, ChangeKind::Removed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn created_then_two_modifies_stays_created() {
+        // The module docs note a Create is followed by "one or more Modify"
+        // events; sticky-Created must survive MULTIPLE modifies, not just one.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let p = tmp.path().join("multi.txt");
+        std::fs::write(&p, b"x").expect("seed");
+        let changes = drive(vec![create_event(&p), modify_event(&p), modify_event(&p)]).await;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(one_for(&changes, &p).kind, ChangeKind::Created);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn distinct_paths_distinct_kinds_are_preserved() {
+        // Per-path pending state is independent: Create(a)/Modify(b)/Remove(c)
+        // emit Created/Modified/Removed respectively — no cross-contamination.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let a = tmp.path().join("created.txt");
+        let b = tmp.path().join("modified.txt");
+        let c = tmp.path().join("removed.txt"); // absent → genuine deletion
+        std::fs::write(&a, b"x").expect("seed");
+        std::fs::write(&b, b"x").expect("seed");
+        let changes = drive(vec![create_event(&a), modify_event(&b), remove_event(&c)]).await;
+        assert_eq!(changes.len(), 3);
+        assert_eq!(one_for(&changes, &a).kind, ChangeKind::Created);
+        assert_eq!(one_for(&changes, &b).kind, ChangeKind::Modified);
+        assert_eq!(one_for(&changes, &c).kind, ChangeKind::Removed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interleaved_two_files_preserve_independent_created_state() {
+        // Interleaving Create/Modify bursts for two brand-new files must keep
+        // BOTH Created — proving per-path merge state does not leak across paths
+        // even when the two bursts are woven together.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let a = tmp.path().join("a_new.txt");
+        let b = tmp.path().join("b_new.txt");
+        std::fs::write(&a, b"x").expect("seed");
+        std::fs::write(&b, b"x").expect("seed");
+        let changes = drive(vec![
+            create_event(&a),
+            create_event(&b),
+            modify_event(&a),
+            modify_event(&b),
+            modify_event(&a),
+        ])
+        .await;
+        assert_eq!(changes.len(), 2);
+        assert_eq!(one_for(&changes, &a).kind, ChangeKind::Created);
+        assert_eq!(one_for(&changes, &b).kind, ChangeKind::Created);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn error_only_stream_emits_nothing_and_closes() {
+        // An error-only event stream must not emit phantom changes and must
+        // still close its output channel (the `drive` drain returns, not times out).
+        let changes = drive(vec![
+            Err(notify::Error::generic("boom one")),
+            Err(notify::Error::generic("boom two")),
+        ])
+        .await;
+        assert!(
+            changes.is_empty(),
+            "error-only stream must emit nothing, got {changes:#?}",
+        );
+    }
 }
