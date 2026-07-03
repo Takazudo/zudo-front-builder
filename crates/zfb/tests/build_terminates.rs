@@ -71,7 +71,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
 /// Wall-clock deadline for the build.
 ///
@@ -222,6 +222,10 @@ fn pnpm_available() -> bool {
 /// and is collected together with the zfb build process.
 #[test]
 fn zfb_build_terminates_with_adapter_and_ssr_route() {
+    // Sibling e2e binaries also boot V8/esbuild; serialize against them
+    // (issue #1339). See zfb-test-utils/src/cross_binary_lock.rs.
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+
     // --- skip-guards ---
 
     let Some(esbuild) = locate_esbuild() else {

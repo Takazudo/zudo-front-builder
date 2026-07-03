@@ -87,12 +87,23 @@ use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
 use zfb_server::livereload::ReloadEvent;
 use zfb_server::{serve_with_listener, PageCache, ServeOpts};
 
-/// Serialize the two real-watcher tests. Each stands up a live notify watcher
+/// Serialize the real-watcher tests. Each stands up a live notify watcher
 /// plus an in-process dev server; cargo runs tests in a file concurrently by
 /// default, and under full-suite load (`cargo test --workspace`) that
 /// contention pushed the HTTP poll past its deadline (both passed when run
 /// alone or with --test-threads=1). A shared async lock forces them to run
 /// one at a time regardless of cargo's thread count.
+///
+/// Audited for issue #1339 (cross-binary e2e flock) and deliberately NOT
+/// given `zfb_test_utils::CrossBinaryE2eLock`: unlike `dev_serve_e2e.rs`
+/// and friends, these tests never spawn the real `zfb` binary or an
+/// embedded V8 host — the discovery hook here is a fake stand-in (see the
+/// module docs' "What is real vs stubbed" section), and the dev server is
+/// an in-process `tokio::spawn` bound to an ephemeral port, not a
+/// subprocess. The resource this file's `SERIAL` guards against is CPU
+/// contention on the HTTP-poll deadline under full-suite load, not the
+/// V8+esbuild memory/CPU blowup the cross-binary lock exists for, so
+/// cross-binary serialization is unnecessary here.
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 // ---------------------------------------------------------------------------

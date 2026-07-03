@@ -56,11 +56,19 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
-/// Serializes the spawning tests in this file (each boots a full V8 +
-/// esbuild dev session; running them concurrently would double memory and
-/// CPU and produce flaky boot deadlines — dev_serve_e2e.rs:96).
+/// Serializes the `zfb dev`-spawning tests in this file (each boots a full
+/// V8 + esbuild dev session; running them concurrently would double memory
+/// and CPU and produce flaky boot deadlines — dev_serve_e2e.rs:96). The two
+/// `zfb build` tests below (Test 1 + Test 2) also boot V8/esbuild but run
+/// as plain sync `#[test]`s, not `#[tokio::test]`s, so they cannot take
+/// this `tokio::sync::Mutex` — they rely solely on `CrossBinaryE2eLock`
+/// (whose blocking, non-async `acquire()` works in both contexts) for
+/// serialization, both against each other and against the two `zfb
+/// dev` tests below. Every spawning test acquires `CrossBinaryE2eLock`
+/// BEFORE this mutex — see `zfb-test-utils/src/cross_binary_lock.rs` for
+/// the lock-ordering rationale (issue #1339).
 static SERIAL: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
@@ -364,6 +372,7 @@ fn run_build(root: &Path, esbuild: &Path, config_override: Option<&str>) -> bool
 /// - `dist/foo/index.html` does NOT contain the public-foo content
 #[test]
 fn build_output_no_base_static_parity() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[dev_build_static_parity] no esbuild binary available; skipping. \
@@ -455,6 +464,7 @@ fn build_output_no_base_static_parity() {
 /// rendered HTML at `dist/`, public files at `dist/mysite/`.
 #[test]
 fn build_output_with_base_static_parity() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[dev_build_static_parity] no esbuild binary available; skipping. \
@@ -518,6 +528,7 @@ fn build_output_with_base_static_parity() {
 /// - `GET /foo` → 200 with the route marker (not the public/foo content)
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_serves_no_base_static_parity() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -616,6 +627,7 @@ async fn dev_serves_no_base_static_parity() {
 /// - Bare `GET /` → redirect to `/mysite/` (the dev server root redirect)
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_serves_with_base_prefix_static_parity() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(

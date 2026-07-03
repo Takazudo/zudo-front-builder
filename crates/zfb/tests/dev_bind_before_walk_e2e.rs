@@ -89,11 +89,15 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary};
+use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
 /// Serializes the spawning tests in this file: each boots a full V8 +
 /// esbuild dev session; running them concurrently would double memory
-/// and CPU and produce flaky boot deadlines (dev_serve_e2e.rs:96).
+/// and CPU and produce flaky boot deadlines (dev_serve_e2e.rs:96). Each
+/// spawning test also acquires `CrossBinaryE2eLock` BEFORE this mutex to
+/// serialize against sibling e2e binaries too (issue #1339) — see
+/// `zfb-test-utils/src/cross_binary_lock.rs` for the lock-ordering
+/// rationale.
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// Deadline for the dev server to print its ready banner. Boot now does
@@ -424,6 +428,7 @@ fn client() -> reqwest::Client {
 /// slow step is still in flight.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_binds_and_serves_before_slow_deferred_step() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
@@ -529,6 +534,7 @@ async fn dev_binds_and_serves_before_slow_deferred_step() {
 /// contract, no wrong body.)
 #[tokio::test(flavor = "multi_thread")]
 async fn eager_request_before_render_serves_controlled_body() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
@@ -640,6 +646,7 @@ async fn eager_request_before_render_serves_controlled_body() {
 /// is what drives the skip-save.)
 #[tokio::test(flavor = "multi_thread")]
 async fn early_shutdown_before_digest_skips_graph_save() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
@@ -798,6 +805,7 @@ async fn early_shutdown_before_digest_skips_graph_save() {
 /// regardless of whether the project has islands.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_binds_and_serves_before_slow_islands_step() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
@@ -922,6 +930,7 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
 /// flight — proof the serve path does not block on the deferred bundle.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_binds_and_serves_before_slow_bundle_step() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
