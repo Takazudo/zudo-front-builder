@@ -754,34 +754,19 @@ jobs:
     # esbuild reaches the build transitively via @takazudo/zfb-runtime, so a
     # clean-room pnpm install still resolves it through the dependency tree.
     #
-    # The shell logic itself lives in scripts/smoke-clean-room.sh (issue
-    # #1342, stage 1 — pure refactor, no logic change) so it is reusable and
-    # independently reviewable.
+    # The shell logic itself lives in scripts/smoke-clean-room.sh, wrapped in
+    # the reusable-smoke-clean-room.yml workflow_call (issue #1342, stage 2)
+    # so .github/workflows/drift-net.yml's weekly off-release exam can call
+    # the exact same smoke. dist_tag and runner below are the SAME parameters
+    # this job always used (needs.publish.outputs.dist_tag, ubuntu-latest) —
+    # only the invocation mechanism changed, not the behavior.
     needs: publish
     # Skip on dry_run — nothing was published, so no registry smoke to run.
     if: ${{ inputs.dry_run != true }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
-        with:
-          # Checkout now provides packageManager, but the version is pinned
-          # explicitly for clarity anyway (match root package.json).
-          version: 11.3.0
-
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: "22"
-          # No cache: pnpm — there is no lockfile in the runner cwd at setup
-          # time (the smoke scaffold directory hasn't been created yet).
-
-      - name: Run clean-room smoke (scaffold + build + assert)
-        shell: bash
-        env:
-          DIST_TAG: ${{ needs.publish.outputs.dist_tag }}
-        run: bash scripts/smoke-clean-room.sh
+    uses: ./.github/workflows/reusable-smoke-clean-room.yml
+    with:
+      dist_tag: ${{ needs.publish.outputs.dist_tag }}
+      runner: ubuntu-latest
 
   notify:
     # Alerting guard: a red build/release-assets/publish/smoke-clean-room leg

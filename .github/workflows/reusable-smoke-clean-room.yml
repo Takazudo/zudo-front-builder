@@ -1,0 +1,62 @@
+# reusable-smoke-clean-room.yml
+#
+# Reusable `workflow_call` wrapper around scripts/smoke-clean-room.sh (issue
+# #1342, stage 2). Parameterized by dist_tag (npm dist-tag to install) and
+# runner (OS/arch to run the smoke on) so the SAME clean-room smoke logic
+# serves two callers:
+#
+#   - release.yml's smoke-clean-room job — dist_tag from the just-run publish
+#     job's output, runner=ubuntu-latest. SAME parameters that job always used;
+#     this stage only changes HOW it is invoked (workflow_call vs inline
+#     steps), not WHAT runs.
+#   - drift-net.yml's weekly off-release exam — dist_tag=next, on both
+#     ubuntu-latest and a pinned macOS runner (the leg release.yml never runs).
+#
+# pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
+# commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
+# release for human readability. To bump: resolve the new tag's SHA via
+# `gh api repos/<org>/<repo>/git/refs/tags/<tag> --jq .object.sha` and replace
+# both the SHA and the version comment.
+
+name: Reusable — Clean-room smoke
+
+on:
+  workflow_call:
+    inputs:
+      dist_tag:
+        description: "npm dist-tag to install create-zfb (and its platform deps) from, e.g. latest or next."
+        required: true
+        type: string
+      runner:
+        description: "Runner label to execute the smoke on, e.g. ubuntu-latest or a pinned macos-* version."
+        required: false
+        type: string
+        default: ubuntu-latest
+
+jobs:
+  smoke-clean-room:
+    name: Clean-room smoke (${{ inputs.runner }}, dist_tag=${{ inputs.dist_tag }})
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          # Checkout provides packageManager, but the version is pinned
+          # explicitly for clarity anyway (match root package.json).
+          version: 11.3.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          # No cache: pnpm — there is no lockfile in the runner cwd at setup
+          # time (the smoke scaffold directory hasn't been created yet).
+
+      - name: Run clean-room smoke (scaffold + build + assert)
+        shell: bash
+        env:
+          DIST_TAG: ${{ inputs.dist_tag }}
+        run: bash scripts/smoke-clean-room.sh
