@@ -35,6 +35,7 @@ Importing `<ClientRouter />` registers the click and form-submit intercepts as a
 |---|---|---|---|
 | `fallback` | `"none" \| "animate" \| "swap"` | `"animate"` | Behaviour when the browser does not support native View Transitions. |
 | `prefetchAll` | `boolean` | `false` | When `true`, every same-origin link is opted into the `"hover"` prefetch strategy automatically. |
+| `preserveHtmlAttrs` | `string[]` | `[]` | Extra `<html>` attribute names whose **runtime** values survive each SPA swap — see [Preserving runtime `<html>` attributes](#preserving-runtime-html-attributes). |
 | `traverseRefetch` | `boolean` | `false` | Opt this page out of the same-page Back/Forward fast-path, forcing a re-fetch on every traversal — see [Same-page traversal](#same-page-traversal). |
 
 ### Fallback modes
@@ -49,6 +50,18 @@ The `fallback` prop controls what happens in browsers that do not support `docum
 {/* No animation, not even a simulated one */}
 <ClientRouter fallback="none" />
 ```
+
+### Preserving runtime `<html>` attributes
+
+On every SPA swap the router copies the incoming server-rendered document's `<html>` attributes onto the live root — so a runtime attribute a persisted island sets on `<html>` (a `data-theme` or `data-sidebar-hidden` driven from `localStorage`) is dropped on every navigation. List those attribute names in `preserveHtmlAttrs` and the router re-applies their current value after each swap:
+
+```tsx
+<ClientRouter preserveHtmlAttrs={["data-theme", "data-sidebar-hidden"]} />
+```
+
+The list is emitted as a `<meta name="zfb-preserve-html-attrs">` tag that the swap reads from the **current (outgoing) page**, so mount `<ClientRouter />` with the same list on every page that participates in SPA navigation — a page that omits an entry drops that attribute when navigating away from it. Names match case-insensitively (DOM attribute names are lowercased).
+
+For dynamic or computed attribute values that a static preserve-list can't express, mutate `event.newDocument.documentElement` in a `zfb:before-swap` listener instead — see [Navigation lifecycle events](#navigation-lifecycle-events).
 
 ## Programmatic navigation with `navigate()`
 
