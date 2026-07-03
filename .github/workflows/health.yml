@@ -214,6 +214,7 @@ jobs:
       # (per-test TRY/PASS/FAIL lines, panic messages) that the JUnit report
       # alone doesn't carry.
       - name: cargo nextest run --workspace --profile ci
+        shell: bash
         run: |
           mkdir -p target/nextest-logs
           cargo nextest run --workspace --profile ci 2>&1 | tee target/nextest-logs/workspace.log
@@ -254,6 +255,7 @@ jobs:
       # Output is teed to a log file (issue #1341) for the same reason as the
       # workspace run above.
       - name: cargo nextest run -p zfb-md-extras --features test-utils --profile ci
+        shell: bash
         run: |
           cargo nextest run -p zfb-md-extras --features test-utils --profile ci 2>&1 | tee target/nextest-logs/md-extras.log
 

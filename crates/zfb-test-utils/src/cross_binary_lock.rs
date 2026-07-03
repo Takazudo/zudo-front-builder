@@ -232,19 +232,31 @@ mod tests {
         let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
 
         // Thread 1: acquire immediately, hold for `hold_duration`, then
-        // release by dropping the guard.
+        // release by dropping the guard. Signals `acquired_tx` the instant
+        // it has genuinely acquired the lock so the main thread can spawn
+        // thread 2 only once contention is real, rather than hoping a
+        // fixed sleep was long enough for thread 1 to win the race — under
+        // a loaded runner it might not be, which would let thread 2 start
+        // before thread 1 holds the lock and invalidate the timing
+        // assertion below.
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel::<Instant>();
         let events1 = Arc::clone(&events);
         let path1 = lock_path.clone();
         let t1 = std::thread::spawn(move || {
             let _guard = CrossBinaryE2eLock::acquire_at(&path1, Duration::from_secs(10));
+            let acquired_at = Instant::now();
             events1.lock().unwrap().push("t1_acquired");
+            let _ = acquired_tx.send(acquired_at);
             std::thread::sleep(hold_duration);
             events1.lock().unwrap().push("t1_released");
             // Guard drops here, releasing the OS lock.
         });
 
-        // Give thread 1 a head start so it wins the race for the lock.
-        std::thread::sleep(Duration::from_millis(80));
+        // Block until thread 1 has genuinely acquired the lock before
+        // spawning the contender.
+        let t1_acquired_at = acquired_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("thread 1 acquired the lock within 10s");
 
         let events2 = Arc::clone(&events);
         let path2 = lock_path.clone();
@@ -266,11 +278,14 @@ mod tests {
             "thread 2 must only acquire the lock after thread 1 released it"
         );
 
-        // Thread 2 started ~80ms after thread 1 acquired, and thread 1 held
-        // the lock for `hold_duration`. So thread 2's wait should be at
-        // least hold_duration minus the head start, with slack for
-        // scheduling jitter.
-        let expected_min_wait = hold_duration.saturating_sub(Duration::from_millis(80));
+        // Thread 2 only started once thread 1 had genuinely acquired the
+        // lock (`head_start` below is however long thread 1 had already
+        // been holding it by the time thread 2 began waiting — just
+        // signal + spawn overhead), and thread 1 held the lock for
+        // `hold_duration` total. So thread 2's wait should be at least
+        // `hold_duration - head_start`, with slack for scheduling jitter.
+        let head_start = t2_start.saturating_duration_since(t1_acquired_at);
+        let expected_min_wait = hold_duration.saturating_sub(head_start);
         assert!(
             t2_waited >= expected_min_wait.saturating_sub(Duration::from_millis(100)),
             "thread 2 acquired the lock suspiciously early: waited {t2_waited:?}, expected at \
