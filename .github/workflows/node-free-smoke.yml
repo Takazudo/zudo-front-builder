@@ -8,7 +8,19 @@
 #
 # PR + main push (ZFB_SMOKE_MODE=local):
 #   build-binary (amd64 on ubuntu-22.04)
-#     └─► smoke-amd64 (ubuntu-latest)   — runs container in local mode
+#     ├─► smoke-amd64 (ubuntu-latest)   — runs container in local mode
+#     └─► scaffold-e2e (ubuntu-latest)  — pre-publish npm-consumption E2E:
+#                                         pnpm/npm packs zfb, zfb-runtime,
+#                                         zfb-adapter-cloudflare, create-zfb,
+#                                         and zfb-linux-x64-gnu (with this
+#                                         leg's freshly built binary injected)
+#                                         into local tarballs, installs
+#                                         create-zfb from its tarball with
+#                                         overrides pinning every @takazudo/*
+#                                         dep to the LOCAL tarballs (never the
+#                                         registry), scaffolds + builds a
+#                                         site, and asserts dist/ content.
+#                                         See scripts/smoke-packed-clean-room.sh.
 #   build-binary (arm64 cross on ubuntu-22.04, mirrors release.yml)
 #     └─► smoke-arm64 (ubuntu-24.04-arm) — runs container in local mode
 #
@@ -100,6 +112,28 @@ jobs:
         with:
           targets: ${{ matrix.platform.target }}
 
+      # Cache compiled Rust artifacts across the two build-binary matrix legs
+      # (issue #1345 — this job rebuilt from scratch, ~6 min, on every PR).
+      # Prefix keyed per target: x86_64 (native) and aarch64 (cross, via a
+      # Docker-mounted target/ dir) run on the same ubuntu-22.04 runner label
+      # but produce non-interchangeable target/ trees — sharing one key
+      # between them risks the same "v8 static lib not found after partial
+      # rebuild" class of breakage that motivated health.yml's v1 -> v2
+      # rust-cache bump (PR #250).
+      #
+      # GitHub enforces a 10GB-per-repo actions-cache eviction budget, LRU
+      # across every prefix in the repo. This workflow adds a THIRD and
+      # FOURTH Swatinem/rust-cache prefix alongside the two that already
+      # exist in health.yml: "v2-zfb" (main job, V8-enabled) and
+      # "v2-zfb-no-v8" (build-no-v8, no-v8 fallback) — see
+      # `grep -rn "Swatinem/rust-cache" .github/workflows/`. Four
+      # moderately-sized target/ caches should stay well under budget; if
+      # repo-wide cache pressure or eviction thrashing appears, this is the
+      # first place to look.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          prefix-key: "v2-zfb-smoke-${{ matrix.platform.target }}"
+
       # Install cross-rs for the arm64 cross-compile target (same as release.yml).
       # cross wraps cargo build inside a Docker container providing the aarch64 sysroot;
       # Cross.toml at repo root pins the image to a GLIBC 2.23 base (≤ 2.35 floor).
@@ -189,6 +223,53 @@ jobs:
 
       - name: Run smoke container
         run: docker run --rm zfb-smoke:amd64
+
+  # ── scaffold E2E: pre-publish `npm create zfb` consumption path (issue #1345) ──
+  #
+  # The full npm consumption path (npm create zfb -> install -> build) was
+  # tested ONLY at release time against the live registry
+  # (scripts/smoke-clean-room.sh / reusable-smoke-clean-room.yml), so a
+  # packaging break only surfaced AFTER publish — one release late for docs'
+  # integration signal, and (in the next.27 incident) after real users had
+  # already hit ERR_MODULE_NOT_FOUND. This job runs the same shape of test
+  # PRE-publish, on every PR, entirely from locally packed tarballs — no
+  # registry round-trip for the packages under test. It complements (does not
+  # replace) the static `packaging.test.ts` in zfb-adapter-cloudflare, which
+  # checks the `files` allowlist / build-copy-step text but cannot prove the
+  # packed tarball actually installs and runs.
+  scaffold-e2e:
+    name: Scaffold E2E (packed tarballs, pre-publish)
+    needs: build-binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Only the packages this job packs need a fresh dist/ — not the whole
+      # workspace (e.g. docs), which pnpm -r build would also touch.
+      - name: Build packages under test
+        run: pnpm --filter @takazudo/zfb --filter @takazudo/zfb-runtime --filter @takazudo/zfb-adapter-cloudflare build
+
+      - name: Download built binary (amd64)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: smoke-binary-amd64
+          path: smoke-ctx
+
+      - name: Pack, override, scaffold, build, and assert (packed clean-room)
+        env:
+          ZFB_LINUX_X64_BINARY: ${{ github.workspace }}/smoke-ctx/zfb-bin
+        run: bash scripts/smoke-packed-clean-room.sh
 
   # ── arm64 smoke: runs on ubuntu-24.04-arm (native arm64 runner) ────────────
   smoke-arm64:
