@@ -43,6 +43,7 @@ export {
   navigate,
   supportsViewTransitions,
   transitionEnabledOnThisPage,
+  syncHistoryEntry,
 } from "./client-router/router.js";
 
 // Prefetch public surface (#276).
@@ -67,7 +68,13 @@ export {
   isTransitionBeforeSwapEvent,
 } from "./client-router/events.js";
 export { swapFunctions, swap } from "./client-router/swap-functions.js";
-export type { Direction, Fallback, NavigationTypeString, Options } from "./client-router/types.js";
+export type {
+  Direction,
+  Fallback,
+  NavigationTypeString,
+  Options,
+  SyncHistoryEntryOptions,
+} from "./client-router/types.js";
 
 // Plugin lifecycle types (#255). The runtime package re-exports the
 // `@takazudo/zfb/plugins` surface so consumers writing plugins from a
