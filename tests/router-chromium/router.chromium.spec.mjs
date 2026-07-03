@@ -420,31 +420,46 @@ test("prefetch inserts a real <link rel=prefetch> for a tap-strategy link", asyn
 });
 
 // ===========================================================================
-// Spec 8 — Forward re-navigation after Back reruns the route (scroll reset).
+// Spec 8 — Forward after Back restores the entry's LIVE-tracked scroll offset.
 // ===========================================================================
-test("Forward after Back re-runs the route and resets scroll to top", async ({ page }) => {
+test("Forward after Back restores the router's live-tracked scroll position", async ({ page }) => {
   await page.goto("/index.html");
   await waitForInitialLoad(page);
 
-  // Home -> A
+  // Home -> A. Page A's history entry is pushed seeded at the top (scrollY 0).
   let s = await seqNow(page);
   await page.click("#to-page-a");
   await waitForNavDone(page, s);
   await expect(page.locator("h1")).toHaveText("Page A");
 
-  // Scroll Page A down, then Back to Home.
+  // Scroll Page A down, then wait until the router has PERSISTED that offset into
+  // Page A's history entry. A real scroll + scrollend (Chromium fires both;
+  // happy-dom fires neither) drives onScrollEnd -> updateScrollPosition, which
+  // replaceState()s the live offset (900) INTO the current entry, overwriting its
+  // push-time seed of 0. This continuous live-tracking is the whole point — the
+  // entry does NOT stay frozen at its push-time scroll.
+  //
+  // The second wait (on history.state, router-owned state — not a timer) is what
+  // makes the record->restore round-trip DETERMINISTIC: scrollend is async, so a
+  // fast goBack() could otherwise race ahead of onScrollEnd and leave the entry
+  // still reading 0. Waiting for the persist is the event-keyed guard the suite's
+  // deflaking discipline requires.
   await page.evaluate(() => window.scrollTo(0, 900));
   await page.waitForFunction(() => Math.round(window.scrollY) === 900);
+  await page.waitForFunction(() => Math.round(window.history.state?.scrollY ?? -1) === 900);
   s = await seqNow(page);
   await page.goBack();
   await waitForNavDone(page, s);
   await expect(page.locator("h1")).toHaveText("Home");
 
-  // Forward again to Page A: its recorded scroll offset for a pushed (index 0
-  // scroll) entry is the top, so a real Forward lands at the top of Page A.
+  // Forward again to Page A. With history.scrollRestoration = "manual", the router
+  // restores that entry's LAST-KNOWN scroll (900) — exactly like the browser's own
+  // manual restoration — NOT the push-time 0. That the restored offset is the
+  // live-tracked 900 proves onScrollEnd persisted it; happy-dom's L2 suite cannot
+  // reach this, having no real scroll/scrollend events.
   s = await seqNow(page);
   await page.goForward();
   await waitForNavDone(page, s);
   await expect(page.locator("h1")).toHaveText("Page A");
-  expect(await page.evaluate(() => Math.round(window.scrollY))).toBe(0);
+  expect(await page.evaluate(() => Math.round(window.scrollY))).toBe(900);
 });
