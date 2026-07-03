@@ -37,7 +37,13 @@ jobs:
   smoke-clean-room:
     name: Clean-room smoke (${{ inputs.runner }}, dist_tag=${{ inputs.dist_tag }})
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 15
+    # Bumped from the original job's 15 → 25 min headroom: scripts/smoke-clean-room.sh
+    # now probes all 5 platform-package tarballs (up to ~310s of retries EACH
+    # in the degenerate case where propagation is genuinely stuck) instead of
+    # just 1, so the worst-case retry budget grew. Normal runs still finish in
+    # a couple of minutes; this only changes when a stuck job gives up with a
+    # clear ::error instead of being killed by the timeout mid-retry.
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
