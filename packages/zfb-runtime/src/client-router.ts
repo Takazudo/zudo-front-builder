@@ -79,6 +79,23 @@ export interface ClientRouterProps {
    * @see https://github.com/Takazudo/zudo-front-builder/issues/1103
    */
   preserveHtmlAttrs?: string[];
+  /**
+   * Opt this page OUT of the same-page traverse fast-path (default `false` —
+   * fast-path ON). By default a Back/Forward traversal between two history
+   * entries sharing the same `pathname + search` is served instantly from the
+   * live DOM — no re-fetch, no re-swap, so island/client state is preserved.
+   *
+   * Set this on a **per-request SSR page** (`prerender = false`) whose
+   * server-rendered content can legitimately differ between two visits to the
+   * same URL: with the fast-path skipped such a traverse would pin the stale
+   * first-render content. Emitted as
+   * `<meta name="zfb-traverse-refetch" content="true">`, which the router reads
+   * on the current (target) page to force the fetch back on. Mount with the
+   * **same value on every page** that participates in SPA navigation, mirroring
+   * the `preserveHtmlAttrs` guidance.
+   * @see https://github.com/Takazudo/zudo-front-builder/issues/1376
+   */
+  traverseRefetch?: boolean;
 }
 
 /**
@@ -150,6 +167,7 @@ export function ClientRouter({
   fallback = "animate",
   prefetchAll: prefetchAllProp = false,
   preserveHtmlAttrs = [],
+  traverseRefetch = false,
 }: ClientRouterProps = {}): readonly ClientRouterElement[] {
   // Bootstrap prefetch exactly once on the client when prefetchAll is true.
   // The initialized flag inside prefetchInit() provides a second safety layer
@@ -207,6 +225,19 @@ export function ClientRouter({
         { name: "zfb-preserve-html-attrs", content: preserveList.join(" ") },
         "zfb-preserve-html-attrs",
       ),
+    );
+  }
+
+  // Traverse-refetch opt-out meta (#1376). A same-page Back/Forward traversal
+  // skips the re-fetch/re-swap by default (the router's traverse fast-path);
+  // this meta opts a per-request SSR page (`prerender = false`) back INTO the
+  // fetch, since skipping it would pin stale server-rendered content. Emitted
+  // only when opted in, so non-opt-in output stays byte-identical. Same
+  // conditional-emission shape as the prefetch-disabled / preserve-html-attrs
+  // metas; the router reads meta[name="zfb-traverse-refetch"][content="true"].
+  if (traverseRefetch) {
+    nodes.push(
+      makeVNode("meta", { name: "zfb-traverse-refetch", content: "true" }, "zfb-traverse-refetch"),
     );
   }
 

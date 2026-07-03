@@ -18,7 +18,13 @@ export {
   isTransitionBeforeSwapEvent,
 } from "./events.js";
 
-export type { Direction, Fallback, NavigationTypeString, Options } from "./types.js";
+export type {
+  Direction,
+  Fallback,
+  NavigationTypeString,
+  Options,
+  SyncHistoryEntryOptions,
+} from "./types.js";
 
 export { swapFunctions, swap } from "./swap-functions.js";
 
@@ -26,7 +32,14 @@ export { swapFunctions, swap } from "./swap-functions.js";
 //   - W3C1: `supportsViewTransitions`, `transitionEnabledOnThisPage`.
 //   - W3C2: `navigate()` (public navigation entry).
 //   - W3C3: `init()` (idempotent bootstrap: registers click + form intercept listeners).
-export { navigate, supportsViewTransitions, transitionEnabledOnThisPage, init } from "./router.js";
+//   - W2 (#1377): `syncHistoryEntry()` (history bookkeeping without navigation).
+export {
+  navigate,
+  supportsViewTransitions,
+  transitionEnabledOnThisPage,
+  init,
+  syncHistoryEntry,
+} from "./router.js";
 export type { InitOptions } from "./router.js";
 
 // Prefetch public surface (#276).

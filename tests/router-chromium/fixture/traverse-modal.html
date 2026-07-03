@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Required by ClientRouter: enables SPA mode + real View Transitions on this page. -->
+    <meta name="zfb-view-transitions-enabled" content="" />
+    <meta name="zfb-view-transitions-fallback" content="animate" />
+    <title>Traverse Modal</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 0;
+      }
+      nav {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        display: flex;
+        gap: 1rem;
+        padding: 0.75rem 1rem;
+        background: #fff;
+        border-bottom: 1px solid #ccc;
+        z-index: 10;
+      }
+      main {
+        padding: 4rem 1rem 1rem;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "@takazudo/zfb/runtime": "/island-stubs.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <nav>
+      <a href="/index.html" id="to-home">Home</a>
+      <a href="/page-a.html" id="to-page-a">Page A</a>
+      <a href="/page-b.html" id="to-page-b">Page B</a>
+    </nav>
+    <main>
+      <h1>Traverse Modal</h1>
+      <button id="open-modal">Open Modal</button>
+      <!--
+        Client-state marker for the traverse fast-path specs (#1378). Incremented
+        only by the click handler below — NOT derived from the URL/hash — so it
+        proves the fast path preserves the live DOM/JS across Back/Forward. This
+        catches a DIFFERENT regression than the harness's __docId: __docId only
+        detects a full page reload (a new document), whereas a regression that
+        fell through to a real body swap (doSwap) would NOT mint a new document
+        but WOULD reset this counter back to "0", since the swap re-parses and
+        re-executes the fetched page's own <script>.
+      -->
+      <div id="counter">0</div>
+    </main>
+    <script type="module">
+      import { init } from "/dist/client-router/router.js";
+      import { init as prefetchInit } from "/dist/client-router/prefetch.js";
+      init();
+      prefetchInit();
+
+      let count = 0;
+      const counterEl = document.getElementById("counter");
+      document.getElementById("open-modal").addEventListener("click", () => {
+        count += 1;
+        counterEl.textContent = String(count);
+        // Raw history.pushState — deliberately NOT routed through the router —
+        // mirrors a hand-rolled modal-open pattern (the #1374 trigger). Non-null
+        // state is required: onPopState ignores `ev.state === null` entries
+        // (client-router/router.ts, onPopState).
+        history.pushState({ ...history.state }, "", `${location.pathname}#modal`);
+      });
+    </script>
+  </body>
+</html>

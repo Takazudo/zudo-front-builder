@@ -59,7 +59,7 @@ import {
   type TransitionBeforePreparationEvent,
 } from "./events.js";
 import { detectScriptExecuted } from "./swap-functions.js";
-import type { Direction, Fallback, Options } from "./types.js";
+import type { Direction, Fallback, Options, SyncHistoryEntryOptions } from "./types.js";
 // Island re-bootstrap and deferred-cancel after body swap (W1B §12.2, §12.5).
 // mountNewIslands() is called after runScripts() and before onPageLoad().
 // cancelPendingIslands() is called before doSwap() so deferred callbacks
@@ -95,6 +95,19 @@ export const supportsViewTransitions = inBrowser && !!document.startViewTransiti
 
 export const transitionEnabledOnThisPage = () =>
   inBrowser && !!document.querySelector('[name="zfb-view-transitions-enabled"]');
+
+// A same-page Back/Forward traversal (two history entries sharing pathname +
+// search) is served from the live DOM by the fast-path in transition() — no
+// re-fetch, no re-swap, no lifecycle events. A per-request SSR page
+// (`prerender = false`) whose server output can differ between two visits to
+// the SAME url opts back INTO the fetch by emitting
+// <meta name="zfb-traverse-refetch" content="true"> (via <ClientRouter
+// traverseRefetch />); skipping the fetch on such a page would pin the stale
+// first-render content. Read from the CURRENT document — for a same-page
+// traverse the current document IS the target page. Mirrors the
+// zfb-prefetch-disabled meta reader. (#1376)
+const traverseRefetchOptedOut = () =>
+  inBrowser && !!document.querySelector('meta[name="zfb-traverse-refetch"][content="true"]');
 
 const samePage = (thisLocation: URL, otherLocation: URL) =>
   thisLocation.pathname === otherLocation.pathname && thisLocation.search === otherLocation.search;
@@ -331,7 +344,12 @@ const moveToLocation = (
   }
 
   if (historyState) {
-    scrollTo(historyState.scrollX, historyState.scrollY);
+    // Raw-History consumers may push partial/empty state (`{}`), so the tracked
+    // scroll fields can be absent or non-finite. Never scrollTo(undefined, …) —
+    // leave scroll where it is rather than jumping to (0,0). #1376.
+    if (Number.isFinite(historyState.scrollX) && Number.isFinite(historyState.scrollY)) {
+      scrollTo(historyState.scrollX, historyState.scrollY);
+    }
   } else {
     if (to.hash) {
       // because we are already on the target page ...
@@ -354,6 +372,81 @@ const moveToLocation = (
     history.scrollRestoration = "manual";
   }
 };
+
+let syncHistoryEntryOnServerWarned = false;
+
+// Public: write a router-managed history entry (push or replace) WITHOUT any
+// navigation, DOM, scroll, or lifecycle side effect. This is the supported path
+// for consumers deep-linking transient UI state (dialogs/modals, a photo
+// viewer's /photos/<slug>/ URL). Hand-rolled raw history.pushState desyncs
+// `originalLocation` and the index bookkeeping that popstate direction detection
+// (derivePopDirection) and the same-page traverse fast-path depend on; navigate()
+// can't be used because it forces a fetch. See #1377 / #1374.
+export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOptions = {}): void {
+  // SSR guard: no window/history to touch. Mirror navigate()'s server no-op +
+  // one-time console warning. Checked at call time via `typeof document` (not the
+  // module-eval `inBrowser` const) so the branch is reachable and behavior is
+  // identical in a real environment (document is always present in a browser).
+  if (typeof document === "undefined") {
+    if (!syncHistoryEntryOnServerWarned) {
+      // instantiate an error for the stacktrace to show to user.
+      const warning = new Error(
+        "syncHistoryEntry() was called during a server side render. This may be unintentional as it is expected to be called in response to a client-side user interaction. Please make sure that your usage is correct.",
+      );
+      warning.name = "Warning";
+      // biome-ignore lint/suspicious/noConsole: allowed
+      console.warn(warning);
+      syncHistoryEntryOnServerWarned = true;
+    }
+    return;
+  }
+
+  const to = new URL(url, location.href);
+
+  // Cross-origin is not ours to manage. The History API would throw a native
+  // SecurityError for a cross-origin URL, but we guard explicitly so the failure
+  // is a clear, documented contract violation rather than an opaque platform
+  // error — and never a silent full-page load. #1377.
+  if (to.origin !== location.origin) {
+    throw new Error(
+      `syncHistoryEntry(): refusing to write a cross-origin history entry for "${to.href}" (current origin: ${location.origin}).`,
+    );
+  }
+
+  if (options.replace) {
+    // Replace keeps the current entry's index. A consumer migrating from raw
+    // history.pushState may have left a missing/invalid index, so fall back to
+    // the tracked index rather than stamping NaN/undefined.
+    const current = history.state;
+    const index =
+      current != null && Number.isFinite(current.index) ? current.index : currentHistoryIndex;
+    history.replaceState(
+      {
+        ...options.state,
+        index,
+        scrollX: Number.isFinite(current?.scrollX) ? current.scrollX : scrollX,
+        scrollY: Number.isFinite(current?.scrollY) ? current.scrollY : scrollY,
+      },
+      "",
+      to.href,
+    );
+  } else {
+    // Persist the CURRENT (outgoing) entry's latest scroll before pushing, so a
+    // later Back restoration can't lose scroll that `scrollend` hasn't flushed
+    // yet — the same guard transition() applies before a non-traverse push.
+    updateScrollPosition({ scrollX, scrollY });
+    history.pushState(
+      { ...options.state, index: ++currentHistoryIndex, scrollX: 0, scrollY: 0 },
+      "",
+      to.href,
+    );
+  }
+
+  // Always re-point originalLocation so the next transition()/onPopState uses the
+  // correct "from" URL. Skipping this is exactly what makes a raw pushState
+  // desync the router (a same-page Back would miss the traverse fast path).
+  originalLocation = to;
+}
 
 function preloadStyleLinks(newDocument: Document) {
   const links: Promise<any>[] = [];
@@ -494,7 +587,13 @@ async function transition(
     updateScrollPosition({ scrollX, scrollY });
   }
   if (samePage(from, to) && !options.formData) {
-    if ((direction !== "back" && to.hash) || (direction === "back" && from.hash)) {
+    if (
+      // Same-page Back/Forward: serve from the live DOM (no re-fetch/re-swap)
+      // unless this page opted back into the fetch (per-request SSR). #1374/#1376.
+      (navigationType === "traverse" && !traverseRefetchOptedOut()) ||
+      (direction !== "back" && to.hash) ||
+      (direction === "back" && from.hash)
+    ) {
       moveToLocation(to, from, options, document.title, historyState);
       if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
       return;
