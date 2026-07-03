@@ -368,10 +368,31 @@ async fn touching_md_via_real_watcher_triggers_one_page_rebuild() {
     let (watcher, mut rx) =
         Watcher::start_with_debounce(project, ["content"], debounce).expect("watcher start");
 
-    // Wait for the watcher's debouncer task to be polled at least once
-    // before mutating the file. See the timing notes at the top of the
-    // test for the rationale.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Prove the watcher is live before mutating the real file, instead of
+    // a fixed settle sleep that races the notify startup dead window under
+    // load. Write fresh-named markers under the watched `content/` dir
+    // until one lands on the channel (#1338 shared helper), then drain the
+    // leftover warmup events so the recv below observes the post.md edit.
+    let handshake = zfb_test_utils::watcher_live_handshake(
+        zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
+        |idx| {
+            std::fs::write(
+                project.join(format!("content/__warmup_{idx}.md")),
+                b"# warmup\n",
+            )
+            .expect("write warmup file");
+        },
+        || rx.try_recv().is_ok(),
+    )
+    .await;
+    assert!(
+        handshake.live,
+        "watcher never delivered a warmup event within {:?} ({} markers) — \
+         the notify stream never started delivering events",
+        handshake.elapsed, handshake.markers_written,
+    );
+    while rx.try_recv().is_ok() {}
+
     std::fs::write(&md_path, "# v2\n").unwrap();
 
     // Wait for the change to propagate. 2s is far longer than the

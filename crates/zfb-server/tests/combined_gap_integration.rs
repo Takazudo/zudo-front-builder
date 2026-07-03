@@ -95,8 +95,29 @@ async fn gap1_ssr_and_gap2_watcher_work_together() {
     )
     .expect("start watcher with extras");
 
-    // Give notify a beat to register its OS-level watch before any edits.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Prove the watcher stream is live before relying on it: a fixed
+    // warmup sleep races the FSEvents startup dead window under load.
+    // Write fresh-named marker files under the watched extra dir until one
+    // is delivered on the channel (#1338 shared helper). The leftover
+    // warmup events are drained just before the real edit below.
+    let handshake = zfb_test_utils::watcher_live_handshake(
+        zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
+        |idx| {
+            std::fs::write(
+                extra_canonical.join(format!("__warmup_{idx}.md")),
+                b"warmup\n",
+            )
+            .expect("write warmup file");
+        },
+        || watch_rx.try_recv().is_ok(),
+    )
+    .await;
+    assert!(
+        handshake.live,
+        "watcher never delivered a warmup event within {:?} ({} markers) — \
+         the extra-path watch never started delivering events",
+        handshake.elapsed, handshake.markers_written,
+    );
 
     // ----------------------------------------------------------------
     // 3. Boot the server with an SSR route that reads from extra_canonical
@@ -170,6 +191,9 @@ async fn gap1_ssr_and_gap2_watcher_work_together() {
     // ----------------------------------------------------------------
     // 5. Edit the file
     // ----------------------------------------------------------------
+    // Drain any warmup events still queued from the liveness handshake so
+    // the assertion below observes the real example.md edit, not a warmup.
+    while watch_rx.try_recv().is_ok() {}
     std::fs::write(extra_canonical.join("example.md"), "v2 content\n")
         .expect("write updated example.md");
 

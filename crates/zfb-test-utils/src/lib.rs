@@ -1,9 +1,11 @@
 mod html_normalize;
 mod sse;
+mod watcher_handshake;
 pub use html_normalize::normalize_html;
 pub use sse::{
     decode_utf8_incremental, next_sse_event_name, wait_for_subscribers, wait_for_subscribers_polled,
 };
+pub use watcher_handshake::{watcher_live_handshake, HandshakeOpts, HandshakeResult};
 
 use std::path::{Path, PathBuf};
 
