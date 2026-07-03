@@ -30,6 +30,12 @@ imagesize = "0.14"
 # cannot decode vector SVGs, so zfb-md-extras::image_dimensions parses an SVG's
 # intrinsic dimensions (width/height/viewBox) straight from its markup (#1083).
 roxmltree = "0.20"
+# Wraps a `serde_json` deserialize with the field path that failed (e.g.
+# `framework`), so `zfb.config.ts` schema errors name the offending key
+# instead of only echoing the raw JSON (issue #1359). Already a transitive
+# dep of `axum` at this same 0.1.x line, so pinning it here adds no new
+# version to the dependency graph.
+serde_path_to_error = "0.1"
 
 # SWC umbrella crate. Pinning the major version here is the project's
 # single source of truth — both `zfb-render` (TSX→JS pipeline) and
