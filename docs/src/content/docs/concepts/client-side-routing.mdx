@@ -35,6 +35,7 @@ Importing `<ClientRouter />` registers the click and form-submit intercepts as a
 |---|---|---|---|
 | `fallback` | `"none" \| "animate" \| "swap"` | `"animate"` | Behaviour when the browser does not support native View Transitions. |
 | `prefetchAll` | `boolean` | `false` | When `true`, every same-origin link is opted into the `"hover"` prefetch strategy automatically. |
+| `traverseRefetch` | `boolean` | `false` | Opt this page out of the same-page Back/Forward fast-path, forcing a re-fetch on every traversal — see [Same-page traversal](#same-page-traversal). |
 
 ### Fallback modes
 
@@ -94,6 +95,73 @@ Add `data-zfb-reload` to any `<a>` or `<form>` to force a full browser reload fo
 ```html
 <a href="/admin" data-zfb-reload>Admin (full reload)</a>
 ```
+
+## Deep-linking transient UI state with `syncHistoryEntry()`
+
+Modals, dialogs, and viewers often want their own URL — so Back closes them, and the state is shareable and bookmarkable — without performing a real page navigation. Don't reach for raw `history.pushState()` / `history.replaceState()` for this: the router tracks its own history index and the URL it navigated *from* to detect Back/Forward direction and same-page traversals (see [Same-page traversal](#same-page-traversal) below), and a hand-rolled history entry desyncs that bookkeeping.
+
+`syncHistoryEntry()` writes a router-managed history entry without navigating — no fetch, no swap, no DOM or scroll changes:
+
+```ts
+import { syncHistoryEntry } from "@takazudo/zfb-runtime/client-router";
+
+function openModal(id: string) {
+  syncHistoryEntry(`#photo-${id}`);
+}
+```
+
+```ts
+function syncHistoryEntry(url: string | URL, options?: SyncHistoryEntryOptions): void;
+
+type SyncHistoryEntryOptions = {
+  replace?: boolean; // use replaceState instead of pushState (no new Back entry)
+  state?: any;       // merged into history.state; the router's own keys win on collision
+};
+```
+
+- **Push by default** — creates a new history entry, so Back returns to whatever the user was looking at before. Pass `{ replace: true }` to overwrite the current entry instead (no new Back stop).
+- **`state` is merged, router keys win** — your own keys survive, but the router's bookkeeping keys (`index`, `scrollX`, `scrollY`) always take precedence if your `state` object happens to reuse those names.
+- **Throws on a cross-origin URL** — never silently falls back to a full-page load; a mistaken cross-origin call is a bug you want to see immediately.
+- **No-ops during SSR**, emitting the same one-time console warning as calling `navigate()` on the server.
+- **Never touches the DOM, scroll position, or `document.title`** — it is pure history bookkeeping. Your component is responsible for rendering the modal/dialog itself based on the current URL.
+
+### Example: a hash-based modal
+
+```tsx
+import { syncHistoryEntry } from "@takazudo/zfb-runtime/client-router";
+
+function PhotoModal({ id, onClose }: { id: string; onClose: () => void }) {
+  useEffect(() => {
+    const onPopState = () => {
+      if (location.hash !== `#photo-${id}`) onClose();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [id, onClose]);
+
+  return <div className="modal">{/* photo content */}</div>;
+}
+
+function openPhoto(id: string) {
+  syncHistoryEntry(`${location.pathname}#photo-${id}`);
+}
+```
+
+Because the pushed entry shares the current `pathname` and `search` (only the hash changes), pressing Back afterwards is served by the same-page traversal fast-path (see below): no fetch, no swap, no full-page remount. The browser still fires its normal `popstate` event, though — `syncHistoryEntry()` does not close the modal for you. The modal listens for `popstate` (or `hashchange`) itself and closes when the hash no longer matches; without that listener the URL would change but the modal would stay open.
+
+### Example: a dialog with its own pathname
+
+Some viewers deep-link to a real path segment instead of a hash — a photo lightbox at `/photos/<slug>/`, say, reachable from a shareable link:
+
+```ts
+import { syncHistoryEntry } from "@takazudo/zfb-runtime/client-router";
+
+function openPhotoLightbox(slug: string) {
+  syncHistoryEntry(`/photos/${slug}/`);
+}
+```
+
+This changes `pathname`, so the pushed entry no longer matches the page the user came from — pressing Back falls through to a normal cross-page traversal (fetch + swap of the previous page), not the fast-path. `syncHistoryEntry()` only edits the URL bar and the router's bookkeeping; it never fetches or renders anything itself, so an island reading `location.pathname` is what actually shows the lightbox contents while the URL carries it.
 
 ## Prefetch strategies
 
@@ -165,6 +233,8 @@ document.addEventListener("zfb:before-preparation", (e) => {
 });
 ```
 
+One exception: none of these six events fire for a same-page Back/Forward traversal — see [Same-page traversal](#same-page-traversal) below.
+
 ### Event reference
 
 | Event name | Cancellable | When it fires |
@@ -222,6 +292,30 @@ document.addEventListener("zfb:before-preparation", (e) => {
   }
 });
 ```
+
+## Same-page traversal
+
+A Back or Forward press that lands on a history entry sharing the current page's `pathname` and `search` — only the hash or router-tracked state differs — is served entirely from the live DOM. The router does not fetch, does not swap `<head>`/`<body>`, and does not remount anything: it restores the entry's tracked scroll position and leaves the page exactly as it is. Island/client state (open dropdowns, form input, video playback, etc.) survives untouched.
+
+This is the mechanism behind the hash-modal example above: pressing Back after `syncHistoryEntry()` is handled with no round trip to the server and no disruption to the rest of the page — the modal component itself still has to react to the URL change (via `popstate`/`hashchange`) to close. (The router already skipped the fetch for a plain same-page `#anchor` link before a traversal was even involved — this fast-path extends the same idea to Back/Forward.)
+
+### Lifecycle events and the route announcer are skipped
+
+Because nothing is fetched or swapped, none of the six `zfb:*` [lifecycle events](#navigation-lifecycle-events) — from `zfb:before-preparation` through `zfb:page-load` — fire for a same-page traversal. The ARIA route announcer (the offscreen `.zfb-route-announcer` element that speaks the new page's title to screen readers after every SPA navigation) is not updated either, since it's only written as part of the fetch/swap flow.
+
+If you hook lifecycle events to run per-navigation side effects (analytics, re-initializing a widget, etc.), those hooks will not run for a Back/Forward press between two same-page history entries.
+
+### Opting back in with `traverseRefetch`
+
+Static and prerendered pages don't need to know about any of this — their content can't change between visits, so serving the fast-path from the live DOM is always correct. A per-request SSR page (`export const prerender = false`) is different: its server-rendered output can legitimately differ between two visits to the *same* URL — session-dependent markup, a CSRF token, live data — so pinning the first-render content on every subsequent traversal would be wrong.
+
+Opt such a page back into the fetch with the `traverseRefetch` prop:
+
+```tsx
+<ClientRouter traverseRefetch />
+```
+
+This emits `<meta name="zfb-traverse-refetch" content="true">`, which the router checks on the current (target) page before taking the fast-path — when present, a same-page traversal falls through to a normal fetch and swap instead. Mount `<ClientRouter />` with the same `traverseRefetch` value on every page that participates in SPA navigation, since the meta is read from whichever page is currently live.
 
 ## View Transitions
 
