@@ -11,7 +11,11 @@ pub enum GraphError {
     #[error("graph persistence IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Binary (de)serialisation failed.
-    #[error("graph persistence codec error: {0}")]
-    Codec(#[from] bincode::Error),
+    /// Binary serialisation failed.
+    #[error("graph persistence encode error: {0}")]
+    Encode(#[from] bincode::error::EncodeError),
+
+    /// Binary deserialisation failed.
+    #[error("graph persistence decode error: {0}")]
+    Decode(#[from] bincode::error::DecodeError),
 }
