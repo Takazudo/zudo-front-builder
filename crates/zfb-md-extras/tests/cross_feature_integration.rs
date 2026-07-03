@@ -63,7 +63,10 @@ use zfb_md_ast::{
 /// broken link from the snippet is visible to the validator.
 #[test]
 fn transclude_link_validation_broken_link_in_snippet() {
-    let tmpdir = tempdir::TempDir::new("zfb-cross-transclude-lv").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-cross-transclude-lv")
+        .tempdir()
+        .expect("tempdir");
     let project_root = tmpdir.path().to_path_buf();
 
     // Write the snippet containing a broken anchor reference.
@@ -340,7 +343,10 @@ fn code_enrichment_and_code_tabs_coexist_documented_limitation() {
 /// transclusion, not to link validation.
 #[test]
 fn transclude_cycle_produces_generic_not_broken_link() {
-    let tmpdir = tempdir::TempDir::new("zfb-cross-cycle").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-cross-cycle")
+        .tempdir()
+        .expect("tempdir");
     let project_root = tmpdir.path().to_path_buf();
 
     // A and B include each other — classic cycle.
@@ -472,7 +478,10 @@ fn all_features_on_does_not_crash() {
         "/tests/fixtures/image_dimensions"
     ));
 
-    let tmpdir = tempdir::TempDir::new("zfb-cross-all-features").expect("tempdir");
+    let tmpdir = tempfile::Builder::new()
+        .prefix("zfb-cross-all-features")
+        .tempdir()
+        .expect("tempdir");
     let project_root = tmpdir.path().to_path_buf();
 
     // Copy the fixture image into tmpdir so image_dimensions can resolve it.

@@ -883,8 +883,6 @@ mod tests {
 
     // ── Integration: file resolution (using tempdir) ──────────────────────
 
-    use tempdir::TempDir;
-
     fn run_transclude(
         input_md: &str,
         source_path: PathBuf,
@@ -910,7 +908,10 @@ mod tests {
 
     #[test]
     fn simple_include_inlines_content() {
-        let dir = TempDir::new("transclude_test").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("transclude_test")
+            .tempdir()
+            .unwrap();
         let snippet_path = dir.path().join("snippet.md");
         std::fs::write(&snippet_path, "# Hello\n\nWorld.\n").unwrap();
 
@@ -941,7 +942,10 @@ mod tests {
 
     #[test]
     fn include_with_code_true_wraps_in_code_block() {
-        let dir = TempDir::new("transclude_code").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("transclude_code")
+            .tempdir()
+            .unwrap();
         let snippet_path = dir.path().join("foo.rs");
         std::fs::write(&snippet_path, "fn main() {}\n").unwrap();
 
@@ -969,7 +973,10 @@ mod tests {
 
     #[test]
     fn include_with_lines_slices_correctly() {
-        let dir = TempDir::new("transclude_lines").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("transclude_lines")
+            .tempdir()
+            .unwrap();
         let snippet_path = dir.path().join("nums.md");
         std::fs::write(&snippet_path, "line1\nline2\nline3\nline4\nline5\n").unwrap();
 
@@ -996,7 +1003,10 @@ mod tests {
     #[test]
     fn cycle_detection_emits_error() {
         // A→A direct self-reference.
-        let dir = TempDir::new("transclude_cycle").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("transclude_cycle")
+            .tempdir()
+            .unwrap();
         let input = r#":::include{file="./cycle.md"}"#;
         // cycle.md includes itself
         let cycle_content = r#":::include{file="./cycle.md"}"#;
@@ -1025,7 +1035,10 @@ mod tests {
     #[test]
     fn max_depth_exceeded_emits_error() {
         // With maxDepth=1 a chain A→B→C is rejected at B→C level.
-        let dir = TempDir::new("transclude_depth").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("transclude_depth")
+            .tempdir()
+            .unwrap();
         // c.md is a leaf (no includes)
         std::fs::write(dir.path().join("c.md"), "leaf\n").unwrap();
         // b.md includes c.md (depth 1 — allowed)
@@ -1050,7 +1063,10 @@ mod tests {
 
     #[test]
     fn absolute_path_rejected() {
-        let dir = TempDir::new("transclude_abs").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("transclude_abs")
+            .tempdir()
+            .unwrap();
         let input = r#":::include{file="/etc/passwd"}"#;
         let source = dir.path().join("input.md");
         std::fs::write(&source, input).unwrap();
@@ -1073,8 +1089,14 @@ mod tests {
 
     #[test]
     fn path_outside_project_root_rejected() {
-        let outer = TempDir::new("transclude_outer").unwrap();
-        let inner = TempDir::new("transclude_inner").unwrap();
+        let outer = tempfile::Builder::new()
+            .prefix("transclude_outer")
+            .tempdir()
+            .unwrap();
+        let inner = tempfile::Builder::new()
+            .prefix("transclude_inner")
+            .tempdir()
+            .unwrap();
         // outer/secret.md exists but project_root is inner/
         std::fs::write(outer.path().join("secret.md"), "secret\n").unwrap();
 
@@ -1107,7 +1129,10 @@ mod tests {
     #[test]
     fn two_level_chain_inlines_both() {
         // A → B → (nothing), verify both levels resolve.
-        let dir = TempDir::new("transclude_chain").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("transclude_chain")
+            .tempdir()
+            .unwrap();
         std::fs::write(dir.path().join("b.md"), "From B.\n").unwrap();
         std::fs::write(dir.path().join("a.md"), r#":::include{file="./b.md"}"#).unwrap();
 
@@ -1162,7 +1187,10 @@ mod tests {
 
     #[test]
     fn successful_include_records_full_content_hash() {
-        let dir = TempDir::new("transclude_rec_ok").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("transclude_rec_ok")
+            .tempdir()
+            .unwrap();
         let snippet = dir.path().join("snippet.md");
         std::fs::write(&snippet, "shared text\n").unwrap();
         let source = dir.path().join("input.md");
@@ -1181,7 +1209,10 @@ mod tests {
 
     #[test]
     fn missing_include_records_missing_outcome() {
-        let dir = TempDir::new("transclude_rec_missing").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("transclude_rec_missing")
+            .tempdir()
+            .unwrap();
         let source = dir.path().join("input.md");
         let input = r#":::include{file="./not-yet.md"}"#;
         std::fs::write(&source, input).unwrap();
@@ -1202,7 +1233,10 @@ mod tests {
 
     #[test]
     fn nested_chain_records_every_level() {
-        let dir = TempDir::new("transclude_rec_chain").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("transclude_rec_chain")
+            .tempdir()
+            .unwrap();
         std::fs::write(dir.path().join("c.md"), "leaf\n").unwrap();
         std::fs::write(dir.path().join("b.md"), r#":::include{file="./c.md"}"#).unwrap();
         let source = dir.path().join("a.md");

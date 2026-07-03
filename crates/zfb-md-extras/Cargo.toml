@@ -72,7 +72,7 @@ required-features = ["test-utils"]
 # context.  The optional flag ensures zero production-binary cost when the
 # feature is off.
 [features]
-test-utils = ["dep:zfb-test-utils", "dep:tempdir"]
+test-utils = ["dep:zfb-test-utils", "dep:tempfile"]
 
 [dependencies]
 markdown = { workspace = true }
@@ -90,14 +90,14 @@ roxmltree = { workspace = true }
 # test_harness.rs via cfg(test)) can resolve them without activating the
 # feature flag.
 zfb-test-utils = { path = "../zfb-test-utils", optional = true }
-tempdir = { version = "0.3", optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
 # Keep here for cfg(test) builds of this crate's own tests (test_harness tests
 # compile via cfg(test), not via the test-utils feature flag).
 zfb-test-utils = { path = "../zfb-test-utils" }
-tempdir = "0.3"
+tempfile = { workspace = true }
 # Dev-dep cycle is intentional and Cargo-supported: zfb-md-extras integration
 # tests need to run content through the full pipeline (which lives in
 # zfb-content). The workspace already uses this pattern elsewhere (e.g.

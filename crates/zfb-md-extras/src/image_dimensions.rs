@@ -858,8 +858,14 @@ mod tests {
         {
             use std::os::unix::fs::symlink;
 
-            let outer = tempdir::TempDir::new("imgdim_symlink_outer").unwrap();
-            let inner = tempdir::TempDir::new("imgdim_symlink_inner").unwrap();
+            let outer = tempfile::Builder::new()
+                .prefix("imgdim_symlink_outer")
+                .tempdir()
+                .unwrap();
+            let inner = tempfile::Builder::new()
+                .prefix("imgdim_symlink_inner")
+                .tempdir()
+                .unwrap();
 
             // Create a real file outside the project root.
             let outside_file = outer.path().join("secret.png");
@@ -920,7 +926,10 @@ mod tests {
 
     #[test]
     fn probed_image_records_full_content_hash() {
-        let dir = tempdir::TempDir::new("imgdim_rec_ok").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("imgdim_rec_ok")
+            .tempdir()
+            .unwrap();
         // Not a real image — the probe fails with a warning, but the READ
         // is still recorded with the full-content hash: the warning
         // outcome depends on these bytes too.
@@ -938,7 +947,10 @@ mod tests {
 
     #[test]
     fn missing_image_records_missing_outcome() {
-        let dir = tempdir::TempDir::new("imgdim_rec_missing").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("imgdim_rec_missing")
+            .tempdir()
+            .unwrap();
         let source = dir.path().join("page.mdx");
         let reads = record_reads_for_src("./absent.png", dir.path(), &source);
         assert_eq!(
@@ -951,7 +963,10 @@ mod tests {
 
     #[test]
     fn remote_and_data_srcs_record_nothing() {
-        let dir = tempdir::TempDir::new("imgdim_rec_remote").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("imgdim_rec_remote")
+            .tempdir()
+            .unwrap();
         let source = dir.path().join("page.mdx");
         for src in [
             "https://example.com/x.png",
@@ -971,7 +986,10 @@ mod tests {
         // The per-plugin mtime cache may skip the header sniff, but the
         // compile-cache manifest still needs the dependency recorded on
         // every compile — the OUTPUT depends on the file each time.
-        let dir = tempdir::TempDir::new("imgdim_rec_cachehit").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("imgdim_rec_cachehit")
+            .tempdir()
+            .unwrap();
         let bytes = b"bytes";
         std::fs::write(dir.path().join("pic.png"), bytes).unwrap();
         let source = dir.path().join("page.mdx");
@@ -1044,7 +1062,10 @@ mod tests {
 
     #[test]
     fn plugin_injects_svg_viewbox_dimensions() {
-        let dir = tempdir::TempDir::new("imgdim_svg_vb").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("imgdim_svg_vb")
+            .tempdir()
+            .unwrap();
         std::fs::write(
             dir.path().join("diagram.svg"),
             r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100"></svg>"#,
@@ -1060,7 +1081,10 @@ mod tests {
     fn plugin_skips_undimensionable_svg_without_warning() {
         // The core of #1083: an SVG with no width/height/viewBox is left
         // unchanged and emits NO diagnostic (was: one warning per SVG).
-        let dir = tempdir::TempDir::new("imgdim_svg_none").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("imgdim_svg_none")
+            .tempdir()
+            .unwrap();
         std::fs::write(
             dir.path().join("plain.svg"),
             r#"<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>"#,
@@ -1081,7 +1105,10 @@ mod tests {
 
         // Regression guard: a non-SVG file imagesize cannot decode must STILL
         // warn — the #1083 silence is scoped to SVGs only.
-        let dir = tempdir::TempDir::new("imgdim_raster_bad").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("imgdim_raster_bad")
+            .tempdir()
+            .unwrap();
         std::fs::write(dir.path().join("broken.png"), b"not a real png").unwrap();
         let (img, diags) = run_plugin_collecting("broken.png", dir.path());
         assert_eq!(get_attr(&img, "width"), None);
@@ -1096,7 +1123,10 @@ mod tests {
         // A missing `.svg` is a broken reference, not an undimensionable SVG —
         // the `fs::metadata` stat fails before the SVG branch, so it still
         // warns (it is NOT swallowed by the silent-skip path).
-        let dir = tempdir::TempDir::new("imgdim_svg_missing").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("imgdim_svg_missing")
+            .tempdir()
+            .unwrap();
         let (img, diags) = run_plugin_collecting("absent.svg", dir.path());
         assert_eq!(get_attr(&img, "width"), None);
         assert_eq!(diags.len(), 1, "a missing SVG must still warn");
@@ -1107,7 +1137,10 @@ mod tests {
     fn plugin_caches_svg_on_second_reference() {
         // The SVG path participates in the mtime cache + read_count
         // instrumentation, exactly like the raster path.
-        let dir = tempdir::TempDir::new("imgdim_svg_cache").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("imgdim_svg_cache")
+            .tempdir()
+            .unwrap();
         std::fs::write(
             dir.path().join("d.svg"),
             r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"></svg>"#,
