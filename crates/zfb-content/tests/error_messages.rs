@@ -96,7 +96,7 @@ fn malformed_frontmatter_error_points_at_file_and_yaml_location() {
 /// surface but forgets to wire the file-pointing error — is at least
 /// surfaced as a failing-but-`#[ignore]`d test that future work flips on.
 #[test]
-#[ignore = "no runtime getCollection() surface yet — see Sub 4 log follow-up"]
+#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1352"]
 fn unknown_collection_name_lists_available_collections() {
     // Once a `get_collection(name: &str)` (or equivalent) surface exists,
     // call it with `"doesnotexist"` and assert that:

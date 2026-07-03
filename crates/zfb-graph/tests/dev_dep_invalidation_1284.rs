@@ -20,12 +20,13 @@
 //!   Same graph gap: no `DepKind::Style` edge for a transitively-imported CSS
 //!   path, so `dirty_pages(css)` is empty.
 //!
-//! The CURRENT (buggy) behaviour is that these queries return empty. The
-//! fixed-behaviour tests assert non-empty and are therefore `#[ignore]`d with
-//! a pointer to #1284 so `cargo test` stays green until the fix waves land and
-//! un-ignore them. See `research/1284-dev-dep-invalidation.md`.
+//! The CURRENT (buggy) behaviour queries returned empty; the fixed-behaviour
+//! tests originally asserted non-empty behind `#[ignore]` pending #1284's fix
+//! waves (#1287/#1288). Both landed and are now CLOSED, so none of the tests
+//! in this file carry `#[ignore]` any more — all five pass unconditionally
+//! (confirmed during the #1337 audit). See `research/1284-dev-dep-invalidation.md`.
 //!
-//! NOTE TO FIX AUTHORS (#1287/#1288): the `current_bug_*` tests assert TODAY's
+//! NOTE TO FIX AUTHORS (#1287/#1288, both closed): the `current_bug_*` tests assert TODAY's
 //! broken behaviour and are intentionally NOT ignored (they lock the regression
 //! boundary). Once your fix lands they WILL fail — that is expected. **Replace
 //! (do not just delete) each `current_bug_*` test with its fixed-behaviour

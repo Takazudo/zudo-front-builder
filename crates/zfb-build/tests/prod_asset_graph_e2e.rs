@@ -778,19 +778,23 @@ fn worker_bundle_does_not_inline_tailwind_css_marker_after_s5() {
 
 /// Real Tailwind v4 subprocess against the same minimal fixture. Mirrors
 /// the existing `#[ignore]` gate in
-/// `crates/zfb-css/tests/integration.rs::subprocess_engine_against_real_binary`
-/// — the staged binary slot at `crates/zfb/binaries/tailwindcss-v4`
-/// is empty in CI, so this test is gated behind `#[ignore]` and run
-/// locally with `cargo test -- --include-ignored` once the slot is
-/// populated.
+/// `crates/zfb-css/tests/integration.rs::subprocess_engine_against_real_binary`.
+/// `crates/zfb/build.rs` downloads + stages the pinned tailwindcss-v4
+/// binary at `crates/zfb/binaries/tailwindcss-v4` as a side effect of
+/// building the `zfb` crate (same mechanism as the esbuild slot), so the
+/// binary IS present in CI once `cargo build --workspace --all-targets`
+/// has run — but no CI step currently passes `--ignored`/`--include-ignored`
+/// to actually run this test, so it stays env-gated. Run locally with
+/// `cargo test -- --include-ignored` (binary already staged by a prior
+/// build) or set `ZFB_TAILWIND_BIN` explicitly.
 ///
 /// When it runs, the assertions are exactly the happy-path test's
 /// assertions: hashed CSS on disk, HTML rewritten to the hashed URL,
 /// disk-existence holds, no unhashed leak.
 #[test]
-#[ignore = "Requires the real tailwindcss v4 binary at \
-            crates/zfb/binaries/tailwindcss-v4 (or ZFB_TAILWIND_BIN). \
-            Run with --include-ignored once the slot is staged."]
+#[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb-build --test \
+            prod_asset_graph_e2e -- --include-ignored (ZFB_TAILWIND_BIN or the \
+            staged crates/zfb/binaries/tailwindcss-v4 slot)"]
 fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
     let fixture = stage_minimal_fixture();
     let dist_dir = fixture.project_root.path().join("dist");

@@ -156,6 +156,21 @@ jobs:
           fi
           "$SLOT" --version
 
+      # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 5
+      # `#[ignore]`d tests (tagged `env-gate:` per CLAUDE.md's taxonomy) were
+      # staged by the assert step above but never actually executed by any CI
+      # step — `cargo test --workspace` below does not pass `--ignored`, so a
+      # green run proved nothing about them. `ZFB_ESBUILD_BIN` must be an
+      # ABSOLUTE path: `EsbuildSubprocessConfig`'s default binary_path is the
+      # literal relative string `crates/zfb/binaries/esbuild/esbuild`, but
+      # `cargo test` runs each test binary with its CWD set to the package
+      # directory (`crates/zfb-islands`), not the workspace root, so the
+      # relative default never resolves.
+      - name: Run zfb-islands esbuild-gated integration suite
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb-islands -- --ignored
+
       # Run the workspace test suite. CI previously only *compiled* the test code
       # (the cargo build --all-targets step above) but never executed it, so unit
       # and integration regression guards — including the #633 react/jsx-runtime ->
@@ -188,7 +203,9 @@ jobs:
   # We build the `zfb` binary with --no-default-features here as the
   # primary V8-off acceptance check. zfb-render --no-default-features
   # is implied by the propagation chain (default-features = false on
-  # every consumer), so building zfb alone proves both ends.
+  # every consumer), so building zfb alone proves both ends. A curated
+  # `cargo test --no-default-features` leg (issue #1337, below) also
+  # EXECUTES the no-v8 fallback code paths, not just compiles them.
   build-no-v8:
     name: build (no-v8)
     runs-on: ubuntu-latest
@@ -224,3 +241,24 @@ jobs:
 
       - name: cargo check (zfb --no-default-features --tests)
         run: cargo check --no-default-features -p zfb --tests
+
+      # V8-off EXECUTION leg (issue #1337): the two steps above only build/
+      # check the no-v8 code paths, they never ran the test bodies, so a
+      # `cfg(feature = "embed_v8")` gate could silently rot on the V8-off
+      # side without any CI signal. `zfb-render`'s full suite (unit +
+      # integration) passes cleanly with V8 off, so it runs unrestricted.
+      # `zfb`'s integration tests under `crates/zfb/tests/` all shell out to
+      # the `zfb build`/`zfb dev` subcommands, which correctly refuse to run
+      # without the embedded V8 host (see the guard in
+      # `crates/zfb/src/commands/build.rs`) — that refusal is CORRECT
+      # no-v8 behaviour, but it means those integration tests are not
+      # written to run in a V8-off environment. `zfb` is therefore scoped to
+      # `--lib` here (unit tests only, including the render_pipeline/config
+      # coverage that exercises the no-v8 fallback paths); the workspace's
+      # full integration coverage for those subcommands still runs under V8
+      # in the `health` job above.
+      - name: cargo test (zfb-render --no-default-features)
+        run: cargo test --no-default-features -p zfb-render
+
+      - name: cargo test (zfb --no-default-features --lib)
+        run: cargo test --no-default-features -p zfb --lib

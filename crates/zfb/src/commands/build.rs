@@ -4699,17 +4699,19 @@ mod tests {
     /// bytes for a fixture project with a single page. Mirrors the
     /// `#[ignore]` gate already used by
     /// `crates/zfb-css/tests/integration.rs::subprocess_engine_against_real_binary`
-    /// — both depend on the staged Tailwind binary slot at
-    /// `crates/zfb/binaries/tailwindcss-v4`, which CI does not yet
-    /// populate. Run locally with `--include-ignored` once the slot
-    /// is staged.
+    /// — both depend on the Tailwind binary slot at
+    /// `crates/zfb/binaries/tailwindcss-v4`, which `crates/zfb/build.rs`
+    /// DOES stage in CI as a side effect of building the `zfb` crate, but
+    /// no CI step runs with `--ignored`/`--include-ignored` yet. Run
+    /// locally with `--include-ignored` once a build has staged the slot.
     // Requires `DefaultRunner` which carries `PluginRegistryHooks` and
     // constructs `Backend::EmbeddedV8` — only available when the
     // `embed_v8` feature is on (issue #371, sub-task 4.1a).
     #[cfg(feature = "embed_v8")]
     #[test]
-    #[ignore = "Requires the real tailwindcss v4 binary at crates/zfb/binaries/tailwindcss-v4. \
-                Run with --include-ignored once the slot is staged in CI."]
+    #[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb --lib \
+                commands::build:: -- --include-ignored (ZFB_TAILWIND_BIN or the \
+                staged crates/zfb/binaries/tailwindcss-v4 slot)"]
     fn default_runner_emit_prod_assets_returns_non_empty_css_for_real_project() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
@@ -4761,15 +4763,18 @@ mod tests {
     /// shells out to cargo + esbuild + embedded V8. Gated behind
     /// `--ignored` so day-to-day `cargo test` stays fast.
     ///
-    /// Status: the renderer call will fail today because the bundler
-    /// emits a bundle WITHOUT a `default { fetch }` Worker entry — the
-    /// "T7-sibling worker-wrapping sub-task" referenced in the
-    /// build-command module docs. The test stays here so once that
-    /// sibling lands, flipping the gate is a one-line change.
-    /// The standalone demo (https://github.com/Takazudo/zfb-example-blog)
-    /// is the intended target once a local checkout is wired in.
+    /// Status: the "T7-sibling worker-wrapping sub-task" this test
+    /// originally waited on HAS landed — the bundler's synthetic
+    /// entry.mjs now emits a `default { fetch }` Worker entry, pinned by
+    /// `entry_module_emits_default_fetch_wrapper_with_routes` in
+    /// `crates/zfb-build/src/bundler.rs`. What's still missing is the
+    /// test BODY itself: it is an intentionally-empty stub (no
+    /// assertions) and needs the real `cargo run` + fixture wiring
+    /// described above. Tracked in issue #1354. The standalone demo
+    /// (https://github.com/Takazudo/zfb-example-blog) is the intended
+    /// target once a local checkout is wired in.
     #[test]
-    #[ignore = "spawns esbuild + embedded V8; run with --include-ignored once worker wrapping lands"]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1354"]
     fn end_to_end_basic_blog_build() {
         // Intentionally minimal — the assertions are described in the
         // doc-comment above; the test body is sketched so the

@@ -2118,9 +2118,11 @@ mod tests {
     // WorkerDispatch::EmbeddedV8 integration test
     //
     // This test exercises a page whose `paths()` export is non-literal (reads
-    // a content collection at runtime). It is gated with `#[ignore]` because
-    // it depends on `EmbeddedV8RenderHost` (Sub 2 — embed-v8/sub-162) which
-    // is not yet merged into this worktree. Run after Sub 2 is merged with:
+    // a content collection at runtime). `EmbeddedV8RenderHost` (Sub 2 —
+    // embed-v8/sub-162, issue #162) merged and `embed_v8` is now default-on,
+    // so the original "not yet merged" gate is stale — but the test body
+    // below is still an empty skeleton (tracked in issue #1354). Run once
+    // filled in with:
     //
     //     cargo test -p zfb -- \
     //         --include-ignored \
@@ -2133,10 +2135,11 @@ mod tests {
     /// Integration test: `eval_deferred_paths_via_worker` drives the embedded
     /// V8 host's `dispatch_fetch` for a page whose `paths()` is non-literal.
     ///
-    /// **Cannot run until Sub 2 (`EmbeddedV8RenderHost`) is merged.**
-    /// Gated with `#[ignore]` — see module-level comment above.
+    /// `EmbeddedV8RenderHost` (Sub 2, issue #162) is merged; the test body is
+    /// still an empty skeleton. Gated with `#[ignore]` — see module-level
+    /// comment above and issue #1354.
     #[test]
-    #[ignore = "depends on EmbeddedV8RenderHost (Sub 2, embed-v8/sub-162); run after merge"]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1354"]
     fn eval_deferred_paths_via_worker_embedded_v8_non_literal_paths() {
         // This test intentionally left as a skeleton to be filled in by the
         // integration manager after Sub 2 is merged. The shape is:

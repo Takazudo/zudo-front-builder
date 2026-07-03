@@ -105,6 +105,40 @@ zfb hits flakiness often (mostly **Rust timing/ordering** in the dev-server, SSE
 - **The 5 deflaking root causes** (fix the cause, don't add a sleep): bare timing waits, `networkidle` on no-request SPA navs, animations in flight, shared/order-coupled state, hydration races. zfb's Rust flakes are mostly timing/ordering — prefer event/condition-keyed waits and deterministic scheduling over fixed `sleep`s (as `zfb-test-utils`'s SSE helpers and the `plugin_runner` timeouts already do).
 - **`cargo-nextest` (recommended next step, deferred):** CI uses plain `cargo test`, which has no native retry. `cargo nextest run` would give the CI retry budget (`--retries`), flaky-pass detection, per-test timeouts, and JUnit output for issue filing — **but nextest does not run doctests**, and zfb has doctests in ~15 crates. A migration must keep a separate `cargo test --doc` step or it silently drops doctest coverage; that's why it is deferred from the adoption PR rather than done blindly.
 
+### `#[ignore]` manifest (Rust)
+
+Every `#[ignore]`d Rust test carries a reason starting with one of 5 machine-greppable taxonomy prefixes — `grep -rn '#\[ignore = "' crates/` and spot-check the prefix:
+
+- `env-gate: <binary> — <how to run>` — needs an external binary present (no issue URL needed).
+- `heavy: run with --ignored — <why>` — deliberate heavy/local-only test (no issue URL needed).
+- `flaky: <issue-url>` — quarantined flaky test (issue URL mandatory).
+- `verification: <why>` — one-time "it was done" proof, not a regression guard (no issue URL needed).
+- `pending-feature: <issue-url>` — blocked on an unimplemented product feature or unwritten test body (issue URL mandatory).
+
+Audited and retagged in full during issue #1337 (2026-07). Table below lists every `#[ignore]`d test as of that audit and its scheduled home — kept accurate for #1344/#1349 to consume. Update this table whenever a `#[ignore]` is added, removed, or reclassified.
+
+| Test (file:line) | Tag | Where / how it runs |
+|---|---|---|
+| `crates/zfb-islands/tests/integration.rs:222` `subprocess_bundler_against_real_binary` | `env-gate` (esbuild) | **CI**: `health.yml` → "Run zfb-islands esbuild-gated integration suite" step (runs right after the esbuild staging/assert step). Local: `ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-islands -- --ignored`. |
+| `crates/zfb-islands/tests/integration.rs:285` `shared_bundle_keeps_islands_with_no_top_level_side_effect` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-islands/tests/integration.rs:394` `splitting_emits_chunk_for_dynamic_import` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-islands/tests/integration.rs:508` `no_dynamic_import_yields_single_file` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-islands/tests/integration.rs:553` `client_script_real_esbuild_bundles_discovered_entry` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-css/tests/integration.rs:48` `subprocess_engine_against_real_binary` | `env-gate` (tailwindcss v4) | Local only today: `cargo test -p zfb-css --test integration -- --include-ignored`. The binary IS staged in CI as a side effect of `crates/zfb/build.rs`, but no CI step passes `--ignored`/`--include-ignored` for it yet — candidate for a future health.yml step (T1 gate) mirroring the zfb-islands wiring above. |
+| `crates/zfb-build/tests/prod_asset_graph_e2e.rs:795` `prod_asset_graph_with_real_tailwind_binary_against_fixture` | `env-gate` (tailwindcss v4) | Local only today: `cargo test -p zfb-build --test prod_asset_graph_e2e -- --include-ignored`. Same CI gap as above. |
+| `crates/zfb/src/commands/build.rs:4712` `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project` | `env-gate` (tailwindcss v4) | Local only today: `cargo test -p zfb --lib commands::build:: -- --include-ignored`. Same CI gap as above. |
+| `crates/zfb/tests/version_stamp.rs:22` `version_stamp_from_env` | `heavy` | Local only (T4): `cargo test -p zfb --test version_stamp -- --ignored`. Performs a full isolated `cargo run` recompile. |
+| `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:495` `e2e_src_component_edit_rerenders_route` | `heavy` | Local only (T4): `cargo test -p zfb --test dev_dep_invalidation_1284_e2e -- --ignored`. Level-4 e2e, spawns a real `zfb dev` server. |
+| `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:703` `e2e_transitive_css_import_refreshes_stylesheet` | `heavy` | Same as above. |
+| `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:903` `e2e_new_utility_class_in_component_is_emitted` | `heavy` | Same as above. |
+| `crates/zfb-content/tests/error_messages.rs:99` `unknown_collection_name_lists_available_collections` | `pending-feature` | Blocked on [#1352](https://github.com/Takazudo/zudo-front-builder/issues/1352) — no runtime `getCollection(name)` lookup surface in `zfb-content` yet. |
+| `crates/zfb-render/tests/error_messages.rs:337` `invalid_zfb_config_ts_points_at_field_and_file` | `pending-feature` | Blocked on [#1353](https://github.com/Takazudo/zudo-front-builder/issues/1353) — `zfb-render` doesn't yet call the in-process TS config evaluator. |
+| `crates/zfb/src/render_pipeline.rs:2142` `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` | `pending-feature` | Blocked on [#1354](https://github.com/Takazudo/zudo-front-builder/issues/1354) — empty skeleton, `EmbeddedV8RenderHost` merged but the test body was never filled in. |
+| `crates/zfb-build/tests/integration_e2e_routing_rendering.rs:367` `e2e_routing_rendering_with_embedded_host` | `pending-feature` | Blocked on [#1354](https://github.com/Takazudo/zudo-front-builder/issues/1354) — hardcodes the legacy `Backend::Existing` (pre-running HTTP server) instead of the now-default in-process `Backend::EmbeddedV8`. |
+| `crates/zfb/src/commands/build.rs:4777` `end_to_end_basic_blog_build` | `pending-feature` | Blocked on [#1354](https://github.com/Takazudo/zudo-front-builder/issues/1354) — worker-wrapping landed, but the test body is still an empty stub. |
+
+No `flaky:` or `verification:` tagged tests exist as of this audit.
+
 ### `b4push` — local pre-push pass (T4)
 
 `pnpm b4push` runs a **bounded** fast pass before pushing: shell-script syntax, `cargo fmt --check`, `pnpm format:check`, `pnpm -r --if-present typecheck`, `pnpm -r test`, and `cargo clippy` (warm tree). It is **not** the authoritative gate — `health.yml` is. b4push is the *fast subset*; the full `cargo test --workspace` runs in CI (V8 first-compile is 15–30 min, too heavy for a pre-push loop).

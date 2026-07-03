@@ -352,14 +352,19 @@ fn build_bundle(
 /// every route through the embedded V8 host. Requires esbuild and a running
 /// embedded V8 host wired via `ZFB_E2E_BASE_URL`.
 ///
-/// Gated `#[ignore]` until the embedded V8 host is merged and
-/// the base URL can be resolved automatically. Kick with:
+/// `EmbeddedV8RenderHost` merged (issue #162) and `embed_v8` is now
+/// default-on, so the original "requires embedded V8 host" gate is stale —
+/// but this test still hardcodes `Backend::Existing { base_url }` (the
+/// legacy pre-running-HTTP-server backend) instead of constructing an
+/// in-process `Backend::EmbeddedV8` host, so it still needs an externally
+/// booted host wired via `ZFB_E2E_BASE_URL`. Tracked for rewiring in
+/// issue #1354. Kick with:
 ///
 ///     ZFB_E2E_BASE_URL=http://127.0.0.1:PORT \
 ///       cargo test --package zfb-build -- --include-ignored \
 ///         e2e_routing_rendering_with_embedded_host
 #[test]
-#[ignore = "requires embedded V8 host"]
+#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1354"]
 fn e2e_routing_rendering_with_embedded_host() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(

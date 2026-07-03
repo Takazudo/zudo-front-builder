@@ -2,10 +2,13 @@
 //!
 //! These exercise the engine trait, the CSS Modules processor, and the
 //! top-level `CssPipeline`. Tests that need the real Tailwind v4 binary
-//! are gated by `#[ignore]` and a comment — they will be enabled in a
-//! release-engineering follow-up once the binary is checked in to
-//! `crates/zfb/binaries/tailwindcss-v4` (Topic B / Sub 4 reserves the slot
-//! but does not yet download the binary).
+//! are gated by `#[ignore]` (`env-gate:`, see CLAUDE.md's taxonomy) — the
+//! binary IS staged at `crates/zfb/binaries/tailwindcss-v4` in CI
+//! (`crates/zfb/build.rs` downloads it as a side effect of building the
+//! `zfb` crate), but no CI step runs with `--ignored`/`--include-ignored`
+//! yet, so these tests stay local-only. Run locally with
+//! `cargo test -- --include-ignored` once a build has staged the slot, or
+//! set `ZFB_TAILWIND_BIN` explicitly.
 
 use std::path::{Path, PathBuf};
 
@@ -42,8 +45,9 @@ fn subprocess_engine_mock_short_circuits_command() {
 }
 
 #[test]
-#[ignore = "Requires the real tailwindcss v4 binary at crates/zfb/binaries/tailwindcss-v4. \
-            Will be enabled in a release-engineering follow-up (Topic B / Sub 4)."]
+#[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb-css --test \
+            integration -- --include-ignored (ZFB_TAILWIND_BIN or the staged \
+            crates/zfb/binaries/tailwindcss-v4 slot)"]
 fn subprocess_engine_against_real_binary() {
     let engine = TailwindSubprocessEngine::with_default_config();
     let css = engine

@@ -19,7 +19,7 @@ use std::process::Command;
 /// Uses an isolated `CARGO_TARGET_DIR` to avoid holding the parent build's
 /// target-dir lock and to prevent stomping the parent's compiled artifacts.
 #[test]
-#[ignore = "performs a full Rust recompile; run with --ignored"]
+#[ignore = "heavy: run with --ignored — performs a full Rust recompile via `cargo run`; too slow for the T1 gate"]
 fn version_stamp_from_env() {
     let test_version = "0.99.0-test";
 
