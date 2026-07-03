@@ -70,6 +70,9 @@ lol_html = "2.8.1"
 owo-colors = { version = "4", features = ["supports-colors"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Field-path diagnostics for `zfb.config.ts` schema errors — see the
+# workspace-root Cargo.toml comment for rationale (issue #1359).
+serde_path_to_error = { workspace = true }
 tempfile = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "process", "sync"] }
 tracing = "0.1"
