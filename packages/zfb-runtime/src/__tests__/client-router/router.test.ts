@@ -66,8 +66,14 @@ import {
   init,
   navigate,
   supportsViewTransitions,
+  syncHistoryEntry,
   transitionEnabledOnThisPage,
 } from "../../client-router/router.js";
+// Type-only import from the PUBLIC barrel — proves SyncHistoryEntryOptions is
+// re-exported from @takazudo/zfb-runtime/client-router. `import type` is erased
+// at runtime, so it does not drag the barrel's <ClientRouter> module into the
+// test environment.
+import type { SyncHistoryEntryOptions } from "../../client-router/index.js";
 
 beforeEach(() => {
   resetDocument();
@@ -1056,5 +1062,272 @@ describe("route announcer — timer lifecycle (#1063)", () => {
       setTimeoutSpy.mockRestore();
       clearTimeoutSpy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// syncHistoryEntry() — public history bookkeeping API (#1377)
+// ---------------------------------------------------------------------------
+//
+// syncHistoryEntry(url, { replace?, state? }) writes a router-managed history
+// entry (push/replace) WITHOUT any navigation, DOM, scroll, or lifecycle side
+// effect — the supported path for consumers deep-linking transient UI state
+// (dialogs/modals, a photo viewer's /photos/<slug>/ URL) that would otherwise
+// hand-roll raw history.pushState and desync originalLocation + the index
+// bookkeeping.
+//
+// `currentHistoryIndex` is module-global and monotonic across THIS whole file
+// (every prior navigate() bumped it), so these tests read the resulting index
+// back from history.state and assert RELATIVE deltas — never an absolute value.
+//
+// BLIND SPOT (documented): happy-dom models neither a real history stack nor a
+// real fetch/paint, so popstate-driven assertions hand-feed the target entry's
+// state and prove the router's BRANCH LOGIC (fetch vs. fast-path, direction),
+// not real-browser back/forward behavior. Definitive proof is the Wave-3
+// chromium harness (#1378).
+describe("syncHistoryEntry() — public history bookkeeping API (#1377)", () => {
+  // Earlier tests in this file shim `location.href` via Object.defineProperty and
+  // never restore it, leaving a frozen own-property getter that would stop
+  // history.push/replaceState(state, "", path) from reflecting into
+  // `location.href`. Delete any leaked own-property so happy-dom's native getter —
+  // which DOES track push/replaceState — is back in effect.
+  beforeEach(() => {
+    if (Object.getOwnPropertyDescriptor(location, "href")) {
+      delete (location as unknown as Record<string, unknown>)["href"];
+    }
+    // A well-formed router-managed base entry so history.state is never null.
+    history.replaceState({ index: 0, scrollX: 0, scrollY: 0 }, "", "/sync-base");
+  });
+
+  const drain = () => new Promise((r) => setTimeout(r, 0));
+
+  function fetchPages() {
+    const fetchMock = vi.fn(async (url: RequestInfo) => {
+      const u = String(url);
+      if (u.includes("/base")) return htmlResponse(pageHtml("Base", "base content"));
+      if (u.includes("/photos")) return htmlResponse(pageHtml("Photos", "photos content"));
+      if (u.includes("/gallery")) return htmlResponse(pageHtml("Gallery", "gallery content"));
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  // Fire the popstate a browser would fire for a history entry. happy-dom's
+  // history.replaceState(state, "", path) updates BOTH history.state and
+  // location.href (same-origin path) — exactly what onPopState reads. State MUST
+  // be non-null (onPopState ignores ev.state === null).
+  function dispatchPopstate(path: string, state: Record<string, unknown>) {
+    history.replaceState(state, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate", { state }));
+  }
+
+  // Capture the Direction the router classified for a popstate-driven transition,
+  // read off the zfb:before-preparation event.
+  function captureDirection(): { get: () => string | undefined; dispose: () => void } {
+    let seen: string | undefined;
+    const handler = (ev: Event) => {
+      seen = (ev as unknown as { direction: string }).direction;
+    };
+    document.addEventListener("zfb:before-preparation", handler);
+    return {
+      get: () => seen,
+      dispose: () => document.removeEventListener("zfb:before-preparation", handler),
+    };
+  }
+
+  it("push: writes a new same-page entry with a finite index and scroll reset to 0", () => {
+    syncHistoryEntry("/sync-base/modal-a");
+    const first = history.state;
+    expect(location.pathname).toBe("/sync-base/modal-a");
+    expect(Number.isFinite(first.index)).toBe(true);
+    expect(first.scrollX).toBe(0);
+    expect(first.scrollY).toBe(0);
+
+    // A second push increments the tracked index by exactly 1 — the bookkeeping
+    // popstate direction detection relies on.
+    syncHistoryEntry("/sync-base/modal-b");
+    const second = history.state;
+    expect(location.pathname).toBe("/sync-base/modal-b");
+    expect(second.index).toBe(first.index + 1);
+  });
+
+  it("replace: keeps the current entry's index (no increment) and swaps the URL in place", () => {
+    syncHistoryEntry("/sync-base/page-1"); // establishes a known current index
+    const before = history.state.index;
+
+    syncHistoryEntry("/sync-base/page-1-replaced", { replace: true });
+    expect(location.pathname).toBe("/sync-base/page-1-replaced");
+    // Replace must NOT advance the index.
+    expect(history.state.index).toBe(before);
+  });
+
+  it("replace: falls back to the tracked index when history.state.index is missing/invalid", () => {
+    syncHistoryEntry("/sync-base/anchor"); // tracked index := N (module currentHistoryIndex)
+    const tracked = history.state.index;
+
+    // A raw-History consumer left the current entry with NO valid index.
+    history.replaceState({ foo: "bar" }, "", "/sync-base/anchor");
+
+    syncHistoryEntry("/sync-base/anchor-2", { replace: true });
+    // The fallback stamped the tracked index, not NaN/undefined.
+    expect(history.state.index).toBe(tracked);
+    expect(history.state.foo).toBeUndefined(); // consumer's stale key not carried over
+  });
+
+  it("merges consumer state, with router keys (index/scrollX/scrollY) winning", () => {
+    syncHistoryEntry("/sync-base/dialog", {
+      state: { modal: "photo", index: 999, scrollX: 555, scrollY: 777 },
+    });
+    const s = history.state;
+    // Consumer's own (non-colliding) key is preserved.
+    expect(s.modal).toBe("photo");
+    // Router bookkeeping keys override the consumer's colliding values.
+    expect(s.index).not.toBe(999);
+    expect(Number.isFinite(s.index)).toBe(true);
+    expect(s.scrollX).toBe(0);
+    expect(s.scrollY).toBe(0);
+  });
+
+  it("throws on a cross-origin target (never a silent full-page load)", () => {
+    const before = history.state;
+    expect(() => syncHistoryEntry("https://evil.example.com/x")).toThrow(/cross-origin/i);
+    // The throw happens before any history write.
+    expect(history.state).toBe(before);
+    expect(location.pathname).toBe("/sync-base");
+  });
+
+  it("is a no-op with a console warning when called during SSR (no document)", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const pushSpy = vi.spyOn(history, "pushState");
+    // Only this test exercises the server path, so the module's one-time
+    // `syncHistoryEntryOnServerWarned` flag is still false on the first call here.
+    vi.stubGlobal("document", undefined);
+    try {
+      syncHistoryEntry("/sync-base/should-not-run");
+      const afterFirst = warnSpy.mock.calls.length;
+      // Second call: no-op AND once-only (no additional warning).
+      syncHistoryEntry("/sync-base/still-nothing");
+      expect(warnSpy.mock.calls.length).toBe(afterFirst);
+      expect(afterFirst).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    // No history entry was written on the server path.
+    expect(pushSpy).not.toHaveBeenCalled();
+    // The warning mirrors navigate()'s shape: an Error named "Warning".
+    const warnedWith = warnSpy.mock.calls[0]?.[0] as Error | undefined;
+    expect(warnedWith?.name).toBe("Warning");
+
+    warnSpy.mockRestore();
+    pushSpy.mockRestore();
+  });
+
+  it("push: persists the outgoing entry's live scroll before pushing the new entry", () => {
+    syncHistoryEntry("/sync-base/list"); // outgoing entry
+    const outgoingIndex = history.state.index;
+
+    // The user scrolled since the last scrollend flush.
+    vi.stubGlobal("scrollX", 24);
+    vi.stubGlobal("scrollY", 480);
+
+    const replaceSpy = vi.spyOn(history, "replaceState");
+    syncHistoryEntry("/sync-base/detail");
+
+    // updateScrollPosition() rewrote the OUTGOING entry's state with the live
+    // scroll (a replaceState) before the new entry was pushed.
+    expect(replaceSpy).toHaveBeenCalled();
+    const replaced = replaceSpy.mock.calls.at(-1)?.[0] as {
+      index: number;
+      scrollX: number;
+      scrollY: number;
+    };
+    expect(replaced.scrollX).toBe(24);
+    expect(replaced.scrollY).toBe(480);
+    // It updated the outgoing entry (same index), not a fresh one.
+    expect(replaced.index).toBe(outgoingIndex);
+    // The freshly pushed entry itself starts at scroll (0,0).
+    expect(history.state.scrollX).toBe(0);
+    expect(history.state.scrollY).toBe(0);
+
+    replaceSpy.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("updates originalLocation: a subsequent same-page Back takes the traverse fast path (no fetch)", async () => {
+    const fetchMock = fetchPages();
+
+    // Router-managed base so originalLocation === /base.
+    await navigate("/base");
+
+    // A photo viewer opens a NEW pathname, then a modal within it — both via
+    // syncHistoryEntry, which re-points originalLocation each time.
+    syncHistoryEntry("/photos/slug/");
+    syncHistoryEntry("/photos/slug/#modal");
+    const modalIndex = history.state.index; // finite, stamped by syncHistoryEntry
+
+    fetchMock.mockClear();
+    const beforePrep = vi.fn();
+    document.addEventListener("zfb:before-preparation", beforePrep);
+
+    // Back to /photos/slug/. originalLocation is /photos/slug/#modal (updated by
+    // the last sync push), so samePage(from, to) holds → traverse fast path.
+    // Had originalLocation NOT been updated it would still be /base, samePage
+    // would be false, and this Back would FETCH.
+    dispatchPopstate("/photos/slug/", { index: modalIndex - 1, scrollX: 0, scrollY: 0 });
+    await drain();
+
+    document.removeEventListener("zfb:before-preparation", beforePrep);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(beforePrep).not.toHaveBeenCalled();
+  });
+
+  it("pathname-changed traverse still fetches normally (not a false fast-path), direction classified 'back'", async () => {
+    const fetchMock = fetchPages();
+
+    await navigate("/base");
+    const baseIndex = history.state.index;
+
+    // syncHistoryEntry pushes a DIFFERENT pathname (photo viewer) and re-points
+    // originalLocation to it — and increments currentHistoryIndex, so the entry
+    // carries a finite index that derivePopDirection can use.
+    syncHistoryEntry("/gallery/");
+
+    fetchMock.mockClear();
+    const dir = captureDirection();
+
+    // Back to /base: samePage(/gallery/, /base) is false → cross-page traverse
+    // must fall through to a real fetch, with the direction correctly "back".
+    dispatchPopstate("/base", { index: baseIndex, scrollX: 0, scrollY: 0 });
+    await drain();
+
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/base"))).toBe(true);
+    expect(dir.get()).toBe("back");
+    dir.dispose();
+  });
+
+  it("never scrolls or mutates the DOM (push and replace are side-effect free)", () => {
+    const scrollToSpy = vi.spyOn(window, "scrollTo");
+    document.body.innerHTML = `<main id="marker">original</main>`;
+    const bodyBefore = document.body.innerHTML;
+    const titleBefore = document.title;
+
+    syncHistoryEntry("/sync-base/quiet-push");
+    syncHistoryEntry("/sync-base/quiet-replace", { replace: true });
+
+    // No scroll side effect (no fragment-scroll, no scroll-to-top).
+    expect(scrollToSpy).not.toHaveBeenCalled();
+    // No DOM mutation: body and title untouched.
+    expect(document.body.innerHTML).toBe(bodyBefore);
+    expect(document.title).toBe(titleBefore);
+
+    scrollToSpy.mockRestore();
+  });
+
+  it("exported SyncHistoryEntryOptions type is usable by consumers", () => {
+    // Compile-time proof that the public option type covers { replace, state }.
+    const opts: SyncHistoryEntryOptions = { replace: true, state: { modal: "x" } };
+    expect(() => syncHistoryEntry("/sync-base/typed", opts)).not.toThrow();
   });
 });
