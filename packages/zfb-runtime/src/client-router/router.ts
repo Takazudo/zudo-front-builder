@@ -59,7 +59,7 @@ import {
   type TransitionBeforePreparationEvent,
 } from "./events.js";
 import { detectScriptExecuted } from "./swap-functions.js";
-import type { Direction, Fallback, Options } from "./types.js";
+import type { Direction, Fallback, Options, SyncHistoryEntryOptions } from "./types.js";
 // Island re-bootstrap and deferred-cancel after body swap (W1B §12.2, §12.5).
 // mountNewIslands() is called after runScripts() and before onPageLoad().
 // cancelPendingIslands() is called before doSwap() so deferred callbacks
@@ -372,6 +372,81 @@ const moveToLocation = (
     history.scrollRestoration = "manual";
   }
 };
+
+let syncHistoryEntryOnServerWarned = false;
+
+// Public: write a router-managed history entry (push or replace) WITHOUT any
+// navigation, DOM, scroll, or lifecycle side effect. This is the supported path
+// for consumers deep-linking transient UI state (dialogs/modals, a photo
+// viewer's /photos/<slug>/ URL). Hand-rolled raw history.pushState desyncs
+// `originalLocation` and the index bookkeeping that popstate direction detection
+// (derivePopDirection) and the same-page traverse fast-path depend on; navigate()
+// can't be used because it forces a fetch. See #1377 / #1374.
+export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOptions = {}): void {
+  // SSR guard: no window/history to touch. Mirror navigate()'s server no-op +
+  // one-time console warning. Checked at call time via `typeof document` (not the
+  // module-eval `inBrowser` const) so the branch is reachable and behavior is
+  // identical in a real environment (document is always present in a browser).
+  if (typeof document === "undefined") {
+    if (!syncHistoryEntryOnServerWarned) {
+      // instantiate an error for the stacktrace to show to user.
+      const warning = new Error(
+        "syncHistoryEntry() was called during a server side render. This may be unintentional as it is expected to be called in response to a client-side user interaction. Please make sure that your usage is correct.",
+      );
+      warning.name = "Warning";
+      // biome-ignore lint/suspicious/noConsole: allowed
+      console.warn(warning);
+      syncHistoryEntryOnServerWarned = true;
+    }
+    return;
+  }
+
+  const to = new URL(url, location.href);
+
+  // Cross-origin is not ours to manage. The History API would throw a native
+  // SecurityError for a cross-origin URL, but we guard explicitly so the failure
+  // is a clear, documented contract violation rather than an opaque platform
+  // error — and never a silent full-page load. #1377.
+  if (to.origin !== location.origin) {
+    throw new Error(
+      `syncHistoryEntry(): refusing to write a cross-origin history entry for "${to.href}" (current origin: ${location.origin}).`,
+    );
+  }
+
+  if (options.replace) {
+    // Replace keeps the current entry's index. A consumer migrating from raw
+    // history.pushState may have left a missing/invalid index, so fall back to
+    // the tracked index rather than stamping NaN/undefined.
+    const current = history.state;
+    const index =
+      current != null && Number.isFinite(current.index) ? current.index : currentHistoryIndex;
+    history.replaceState(
+      {
+        ...options.state,
+        index,
+        scrollX: Number.isFinite(current?.scrollX) ? current.scrollX : scrollX,
+        scrollY: Number.isFinite(current?.scrollY) ? current.scrollY : scrollY,
+      },
+      "",
+      to.href,
+    );
+  } else {
+    // Persist the CURRENT (outgoing) entry's latest scroll before pushing, so a
+    // later Back restoration can't lose scroll that `scrollend` hasn't flushed
+    // yet — the same guard transition() applies before a non-traverse push.
+    updateScrollPosition({ scrollX, scrollY });
+    history.pushState(
+      { ...options.state, index: ++currentHistoryIndex, scrollX: 0, scrollY: 0 },
+      "",
+      to.href,
+    );
+  }
+
+  // Always re-point originalLocation so the next transition()/onPopState uses the
+  // correct "from" URL. Skipping this is exactly what makes a raw pushState
+  // desync the router (a same-page Back would miss the traverse fast path).
+  originalLocation = to;
+}
 
 function preloadStyleLinks(newDocument: Document) {
   const links: Promise<any>[] = [];
