@@ -46,6 +46,10 @@ export function detectMuslLinux({
   getReportFn = defaultGetReport,
 } = {}) {
   if (platform !== "linux") return false;
-  if (hasMuslLoaderFile(readdirSyncFn)) return true;
-  return !hasGlibcVersionRuntime(getReportFn);
+  // The glibc runtime report is authoritative when present: a Node process
+  // that reports a glibc version is definitely glibc-linked and will work,
+  // regardless of an unrelated musl loader file sitting on the filesystem
+  // (e.g. a `musl` package installed on Debian/Ubuntu for other reasons).
+  if (hasGlibcVersionRuntime(getReportFn)) return false;
+  return hasMuslLoaderFile(readdirSyncFn);
 }

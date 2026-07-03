@@ -64,14 +64,13 @@ describe("detectMuslLinux", () => {
     ).toBe(false);
   });
 
-  it("returns true on linux when a musl loader file is present (e.g. Alpine)", () => {
+  it("returns true on linux when a musl loader file is present (e.g. Alpine, no glibc report)", () => {
     expect(
       detectMuslLinux({
         platform: "linux",
         readdirSyncFn: readdirWith(["ld-musl-x86_64.so.1"]),
-        // Even if the report check would say "glibc" (shouldn't happen in
-        // practice), the loader-file probe is authoritative and wins.
-        getReportFn: reportWithGlibc(),
+        // Real musl-built Node doesn't populate glibcVersionRuntime.
+        getReportFn: reportWithoutGlibc(),
       }),
     ).toBe(true);
   });
@@ -81,19 +80,35 @@ describe("detectMuslLinux", () => {
       detectMuslLinux({
         platform: "linux",
         readdirSyncFn: readdirWith(["ld-musl-aarch64.so.1"]),
-        getReportFn: reportWithGlibc(),
+        getReportFn: reportWithoutGlibc(),
       }),
     ).toBe(true);
   });
 
-  it("falls back to the glibcVersionRuntime absence check when /lib can't be read", () => {
+  it("trusts the glibc runtime report over an incidental musl loader file", () => {
+    // Regression case: a glibc Linux host that also happens to have a musl
+    // loader present (e.g. Debian/Ubuntu with the `musl` package installed
+    // for unrelated reasons) must NOT be misdetected as musl — the current
+    // process's own glibc runtime report is authoritative.
+    expect(
+      detectMuslLinux({
+        platform: "linux",
+        readdirSyncFn: readdirWith(["ld-musl-x86_64.so.1"]),
+        getReportFn: reportWithGlibc(),
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when /lib can't be read and the glibc report is absent (both signals inconclusive)", () => {
+    // Neither signal can positively confirm musl, so the safe default is
+    // "not musl" — avoids blocking a working install on inconclusive data.
     expect(
       detectMuslLinux({
         platform: "linux",
         readdirSyncFn: readdirThrows(),
         getReportFn: reportWithoutGlibc(),
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("falls back to false when /lib can't be read but glibcVersionRuntime is present", () => {
@@ -106,14 +121,14 @@ describe("detectMuslLinux", () => {
     ).toBe(false);
   });
 
-  it("treats a throwing process.report as inconclusive, not a crash (returns true, matching absence)", () => {
+  it("treats a throwing process.report as inconclusive, not a crash (falls back to the loader probe)", () => {
     expect(
       detectMuslLinux({
         platform: "linux",
         readdirSyncFn: readdirWith([]),
         getReportFn: reportThrows(),
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("never throws even when both probes fail", () => {
