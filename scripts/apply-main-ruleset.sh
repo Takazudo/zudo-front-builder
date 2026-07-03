@@ -15,6 +15,7 @@ set -euo pipefail
 #   - Smoke amd64 TS-config (local mode)            (.github/workflows/node-free-smoke.yml)
 #   - Smoke arm64 (local mode)                      (.github/workflows/node-free-smoke.yml)
 #   - Smoke arm64 TS-config (local mode)            (.github/workflows/node-free-smoke.yml)
+#   - Scaffold E2E (packed tarballs, pre-publish)   (.github/workflows/node-free-smoke.yml)
 #   - pnpm audit (prod)                             (.github/workflows/pr-checks.yml)
 #
 # Build binary's two matrix legs both build on the ubuntu-22.04 runner (the
@@ -87,6 +88,7 @@ BODY=$(cat <<'JSON'
           { "context": "Smoke amd64 TS-config (local mode)" },
           { "context": "Smoke arm64 (local mode)" },
           { "context": "Smoke arm64 TS-config (local mode)" },
+          { "context": "Scaffold E2E (packed tarballs, pre-publish)" },
           { "context": "pnpm audit (prod)" }
         ],
         "strict_required_status_checks_policy": false

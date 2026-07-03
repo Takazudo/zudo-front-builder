@@ -28,7 +28,15 @@
 #     test name below was verified workspace-unique
 #     (`grep -rln 'fn <name>' crates/` → exactly one file each), so the
 #     exact-match filterset alone is sufficient scoping — no `-p`/package
-#     qualifier is needed for correctness.
+#     qualifier is needed for correctness. `test(=NAME)` matches nextest's
+#     FULL qualified test name (module path included), not just the bare fn
+#     name — the 11 top-level integration-test functions need no prefix, but
+#     `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project`
+#     lives inside `#[cfg(test)] mod tests` in crates/zfb/src/commands/build.rs
+#     and so is filtered as `commands::build::tests::<name>`; verify with
+#     `cargo nextest list --workspace --run-ignored ignored-only -E '<filterset>'`
+#     after touching this list — a bare fn name for a nested test silently
+#     matches zero tests instead of erroring.
 #   - macos-exam (macos-15, PINNED — not macos-latest, which drifts across
 #     major OS versions without notice) — a full `cargo nextest run
 #     --workspace` + `cargo test --workspace --doc` re-exam, unfiltered.
@@ -189,7 +197,7 @@ jobs:
               | test(=client_script_real_esbuild_bundles_discovered_entry)
               | test(=subprocess_engine_against_real_binary)
               | test(=prod_asset_graph_with_real_tailwind_binary_against_fixture)
-              | test(=default_runner_emit_prod_assets_returns_non_empty_css_for_real_project)
+              | test(=commands::build::tests::default_runner_emit_prod_assets_returns_non_empty_css_for_real_project)
               | test(=version_stamp_from_env)
               | test(=e2e_src_component_edit_rerenders_route)
               | test(=e2e_transitive_css_import_refreshes_stylesheet)
