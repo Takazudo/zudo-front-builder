@@ -13,6 +13,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -30,6 +31,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // __tests__ is at packages/zfb/src/__tests__, bin is at packages/zfb/bin/
 // (two levels up from __tests__: __tests__ → src → zfb/, then bin/).
 const launcherPath = resolve(__dirname, "../../bin/zfb.mjs");
+// zfb.mjs imports sibling modules (e.g. detect-musl.mjs) that must be
+// present alongside it in the fake install tree, exactly like a real
+// `npm install` places every file under bin/. Copy the whole directory
+// instead of just zfb.mjs so a future sibling module doesn't silently
+// break these tests with ERR_MODULE_NOT_FOUND.
+const launcherSourceDir = dirname(launcherPath);
+function copyBinDir(destDir: string): void {
+  mkdirSync(destDir, { recursive: true });
+  for (const name of readdirSync(launcherSourceDir)) {
+    copyFileSync(join(launcherSourceDir, name), join(destDir, name));
+  }
+}
 
 // Use the same platform→package mapping as the launcher.
 const platformPackages: Record<string, string> = {
@@ -68,9 +81,8 @@ describe("launcher EACCES surfacing (issue #447)", () => {
     // install layout. createRequire then searches upwards and finds
     // <tmpDir>/node_modules/<platformPkg>/package.json.
     const launcherDir = join(tmpDir, "node_modules", "@takazudo", "zfb", "bin");
-    mkdirSync(launcherDir, { recursive: true });
+    copyBinDir(launcherDir);
     launcherCopyPath = join(launcherDir, "zfb.mjs");
-    copyFileSync(launcherPath, launcherCopyPath);
 
     // Build the fake platform package.
     const pkgDir = join(tmpDir, "node_modules", platformPkg);
@@ -147,9 +159,8 @@ describe("launcher signal forwarding and exit propagation (issue #873)", () => {
     tmpDir = mkdtempSync(join(tmpdir(), "zfb-launcher-test-"));
 
     const launcherDir = join(tmpDir, "node_modules", "@takazudo", "zfb", "bin");
-    mkdirSync(launcherDir, { recursive: true });
+    copyBinDir(launcherDir);
     launcherCopyPath = join(launcherDir, "zfb.mjs");
-    copyFileSync(launcherPath, launcherCopyPath);
 
     const pkgDir = join(tmpDir, "node_modules", platformPkg);
     mkdirSync(pkgDir, { recursive: true });
