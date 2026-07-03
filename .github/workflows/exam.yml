@@ -1,0 +1,387 @@
+# exam.yml
+#
+# Weekly "exam" lane (issue #1344, zudo-test-wisdom T3 scheduled exam). Gives
+# the #[ignore]d quarantine/heavy manifest (audited + tagged by issue #1337,
+# see CLAUDE.md's "`#[ignore]` manifest (Rust)" table) a scheduled home where
+# it "must still run somewhere, allowed-to-fail" — today these tests only run
+# ad hoc on a developer's machine. It also adds the ONE platform-bound
+# coverage zfb otherwise lacks entirely: a full-workspace test run on macOS.
+# FSEvents is a genuinely different code path from Linux inotify, and today
+# macOS only ever builds the release binary + runs `--version` (release.yml) —
+# the dev-server/watcher test suite has never executed on macOS in CI.
+#
+# THIS IS THE THIN PRE-RELEASE LANE, not the full T3 upgrade. Per
+# CLAUDE.md's "Execution tiers" table, standing up a proper nightly scheduled
+# re-exam is deferred until release (zfb is pre-release WIP and this is a
+# public repo, so no self-hosted/blacksmith runners). The full nightly T3
+# cutover manifest is a future sub-task (#1349) — this workflow only covers
+# what #1344 asks for: the #1337 manifest + one macOS leg, both weekly and
+# allowed-to-fail.
+#
+# Two independent jobs, neither gates anything (schedule + workflow_dispatch
+# only — no pull_request/push trigger):
+#   - quarantine-heavy (ubuntu-latest) — runs exactly the env-gate + heavy
+#     tagged tests from #1337's manifest table under
+#     `cargo nextest run --run-ignored ignored-only`, scoped via an exact-name
+#     filterset (`-E`) so the pending-feature-tagged #[ignore]d tests (blocked
+#     on #1352/#1353/#1354, not this issue's scope) are NOT swept in. Every
+#     test name below was verified workspace-unique
+#     (`grep -rln 'fn <name>' crates/` → exactly one file each), so the
+#     exact-match filterset alone is sufficient scoping — no `-p`/package
+#     qualifier is needed for correctness.
+#   - macos-exam (macos-15, PINNED — not macos-latest, which drifts across
+#     major OS versions without notice) — a full `cargo nextest run
+#     --workspace` + `cargo test --workspace --doc` re-exam, unfiltered.
+#
+# ALLOWED-TO-FAIL, WITHOUT SWALLOWING THE SIGNAL: neither job uses
+# `continue-on-error: true`. That flag has a sharp edge — a continue-on-error
+# step never marks its job "failed", so a downstream `if: failure()` step
+# never fires either, silently dropping the very failure this workflow exists
+# to surface. Instead, each job's test-running step wraps the command in
+# `set +e; ...; rc=$?; set -e`, writes `rc` to `$GITHUB_OUTPUT`, and then
+# `exit 0`s unconditionally — the step (and therefore the job) is green by
+# design regardless of test outcome. A later step in the SAME job reads that
+# captured `rc` via an explicit `if:` condition to decide whether to file into
+# the tracking issue; the job's real outcome survives as a job `output`, not
+# as the job's pass/fail status.
+#
+# FILING: both test-running jobs call scripts/file-exam-issue.sh directly on
+# their own failure (issue #1342's one-tracking-issue-per-workflow dedup
+# pattern) — each needs its own job-level `issues: write` + `GH_TOKEN` for
+# this ("both jobs that might need to file" per #1344). This means if BOTH
+# legs fail in the very same run, there is a narrow race on the dedup
+# lookup-then-create (both jobs could see "no open issue yet" and each create
+# one) — accepted: rare (both legs must fail in the same run), and the
+# failure mode is "two tracking issues" not "no tracking issue", so the
+# signal is never lost. Closing on green needs BOTH legs to have passed, which
+# a single job can't know about itself, so that (and the IFTTT notify) is
+# centralized in two small downstream jobs that read the two test jobs'
+# `outputs.rc` (not `needs.*.result`, which is always "success" by design
+# here) — reusing the exact IFTTT pattern from release.yml's `notify` job
+# (issue #1335).
+#
+# pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
+# commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
+# release for human readability. To bump: resolve the new tag's SHA via
+# `gh api repos/<org>/<repo>/git/refs/tags/<tag> --jq .object.sha` and replace
+# both the SHA and the version comment.
+
+name: exam
+
+on:
+  schedule:
+    # Weekly, Saturday 04:17 UTC — an off-minute quiet hour, deliberately not
+    # a round number, and a DIFFERENT day than drift-net.yml's Wednesday
+    # 03:43 UTC cron so the two weekly exam lanes don't collide on the same
+    # day's shared-runner load.
+    - cron: "17 4 * * 6"
+  workflow_dispatch:
+
+concurrency:
+  group: exam-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default to least privilege; jobs that file/close tracking issues opt into
+# issues: write below.
+permissions:
+  contents: read
+
+jobs:
+  quarantine-heavy:
+    name: Quarantine/heavy manifest (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # Job-level permissions override: this job calls scripts/file-exam-issue.sh
+    # directly on its own failure (see header). A job-level `permissions:`
+    # block REPLACES the workflow default, so contents:read must be restated.
+    permissions:
+      contents: read
+      issues: write
+    # cargo build --workspace --all-targets pays the same V8 first-compile
+    # cost as health.yml (15-30 min cold, cache-hit fast) plus the manifest's
+    # own runtime (3 heavy dev-server e2e tests + version_stamp's own full
+    # `cargo run` recompile). Generous headroom for a weekly, non-gating job.
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      rc: ${{ steps.run_manifest.outputs.rc }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+
+      # Same install mechanism as health.yml (issue #1340): SHA-pinned action,
+      # checksum-verified prebuilt binary, no compile cost.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: nextest
+
+      # Same prefix-key as health.yml on purpose: this job compiles the same
+      # workspace targets on the same ubuntu-latest runner, so it can reuse
+      # health.yml's warm cache instead of always paying a cold V8 first-compile.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          prefix-key: "v2-zfb"
+
+      - run: pnpm install --frozen-lockfile
+
+      # Compiles every target AND triggers crates/zfb's build.rs to download +
+      # SHA-verify + stage the pinned esbuild and tailwindcss v4 binaries into
+      # their crates/zfb/binaries/ slots — the same side effect health.yml's
+      # esbuild staging step relies on.
+      - run: cargo build --workspace --all-targets
+
+      # Guard mirroring health.yml's "Assert esbuild was provisioned" step
+      # (issue #638): if either binary failed to stage, the env-gate tests
+      # below would either error clearly (good) or, worse, be silently
+      # skipped by --run-ignored not matching anything real. Fail loudly here
+      # instead of discovering a silent gap in the manifest run's log.
+      - name: Assert esbuild + tailwindcss binaries were provisioned
+        run: |
+          ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
+          TAILWIND_SLOT="crates/zfb/binaries/tailwindcss-v4"
+          for slot in "$ESBUILD_SLOT" "$TAILWIND_SLOT"; do
+            if [ ! -x "$slot" ]; then
+              echo "::error::$slot not staged — the env-gated manifest tests would not run for real. Failing the job instead."
+              exit 1
+            fi
+          done
+          "$ESBUILD_SLOT" --version
+          "$TAILWIND_SLOT" --version
+
+      # The #1337 manifest, env-gate + heavy tags only (12 tests — see
+      # CLAUDE.md's "`#[ignore]` manifest (Rust)" table for the authoritative
+      # list). pending-feature-tagged tests are deliberately excluded: they
+      # are blocked on unimplemented product features (#1352/#1353/#1354),
+      # not covered by this issue, and would just fail every single run with
+      # no new information.
+      #
+      # ZFB_ESBUILD_BIN / ZFB_TAILWIND_BIN must be ABSOLUTE paths: nextest
+      # (like plain `cargo test`) runs each test binary with its CWD set to
+      # the owning package directory, not the workspace root, so the crates'
+      # relative default binary_path (`crates/zfb/binaries/...`) would not
+      # resolve — same reasoning as health.yml's ZFB_ESBUILD_BIN wiring.
+      #
+      # rc is captured explicitly (not via continue-on-error) and the step
+      # always exits 0 — see the header comment for why.
+      - name: Run the #1337 quarantine/heavy manifest (env-gate + heavy tags)
+        id: run_manifest
+        shell: bash
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+          ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
+        run: |
+          mkdir -p target/nextest-logs
+          set +e
+          cargo nextest run --workspace --profile ci --run-ignored ignored-only -E '
+            test(=subprocess_bundler_against_real_binary)
+              | test(=shared_bundle_keeps_islands_with_no_top_level_side_effect)
+              | test(=splitting_emits_chunk_for_dynamic_import)
+              | test(=no_dynamic_import_yields_single_file)
+              | test(=client_script_real_esbuild_bundles_discovered_entry)
+              | test(=subprocess_engine_against_real_binary)
+              | test(=prod_asset_graph_with_real_tailwind_binary_against_fixture)
+              | test(=default_runner_emit_prod_assets_returns_non_empty_css_for_real_project)
+              | test(=version_stamp_from_env)
+              | test(=e2e_src_component_edit_rerenders_route)
+              | test(=e2e_transitive_css_import_refreshes_stylesheet)
+              | test(=e2e_new_utility_class_in_component_is_emitted)
+          ' 2>&1 | tee target/nextest-logs/exam-quarantine.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload exam log (on failure)
+        if: steps.run_manifest.outputs.rc != '0'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: exam-quarantine-log
+          path: target/nextest-logs/exam-quarantine.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: File or comment on tracking issue (failure)
+        if: steps.run_manifest.outputs.rc != '0'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LEG: "quarantine/heavy manifest (ubuntu-latest)"
+        run: bash scripts/file-exam-issue.sh "exam"
+
+  macos-exam:
+    name: macOS full workspace re-exam (macos-15)
+    runs-on: macos-15
+    permissions:
+      contents: read
+      issues: write
+    # Full `cargo nextest run --workspace` + `cargo test --workspace --doc`
+    # on a runner with no warm cache of its own (health.yml never runs on
+    # macOS) — first run pays a cold V8 first-compile (15-30 min per
+    # health.yml's own estimate) PLUS the full test run PLUS the doctest
+    # step. Generous headroom for a weekly, non-gating job on an
+    # infrequently-primed cache.
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      rc: ${{ steps.run_macos_suite.outputs.rc }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: nextest
+
+      # Separate cache key from the ubuntu jobs — the target/ trees are not
+      # interchangeable across OS/arch.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          prefix-key: "v2-zfb-macos-exam"
+
+      # Install dependencies before cargo build so build.rs (embed_framework_packages)
+      # can find node_modules/.pnpm/preact@*/node_modules/preact/ etc. — same
+      # ordering as release.yml's macOS build leg.
+      - run: pnpm install --frozen-lockfile
+
+      # Full platform re-exam: EVERY non-ignored test in the workspace,
+      # unfiltered, on FSEvents instead of Linux inotify — this is the whole
+      # point of this leg (issue #1344). Not scoped like the ubuntu job
+      # above; that job targets a specific manifest, this one targets the
+      # platform itself.
+      #
+      # rc is captured explicitly (not via continue-on-error) for each of the
+      # two commands, combined, and the step always exits 0 — see the header
+      # comment for why. nextest does not run doctests (CLAUDE.md), hence the
+      # separate `cargo test --workspace --doc` leg, same as health.yml.
+      - name: Run full workspace suite (nextest + doctests), allowed-to-fail
+        id: run_macos_suite
+        shell: bash
+        run: |
+          mkdir -p target/nextest-logs
+          set +e
+          cargo nextest run --workspace --profile ci 2>&1 | tee target/nextest-logs/exam-macos-nextest.log
+          rc_nextest=${PIPESTATUS[0]}
+          cargo test --workspace --doc 2>&1 | tee target/nextest-logs/exam-macos-doctest.log
+          rc_doctest=${PIPESTATUS[0]}
+          set -e
+          rc=0
+          if [ "$rc_nextest" -ne 0 ] || [ "$rc_doctest" -ne 0 ]; then
+            rc=1
+          fi
+          {
+            echo "rc=$rc"
+            echo "rc_nextest=$rc_nextest"
+            echo "rc_doctest=$rc_doctest"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload exam logs (on failure)
+        if: steps.run_macos_suite.outputs.rc != '0'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: exam-macos-logs
+          path: |
+            target/nextest-logs/exam-macos-nextest.log
+            target/nextest-logs/exam-macos-doctest.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: File or comment on tracking issue (failure)
+        if: steps.run_macos_suite.outputs.rc != '0'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LEG: "macOS full workspace re-exam (macos-15)"
+        run: bash scripts/file-exam-issue.sh "exam"
+
+  close-tracking-issue-if-green:
+    # Centralized here (rather than in either test job) because closing
+    # requires knowing BOTH legs passed — a single job can't see the other
+    # job's outcome. Reads `outputs.rc`, not `needs.*.result`: both test jobs
+    # are green by design (see header), so `.result` is always "success" and
+    # cannot distinguish a passing exam from a failing one.
+    name: Close exam tracking issue if both legs are green
+    needs: [quarantine-heavy, macos-exam]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Close tracking issue (both legs green)
+        if: ${{ needs.quarantine-heavy.outputs.rc == '0' && needs.macos-exam.outputs.rc == '0' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/file-exam-issue.sh "exam" --green
+
+  notify:
+    # Alerting guard: a red leg otherwise sits unseen in the Actions tab
+    # between someone actually looking — nobody watches a scheduled run the
+    # way a release is watched live. Same IFTTT pattern as release.yml's /
+    # drift-net.yml's `notify` job (issue #1335), keyed on the two test jobs'
+    # `outputs.rc` for the same reason as the close job above.
+    name: Notify via IFTTT on failure
+    needs: [quarantine-heavy, macos-exam]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
+    steps:
+      - name: Notify via IFTTT on failure
+        if: env.IFTTT_PROD_NOTIFY != ''
+        env:
+          QUARANTINE_RC: ${{ needs.quarantine-heavy.outputs.rc }}
+          MACOS_RC: ${{ needs.macos-exam.outputs.rc }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          FAILED_LEG=""
+          if [ "$QUARANTINE_RC" != "0" ]; then
+            FAILED_LEG="quarantine/heavy manifest"
+          fi
+          if [ "$MACOS_RC" != "0" ]; then
+            if [ -n "$FAILED_LEG" ]; then
+              FAILED_LEG="${FAILED_LEG}, macOS full workspace"
+            else
+              FAILED_LEG="macOS full workspace"
+            fi
+          fi
+
+          if [ -z "$FAILED_LEG" ]; then
+            echo "Both legs green — skipping notification."
+            exit 0
+          fi
+
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+
+          curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"value1\": \"exam failed (${FAILED_LEG})\",
+              \"value2\": \"weekly quarantine/heavy + macOS re-exam\",
+              \"value3\": \"${RUN_URL}\"
+            }" || echo "::warning::IFTTT notification failed"
