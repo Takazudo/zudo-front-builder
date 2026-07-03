@@ -96,6 +96,19 @@ export const supportsViewTransitions = inBrowser && !!document.startViewTransiti
 export const transitionEnabledOnThisPage = () =>
   inBrowser && !!document.querySelector('[name="zfb-view-transitions-enabled"]');
 
+// A same-page Back/Forward traversal (two history entries sharing pathname +
+// search) is served from the live DOM by the fast-path in transition() — no
+// re-fetch, no re-swap, no lifecycle events. A per-request SSR page
+// (`prerender = false`) whose server output can differ between two visits to
+// the SAME url opts back INTO the fetch by emitting
+// <meta name="zfb-traverse-refetch" content="true"> (via <ClientRouter
+// traverseRefetch />); skipping the fetch on such a page would pin the stale
+// first-render content. Read from the CURRENT document — for a same-page
+// traverse the current document IS the target page. Mirrors the
+// zfb-prefetch-disabled meta reader. (#1376)
+const traverseRefetchOptedOut = () =>
+  inBrowser && !!document.querySelector('meta[name="zfb-traverse-refetch"][content="true"]');
+
 const samePage = (thisLocation: URL, otherLocation: URL) =>
   thisLocation.pathname === otherLocation.pathname && thisLocation.search === otherLocation.search;
 
@@ -331,7 +344,12 @@ const moveToLocation = (
   }
 
   if (historyState) {
-    scrollTo(historyState.scrollX, historyState.scrollY);
+    // Raw-History consumers may push partial/empty state (`{}`), so the tracked
+    // scroll fields can be absent or non-finite. Never scrollTo(undefined, …) —
+    // leave scroll where it is rather than jumping to (0,0). #1376.
+    if (Number.isFinite(historyState.scrollX) && Number.isFinite(historyState.scrollY)) {
+      scrollTo(historyState.scrollX, historyState.scrollY);
+    }
   } else {
     if (to.hash) {
       // because we are already on the target page ...
@@ -494,7 +512,13 @@ async function transition(
     updateScrollPosition({ scrollX, scrollY });
   }
   if (samePage(from, to) && !options.formData) {
-    if ((direction !== "back" && to.hash) || (direction === "back" && from.hash)) {
+    if (
+      // Same-page Back/Forward: serve from the live DOM (no re-fetch/re-swap)
+      // unless this page opted back into the fetch (per-request SSR). #1374/#1376.
+      (navigationType === "traverse" && !traverseRefetchOptedOut()) ||
+      (direction !== "back" && to.hash) ||
+      (direction === "back" && from.hash)
+    ) {
       moveToLocation(to, from, options, document.title, historyState);
       if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
       return;
