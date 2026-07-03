@@ -137,6 +137,41 @@ describe("ClientRouter — preserveHtmlAttrs", () => {
   });
 });
 
+describe("ClientRouter — traverseRefetch", () => {
+  it("does not emit a zfb-traverse-refetch meta when the prop is omitted", () => {
+    const nodes = ClientRouter();
+    const meta = nodes.find((n) => n.type === "meta" && n.props["name"] === "zfb-traverse-refetch");
+    expect(meta).toBeUndefined();
+    // Byte-identical baseline: still exactly the three base nodes.
+    expect(nodes).toHaveLength(3);
+  });
+
+  it("does not emit the meta when traverseRefetch is false", () => {
+    const nodes = ClientRouter({ traverseRefetch: false });
+    const meta = nodes.find((n) => n.type === "meta" && n.props["name"] === "zfb-traverse-refetch");
+    expect(meta).toBeUndefined();
+    expect(nodes).toHaveLength(3);
+  });
+
+  it("appends a zfb-traverse-refetch meta VNode when traverseRefetch is true", () => {
+    const nodes = ClientRouter({ traverseRefetch: true });
+    const meta = nodes.find((n) => n.type === "meta" && n.props["name"] === "zfb-traverse-refetch");
+    expect(meta).toBeDefined();
+    // Pin the exact attribute values — this is the contract the router reads.
+    expect(meta?.props["name"]).toBe("zfb-traverse-refetch");
+    expect(meta?.props["content"]).toBe("true");
+    expect(nodes).toHaveLength(4);
+  });
+
+  it("the traverse-refetch meta is a real JSX-runtime element (carries the $$typeof brand)", () => {
+    const nodes = ClientRouter({ traverseRefetch: true });
+    const meta = nodes.find((n) => n.type === "meta" && n.props["name"] === "zfb-traverse-refetch");
+    expect(meta).toBeDefined();
+    const brand = (meta as { $$typeof?: unknown } | undefined)?.$$typeof;
+    expect(typeof brand).toBe("symbol");
+  });
+});
+
 describe("ClientRouter — baseline nodes are always present", () => {
   it("always emits a style VNode first", () => {
     const nodes = ClientRouter();

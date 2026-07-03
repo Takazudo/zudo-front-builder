@@ -726,6 +726,224 @@ describe("pageshow / bfcache re-sync — WebKit Back-history (#1076)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Same-page traverse fast-path (#1374 / #1376)
+// ---------------------------------------------------------------------------
+//
+// A Back/Forward (popstate) traversal between two history entries sharing the
+// same pathname+search is served from the live DOM — no re-fetch, no re-swap,
+// no zfb:* lifecycle events. This is the #1374 fix: before it, a traversal over
+// a raw `history.pushState('#slug')` entry fell through to a full fetch + swap
+// of the byte-identical page (overlay flash, wasted fetch, island-state loss),
+// because the old hash-gate only saw router-managed navigation.
+//
+// The fast path routes through moveToLocation (scroll restore + originalLocation
+// self-heal), NOT a bare early return — see the acceptance criteria in #1376.
+//
+// A per-page opt-out (`<ClientRouter traverseRefetch />` →
+// meta[name="zfb-traverse-refetch"]) forces the fetch back on for per-request
+// SSR pages whose content can differ between two visits to the same URL.
+//
+// BLIND SPOT (documented): happy-dom models neither a real fetch/paint nor
+// bfcache, so this proves the gate's BRANCH LOGIC, not the real-browser
+// no-flash behavior. Definitive proof is the Wave-3 chromium harness (#1378).
+describe("same-page traverse fast-path (#1374 / #1376)", () => {
+  // Earlier tests in this file shim `location.href` via Object.defineProperty
+  // and never restore it, leaving a frozen own-property getter that would stop
+  // `history.push/replaceState(state, "", path)` from reflecting into
+  // `location.href` (which onPopState reads via `new URL(location.href)`).
+  // Delete any leaked own-property so happy-dom's native prototype getter — which
+  // DOES track push/replaceState — is back in effect for these tests.
+  beforeEach(() => {
+    if (Object.getOwnPropertyDescriptor(location, "href")) {
+      delete (location as unknown as Record<string, unknown>)["href"];
+    }
+  });
+
+  const drain = () => new Promise((r) => setTimeout(r, 0));
+
+  function fetchPages() {
+    const fetchMock = vi.fn(async (url: RequestInfo) => {
+      const u = String(url);
+      if (u.includes("/base")) return htmlResponse(pageHtml("Base", "base content"));
+      if (u.includes("/other")) return htmlResponse(pageHtml("Other", "other content"));
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  // Add the opt-out meta to the CURRENT (live) document — i.e. AFTER a navigate()
+  // swap has replaced the head, since the router reads it on the target page.
+  function injectTraverseRefetchMeta() {
+    const meta = document.createElement("meta");
+    meta.setAttribute("name", "zfb-traverse-refetch");
+    meta.setAttribute("content", "true");
+    document.head.appendChild(meta);
+  }
+
+  // Fire the popstate a browser would fire for a history entry. happy-dom's
+  // history.replaceState(state, "", path) updates BOTH history.state and
+  // location.href (same-origin path) — exactly what onPopState reads. The state
+  // MUST be non-null: onPopState ignores `ev.state === null` (:814-816).
+  function dispatchPopstate(path: string, state: Record<string, unknown>) {
+    history.replaceState(state, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate", { state }));
+  }
+
+  // Seed one router-managed entry at /base through production code so
+  // originalLocation === /base and history.state carries a finite index. The
+  // module index is monotonic across the whole file, so read the resulting
+  // index back rather than assuming an absolute value.
+  async function seedBase(): Promise<number> {
+    await navigate("/base");
+    expect(document.title).toBe("Base");
+    return (history.state as { index: number }).index;
+  }
+
+  it("(a) raw pushState('#modal') + Back popstate → no fetch, no before-preparation, originalLocation self-heals", async () => {
+    const fetchMock = fetchPages();
+    const baseIndex = await seedBase();
+
+    // Consumer opens a modal via RAW history.pushState — NOT through the router,
+    // so originalLocation stays /base and the module index is unchanged. This is
+    // the #1374 trigger: the old hash-gate could not see this entry.
+    history.pushState({ ...history.state }, "", "/base#modal");
+
+    const beforePrep = vi.fn();
+    document.addEventListener("zfb:before-preparation", beforePrep);
+    fetchMock.mockClear();
+
+    // User presses Back: the browser pops to the /base entry and fires popstate.
+    dispatchPopstate("/base", { index: baseIndex, scrollX: 0, scrollY: 0 });
+    await drain();
+
+    document.removeEventListener("zfb:before-preparation", beforePrep);
+
+    // Fast path: byte-identical same-page traverse never fetches or swaps, and
+    // skips ALL zfb:* lifecycle events (intentional — same as the hash fast-path).
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(beforePrep).not.toHaveBeenCalled();
+
+    // originalLocation self-healed by moveToLocation (NOT a bare early return):
+    // a subsequent cross-page navigation behaves normally.
+    await navigate("/other");
+    expect(document.title).toBe("Other");
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/other"))).toBe(true);
+  });
+
+  it("(b) same scenario WITH the zfb-traverse-refetch meta → fetch IS called (opt-out preserved)", async () => {
+    const fetchMock = fetchPages();
+    const baseIndex = await seedBase();
+
+    // Opt this page back INTO the fetch (per-request SSR). The router reads the
+    // meta on the CURRENT document, so inject it after the navigate() swap.
+    injectTraverseRefetchMeta();
+
+    history.pushState({ ...history.state }, "", "/base#modal");
+
+    fetchMock.mockClear();
+    dispatchPopstate("/base", { index: baseIndex, scrollX: 0, scrollY: 0 });
+    await drain();
+
+    // The opt-out disables the traverse clause, so the same-page traverse falls
+    // through to a full fetch (today's pre-fast-path behavior, preserved).
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/base"))).toBe(true);
+  });
+
+  it("(c) forward hash fast-path is unaffected by the gate restructure", async () => {
+    const fetchMock = fetchPages();
+    await seedBase();
+
+    fetchMock.mockClear();
+    const beforePrep = vi.fn();
+    document.addEventListener("zfb:before-preparation", beforePrep);
+
+    // Forward same-page hash nav via navigate() — hits `(direction !== "back" &&
+    // to.hash)`, which the new traverse clause must not disturb.
+    await navigate(`${location.pathname}#section-2`);
+
+    document.removeEventListener("zfb:before-preparation", beforePrep);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(beforePrep).not.toHaveBeenCalled();
+    expect(location.hash).toBe("#section-2");
+  });
+
+  it("(c) back-direction hash clause (from.hash) still fast-paths even with the traverse clause opted out", async () => {
+    const fetchMock = fetchPages();
+    await seedBase();
+
+    // Move forward into a hash entry so originalLocation carries a hash
+    // (`from.hash` for the subsequent Back). This goes through the router.
+    await navigate(`${location.pathname}#section`);
+    const hashIndex = (history.state as { index: number }).index;
+
+    // Opt OUT of the traverse fast-path so the traverse clause is disabled — the
+    // back-direction hash clause `(direction === "back" && from.hash)` is then
+    // the ONLY thing that can short-circuit the fetch, proving it is still live.
+    injectTraverseRefetchMeta();
+
+    fetchMock.mockClear();
+    const beforePrep = vi.fn();
+    document.addEventListener("zfb:before-preparation", beforePrep);
+
+    // Browser Back from /base#section to /base: to.hash empty, from.hash "#section".
+    dispatchPopstate("/base", { index: hashIndex - 1, scrollX: 0, scrollY: 0 });
+    await drain();
+
+    document.removeEventListener("zfb:before-preparation", beforePrep);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(beforePrep).not.toHaveBeenCalled();
+  });
+
+  it("(d) cross-page popstate still fetches (the traverse clause is gated on samePage)", async () => {
+    const fetchMock = fetchPages();
+
+    // Two DIFFERENT pages so the traverse is cross-page (samePage false).
+    await navigate("/base");
+    const baseIdx = (history.state as { index: number }).index;
+    await navigate("/other");
+
+    fetchMock.mockClear();
+    // Browser Back to /base (lower index) — cross-page traverse must still fetch.
+    dispatchPopstate("/base", { index: baseIdx, scrollX: 0, scrollY: 0 });
+    await drain();
+
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("/base"))).toBe(true);
+  });
+
+  it("(e) incomplete non-null state ({}) + Back → no fetch, no crash, no scroll jump", async () => {
+    const fetchMock = fetchPages();
+    await seedBase();
+
+    // Consumer opens a modal via RAW pushState with EMPTY (incomplete) state.
+    history.pushState({}, "", "/base#modal");
+
+    // User presses Back. In this raw-History flow the popstate delivers a
+    // non-null but INCOMPLETE state (no index/scrollX/scrollY). The fast path
+    // must tolerate it: no crash, and it must NEVER call scrollTo(undefined, …)
+    // — scroll is left where it is rather than jumping to (0,0).
+    const scrollSpy = vi.spyOn(window, "scrollTo");
+    fetchMock.mockClear();
+    const beforePrep = vi.fn();
+    document.addEventListener("zfb:before-preparation", beforePrep);
+
+    dispatchPopstate("/base", {});
+    await drain();
+
+    document.removeEventListener("zfb:before-preparation", beforePrep);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(beforePrep).not.toHaveBeenCalled();
+    // Partial-state hardening: no scrollTo call at all on this path.
+    expect(scrollSpy).not.toHaveBeenCalled();
+
+    scrollSpy.mockRestore();
+  });
+});
+
 describe("island lifecycle ordering during navigate()", () => {
   it("calls cancelPendingIslands then unmountIslands then mountNewIslands in that order", async () => {
     vi.stubGlobal(
