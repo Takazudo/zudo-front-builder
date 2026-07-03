@@ -54,7 +54,7 @@ axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 include_dir = "0.7"
-indicatif = "0.17"
+indicatif = "0.18"
 # Issue #228's HTML link rewriter (`<a href>` / `<form action>`
 # prefix-stamp) used to live here with its own `lol_html` dep. After
 # the post-merge review caught that the dev server also needs to apply
