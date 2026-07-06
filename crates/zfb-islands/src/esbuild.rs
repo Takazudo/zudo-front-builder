@@ -15,6 +15,28 @@
 //! (the prod pipeline, the dev server) own all disk writes.
 //! `ProductionAssetPipeline` is the single source of truth for content
 //! hashing per the Prod Asset Graph epic.
+//!
+//! ## CSS-import policy (issue #1395)
+//!
+//! `"use client"` islands are allowed to `import "./x.css"` (and
+//! `import styles from "./x.module.css"`), same as any other component in
+//! the project. [`build_esbuild_args_with_entry_name`] passes
+//! `--loader:.css=empty`, mirroring the SSR bundler's
+//! `ESBUILD_LOADER_ARGS` (`crates/zfb-build/src/bundler.rs`): the loader
+//! substitutes an empty exports object for the CSS module at compile time,
+//! so the import resolves and esbuild does not emit a sibling CSS output
+//! file for `read_back_outdir` to reject. Authored CSS is shipped
+//! separately via the zfb CSS pipeline's `styles-<hash>.css` — islands
+//! never carry those bytes in their own JS bundle.
+//!
+//! **Out of scope (deliberately):** unlike the SSR bundler,
+//! `.module.css` imports inside an island do NOT get a scoped
+//! class-name map. `--loader:.css=empty` also matches `.module.css` (no
+//! more specific rule is registered), so `import styles from
+//! "./x.module.css"` resolves to `styles === undefined` in the client
+//! bundle rather than the real scoped names. Extracting a real client-side
+//! class map is tracked by the shadow-materialisation follow-up (#1404);
+//! the docs wave (#1406) documents this limitation for users.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -1141,6 +1163,21 @@ fn validate_chunk_filename(name: &str) -> Result<()> {
             "esbuild chunk filename must not contain `..`: {name:?}"
         ));
     }
+    // Issue #1395: a residual `.css` output here means the `--loader:.css=empty`
+    // policy in `build_esbuild_args_with_entry_name` was bypassed or an
+    // unexpected esbuild version emitted a sibling CSS file anyway. Give a
+    // targeted message pointing at the zfb CSS pipeline instead of the
+    // generic "unexpected output file" wording, which reads as an esbuild
+    // internals bug rather than a documented policy.
+    if name.ends_with(".css") {
+        return Err(anyhow!(
+            "esbuild emitted a CSS output file {name:?} from an island bundle; \
+             CSS imports in islands are handled by the zfb CSS pipeline \
+             (`styles-<hash>.css`), not shipped as a separate islands build \
+             artifact — see the `--loader:.css=empty` policy in \
+             build_esbuild_args_with_entry_name"
+        ));
+    }
     if !name.starts_with(ESBUILD_CHUNK_FILENAME_PREFIX) {
         return Err(anyhow!(
             "esbuild emitted an unexpected output file {name:?}; \
@@ -1233,6 +1270,26 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     // target + node:* externalization.
     args.push(OsString::from("--platform=browser"));
     args.push(OsString::from("--external:node:*"));
+    // Issue #1395: an island importing a `.css` file (e.g.
+    // `import "./styles.css"` inside a `"use client"` component) must not
+    // hard-fail the islands bundle. Mirrors the SSR bundler's
+    // `--loader:.css=empty` in `ESBUILD_LOADER_ARGS`
+    // (`crates/zfb-build/src/bundler.rs`): the loader substitutes an empty
+    // exports object for the CSS file at compile time, so the import
+    // resolves instead of esbuild emitting a sibling CSS output file that
+    // `read_back_outdir`/`validate_chunk_filename` below would reject.
+    // Authored CSS (including `.css` bytes reachable from an island) is
+    // already shipped separately via the zfb CSS pipeline's
+    // `styles-<hash>.css` — islands never need to carry those bytes
+    // themselves. esbuild matches `.css=empty` against `.module.css` files
+    // too (no more specific `.module.css` rule is registered here), so a
+    // `import styles from "./x.module.css"` resolves to `styles ===
+    // undefined` rather than a scoped class-name map: the SSR bundler's
+    // per-file class-map extraction is deliberately OUT OF SCOPE for the
+    // islands client bundle (see #1404 for the shadow-materialisation
+    // follow-up and #1406 for the docs wave that documents this
+    // limitation to users).
+    args.push(OsString::from("--loader:.css=empty"));
     // Issue #151: route esbuild through the automatic JSX transform
     // pointed at the host framework's import source (typically
     // `"preact"`). Without these two flags esbuild defaults to the
@@ -2887,6 +2944,51 @@ mod tests {
         assert!(validate_chunk_filename("islands-chunk-..").is_err());
         assert!(validate_chunk_filename("evil.js").is_err());
         assert!(validate_chunk_filename("islands.js").is_err());
+    }
+
+    /// Issue #1395: a residual `.css` output must fail with the targeted
+    /// "handled by the zfb CSS pipeline" message rather than the generic
+    /// "unexpected output file" wording — the CSS-specific branch must be
+    /// checked before the generic prefix check below it.
+    #[test]
+    fn validate_chunk_filename_rejects_css_with_targeted_message() {
+        let err = validate_chunk_filename("styles.css")
+            .expect_err("a residual .css output must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("zfb CSS pipeline"),
+            "expected the targeted CSS-pipeline message, got: {msg}"
+        );
+        assert!(
+            !msg.contains("unexpected output file"),
+            "CSS rejection must not fall through to the generic message: {msg}"
+        );
+
+        let err2 = validate_chunk_filename("islands-chunk-WOEGGERP.css")
+            .expect_err("a chunk-prefixed .css output must still be rejected as CSS");
+        assert!(
+            format!("{err2}").contains("zfb CSS pipeline"),
+            "expected the targeted CSS-pipeline message even with the chunk prefix: {err2}"
+        );
+    }
+
+    /// Issue #1395: the islands esbuild arg set must carry
+    /// `--loader:.css=empty` (mirroring the SSR bundler's
+    /// `ESBUILD_LOADER_ARGS`) so an island's `import "./x.css"` neutralises
+    /// at compile time instead of esbuild writing a sibling CSS output file
+    /// that `read_back_outdir` would reject. Checked on both the
+    /// shared-bundle (`splitting = true`) and per-island (`splitting =
+    /// false`) arg shapes since both call the same builder.
+    #[test]
+    fn build_esbuild_args_includes_css_empty_loader() {
+        let cfg = BundleConfig::default();
+        for splitting in [true, false] {
+            let args = args_as_strings(&cfg, splitting);
+            assert!(
+                args.iter().any(|a| a == "--loader:.css=empty"),
+                "missing --loader:.css=empty (splitting={splitting}) in args: {args:?}"
+            );
+        }
     }
 
     /// `read_back_outdir`: a directory holding only the entry (the
