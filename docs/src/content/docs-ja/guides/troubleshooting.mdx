@@ -1,0 +1,82 @@
+---
+title: トラブルシューティング
+description: 具体的な修正方法つきの既知の失敗モード — インストールスクリプトのエラー、musl/Alpine、サポートされない import.meta.glob 形式、プロジェクトルート外のインポート、esbuild バイナリの不足。
+sidebar_position: 9
+---
+
+<Info title="このページで扱うこと">
+
+直接名前を付けて解説する価値があるほど頻繁に出てくる失敗モードを、症状ベースで索引したものです。それぞれについて、実際に目にするメッセージと修正方法を示します。あなたの問題がここにない場合は、リンク先の概念/ガイドのページが、各機能の土台となる挙動全体を扱っています。
+
+</Info>
+
+## `curl | sh` インストールがリリースタグを解決できない
+
+**症状:** [curl インストーラ](../install/node-free.mdx#linux-macos-—-curl) が次のいずれかで終了する。
+
+```
+error: could not resolve the latest release tag from GitHub API
+```
+
+```
+error: could not resolve the latest prerelease tag from GitHub API (no prerelease found in the last 30 releases)
+```
+
+**原因:** `install.sh` は何かをダウンロードする前に、GitHub Releases API からタグを解決します。
+
+- `ZFB_VERSION` が未設定の場合、最新の **非プレリリース** リリースを要求します。1.0 以前の zfb はプレリリース（`v0.1.0-next.N`）しか出していないため、解決すべき安定版リリースがまだ存在せず、これは設計どおり失敗します。[Node なしでインストール](../install/node-free.mdx#linux-macos-—-curl) の注記を参照してください。
+- `ZFB_VERSION=latest-prerelease` の場合、直近 30 件のリリースを走査して `"prerelease": true` が付いたものを探します。直近 30 件のいずれもプレリリースでない場合（たとえば、その後いくつかの安定版がリリースされ、プレリリースがそのウィンドウから押し出された場合）、同じように解決に失敗します。
+
+**対処:**
+
+- 1.0 以前（まだ安定版リリースが存在しない）: 明示的にプレリリースにオプトインする —
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION=latest-prerelease sh
+  ```
+
+- `latest-prerelease` 自体が解決に失敗する場合: 代わりに [リリースページ](https://github.com/Takazudo/zudo-front-builder/releases) から厳密なタグを固定してください（例: `ZFB_VERSION=v0.1.0-next.76`）。
+
+## `musl/Alpine is not supported yet`
+
+**症状:**
+
+```
+[zfb] musl/Alpine is not supported yet — no @takazudo/zfb-linux-*-musl package exists.
+      Use a glibc-based Linux image (e.g. Debian/Ubuntu) instead of Alpine.
+```
+
+**原因:** zfb は glibc にリンクされたプリビルドのプラットフォームバイナリしか配布しておらず、`@takazudo/zfb-linux-*-musl` パッケージは存在しません。npm ラッパー（`packages/zfb/bin/detect-musl.mjs`）は musl ランタイム（Alpine の `/lib/ld-musl-*` 動的ローダー、あるいは Node 自身のランタイムレポートに glibc バージョンが存在しないこと）を検出し、glibc バイナリを不透明な動的ローダーエラーでクラッシュさせる代わりに、この親切なメッセージで失敗します。スタンドアロンの curl/PowerShell インストーラはこの方法で musl を検出できず（OS/CPU しかチェックしません）、glibc バイナリをダウンロードしてしまい、それが実行時にそのまま失敗します。
+
+**対処:** Alpine の代わりに glibc ベースの Linux ベースイメージ（Debian、Ubuntu）を使ってください。Dockerfile でも、CI ランナーでも、任意のコンテナイメージでも同様です。今日、musl 上でネイティブに zfb を動かす回避策はありません。サポートされるプラットフォームのマトリクスは [インストール](../getting-started/installation.mdx#サポートされているプラットフォーム) と [Node なしでインストール](../install/node-free.mdx#サポートされているプラットフォーム) を参照してください。
+
+## `import.meta.glob(...)` のビルドエラー
+
+**症状**（`zfb build` から。または `zfb dev` からは警告 + リバンドルのスキップ）:
+
+```
+zfb islands: `import.meta.glob(...)` is only supported in the eager string-literal
+form (`import.meta.glob('<literal>', { eager: true })`) in files reachable from a
+"use client" island. The following remain unsupported and would ship to the browser
+unexpanded (throwing at hydration): <file> — ...
+```
+
+**原因:** `import.meta.glob` は Vite 専用のビルド時マクロです。島をバンドルする esbuild はこれをネイティブには理解しないため、zfb は esbuild がファイルを目にする前に、サポートされる唯一の形式を自分で展開します。`"use client"` 島から到達可能なファイルでサポートされるのは、パターンがインポート元ファイル自身のディレクトリ配下に解決される `import.meta.glob("<string-literal>", { eager: true })` だけです。それ以外のすべて — デフォルトの lazy 形式、`{ eager: false }`、リテラルでないパターン、`import`/`query`/`as` オプション、`../` でディレクトリを抜け出すパターン — は拒否されます。
+
+**対処:** 完全なサポートマトリクスと代替手段（プラグインの仮想モジュール、または明示的な静的インポート）は [Islands: `import.meta.glob` のサポート](../concepts/islands.mdx#import-meta-glob-のサポート) を参照してください。なお **クライアントスクリプト**（`*.client.ts`）は `import.meta.glob` を一切サポートせず、しかも島とは異なり、その失敗はビルド時には検出され *ません*。[クライアントスクリプト: `import.meta.glob` はサポートされていません](./client-scripts.mdx#import-meta-glob-はサポートされていません) を参照してください。
+
+## プロジェクトルート外への相対インポートが "Could not resolve" になる
+
+**症状:** `zfb build`（または `zfb dev`）が esbuild の `Could not resolve "../../../somewhere/outside.ts"` エラーで失敗し、付随する zfb の注記が「シャドウコピーのビルド境界」を説明する。
+
+**原因:** zfb は、esbuild を実行する前にプロジェクトルートを一時ディレクトリへシャドウコピーしてビルドします。プロジェクトルートより上へ歩く相対インポート（例: `../../../../packages/ui/src/button.tsx`）は、そのシャドウコピーの外に解決されるため見つかりません。これは診断専用であり、解決可能なバグではありません。根本的な脱出は依然としてサポートされません。zfb は、意味のない一時ディレクトリのパスを漏らす代わりに、*報告される* エラーが実際の（シャドウでない）パスを示し、回避策を説明するようにするだけです。
+
+**対処:** ルート外のターゲットを相対インポートではなくパッケージインポートとして公開してください。ターゲットパッケージの `package.json` にワイルドカードの `exports` エントリ（例: `"./src/*": "./src/*"`）を追加し、パッケージ指定子でインポートします（例: `@scope/pkg/src/button.tsx`）。`node_modules`（`file:`/ワークスペースリンクされたパッケージを含む）はシャドウコピーに含まれるため、パッケージ指定子のインポートは通常どおり解決されます。詳細は [`defineConfig`: プロジェクトルート外のパスを監視する](../api/define-config.mdx#プロジェクトルート外のパスを監視する) を参照してください。追跡は [issue #1385](https://github.com/Takazudo/zudo-front-builder/issues/1385) で行われています。
+
+## 組み込みの `zfb-server` からの `esbuild binary not found`
+
+**症状:** `zfb-server` を組み込んだ Rust ホスト（[ライブラリとして組み込む](./embed-as-library.mdx) を参照）が、`config_path` が `zfb.config.ts` ファイルを指しているときに "esbuild binary not found" エラーで失敗する。
+
+**原因:** TypeScript の設定を評価するには、まずそれを esbuild でバンドルする必要がありますが、組み込みの `zfb-server` は `zfb` CLI のように自前の esbuild バイナリを同梱していません。
+
+**対処:** `config_path` を `zfb.config.json` ファイルに切り替える（esbuild は一切不要 — 最もシンプルな修正）か、`build()` を呼び出す前に環境変数 `ZFB_ESBUILD_BIN` を利用可能な esbuild CLI バイナリに設定してください。完全な説明は [ライブラリとして組み込む](./embed-as-library.mdx) を参照してください。
