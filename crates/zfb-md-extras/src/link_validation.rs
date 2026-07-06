@@ -413,6 +413,15 @@ fn validate_file_exists(
     env: &ValidationEnv<'_>,
     ctx: &mut BuildContext<'_>,
 ) {
+    // A percent-encoded path (`./my%20file.md`) probed verbatim against the
+    // filesystem false-positives as broken — the on-disk name is decoded
+    // (`my file.md`), not the raw href. Skip rather than decode, mirroring
+    // the percent-encoded-fragment rule used elsewhere in this module
+    // (`validate_fragment_in_file`, `validate_file_with_fragment`) rather
+    // than adding a decode dependency for this one probe site (#1392).
+    if file_ref.contains('%') {
+        return;
+    }
     let resolved = match resolve_relative(env.source_path, file_ref) {
         Some(p) => p,
         None => return,
@@ -670,6 +679,56 @@ mod tests {
         assert!(
             diags.is_empty(),
             "img src with svg sprite fragment must not emit BrokenLink: {diags:?}"
+        );
+    }
+
+    // ── #1392: percent-encoded paths must not false-positive as broken ────
+
+    /// `[x](./my%20file.md)` probed the raw `%20`-encoded path against the
+    /// filesystem, so a real file named `my file.md` (decoded) was reported
+    /// as a broken link. Percent-containing file paths are now skipped —
+    /// mirroring the existing percent-encoded-fragment rule — rather than
+    /// false-positiving.
+    #[test]
+    fn percent_encoded_file_path_is_not_reported_broken() {
+        use zfb_md_ast::{diagnostics::CollectingSink, HastVisitor};
+
+        let dir = tempfile::Builder::new()
+            .prefix("link_val_percent_path")
+            .tempdir()
+            .unwrap();
+        // The real on-disk file has a space in its name — the href encodes
+        // it as `%20`, which the pre-fix code probed verbatim (a file
+        // literally named "my%20file.md" does not exist).
+        std::fs::write(dir.path().join("my file.md"), "# Hi\n").unwrap();
+        let source_path = dir.path().join("page.md");
+        std::fs::write(&source_path, "").unwrap();
+
+        let mut root = HastNode::Root {
+            children: vec![HastNode::Element {
+                tag: "a".to_string(),
+                attrs: vec![("href".to_string(), "./my%20file.md".to_string())],
+                children: vec![],
+                void: false,
+            }],
+        };
+
+        let mut sink = CollectingSink::new();
+        let mut ctx = BuildContext {
+            source_path: Some(source_path),
+            project_root: dir.path().to_path_buf(),
+            public_dir: dir.path().to_path_buf(),
+            heading_registry: None,
+            diagnostics: Some(&mut sink),
+            cross_file_links: None,
+        };
+        let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
+        plugin.visit_with_context(&mut root, &mut ctx);
+
+        let diags = sink.take();
+        assert!(
+            diags.is_empty(),
+            "percent-encoded file path must not be reported broken: {diags:?}"
         );
     }
 
