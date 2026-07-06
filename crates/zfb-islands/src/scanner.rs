@@ -216,6 +216,32 @@ pub struct ScanMeta {
     /// this field needs to relax (e.g. narrow it to still-unsupported
     /// forms) — the detection here does not need to change.
     pub glob_reachable_from_islands: Vec<PathBuf>,
+
+    /// Sorted, deduped resolved paths of EVERY module reachable from a
+    /// `"use client"` island — the island's own file plus every module
+    /// transitively imported from it, following the exact same edges the
+    /// DFS walks (static `import`, `export … from`, `export *`, and
+    /// string-literal dynamic `import()`; see
+    /// [`collect_import_specifiers`]). This is the precise set the islands
+    /// esbuild bundle will traverse starting from the island entries.
+    ///
+    /// Consumed by the #1404 islands-shadow materialisation
+    /// (`build_default_islands_payload` in `crates/zfb/src/commands`): the
+    /// shadow only has to concern itself with modules the island bundle
+    /// actually reaches, and this set is the completeness contract for that
+    /// — a module reachable from an island but MISSING here (a scanner
+    /// edge the walk failed to follow) would become an unexpanded-glob hole
+    /// or an unresolved import in the shadow, which is why the scanner's
+    /// import-form coverage is pinned by parity unit tests.
+    ///
+    /// Superset of [`Self::glob_reachable_from_islands`] (the
+    /// glob-containing subset). Empty when the project has no islands (or
+    /// none is reachable from a page). Includes paths under `node_modules`
+    /// for workspace-package islands — the shadow reaches those through a
+    /// single `node_modules` symlink rather than materialising them
+    /// individually, so the consumer filters this set to project-local
+    /// paths before mirroring.
+    pub island_reachable_modules: Vec<PathBuf>,
 }
 
 /// Abstraction over module resolution + source reading.
@@ -1498,12 +1524,19 @@ pub fn scan_islands_with_meta<R: Resolver>(
     // re-parsing anything.
     let mut glob_reachable_from_islands: std::collections::BTreeSet<PathBuf> =
         std::collections::BTreeSet::new();
+    // Issue #1404: the FULL island-reachable module set (not just the
+    // glob-containing subset) — the shadow's completeness contract. A
+    // `BTreeSet` gives sorted + deduped output for free, matching the
+    // byte-stable ordering the rest of the scanner's public surface holds.
+    let mut island_reachable_modules: std::collections::BTreeSet<PathBuf> =
+        std::collections::BTreeSet::new();
     let mut island_reach_visited: HashSet<PathBuf> = HashSet::new();
     let mut island_reach_stack: Vec<PathBuf> = island_paths.into_iter().collect();
     while let Some(node) = island_reach_stack.pop() {
         if !island_reach_visited.insert(node.clone()) {
             continue;
         }
+        island_reachable_modules.insert(node.clone());
         if glob_by_path.get(&node).copied().unwrap_or(false) {
             glob_reachable_from_islands.insert(node.clone());
         }
@@ -1522,6 +1555,7 @@ pub fn scan_islands_with_meta<R: Resolver>(
             uses_client_router: resolve_client_router_usage(&client_router_facts),
             near_miss_candidates,
             glob_reachable_from_islands: glob_reachable_from_islands.into_iter().collect(),
+            island_reachable_modules: island_reachable_modules.into_iter().collect(),
         },
     ))
 }
@@ -2047,7 +2081,57 @@ fn collect_import_specifiers(module: &Module) -> Vec<String> {
             _ => {}
         }
     }
+    // Issue #1404: string-literal dynamic `import("…")` is a real edge
+    // esbuild resolves and bundles (as a code-split chunk), so the scanner
+    // MUST follow it too — a `"use client"` island (or a glob-using module)
+    // reachable ONLY through a dynamic import was previously invisible to
+    // the DFS, leaving it out of the islands bundle (never hydrated) and,
+    // post-#1404, out of the shadow's `island_reachable_modules` set (a
+    // silent unexpanded-glob hole). Unlike the static declaration forms
+    // above, a dynamic import can appear anywhere in the module body, so it
+    // needs an AST walk rather than a top-level `module.body` scan. Only the
+    // string-literal-argument form is collectable — a computed specifier
+    // (`import(pathVar)`) is not statically resolvable and is left for
+    // esbuild's own runtime handling, exactly as `import.meta.glob`'s
+    // non-literal form is rejected by the expander.
+    out.extend(collect_dynamic_import_specifiers(module));
     out
+}
+
+/// Collect the string-literal specifier of every dynamic `import("…")` call
+/// anywhere in `module` (nested inside function bodies, arrow expressions,
+/// conditionals, …), in source order. A spread argument or a non-string
+/// first argument (a computed specifier) is skipped — only a statically
+/// resolvable literal becomes a scanner edge (see [`collect_import_specifiers`]
+/// for why dynamic imports are followed at all).
+fn collect_dynamic_import_specifiers(module: &Module) -> Vec<String> {
+    use swc_core::ecma::ast::{Callee, CallExpr, Expr, Lit};
+    use swc_core::ecma::visit::{Visit, VisitWith};
+
+    struct DynImportCollector {
+        out: Vec<String>,
+    }
+
+    impl Visit for DynImportCollector {
+        fn visit_call_expr(&mut self, node: &CallExpr) {
+            if matches!(node.callee, Callee::Import(_)) {
+                if let Some(arg) = node.args.first() {
+                    if arg.spread.is_none() {
+                        if let Expr::Lit(Lit::Str(s)) = &*arg.expr {
+                            self.out.push(atom_to_string(&s.value));
+                        }
+                    }
+                }
+            }
+            // Recurse so a dynamic import nested inside this call's
+            // arguments / callee is still discovered.
+            node.visit_children_with(self);
+        }
+    }
+
+    let mut collector = DynImportCollector { out: Vec::new() };
+    module.visit_with(&mut collector);
+    collector.out
 }
 
 /// One exported binding paired with its SSR-marker name.
@@ -6970,6 +7054,259 @@ mod tests {
             meta.glob_reachable_from_islands.is_empty(),
             "a comment/string mention of import.meta.glob must not be flagged: {:?}",
             meta.glob_reachable_from_islands
+        );
+    }
+
+    // --- `collect_import_specifiers` scanner↔esbuild parity (issue #1404)
+    // ---
+    //
+    // The islands shadow (#1404) materialises the exact module set the
+    // esbuild bundle traverses from the island entries. That set is grown
+    // by following `collect_import_specifiers` edges, so any import FORM
+    // esbuild resolves but the scanner drops becomes a silent
+    // unexpanded-glob hole in the shadow. These tests PIN the forms the
+    // scanner must cover so a future edit that narrows the collector fails
+    // loudly here instead of silently in a downstream build.
+
+    /// Parse `source` as a TSX module and collect its import specifiers —
+    /// the exact call the DFS makes per module.
+    fn specs(source: &str) -> Vec<String> {
+        let module = parse_module(&root().join("m.tsx"), source).expect("parse");
+        collect_import_specifiers(&module)
+    }
+
+    #[test]
+    fn collect_import_specifiers_covers_static_default_and_named_import() {
+        let out = specs(
+            r#"import Foo from "./foo";
+               import { bar } from "./bar";
+               import * as ns from "./ns";
+               import "./side-effect";
+            "#,
+        );
+        for want in ["./foo", "./bar", "./ns", "./side-effect"] {
+            assert!(out.contains(&want.to_string()), "missing {want} in {out:?}");
+        }
+    }
+
+    #[test]
+    fn collect_import_specifiers_covers_export_from_named_and_star() {
+        // `export { X } from "…"` and `export * from "…"` are runtime
+        // pulls esbuild follows — the shadow must reach the re-exported
+        // module (a barrel is the classic place a glob-using data module
+        // hides behind).
+        let out = specs(
+            r#"export { A, B as C } from "./named-reexport";
+               export * from "./star-reexport";
+            "#,
+        );
+        assert!(
+            out.contains(&"./named-reexport".to_string()),
+            "export-from (named) must be an edge: {out:?}"
+        );
+        assert!(
+            out.contains(&"./star-reexport".to_string()),
+            "export * must be an edge: {out:?}"
+        );
+    }
+
+    #[test]
+    fn collect_import_specifiers_covers_dynamic_import_with_literal() {
+        // The gap #1404 closes: a string-literal `import("…")` — nested in
+        // a function body, an await, and a top-level statement — is a real
+        // esbuild edge and MUST be collected, or a glob-using module
+        // reachable only through a dynamic import is a silent hole.
+        let out = specs(
+            r#"async function load() { return await import("./nested-dynamic"); }
+               const p = import("./top-dynamic");
+               export default function C() {
+                 return import("./inside-component").then((m) => m.default);
+               }
+            "#,
+        );
+        for want in ["./nested-dynamic", "./top-dynamic", "./inside-component"] {
+            assert!(
+                out.contains(&want.to_string()),
+                "dynamic import literal {want} must be an edge: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn collect_import_specifiers_covers_tsconfig_alias_hop_specifier() {
+        // "tsconfig-alias hop" parity: the collector returns the RAW
+        // specifier string (relative, bare, OR alias) untouched — it is the
+        // resolver's job to map `@/…` to a path. The contract the shadow
+        // relies on is that the collector never FILTERS an alias/bare
+        // specifier out, so the resolver still gets a chance to resolve it.
+        let out = specs(
+            r##"import { Widget } from "@/components/widget";
+               export { data } from "#content/data";
+            "##,
+        );
+        assert!(
+            out.contains(&"@/components/widget".to_string()),
+            "tsconfig `@/*` alias specifier must survive collection: {out:?}"
+        );
+        assert!(
+            out.contains(&"#content/data".to_string()),
+            "tsconfig `#…` alias specifier must survive collection: {out:?}"
+        );
+    }
+
+    #[test]
+    fn collect_import_specifiers_skips_computed_dynamic_import() {
+        // Precision: a computed (non-literal) `import(pathVar)` is not
+        // statically resolvable, so it must NOT become an edge (mirrors the
+        // expander rejecting non-literal `import.meta.glob` patterns). Only
+        // esbuild's own runtime handling covers it.
+        let out = specs(
+            r#"const path = "./x";
+               const p = import(path);
+               export default function C() { return null; }
+            "#,
+        );
+        assert!(
+            !out.iter().any(|s| s == "./x"),
+            "a computed dynamic import must not be collected as an edge: {out:?}"
+        );
+    }
+
+    #[test]
+    fn collect_import_specifiers_skips_type_only_forms() {
+        // Regression guard kept alongside the parity set: compile-time
+        // erased forms are NOT runtime edges and must stay excluded.
+        let out = specs(
+            r#"import type { T } from "./type-only-import";
+               export type { U } from "./type-only-reexport";
+               export type * from "./type-only-star";
+            "#,
+        );
+        assert!(
+            out.is_empty(),
+            "type-only forms must not become edges: {out:?}"
+        );
+    }
+
+    #[test]
+    fn island_reachable_via_dynamic_import_is_discovered() {
+        // End-to-end consequence of the dynamic-import edge: a `"use
+        // client"` island reachable ONLY through a string-literal dynamic
+        // import is now discovered (previously it silently vanished from
+        // the bundle and never hydrated).
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"export default function Home() {
+                     const load = () => import("../components/lazy-counter");
+                     return null;
+                   }
+                "#,
+            )
+            .with_file(
+                root().join("components/lazy-counter.tsx"),
+                r#""use client";
+                export function LazyCounter() { return null; }
+                "#,
+            );
+
+        let islands = scan_islands(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            islands.len(),
+            1,
+            "a 'use client' island reachable only via dynamic import must be discovered: {islands:?}"
+        );
+        assert_eq!(islands[0].component_name, "LazyCounter");
+    }
+
+    // --- `island_reachable_modules` exposure (issue #1404) ---------------
+
+    #[test]
+    fn island_reachable_modules_lists_full_island_closure() {
+        // The shadow's materialisation seed: the island file plus every
+        // module transitively reachable from it (a helper, and a
+        // dynamically-imported leaf), but NOT a module reachable only from
+        // a server-only page.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Gallery } from "../components/gallery";
+                   import { serverOnly } from "../lib/server-only";
+                   export default function Home() { return <Gallery/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/gallery.tsx"),
+                r#""use client";
+                import { data } from "./gallery-data";
+                const lazy = () => import("./gallery-lazy");
+                export function Gallery() { return null; }
+                "#,
+            )
+            .with_file(
+                root().join("components/gallery-data.tsx"),
+                r#"export const data = 1;"#,
+            )
+            .with_file(
+                root().join("components/gallery-lazy.tsx"),
+                r#"export const lazy = 1;"#,
+            )
+            .with_file(
+                root().join("lib/server-only.tsx"),
+                r#"export const serverOnly = 1;"#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+
+        assert!(
+            meta.island_reachable_modules
+                .contains(&root().join("components/gallery.tsx")),
+            "island file itself must be listed: {:?}",
+            meta.island_reachable_modules
+        );
+        assert!(
+            meta.island_reachable_modules
+                .contains(&root().join("components/gallery-data.tsx")),
+            "statically-imported helper must be listed: {:?}",
+            meta.island_reachable_modules
+        );
+        assert!(
+            meta.island_reachable_modules
+                .contains(&root().join("components/gallery-lazy.tsx")),
+            "dynamically-imported leaf must be listed: {:?}",
+            meta.island_reachable_modules
+        );
+        assert!(
+            !meta
+                .island_reachable_modules
+                .contains(&root().join("lib/server-only.tsx")),
+            "a server-only-reachable module must NOT be listed: {:?}",
+            meta.island_reachable_modules
+        );
+        // Byte-stable ordering contract (sorted).
+        let mut sorted = meta.island_reachable_modules.clone();
+        sorted.sort();
+        assert_eq!(
+            meta.island_reachable_modules, sorted,
+            "island_reachable_modules must be sorted"
+        );
+    }
+
+    #[test]
+    fn island_reachable_modules_empty_without_islands() {
+        // Zero-regression: a project with no islands reports an empty set,
+        // so the shadow is never even attempted (fast path).
+        let resolver = InMemoryResolver::new().with_file(
+            root().join("pages/home.tsx"),
+            r#"export default function Home() { return null; }"#,
+        );
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            meta.island_reachable_modules.is_empty(),
+            "no islands ⇒ empty reachable set: {:?}",
+            meta.island_reachable_modules
         );
     }
 }

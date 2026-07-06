@@ -1333,6 +1333,15 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     if config.sourcemap {
         args.push(OsString::from("--sourcemap=linked"));
     }
+    // Issue #1404: keep esbuild anchored at each importer's on-disk
+    // location instead of canonicalising symlinks. Set ONLY by the
+    // islands-shadow path (`BundleConfig::preserve_symlinks`), so the
+    // default no-shadow argv is byte-identical to a pre-#1404 build. See
+    // [`crate::bundler::BundleConfig::preserve_symlinks`] for why the
+    // shadow's expanded-glob copies would otherwise be bypassed.
+    if config.preserve_symlinks {
+        args.push(OsString::from("--preserve-symlinks"));
+    }
     // Directory-mode output: esbuild writes the entry (and, when splitting is
     // on, any chunks) into the *staging* `out_dir` (a throwaway tempdir —
     // NOT `dist/assets/`). `--outdir` is always present — the read-back
@@ -2987,6 +2996,29 @@ mod tests {
             assert!(
                 args.iter().any(|a| a == "--loader:.css=empty"),
                 "missing --loader:.css=empty (splitting={splitting}) in args: {args:?}"
+            );
+        }
+    }
+
+    /// Issue #1404: `--preserve-symlinks` is emitted iff
+    /// `BundleConfig::preserve_symlinks` is set, and is absent by default so
+    /// the no-shadow argv stays byte-identical to a pre-#1404 build.
+    #[test]
+    fn build_esbuild_args_emits_preserve_symlinks_only_when_configured() {
+        for splitting in [true, false] {
+            let off = args_as_strings(&BundleConfig::default(), splitting);
+            assert!(
+                !off.iter().any(|a| a == "--preserve-symlinks"),
+                "default config must NOT emit --preserve-symlinks (splitting={splitting}): {off:?}"
+            );
+
+            let on = args_as_strings(
+                &BundleConfig::default().with_preserve_symlinks(true),
+                splitting,
+            );
+            assert!(
+                on.iter().any(|a| a == "--preserve-symlinks"),
+                "preserve_symlinks=true must emit --preserve-symlinks (splitting={splitting}): {on:?}"
             );
         }
     }
