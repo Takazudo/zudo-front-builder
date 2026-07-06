@@ -307,6 +307,19 @@ interface IslandModule {
 export type IslandManifestValue = string | IslandModule;
 export type IslandManifest = Readonly<Record<string, IslandManifestValue>>;
 
+// data-zfb-transition-persist marker attribute — the client-router's persist
+// contract. Mirrored from client-router/swap-functions.ts: that package owns the
+// body swap (lifting persisted nodes into the incoming body), this package owns
+// island mount/unmount. Both must agree on the literal string. See the port
+// spec at packages/zfb-runtime/docs/client-router/port-spec.md §12.3.
+const PERSIST_ATTR = "data-zfb-transition-persist";
+
+// Cross-package "needs-remount" flag set by client-router/swap-functions.ts on a
+// persisted island whose props changed across a body swap. Mirrored literal (same
+// cross-package contract as PERSIST_ATTR above — both packages must agree on the
+// string). Consumed by clearMountedForRemount(). See #1389.
+const ISLAND_REMOUNT_ATTR = "data-zfb-island-remount";
+
 // WeakMap<Element, unmount thunk> — replaces the old WeakSet.
 // Value is a per-element function that calls the bundle's unmount(element)
 // (or a noop if the bundle does not expose one). Used by unmountIslands()
@@ -399,6 +412,11 @@ export function mountNewIslands(): void {
   for (const el of Array.from(ssrIslands)) {
     const name = el.getAttribute("data-zfb-island");
     if (!name) continue;
+    // A persisted island whose props changed across the body swap is flagged
+    // for remount by swap-functions.swapBodyElement. Clear its surviving mounted
+    // entry BEFORE scheduleMount's already-mounted guard so it re-mounts fresh
+    // with the refreshed data-props. No-op for every other element.
+    clearMountedForRemount(el);
     warnIfNestedIsland(el, name);
     scheduleMount(manifest, el, name, "hydrate");
   }
@@ -409,6 +427,43 @@ export function mountNewIslands(): void {
     if (!name) continue;
     warnIfNestedIsland(el, name);
     scheduleMount(manifest, el, name, "render");
+  }
+}
+
+/**
+ * Consume the cross-package "needs-remount" signal for the persist-props hybrid
+ * path (port-spec §12.3.1 hybrid case / §12.3.2). When a persisted island's
+ * props differ from the incoming markup, `swapBodyElement` refreshes the
+ * surviving element's `data-props` and marks it with `ISLAND_REMOUNT_ATTR`.
+ * That attribute is the ONLY channel that crosses the zfb-runtime → zfb package
+ * boundary — the `mounted` map is module-private to this file, so a shared
+ * in-memory "needs-remount" queue between the two packages is impossible; the
+ * live DOM node carrying the flag IS the queue.
+ *
+ * On a flagged element: fire the old instance's unmount thunk (so its
+ * useEffect/framework cleanups run against the still-connected node), drop the
+ * `mounted` entry so `scheduleMount`'s guard no longer short-circuits, and strip
+ * the flag so the remount happens exactly once. A no-op for elements without the
+ * flag (the common case: fresh markers and props-unchanged persisted islands).
+ *
+ * Scope: only the `[data-zfb-island]` (hydrated) loop calls this, mirroring the
+ * writer side — swapBodyElement sets the flag only for `newTarget.matches(
+ * "[data-zfb-island]")`, never for skip-ssr islands. Known v1 limitations for the
+ * niche props-changed hybrid path (tracked as a follow-up): (1) if the island's
+ * per-island bundle import is still in `pending` at swap time, the follow-up
+ * scheduleMount is blocked by the pending guard and the eventual mount uses the
+ * props captured before the swap; (2) a deferred (`data-when` idle/visible/media)
+ * island is unmounted synchronously here but re-mounts only when its scheduler
+ * next fires, so it can briefly blank. Both require the rare persist-props path
+ * plus a deferred/in-flight island; the common `data-when="load"` case is exact.
+ */
+function clearMountedForRemount(el: Element): void {
+  if (!el.hasAttribute(ISLAND_REMOUNT_ATTR)) return;
+  el.removeAttribute(ISLAND_REMOUNT_ATTR);
+  const thunk = mounted.get(el);
+  if (thunk) {
+    thunk();
+    mounted.delete(el);
   }
 }
 
@@ -665,7 +720,8 @@ function fireInlineMount(element: Element, mod: IslandModule, mode: "hydrate" | 
 }
 
 /**
- * Unmount all currently-mounted islands within `root` (default: `document.body`).
+ * Unmount the mounted islands within `root` (default: `document.body`) that will
+ * NOT survive the body swap.
  *
  * Walks `root` for `[data-zfb-island]` and `[data-zfb-island-skip-ssr]` elements,
  * looks up each element's unmount thunk in the `mounted` WeakMap, calls it (which
@@ -675,18 +731,58 @@ function fireInlineMount(element: Element, mod: IslandModule, mode: "hydrate" | 
  * Call this before `swapBodyElement(...)` so the OLD body's islands receive proper
  * framework lifecycle cleanup (useEffect teardowns, etc.) before being discarded.
  *
+ * When `incomingBody` is supplied (the client-router passes the parsed incoming
+ * document body), any island whose `data-zfb-transition-persist` id matches a
+ * marker in that body is DELIBERATELY SKIPPED: swapBodyElement will physically
+ * lift the node into the new body, so its component instance and internal state
+ * must survive — unmounting it here would empty the container before the lift and
+ * defeat the persist contract (issue #1389). Omit `incomingBody` (or pass null)
+ * to unmount everything, the pre-#1389 behavior.
+ *
  * No-op for elements not in the `mounted` map (e.g. never-mounted or already cleaned up).
  */
-export function unmountIslands(root: ParentNode = document.body): void {
+export function unmountIslands(
+  root: ParentNode = document.body,
+  incomingBody?: ParentNode | null,
+): void {
   const selector = "[data-zfb-island],[data-zfb-island-skip-ssr]";
+  // Persist ids that `swapBodyElement` will physically LIFT from the old body
+  // into the incoming body — an old marker survives iff the incoming body has a
+  // marker with the same `data-zfb-transition-persist` id. Those DOM nodes are
+  // moved, not discarded, so their component instance and internal state MUST
+  // survive the swap: skip their framework unmount here or the persist contract
+  // preserves nothing (port-spec §12.3.1 case (a) / issue #1389). A persisted
+  // island whose props changed is skipped here too — its refreshed remount runs
+  // later in mountNewIslands via the `ssr` flag swapBodyElement sets. With no
+  // incoming body (a call outside a swap) nothing is preserved, so the walk is
+  // byte-identical to the pre-#1389 behavior.
+  const preservedPersistIds = collectPersistIds(incomingBody);
   const elements = root.querySelectorAll<HTMLElement>(selector);
   for (const el of Array.from(elements)) {
+    const persistId = el.getAttribute(PERSIST_ATTR);
+    if (persistId !== null && preservedPersistIds.has(persistId)) continue;
     const thunk = mounted.get(el);
     if (thunk) {
       thunk();
       mounted.delete(el);
     }
   }
+}
+
+/**
+ * Collect the `data-zfb-transition-persist` ids present in the incoming body so
+ * `unmountIslands` can tell which old-body islands `swapBodyElement` will lift
+ * (and therefore must be left mounted). Returns an empty set when no incoming
+ * body is supplied.
+ */
+function collectPersistIds(incomingBody?: ParentNode | null): Set<string> {
+  const ids = new Set<string>();
+  if (!incomingBody) return ids;
+  for (const el of incomingBody.querySelectorAll(`[${PERSIST_ATTR}]`)) {
+    const id = el.getAttribute(PERSIST_ATTR);
+    if (id !== null) ids.add(id);
+  }
+  return ids;
 }
 
 function readProps(element: Element): Record<string, unknown> {

@@ -14,6 +14,16 @@ export type SavedFocus = {
 
 const PERSIST_ATTR = "data-zfb-transition-persist";
 
+// Cross-package "needs-remount" flag written onto a persisted island whose props
+// changed across the swap. @takazudo/zfb's mountNewIslands consumes it — the
+// island mounted-map lives in that separate package, so a DOM attribute is the
+// only channel the two packages share. Namespaced under data-zfb-* like every
+// other zfb marker so it can't collide with a bare attribute a consumer sets on
+// the same island root. Replaces the opaque `ssr` attribute the original Astro
+// port set here but nothing consumed — zfb islands are marker divs, not
+// <astro-island> custom elements. See client-router/port-spec.md §12.3 / #1389.
+const ISLAND_REMOUNT_ATTR = "data-zfb-island-remount";
+
 const NON_OVERRIDABLE_ZFB_ATTRS = ["data-zfb-transition", "data-zfb-transition-fallback"];
 
 // Consumers extend the preserve-set via <meta name="zfb-preserve-html-attrs"
@@ -159,13 +169,21 @@ export function swapBodyElement(newElement: Element, oldElement: Element) {
     } else {
       newTarget.replaceWith(el);
     }
-    // For islands, copy over the props to allow them to re-render
+    // Persist-props hybrid path (port-spec §12.3.1 hybrid case / §12.3.2): the
+    // persisted island survived the lift with its live component instance, but
+    // the incoming page carries different props. Refresh data-props on the
+    // surviving node and flag it with ISLAND_REMOUNT_ATTR. That flag is the
+    // cross-package "needs-remount" signal consumed by @takazudo/zfb's
+    // mountNewIslands (clearMountedForRemount): it can't be an in-memory queue
+    // because the islands runtime's mounted-map lives in a different package, so
+    // the flagged DOM node itself is the queue. mountNewIslands unmounts the
+    // stale instance and re-mounts against this node with the new data-props.
     if (
       newTarget.matches("[data-zfb-island]") &&
       shouldCopyProps(el as HTMLElement) &&
       !isSameProps(el, newTarget)
     ) {
-      el.setAttribute("ssr", "");
+      el.setAttribute(ISLAND_REMOUNT_ATTR, "");
       // zfb island wrapper writes SSR props to data-props, not props (different attribute, not just renamed).
       const np = newTarget.getAttribute("data-props");
       if (np !== null) el.setAttribute("data-props", np);
