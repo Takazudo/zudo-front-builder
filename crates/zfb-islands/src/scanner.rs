@@ -204,8 +204,8 @@ pub struct ScanMeta {
     /// needs.
     ///
     /// Empty for the overwhelming common case (no `import.meta.glob`
-    /// anywhere in the island graph) — zero cost callers need to pay
-    /// attention to.
+    /// anywhere in the island graph) — nothing new for callers to react to
+    /// in that common case.
     ///
     /// The caller (`build_default_islands_payload` / `rebundle_islands` in
     /// `crates/zfb/src/commands`) turns a non-empty list into a build-time
