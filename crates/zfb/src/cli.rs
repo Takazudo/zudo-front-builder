@@ -44,9 +44,11 @@ pub struct NewArgs {
     /// Name of the new project (used as the destination directory).
     pub name: String,
 
-    /// Template to scaffold from. v0 ships a single template:
-    /// `basic-blog`, sourced from `crates/zfb/templates/basic-blog/` and
-    /// baked into the binary at compile time.
+    /// Template to scaffold from. v0 ships two templates, sourced from
+    /// `crates/zfb/templates/<name>/` and baked into the binary at compile
+    /// time: `basic-blog` (default, ships a `package.json`) and
+    /// `node-free` (no `package.json` / no `pnpm install` step, for
+    /// projects run with no Node/pnpm on `PATH`).
     #[arg(long, default_value = "basic-blog")]
     pub template: String,
 }
