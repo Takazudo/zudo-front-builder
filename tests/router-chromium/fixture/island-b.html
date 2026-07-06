@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="zfb-view-transitions-enabled" content="" />
+    <meta name="zfb-view-transitions-fallback" content="animate" />
+    <title>Island B</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 0;
+      }
+      nav {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        display: flex;
+        gap: 1rem;
+        padding: 0.75rem 1rem;
+        background: #fff;
+        border-bottom: 1px solid #ccc;
+        z-index: 10;
+      }
+      main {
+        padding: 4rem 1rem 1rem;
+      }
+    </style>
+    <!--
+      Same real (non-stub) island runtime as island-a.html — see that file's
+      header comment. The "counter" persist id below MUST match island-a.html's
+      so swapBodyElement can find the matching target and lift the node.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@takazudo/zfb/runtime": "/island-real.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <nav>
+      <a href="/island-a.html" id="to-island-a">Island A</a>
+      <a href="/island-b.html" id="to-island-b">Island B</a>
+    </nav>
+    <main>
+      <h1>Island B</h1>
+      <div data-counter-island data-zfb-transition-persist="counter" id="counter-persist">
+        <span data-counter-value id="persist-value">0</span>
+        <button data-counter-inc id="persist-inc" type="button">+1 persist</button>
+      </div>
+      <div data-counter-island id="counter-plain">
+        <span data-counter-value id="plain-value">0</span>
+        <button data-counter-inc id="plain-inc" type="button">+1 plain</button>
+      </div>
+    </main>
+    <!--
+      Keep this script's textContent byte-identical to island-a.html's — see
+      that file's comment above its own copy for why.
+    -->
+    <script type="module">
+      import { init } from "/dist/client-router/router.js";
+      import { init as prefetchInit } from "/dist/client-router/prefetch.js";
+      import { mountNewIslands } from "/island-real.js";
+      init();
+      prefetchInit();
+      mountNewIslands();
+    </script>
+  </body>
+</html>
