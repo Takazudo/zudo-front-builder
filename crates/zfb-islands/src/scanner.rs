@@ -177,6 +177,45 @@ pub struct ScanMeta {
     /// island-free on purpose, so a quiet info note suffices and the
     /// verify-hint would be pure noise.
     pub near_miss_candidates: usize,
+
+    /// Sorted, deduped paths of every module reachable from a `"use
+    /// client"` island whose source contains an `import.meta.glob(...)`
+    /// call expression (issue #1387, stopgap for #1385 pt.1).
+    ///
+    /// "Reachable from an island" means: the island's own source file
+    /// (a module carrying a valid — see [`has_use_client_directive`] —
+    /// `"use client"` directive), or any module transitively imported
+    /// from it, following the exact same edges the DFS in
+    /// [`scan_islands_with_meta`] already walks. This is computed by a
+    /// second, smaller forward walk seeded from every discovered island
+    /// module over the edge set gathered during the shared DFS — not a
+    /// fresh page-rooted walk — so a module that uses `import.meta.glob`
+    /// but is reachable ONLY from server-only pages/layouts (never from
+    /// an island) is deliberately excluded: that usage is already
+    /// supported by `zfb-build`'s SSR shadow materialisation and must not
+    /// regress.
+    ///
+    /// Detection is presence-only — ANY call shape (eager, lazy/default,
+    /// dynamic `import()` mode, …) is recorded, unlike zfb-build's
+    /// `GlobCallCollector` which validates the call's arguments. The
+    /// islands esbuild pipeline does not expand `import.meta.glob` in any
+    /// form yet, so every shape ships the literal call to the browser and
+    /// throws at hydration — presence alone is the signal this stopgap
+    /// needs.
+    ///
+    /// Empty for the overwhelming common case (no `import.meta.glob`
+    /// anywhere in the island graph) — nothing new for callers to react to
+    /// in that common case.
+    ///
+    /// The caller (`build_default_islands_payload` / `rebundle_islands` in
+    /// `crates/zfb/src/commands`) turns a non-empty list into a build-time
+    /// error (or, in dev mode, a warning that skips the rebundle) naming
+    /// the offending file(s) and linking
+    /// <https://github.com/Takazudo/zudo-front-builder/issues/1385>. When
+    /// the full islands-shadow fix lands, only the *condition* consuming
+    /// this field needs to relax (e.g. narrow it to still-unsupported
+    /// forms) — the detection here does not need to change.
+    pub glob_reachable_from_islands: Vec<PathBuf>,
 }
 
 /// Abstraction over module resolution + source reading.
@@ -1328,6 +1367,18 @@ pub fn scan_islands_with_meta<R: Resolver>(
     // substring but contributed no island — likely a misplaced /
     // misspelled directive the empty-islands warning should point at.
     let mut near_miss_candidates: usize = 0;
+    // Issue #1387: import-graph edges (importer -> resolved specifier),
+    // recorded for EVERY resolved specifier regardless of whether the
+    // target was already visited — the later island-reachability walk
+    // needs the full edge set, not just the newly-discovered frontier the
+    // main DFS stack tracks.
+    let mut edges: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    // Per-module "does this file's source contain an `import.meta.glob`
+    // call anywhere" fact, recorded once per parsed module (issue #1387).
+    let mut glob_by_path: HashMap<PathBuf, bool> = HashMap::new();
+    // Resolved paths of every module carrying a valid `"use client"`
+    // directive — the roots for the island-reachability walk below.
+    let mut island_paths: HashSet<PathBuf> = HashSet::new();
 
     while let Some(current) = stack.pop() {
         if !visited.insert(current.clone()) {
@@ -1368,7 +1419,20 @@ pub fn scan_islands_with_meta<R: Resolver>(
         let cr_facts =
             collect_client_router_facts(&module, |spec| resolver.resolve(&importer_dir, spec));
 
+        // Issue #1387: record whether THIS module's source contains an
+        // `import.meta.glob(...)` call anywhere, keyed by its resolved
+        // path — consumed by the island-reachability walk after the DFS
+        // finishes.
+        glob_by_path.insert(current.clone(), contains_import_meta_glob(&module));
+
         if has_use_client_directive(&module) {
+            // Issue #1387: any module carrying a valid `"use client"`
+            // directive is an island-reachability root, regardless of
+            // whether it goes on to export a mountable component below —
+            // a directive-bearing file that itself calls
+            // `import.meta.glob` is exactly the crash scenario #1385
+            // describes.
+            island_paths.insert(current.clone());
             let records = exported_island_records(&module);
             if records.is_empty() {
                 // Issue #822: a valid `"use client"` module that exports
@@ -1408,6 +1472,14 @@ pub fn scan_islands_with_meta<R: Resolver>(
         // genuinely runtime-only specifiers like `preact/hooks`.
         for specifier in collect_import_specifiers(&module) {
             if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                // Issue #1387: record the edge regardless of whether
+                // `resolved` was already visited — the island-reachability
+                // walk below needs the full edge set, not just the edges
+                // that happened to extend the DFS frontier.
+                edges
+                    .entry(current.clone())
+                    .or_default()
+                    .push(resolved.clone());
                 if !visited.contains(&resolved) {
                     stack.push(resolved);
                 }
@@ -1417,13 +1489,100 @@ pub fn scan_islands_with_meta<R: Resolver>(
         client_router_facts.insert(current, cr_facts);
     }
 
+    // Issue #1387: forward walk from every island root over `edges`,
+    // collecting every reachable module that contains an
+    // `import.meta.glob` call. Deliberately a SEPARATE, smaller walk from
+    // the main DFS above (which is rooted at `pages`, a superset that
+    // also includes server-only modules never reachable from an island)
+    // — reusing its `edges` and `glob_by_path` facts rather than
+    // re-parsing anything.
+    let mut glob_reachable_from_islands: std::collections::BTreeSet<PathBuf> =
+        std::collections::BTreeSet::new();
+    let mut island_reach_visited: HashSet<PathBuf> = HashSet::new();
+    let mut island_reach_stack: Vec<PathBuf> = island_paths.into_iter().collect();
+    while let Some(node) = island_reach_stack.pop() {
+        if !island_reach_visited.insert(node.clone()) {
+            continue;
+        }
+        if glob_by_path.get(&node).copied().unwrap_or(false) {
+            glob_reachable_from_islands.insert(node.clone());
+        }
+        if let Some(children) = edges.get(&node) {
+            for child in children {
+                if !island_reach_visited.contains(child) {
+                    island_reach_stack.push(child.clone());
+                }
+            }
+        }
+    }
+
     Ok((
         found.into_values().collect(),
         ScanMeta {
             uses_client_router: resolve_client_router_usage(&client_router_facts),
             near_miss_candidates,
+            glob_reachable_from_islands: glob_reachable_from_islands.into_iter().collect(),
         },
     ))
+}
+
+/// Return `true` iff `module`'s source contains at least one
+/// `import.meta.glob(...)` call expression anywhere in its body (issue
+/// #1387). ANY form counts — eager, lazy/default, dynamic `import()`
+/// mode, unsupported options, … — because unlike `zfb-build`'s bundler
+/// (which validates the call's arguments since it actually expands the
+/// supported eager-literal form), the islands esbuild pipeline does not
+/// expand `import.meta.glob` in any form yet: every shape ships the
+/// literal call to the browser and throws at hydration.
+///
+/// Mirrors the visitor shape of zfb-build's `GlobCallCollector`
+/// (`crates/zfb-build/src/bundler.rs`) but only needs a presence bit, not
+/// byte spans or argument validation.
+fn contains_import_meta_glob(module: &Module) -> bool {
+    use swc_core::ecma::visit::{Visit, VisitWith};
+
+    struct GlobCallFinder {
+        found: bool,
+    }
+
+    impl Visit for GlobCallFinder {
+        fn visit_call_expr(&mut self, node: &swc_core::ecma::ast::CallExpr) {
+            if self.found {
+                return;
+            }
+            if is_import_meta_glob_callee(node) {
+                self.found = true;
+                return;
+            }
+            // Recurse so a nested call (e.g. inside an arrow body) is
+            // still found.
+            node.visit_children_with(self);
+        }
+    }
+
+    let mut finder = GlobCallFinder { found: false };
+    module.visit_with(&mut finder);
+    finder.found
+}
+
+/// `true` iff `call`'s callee is exactly the `import.meta.glob` member
+/// expression — the same callee shape zfb-build's
+/// `parse_import_meta_glob_call` matches, minus the argument validation
+/// (see [`contains_import_meta_glob`] for why presence alone is enough
+/// here).
+fn is_import_meta_glob_callee(call: &swc_core::ecma::ast::CallExpr) -> bool {
+    use swc_core::ecma::ast::{Callee, Expr, MemberProp, MetaPropKind};
+
+    let Callee::Expr(callee_expr) = &call.callee else {
+        return false;
+    };
+    let Expr::Member(member) = &**callee_expr else {
+        return false;
+    };
+    if !matches!(&member.prop, MemberProp::Ident(i) if i.sym == "glob") {
+        return false;
+    }
+    matches!(&*member.obj, Expr::MetaProp(mp) if mp.kind == MetaPropKind::ImportMeta)
 }
 
 /// Bare specifier of the `@takazudo/zfb-runtime` barrel package.
@@ -6590,6 +6749,227 @@ mod tests {
         assert_eq!(
             meta.near_miss_candidates, 0,
             "a correctly-authored island must not be counted as a near-miss"
+        );
+    }
+
+    // --- `import.meta.glob` reachable from an island (issue #1387,
+    // --- stopgap for #1385 pt.1) -----------------------------------------
+
+    #[test]
+    fn glob_absent_reports_empty_glob_reachable_from_islands() {
+        // Baseline / zero-regression: a normal island with no
+        // `import.meta.glob` anywhere must report an empty list.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Counter } from "../components/counter";
+                export default function Home() { return <Counter/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/counter.tsx"),
+                r#""use client";
+                export function Counter() {}
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            meta.glob_reachable_from_islands.is_empty(),
+            "no import.meta.glob anywhere: {:?}",
+            meta.glob_reachable_from_islands
+        );
+    }
+
+    #[test]
+    fn eager_glob_in_island_itself_is_detected() {
+        // The island's own file calls `import.meta.glob` directly — the
+        // simplest crash scenario #1385 describes.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Gallery } from "../components/gallery";
+                export default function Home() { return <Gallery/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/gallery.tsx"),
+                r#""use client";
+                const images = import.meta.glob('./images/*.png', { eager: true });
+                export function Gallery() { return null; }
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            meta.glob_reachable_from_islands,
+            vec![root().join("components/gallery.tsx")],
+            "eager glob in the island file itself must be flagged"
+        );
+    }
+
+    #[test]
+    fn lazy_default_glob_in_island_is_also_detected() {
+        // Detection is presence-only, NOT form-validated — the islands
+        // esbuild pipeline doesn't expand ANY form of `import.meta.glob`
+        // yet, so the lazy/default form (no `{ eager: true }`) must be
+        // flagged just as loudly as the eager form.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Gallery } from "../components/gallery";
+                export default function Home() { return <Gallery/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/gallery.tsx"),
+                r#""use client";
+                const images = import.meta.glob('./images/*.png');
+                export function Gallery() { return null; }
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            meta.glob_reachable_from_islands,
+            vec![root().join("components/gallery.tsx")],
+            "lazy/default-form glob must be flagged too (presence-only detection)"
+        );
+    }
+
+    #[test]
+    fn glob_in_module_transitively_imported_by_island_is_detected() {
+        // The island file itself is clean; the glob call lives in a
+        // helper module the island imports. The reachability walk must
+        // follow that edge and name the HELPER's path, not the island's.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Gallery } from "../components/gallery";
+                export default function Home() { return <Gallery/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/gallery.tsx"),
+                r#""use client";
+                import { images } from "./gallery-data";
+                export function Gallery() { return null; }
+                "#,
+            )
+            .with_file(
+                root().join("components/gallery-data.tsx"),
+                r#"export const images = import.meta.glob('./images/*.png', { eager: true });
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            meta.glob_reachable_from_islands,
+            vec![root().join("components/gallery-data.tsx")],
+            "glob in a module imported BY the island must be flagged, naming that module"
+        );
+    }
+
+    #[test]
+    fn glob_reachable_only_from_a_server_only_page_is_not_flagged() {
+        // Precision guard: `import.meta.glob` in a module reachable from
+        // a page but NEVER from any `"use client"` island is already
+        // supported by zfb-build's SSR shadow materialisation — this
+        // stopgap must NOT flag it, or every server-only project using
+        // the (working) eager-literal glob form would regress into a
+        // build failure.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { posts } from "../content/posts-loader";
+                export default function Home() { return null; }
+                "#,
+            )
+            .with_file(
+                root().join("content/posts-loader.tsx"),
+                r#"export const posts = import.meta.glob('./posts/*.mdx', { eager: true });
+                "#,
+            );
+
+        let (islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            islands.is_empty(),
+            "no islands in this fixture: {islands:?}"
+        );
+        assert!(
+            meta.glob_reachable_from_islands.is_empty(),
+            "server-only-reachable glob usage must not be flagged: {:?}",
+            meta.glob_reachable_from_islands
+        );
+    }
+
+    #[test]
+    fn glob_reachable_from_island_is_flagged_even_when_shared_with_a_server_page() {
+        // A helper imported by BOTH a plain page and an island: since it
+        // IS reachable from the island, it must still be flagged — the
+        // module ships to the browser as part of the island's bundle
+        // regardless of who else also imports it.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { shared } from "../components/shared-data";
+                import { Gallery } from "../components/gallery";
+                export default function Home() { return <Gallery/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/gallery.tsx"),
+                r#""use client";
+                import { shared } from "./shared-data";
+                export function Gallery() { return null; }
+                "#,
+            )
+            .with_file(
+                root().join("components/shared-data.tsx"),
+                r#"export const shared = import.meta.glob('./data/*.json', { eager: true });
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            meta.glob_reachable_from_islands,
+            vec![root().join("components/shared-data.tsx")],
+            "a module reachable from BOTH a page and an island is still flagged"
+        );
+    }
+
+    #[test]
+    fn glob_inside_string_or_comment_is_not_a_false_positive() {
+        // AST-based detection: a literal `import.meta.glob` substring
+        // inside a string or comment must not trip the check.
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Gallery } from "../components/gallery";
+                export default function Home() { return <Gallery/>; }
+                "#,
+            )
+            .with_file(
+                root().join("components/gallery.tsx"),
+                r#""use client";
+                // not a real call: import.meta.glob('./images/*.png')
+                const label = "import.meta.glob is not called here";
+                export function Gallery() { return null; }
+                "#,
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            meta.glob_reachable_from_islands.is_empty(),
+            "a comment/string mention of import.meta.glob must not be flagged: {:?}",
+            meta.glob_reachable_from_islands
         );
     }
 }

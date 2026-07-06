@@ -1548,6 +1548,10 @@ fn rebundle_islands(
     // (Package-owned build routes are a build-time concern; dev's
     // injected routes are served live, not materialised — #1193.) No
     // package-route entrypoints to seed in dev (codex P1 is build-only).
+    // Issue #1387 — `WarnAndSkip`: `import.meta.glob` reachable from an
+    // island warns and skips this rebundle tick instead of failing the
+    // whole watcher loop (unlike `zfb build`'s `HardError`); the dev
+    // server stays up so the author can fix the file and save again.
     let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
         project_root,
         &project_root.join("pages"),
@@ -1555,6 +1559,7 @@ fn rebundle_islands(
         assets_root,
         framework,
         plugin_config,
+        crate::commands::build::IslandsGlobPolicy::WarnAndSkip,
     )?;
     // Rewrite the shared handle so the next initial GET (a fresh browser
     // tab, or a page that has not yet hydrated) sees the current bundle URL.
