@@ -14,6 +14,15 @@ pnpm create zfb@latest my-site
 npm create zfb@latest my-site
 ```
 
+<Note title="pnpm 11 note">
+
+pnpm 11's `minimumReleaseAge` may install a previous release of `create-zfb`
+within ~48h of any new release. If `create-zfb` warns about a stale install
+at startup, re-run with `pnpm create zfb@latest --config.minimumReleaseAge=0`
+or use `npm create zfb@latest` instead.
+
+</Note>
+
 This runs the `create-zfb` initializer, which calls `zfb new` under the hood and copies the bundled `basic-blog` template into `my-site/`. If pnpm is on your `PATH`, zfb runs `pnpm install` automatically right after copying the template; otherwise it prints a short note telling you to run it yourself.
 
 ```bash
