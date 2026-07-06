@@ -46,14 +46,21 @@ pub enum FeatureToggle {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FeatureOptions {}
 
-/// Options for the `githubAutolinks` feature. Requires `repo`.
+/// Options for the `githubAutolinks` feature — rewrites bare `#123`,
+/// `user/repo#456`, and commit-SHA references into GitHub links (see
+/// `zfb_md_extras::github_autolinks` for the recognised patterns).
 ///
-/// TODO: fill in actual fields when the githubAutolinks feature is ported.
+/// `repo` is required: `githubAutolinks: {}` (repo absent/`None`) is a
+/// config error — `register_features` (`zfb-content::pipeline`) emits a
+/// build-blocking diagnostic rather than silently skipping the feature
+/// (#1392).
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GithubAutolinksConfig {
-    /// GitHub repository reference (`owner/repo`) used to build autolink URLs.
-    // Required by the githubAutolinks feature spec; value is set by users.
+    /// GitHub repository reference (`owner/repo`) used to build autolink URLs
+    /// (e.g. `"owner/repo"` renders `#123` as
+    /// `https://github.com/owner/repo/issues/123`). Required — see the
+    /// struct-level doc comment.
     #[serde(default)]
     pub repo: Option<String>,
 }
@@ -551,11 +558,16 @@ pub struct MarkdownFeaturesConfig {
     #[serde(default)]
     pub image_dimensions: Option<ImageDimensionsConfig>,
 
-    /// Validate internal and external links at build time.
+    /// Validate internal links (file-relative paths and anchor fragments) at
+    /// build time. External URLs (`http://`, `https://`, `mailto:`, etc.) are
+    /// always skipped — network validation is out of scope (see
+    /// `zfb_md_extras::link_validation`).
     #[serde(default)]
     pub link_validation: Option<LinkValidationConfig>,
 
-    /// Transclusion of other MDX files (`![[path]]` syntax).
+    /// Transclusion of other markdown/MDX files via
+    /// `:::include{file="./path.md"}` (see `zfb_md_extras::transclude`) —
+    /// NOT the Obsidian `[[path]]` wikilink syntax.
     #[serde(default)]
     pub transclude: Option<TranscludeConfig>,
 

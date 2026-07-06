@@ -24,8 +24,9 @@
 //! # Config
 //!
 //! Wire via `features.githubAutolinks: { repo: "owner/repo" }` in
-//! `zfb.config.ts`. The `repo` field is required — if absent, the feature is
-//! silently disabled (see `register_features` in `zfb-content::pipeline`).
+//! `zfb.config.ts`. The `repo` field is required — if absent, `register_features`
+//! (`zfb-content::pipeline`) emits a build-blocking config-error diagnostic
+//! instead of silently skipping the feature (#1392).
 //!
 //! # Wave 5 (#574)
 //!

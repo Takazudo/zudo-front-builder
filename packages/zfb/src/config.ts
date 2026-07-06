@@ -769,14 +769,21 @@ export type FeatureToggle = boolean | FeatureOptions;
 export type FeatureOptions = Record<string, never>;
 
 /**
- * Options for the `githubAutolinks` feature. Requires `repo`.
+ * Options for the `githubAutolinks` feature — rewrites bare `#123`,
+ * `user/repo#456`, and commit-SHA references into GitHub links.
  *
- * TODO: fill in actual fields when the githubAutolinks feature is ported.
+ * `repo` is required: `githubAutolinks: {}` (repo absent) is a config error
+ * — the Rust pipeline emits a build-blocking diagnostic rather than
+ * silently skipping the feature.
  *
- * Mirrors `GithubAutolinksConfig` in crates/zfb/src/config.rs.
+ * Mirrors `GithubAutolinksConfig` in `crates/zfb-md-ast/src/features_config.rs`.
  */
 export type GithubAutolinksConfig = {
-  /** GitHub repository reference (`owner/repo`) used to build autolink URLs. */
+  /**
+   * GitHub repository reference (`owner/repo`) used to build autolink URLs
+   * (e.g. `"owner/repo"` renders `#123` as
+   * `https://github.com/owner/repo/issues/123`). Required — see above.
+   */
   repo?: string;
 };
 
@@ -917,10 +924,18 @@ export type MarkdownFeaturesConfig = {
   /** Auto-detect and inject `width`/`height` on `<img>` elements. */
   imageDimensions?: ImageDimensionsConfig;
 
-  /** Validate internal and external links at build time. */
+  /**
+   * Validate internal links (file-relative paths and anchor fragments) at
+   * build time. External URLs are always skipped — network validation is
+   * out of scope.
+   */
   linkValidation?: LinkValidationConfig;
 
-  /** Transclusion of other MDX files (`![[path]]` syntax). */
+  /**
+   * Transclusion of other markdown/MDX files via
+   * `:::include{file="./path.md"}` — NOT the Obsidian `[[path]]` wikilink
+   * syntax.
+   */
   transclude?: TranscludeConfig;
 
   /**
