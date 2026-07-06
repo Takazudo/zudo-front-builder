@@ -1,0 +1,85 @@
+---
+title: Troubleshooting
+description: Known failure modes with concrete fixes — install script errors, musl/Alpine, unsupported import.meta.glob forms, out-of-root imports, and missing esbuild binaries.
+sidebar_position: 9
+---
+
+<Info title="What this page covers">
+
+A symptom-first index of failure modes that come up often enough to be worth
+naming directly, each with the exact message you'll see and the fix. If your
+problem isn't here, the linked concept/guide pages cover the full behavior
+each feature is built on.
+
+</Info>
+
+## `curl | sh` install fails to resolve a release tag
+
+**Symptom:** the [curl installer](../install/node-free.mdx#linux-macos-—-curl) exits with one of:
+
+```
+error: could not resolve the latest release tag from GitHub API
+```
+
+```
+error: could not resolve the latest prerelease tag from GitHub API (no prerelease found in the last 30 releases)
+```
+
+**Cause:** `install.sh` resolves a tag from the GitHub Releases API before downloading anything.
+
+- With `ZFB_VERSION` unset, it asks for the latest **non-prerelease** release. Pre-1.0, zfb has shipped only prereleases (`v0.1.0-next.N`) — there is no stable release to resolve yet, so this fails by design. See the note in [Install without Node](../install/node-free.mdx#linux-macos-—-curl).
+- With `ZFB_VERSION=latest-prerelease`, it scans the most recent 30 releases for one flagged `"prerelease": true`. If none of the last 30 is a prerelease (for example, several stable releases have since shipped and prereleases have rolled off that window), resolution fails the same way.
+
+**Fix:**
+
+- Pre-1.0 (no stable release exists yet): explicitly opt into prereleases —
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION=latest-prerelease sh
+  ```
+
+- If `latest-prerelease` itself fails to resolve: pin an exact tag from the [releases page](https://github.com/Takazudo/zudo-front-builder/releases) instead, e.g. `ZFB_VERSION=v0.1.0-next.76`.
+
+## `musl/Alpine is not supported yet`
+
+**Symptom:**
+
+```
+[zfb] musl/Alpine is not supported yet — no @takazudo/zfb-linux-*-musl package exists.
+      Use a glibc-based Linux image (e.g. Debian/Ubuntu) instead of Alpine.
+```
+
+**Cause:** zfb ships prebuilt, glibc-linked platform binaries only — no `@takazudo/zfb-linux-*-musl` package exists. The npm wrapper (`packages/zfb/bin/detect-musl.mjs`) detects a musl runtime (Alpine's `/lib/ld-musl-*` dynamic loader, or the absence of a glibc version in Node's own runtime report) and fails with this friendly message instead of letting the glibc binary crash with an opaque dynamic-loader error. The standalone curl/PowerShell installers can't detect musl this way (they only check OS/CPU) and will download a glibc binary that then fails to execute outright.
+
+**Fix:** use a glibc-based Linux base image (Debian, Ubuntu) instead of Alpine — in a Dockerfile, a CI runner, or any container image. There is no workaround that runs zfb natively on musl today; see [Installation](../getting-started/installation.mdx#supported-platforms) and [Install without Node](../install/node-free.mdx#supported-platforms) for the supported platform matrix.
+
+## `import.meta.glob(...)` build error
+
+**Symptom**, from `zfb build` (or a warning + skipped rebundle from `zfb dev`):
+
+```
+zfb islands: `import.meta.glob(...)` is only supported in the eager string-literal
+form (`import.meta.glob('<literal>', { eager: true })`) in files reachable from a
+"use client" island. The following remain unsupported and would ship to the browser
+unexpanded (throwing at hydration): <file> — ...
+```
+
+**Cause:** `import.meta.glob` is a Vite-only build-time macro; esbuild (which bundles islands) has no native understanding of it, so zfb expands the one supported shape itself before esbuild ever sees the file. Only `import.meta.glob("<string-literal>", { eager: true })`, with the pattern resolving under the importing file's own directory, is supported for a file reachable from a `"use client"` island. Everything else — the default lazy form, `{ eager: false }`, a non-literal pattern, the `import`/`query`/`as` options, or a `../`-escaping pattern — is rejected.
+
+**Fix:** see [Islands: `import.meta.glob` support](../concepts/islands.mdx#import-meta-glob-support) for the full support matrix and alternatives (a plugin virtual module, or explicit static imports). Note that **client scripts** (`*.client.ts`) don't support `import.meta.glob` at all, and — unlike islands — that failure is *not* caught at build time; see [Client Scripts: `import.meta.glob` is not supported](./client-scripts.mdx#import-meta-glob-is-not-supported).
+
+## A relative import "Could not resolve" outside the project root
+
+**Symptom:** `zfb build` (or `zfb dev`) fails with an esbuild `Could not resolve "../../../somewhere/outside.ts"` error, and the accompanying zfb note explains a "shadow-copy build boundary."
+
+**Cause:** zfb builds by shadow-copying the project root into a temporary directory before running esbuild. A relative import that walks above the project root (e.g. `../../../../packages/ui/src/button.tsx`) resolves outside that shadow copy and cannot be found. This is diagnose-only, not a resolvable bug — the underlying escape stays unsupported; zfb only makes the *reported* error name the real (non-shadow) path and explain the workaround instead of leaking a meaningless temp-directory path.
+
+**Fix:** expose the out-of-root target as a package import instead of a relative one — add a wildcard `exports` entry to the target package's `package.json` (e.g. `"./src/*": "./src/*"`) and import it by package specifier (e.g. `@scope/pkg/src/button.tsx`). `node_modules` (including `file:`/workspace-linked packages) IS included in the shadow copy, so package-specifier imports resolve normally. Full details: [`defineConfig`: Watching paths outside the project root](../api/define-config.mdx#watching-paths-outside-the-project-root); tracked at [issue #1385](https://github.com/Takazudo/zudo-front-builder/issues/1385).
+
+## `esbuild binary not found` from an embedded `zfb-server`
+
+**Symptom:** a Rust host embedding `zfb-server` (see [Embed as library](./embed-as-library.mdx)) fails with an "esbuild binary not found" error when `config_path` points at a `zfb.config.ts` file.
+
+**Cause:** evaluating a TypeScript config first bundles it with esbuild, and an embedded `zfb-server` does not ship its own esbuild binary the way the `zfb` CLI does.
+
+**Fix:** either switch `config_path` to a `zfb.config.json` file (no esbuild needed at all — the simplest fix), or set the `ZFB_ESBUILD_BIN` environment variable to a usable esbuild CLI binary before calling `build()`. See [Embed as library: config format](./embed-as-library.mdx#config-format-prefer-zfb-config-json) for the full explanation.
