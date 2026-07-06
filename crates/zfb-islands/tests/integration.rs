@@ -615,6 +615,135 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
 }
 
 // -----------------------------------------------------------------------------
+// CSS-import policy (#1395) — real-esbuild integration
+//
+// Pre-fix, an island importing a `.css` file failed the build: the islands
+// esbuild arg set had no `--loader:.css=empty` policy (unlike the SSR
+// bundler), so esbuild wrote a sibling CSS output file that
+// `read_back_outdir`/`validate_chunk_filename` rejected as "esbuild emitted
+// an unexpected output file". These tests pin the fix — plain `.css` and
+// `.module.css` imports must both bundle successfully.
+// -----------------------------------------------------------------------------
+
+/// Acceptance (#1395): an island importing a plain `.css` file must bundle
+/// without error under the `--loader:.css=empty` policy in
+/// `build_esbuild_args_with_entry_name`.
+#[test]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
+fn island_css_import_bundles_without_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    stage_minimal_node_modules(tmp.path());
+
+    std::fs::write(
+        tmp.path().join("styles.css"),
+        ".zfb_css_import_marker { color: red; }\n",
+    )
+    .expect("write styles.css");
+
+    let island_src = tmp.path().join("island.tsx");
+    std::fs::write(
+        &island_src,
+        "import \"./styles.css\";\n\
+         export default function Island() { return null; }\n",
+    )
+    .expect("write island");
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
+    );
+    let cfg = BundleConfig::production()
+        .with_outdir(tmp.path().join("dist"))
+        .with_minify(false);
+
+    let out = bundler
+        .bundle(&[Island::new("Island", island_src)], &cfg)
+        .expect(
+            "island importing a plain .css file must bundle successfully under \
+             the --loader:.css=empty policy (issue #1395)",
+        );
+
+    // Bundler carries bytes in memory — no disk write.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
+    assert!(!out.bytes.is_empty(), "entry bytes must be non-empty");
+    assert!(
+        out.chunks.is_empty(),
+        "no dynamic import in this fixture — zero chunks expected: {:?}",
+        out.chunks.iter().map(|c| &c.filename).collect::<Vec<_>>()
+    );
+
+    // `--loader:.css=empty` must have neutralised the CSS bytes — no raw
+    // CSS text leaks into the JS entry.
+    let entry = String::from_utf8(out.bytes).expect("entry bytes are valid UTF-8");
+    assert!(
+        !entry.contains("zfb_css_import_marker"),
+        "raw CSS bytes leaked into the islands JS bundle:\n{entry}"
+    );
+}
+
+/// Acceptance (#1395): an island importing a `.module.css` file must also
+/// bundle without error. Client-side CSS-modules class maps are OUT of
+/// scope for this bundle (see the `esbuild.rs` module doc's "CSS-import
+/// policy" section, and #1404/#1406) — `--loader:.css=empty` also matches
+/// `.module.css` (no more specific rule is registered for the islands
+/// bundle), so the imported default resolves to an empty object rather
+/// than a scoped class-name map. This test only pins "does not fail the
+/// build"; it deliberately does not assert a class-name map.
+#[test]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
+fn island_module_css_import_bundles_without_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    stage_minimal_node_modules(tmp.path());
+
+    std::fs::write(
+        tmp.path().join("x.module.css"),
+        ".zfb_module_css_marker { color: blue; }\n",
+    )
+    .expect("write x.module.css");
+
+    let island_src = tmp.path().join("island.tsx");
+    std::fs::write(
+        &island_src,
+        "import styles from \"./x.module.css\";\n\
+         export default function Island() { return styles; }\n",
+    )
+    .expect("write island");
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
+    );
+    let cfg = BundleConfig::production()
+        .with_outdir(tmp.path().join("dist"))
+        .with_minify(false);
+
+    let out = bundler
+        .bundle(&[Island::new("Island", island_src)], &cfg)
+        .expect(
+            "island importing a .module.css file must bundle successfully under \
+             the --loader:.css=empty policy (issue #1395); a scoped class-name \
+             map is out of scope, see #1404/#1406",
+        );
+
+    // Bundler carries bytes in memory — no disk write.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
+    assert!(!out.bytes.is_empty(), "entry bytes must be non-empty");
+    assert!(
+        out.chunks.is_empty(),
+        "no dynamic import in this fixture — zero chunks expected: {:?}",
+        out.chunks.iter().map(|c| &c.filename).collect::<Vec<_>>()
+    );
+
+    let entry = String::from_utf8(out.bytes).expect("entry bytes are valid UTF-8");
+    assert!(
+        !entry.contains("zfb_module_css_marker"),
+        "raw CSS bytes leaked into the islands JS bundle:\n{entry}"
+    );
+}
+
+// -----------------------------------------------------------------------------
 // Sub-task 3 — manifest emission (acceptance)
 //
 // The 2-island fixture under `fixtures/two-islands/` is the smallest realistic
