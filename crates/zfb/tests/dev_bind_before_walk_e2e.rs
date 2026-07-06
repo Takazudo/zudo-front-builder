@@ -927,7 +927,11 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
 ///
 /// Belt-and-braces: `GET /__zfb/reload` answers 200 within
 /// `FIRST_RESPONSE_DEADLINE` while the deferred bundle slow-step is still in
-/// flight — proof the serve path does not block on the deferred bundle.
+/// flight — proof the serve path does not block on the deferred bundle. And
+/// (issue #1390) `GET /` returns 200 with the seeded `dist/index.html` body
+/// during that same window — proof the boot-lazy prebuilt-`dist/` seed leg
+/// (`serve_page`'s Dev-gated `dist_root` fallback) actually serves pages,
+/// not just 404s, before the deferred renderer publishes.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_binds_and_serves_before_slow_bundle_step() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
@@ -1019,6 +1023,49 @@ async fn dev_binds_and_serves_before_slow_bundle_step() {
          dev-bundle slow-step was in flight — the serve path is blocking on the deferred \
          dev bundle (issue #1182).\n{}",
         FIRST_RESPONSE_DEADLINE.as_secs(),
+        session.logs(),
+    );
+
+    // Guarantee 3 (issue #1390 — the boot-lazy prebuilt-`dist/` seed is
+    // ACTUALLY served during the deferred window, not merely documented):
+    // `GET /` must return 200 with the seed body written above. During this
+    // window the renderer is not published (the deferred bundle slow-step is
+    // still sleeping) and no route has re-rendered into the dev HTML root, so
+    // the ONLY way `/` resolves to 200 is the Dev-gated `dist_root` seed leg
+    // in `serve_page` (`PageCache → html_root → public_root → dist_root → 404`).
+    // Before #1390 that leg did not exist and this GET returned the dev 404 —
+    // so this assertion is the e2e falsification of the missing leg.
+    let root_url = format!("{base}/");
+    let root_start = Instant::now();
+    let mut seed_body: Option<String> = None;
+    while root_start.elapsed() < FIRST_RESPONSE_DEADLINE {
+        if let Ok(resp) = client.get(&root_url).send().await {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            assert_eq!(
+                status,
+                200,
+                "GET / must serve the prebuilt dist/ seed with 200 during the deferred \
+                 window (issue #1390); got status {status}, body:\n{body}\n{}",
+                session.logs(),
+            );
+            seed_body = Some(body);
+            break;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    let seed_body = seed_body.unwrap_or_else(|| {
+        panic!(
+            "the dev server did not answer GET / within {}s of the banner while the \
+             deferred bundle slow-step was in flight (issue #1390).\n{}",
+            FIRST_RESPONSE_DEADLINE.as_secs(),
+            session.logs(),
+        )
+    });
+    assert!(
+        seed_body.contains("servable-dist-seed"),
+        "GET / must serve the prebuilt dist/index.html seed body during the deferred \
+         window (issue #1390 — the Dev-gated dist_root leg in serve_page); got body:\n{seed_body}\n{}",
         session.logs(),
     );
 

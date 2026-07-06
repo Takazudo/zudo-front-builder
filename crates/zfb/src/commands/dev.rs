@@ -232,11 +232,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // dev-only directory under `.zfb-build/` keeps the read-back working
     // while taking dev out of the production output's write set entirely.
     //
-    // The dev server's disk-fallback in `read_from_dist` intentionally
-    // still points at `dist_root` (not at `dev_html_root`): on a cold
-    // cache it serves whatever the most recent `pnpm build` left there,
-    // which is what users expect from "build, then dev for a quick check"
-    // and is now safe because dev no longer mutates that file.
+    // The dev server's page disk-fallback probes `dev_html_root` FIRST
+    // (issue #534 — dev's per-route renders land there, kept out of the
+    // production `dist_root` write set), then `public_root`, and finally
+    // the prebuilt `dist_root` as a Dev-only, last-resort boot-lazy seed
+    // (issues #1057 / #1182 / #1390, in `zfb-server` `serve_page`): on a
+    // cold cache it serves whatever the most recent `pnpm build` left
+    // there — "build, then dev for a quick check" — and is safe because
+    // dev only READS `dist_root`, never mutates it. Probed AFTER
+    // `public_root` (#1390) so a live `public/` edit is never shadowed by
+    // a stale build copy. The seed self-heals for HTML routes: once dev
+    // renders a route into `dev_html_root`, the fresh bytes win.
     let dev_html_root = dev_html_root_for(&project_root);
     // Guard against a pathological `outDir` (`.zfb-build/dev-pages`,
     // its parent, or anything that overlaps): when the dev HTML root
@@ -1134,11 +1140,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //
     //     REQUEST-BEFORE-RENDER RACE (eager mode): a GET can arrive
     //     before this task's boot render finishes. The dev server's serve
-    //     waterfall is `PageCache → html_root → dist_root → public_root →
+    //     waterfall is `PageCache → html_root → public_root → dist_root →
     //     404` (zfb-server `serve_page`): until the eager render writes a
     //     route's HTML, the request is served from the prebuilt `dist/`
-    //     (the `read_from_dist` leg, which points at `dist_root`) if a
-    //     servable copy exists, and otherwise gets the controlled
+    //     (the Dev-gated `read_from_dist(dist_root, …)` seed leg, last
+    //     before the 404) if a servable copy exists, and otherwise gets
+    //     the controlled
     //     `DEV_404_BODY` — a complete, well-formed HTML page carrying the
     //     live-reload script that auto-upgrades the moment the real render
     //     lands. It is NEVER a wrong/empty/partial body. This matches the
@@ -1378,36 +1385,41 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             //    synthesise a `BuildOutcome` carrying only the islands info.
             //    A single merged outcome is returned (one broadcast), never
             //    two.
-            // Issue #1182 — drain the routes the deferred publish marked stale.
-            // In a deferred boot, step 0 published the renderer and
-            // `run_boot_render`'s boot-lazy branch then staled every known
-            // route. Fold those into `pages_stale` so the single
+            // Issues #1182 / #1390 — drain the routes the boot task marked
+            // stale and fold them into `pages_stale` so the single
             // `run_with_boot` broadcast emits one `ReloadEvent::Page`
-            // (livereload.rs): a tab that loaded the prebuilt `dist/` during the
-            // pre-renderer window reloads, and its GET re-renders through the
-            // now-live request-time hook. Drained from the same tick buffer the
-            // pipeline's stale probe uses; the per-route stale map (claimable
-            // for request-time render) is untouched — this is the broadcast,
-            // not a second one. Empty and inert unless the bundle was deferred.
+            // (livereload.rs): a tab that loaded the prebuilt `dist/` seed
+            // during the pre-render window reloads, and its GET re-renders
+            // through the now-live request-time hook. Drained from the same
+            // tick buffer the pipeline's stale probe uses; the per-route stale
+            // map (claimable for request-time render) is untouched — this is
+            // the broadcast, not a second one.
             //
-            // Deliberately gated on `defer_dev_bundle`, NOT on boot-lazy: this
-            // reload only matters for the deferred window, where step 0 publishes
-            // the renderer AFTER bind so a tab may have loaded the prebuilt `dist/`
-            // first. When boot-lazy is on but NOT deferred — boot-lazy without a
-            // servable seed, or the #1188 `ZFB_DEV_DEFER_BUNDLE=0` opt-out —
-            // `boot_dev_renderer` built the V8 host + route tables EAGERLY before
-            // bind, so SSR routes render fresh through the live host on first
-            // request and no tab ever served stale/prebuilt content needing a
-            // reload. So the broadcast is correctly inert there (and the always-on
-            // islands reload above still fires regardless of this gate).
-            let boot_stale: Vec<PathBuf> = if defer_dev_bundle {
-                dev_session_for_boot
-                    .as_ref()
-                    .map(|s| s.inner.take_tick_stale())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+            // UNCONDITIONAL, not gated on `defer_dev_bundle` (was #1182, fixed
+            // in #1390). `take_tick_stale()` is the self-describing signal —
+            // it returns exactly the routes the boot task left marked stale —
+            // so gating on `defer_dev_bundle` was both unnecessary and a bug:
+            //   - Eager (non-boot-lazy) boot: `run_boot_render` renders every
+            //     route through `initial_build`, whose pipeline stale probe
+            //     ALREADY drained `tick_stale` into `outcome.pages_stale`. So
+            //     this drain returns empty and the `if !boot_stale.is_empty()`
+            //     fold below is inert — no behaviour change, no double-count.
+            //   - Deferred boot-lazy: step 0 published the renderer and
+            //     `run_boot_render`'s boot-lazy branch staled every route →
+            //     this drains + broadcasts them (the original #1182 case).
+            //   - Non-deferred boot-lazy (a servable seed present but the #1188
+            //     `ZFB_DEV_DEFER_BUNDLE=0` opt-out): `run_boot_render` STILL
+            //     takes its boot-lazy branch and calls `mark_all_routes_stale`
+            //     AFTER bind — but the old `defer_dev_bundle` gate suppressed
+            //     the broadcast, so a tab that loaded the prebuilt `dist/` seed
+            //     during the [bind → mark_all_routes_stale] window never got
+            //     the reload and stayed on stale seed bytes. Ungating delivers
+            //     it (the always-on islands reload above was never enough — it
+            //     re-imports the bundle but does not re-fetch the page HTML).
+            let boot_stale: Vec<PathBuf> = dev_session_for_boot
+                .as_ref()
+                .map(|s| s.inner.take_tick_stale())
+                .unwrap_or_default();
 
             let mut outcome = match (render_outcome, islands_info) {
                 (Some(mut outcome), Some(info)) => {
@@ -1670,9 +1682,10 @@ fn rebundle_islands(
 /// Eager mode request-before-render race (issue #1166): because this now
 /// runs on a background task AFTER the listener binds, a GET can arrive
 /// before the eager render writes a route's HTML. The dev server's serve
-/// waterfall (`PageCache → html_root → dist_root → public_root → 404`)
-/// handles it: the request is served from the prebuilt `dist/` if a
-/// servable copy exists, otherwise the controlled `DEV_404_BODY` (a
+/// waterfall (`PageCache → html_root → public_root → dist_root → 404`)
+/// handles it: the request is served from the prebuilt `dist/` seed (the
+/// last leg before the 404) if a servable copy exists, otherwise the
+/// controlled `DEV_404_BODY` (a
 /// complete HTML page carrying the live-reload script, which auto-upgrades
 /// the instant the real render lands) — never a wrong/empty/partial body.
 #[cfg(feature = "embed_v8")]

@@ -13,12 +13,20 @@
 //! - `GET /__zfb/reload` — SSE event stream. See
 //!   [`crate::livereload::sse_response`].
 //! - `GET /` and `GET /*path` — render HTML out of the in-memory page
-//!   cache, then fall back to `<dist_root>/...` and finally to
-//!   `<public_root>/...` on disk before returning the dev 404. The
-//!   `public/` directory has NO URL prefix — `public/logo.svg` is
-//!   reachable at `/logo.svg`, matching the production layout
-//!   `zfb build` produces (`copy_public_dir` copies straight into
-//!   `dist/`).
+//!   cache, then fall back to `<html_root>/...`, then `<public_root>/...`,
+//!   and finally — in Dev only, as a last resort before the dev 404 — the
+//!   prebuilt `<dist_root>/...` boot-lazy seed. In `zfb dev` `html_root`
+//!   is a dev-only scratch dir kept separate from the production
+//!   `dist_root` (#534), and the `dist_root` leg serves the last
+//!   `zfb build` output as the cold-cache seed until dev re-renders the
+//!   route into `html_root` (#1057 / #1182); it sits AFTER `public_root`
+//!   (#1390) so a live `public/` edit is never shadowed by a stale build
+//!   copy of the same file. Preview / Embed set `html_root == dist_root`,
+//!   so the earlier `html_root` probe already covers `dist_root` and the
+//!   Dev-gated seed leg is skipped. The `public/` directory has NO URL
+//!   prefix — `public/logo.svg` is reachable at `/logo.svg`, matching the
+//!   production layout `zfb build` produces (`copy_public_dir` copies
+//!   straight into `dist/`).
 //!
 //! ## Page key / static-file resolution
 //!
@@ -30,14 +38,17 @@
 //!    directory-style path)
 //!
 //! For a request to `/` we look up `/` and then `/index.html`. First
-//! hit wins. If the cache misses, we then try `<dist_root>/<path>` and
-//! `<dist_root>/<path>/index.html` on disk, then `<public_root>/<path>`
-//! as a verbatim static-file read. Only after all three layers miss do
-//! we return [`DEV_404_BODY`].
+//! hit wins. If the cache misses, we then try `<html_root>/<path>` and
+//! `<html_root>/<path>/index.html` on disk, then `<public_root>/<path>`
+//! as a verbatim static-file read, then — in Dev only — the prebuilt
+//! `<dist_root>/<path>` / `<dist_root>/<path>/index.html` boot-lazy seed.
+//! Only after all layers miss do we return [`DEV_404_BODY`].
 //!
 //! Precedence (highest first): plugin dev-middleware → page cache →
-//! dist directory → public directory → 404. A `pages/foo.tsx` route
-//! therefore always wins over a same-named `public/foo` file.
+//! html_root → public directory → dist_root (Dev-only boot-lazy seed) →
+//! 404. A `pages/foo.tsx` route therefore always wins over a same-named
+//! `public/foo` file, and a live `public/` edit wins over a stale
+//! prebuilt `dist/` copy of the same file (#1390).
 //!
 //! All HTML responses (including 404) go through
 //! [`crate::inject::inject_livereload_with_prefix`] before being
@@ -396,10 +407,17 @@ pub struct AppState {
     /// handler claiming the same path as a runtime-rendered page wins.
     pub embed_handlers: Option<EmbedHandlerSet>,
     /// Build output directory. Used for `/assets/*` serving (mounted at
-    /// `<dist_root>/assets/`). The HTML page-cache disk fallback lives
-    /// on [`html_root`](Self::html_root) instead so dev's per-route
-    /// renders can target a separate directory from the production
-    /// `outDir` (issue #534).
+    /// `<dist_root>/assets/`). The PRIMARY HTML page-cache disk fallback
+    /// lives on [`html_root`](Self::html_root) so dev's per-route renders
+    /// target a separate directory from the production `outDir` (issue
+    /// #534); this `dist_root` is probed only as a LAST-resort, Dev-gated
+    /// boot-lazy seed in `serve_page` (after BOTH the `html_root` and
+    /// `public_root` misses — issues #1057 / #1182 / #1390), serving the
+    /// last `zfb build` output until dev re-renders the route into
+    /// `html_root`. It sits after `public_root` so a live `public/` edit
+    /// is never shadowed by a stale prebuilt copy (#1390). For Preview /
+    /// Embed callers `html_root == dist_root`, so the primary probe
+    /// already covers it and the Dev-gated seed leg is skipped.
     pub dist_root: std::path::PathBuf,
     /// Optional isolated dev-assets root (issue #1189). When `Some`,
     /// `/assets/*` is served from `<dev_assets_root>/assets/` FIRST and
@@ -483,8 +501,8 @@ pub struct AppState {
     /// When `Some` and `mode == ServerMode::Dev`, `serve_page` awaits
     /// this hook on every GET/HEAD request **before** the in-memory page
     /// cache lookup. The hook's job is to ensure `html_root` is fresh;
-    /// after it returns the normal `PageCache → html_root → public_root`
-    /// waterfall continues unchanged.
+    /// after it returns the normal `PageCache → html_root → public_root →
+    /// dist_root (Dev boot-lazy seed)` waterfall continues unchanged.
     ///
     /// `None` disables the hook (Preview/Embed/tests without a hook); all
     /// existing legs are byte-identical. Snapshotted under a short read
@@ -968,8 +986,9 @@ async fn serve_page(
 
     // Issue #1020 — render-on-request hook. Dev + GET/HEAD only (gated
     // above). The hook makes `html_root` fresh as a side effect; after
-    // it returns the request falls through to the existing PageCache →
-    // html_root → public_root waterfall unchanged.
+    // it returns the request falls through to the existing
+    // PageCache → html_root → public_root → dist_root (Dev boot-lazy
+    // seed) waterfall unchanged.
     //
     // Threading discipline mirrors the SSR leg (routes.rs:867-874):
     // snapshot the inner `Arc` under a short read lock, release the lock
@@ -1144,6 +1163,66 @@ async fn serve_page(
             let ext = basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
             let content_type = if ext.is_empty() {
                 "application/octet-stream".to_string()
+            } else {
+                content_type_for_extension(ext)
+            };
+            let is_html = content_type.to_ascii_lowercase().starts_with("text/html");
+            return page_response_bytes(
+                StatusCode::OK,
+                bytes,
+                &content_type,
+                is_html,
+                lr_prefix,
+                state.trailing_slash,
+                state.mode,
+                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                current_css_bundle_url(&state.css_bundle_url).as_deref(),
+            );
+        }
+    }
+
+    // Boot-lazy prebuilt-seed fallback (issues #1057 / #1182 / #1390 —
+    // restoring the pre-#534 intent). In `zfb dev` the `html_root` probe
+    // above targets a dev-only scratch dir (#534), so on a cold cache —
+    // before the deferred renderer publishes, or before a route's first
+    // request re-renders it — every SSG route would 404 even when a prior
+    // `zfb build` left a servable `dist/`. Probe that prebuilt `dist_root`
+    // HERE as the before-first-render seed: it makes first-accept O(1)
+    // regardless of project size (the boot-lazy contract #1057/#1182), and
+    // it self-heals — `html_root` is probed FIRST, so the instant dev
+    // renders a route into `html_root` the fresh dev bytes win over this
+    // stale seed.
+    //
+    // LAST resort, AFTER `public_root` (issue #1390 review): `dist_root`
+    // is the frozen output of a *past* `zfb build` and includes a copy of
+    // every `public/*` file (`copy_public_dir`). Probing it BEFORE the
+    // live `public_root` leg would let a stale `dist/logo.svg` permanently
+    // shadow a freshly-edited `public/logo.svg` for the whole dev session
+    // (public assets never re-render into `html_root`, so that shadow
+    // would never self-heal). Ordering the seed last means live `public/`
+    // edits always win; the seed only supplies HTML routes (never present
+    // in `public/`) not yet re-rendered into `html_root` — exactly the
+    // boot-lazy window it exists for.
+    //
+    // Gated to Dev on purpose: Preview / Embed callers set
+    // `html_root == dist_root` (#534), so the `html_root` probe above
+    // already covers `dist_root` for them — running this leg there would
+    // be a redundant second read of the same directory. It is read-only
+    // (dev never writes into `dist_root`), so #534's "dev must not clobber
+    // the production build output" invariant is preserved.
+    if matches!(state.mode, crate::ServerMode::Dev) {
+        if let Some(bytes) = read_from_dist(
+            &state.dist_root,
+            trimmed,
+            state.canonical_dist_root.as_deref(),
+        )
+        .await
+        {
+            // Same content-type derivation as the `html_root` leg above.
+            let basename = trimmed.rsplit('/').next().unwrap_or(trimmed);
+            let ext = basename.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+            let content_type = if ext.is_empty() {
+                "text/html; charset=utf-8".to_string()
             } else {
                 content_type_for_extension(ext)
             };
@@ -2180,6 +2259,210 @@ mod tests {
         assert!(
             !body.contains("prod-build-leftover-from-dist_root"),
             "disk fallback must NOT read from dist_root; got body:\n{body}",
+        );
+    }
+
+    /// Issues #1057 / #1182 / #1390 — the boot-lazy prebuilt-seed leg. In
+    /// Dev, when the in-memory cache, `html_root`, AND `public_root` all
+    /// miss (a cold dev server before the deferred renderer publishes /
+    /// re-renders the route), `serve_page` must serve the prebuilt
+    /// `dist_root` copy as the before-first-render seed. This is the last
+    /// leg that makes the documented
+    /// `PageCache → html_root → public_root → dist_root → 404` waterfall
+    /// real — without it every SSG route 404s during the boot-lazy window.
+    ///
+    /// Falsifiability: deleting the Dev-gated `read_from_dist(dist_root, …)`
+    /// leg in `serve_page` makes this request fall through to the dev 404
+    /// and the `assert_eq!(status, OK)` / body assertion fail.
+    #[tokio::test]
+    async fn dev_serves_prebuilt_dist_seed_when_html_root_misses() {
+        use tempfile::TempDir;
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+
+        // `html_root` is dev's (empty) scratch dir; `dist_root` holds the
+        // prior `zfb build` output — the boot-lazy seed.
+        let dist_dir = TempDir::new().expect("dist tempdir");
+        let html_dir = TempDir::new().expect("html tempdir");
+
+        let dist_page_dir = dist_dir.path().join("blog");
+        std::fs::create_dir_all(&dist_page_dir).expect("mk dist subdir");
+        std::fs::write(
+            dist_page_dir.join("index.html"),
+            "<html><body>prebuilt-dist-seed</body></html>",
+        )
+        .expect("write dist seed html");
+
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist_dir.path().to_path_buf(),
+            html_root: html_dir.path().to_path_buf(),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            dev_assets_root: None,
+            canonical_public_root: None,
+        };
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/blog/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("prebuilt-dist-seed"),
+            "Dev boot-lazy seed leg must serve the prebuilt dist_root copy when \
+             html_root misses; got body:\n{body}",
+        );
+    }
+
+    /// Companion to `dev_serves_prebuilt_dist_seed_when_html_root_misses`:
+    /// the seed leg is Dev-GATED. In Preview / Embed the two roots are
+    /// equal in production, but here we deliberately point them at
+    /// DIFFERENT dirs (only `dist_root` has the file) and assert a
+    /// non-Dev server does NOT reach into `dist_root` behind the
+    /// `html_root` miss — it 404s. This pins the `matches!(mode, Dev)`
+    /// gate: flipping it to unconditional would serve the file and fail
+    /// the `NOT_FOUND` assertion.
+    #[tokio::test]
+    async fn preview_does_not_serve_dist_seed_behind_html_root_miss() {
+        use tempfile::TempDir;
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+
+        let dist_dir = TempDir::new().expect("dist tempdir");
+        let html_dir = TempDir::new().expect("html tempdir");
+
+        let dist_page_dir = dist_dir.path().join("blog");
+        std::fs::create_dir_all(&dist_page_dir).expect("mk dist subdir");
+        std::fs::write(
+            dist_page_dir.join("index.html"),
+            "<html><body>prebuilt-dist-seed</body></html>",
+        )
+        .expect("write dist seed html");
+
+        let state = AppState {
+            mode: crate::ServerMode::Preview,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist_dir.path().to_path_buf(),
+            html_root: html_dir.path().to_path_buf(),
+            public_root: std::env::temp_dir().join("zfb-test-public"),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            dev_assets_root: None,
+            canonical_public_root: None,
+        };
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/blog/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "the Dev-gated dist_root seed leg must NOT fire in Preview/Embed mode",
+        );
+    }
+
+    /// Issue #1390 (review regression guard) — a live `public/` file must
+    /// win over a same-named STALE copy in the prebuilt `dist_root` seed.
+    /// `zfb build`'s `copy_public_dir` mirrors `public/*` into `dist/`, so
+    /// after a build both roots hold e.g. `logo.svg`; dev serves `public/`
+    /// live but `dist_root` is frozen for the session. The seed leg is
+    /// therefore ordered AFTER `public_root` so an edit to `public/logo.svg`
+    /// is served, not the stale build copy.
+    ///
+    /// Falsifiability: moving the Dev `dist_root` leg back BEFORE the
+    /// `public_root` leg makes this serve `stale-dist-copy` and fail.
+    #[tokio::test]
+    async fn dev_live_public_wins_over_stale_dist_seed() {
+        use tempfile::TempDir;
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
+
+        let dist_dir = TempDir::new().expect("dist tempdir");
+        let html_dir = TempDir::new().expect("html tempdir");
+        let public_dir = TempDir::new().expect("public tempdir");
+
+        // Same URL (`/logo.svg`) present in BOTH the frozen dist seed and
+        // the live public dir, with different bodies.
+        std::fs::write(dist_dir.path().join("logo.svg"), "stale-dist-copy")
+            .expect("write dist copy");
+        std::fs::write(public_dir.path().join("logo.svg"), "live-public-edit")
+            .expect("write public file");
+
+        let state = AppState {
+            mode: crate::ServerMode::Dev,
+            pages: PageCache::new(),
+            broadcast: tx,
+            plugins: None,
+            injected_routes: None,
+            ssr_routes: None,
+            embed_handlers: None,
+            dist_root: dist_dir.path().to_path_buf(),
+            html_root: html_dir.path().to_path_buf(),
+            public_root: public_dir.path().to_path_buf(),
+            base_prefix: None,
+            trailing_slash: false,
+            islands_bundle_url: None,
+            css_bundle_url: None,
+            host_validation: crate::host_validation::HostValidation::disabled(),
+            render_on_request_hook: None,
+            canonical_html_root: None,
+            canonical_dist_root: None,
+            dev_assets_root: None,
+            canonical_public_root: None,
+        };
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/logo.svg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("live-public-edit") && !body.contains("stale-dist-copy"),
+            "live public/ file must win over the stale dist_root seed copy (#1390); \
+             got body:\n{body}",
         );
     }
 

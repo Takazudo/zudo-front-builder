@@ -5,11 +5,14 @@
 //!
 //! `zfb dev` serves `public/` via a disk fallback waterfall:
 //!
-//!   `PageCache → html_root → dist_root → public_root → 404`
+//!   `PageCache → html_root → public_root → dist_root → 404`
 //!
-//! `zfb build` copies `public/` straight into `dist/` (via
-//! `copy_public_dir`). The same URL that resolves via the `public_root`
-//! fallback in dev must resolve identically after a build.
+//! (`dist_root` is the Dev-only, last-resort boot-lazy seed — issue
+//! #1390 — probed AFTER `public_root` so a live `public/` edit is never
+//! shadowed by a stale build copy.) `zfb build` copies `public/`
+//! straight into `dist/` (via `copy_public_dir`). The same URL that
+//! resolves via the `public_root` fallback in dev must resolve
+//! identically after a build.
 //!
 //! ## Coverage
 //!
