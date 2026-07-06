@@ -97,6 +97,14 @@ Semantics:
 
 This is a dev-mode feature. Production builds (`zfb build`) snapshot the filesystem once and do not rely on watcher events, so `extraWatchPaths` has no effect on shipped output.
 
+<Warning title="Watching out-of-root files is not the same as importing them">
+
+`extraWatchPaths` only makes the dev watcher **notice** changes outside the project root — it does not make those files **importable**. zfb builds by shadow-copying the project root into a temporary directory before running esbuild; a relative import that walks outside the project root (e.g. `../../../../packages/ui/src/button.tsx`) resolves outside that shadow copy, and the build fails with a `Could not resolve "..."` error. The error message names the real (non-shadow) path of the importing file and explains this shadow-copy boundary.
+
+**Workaround:** expose the out-of-root target as a package import instead of a relative one. Add a wildcard `exports` entry to the target package's `package.json` (e.g. `"./src/*": "./src/*"`) and import it by package specifier (e.g. `@scope/pkg/src/button.tsx`) — `node_modules` (including `file:`/workspace-linked packages) IS included in the shadow copy, so package-specifier imports resolve normally. See [issue #1385](https://github.com/Takazudo/zudo-front-builder/issues/1385) for the full context; this is diagnose-only for now — the escape itself stays unsupported.
+
+</Warning>
+
 ## Examples
 
 ```ts
