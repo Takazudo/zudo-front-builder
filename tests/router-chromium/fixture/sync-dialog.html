@@ -36,15 +36,39 @@
     </script>
   </head>
   <body>
+    <!--
+      The dialog-trigger buttons live inside the fixed nav (not in <main>) on
+      purpose: the same-page scroll spec (#1398) scrolls the page down to 600
+      BEFORE clicking a trigger, and Playwright's actionability auto-scrolls an
+      off-screen target into view before clicking it — which would reset
+      window.scrollY to ~0 and defeat the very scroll-preservation the spec
+      observes. Keeping the triggers in the position:fixed nav keeps them inside
+      the viewport at any scroll offset, so page.click() never needs to
+      auto-scroll (the same reason index.html keeps all its links in a fixed
+      nav). This is a harness-reachability requirement, not app behavior:
+      syncHistoryEntry itself is side-effect free and does not touch scroll.
+    -->
     <nav>
       <a href="/index.html" id="to-home">Home</a>
       <a href="/page-a.html" id="to-page-a">Page A</a>
       <a href="/page-b.html" id="to-page-b">Page B</a>
+      <!-- Stands in for a photo-viewer's deep-linkable "dialog" URL. -->
+      <button id="open-dialog">Open Photo</button>
+      <!--
+        Same-pathname (hash-only) variant of the dialog pattern (#1398): unlike
+        #open-dialog above (a DIFFERENT pathname, so samePage() is false and
+        Back/Forward takes the full-lifecycle path per spec 4 below), this one
+        keeps the CURRENT pathname and only changes the hash — samePage() is
+        true, so Back/Forward on it takes the traverse FAST path
+        (moveToLocation's historyState branch), which is exactly what the
+        syncHistoryEntry scroll-stamping fix needs a real-browser proof for.
+      -->
+      <button id="open-dialog-samepage">Open Same-Page Modal</button>
     </nav>
     <main>
       <h1>Sync Dialog</h1>
-      <!-- Stands in for a photo-viewer's deep-linkable "dialog" URL. -->
-      <button id="open-dialog">Open Photo</button>
+      <!-- Tall enough to actually scroll in a real viewport. -->
+      <div style="height: 3000px"></div>
     </main>
     <script type="module">
       import { init } from "/dist/client-router/router.js";
@@ -64,6 +88,11 @@
       // scroll/lifecycle side effect, just a router-managed history entry.
       document.getElementById("open-dialog").addEventListener("click", () => {
         syncHistoryEntry("/photos/photo-1/");
+      });
+
+      // Same-pathname (hash-only) dialog — see the button's comment above.
+      document.getElementById("open-dialog-samepage").addEventListener("click", () => {
+        syncHistoryEntry(`${location.pathname}#modal`);
       });
     </script>
   </body>

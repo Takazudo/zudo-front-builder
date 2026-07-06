@@ -1,0 +1,452 @@
+---
+title: クライアントサイドルーティングと View Transitions
+description: ソフトスワップナビゲーション・View Transition アニメーション・リンクのプリフェッチで zfb を SPA に変える。
+sidebar_position: 9
+category: Concepts
+---
+
+zfb のページはデフォルトで静的 HTML です。**`<ClientRouter />`** は、それらを SPA スタイルのナビゲーションにオプトインします。同一オリジンのリンクをクリックすると、次のページをバックグラウンドで取得し、`<body>`（と変化した `<head>` ノード）だけを入れ替え、View Transition アニメーションを再生します。ブラウザの完全なリロードは発生しません。
+
+## `<ClientRouter />` をマウントする
+
+`@takazudo/zfb-runtime` からインポートし、コンポーネントをページの `<head>` 内に一度だけ配置します。
+
+```tsx
+import { ClientRouter } from "@takazudo/zfb-runtime";
+
+export default function Layout({ children }) {
+  return (
+    <html>
+      <head>
+        <meta charset="UTF-8" />
+        <ClientRouter fallback="animate" />
+      </head>
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+`<ClientRouter />` をインポートすると、モジュールレベルの副作用としてクリックとフォーム送信のインターセプトが登録されます。この登録は冪等です。同じページでの複数回のマウント（あるいは HMR の再実行）は安全です。
+
+### Props
+
+| プロパティ | 型 | デフォルト | 説明 |
+|---|---|---|---|
+| `fallback` | `"none" \| "animate" \| "swap"` | `"animate"` | ブラウザがネイティブの View Transitions をサポートしていないときの挙動。 |
+| `prefetchAll` | `boolean` | `false` | `true` のとき、すべての同一オリジンリンクが自動的に `"hover"` プリフェッチ戦略にオプトインされます。 |
+| `preserveHtmlAttrs` | `string[]` | `[]` | 各 SPA スワップをまたいで **ランタイム** の値が維持される、追加の `<html>` 属性名。[ランタイムの `<html>` 属性を保持する](#ランタイムの-html-属性を保持する) を参照。 |
+| `traverseRefetch` | `boolean` | `false` | このページを同一ページ内の戻る/進むの高速パスからオプトアウトし、トラバーサルのたびに再フェッチを強制します。[同一ページ内トラバーサル](#同一ページ内トラバーサル) を参照。 |
+
+### フォールバックモード
+
+`fallback` プロパティは、`document.startViewTransition` をサポートしないブラウザ（執筆時点では Firefox と古い Safari）での挙動を制御します。
+
+- **`"animate"`** — CSS アニメーションでトランジションをシミュレートします。zfb はスワップ前に `<html>` へ `data-zfb-transition-fallback="old"` を、スワップ後に `"new"` を設定します。ネイティブの View Transitions 向けに定義したフェードやスライドを再現するには、これらを CSS でターゲットにしてください。
+- **`"swap"`** — アニメーションなしで、即座に head と body を入れ替えます。
+- **`"none"`** — ルーターを完全にスキップします。同一オリジンのリンクは完全なページ遷移にフォールバックします。
+
+```tsx
+{/* No animation, not even a simulated one */}
+<ClientRouter fallback="none" />
+```
+
+### ランタイムの `<html>` 属性を保持する
+
+SPA スワップのたびに、ルーターは新しく受信したサーバーレンダリング済みドキュメントの `<html>` 属性をライブなルート要素へコピーします。そのため、永続化された島が `<html>` に設定するランタイム属性（`localStorage` から駆動される `data-theme` や `data-sidebar-hidden` など）は、ナビゲーションのたびに失われます。これらの属性名を `preserveHtmlAttrs` に列挙すると、ルーターは各スワップの後にそれらの現在値を再適用します。
+
+```tsx
+<ClientRouter preserveHtmlAttrs={["data-theme", "data-sidebar-hidden"]} />
+```
+
+このリストは `<meta name="zfb-preserve-html-attrs">` タグとして出力され、スワップは **現在（遷移元）のページ** からそれを読み取ります。そのため、SPA ナビゲーションに参加するすべてのページで、同じリストを指定して `<ClientRouter />` をマウントしてください。エントリを省いたページは、そのページから離れるナビゲーションの際にその属性を失います。属性名は大文字・小文字を区別せずにマッチします（DOM の属性名は小文字化されます）。
+
+静的な保持リストでは表現できない動的あるいは計算された属性値については、代わりに `zfb:before-swap` リスナー内で `event.newDocument.documentElement` を変更してください。[ナビゲーションライフサイクルイベント](#ナビゲーションライフサイクルイベント) を参照。
+
+## `navigate()` によるプログラムによるナビゲーション
+
+クライアントサイドのコード（島やイベントハンドラの中）から `navigate()` を呼び出すと、ソフトナビゲーションをトリガーできます。
+
+```tsx
+import { navigate } from "@takazudo/zfb-runtime/client-router";
+
+// Push a new history entry (default)
+await navigate("/about");
+
+// Replace the current history entry instead of pushing
+await navigate("/search?q=zfb", { history: "replace" });
+```
+
+<Warning title="`<ClientRouter />` は「現在の」ページにマウントされていなければならない">
+
+`navigate()` は、それが呼び出されるページに `<ClientRouter />` がマウントされているときにのみソフトナビゲーションを行います。内部的には `<ClientRouter />` が `<head>` にレンダリングする `<meta name="zfb-view-transitions-enabled">` タグをチェックし、そのタグが存在しない場合は素の `location.href` への代入にフォールバックします。これはソフトナビゲーションではなく完全なページロードであり、エラーも警告も出ません。
+
+ルートの `@takazudo/zfb-runtime` バレルから `navigate`（や `syncHistoryEntry`）をインポートするだけでは、それ自体では **不十分** です。このバレルは意図的に `init()`（クリック/フォームのインターセプトを配線する関数）をエクスポートしていません（[runtime README](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb-runtime/README.md) の「Enabling SPA soft-navigation」セクションを参照）。ソフトナビゲーション可能にしたいすべてのページのレイアウトの `<head>` に `<ClientRouter />` をマウントしてください。これは必要なメタタグをレンダリングし、副作用として `init()` を呼び出します。コンポーネントをマウントする代わりに自分で `init()` を呼び出す理由がある場合は、`@takazudo/zfb-runtime/client-router` サブパスからインポートしてください。
+
+</Warning>
+
+`navigate()` はオプションの `Options` オブジェクトを受け取ります。
+
+```ts
+type Options = {
+  history?: "auto" | "push" | "replace";
+  info?: any;    // passed to before-preparation event as event.info
+  state?: any;   // merged into the new history.state entry
+  formData?: FormData;
+};
+```
+
+- **`history: "auto"`**（オプションを省略したときのデフォルト） — `pushState` で新しいブラウザ履歴エントリを作成します。明示的に `"push"` を渡しても同じ動作です。
+- **`history: "replace"`** — `history.replaceState` を呼び出すので、戻るボタン用のエントリは作成されません。
+
+`navigate()` は SSR 中は何もせず、サーバー上で呼び出された場合はコンソール警告を出します。
+
+### リンクの `data-zfb-history`
+
+個々の `<a>` タグを、JavaScript なしで `replaceState` にオプトインできます。
+
+```html
+<a href="/terms" data-zfb-history="replace">Terms</a>
+```
+
+### リンクをルーターからオプトアウトする
+
+任意の `<a>` または `<form>` に `data-zfb-reload` を付けると、そのナビゲーションで完全なブラウザリロードを強制できます。
+
+```html
+<a href="/admin" data-zfb-reload>Admin (full reload)</a>
+```
+
+## `syncHistoryEntry()` で一時的な UI 状態をディープリンクする
+
+モーダル・ダイアログ・ビューアは、独自の URL を持ちたいことがよくあります。そうすれば「戻る」で閉じられ、状態が共有・ブックマーク可能になります。しかも実際のページ遷移は行いません。このために生の `history.pushState()` / `history.replaceState()` に手を伸ばさないでください。ルーターは戻る/進むの方向や同一ページ内トラバーサルを検出するために、自身の履歴インデックスとナビゲーション *元* の URL を追跡しており（後述の [同一ページ内トラバーサル](#同一ページ内トラバーサル) を参照）、手作りの履歴エントリはその管理情報を狂わせます。
+
+`syncHistoryEntry()` は、ナビゲーションせずにルーター管理の履歴エントリを書き込みます。フェッチも、スワップも、DOM の変更もなく、ビューポートをスクロールすることも決してありません（ただしエントリには現在のスクロール位置がスタンプされます。後述を参照）。
+
+```ts
+import { syncHistoryEntry } from "@takazudo/zfb-runtime/client-router";
+
+function openModal(id: string) {
+  syncHistoryEntry(`#photo-${id}`);
+}
+```
+
+```ts
+function syncHistoryEntry(url: string | URL, options?: SyncHistoryEntryOptions): void;
+
+type SyncHistoryEntryOptions = {
+  replace?: boolean; // use replaceState instead of pushState (no new Back entry)
+  state?: any;       // merged into history.state; the router's own keys win on collision
+};
+```
+
+- **デフォルトは push** — 新しい履歴エントリを作成するので、「戻る」はユーザーがその前に見ていたものへ戻ります。代わりに現在のエントリを上書きするには `{ replace: true }` を渡してください（新しい「戻る」の停止点は作られません）。
+- **`state` はマージされ、ルーターのキーが勝つ** — あなた自身のキーは残りますが、あなたの `state` オブジェクトがたまたまルーターの管理キー（`index`・`scrollX`・`scrollY`）と同じ名前を再利用していた場合は、常にルーターのキーが優先されます。
+- **クロスオリジン URL では例外を投げます** — 完全なページロードへ黙ってフォールバックすることは決してありません。誤ったクロスオリジン呼び出しは、すぐに気づきたいバグです。
+- **SSR 中は何もしません**。サーバー上で `navigate()` を呼び出したときと同じ一度きりのコンソール警告を出します。
+- **ビューポートをスクロールしたり DOM / `document.title` に触れたりすることは決してありません** — これは純粋な履歴管理です。現在の URL に基づいてモーダル/ダイアログ自体をレンダリングするのは、あなたのコンポーネントの責務です。
+- **エントリには `(0, 0)` ではなく「現在の」スクロール位置がスタンプされます。** push（または replace）されたエントリは、ページ先頭ではなく *まさに今この瞬間の* `scrollX`/`scrollY` を記録します。これはトラバーサルの高速パスにとって重要です。ユーザーが後で「進む」でこのエントリに戻ったとき（後述の [同一ページ内トラバーサル](#同一ページ内トラバーサル) を参照）、ページは `syncHistoryEntry()` を呼び出した時点で実際にあったスクロール位置へ復元されます。再び開いたダイアログの下で先頭へ不快にスナップすることはありません。
+
+### 例: ハッシュベースのモーダル
+
+```tsx
+import { syncHistoryEntry } from "@takazudo/zfb-runtime/client-router";
+
+function PhotoModal({ id, onClose }: { id: string; onClose: () => void }) {
+  useEffect(() => {
+    const onPopState = () => {
+      if (location.hash !== `#photo-${id}`) onClose();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [id, onClose]);
+
+  return <div className="modal">{/* photo content */}</div>;
+}
+
+function openPhoto(id: string) {
+  syncHistoryEntry(`${location.pathname}#photo-${id}`);
+}
+```
+
+push されたエントリは現在の `pathname` と `search` を共有する（変わるのはハッシュだけ）ため、その後に「戻る」を押すと同一ページ内トラバーサルの高速パス（後述）で処理されます。フェッチも、スワップも、完全なページの再マウントもありません。ただしブラウザは通常どおり `popstate` イベントを発火します。`syncHistoryEntry()` があなたの代わりにモーダルを閉じることはありません。モーダルは自身で `popstate`（または `hashchange`）をリッスンし、ハッシュがもうマッチしなくなったら閉じます。そのリスナーがなければ、URL は変わってもモーダルは開いたままになります。
+
+### 例: 独自の pathname を持つダイアログ
+
+一部のビューアは、ハッシュではなく実際のパスセグメントにディープリンクします。たとえば共有可能なリンクから到達できる `/photos/<slug>/` のフォトライトボックスなどです。
+
+```ts
+import { syncHistoryEntry } from "@takazudo/zfb-runtime/client-router";
+
+function openPhotoLightbox(slug: string) {
+  syncHistoryEntry(`/photos/${slug}/`);
+}
+```
+
+これは `pathname` を変えるため、push されたエントリはユーザーが来たページともうマッチしません。「戻る」を押すと、高速パスではなく通常のページ間トラバーサル（前のページのフェッチ + スワップ）に落ちます。`syncHistoryEntry()` は URL バーとルーターの管理情報を編集するだけで、それ自体は何もフェッチもレンダリングもしません。そのため、URL が運ぶライトボックスの内容を実際に表示するのは、`location.pathname` を読み取る島です。
+
+## プリフェッチ戦略
+
+ルーターは、ユーザーがリンクをクリックする前にブラウザのキャッシュをウォームアップできます。各リンクは `data-zfb-prefetch` 属性でオプトインします。
+
+### リンクごとの属性
+
+```html
+<!-- Prefetch when the link enters the viewport -->
+<a href="/docs/api" data-zfb-prefetch="viewport">API docs</a>
+
+<!-- Prefetch on pointer hover (default when prefetchAll is true) -->
+<a href="/blog" data-zfb-prefetch="hover">Blog</a>
+
+<!-- Prefetch on touchstart / mousedown (just before the click) -->
+<a href="/pricing" data-zfb-prefetch="tap">Pricing</a>
+
+<!-- Prefetch immediately after DOMContentLoaded (idle callback) -->
+<a href="/contact" data-zfb-prefetch="load">Contact</a>
+
+<!-- Opt this link out even when prefetchAll is true -->
+<a href="/heavy-page" data-zfb-prefetch="false">Heavy page</a>
+```
+
+### 利用可能な戦略
+
+| 戦略 | トリガー |
+|---|---|
+| `"hover"` | `pointerenter`（アイドルコールバックの遅延あり。`pointerleave` でキャンセル） |
+| `"viewport"` | `IntersectionObserver` — リンクがビューに入ったときに発火 |
+| `"tap"` | `touchstart` / `mousedown` — クリックイベントの直前に発火 |
+| `"load"` | `DOMContentLoaded` の後の `requestIdleCallback` |
+
+プリフェッチモジュールはサポートされている場合は `<link rel="prefetch">` を使い、そうでなければ `priority: "low"` の `fetch()` にフォールバックします。プリフェッチは URL 単位で重複排除されます。低速な接続（Save-Data ヘッダ、2G/slow-2G）は、呼び出し側が `ignoreSlowConnection: true` を渡さない限りスキップされます。
+
+### `prefetchAll`
+
+`<ClientRouter />` に `prefetchAll` を設定すると、`data-zfb-prefetch="false"` を持たないすべての同一オリジンリンクを `"hover"` 戦略にオプトインします。
+
+```tsx
+<ClientRouter prefetchAll />
+```
+
+これは、すべてのページのすべてのリンクに `data-zfb-prefetch="hover"` を追加するのと同等です。
+
+### サイト全体でプリフェッチを無効化する
+
+`zfb.config.ts` で `prefetch.disabled` を設定すると、サイト全体のプリフェッチ配線を抑制できます。
+
+```ts
+// zfb.config.ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  prefetch: { disabled: true },
+});
+```
+
+このフラグが設定されると、バンドラはすべてのページに `<meta name="zfb-prefetch-disabled" content="true">` タグを出力し、プリフェッチモジュールはランタイムで何もしなくなります。設定の完全なリファレンスは [defineConfig](../api/define-config.mdx) を参照してください。
+
+## ナビゲーションライフサイクルイベント
+
+ルーターは各ナビゲーションの間に、6 つのカスタムイベントを `document` 上でディスパッチします。`document.addEventListener` でリッスンします。
+
+```ts
+document.addEventListener("zfb:before-preparation", (e) => {
+  // e is a TransitionBeforePreparationEvent
+  console.log("navigating from", e.from.href, "to", e.to.href);
+});
+```
+
+例外が 1 つあります。これら 6 つのイベントは、同一ページ内の戻る/進むトラバーサルでは 1 つも発火しません。後述の [同一ページ内トラバーサル](#同一ページ内トラバーサル) を参照。
+
+### イベントリファレンス
+
+| イベント名 | キャンセル可能 | 発火するタイミング |
+|---|---|---|
+| `zfb:before-preparation` | あり | 次のページがフェッチされる前。キャンセルするとナビゲーションを中止し、完全なブラウザロードにフォールバックします。 |
+| `zfb:after-preparation` | なし | 次のページがフェッチされ、`event.newDocument` にパースされた後。 |
+| `zfb:before-swap` | なし | `<head>` と `<body>` が入れ替わる直前。 |
+| `zfb:after-swap` | なし | DOM スワップの直後。新しい body はライブですが、スクリプトはまだ再実行されていません。 |
+| `zfb:page-load` | なし | 新しいページのスクリプトが再実行され、島が再マウントされた後。受信ページにとっての `DOMContentLoaded` に相当します。 |
+| `zfb:navigation-aborted` | なし | ナビゲーションがキャンセルされた（例: `zfb:before-preparation` での `e.preventDefault()`、あるいは進行中のナビゲーションが新しいものに取って代わられた）。 |
+
+### `zfb:before-preparation` イベントのプロパティ
+
+`TransitionBeforePreparationEvent` は `Event` を拡張し、次を持ちます。
+
+```ts
+event.from            // URL  — current page URL
+event.to              // URL  — destination URL (writable)
+event.direction       // "forward" | "back"
+event.navigationType  // "push" | "replace" | "traverse"
+event.sourceElement   // Element | undefined — the <a> or <form> that triggered navigation
+event.info            // any  — value passed to navigate() options.info
+event.newDocument     // Document  — starts as the current page; overwritten with the fetched document after event.loader() resolves (writable)
+event.signal          // AbortSignal — aborted if a newer navigation supersedes this one
+event.formData        // FormData | undefined — set for POST form submissions
+event.loader          // () => Promise<void> — call to execute the default fetch; replace to use a custom loader
+```
+
+`event.preventDefault()` を呼び出すとナビゲーションを停止します。その後ルーターは、遷移先への完全なブラウザロードをトリガーします。
+
+### `zfb:before-swap` イベントのプロパティ
+
+`TransitionBeforeSwapEvent` は同じ基底を拡張し、さらに次を公開します。
+
+```ts
+event.viewTransition  // ViewTransition — the active View Transition object
+event.swap            // () => void — call to execute the default head/body swap; replace to implement a custom swap
+```
+
+### 例: すべての SPA ナビゲーションの後にコードを実行する
+
+```ts
+document.addEventListener("zfb:page-load", () => {
+  // Re-initialise analytics, syntax highlighters, etc.
+  initHighlighter();
+});
+```
+
+### 例: ナビゲーションをインターセプトしてリダイレクトする
+
+```ts
+document.addEventListener("zfb:before-preparation", (e) => {
+  if (e.to.pathname.startsWith("/beta/")) {
+    e.to = new URL(e.to.href.replace("/beta/", "/stable/"));
+  }
+});
+```
+
+## 同一ページ内トラバーサル
+
+現在のページの `pathname` と `search` を共有する履歴エントリ（変わるのはハッシュかルーター追跡状態だけ）に着地する「戻る」や「進む」の操作は、完全にライブな DOM から処理されます。ルーターはフェッチせず、`<head>`/`<body>` を入れ替えず、何も再マウントしません。エントリの追跡済みスクロール位置を復元し、ページをそのままの状態に保ちます。島/クライアントの状態（開いているドロップダウン、フォーム入力、動画の再生など）はそのまま保たれます。
+
+これが上のハッシュモーダルの例の背後にある仕組みです。`syncHistoryEntry()` の後に「戻る」を押しても、サーバーへの往復はなく、ページの他の部分も乱れません。モーダルコンポーネント自体は、閉じるために URL の変化に（`popstate`/`hashchange` を通じて）反応する必要があります。（ルーターはトラバーサルが関わる以前から、単純な同一ページ内の `#anchor` リンクではすでにフェッチをスキップしていました。この高速パスは、同じ考え方を戻る/進むに拡張したものです。）
+
+### ライフサイクルイベントとルートアナウンサーはスキップされる
+
+何もフェッチもスワップもされないため、6 つの `zfb:*` [ライフサイクルイベント](#ナビゲーションライフサイクルイベント)（`zfb:before-preparation` から `zfb:page-load` まで）は、同一ページ内トラバーサルでは 1 つも発火しません。ARIA ルートアナウンサー（すべての SPA ナビゲーションの後に新しいページのタイトルをスクリーンリーダーへ読み上げる、画面外の `.zfb-route-announcer` 要素）も更新されません。これはフェッチ/スワップのフローの一部としてのみ書き込まれるためです。
+
+ナビゲーションごとの副作用（アナリティクス、ウィジェットの再初期化など）を実行するためにライフサイクルイベントをフックしている場合、それらのフックは 2 つの同一ページ履歴エントリ間の戻る/進む操作では実行されません。
+
+### `traverseRefetch` で再びオプトインする
+
+静的なページや事前レンダリングされたページは、これらを一切気にする必要がありません。それらのコンテンツは訪問の間に変わり得ないため、ライブな DOM から高速パスを提供するのは常に正しいのです。リクエストごとの SSR ページ（`export const prerender = false`）は事情が異なります。そのサーバーレンダリング出力は、*同じ* URL への 2 回の訪問の間で正当に異なり得ます（セッション依存のマークアップ、CSRF トークン、ライブデータなど）。そのため、以後のトラバーサルのたびに初回レンダリングの内容を固定するのは誤りになります。
+
+そのようなページを `traverseRefetch` プロパティで再びフェッチにオプトインします。
+
+```tsx
+<ClientRouter traverseRefetch />
+```
+
+これは `<meta name="zfb-traverse-refetch" content="true">` を出力し、ルーターは高速パスを取る前に現在（対象）のページでこれをチェックします。存在する場合、同一ページ内トラバーサルは高速パスではなく通常のフェッチとスワップに落ちます。メタは現在ライブなページから読み取られるため、SPA ナビゲーションに参加するすべてのページで、同じ `traverseRefetch` の値を指定して `<ClientRouter />` をマウントしてください。
+
+## View Transitions
+
+ブラウザが `document.startViewTransition` をサポートしている場合（Chrome 111+、Edge 111+）、ルーターはすべてのスワップをネイティブの View Transition でラップします。CSS の `view-transition-name` 宣言を追加しない限り、トランジションはブラウザのデフォルトのクロスフェードを再生します。
+
+### CSS でのオプトイン
+
+独立してアニメーションさせたい要素に名前を付けます。
+
+```css
+/* Shared element transition — the header animates from its old position to its new one */
+header {
+  view-transition-name: site-header;
+}
+
+/* Page content fades/slides as a named region */
+main {
+  view-transition-name: page-content;
+}
+```
+
+カスタムなアニメーションのキーフレーム用に、標準の `::view-transition-old` と `::view-transition-new` 疑似要素が利用できます。
+
+### 機能検出
+
+ルーターは 2 つのヘルパーを公開しています。
+
+```ts
+import {
+  supportsViewTransitions,
+  transitionEnabledOnThisPage,
+} from "@takazudo/zfb-runtime/client-router";
+
+// true if the browser has document.startViewTransition
+console.log(supportsViewTransitions);
+
+// true if the current page has <ClientRouter /> mounted
+console.log(transitionEnabledOnThisPage());
+```
+
+`supportsViewTransitions` が `false` のとき、`fallback` プロパティが劣化した体験を制御します（[フォールバックモード](#フォールバックモード) を参照）。
+
+### ナビゲーションをまたいで要素を永続化する
+
+ソフトナビゲーションをまたいで破棄・再生成せずに生かし続けたい要素には、`data-zfb-transition-persist="<id>"` を追加します。古い body と新しい body の両方が、同じ `id` を持つその属性を備えていなければなりません。
+
+```html
+<!-- Keeps this video player alive across page navigations -->
+<video data-zfb-transition-persist="promo-video" src="/intro.mp4" autoplay />
+```
+
+ルーターは、body スワップの前に永続化された要素を `<html>` へ持ち上げ（Chrome 133+ では切り離しゼロの `moveBefore()` API を、そうでなければフォールバックの `appendChild` を使用）、新しい body 内の対応するターゲットへ再アタッチします。これは、Astro が WebGL コンテキストや再生状態を失わずに `<canvas>` や `<video>` を生かし続けるために使っているのと同じ仕組みです。
+
+#### `data-zfb-transition-persist-props` で島のコンポーネント状態を永続化する
+
+同じ `data-zfb-transition-persist` 属性は、`<video>` のような素の要素だけでなく、島のラッパー（`[data-zfb-island]` マーカー）にも効きます。マーカーがスワップを生き延びると、そのライブなコンポーネントインスタンスも生き延びます。内部状態（開/折りたたみ、ネストしたリスト内のスクロールオフセット、フォーカスされた入力）はリセットされません。フレームワークがそれをアンマウントしていないからです。
+
+```tsx
+// A layout component — the sidebar tree keeps its expand/collapse state
+// and its scroll position across every SPA navigation.
+<div data-zfb-island="SidebarTree" data-zfb-transition-persist="sidebar-tree" data-props={props}>
+  <SidebarTree {...props} />
+</div>
+```
+
+デフォルトでは、スワップは依然として、永続化された島の props を受信ページに合わせてリフレッシュします（ルーターはそのマークアップを破棄するとはいえ、新しいページが *何を* レンダリングしたはずかを常に把握しています）。リフレッシュされた props がライブインスタンスがすでに持っているものと同一なら、それ以外は何も起きません。完全な連続性が、静かに保たれます。異なる場合、島は新しい props でアンマウントされ、新しくマウントし直されます。そのため、前のページの古いレンダリングを表示したまま固まることは決してありません。ただし props に由来しない内部状態（開閉トグルなど）は、その再マウントで失われます。これは通常の（永続化されていない）島と同じです。
+
+`data-zfb-transition-persist-props` を `"false"` **以外の** 任意の値（慣例では `"true"`）に設定すると、その props リフレッシュを完全にオプトアウトし、受信ページの props がどうであれ、島の現在の props（したがって現在のレンダリング状態）をそのまま正確に保ちます。
+
+```tsx
+<div
+  data-zfb-island="SidebarTree"
+  data-zfb-transition-persist="sidebar-tree"
+  data-zfb-transition-persist-props="true"
+  data-props={props}
+>
+  <SidebarTree {...props} />
+</div>
+```
+
+これは、props がページをまたいで実質的に不変であるクロムゾーンの島（サイドバー、ヘッダー）で、再レンダリングを絶対にゼロにしたい場合に使ってください。ページに応じて props が変わることが想定されるコンテンツ領域の島（目次、「最終更新」ウィジェット）には使わないでください。オプトアウトするということは、受信 props が実際に異なるナビゲーションの後でも、島が *前の* ページのデータを表示し続けることを意味するからです。
+
+<Note title="属性のデフォルトは名前が示唆するのと逆">
+
+`data-zfb-transition-persist-props` が存在しない、または明示的に `"false"` である場合、props は **リフレッシュされます**（よくあるケース: 状態は永続化されるが、データは最新に保たれる）。それ以外の任意の値はリフレッシュをオプト **アウト** します。慣例では `"true"` ですが、チェックは常にリテラル文字列 `"false"` に対してのみ行われます。これは Astro の `data-astro-transition-persist-props` の挙動を正確にミラーしています。
+
+</Note>
+
+## `<ViewTransitions />` — 非推奨
+
+`@takazudo/zfb-runtime` は `<ViewTransitions />` もエクスポートしています。**このコンポーネントは型付きの no-op** であり、後方互換性のためだけに残されています。何もレンダリングせず、何も登録しません。
+
+```tsx
+// Old code — compiles but does nothing
+import { ViewTransitions } from "@takazudo/zfb-runtime";
+<ViewTransitions />
+
+// Use this instead
+import { ClientRouter } from "@takazudo/zfb-runtime";
+<ClientRouter fallback="animate" />
+```
+
+クロスドキュメント（MPA）の View Transitions — リンクをクリックすると、JavaScript ルーターなしでネイティブのブラウザアニメーションがトリガーされるもの — は、コンポーネントではなく、両方のページでの CSS `@view-transition` at-rule によって有効化されます。
+
+```css
+/* global.css — applies to every page */
+@view-transition {
+  navigation: auto;
+}
+```
+
+ブラウザのサポート状況とアニメーションのカスタマイズオプションについては [MDN: @view-transition](https://developer.mozilla.org/en-US/docs/Web/CSS/@view-transition) を参照してください。

@@ -292,7 +292,8 @@ pub struct ServeOpts {
     /// consulting the in-memory page cache and the `html_root` disk read.
     /// The hook is responsible for making `html_root` fresh as a side
     /// effect; after it returns the server falls through to the existing
-    /// `PageCache → html_root → public_root` waterfall unchanged.
+    /// `PageCache → html_root → public_root → dist_root (Dev boot-lazy
+    /// seed)` waterfall unchanged.
     ///
     /// `None` in Preview, Embed, and all non-Dev modes — no hook fires and
     /// behaviour is byte-identical to the pre-hook server. `None` is also

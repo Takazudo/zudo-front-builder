@@ -19,6 +19,29 @@ sidebar_position: 2
 - **Node.js ≥ 22** — 設定ローダーや一部のビルドステップが Node を呼び出します。
 - **pnpm** — [公式インストーラー](https://pnpm.io/installation) からインストールしてください。zfb は pnpm を使うプロジェクトをスキャフォールドし、`PATH` 上に pnpm が見つかる場合は `pnpm install` を自動で実行します。
 
+## サポートされているプラットフォーム
+
+`@takazudo/zfb` は npm の optional-deps 経由で、以下のプラットフォーム向けにビルド済みバイナリを配布しています。
+
+| プラットフォーム | アーキテクチャ | npm optional dependency |
+| --- | --- | --- |
+| Linux（glibc） | x64 | `@takazudo/zfb-linux-x64-gnu` |
+| Linux（glibc） | arm64 | `@takazudo/zfb-linux-arm64-gnu` |
+| macOS | x64 | `@takazudo/zfb-darwin-x64` |
+| macOS | arm64（Apple Silicon） | `@takazudo/zfb-darwin-arm64` |
+| Windows | x64 | `@takazudo/zfb-win32-x64-msvc` |
+
+<Note title="musl / Alpine Linux はまだ未対応です">
+
+`@takazudo/zfb-linux-*-musl` パッケージは存在しません。Alpine（などの musl 系
+ディストリビューション）では、`zfb` ラッパーが起動時に musl ランタイムを検出し、
+glibc バイナリが引き起こすであろう分かりにくいダイナミックローダーのエラーの代わりに、
+`musl/Alpine is not supported yet — no @takazudo/zfb-linux-*-musl package exists`
+という分かりやすいエラーで終了します。glibc ベースの Linux イメージ（例：
+Debian/Ubuntu）を使ってください。
+
+</Note>
+
 ## CLI のインストール
 
 `@takazudo/zfb` をプロジェクトの開発依存としてインストールします。

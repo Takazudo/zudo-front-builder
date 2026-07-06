@@ -66,8 +66,19 @@ max-threads = 1
 # `#[ignore]`d test runs) could schedule it concurrently with the other
 # V8/esbuild-heavy entries in that job's filterset, reintroducing the exact
 # CPU/memory contention this group exists to prevent.
+#
+# A SECOND `test(=...)` predicate (issue #1394) joins the same OR:
+# `version_stamp_from_env` (crates/zfb/tests/version_stamp.rs, tagged `heavy`
+# in CLAUDE.md's manifest) shells out to a fresh `cargo run` recompile and was
+# clocked at 134s in exam.yml's quarantine-heavy job — well within this
+# group's watchdog budget, and exactly the kind of CPU/memory-heavy process
+# this group exists to keep off the CPU at the same time as the other 14
+# entries. Unlike the render_pipeline case above it IS its own binary
+# (`binary(=version_stamp)` would also have worked), but `test(=...)` is used
+# for consistency with the render_pipeline entry and to stay exact-name-scoped
+# if the file ever grows a second test.
 [[profile.default.overrides]]
-filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=end_to_end_basic_blog_build) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths))'
+filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=end_to_end_basic_blog_build) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env))'
 test-group = 'e2e-heavy'
 # The longest LEGITIMATE e2e watchdog is 280s (dev_serve_e2e's lazy scenario
 # and dev_serve_injected_routes_e2e), 300s for the #[ignore]d heavy

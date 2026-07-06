@@ -16,6 +16,28 @@ HTML ページ、**さらに islands** まで対応します — esbuild と Tai
 スタンドアロンのネイティブバイナリとして動作するため、クライアントサイドの
 ハイドレーションも CSS 処理も Node を一切介さずに動きます。
 
+## サポートされているプラットフォーム
+
+| プラットフォーム | アーキテクチャ | ターゲットトリプル |
+| --- | --- | --- |
+| Linux（glibc） | x64 | `x86_64-unknown-linux-gnu` |
+| Linux（glibc） | arm64 | `aarch64-unknown-linux-gnu` |
+| macOS | x64 | `x86_64-apple-darwin` |
+| macOS | arm64（Apple Silicon） | `aarch64-apple-darwin` |
+| Windows | x64 | `x86_64-pc-windows-msvc` |
+
+<Note title="musl / Alpine Linux は未対応です">
+
+musl リンクのバイナリは存在しません。`install.sh` は OS とアーキテクチャのみを検出し、
+glibc と musl を区別できません。そのため Alpine（などの musl 系ディストリビューション）
+では glibc 版の `x86_64-unknown-linux-gnu` バイナリがダウンロードされ、実行時に分かり
+にくいダイナミックローダーのエラーで失敗します。glibc ベースの Linux イメージ（例：
+Debian/Ubuntu）を使ってください。（npm 経由のインストールでは musl を検出し、より
+分かりやすいエラーで失敗します — [Installation](../getting-started/installation.mdx#supported-platforms)
+を参照。）
+
+</Note>
+
 ## インストール経路
 
 ### Linux / macOS — curl
@@ -23,6 +45,19 @@ HTML ページ、**さらに islands** まで対応します — esbuild と Tai
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | sh
 ```
+
+<Note title="1.0 未満の現状：上記のコマンドはまだ何もインストールできません">
+
+現時点では安定版リリースは存在せず、プレリリース（`v0.1.0-next.N`）のみです。
+`v0.1.0` がリリースされるまで、デフォルトのコマンドは**安定版のみ**を解決しようと
+して、該当するリリースが見つからずに失敗します。プレリリースを明示的にインストール
+してください。
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION=latest-prerelease sh
+```
+
+</Note>
 
 `zfb` は `$HOME/.local/bin/zfb` にインストールされます。このディレクトリがまだ
 `PATH` に含まれていない場合は追加してください：

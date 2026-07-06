@@ -529,6 +529,61 @@ describe("link method settle timeout", () => {
   });
 });
 
+describe("nested-child intra-link pointer moves", () => {
+  it("21. moving between nested children of the SAME link does not cancel or re-queue the pending prefetch (#1398)", () => {
+    // Deferred requestIdleCallback so the handle stays observably pending
+    // (mirrors tests #2 and #16 above).
+    const deferred = new Map<number, IdleCallback>();
+    let h = 0;
+    globalThis.requestIdleCallback = (cb: IdleCallback): number => {
+      const id = ++h;
+      deferred.set(id, cb);
+      return id; // NOT fired yet
+    };
+    globalThis.cancelIdleCallback = (id: number): void => {
+      deferred.delete(id);
+    };
+
+    init();
+    const link = createLink(sameOriginUrl("/nested-page"), "hover");
+    // <a><span>icon</span><span>label</span></a>
+    const iconSpan = document.createElement("span");
+    iconSpan.textContent = "icon";
+    const labelSpan = document.createElement("span");
+    labelSpan.textContent = "label";
+    link.append(iconSpan, labelSpan);
+
+    function pointerLeaveTo(relatedTarget: EventTarget | null): Event {
+      const ev = new Event("pointerleave", { bubbles: true });
+      Object.defineProperty(ev, "relatedTarget", { value: relatedTarget, configurable: true });
+      return ev;
+    }
+
+    // Enter via the first inner child — queues a handle for the LINK.
+    iconSpan.dispatchEvent(new Event("pointerenter", { bubbles: true }));
+    expect(deferred.size).toBe(1);
+
+    // Moving off iconSpan toward labelSpan fires pointerleave(target=iconSpan)
+    // with relatedTarget=labelSpan — still inside the same link. Must NOT
+    // cancel: the pointer never left the link.
+    iconSpan.dispatchEvent(pointerLeaveTo(labelSpan));
+    expect(deferred.size).toBe(1);
+
+    // pointerenter re-fires on labelSpan (the enter side). A handle already
+    // exists for this link — must NOT overwrite it with a fresh debounce.
+    labelSpan.dispatchEvent(new Event("pointerenter", { bubbles: true }));
+    expect(deferred.size).toBe(1);
+
+    // A REAL leave — relatedTarget outside the link entirely — still cancels.
+    labelSpan.dispatchEvent(pointerLeaveTo(document.body));
+    expect(deferred.size).toBe(0);
+
+    // Draining now fires nothing: the pending prefetch was genuinely canceled.
+    deferred.forEach((cb) => cb({ didTimeout: false, timeRemaining: () => 50 }));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("viewport observer reset on SPA swap", () => {
   it("19. zfb:after-swap disconnects old observer and creates a fresh one for the new body", () => {
     // Create an old-body link and observe it.

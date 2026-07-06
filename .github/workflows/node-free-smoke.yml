@@ -9,18 +9,35 @@
 # PR + main push (ZFB_SMOKE_MODE=local):
 #   build-binary (amd64 on ubuntu-22.04)
 #     ├─► smoke-amd64 (ubuntu-latest)   — runs container in local mode
-#     └─► scaffold-e2e (ubuntu-latest)  — pre-publish npm-consumption E2E:
-#                                         pnpm/npm packs zfb, zfb-runtime,
-#                                         zfb-adapter-cloudflare, create-zfb,
-#                                         and zfb-linux-x64-gnu (with this
-#                                         leg's freshly built binary injected)
-#                                         into local tarballs, installs
-#                                         create-zfb from its tarball with
-#                                         overrides pinning every @takazudo/*
-#                                         dep to the LOCAL tarballs (never the
-#                                         registry), scaffolds + builds a
-#                                         site, and asserts dist/ content.
-#                                         See scripts/smoke-packed-clean-room.sh.
+#     ├─► scaffold-e2e (ubuntu-latest)  — pre-publish npm-consumption E2E:
+#     │                                   pnpm/npm packs zfb, zfb-runtime,
+#     │                                   zfb-adapter-cloudflare, create-zfb,
+#     │                                   and zfb-linux-x64-gnu (with this
+#     │                                   leg's freshly built binary injected)
+#     │                                   into local tarballs, installs
+#     │                                   create-zfb from its tarball with
+#     │                                   overrides pinning every @takazudo/*
+#     │                                   dep to the LOCAL tarballs (never the
+#     │                                   registry), scaffolds + builds a
+#     │                                   site, and asserts dist/ content.
+#     │                                   See scripts/smoke-packed-clean-room.sh.
+#     └─► built-site-browser-smoke (ubuntu-latest) — issue #1401: builds
+#                                         tests/built-site-smoke/fixture-site/
+#                                         (a real interactive Preact island)
+#                                         with this leg's binary, serves the
+#                                         resulting dist/ statically, and
+#                                         loads it in real Chromium via
+#                                         Playwright — asserting zero page
+#                                         errors and that the island actually
+#                                         hydrates (click increments a
+#                                         counter). Closes the #1385 bug
+#                                         class's blind spot: no other tier
+#                                         loads a BUILT zfb site in a real
+#                                         browser. NOT a required status
+#                                         check (see CLAUDE.md's ruleset
+#                                         list) — deliberately excluded so a
+#                                         Playwright/Chromium regression here
+#                                         never blocks an unrelated PR.
 #   build-binary (arm64 cross on ubuntu-22.04, mirrors release.yml)
 #     └─► smoke-arm64 (ubuntu-24.04-arm) — runs container in local mode
 #
@@ -122,12 +139,22 @@ jobs:
       # rust-cache bump (PR #250).
       #
       # GitHub enforces a 10GB-per-repo actions-cache eviction budget, LRU
-      # across every prefix in the repo. This workflow adds a THIRD and
-      # FOURTH Swatinem/rust-cache prefix alongside the two that already
-      # exist in health.yml: "v2-zfb" (main job, V8-enabled) and
-      # "v2-zfb-no-v8" (build-no-v8, no-v8 fallback) — see
-      # `grep -rn "Swatinem/rust-cache" .github/workflows/`. Four
-      # moderately-sized target/ caches should stay well under budget; if
+      # across every prefix in the repo. Stale count fixed (issue #1394): this
+      # comment used to say "four" families total, counting only health.yml's
+      # two plus this workflow's two matrix legs — it missed exam.yml, which
+      # also calls Swatinem/rust-cache (`grep -rn "Swatinem/rust-cache"
+      # .github/workflows/` — 5 call sites today). The real, current count of
+      # distinct cache families is FIVE: health.yml's `health` job
+      # (V8-enabled) and exam.yml's `quarantine-heavy` job now deliberately
+      # SHARE one family via a common `shared-key` (both run the identical
+      # `cargo build --workspace --all-targets`, so the target/ tree really is
+      # interchangeable — see exam.yml's rust-cache step); health.yml's
+      # `build-no-v8` job is its own family ("v2-zfb-no-v8"); exam.yml's
+      # `macos-exam` job is its own family ("v2-zfb-macos-exam", different
+      # OS/arch); and this workflow's two matrix legs
+      # ("v2-zfb-smoke-x86_64-unknown-linux-gnu" /
+      # "v2-zfb-smoke-aarch64-unknown-linux-gnu") are each their own family.
+      # Five moderately-sized target/ caches should stay well under budget; if
       # repo-wide cache pressure or eviction thrashing appears, this is the
       # first place to look.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
@@ -270,6 +297,112 @@ jobs:
         env:
           ZFB_LINUX_X64_BINARY: ${{ github.workspace }}/smoke-ctx/zfb-bin
         run: bash scripts/smoke-packed-clean-room.sh
+
+  # ── Built-site browser smoke: real `zfb build` output in real Chromium ─────
+  #
+  # Issue #1401. Every other tier is structurally blind to the #1385 bug
+  # class (an emitted client bundle that throws at hydration):
+  #   - router-chromium.yml drives zfb-runtime fixtures, not `zfb build`
+  #     output;
+  #   - the Rust dev-server e2es are HTTP/process-level, never a real
+  #     browser;
+  #   - smoke-amd64/arm64/scaffold-e2e above assert dist/ file CONTENT
+  #     (grep / string checks), never execute the emitted JS.
+  #
+  # This job builds a small fixture site with one working interactive
+  # island (tests/built-site-smoke/fixture-site/, a Preact counter) using
+  # THIS leg's freshly built binary — no separate compile, no pnpm
+  # workspace deps needed for the build itself (the binary embeds
+  # @takazudo/zfb / @takazudo/zfb-runtime / preact and extracts them on
+  # demand, same as the Rust end_to_end_basic_blog_build test) — then
+  # serves the resulting dist/ statically and drives it with Playwright,
+  # mirroring router-chromium.yml's Chromium setup.
+  #
+  # Scope (see issue #1401): no `import.meta.glob` island yet — the #1387
+  # stopgap makes that a build-time error; a later wave upgrades this
+  # fixture once the full fix lands.
+  #
+  # NOT a required status check — deliberately excluded from the
+  # `main-required-status-checks` ruleset (see CLAUDE.md's list of required
+  # checks). A Playwright/Chromium-specific flake here must never block an
+  # unrelated PR.
+  built-site-browser-smoke:
+    name: Built-site browser smoke (L4)
+    needs: build-binary
+    runs-on: ubuntu-latest
+    # Budgeted the same as router-chromium.yml: the suite itself is a single
+    # short assertion; the timeout mostly covers the pnpm install + Chromium
+    # download. Whole job targets a few minutes.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      # Only @playwright/test (a root devDependency) is needed to run the
+      # suite — the fixture site itself is built by the standalone zfb
+      # binary below and needs no pnpm-installed deps of its own.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Chromium only — no WebKit/Firefox. `--with-deps` pulls the system
+      # libraries the browser needs on a bare ubuntu runner.
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Download built binary (amd64)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: smoke-binary-amd64
+          path: smoke-ctx
+
+      # actions/upload-artifact does not reliably round-trip the execute
+      # bit, so chmod defensively — same pattern as smoke-amd64/arm64's
+      # `chmod +x smoke-ctx/run.sh` above.
+      - name: Fix permissions on downloaded binary
+        run: chmod 0755 smoke-ctx/zfb-bin
+
+      # Real `zfb build` against the fixture site — no node_modules, no
+      # package.json needed (see crates/zfb/tests/end_to_end_basic_blog_build.rs
+      # for the same no-pnpm-install build path).
+      - name: Build fixture site
+        working-directory: tests/built-site-smoke/fixture-site
+        run: ${{ github.workspace }}/smoke-ctx/zfb-bin build
+
+      # Fast, explicit build-output sanity check before paying for a browser:
+      # if the islands bundle is missing entirely, fail here with a clear
+      # message rather than a confusing Playwright click-timeout later.
+      - name: Assert islands bundle was emitted
+        working-directory: tests/built-site-smoke/fixture-site
+        shell: bash
+        run: |
+          test -f dist/index.html || { echo "::error::dist/index.html missing after build"; exit 1; }
+          shopt -s nullglob
+          bundles=(dist/assets/islands-*.js)
+          if [ ${#bundles[@]} -eq 0 ]; then
+            echo "::error::no dist/assets/islands-*.js bundle emitted"
+            exit 1
+          fi
+          echo "Found islands bundle: ${bundles[*]}"
+
+      - name: Run built-site-smoke Playwright suite
+        run: pnpm exec playwright test --config tests/built-site-smoke/playwright.config.mjs
+
+      # Traces live in test-results/ (NOT playwright-report/), matching
+      # router-chromium.yml. Uploaded only on failure.
+      - name: Upload Playwright traces
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: built-site-smoke-traces
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
 
   # ── arm64 smoke: runs on ubuntu-24.04-arm (native arm64 runner) ────────────
   smoke-arm64:

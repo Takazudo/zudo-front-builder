@@ -16,6 +16,28 @@ MDX, HTML pages, **and islands** — esbuild and Tailwind run as standalone
 native binaries shipped with `zfb`, so client-side hydration and CSS processing
 work with zero Node involvement.
 
+## Supported platforms
+
+| Platform | Architecture | Target triple |
+| --- | --- | --- |
+| Linux (glibc) | x64 | `x86_64-unknown-linux-gnu` |
+| Linux (glibc) | arm64 | `aarch64-unknown-linux-gnu` |
+| macOS | x64 | `x86_64-apple-darwin` |
+| macOS | arm64 (Apple Silicon) | `aarch64-apple-darwin` |
+| Windows | x64 | `x86_64-pc-windows-msvc` |
+
+<Note title="musl/Alpine Linux is not supported">
+
+There is no musl-linked binary. `install.sh` detects OS and CPU architecture
+only — it cannot tell glibc from musl — so on Alpine (or another musl-based
+distro) it downloads the glibc `x86_64-unknown-linux-gnu` binary, which then
+fails to execute with a raw dynamic-loader error rather than a clear message.
+Use a glibc-based Linux image (e.g. Debian/Ubuntu) instead. (The npm install
+path detects musl and fails with a friendlier message — see
+[Installation](../getting-started/installation.mdx#supported-platforms).)
+
+</Note>
+
 ## Install paths
 
 ### Linux / macOS — curl
@@ -23,6 +45,19 @@ work with zero Node involvement.
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | sh
 ```
+
+<Note title="Pre-1.0: the command above has nothing to install yet">
+
+There are no stable releases yet — only prereleases (`v0.1.0-next.N`). Until
+`v0.1.0` ships, the default command resolves the latest **non-prerelease**
+release and fails with no matching release found. Install a prerelease
+explicitly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION=latest-prerelease sh
+```
+
+</Note>
 
 Installs `zfb` to `$HOME/.local/bin/zfb`. Add that directory to your `PATH`
 if it isn't already:

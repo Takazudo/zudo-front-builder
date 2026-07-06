@@ -789,6 +789,154 @@ describe("scheduleHydrate", () => {
       expect(unmount).toHaveBeenCalledWith(el);
     });
 
+    // -----------------------------------------------------------------------
+    // data-zfb-transition-persist lifecycle across a body swap (#1389).
+    //
+    // The client-router hands unmountIslands() the INCOMING body so it can skip
+    // islands swapBodyElement will lift (a persist id present on both sides).
+    // These use the inline-module manifest shape so mount/unmount are
+    // synchronous and directly observable. swapBodyElement lives in the sibling
+    // @takazudo/zfb-runtime package; here we simulate only the DOM effects it
+    // produces (the data-zfb-island-remount flag + refreshed data-props). The real
+    // swapBodyElement is exercised end-to-end in zfb-runtime's
+    // persist-island-lifecycle.test.ts.
+    // -----------------------------------------------------------------------
+    describe("persist lifecycle across a body swap (#1389)", () => {
+      const PERSIST = "data-zfb-transition-persist";
+      const incomingBody = (inner: string): HTMLElement =>
+        new DOMParser().parseFromString(
+          `<!doctype html><html><body>${inner}</body></html>`,
+          "text/html",
+        ).body;
+
+      it("unmountIslands SKIPS a persisted island whose id matches the incoming body", () => {
+        document.body.innerHTML = `
+          <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{"open":true}' data-when="load"></div>
+          <div data-zfb-island="Toc" data-props='{"page":1}' data-when="load"></div>
+        `;
+        const sidebarUnmount = vi.fn();
+        const tocUnmount = vi.fn();
+        mountIslands({
+          Sidebar: { mount: vi.fn(), unmount: sidebarUnmount },
+          Toc: { mount: vi.fn(), unmount: tocUnmount },
+        });
+
+        unmountIslands(
+          document.body,
+          incomingBody(`
+            <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{"open":true}' data-when="load"></div>
+            <div data-zfb-island="Toc" data-props='{"page":2}' data-when="load"></div>
+          `),
+        );
+
+        // Persisted island survives the lift — its framework unmount must NOT fire.
+        expect(sidebarUnmount).not.toHaveBeenCalled();
+        // Non-persisted island still unmounts as before.
+        expect(tocUnmount).toHaveBeenCalledTimes(1);
+      });
+
+      it("the persisted island's mounted entry survives, so mountNewIslands does NOT re-mount it (but DOES re-mount the discarded one)", () => {
+        document.body.innerHTML = `
+          <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{"open":true}' data-when="load"></div>
+          <div data-zfb-island="Toc" data-props='{"page":1}' data-when="load"></div>
+        `;
+        const sidebarMount = vi.fn();
+        const tocMount = vi.fn();
+        mountIslands({
+          Sidebar: { mount: sidebarMount, unmount: vi.fn() },
+          Toc: { mount: tocMount, unmount: vi.fn() },
+        });
+        expect(sidebarMount).toHaveBeenCalledTimes(1);
+        expect(tocMount).toHaveBeenCalledTimes(1);
+
+        unmountIslands(
+          document.body,
+          incomingBody(`
+            <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{"open":true}' data-when="load"></div>
+            <div data-zfb-island="Toc" data-props='{"page":2}' data-when="load"></div>
+          `),
+        );
+        // Re-walk the (still-live) body: persisted stays mounted, discarded remounts.
+        mountNewIslands();
+
+        // Sidebar was never re-mounted → its mounted-map entry (and instance) survived.
+        expect(sidebarMount).toHaveBeenCalledTimes(1);
+        // Toc was unmounted → mountNewIslands mounts a fresh instance.
+        expect(tocMount).toHaveBeenCalledTimes(2);
+      });
+
+      it("unmountIslands STILL unmounts a persisted island when the incoming body lacks the id", () => {
+        document.body.innerHTML = `
+          <div ${PERSIST}="gone" data-zfb-island="Orphan" data-props='{}' data-when="load"></div>
+        `;
+        const unmount = vi.fn();
+        mountIslands({ Orphan: { mount: vi.fn(), unmount } });
+
+        // Incoming body has no matching persist id → swapBodyElement would discard
+        // it → it must be unmounted here.
+        unmountIslands(document.body, incomingBody(`<p>fresh</p>`));
+
+        expect(unmount).toHaveBeenCalledTimes(1);
+      });
+
+      it("unmountIslands with no incoming body unmounts a persisted island (pre-#1389 back-compat)", () => {
+        document.body.innerHTML = `
+          <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{}' data-when="load"></div>
+        `;
+        const unmount = vi.fn();
+        mountIslands({ Sidebar: { mount: vi.fn(), unmount } });
+
+        // Single-arg call (no swap in flight) preserves nothing — identical to
+        // the original walk.
+        unmountIslands(document.body);
+
+        expect(unmount).toHaveBeenCalledTimes(1);
+      });
+
+      it("mountNewIslands consumes the remount flag: unmounts the stale instance and re-mounts with fresh props (remount queue)", () => {
+        document.body.innerHTML = `
+          <div ${PERSIST}="panel" data-zfb-island="Panel" data-props='{"v":1}' data-when="load"></div>
+        `;
+        const el = document.querySelector(`[${PERSIST}="panel"]`)!;
+        const mount = vi.fn();
+        const unmount = vi.fn();
+        mountIslands({ Panel: { mount, unmount } });
+        expect(mount).toHaveBeenCalledTimes(1);
+        expect(mount.mock.calls[0]![0]).toEqual({ v: 1 });
+
+        // Simulate swapBodyElement's persist-props branch: the surviving element
+        // gets the refreshed props + the data-zfb-island-remount flag.
+        el.setAttribute("data-props", '{"v":2}');
+        el.setAttribute("data-zfb-island-remount", "");
+
+        mountNewIslands();
+
+        // The stale instance was torn down exactly once, then a fresh one mounted
+        // with the new props.
+        expect(unmount).toHaveBeenCalledTimes(1);
+        expect(mount).toHaveBeenCalledTimes(2);
+        expect(mount.mock.calls[1]![0]).toEqual({ v: 2 });
+        // The flag is consumed so the remount happens exactly once.
+        expect(el.hasAttribute("data-zfb-island-remount")).toBe(false);
+      });
+
+      it("mountNewIslands leaves a persisted island with unchanged props (no remount flag) mounted — no unmount, no re-mount", () => {
+        document.body.innerHTML = `
+          <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{"open":true}' data-when="load"></div>
+        `;
+        const mount = vi.fn();
+        const unmount = vi.fn();
+        mountIslands({ Sidebar: { mount, unmount } });
+        expect(mount).toHaveBeenCalledTimes(1);
+
+        // No remount flag (props were identical) → mountNewIslands must not disturb it.
+        mountNewIslands();
+
+        expect(unmount).not.toHaveBeenCalled();
+        expect(mount).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it("stale-mount race: does not call mount when element is detached before import resolves", async () => {
       document.body.innerHTML = `
         <div data-zfb-island="Counter" data-props='{}' data-when="load"></div>

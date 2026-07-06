@@ -147,6 +147,12 @@ const DEFAULT_WATCH_ROOTS: &[&str] = &[
     "zfb.config.ts",
 ];
 
+/// Watch-root basenames excluded from the missing-target boot warning
+/// (issue #1391). These are the mutually-exclusive `zfb.config.*` files:
+/// a project has at most one, so warning about the absent variant(s)
+/// would be pure noise on every boot. See [`missing_watch_targets`].
+const WATCH_WARN_SKIP: &[&str] = &["zfb.config.json", "zfb.config.ts"];
+
 /// Strip `.` components so `./src/mdx` and `src/mdx` compare equal in
 /// the dedupe / coverage checks below.
 fn normalize_relative(path: &Path) -> PathBuf {
@@ -193,6 +199,61 @@ fn derive_watch_roots(cfg: &config::Config) -> Vec<PathBuf> {
     roots
 }
 
+/// Compute which derived watch roots + `extraWatchPaths` targets are
+/// absent from disk at boot (issue #1391).
+///
+/// `zfb_watcher::Watcher::start_with_extras` already skips a missing
+/// path and does NOT re-register it if it appears later — but the only
+/// signal is a `tracing::warn!`, which a user running `zfb dev` from a
+/// terminal never sees (this crate's user-facing messages go through
+/// [`crate::output`]). Absent a warning here, "run `zfb dev` before
+/// `mkdir content`" silently degrades into a no-reload mode for that
+/// root until the user restarts.
+///
+/// Kept as a pure function (returns the missing paths rather than
+/// printing them) so the boot path's `output::warn` side effect stays a
+/// thin, untested wrapper around unit-testable logic — mirroring the
+/// `fmt_*` / `warn` split in `crate::output`.
+///
+/// The two `zfb.config.*` entries in [`DEFAULT_WATCH_ROOTS`] are
+/// deliberately EXCLUDED from the warning: they are mutually-exclusive
+/// config *files* (a project carries at most one, and a defaults-only
+/// project carries neither), so at least one is ALWAYS absent. Warning
+/// about them would fire on every single boot and drown out the real
+/// signal this exists for — a missing content/source *directory* that
+/// silently degrades into no-reload. A missing config file is the normal
+/// steady state, not a degraded mode.
+fn missing_watch_targets(
+    project_root: &Path,
+    watch_roots: &[PathBuf],
+    extra_watch_paths: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut missing = Vec::new();
+    for root in watch_roots {
+        let is_config_file = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| WATCH_WARN_SKIP.contains(&n))
+            .unwrap_or(false);
+        if is_config_file {
+            continue;
+        }
+        let full = project_root.join(root);
+        if !full.exists() {
+            missing.push(full);
+        }
+    }
+    // `extra_watch_paths` are already absolute by this point (resolved via
+    // `resolve_extra_watch_paths`, `session.out_of_root_watch_targets()`, or
+    // `resolve_css_import_watch_targets` — all canonicalise before adding).
+    for extra in extra_watch_paths {
+        if !extra.exists() {
+            missing.push(extra.clone());
+        }
+    }
+    missing
+}
+
 /// Entry point for `zfb dev`.
 ///
 /// Available only when the `embed_v8` cargo feature is on (issue #371,
@@ -232,11 +293,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // dev-only directory under `.zfb-build/` keeps the read-back working
     // while taking dev out of the production output's write set entirely.
     //
-    // The dev server's disk-fallback in `read_from_dist` intentionally
-    // still points at `dist_root` (not at `dev_html_root`): on a cold
-    // cache it serves whatever the most recent `pnpm build` left there,
-    // which is what users expect from "build, then dev for a quick check"
-    // and is now safe because dev no longer mutates that file.
+    // The dev server's page disk-fallback probes `dev_html_root` FIRST
+    // (issue #534 — dev's per-route renders land there, kept out of the
+    // production `dist_root` write set), then `public_root`, and finally
+    // the prebuilt `dist_root` as a Dev-only, last-resort boot-lazy seed
+    // (issues #1057 / #1182 / #1390, in `zfb-server` `serve_page`): on a
+    // cold cache it serves whatever the most recent `pnpm build` left
+    // there — "build, then dev for a quick check" — and is safe because
+    // dev only READS `dist_root`, never mutates it. Probed AFTER
+    // `public_root` (#1390) so a live `public/` edit is never shadowed by
+    // a stale build copy. The seed self-heals for HTML routes: once dev
+    // renders a route into `dev_html_root`, the fresh bytes win.
     let dev_html_root = dev_html_root_for(&project_root);
     // Guard against a pathological `outDir` (`.zfb-build/dev-pages`,
     // its parent, or anything that overlaps): when the dev HTML root
@@ -553,6 +620,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         if !extra_watch_paths.contains(real) {
             extra_watch_paths.push(real.clone());
         }
+    }
+    // Issue #1391 — every watch root + extra target is now finalised;
+    // warn about any that don't exist yet so the silent no-reload mode
+    // (see `missing_watch_targets` doc) is at least visible in the
+    // dev server's own console output before the user hits it.
+    for missing in missing_watch_targets(&project_root, &watch_roots, &extra_watch_paths) {
+        output::warn(format!(
+            "watch target {} does not exist yet — it will not be watched \
+             until you restart `zfb dev` after creating it",
+            missing.display(),
+        ));
     }
     // Configured collection roots classify as Content ahead of the
     // standard root-segment walk — without this, a collection under
@@ -1134,11 +1212,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //
     //     REQUEST-BEFORE-RENDER RACE (eager mode): a GET can arrive
     //     before this task's boot render finishes. The dev server's serve
-    //     waterfall is `PageCache → html_root → dist_root → public_root →
+    //     waterfall is `PageCache → html_root → public_root → dist_root →
     //     404` (zfb-server `serve_page`): until the eager render writes a
     //     route's HTML, the request is served from the prebuilt `dist/`
-    //     (the `read_from_dist` leg, which points at `dist_root`) if a
-    //     servable copy exists, and otherwise gets the controlled
+    //     (the Dev-gated `read_from_dist(dist_root, …)` seed leg, last
+    //     before the 404) if a servable copy exists, and otherwise gets
+    //     the controlled
     //     `DEV_404_BODY` — a complete, well-formed HTML page carrying the
     //     live-reload script that auto-upgrades the moment the real render
     //     lands. It is NEVER a wrong/empty/partial body. This matches the
@@ -1378,36 +1457,41 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             //    synthesise a `BuildOutcome` carrying only the islands info.
             //    A single merged outcome is returned (one broadcast), never
             //    two.
-            // Issue #1182 — drain the routes the deferred publish marked stale.
-            // In a deferred boot, step 0 published the renderer and
-            // `run_boot_render`'s boot-lazy branch then staled every known
-            // route. Fold those into `pages_stale` so the single
+            // Issues #1182 / #1390 — drain the routes the boot task marked
+            // stale and fold them into `pages_stale` so the single
             // `run_with_boot` broadcast emits one `ReloadEvent::Page`
-            // (livereload.rs): a tab that loaded the prebuilt `dist/` during the
-            // pre-renderer window reloads, and its GET re-renders through the
-            // now-live request-time hook. Drained from the same tick buffer the
-            // pipeline's stale probe uses; the per-route stale map (claimable
-            // for request-time render) is untouched — this is the broadcast,
-            // not a second one. Empty and inert unless the bundle was deferred.
+            // (livereload.rs): a tab that loaded the prebuilt `dist/` seed
+            // during the pre-render window reloads, and its GET re-renders
+            // through the now-live request-time hook. Drained from the same
+            // tick buffer the pipeline's stale probe uses; the per-route stale
+            // map (claimable for request-time render) is untouched — this is
+            // the broadcast, not a second one.
             //
-            // Deliberately gated on `defer_dev_bundle`, NOT on boot-lazy: this
-            // reload only matters for the deferred window, where step 0 publishes
-            // the renderer AFTER bind so a tab may have loaded the prebuilt `dist/`
-            // first. When boot-lazy is on but NOT deferred — boot-lazy without a
-            // servable seed, or the #1188 `ZFB_DEV_DEFER_BUNDLE=0` opt-out —
-            // `boot_dev_renderer` built the V8 host + route tables EAGERLY before
-            // bind, so SSR routes render fresh through the live host on first
-            // request and no tab ever served stale/prebuilt content needing a
-            // reload. So the broadcast is correctly inert there (and the always-on
-            // islands reload above still fires regardless of this gate).
-            let boot_stale: Vec<PathBuf> = if defer_dev_bundle {
-                dev_session_for_boot
-                    .as_ref()
-                    .map(|s| s.inner.take_tick_stale())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+            // UNCONDITIONAL, not gated on `defer_dev_bundle` (was #1182, fixed
+            // in #1390). `take_tick_stale()` is the self-describing signal —
+            // it returns exactly the routes the boot task left marked stale —
+            // so gating on `defer_dev_bundle` was both unnecessary and a bug:
+            //   - Eager (non-boot-lazy) boot: `run_boot_render` renders every
+            //     route through `initial_build`, whose pipeline stale probe
+            //     ALREADY drained `tick_stale` into `outcome.pages_stale`. So
+            //     this drain returns empty and the `if !boot_stale.is_empty()`
+            //     fold below is inert — no behaviour change, no double-count.
+            //   - Deferred boot-lazy: step 0 published the renderer and
+            //     `run_boot_render`'s boot-lazy branch staled every route →
+            //     this drains + broadcasts them (the original #1182 case).
+            //   - Non-deferred boot-lazy (a servable seed present but the #1188
+            //     `ZFB_DEV_DEFER_BUNDLE=0` opt-out): `run_boot_render` STILL
+            //     takes its boot-lazy branch and calls `mark_all_routes_stale`
+            //     AFTER bind — but the old `defer_dev_bundle` gate suppressed
+            //     the broadcast, so a tab that loaded the prebuilt `dist/` seed
+            //     during the [bind → mark_all_routes_stale] window never got
+            //     the reload and stayed on stale seed bytes. Ungating delivers
+            //     it (the always-on islands reload above was never enough — it
+            //     re-imports the bundle but does not re-fetch the page HTML).
+            let boot_stale: Vec<PathBuf> = dev_session_for_boot
+                .as_ref()
+                .map(|s| s.inner.take_tick_stale())
+                .unwrap_or_default();
 
             let mut outcome = match (render_outcome, islands_info) {
                 (Some(mut outcome), Some(info)) => {
@@ -1548,6 +1632,18 @@ fn rebundle_islands(
     // (Package-owned build routes are a build-time concern; dev's
     // injected routes are served live, not materialised — #1193.) No
     // package-route entrypoints to seed in dev (codex P1 is build-only).
+    // Issue #1404 — the islands-shadow `import.meta.glob` fix is applied
+    // inside `build_default_islands_payload`, so the dev path gets it for
+    // free by routing through the same function: a supported eager
+    // string-literal glob reachable from an island is expanded into a
+    // per-rebundle shadow and bundles normally. Only the UNSUPPORTED-form
+    // remainder falls back to the #1387 stopgap, and here that stopgap is
+    // `WarnAndSkip`: it warns and skips this rebundle tick instead of
+    // failing the whole watcher loop (unlike `zfb build`'s `HardError`), so
+    // the dev server stays up while the author fixes the file and saves
+    // again. The shadow TempDir is created and dropped entirely within the
+    // call below (esbuild runs synchronously inside it), so no shadow state
+    // leaks across dev ticks.
     let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
         project_root,
         &project_root.join("pages"),
@@ -1555,6 +1651,7 @@ fn rebundle_islands(
         assets_root,
         framework,
         plugin_config,
+        crate::commands::build::IslandsGlobPolicy::WarnAndSkip,
     )?;
     // Rewrite the shared handle so the next initial GET (a fresh browser
     // tab, or a page that has not yet hydrated) sees the current bundle URL.
@@ -1670,9 +1767,10 @@ fn rebundle_islands(
 /// Eager mode request-before-render race (issue #1166): because this now
 /// runs on a background task AFTER the listener binds, a GET can arrive
 /// before the eager render writes a route's HTML. The dev server's serve
-/// waterfall (`PageCache → html_root → dist_root → public_root → 404`)
-/// handles it: the request is served from the prebuilt `dist/` if a
-/// servable copy exists, otherwise the controlled `DEV_404_BODY` (a
+/// waterfall (`PageCache → html_root → public_root → dist_root → 404`)
+/// handles it: the request is served from the prebuilt `dist/` seed (the
+/// last leg before the 404) if a servable copy exists, otherwise the
+/// controlled `DEV_404_BODY` (a
 /// complete HTML page carrying the live-reload script, which auto-upgrades
 /// the instant the real render lands) — never a wrong/empty/partial body.
 #[cfg(feature = "embed_v8")]
@@ -6093,6 +6191,68 @@ mod tests {
         let roots = derive_watch_roots(&cfg);
         assert!(roots.contains(&PathBuf::from("articles")));
         assert_eq!(roots.len(), DEFAULT_WATCH_ROOTS.len() + 1);
+    }
+
+    /// Issue #1391 — a configured-but-missing derived watch root (e.g.
+    /// `content/` never created) AND a missing extra watch path must both
+    /// be reported so the boot path can warn the user. A present root and
+    /// a present extra path must NOT show up.
+    #[test]
+    fn missing_watch_targets_flags_absent_root_and_extra_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // `content` is a derived watch root that does not exist under `dir`.
+        let watch_roots = vec![PathBuf::from("content"), PathBuf::from("pages")];
+        std::fs::create_dir_all(dir.path().join("pages")).unwrap();
+
+        let present_extra = dir.path().join("present-extra");
+        std::fs::create_dir_all(&present_extra).unwrap();
+        let missing_extra = dir.path().join("missing-extra");
+        let extra_watch_paths = vec![present_extra, missing_extra.clone()];
+
+        let missing = missing_watch_targets(dir.path(), &watch_roots, &extra_watch_paths);
+
+        assert_eq!(
+            missing,
+            vec![dir.path().join("content"), missing_extra],
+            "must flag exactly the missing root and the missing extra path"
+        );
+    }
+
+    /// Everything present ⇒ no warnings — the common case (a freshly
+    /// scaffolded project with all default roots created) must not spam
+    /// the console.
+    #[test]
+    fn missing_watch_targets_empty_when_everything_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("content")).unwrap();
+        let missing = missing_watch_targets(dir.path(), &[PathBuf::from("content")], &[]);
+        assert!(missing.is_empty());
+    }
+
+    /// Issue #1391 — the mutually-exclusive `zfb.config.*` entries in
+    /// `DEFAULT_WATCH_ROOTS` must NOT be reported as missing: at least
+    /// one is always absent, so warning about them would spam every boot
+    /// and bury the real content/source-dir signal. Passing the real
+    /// default roots against an empty project must surface the missing
+    /// *directories* but never the config files.
+    #[test]
+    fn missing_watch_targets_never_flags_config_files() {
+        let dir = tempfile::tempdir().unwrap();
+        // Empty project: no default dirs, no config files exist.
+        let roots: Vec<PathBuf> = DEFAULT_WATCH_ROOTS.iter().map(PathBuf::from).collect();
+        let missing = missing_watch_targets(dir.path(), &roots, &[]);
+        for m in &missing {
+            let name = m.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            assert!(
+                !WATCH_WARN_SKIP.contains(&name),
+                "config file {m:?} must never be reported as a missing watch target"
+            );
+        }
+        // Sanity: the directory roots ARE still reported (e.g. `content`).
+        assert!(
+            missing.contains(&dir.path().join("content")),
+            "a missing content/ dir must still be flagged; got {missing:?}"
+        );
     }
 
     /// Issue #534 regression — dev's per-route HTML output dir must live

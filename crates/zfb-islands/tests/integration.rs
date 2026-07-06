@@ -615,6 +615,135 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
 }
 
 // -----------------------------------------------------------------------------
+// CSS-import policy (#1395) — real-esbuild integration
+//
+// Pre-fix, an island importing a `.css` file failed the build: the islands
+// esbuild arg set had no `--loader:.css=empty` policy (unlike the SSR
+// bundler), so esbuild wrote a sibling CSS output file that
+// `read_back_outdir`/`validate_chunk_filename` rejected as "esbuild emitted
+// an unexpected output file". These tests pin the fix — plain `.css` and
+// `.module.css` imports must both bundle successfully.
+// -----------------------------------------------------------------------------
+
+/// Acceptance (#1395): an island importing a plain `.css` file must bundle
+/// without error under the `--loader:.css=empty` policy in
+/// `build_esbuild_args_with_entry_name`.
+#[test]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
+fn island_css_import_bundles_without_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    stage_minimal_node_modules(tmp.path());
+
+    std::fs::write(
+        tmp.path().join("styles.css"),
+        ".zfb_css_import_marker { color: red; }\n",
+    )
+    .expect("write styles.css");
+
+    let island_src = tmp.path().join("island.tsx");
+    std::fs::write(
+        &island_src,
+        "import \"./styles.css\";\n\
+         export default function Island() { return null; }\n",
+    )
+    .expect("write island");
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
+    );
+    let cfg = BundleConfig::production()
+        .with_outdir(tmp.path().join("dist"))
+        .with_minify(false);
+
+    let out = bundler
+        .bundle(&[Island::new("Island", island_src)], &cfg)
+        .expect(
+            "island importing a plain .css file must bundle successfully under \
+             the --loader:.css=empty policy (issue #1395)",
+        );
+
+    // Bundler carries bytes in memory — no disk write.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
+    assert!(!out.bytes.is_empty(), "entry bytes must be non-empty");
+    assert!(
+        out.chunks.is_empty(),
+        "no dynamic import in this fixture — zero chunks expected: {:?}",
+        out.chunks.iter().map(|c| &c.filename).collect::<Vec<_>>()
+    );
+
+    // `--loader:.css=empty` must have neutralised the CSS bytes — no raw
+    // CSS text leaks into the JS entry.
+    let entry = String::from_utf8(out.bytes).expect("entry bytes are valid UTF-8");
+    assert!(
+        !entry.contains("zfb_css_import_marker"),
+        "raw CSS bytes leaked into the islands JS bundle:\n{entry}"
+    );
+}
+
+/// Acceptance (#1395): an island importing a `.module.css` file must also
+/// bundle without error. Client-side CSS-modules class maps are OUT of
+/// scope for this bundle (see the `esbuild.rs` module doc's "CSS-import
+/// policy" section, and #1404/#1406) — `--loader:.css=empty` also matches
+/// `.module.css` (no more specific rule is registered for the islands
+/// bundle), so the imported default resolves to an empty object rather
+/// than a scoped class-name map. This test only pins "does not fail the
+/// build"; it deliberately does not assert a class-name map.
+#[test]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
+fn island_module_css_import_bundles_without_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    stage_minimal_node_modules(tmp.path());
+
+    std::fs::write(
+        tmp.path().join("x.module.css"),
+        ".zfb_module_css_marker { color: blue; }\n",
+    )
+    .expect("write x.module.css");
+
+    let island_src = tmp.path().join("island.tsx");
+    std::fs::write(
+        &island_src,
+        "import styles from \"./x.module.css\";\n\
+         export default function Island() { return styles; }\n",
+    )
+    .expect("write island");
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
+    );
+    let cfg = BundleConfig::production()
+        .with_outdir(tmp.path().join("dist"))
+        .with_minify(false);
+
+    let out = bundler
+        .bundle(&[Island::new("Island", island_src)], &cfg)
+        .expect(
+            "island importing a .module.css file must bundle successfully under \
+             the --loader:.css=empty policy (issue #1395); a scoped class-name \
+             map is out of scope, see #1404/#1406",
+        );
+
+    // Bundler carries bytes in memory — no disk write.
+    assert!(!out.asset_path.exists(), "bundler must not write to disk");
+    assert!(!out.bytes.is_empty(), "entry bytes must be non-empty");
+    assert!(
+        out.chunks.is_empty(),
+        "no dynamic import in this fixture — zero chunks expected: {:?}",
+        out.chunks.iter().map(|c| &c.filename).collect::<Vec<_>>()
+    );
+
+    let entry = String::from_utf8(out.bytes).expect("entry bytes are valid UTF-8");
+    assert!(
+        !entry.contains("zfb_module_css_marker"),
+        "raw CSS bytes leaked into the islands JS bundle:\n{entry}"
+    );
+}
+
+// -----------------------------------------------------------------------------
 // Sub-task 3 — manifest emission (acceptance)
 //
 // The 2-island fixture under `fixtures/two-islands/` is the smallest realistic
@@ -734,4 +863,210 @@ fn two_islands_fixture_yields_two_entry_manifest() {
     let cpos = json.find("\"Counter\"").unwrap();
     let tpos = json.find("\"ThemeToggle\"").unwrap();
     assert!(cpos < tpos, "json keys must be sorted: {json}");
+}
+
+// ---------------------------------------------------------------------------
+// Islands shadow: `import.meta.glob` in an island bundles + executes (#1404)
+// ---------------------------------------------------------------------------
+//
+// These prove the ESBUILD half of the #1385 pt.1 fix (the shadow-tree
+// materialisation half lives in `crates/zfb/src/commands/build.rs` and is
+// unit-tested there without a binary). The test constructs the shadow tree
+// by hand — exactly the shape `materialise_islands_shadow` produces: plain
+// island files symlinked, the `import.meta.glob` data module written as a
+// REAL expanded copy, `node_modules` symlinked whole — and drives the real
+// bundler against it with `--preserve-symlinks`. This is the L3
+// "execute-the-artifact" doctrine: string-equality proves the macro was
+// removed, and running the bundle under node proves it evaluates (the #1385
+// crash was `import.meta.glob` being `undefined` at module-init).
+
+/// Symlink `from` -> `to` for the shadow (unix) / copy-fallback elsewhere.
+#[cfg(unix)]
+fn shadow_link(from: &Path, to: &Path) {
+    std::os::unix::fs::symlink(from, to).expect("symlink");
+}
+#[cfg(not(unix))]
+fn shadow_link(from: &Path, to: &Path) {
+    // Windows islands shadows are out of scope (#1404); tests run on unix CI.
+    std::fs::copy(from, to).map(|_| ()).expect("copy fallback");
+}
+
+/// Build a real project tree + a hand-materialised shadow of it under a fresh
+/// tempdir, returning `(project_tempdir, shadow_tempdir, shadow_island_path)`.
+/// The glob data module is written EXPANDED in the shadow (mirroring
+/// `zfb_build::glob_expand::expand_import_meta_glob`'s output); the raw macro
+/// stays only in the real project tree.
+fn stage_glob_island_shadow() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let proj = tempfile::tempdir().expect("proj tempdir");
+    let proj_root = proj.path();
+    stage_minimal_node_modules(proj_root);
+    std::fs::create_dir_all(proj_root.join("components/widgets")).unwrap();
+    // Island file (plain — no glob) importing the glob data module + a widget.
+    std::fs::write(
+        proj_root.join("components/gallery.tsx"),
+        "\"use client\";\n\
+         import { widgets } from \"./gallery-data\";\n\
+         export function Gallery() { return Object.keys(widgets).length; }\n",
+    )
+    .unwrap();
+    // REAL glob data module (raw macro — what the user wrote).
+    std::fs::write(
+        proj_root.join("components/gallery-data.tsx"),
+        "export const widgets = import.meta.glob('./widgets/*.tsx', { eager: true });\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj_root.join("components/widgets/a.tsx"),
+        "export const a = 1;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj_root.join("components/widgets/b.tsx"),
+        "export const b = 2;\n",
+    )
+    .unwrap();
+
+    // Hand-materialised shadow.
+    let shadow = tempfile::tempdir().expect("shadow tempdir");
+    let shadow_root = shadow.path();
+    std::fs::create_dir_all(shadow_root.join("components/widgets")).unwrap();
+    shadow_link(
+        &proj_root.join("node_modules"),
+        &shadow_root.join("node_modules"),
+    );
+    shadow_link(
+        &proj_root.join("components/gallery.tsx"),
+        &shadow_root.join("components/gallery.tsx"),
+    );
+    shadow_link(
+        &proj_root.join("components/widgets/a.tsx"),
+        &shadow_root.join("components/widgets/a.tsx"),
+    );
+    shadow_link(
+        &proj_root.join("components/widgets/b.tsx"),
+        &shadow_root.join("components/widgets/b.tsx"),
+    );
+    // EXPANDED glob module as a REAL file (mirrors expand_import_meta_glob).
+    std::fs::write(
+        shadow_root.join("components/gallery-data.tsx"),
+        "import * as __glob_0 from \"./widgets/a.tsx\";\n\
+         import * as __glob_1 from \"./widgets/b.tsx\";\n\
+         export const widgets = {\n\
+         \x20 \"./widgets/a.tsx\": __glob_0,\n\
+         \x20 \"./widgets/b.tsx\": __glob_1\n\
+         };\n",
+    )
+    .unwrap();
+
+    let shadow_island = shadow_root.join("components/gallery.tsx");
+    (proj, shadow, shadow_island)
+}
+
+#[test]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
+fn islands_shadow_expands_glob_and_executes() {
+    let (proj, _shadow, shadow_island) = stage_glob_island_shadow();
+    let proj_root = proj.path();
+    let out_dir = tempfile::tempdir().expect("outdir");
+
+    let bundler = EsbuildSubprocessBundler::new(
+        // working_dir = the REAL project root (entry temp file + entry's own
+        // bare imports resolve against the real node_modules); the island's
+        // source_path points into the shadow, so its transitive imports
+        // resolve through the shadow under --preserve-symlinks.
+        EsbuildSubprocessConfig::default().with_working_dir(proj_root.to_path_buf()),
+    );
+    let bundle_cfg = BundleConfig::production()
+        .with_outdir(out_dir.path())
+        .with_minify(false)
+        .with_preserve_symlinks(true);
+    let out = bundler
+        .bundle(
+            &[Island::new("Gallery", shadow_island.clone())],
+            &bundle_cfg,
+        )
+        .expect("glob island must bundle via the shadow");
+    let js = String::from_utf8(out.bytes).expect("bundle is utf-8");
+
+    // The raw Vite macro must be GONE — the shadow's expanded copy won.
+    assert!(
+        !js.contains("import.meta.glob("),
+        "bundle still contains the raw import.meta.glob macro:\n{js}"
+    );
+    assert!(
+        js.contains("Gallery"),
+        "island component must survive tree-shaking into the bundle:\n{js}"
+    );
+
+    // Execute-the-artifact: the bundle must EVALUATE without throwing. If the
+    // macro had leaked (see the load-bearing test below), module-init would
+    // throw `TypeError: import.meta.glob is not a function`.
+    if node_available() {
+        let script_dir = tempfile::tempdir().expect("script dir");
+        let bundle_path = script_dir.path().join("bundle.mjs");
+        std::fs::write(&bundle_path, js.as_bytes()).unwrap();
+        let runner = script_dir.path().join("run.mjs");
+        std::fs::write(
+            &runner,
+            "globalThis.document = { querySelectorAll: () => [], addEventListener: () => {} };\n\
+             globalThis.window = globalThis;\n\
+             await import(\"./bundle.mjs\");\n\
+             console.log(\"ZFB_OK\");\n",
+        )
+        .unwrap();
+        let output = std::process::Command::new("node")
+            .arg(&runner)
+            .output()
+            .expect("spawn node");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("ZFB_OK"),
+            "bundle failed to execute under node — glob likely unexpanded.\n\
+             status={:?}\nstdout={stdout}\nstderr={stderr}",
+            output.status
+        );
+    } else {
+        eprintln!("[islands_shadow] node not on PATH; skipped the execute-the-artifact step.");
+    }
+}
+
+#[test]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
+fn islands_shadow_preserve_symlinks_is_load_bearing() {
+    // Same shadow, but bundled WITHOUT --preserve-symlinks: esbuild
+    // canonicalises the symlinked island file back to the REAL project tree
+    // and resolves `./gallery-data` to the RAW (un-expanded) module — so the
+    // macro leaks back into the bundle. This pins WHY the flag is required.
+    let (proj, _shadow, shadow_island) = stage_glob_island_shadow();
+    let out_dir = tempfile::tempdir().expect("outdir");
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(proj.path().to_path_buf()),
+    );
+    let bundle_cfg = BundleConfig::production()
+        .with_outdir(out_dir.path())
+        .with_minify(false)
+        .with_preserve_symlinks(false);
+    let out = bundler
+        .bundle(&[Island::new("Gallery", shadow_island)], &bundle_cfg)
+        .expect("bundle (no preserve-symlinks)");
+    let js = String::from_utf8(out.bytes).expect("utf-8");
+    assert!(
+        js.contains("import.meta.glob("),
+        "without --preserve-symlinks the raw macro MUST leak (proving the flag is \
+         load-bearing); got a bundle without it:\n{js}"
+    );
+}
+
+/// `true` when a `node` binary is on PATH (for the execute-the-artifact step).
+fn node_available() -> bool {
+    std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }

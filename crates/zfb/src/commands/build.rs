@@ -695,6 +695,7 @@ impl BuildRunner for DefaultRunner {
             outdir,
             config.framework,
             &self.islands_plugin_config,
+            IslandsGlobPolicy::HardError,
         )
         .context("islands emitter (DefaultRunner) failed")?;
         let client_scripts = build_default_client_scripts_payloads(
@@ -1132,6 +1133,347 @@ pub(crate) fn compute_css_module_class_maps(
     Ok(out.class_maps)
 }
 
+/// How `build_default_islands_payload` reacts when the scanner reports
+/// [`zfb_islands::ScanMeta::glob_reachable_from_islands`] non-empty (issue
+/// #1387, stopgap for #1385 pt.1: `import.meta.glob` reachable from a
+/// `"use client"` island ships to the browser unexpanded and throws at
+/// hydration).
+///
+/// Both `zfb build` and `zfb dev` route through the same
+/// `build_default_islands_payload` function, but the two surfaces need
+/// different failure modes: a one-shot build should fail loudly and stop,
+/// while a live dev server must keep running so the author can fix the
+/// file and save again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IslandsGlobPolicy {
+    /// `zfb build` — return a hard `Err` naming the offending file(s).
+    HardError,
+    /// `zfb dev` — warn (naming the offending file(s)) and skip this
+    /// rebundle tick; the caller sees `Ok((None, ..))`, same shape as the
+    /// "no islands found" short-circuit, and the dev server stays up.
+    WarnAndSkip,
+}
+
+/// A materialised islands shadow tree (issue #1404 — the full #1385 pt.1
+/// fix).
+///
+/// Built by [`materialise_islands_shadow`] only when `import.meta.glob` is
+/// reachable from a `"use client"` island. It mirrors the project's source
+/// tree under a throwaway `TempDir` keyed by project-root-relative path:
+/// plain files are symlinked, files that call `import.meta.glob` are written
+/// as REAL, expanded copies (the Vite macro expanded Rust-side via
+/// `zfb_build::glob_expand`, the same trick the SSR bundler's
+/// `materialise_source_file` uses), and `node_modules` is symlinked as a
+/// whole. The island `source_path`s are then remapped into the shadow so
+/// esbuild — invoked with `--preserve-symlinks` — resolves each island's
+/// transitive imports through the shadow, reaching the expanded glob copies
+/// instead of the raw project files.
+struct IslandsShadow {
+    /// Kept alive so the tempdir (and every symlink / real file inside it)
+    /// survives until esbuild has finished bundling. Dropping it deletes the
+    /// whole tree, so the caller MUST hold this until after
+    /// `build_production_islands_asset` returns.
+    _tempdir: tempfile::TempDir,
+    /// Map from a real island `source_path` (as it appears in the scanner's
+    /// islands set) to its shadow copy. Islands whose source lives outside
+    /// the mirrored tree (e.g. a workspace package under `node_modules`) are
+    /// absent — left pointing at the real file, resolved through the shadow's
+    /// `node_modules` symlink.
+    remap: std::collections::HashMap<PathBuf, PathBuf>,
+}
+
+/// Outcome of attempting to build the islands shadow for a project whose
+/// scan reported `import.meta.glob` reachable from an island.
+enum IslandsShadowOutcome {
+    /// A complete shadow was materialised; use it.
+    Ready(IslandsShadow),
+    /// One or more glob-using modules reachable from an island cannot be
+    /// expanded into the shadow — an unsupported `import.meta.glob` form
+    /// (lazy/default, non-literal pattern, `import()` mode, …), a parse
+    /// error, or a glob module located outside the mirrorable project tree
+    /// (outside the project root, or under `node_modules`). The caller keeps
+    /// the #1387 stopgap (build-time error / dev warn-and-skip) for these,
+    /// naming the offenders carried here — glob in a SUPPORTED form still
+    /// expands; only the unsupported remainder falls back.
+    KeepStopgap(Vec<String>),
+}
+
+/// Return the project-root-relative path of `p` when `p` is a project-local
+/// source file the islands shadow mirrors individually — i.e. it lives under
+/// `root` and NOT under `root/node_modules` (which is symlinked whole). A
+/// path outside `root`, under `node_modules`, or equal to `root` returns
+/// `None`.
+fn project_local_shadow_rel<'a>(p: &'a Path, root: &Path) -> Option<&'a Path> {
+    let rel = p.strip_prefix(root).ok()?;
+    match rel.components().next() {
+        Some(c) if c.as_os_str() == "node_modules" => None,
+        Some(_) => Some(rel),
+        None => None,
+    }
+}
+
+/// True when the walk must NOT descend into this directory while mirroring
+/// the shadow: dependency/infra trees (`node_modules` is symlinked as a
+/// whole instead) and top-level build outputs. Mirrors zfb-build's private
+/// `is_pruned_infra_dir` prune list plus the top-level `dist`/`target` dirs
+/// so a glob-in-island build never symlinks a large output tree.
+///
+/// The extra top-level `dist`/`target` prune is what makes this predicate
+/// diverge from the expander's `is_pruned_infra_dir` match-walk, so the
+/// expansion is fed [`matched_target_under_pruned_build_output`] as its
+/// `is_excluded` predicate to drop the same files — the two MUST stay in
+/// sync or the expander references a target the mirror never materialises.
+fn is_islands_shadow_pruned_dir(entry: &walkdir::DirEntry) -> bool {
+    if !entry.file_type().is_dir() {
+        return false;
+    }
+    let name = entry.file_name().to_string_lossy();
+    if matches!(
+        name.as_ref(),
+        "node_modules" | ".git" | ".next" | ".turbo" | ".vercel"
+    ) {
+        return true;
+    }
+    // Top-level build outputs only (depth 1 under the walk root) — a nested
+    // `dist/`/`target/` source dir is still mirrored (same caveat as
+    // zfb-build's prune list).
+    if entry.depth() == 1 && matches!(name.as_ref(), "dist" | "target") {
+        return true;
+    }
+    // Any hidden dir below the root (`.zfb-build`, `.cache`, `.vite`, …).
+    if entry.depth() > 0 && name.starts_with('.') {
+        return true;
+    }
+    false
+}
+
+/// Companion to [`is_islands_shadow_pruned_dir`] for the glob EXPANSION
+/// match-walk.
+///
+/// The shadow MIRROR walk (set (b)) prunes a top-level `dist`/`target`
+/// directory via [`is_islands_shadow_pruned_dir`]. The expander's OWN
+/// match-walk (`zfb_build::glob_expand`, which prunes with the SSR
+/// bundler's `is_pruned_infra_dir`) deliberately does NOT prune those, so
+/// a glob like `./**/*.tsx` next to a `dist/` would be matched + imported by
+/// the expander but pruned from the mirror → "Could not resolve ./dist/…"
+/// at esbuild time. Passing this as the expander's `is_excluded` predicate
+/// drops exactly those build-output matches, keeping the matched set ⊆ the
+/// mirrored set (and keeping compiled output out of an island bundle, which
+/// is correct on its own).
+///
+/// It mirrors ONLY the depth-1 `dist`/`target` rule — the sole divergence
+/// between the two prune predicates — and MUST be kept in sync with it.
+fn matched_target_under_pruned_build_output(abs: &Path, file_dir: &Path) -> bool {
+    let rel = match abs.strip_prefix(file_dir) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let mut comps = rel.components();
+    let first = match comps.next() {
+        Some(c) => c.as_os_str().to_string_lossy().into_owned(),
+        None => return false,
+    };
+    // Only a file UNDER a top-level `dist/`/`target/` dir (there must be a
+    // further path component) — a file literally named `dist`/`target` at
+    // depth 1 is not build output, matching the directory-only prune in
+    // `is_islands_shadow_pruned_dir`.
+    comps.next().is_some() && matches!(first.as_str(), "dist" | "target")
+}
+
+/// Create a symlink at `to` pointing at `from`, removing any pre-existing
+/// entry first. Unix uses one call for files and dirs; Windows needs the
+/// file/dir split and the privilege to create symlinks (Windows islands
+/// shadows are UNTESTED and out of scope per the T3 cutover manifest —
+/// junction fallback is a follow-up).
+fn shadow_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
+    let _ = std::fs::remove_file(to);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(from, to)
+    }
+    #[cfg(windows)]
+    {
+        if from.is_dir() {
+            std::os::windows::fs::symlink_dir(from, to)
+        } else {
+            std::os::windows::fs::symlink_file(from, to)
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // No symlink support — fall back to a real file copy (dirs
+        // unsupported on such platforms; none are targeted by zfb today).
+        std::fs::copy(from, to).map(|_| ())
+    }
+}
+
+/// Materialise the islands shadow tree for a project whose scan reported
+/// `import.meta.glob` reachable from a `"use client"` island (issue #1404).
+///
+/// Precondition: `scan_meta.glob_reachable_from_islands` is non-empty (the
+/// caller takes the no-shadow fast path otherwise, so the common
+/// glob-free build is byte-identical to before).
+///
+/// The set of files mirrored is the union of (a) the island-reachable
+/// closure `scan_meta.island_reachable_modules` — the shadow's completeness
+/// contract — and (b) every file under each glob module's own directory
+/// subtree. Set (b) captures the glob's matched TARGET files, which are
+/// reachable only through the expanded macro (never as a scanner edge) and
+/// are always anchored under the glob module's directory (`import.meta.glob`
+/// rejects `../` patterns), so mirroring that subtree materialises them
+/// without re-running the match. Every mirrored file is symlinked EXCEPT the
+/// island-reachable glob modules, which are written as expanded real copies.
+///
+/// Returns [`IslandsShadowOutcome::KeepStopgap`] (not an `Err`) when a
+/// glob module uses an unsupported form or lies outside the mirrorable tree,
+/// so the caller can apply the #1387 policy (hard error / dev warn-and-skip).
+/// A genuine filesystem error propagates as `Err`.
+fn materialise_islands_shadow(
+    project_root: &Path,
+    islands: &[zfb_islands::Island],
+    scan_meta: &zfb_islands::ScanMeta,
+) -> Result<IslandsShadowOutcome> {
+    use std::collections::{BTreeSet, HashMap};
+
+    let root = project_root;
+
+    // --- Pre-flight: every glob module must be shadow-expandable. ---------
+    // A glob module outside the mirrorable tree (outside project_root, or
+    // under node_modules) would be reached through the whole `node_modules`
+    // symlink as its RAW source and ship the unexpanded call — keep the
+    // stopgap for those. Then expand every mirrorable glob module up front so
+    // all unsupported-form errors are reported together and the mirror walk
+    // is skipped entirely when any is unsupported; cache the expansion for
+    // the walk below.
+    let mut offenders: Vec<String> = Vec::new();
+    let mut expanded_by_path: HashMap<PathBuf, String> = HashMap::new();
+    for g in &scan_meta.glob_reachable_from_islands {
+        if project_local_shadow_rel(g, root).is_none() {
+            offenders.push(format!(
+                "{} — reachable from a \"use client\" island but located outside the \
+                 mirrorable project tree (outside the project root, or under \
+                 node_modules), so its `import.meta.glob` cannot be expanded into the \
+                 islands shadow yet",
+                g.display()
+            ));
+            continue;
+        }
+        let source = std::fs::read_to_string(g)
+            .with_context(|| format!("read glob module {}", g.display()))?;
+        let file_dir = g.parent().unwrap_or(root);
+        // Keep the expander's match-walk in lockstep with the shadow mirror
+        // walk (set (b) below): drop any matched target under a top-level
+        // `dist`/`target` so the expansion never references a file the mirror
+        // (which prunes those via `is_islands_shadow_pruned_dir`) won't
+        // materialise. See `matched_target_under_pruned_build_output`.
+        let exclude_build_output =
+            |abs: &Path| matched_target_under_pruned_build_output(abs, file_dir);
+        match zfb_build::glob_expand::expand_import_meta_glob(
+            &source,
+            file_dir,
+            &exclude_build_output,
+        ) {
+            Ok(expanded) => {
+                expanded_by_path.insert(g.clone(), expanded);
+            }
+            Err(e) => offenders.push(format!("{}: {e:#}", g.display())),
+        }
+    }
+    if !offenders.is_empty() {
+        return Ok(IslandsShadowOutcome::KeepStopgap(offenders));
+    }
+
+    // --- Collect the file set to mirror. ---------------------------------
+    let mut to_mirror: BTreeSet<PathBuf> = BTreeSet::new();
+    // (a) the island-reachable closure (project-local files only; the rest
+    //     are covered by the node_modules symlink).
+    for m in &scan_meta.island_reachable_modules {
+        if project_local_shadow_rel(m, root).is_some() {
+            to_mirror.insert(m.clone());
+        }
+    }
+    // (b) every file under each glob module's directory subtree (its matched
+    //     targets live here).
+    for g in &scan_meta.glob_reachable_from_islands {
+        let dir = g.parent().unwrap_or(root);
+        for entry in walkdir::WalkDir::new(dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| !is_islands_shadow_pruned_dir(e))
+        {
+            let entry =
+                entry.with_context(|| format!("walking glob module subtree {}", dir.display()))?;
+            if entry.file_type().is_file() && project_local_shadow_rel(entry.path(), root).is_some()
+            {
+                to_mirror.insert(entry.path().to_path_buf());
+            }
+        }
+    }
+
+    // --- Materialise. ----------------------------------------------------
+    let tempdir = tempfile::Builder::new()
+        .prefix("zfb-islands-shadow-")
+        .tempdir()
+        .context("failed to allocate islands shadow tempdir")?;
+    let shadow_root = tempdir.path();
+
+    for from in &to_mirror {
+        let rel = match project_local_shadow_rel(from, root) {
+            Some(r) => r,
+            None => continue,
+        };
+        let to = shadow_root.join(rel);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create shadow dir {}", parent.display()))?;
+        }
+        if let Some(expanded) = expanded_by_path.get(from) {
+            // Real expanded copy — NOT a symlink, so esbuild (under
+            // --preserve-symlinks) reads the expanded macro from the shadow.
+            std::fs::write(&to, expanded.as_bytes())
+                .with_context(|| format!("write expanded glob module {}", to.display()))?;
+        } else {
+            shadow_symlink(from, &to).with_context(|| {
+                format!("symlink shadow file {} -> {}", from.display(), to.display())
+            })?;
+        }
+    }
+
+    // Symlink node_modules as a whole so shadow files' bare imports
+    // (`preact`, `@takazudo/zfb/runtime`, …) resolve — esbuild walks up from
+    // each shadow file to `<shadow>/node_modules`.
+    if let Some(nm) = detect_project_node_modules(root) {
+        let shadow_nm = shadow_root.join("node_modules");
+        shadow_symlink(&nm, &shadow_nm).with_context(|| {
+            format!(
+                "symlink shadow node_modules {} -> {}",
+                shadow_nm.display(),
+                nm.display()
+            )
+        })?;
+    }
+    // Note: the user's `tsconfig.json` / `jsconfig.json` need no special
+    // handling — they are ordinary project-root files, already symlinked
+    // into the shadow root by the mirror walk when the project has them, so
+    // esbuild's upward walk from a shadow source file finds them (with
+    // `baseUrl: "."` resolving relative to the shadow root, whose mirror of
+    // the project tree makes relative `compilerOptions.paths` targets resolve
+    // in-shadow).
+
+    // --- Remap island source_paths into the shadow. ----------------------
+    let mut remap: HashMap<PathBuf, PathBuf> = HashMap::new();
+    for island in islands {
+        if let Some(rel) = project_local_shadow_rel(&island.source_path, root) {
+            remap.insert(island.source_path.clone(), shadow_root.join(rel));
+        }
+    }
+
+    Ok(IslandsShadowOutcome::Ready(IslandsShadow {
+        _tempdir: tempdir,
+        remap,
+    }))
+}
+
 /// Run the real `build_production_islands_asset` against the
 /// project's discovered island set and return its bytes packaged for
 /// [`ProductionAssetPipeline`].
@@ -1143,7 +1485,18 @@ pub(crate) fn compute_css_module_class_maps(
 /// - the islands scanner returned a transient error (we surface a
 ///   warning so the build keeps going — a missing island bundle is
 ///   an authoring concern, not a hard failure of the build's CSS or
-///   page paths).
+///   page paths), OR
+/// - `islands_glob_policy` is [`IslandsGlobPolicy::WarnAndSkip`] and the
+///   scanner found `import.meta.glob` reachable from an island (#1387) —
+///   a warning is emitted and the rebundle is skipped for this tick.
+///
+/// Returns `Err` when `islands_glob_policy` is
+/// [`IslandsGlobPolicy::HardError`] and the scanner found
+/// `import.meta.glob` reachable from an island (#1387) — this is the
+/// build-time stopgap for #1385 pt.1: the islands esbuild pipeline does
+/// not expand `import.meta.glob` in any form yet, so shipping the literal
+/// call to the browser would throw a `TypeError` at hydration instead of
+/// failing the build with a clear message.
 ///
 /// On `Ok(Some(_))` the orchestrator hashes the bytes and writes
 /// `dist/assets/islands-<hash>.js`. The renderer's HTML references
@@ -1186,6 +1539,9 @@ pub(crate) fn build_default_islands_payload(
     outdir: &Path,
     framework: crate::config::Framework,
     plugin_config: &IslandsPluginConfig,
+    // Issue #1387 — see [`IslandsGlobPolicy`]: `zfb build` passes
+    // `HardError`, `zfb dev`'s `rebundle_islands` passes `WarnAndSkip`.
+    islands_glob_policy: IslandsGlobPolicy,
 ) -> Result<(
     Option<AssetEmitterPayload>,
     std::collections::BTreeSet<String>,
@@ -1242,6 +1598,68 @@ pub(crate) fn build_default_islands_payload(
             return Ok((None, std::collections::BTreeSet::new()));
         }
     };
+
+    // Issue #1404 (full #1385 pt.1 fix): when `import.meta.glob` is reachable
+    // from a `"use client"` island, materialise a minimal islands shadow —
+    // the island graph mirrored under a TempDir with the Vite macro expanded
+    // Rust-side (the islands esbuild pipeline cannot expand it itself), the
+    // same trick the SSR bundler already uses — and remap the island
+    // `source_path`s into it so esbuild (run with `--preserve-symlinks`)
+    // bundles the expanded copies. Supported forms (eager + string-literal)
+    // now WORK; unsupported forms (lazy/default, non-literal, `import()`
+    // mode) and glob modules outside the mirrorable tree keep the #1387
+    // stopgap below. The no-glob common case takes the fast path (this whole
+    // block is skipped), so its bundle is byte-identical to a pre-#1404
+    // build: no shadow, `source_path`s untouched, no `--preserve-symlinks`.
+    //
+    // `_islands_shadow` holds the shadow TempDir alive until AFTER
+    // `build_production_islands_asset` runs esbuild below — dropping it early
+    // would delete the tree out from under the subprocess. The remap is
+    // applied ONLY to the bundle's island slice (built just before the
+    // bundle call), NOT to `islands_set` itself, so the marker-name and
+    // collision passes below keep seeing the real project paths.
+    let mut _islands_shadow: Option<IslandsShadow> = None;
+    let mut islands_preserve_symlinks = false;
+    if !scan_meta.glob_reachable_from_islands.is_empty() {
+        match materialise_islands_shadow(project_root, &islands_set, &scan_meta)? {
+            IslandsShadowOutcome::Ready(shadow) => {
+                islands_preserve_symlinks = true;
+                _islands_shadow = Some(shadow);
+            }
+            IslandsShadowOutcome::KeepStopgap(offenders) => {
+                // Unsupported `import.meta.glob` form(s) / glob module(s)
+                // outside the mirrorable tree remain — retain the #1387
+                // stopgap for exactly these files (hard error for `zfb
+                // build`, warn-and-skip for `zfb dev`). The islands esbuild
+                // pipeline still ships an unsupported call to the browser
+                // unexpanded, so shipping it would throw at hydration.
+                let files = offenders.join("; ");
+                let message = format!(
+                    "`import.meta.glob(...)` is only supported in the eager string-literal \
+                     form (`import.meta.glob('<literal>', {{ eager: true }})`) in files \
+                     reachable from a \"use client\" island. The following remain \
+                     unsupported and would ship to the browser unexpanded (throwing at \
+                     hydration): {files}. Use the eager string-literal form, replace the \
+                     glob with explicit static imports, or move the usage to a server-only \
+                     (non-\"use client\") module. Tracked at \
+                     https://github.com/Takazudo/zudo-front-builder/issues/1385."
+                );
+                match islands_glob_policy {
+                    IslandsGlobPolicy::HardError => {
+                        return Err(anyhow!("zfb islands: {message}"));
+                    }
+                    IslandsGlobPolicy::WarnAndSkip => {
+                        output::warn(format!(
+                            "zfb islands: {message} Skipping this islands rebundle; the dev \
+                             server stays up — fix the file(s) above and save again."
+                        ));
+                        return Ok((None, std::collections::BTreeSet::new()));
+                    }
+                }
+            }
+        }
+    }
+
     // Issue #289: a project may use `<ClientRouter />` without any
     // `"use client"` islands (a static page that only wants View
     // Transitions). When the scanner detected client-router usage, the
@@ -1410,9 +1828,35 @@ pub(crate) fn build_default_islands_payload(
     let bundle_cfg = BundleConfig::production()
         .with_outdir(outdir.to_path_buf())
         .with_jsx_import_source(islands_jsx_import_source)
-        .with_client_router(scan_meta.uses_client_router);
+        .with_client_router(scan_meta.uses_client_router)
+        // Issue #1404: `--preserve-symlinks` iff a glob-expanding shadow was
+        // materialised above — keeps esbuild anchored at the shadow's
+        // expanded copies. `false` on the fast path ⇒ byte-identical argv.
+        .with_preserve_symlinks(islands_preserve_symlinks);
 
-    match build_production_islands_asset(&bundler, &islands_set, &bundle_cfg)? {
+    // Issue #1404: remap island `source_path`s into the shadow ONLY for the
+    // bundle input, so the synthesized esbuild entry imports the in-shadow
+    // (expanded) tree. Islands outside the mirrored tree keep their real path
+    // (resolved through the shadow's node_modules symlink). On the no-shadow
+    // fast path this is a zero-copy borrow of `islands_set` — `source_path`s
+    // untouched, byte-identical to before.
+    let bundle_islands: std::borrow::Cow<[zfb_islands::Island]> = match &_islands_shadow {
+        Some(shadow) if !shadow.remap.is_empty() => {
+            let mut remapped = islands_set.clone();
+            for island in &mut remapped {
+                if let Some(shadow_path) = shadow.remap.get(&island.source_path) {
+                    island.source_path = shadow_path.clone();
+                }
+            }
+            std::borrow::Cow::Owned(remapped)
+        }
+        _ => std::borrow::Cow::Borrowed(&islands_set),
+    };
+
+    // `_islands_shadow` MUST stay alive across this call — esbuild reads the
+    // shadow tree during `bundle()`. It drops at end of function, after the
+    // bundle bytes are in memory.
+    match build_production_islands_asset(&bundler, &bundle_islands, &bundle_cfg)? {
         Some(asset) => {
             let companions = asset
                 .chunks
@@ -1452,6 +1896,20 @@ pub(crate) fn build_default_islands_payload(
 /// re-prefixes those stable URLs when `config.base` is set, keeping the
 /// renderer-emitted reference and the `boundary_replace` rewrite key in
 /// sync.
+///
+/// ## `import.meta.glob` is NOT supported in client scripts (issue #1404)
+///
+/// The islands-shadow materialisation (#1404) that makes `import.meta.glob`
+/// work in `"use client"` island modules is deliberately NOT applied to this
+/// `*.client.{ts,tsx,js,jsx}` path: client scripts are bundled by esbuild
+/// directly against the real project tree (`bundle_client_script_file`), with
+/// no shadow, so a `import.meta.glob(...)` call in a client script (or a
+/// module it imports) still ships to the browser unexpanded and throws at
+/// runtime. Glob in client scripts stays unsupported on purpose — do not
+/// extend the shadow here or over-claim support in the docs (#1406). If glob
+/// support for client scripts is ever wanted, mirror the islands path: run
+/// the scanner over the client-script graph, materialise a shadow, and set
+/// `--preserve-symlinks` on this path too.
 pub(crate) fn build_default_client_scripts_payloads(
     project_root: &Path,
     outdir: &Path,
@@ -4601,6 +5059,7 @@ mod tests {
             &project_root.join("dist"),
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
+            IslandsGlobPolicy::HardError,
         )
         .expect("should not error");
         assert!(
@@ -4634,6 +5093,7 @@ mod tests {
             &project_root.join("dist"),
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
+            IslandsGlobPolicy::HardError,
         )
         .expect("should not error");
         assert!(
@@ -4681,6 +5141,7 @@ mod tests {
             &project_root.join("dist"),
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
+            IslandsGlobPolicy::HardError,
         )
         .expect("should not error");
         assert!(
@@ -4692,6 +5153,259 @@ mod tests {
             "expected empty names for near-miss directive; got {names:?}"
         );
     }
+
+    /// Issue #1404 (relaxes the #1387 stopgap): an UNSUPPORTED
+    /// `import.meta.glob` form (here the default LAZY form — no `{ eager:
+    /// true }`) reachable from a `"use client"` island must still fail the
+    /// build with a targeted message, because the islands esbuild pipeline
+    /// cannot expand it and would ship the raw call to the browser (throwing
+    /// at hydration). The unsupported-form detection is the shadow's
+    /// pre-flight expand pass, which runs BEFORE any esbuild setup, so this
+    /// test needs no subprocess/binary. (The SUPPORTED eager form is now
+    /// expanded via the shadow — proven by the env-gated L3 test
+    /// `islands_shadow_expands_glob_and_executes` in
+    /// `crates/zfb-islands/tests/integration.rs`.)
+    #[test]
+    fn build_default_islands_payload_errors_on_unsupported_glob_form_reachable_from_island() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::create_dir_all(project_root.join("components")).unwrap();
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "import { Gallery } from \"../components/gallery\";\n\
+             export default function Index() { return <Gallery/>; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project_root.join("components/gallery.tsx"),
+            // Default (LAZY) form: no `{ eager: true }` — unsupported, so the
+            // shadow pre-flight must keep the stopgap for it.
+            "\"use client\";\n\
+             const images = import.meta.glob('./images/*.png');\n\
+             export function Gallery() { return null; }\n",
+        )
+        .unwrap();
+        let err = build_default_islands_payload(
+            project_root,
+            &project_root.join("pages"),
+            &[],
+            &project_root.join("dist"),
+            crate::config::Framework::Preact,
+            &IslandsPluginConfig::default(),
+            IslandsGlobPolicy::HardError,
+        )
+        .expect_err("an unsupported-form glob-using island must fail the build");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("import.meta.glob"),
+            "error must name the unsupported construct; got: {message}"
+        );
+        assert!(
+            message.contains("gallery.tsx"),
+            "error must name the offending file; got: {message}"
+        );
+        assert!(
+            message.contains("1385"),
+            "error must link the tracked follow-up issue #1385; got: {message}"
+        );
+    }
+
+    /// Issue #1404: the shadow materialiser expands a SUPPORTED eager
+    /// string-literal glob reachable from an island — it remaps the island's
+    /// `source_path` into a shadow copy and never returns `KeepStopgap`, so
+    /// the caller proceeds to esbuild rather than hard-erroring. This drives
+    /// `materialise_islands_shadow` directly (no esbuild binary needed) and
+    /// asserts the shadow's structure: the glob module is a REAL expanded
+    /// file (no `import.meta.glob(` literal, the matched target present),
+    /// while the plain island file is a symlink.
+    #[test]
+    fn materialise_islands_shadow_expands_supported_glob_and_remaps() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("components/widgets")).unwrap();
+        // Island file (plain — no glob): imports the glob data module.
+        let island_src = project_root.join("components/gallery.tsx");
+        std::fs::write(
+            &island_src,
+            "\"use client\";\n\
+             import { widgets } from \"./gallery-data\";\n\
+             export function Gallery() { return null; }\n",
+        )
+        .unwrap();
+        // Glob data module (eager string-literal — SUPPORTED).
+        std::fs::write(
+            project_root.join("components/gallery-data.tsx"),
+            "export const widgets = import.meta.glob('./widgets/*.tsx', { eager: true });\n",
+        )
+        .unwrap();
+        // A matched target of the glob — reachable ONLY through the macro.
+        std::fs::write(
+            project_root.join("components/widgets/a.tsx"),
+            "export const a = 1;\n",
+        )
+        .unwrap();
+
+        let islands = vec![zfb_islands::Island::new("Gallery", island_src.clone())];
+        let scan_meta = zfb_islands::ScanMeta {
+            uses_client_router: false,
+            near_miss_candidates: 0,
+            glob_reachable_from_islands: vec![project_root.join("components/gallery-data.tsx")],
+            island_reachable_modules: vec![
+                island_src.clone(),
+                project_root.join("components/gallery-data.tsx"),
+            ],
+        };
+
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let shadow = match outcome {
+            IslandsShadowOutcome::Ready(s) => s,
+            IslandsShadowOutcome::KeepStopgap(o) => {
+                panic!("supported eager glob must NOT keep the stopgap; offenders: {o:?}")
+            }
+        };
+
+        // The island's source_path was remapped into the shadow.
+        let shadow_island = shadow
+            .remap
+            .get(&island_src)
+            .expect("island source_path must be remapped into the shadow");
+        let shadow_root = shadow_island.parent().unwrap().parent().unwrap();
+
+        // The glob module is a REAL expanded file: macro removed, matched
+        // target imported as a namespace.
+        let expanded =
+            std::fs::read_to_string(shadow_root.join("components/gallery-data.tsx")).unwrap();
+        assert!(
+            !expanded.contains("import.meta.glob("),
+            "shadow glob module must be expanded (no raw macro): {expanded}"
+        );
+        assert!(
+            expanded.contains("./widgets/a.tsx"),
+            "expanded glob must reference the matched target: {expanded}"
+        );
+
+        // The plain island file is a symlink (not a real copy).
+        let island_meta =
+            std::fs::symlink_metadata(shadow_root.join("components/gallery.tsx")).unwrap();
+        assert!(
+            island_meta.file_type().is_symlink(),
+            "plain island file must be symlinked into the shadow, not copied"
+        );
+
+        // The glob target was materialised too (so esbuild can resolve the
+        // generated `import * as … from \"./widgets/a.tsx\"`).
+        assert!(
+            std::fs::symlink_metadata(shadow_root.join("components/widgets/a.tsx")).is_ok(),
+            "glob target must be present in the shadow"
+        );
+    }
+
+    /// Issue #1404 review (prune-predicate divergence): the glob EXPANSION
+    /// match-walk and the shadow MIRROR walk must agree on pruning a
+    /// top-level `dist`/`target` under the glob module's directory, so the
+    /// expander never references a matched target the mirror won't
+    /// materialise (which would surface as an esbuild "Could not resolve").
+    /// A `./**/*.tsx` glob next to a `dist/` subdir must therefore (a) NOT
+    /// reference `./dist/…` in the expanded output AND (b) NOT mirror
+    /// `dist/…` into the shadow — while still handling the ordinary
+    /// `./widgets/a.tsx` target in BOTH. Pins the two walks in lockstep.
+    #[test]
+    fn materialise_islands_shadow_prunes_build_output_consistently() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("components/widgets")).unwrap();
+        std::fs::create_dir_all(project_root.join("components/dist")).unwrap();
+        // Island file (plain) importing the glob data module.
+        let island_src = project_root.join("components/gallery.tsx");
+        std::fs::write(
+            &island_src,
+            "\"use client\";\n\
+             import { widgets } from \"./gallery-data\";\n\
+             export function Gallery() { return null; }\n",
+        )
+        .unwrap();
+        // Glob data module — a recursive `**` pattern that WOULD reach into
+        // the sibling `dist/` build-output dir if the match-walk did not
+        // prune it.
+        std::fs::write(
+            project_root.join("components/gallery-data.tsx"),
+            "export const widgets = import.meta.glob('./**/*.tsx', { eager: true });\n",
+        )
+        .unwrap();
+        // An ordinary matched target — expected in BOTH the expansion and
+        // the shadow.
+        std::fs::write(
+            project_root.join("components/widgets/a.tsx"),
+            "export const a = 1;\n",
+        )
+        .unwrap();
+        // Build output under a top-level `dist/` — must be pruned from BOTH.
+        std::fs::write(
+            project_root.join("components/dist/generated.tsx"),
+            "export const generated = 1;\n",
+        )
+        .unwrap();
+
+        let islands = vec![zfb_islands::Island::new("Gallery", island_src.clone())];
+        let scan_meta = zfb_islands::ScanMeta {
+            uses_client_router: false,
+            near_miss_candidates: 0,
+            glob_reachable_from_islands: vec![project_root.join("components/gallery-data.tsx")],
+            island_reachable_modules: vec![
+                island_src.clone(),
+                project_root.join("components/gallery-data.tsx"),
+            ],
+        };
+
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let shadow = match outcome {
+            IslandsShadowOutcome::Ready(s) => s,
+            IslandsShadowOutcome::KeepStopgap(o) => {
+                panic!("supported glob must NOT keep the stopgap; offenders: {o:?}")
+            }
+        };
+        let shadow_island = shadow
+            .remap
+            .get(&island_src)
+            .expect("island source_path must be remapped into the shadow");
+        let shadow_root = shadow_island.parent().unwrap().parent().unwrap();
+
+        let expanded =
+            std::fs::read_to_string(shadow_root.join("components/gallery-data.tsx")).unwrap();
+        // (a) MATCH-walk: ordinary target referenced, build output NOT.
+        assert!(
+            expanded.contains("./widgets/a.tsx"),
+            "expanded glob must reference the ordinary target: {expanded}"
+        );
+        assert!(
+            !expanded.contains("./dist/"),
+            "expanded glob must NOT reference build output under dist/: {expanded}"
+        );
+        // (b) MIRROR-walk: ordinary target present, build output absent —
+        // consistent with the expansion so esbuild can resolve every
+        // referenced target and never a pruned one.
+        assert!(
+            std::fs::symlink_metadata(shadow_root.join("components/widgets/a.tsx")).is_ok(),
+            "ordinary glob target must be present in the shadow"
+        );
+        assert!(
+            std::fs::symlink_metadata(shadow_root.join("components/dist/generated.tsx")).is_err(),
+            "build output under dist/ must be pruned from the shadow (matched set ⊆ mirrored set)"
+        );
+    }
+
+    // Zero-regression coverage for "no glob anywhere" is already provided by
+    // `default_runner_returns_none_islands_when_no_pages_dir`,
+    // `_when_no_use_client_components`, and `_for_near_miss_directive`
+    // above — all three now thread `IslandsGlobPolicy::HardError` and still
+    // assert `.expect("should not error")`. A companion test using a REAL
+    // (non-empty) island set here would exercise the real esbuild
+    // subprocess via `build_production_islands_asset`, which none of this
+    // module's other non-`#[ignore]`d tests do — see the doc comments on
+    // the three tests above ("esbuild is never invoked").
 
     /// End-to-end check that `DefaultRunner::emit_prod_assets`
     /// invokes the real Tailwind v4 CLI and returns non-empty CSS

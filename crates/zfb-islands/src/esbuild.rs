@@ -15,6 +15,30 @@
 //! (the prod pipeline, the dev server) own all disk writes.
 //! `ProductionAssetPipeline` is the single source of truth for content
 //! hashing per the Prod Asset Graph epic.
+//!
+//! ## CSS-import policy (issue #1395)
+//!
+//! `"use client"` islands are allowed to `import "./x.css"` (and
+//! `import styles from "./x.module.css"`), same as any other component in
+//! the project. [`build_esbuild_args_with_entry_name`] passes
+//! `--loader:.css=empty` **and** `--loader:.module.css=empty`, mirroring the SSR bundler's
+//! `ESBUILD_LOADER_ARGS` (`crates/zfb-build/src/bundler.rs`): the loader
+//! substitutes an empty exports object for the CSS module at compile time,
+//! so the import resolves and esbuild does not emit a sibling CSS output
+//! file for `read_back_outdir` to reject. Authored CSS is shipped
+//! separately via the zfb CSS pipeline's `styles-<hash>.css` — islands
+//! never carry those bytes in their own JS bundle.
+//!
+//! **Out of scope (deliberately):** unlike the SSR bundler,
+//! `.module.css` imports inside an island do NOT get a scoped
+//! class-name map. On esbuild 0.25 a bare `--loader:.css=empty` does NOT
+//! cover `.module.css` — esbuild's native `local-css` loader claims that
+//! extension unless a more specific rule is registered (issue #1410) — so
+//! `.module.css` gets its own explicit `--loader:.module.css=empty`; then
+//! `import styles from "./x.module.css"` resolves to `styles === undefined`
+//! in the client bundle rather than the real scoped names. Extracting a real client-side
+//! class map is tracked by the shadow-materialisation follow-up (#1404);
+//! the docs wave (#1406) documents this limitation for users.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -958,10 +982,22 @@ impl EsbuildSubprocessBundler {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let friendly = redact_temp_path(
+                &stderr,
+                entry_tmp.path(),
+                &self.config.working_dir,
+                "<synthesized zfb-islands bundle entry, not a project file>",
+            );
+            let friendly = redact_temp_path(
+                &friendly,
+                out_dir.path(),
+                &self.config.working_dir,
+                "<zfb-islands internal esbuild output directory>",
+            );
             return Err(anyhow!(
                 "esbuild exited with status {}: {}",
                 output.status,
-                stderr.trim()
+                friendly.trim()
             ));
         }
 
@@ -994,6 +1030,37 @@ impl OneEntryOutput {
             chunks: Vec::new(),
         }
     }
+}
+
+/// Redacts one ephemeral internal temp path from an esbuild subprocess's
+/// captured stderr, replacing it with a stable, self-explanatory `label`
+/// (#1385 pt.2 / issue #1388 — same treatment as the bundler's
+/// `friendly_esbuild_error` in `zfb-build`, applied here to the islands
+/// pipeline's own leaks: the synthesized `.zfb-esbuild-entry-*.tsx` wrapper
+/// [`bundle_one_entry`] writes beside the project, and the system-tempdir
+/// `--outdir` both entry points use).
+///
+/// Unlike the main SSR/page bundler, `zfb-islands` never shadow-copies the
+/// project — `working_dir` (`cmd.current_dir`) IS the real project root, so
+/// there is no project-root escape boundary to explain here; the only leak
+/// is a meaningless generated filename the user never created. `leak_path`
+/// is redacted in both forms esbuild's diagnostics might show it in: the
+/// `cwd`-relative form (esbuild's normal source-location display) and the
+/// full absolute path (a defensive catch-all for non-source-location
+/// diagnostics, e.g. an outdir write failure).
+fn redact_temp_path(stderr: &str, leak_path: &Path, cwd: &Path, label: &str) -> String {
+    let mut out = stderr.to_string();
+    if let Ok(rel) = leak_path.strip_prefix(cwd) {
+        let rel_str = rel.to_string_lossy();
+        if !rel_str.is_empty() {
+            out = out.replace(rel_str.as_ref(), label);
+        }
+    }
+    let abs_str = leak_path.to_string_lossy();
+    if !abs_str.is_empty() {
+        out = out.replace(abs_str.as_ref(), label);
+    }
+    out
 }
 
 /// Read every file esbuild staged into `out_dir` back into memory, split
@@ -1098,6 +1165,21 @@ fn validate_chunk_filename(name: &str) -> Result<()> {
             "esbuild chunk filename must not contain `..`: {name:?}"
         ));
     }
+    // Issue #1395: a residual `.css` output here means the `--loader:.css=empty`
+    // policy in `build_esbuild_args_with_entry_name` was bypassed or an
+    // unexpected esbuild version emitted a sibling CSS file anyway. Give a
+    // targeted message pointing at the zfb CSS pipeline instead of the
+    // generic "unexpected output file" wording, which reads as an esbuild
+    // internals bug rather than a documented policy.
+    if name.ends_with(".css") {
+        return Err(anyhow!(
+            "esbuild emitted a CSS output file {name:?} from an island bundle; \
+             CSS imports in islands are handled by the zfb CSS pipeline \
+             (`styles-<hash>.css`), not shipped as a separate islands build \
+             artifact — see the `--loader:.css=empty` policy in \
+             build_esbuild_args_with_entry_name"
+        ));
+    }
     if !name.starts_with(ESBUILD_CHUNK_FILENAME_PREFIX) {
         return Err(anyhow!(
             "esbuild emitted an unexpected output file {name:?}; \
@@ -1190,6 +1272,29 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     // target + node:* externalization.
     args.push(OsString::from("--platform=browser"));
     args.push(OsString::from("--external:node:*"));
+    // Issue #1395: an island importing a `.css` file (e.g.
+    // `import "./styles.css"` inside a `"use client"` component) must not
+    // hard-fail the islands bundle. Mirrors the SSR bundler's
+    // `--loader:.css=empty` in `ESBUILD_LOADER_ARGS`
+    // (`crates/zfb-build/src/bundler.rs`): the loader substitutes an empty
+    // exports object for the CSS file at compile time, so the import
+    // resolves instead of esbuild emitting a sibling CSS output file that
+    // `read_back_outdir`/`validate_chunk_filename` below would reject.
+    // Authored CSS (including `.css` bytes reachable from an island) is
+    // already shipped separately via the zfb CSS pipeline's
+    // `styles-<hash>.css` — islands never need to carry those bytes
+    // themselves. NOTE (issue #1410): on esbuild 0.25 a bare
+    // `--loader:.css=empty` does NOT cover `.module.css` — esbuild's native
+    // `local-css` loader claims the `.module.css` extension and emits a
+    // sibling CSS output file (+ a scoped class-name map) unless a MORE
+    // SPECIFIC extension rule is registered. So `.module.css` needs its own
+    // explicit `--loader:.module.css=empty`. Both then resolve the import to
+    // `styles === undefined` rather than a scoped class-name map: the SSR
+    // bundler's per-file class-map extraction is deliberately OUT OF SCOPE
+    // for the islands client bundle (see #1404 for the shadow-materialisation
+    // follow-up and #1406 for the docs wave that documents this limitation).
+    args.push(OsString::from("--loader:.css=empty"));
+    args.push(OsString::from("--loader:.module.css=empty"));
     // Issue #151: route esbuild through the automatic JSX transform
     // pointed at the host framework's import source (typically
     // `"preact"`). Without these two flags esbuild defaults to the
@@ -1232,6 +1337,15 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     }
     if config.sourcemap {
         args.push(OsString::from("--sourcemap=linked"));
+    }
+    // Issue #1404: keep esbuild anchored at each importer's on-disk
+    // location instead of canonicalising symlinks. Set ONLY by the
+    // islands-shadow path (`BundleConfig::preserve_symlinks`), so the
+    // default no-shadow argv is byte-identical to a pre-#1404 build. See
+    // [`crate::bundler::BundleConfig::preserve_symlinks`] for why the
+    // shadow's expanded-glob copies would otherwise be bypassed.
+    if config.preserve_symlinks {
+        args.push(OsString::from("--preserve-symlinks"));
     }
     // Directory-mode output: esbuild writes the entry (and, when splitting is
     // on, any chunks) into the *staging* `out_dir` (a throwaway tempdir —
@@ -1902,11 +2016,17 @@ impl EsbuildSubprocessBundler {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let friendly = redact_temp_path(
+                &stderr,
+                out_dir.path(),
+                &self.config.working_dir,
+                "<zfb-islands internal esbuild output directory>",
+            );
             return Err(anyhow!(
                 "esbuild exited with status {} bundling client script {:?}: {}",
                 output.status,
                 entry_path,
-                stderr.trim()
+                friendly.trim()
             ));
         }
 
@@ -1952,6 +2072,43 @@ mod tests {
         let before = hash_8("export const x = 1;");
         let after = hash_8("export const x = 2;");
         assert_ne!(before, after);
+    }
+
+    // ── redact_temp_path (#1388) ─────────────────────────────────────────────
+
+    #[test]
+    fn redact_temp_path_replaces_cwd_relative_form() {
+        let cwd = Path::new("/Users/dev/my-project");
+        let leak_path = cwd.join(".zfb-esbuild-entry-a1b2c3.tsx");
+        let stderr = "\u{2718} [ERROR] Could not resolve \"preact\"\n\n    .zfb-esbuild-entry-a1b2c3.tsx:2:9:\n";
+        let friendly = redact_temp_path(stderr, &leak_path, cwd, "<synthesized entry>");
+        assert!(
+            friendly.contains("<synthesized entry>"),
+            "should replace the leaked filename with the label: {friendly}"
+        );
+        assert!(
+            !friendly.contains(".zfb-esbuild-entry-a1b2c3.tsx"),
+            "should not leak the synthesized entry filename: {friendly}"
+        );
+    }
+
+    #[test]
+    fn redact_temp_path_replaces_absolute_form() {
+        let cwd = Path::new("/Users/dev/my-project");
+        let leak_path = Path::new("/tmp/zfb-esbuild-out-xyz789/islands.js");
+        let stderr = "error writing /tmp/zfb-esbuild-out-xyz789/islands.js: disk full";
+        let friendly = redact_temp_path(stderr, leak_path, cwd, "<internal outdir>");
+        assert_eq!(friendly, "error writing <internal outdir>: disk full");
+    }
+
+    #[test]
+    fn redact_temp_path_is_a_no_op_when_leak_path_never_appears() {
+        let cwd = Path::new("/Users/dev/my-project");
+        let leak_path = cwd.join(".zfb-esbuild-entry-a1b2c3.tsx");
+        let stderr =
+            "\u{2718} [ERROR] Could not resolve \"preact\"\n\n    components/counter.tsx:2:9:\n";
+        let friendly = redact_temp_path(stderr, &leak_path, cwd, "<synthesized entry>");
+        assert_eq!(friendly, stderr);
     }
 
     #[test]
@@ -2801,6 +2958,81 @@ mod tests {
         assert!(validate_chunk_filename("islands-chunk-..").is_err());
         assert!(validate_chunk_filename("evil.js").is_err());
         assert!(validate_chunk_filename("islands.js").is_err());
+    }
+
+    /// Issue #1395: a residual `.css` output must fail with the targeted
+    /// "handled by the zfb CSS pipeline" message rather than the generic
+    /// "unexpected output file" wording — the CSS-specific branch must be
+    /// checked before the generic prefix check below it.
+    #[test]
+    fn validate_chunk_filename_rejects_css_with_targeted_message() {
+        let err = validate_chunk_filename("styles.css")
+            .expect_err("a residual .css output must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("zfb CSS pipeline"),
+            "expected the targeted CSS-pipeline message, got: {msg}"
+        );
+        assert!(
+            !msg.contains("unexpected output file"),
+            "CSS rejection must not fall through to the generic message: {msg}"
+        );
+
+        let err2 = validate_chunk_filename("islands-chunk-WOEGGERP.css")
+            .expect_err("a chunk-prefixed .css output must still be rejected as CSS");
+        assert!(
+            format!("{err2}").contains("zfb CSS pipeline"),
+            "expected the targeted CSS-pipeline message even with the chunk prefix: {err2}"
+        );
+    }
+
+    /// Issue #1395 + #1410: the islands esbuild arg set must carry BOTH
+    /// `--loader:.css=empty` and `--loader:.module.css=empty` (mirroring the
+    /// SSR bundler's `ESBUILD_LOADER_ARGS`) so an island's `import "./x.css"`
+    /// / `import styles from "./x.module.css"` neutralises at compile time
+    /// instead of esbuild writing a sibling CSS output file that
+    /// `read_back_outdir` would reject. The explicit `.module.css` rule is
+    /// load-bearing on esbuild 0.25: its native `local-css` loader claims
+    /// `.module.css` unless a more specific rule overrides it (#1410).
+    /// Checked on both the shared-bundle (`splitting = true`) and per-island
+    /// (`splitting = false`) arg shapes since both call the same builder.
+    #[test]
+    fn build_esbuild_args_includes_css_empty_loader() {
+        let cfg = BundleConfig::default();
+        for splitting in [true, false] {
+            let args = args_as_strings(&cfg, splitting);
+            assert!(
+                args.iter().any(|a| a == "--loader:.css=empty"),
+                "missing --loader:.css=empty (splitting={splitting}) in args: {args:?}"
+            );
+            assert!(
+                args.iter().any(|a| a == "--loader:.module.css=empty"),
+                "missing --loader:.module.css=empty (splitting={splitting}) in args: {args:?}"
+            );
+        }
+    }
+
+    /// Issue #1404: `--preserve-symlinks` is emitted iff
+    /// `BundleConfig::preserve_symlinks` is set, and is absent by default so
+    /// the no-shadow argv stays byte-identical to a pre-#1404 build.
+    #[test]
+    fn build_esbuild_args_emits_preserve_symlinks_only_when_configured() {
+        for splitting in [true, false] {
+            let off = args_as_strings(&BundleConfig::default(), splitting);
+            assert!(
+                !off.iter().any(|a| a == "--preserve-symlinks"),
+                "default config must NOT emit --preserve-symlinks (splitting={splitting}): {off:?}"
+            );
+
+            let on = args_as_strings(
+                &BundleConfig::default().with_preserve_symlinks(true),
+                splitting,
+            );
+            assert!(
+                on.iter().any(|a| a == "--preserve-symlinks"),
+                "preserve_symlinks=true must emit --preserve-symlinks (splitting={splitting}): {on:?}"
+            );
+        }
     }
 
     /// `read_back_outdir`: a directory holding only the entry (the

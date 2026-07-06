@@ -138,12 +138,23 @@ jobs:
         with:
           tool: nextest
 
-      # Same prefix-key as health.yml on purpose: this job compiles the same
-      # workspace targets on the same ubuntu-latest runner, so it can reuse
-      # health.yml's warm cache instead of always paying a cold V8 first-compile.
+      # Swatinem/rust-cache derives its actual cache key from prefix-key PLUS
+      # github.job by default (verified via run 28696339118's key
+      # `v2-zfb-quarantine-heavy-...`) — a same-looking `prefix-key: "v2-zfb"`
+      # here does NOT reuse health.yml's `health`-job cache; it silently forms
+      # a separate ~733MB family (issue #1394 caught this stale claim). Both
+      # jobs run the IDENTICAL `cargo build --workspace --all-targets` on the
+      # same toolchain against the same lockfiles, so the compiled target/
+      # tree really is interchangeable between them — a shared-key is a net
+      # win here (one of the two jobs pays the cold V8 compile, the other
+      # restores it), unlike exam's macos-exam leg below which never overlaps
+      # with anything on Linux. `shared-key` replaces the job-derived
+      # component of the key outright, so both this step and health.yml's
+      # `health` job's rust-cache step must use the exact same value.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
           prefix-key: "v2-zfb"
+          shared-key: "workspace-all-targets"
 
       - run: pnpm install --frozen-lockfile
 
@@ -187,7 +198,10 @@ jobs:
       #
       # rc is captured explicitly (not via continue-on-error) and the step
       # always exits 0 — see the header comment for why.
-      - name: Run the #1337 quarantine/heavy manifest (env-gate + heavy tags)
+      # Quoted (issue #1394): an unquoted `#` preceded by whitespace starts a
+      # YAML comment, so this step's name silently rendered as just "Run the"
+      # in the Actions UI — verified via `yaml.safe_load` before the fix.
+      - name: "Run the #1337 quarantine/heavy manifest (env-gate + heavy tags)"
         id: run_manifest
         shell: bash
         env:
@@ -216,6 +230,33 @@ jobs:
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           exit 0
 
+      # Flaky telemetry (issue #1394): this job runs under `--profile ci`
+      # (retries = 1, same as health.yml) but until now discarded
+      # target/nextest/ci/junit.xml entirely — a pass-on-retry here left zero
+      # trace, violating CLAUDE.md's "pass-on-retry is a triage signal, not a
+      # success" policy on the lane most likely to actually flake (heavy e2e +
+      # a full recompile). Mirrors health.yml's "Upload nextest JUnit reports"
+      # step (~:281-290): `if: always()` uploads on every run, not just
+      # failures, since a pass-on-retry only shows up in an otherwise-green run.
+      - name: Upload nextest JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-junit-exam-quarantine
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Consumes the JUnit report just uploaded to make the flaky-test policy
+      # mechanically real on this leg too — same script + `if: always()` as
+      # health.yml's "Detect and report flaky tests" step (~:319-324).
+      - name: Detect and report flaky tests
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/report-flaky-tests.sh target/nextest/ci/junit.xml
+
       - name: Upload exam log (on failure)
         if: steps.run_manifest.outputs.rc != '0'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -225,8 +266,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # `always()` (issue #1394): the bare `steps.run_manifest.outputs.rc !=
+      # '0'` condition implicitly ANDs in `success()` (GitHub Actions' default
+      # for any `if:` that doesn't itself reference always()/failure()/
+      # cancelled()), so a job that fails BEFORE this step runs — e.g. the
+      # esbuild/tailwindcss staging assert above, or a compile error in
+      # `cargo build --workspace --all-targets` — filed nothing at all. With
+      # `always()`, an infra failure that never reaches run_manifest leaves
+      # `outputs.rc` empty, and `'' != '0'` is true, so this step still runs
+      # and files the tracking issue — the empty-rc case is the fallback the
+      # comparison already provides, not extra logic.
       - name: File or comment on tracking issue (failure)
-        if: steps.run_manifest.outputs.rc != '0'
+        if: always() && steps.run_manifest.outputs.rc != '0'
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: "quarantine/heavy manifest (ubuntu-latest)"
@@ -277,6 +328,34 @@ jobs:
       # ordering as release.yml's macOS build leg.
       - run: pnpm install --frozen-lockfile
 
+      # Compiles every target AND triggers crates/zfb's build.rs to stage the
+      # pinned esbuild + tailwindcss v4 binaries — same as health.yml and this
+      # workflow's quarantine-heavy job above. Needed so the assert step below
+      # has something to check BEFORE the test run starts (nextest would
+      # otherwise trigger the same compile+stage implicitly, but only once the
+      # test run is already underway).
+      - run: cargo build --workspace --all-targets
+
+      # macOS staging assert (issue #1394): this leg had no equivalent of
+      # health.yml's / this workflow's own quarantine-heavy job's staging
+      # guard (issue #638), so a staging failure on the ONE FSEvents leg could
+      # let runtime-checked (non-`#[ignore]`d) tests that early-return when a
+      # binary is missing silently record themselves as PASS instead of
+      # failing loudly — on the only platform this workflow exists to give
+      # real coverage to.
+      - name: Assert esbuild + tailwindcss binaries were provisioned
+        run: |
+          ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
+          TAILWIND_SLOT="crates/zfb/binaries/tailwindcss-v4"
+          for slot in "$ESBUILD_SLOT" "$TAILWIND_SLOT"; do
+            if [ ! -x "$slot" ]; then
+              echo "::error::$slot not staged — runtime-checked tests could silently skip-as-pass. Failing the job instead."
+              exit 1
+            fi
+          done
+          "$ESBUILD_SLOT" --version
+          "$TAILWIND_SLOT" --version
+
       # Full platform re-exam: EVERY non-ignored test in the workspace,
       # unfiltered, on FSEvents instead of Linux inotify — this is the whole
       # point of this leg (issue #1344). Not scoped like the ubuntu job
@@ -309,6 +388,27 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           exit 0
 
+      # Flaky telemetry (issue #1394) — same reasoning as the quarantine-heavy
+      # job above: `--profile ci` records retries in
+      # target/nextest/ci/junit.xml, but this leg discarded it entirely. This
+      # is the ONE leg with no warm cache of its own, so it's also the most
+      # likely to hit real timing flakiness on a cold, unfamiliar runner.
+      - name: Upload nextest JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nextest-junit-exam-macos
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Detect and report flaky tests
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/report-flaky-tests.sh target/nextest/ci/junit.xml
+
       - name: Upload exam logs (on failure)
         if: steps.run_macos_suite.outputs.rc != '0'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -320,8 +420,13 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # `always()` (issue #1394) — same implicit-success() gap as the
+      # quarantine-heavy job's filing step: without it, a failure BEFORE
+      # run_macos_suite (the staging assert above, or a compile error) filed
+      # nothing. Empty `outputs.rc` compares `!= '0'` as true, so this still
+      # fires for those infra failures too.
       - name: File or comment on tracking issue (failure)
-        if: steps.run_macos_suite.outputs.rc != '0'
+        if: always() && steps.run_macos_suite.outputs.rc != '0'
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: "macOS full workspace re-exam (macos-15)"

@@ -297,6 +297,15 @@ const moveToLocation = (
   options: Options,
   pageTitleForBrowserHistory: string,
   historyState?: State,
+  // True when transition() already committed a history entry for THIS
+  // navigation before the swap ran (the WebKit-workaround early commit
+  // below). `to` here may differ from that committed entry's URL if a
+  // `zfb:before-swap` listener mutated `event.to` (writable per Astro
+  // parity) after the early commit already ran — in that case we must
+  // REPLACE the already-committed entry instead of pushing a second one, or
+  // a single navigation would leave two history entries (a phantom Back
+  // stop). #1398.
+  historyCommittedEarly = false,
 ) => {
   const intraPage = samePage(from, to);
 
@@ -305,7 +314,7 @@ const moveToLocation = (
 
   let scrolledToTop = false;
   if (to.href !== location.href && !historyState) {
-    if (options.history === "replace") {
+    if (options.history === "replace" || historyCommittedEarly) {
       // Astro reads current.index/scrollX/scrollY directly; `history.state` can be
       // null (page entered without a transition state), which would throw a
       // TypeError. Fall back to a synthesized state from the tracked index/scroll.
@@ -375,13 +384,32 @@ const moveToLocation = (
 
 let syncHistoryEntryOnServerWarned = false;
 
-// Public: write a router-managed history entry (push or replace) WITHOUT any
-// navigation, DOM, scroll, or lifecycle side effect. This is the supported path
-// for consumers deep-linking transient UI state (dialogs/modals, a photo
-// viewer's /photos/<slug>/ URL). Hand-rolled raw history.pushState desyncs
-// `originalLocation` and the index bookkeeping that popstate direction detection
-// (derivePopDirection) and the same-page traverse fast-path depend on; navigate()
-// can't be used because it forces a fetch. See #1377 / #1374.
+/**
+ * Write a router-managed history entry (push or replace) WITHOUT any
+ * navigation, DOM, or lifecycle side effect. This is the supported path for
+ * consumers deep-linking transient UI state (dialogs/modals, a photo
+ * viewer's `/photos/<slug>/` URL). Hand-rolled raw `history.pushState`
+ * desyncs `originalLocation` and the index bookkeeping that popstate
+ * direction detection ({@link derivePopDirection}) and the same-page
+ * traverse fast-path depend on; `navigate()` can't be used instead because
+ * it forces a fetch. See #1377 / #1374.
+ *
+ * Never scrolls the viewport itself — but the entry it writes IS stamped
+ * with the CURRENT scroll position (`scrollX`/`scrollY` at call time), not
+ * `(0, 0)` (issue #1398). This matters only for a later Forward-traversal
+ * back to this entry: the same-page traverse fast-path restores whatever
+ * scroll position was stamped on the entry, so a same-page push (e.g.
+ * opening a dialog) does not snap the underlying page to the top when the
+ * dialog is later reopened via Forward.
+ *
+ * @param url - The URL to write. Cross-origin URLs throw rather than
+ *   silently falling back to a full-page load.
+ * @param options.replace - Use `history.replaceState` instead of
+ *   `history.pushState` (no new Back-button entry). Default: push.
+ * @param options.state - Merged into the entry's `history.state`; the
+ *   router's own bookkeeping keys (`index`, `scrollX`, `scrollY`) always win
+ *   on a colliding key.
+ */
 export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOptions = {}): void {
   // SSR guard: no window/history to touch. Mirror navigate()'s server no-op +
   // one-time console warning. Checked at call time via `typeof document` (not the
@@ -435,8 +463,15 @@ export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOpt
     // later Back restoration can't lose scroll that `scrollend` hasn't flushed
     // yet — the same guard transition() applies before a non-traverse push.
     updateScrollPosition({ scrollX, scrollY });
+    // Stamp the CURRENT scroll on the freshly-pushed entry too — NOT (0,0).
+    // This is a same-page push (dialog/photo-viewer pattern): the underlying
+    // page never actually scrolled anywhere, it just gained an overlay. A
+    // (0,0)-stamped entry would make the traverse fast-path (moveToLocation's
+    // historyState branch below) scrollTo(0,0) when this entry is later
+    // Forward-reopened, snapping the page to the top under the reopened
+    // dialog. #1398.
     history.pushState(
-      { ...options.state, index: ++currentHistoryIndex, scrollX: 0, scrollY: 0 },
+      { ...options.state, index: ++currentHistoryIndex, scrollX, scrollY },
       "",
       to.href,
     );
@@ -484,6 +519,8 @@ async function updateDOM(
   currentTransition: Transition,
   historyState?: State,
   fallback?: Fallback,
+  // Forwarded to moveToLocation() — see its parameter doc. #1398.
+  historyCommittedEarly = false,
 ) {
   async function animate(phase: string) {
     function isInfinite(animation: Animation) {
@@ -528,13 +565,26 @@ async function updateDOM(
   // trees receive render(null, element) / root.unmount() and their useEffect
   // cleanups fire. Must happen after cancelPendingIslands() and before doSwap()
   // so document.body still points to the old body.
-  unmountIslands();
+  //
+  // Pass the incoming body so unmountIslands can SKIP islands that swapBodyElement
+  // will lift into the new body (a persisted marker matched on both sides). Those
+  // nodes are physically moved, not discarded, so their component instance and
+  // state must survive the swap — unmounting them here would empty the container
+  // before the lift and defeat data-zfb-transition-persist entirely (issue #1389).
+  unmountIslands(document.body, preparationEvent.newDocument.body);
   const swapEvent = await doSwap(
     preparationEvent,
     currentTransition.viewTransition!,
     animateFallbackOld,
   );
-  moveToLocation(swapEvent.to, swapEvent.from, options, pageTitleForBrowserHistory, historyState);
+  moveToLocation(
+    swapEvent.to,
+    swapEvent.from,
+    options,
+    pageTitleForBrowserHistory,
+    historyState,
+    historyCommittedEarly,
+  );
   triggerEvent("zfb:after-swap");
 
   // Resolve the finished promise of the simulation's ViewTransition.
@@ -751,7 +801,13 @@ async function transition(
   //
   // Traverse (popstate) navigations carry historyState: the browser has already
   // moved, so they must NOT create a new entry here.
+  //
+  // Tracks whether this block ran (push OR replace) so moveToLocation (called
+  // later, from updateDOM) knows a commit already happened for THIS navigation
+  // — see moveToLocation's `historyCommittedEarly` parameter doc. #1398.
+  let historyCommittedEarly = false;
   if (!historyState && prepEvent.to.href !== location.href) {
+    historyCommittedEarly = true;
     if (options.history === "replace") {
       // Mirror of the moveToLocation replace-path guard: `history.state` can be
       // null here too (page entered without a transition state), so synthesize a
@@ -784,7 +840,15 @@ async function transition(
     // This automatically cancels any previous transition
     // We also already took care that the earlier update callback got through
     currentTransition.viewTransition = document.startViewTransition(
-      async () => await updateDOM(prepEvent, options, currentTransition, historyState),
+      async () =>
+        await updateDOM(
+          prepEvent,
+          options,
+          currentTransition,
+          historyState,
+          undefined,
+          historyCommittedEarly,
+        ),
     );
   } else {
     // Simulation mode requires a bit more manual work.
@@ -800,6 +864,7 @@ async function transition(
         currentTransition,
         historyState,
         hasUAVisualTransition ? "swap" : getFallback(),
+        historyCommittedEarly,
       );
       return undefined;
     })();
