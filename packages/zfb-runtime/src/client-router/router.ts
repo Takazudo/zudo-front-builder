@@ -297,6 +297,15 @@ const moveToLocation = (
   options: Options,
   pageTitleForBrowserHistory: string,
   historyState?: State,
+  // True when transition() already committed a history entry for THIS
+  // navigation before the swap ran (the WebKit-workaround early commit
+  // below). `to` here may differ from that committed entry's URL if a
+  // `zfb:before-swap` listener mutated `event.to` (writable per Astro
+  // parity) after the early commit already ran — in that case we must
+  // REPLACE the already-committed entry instead of pushing a second one, or
+  // a single navigation would leave two history entries (a phantom Back
+  // stop). #1398.
+  historyCommittedEarly = false,
 ) => {
   const intraPage = samePage(from, to);
 
@@ -305,7 +314,7 @@ const moveToLocation = (
 
   let scrolledToTop = false;
   if (to.href !== location.href && !historyState) {
-    if (options.history === "replace") {
+    if (options.history === "replace" || historyCommittedEarly) {
       // Astro reads current.index/scrollX/scrollY directly; `history.state` can be
       // null (page entered without a transition state), which would throw a
       // TypeError. Fall back to a synthesized state from the tracked index/scroll.
@@ -435,8 +444,15 @@ export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOpt
     // later Back restoration can't lose scroll that `scrollend` hasn't flushed
     // yet — the same guard transition() applies before a non-traverse push.
     updateScrollPosition({ scrollX, scrollY });
+    // Stamp the CURRENT scroll on the freshly-pushed entry too — NOT (0,0).
+    // This is a same-page push (dialog/photo-viewer pattern): the underlying
+    // page never actually scrolled anywhere, it just gained an overlay. A
+    // (0,0)-stamped entry would make the traverse fast-path (moveToLocation's
+    // historyState branch below) scrollTo(0,0) when this entry is later
+    // Forward-reopened, snapping the page to the top under the reopened
+    // dialog. #1398.
     history.pushState(
-      { ...options.state, index: ++currentHistoryIndex, scrollX: 0, scrollY: 0 },
+      { ...options.state, index: ++currentHistoryIndex, scrollX, scrollY },
       "",
       to.href,
     );
@@ -484,6 +500,8 @@ async function updateDOM(
   currentTransition: Transition,
   historyState?: State,
   fallback?: Fallback,
+  // Forwarded to moveToLocation() — see its parameter doc. #1398.
+  historyCommittedEarly = false,
 ) {
   async function animate(phase: string) {
     function isInfinite(animation: Animation) {
@@ -540,7 +558,14 @@ async function updateDOM(
     currentTransition.viewTransition!,
     animateFallbackOld,
   );
-  moveToLocation(swapEvent.to, swapEvent.from, options, pageTitleForBrowserHistory, historyState);
+  moveToLocation(
+    swapEvent.to,
+    swapEvent.from,
+    options,
+    pageTitleForBrowserHistory,
+    historyState,
+    historyCommittedEarly,
+  );
   triggerEvent("zfb:after-swap");
 
   // Resolve the finished promise of the simulation's ViewTransition.
@@ -757,7 +782,13 @@ async function transition(
   //
   // Traverse (popstate) navigations carry historyState: the browser has already
   // moved, so they must NOT create a new entry here.
+  //
+  // Tracks whether this block ran (push OR replace) so moveToLocation (called
+  // later, from updateDOM) knows a commit already happened for THIS navigation
+  // — see moveToLocation's `historyCommittedEarly` parameter doc. #1398.
+  let historyCommittedEarly = false;
   if (!historyState && prepEvent.to.href !== location.href) {
+    historyCommittedEarly = true;
     if (options.history === "replace") {
       // Mirror of the moveToLocation replace-path guard: `history.state` can be
       // null here too (page entered without a transition state), so synthesize a
@@ -790,7 +821,15 @@ async function transition(
     // This automatically cancels any previous transition
     // We also already took care that the earlier update callback got through
     currentTransition.viewTransition = document.startViewTransition(
-      async () => await updateDOM(prepEvent, options, currentTransition, historyState),
+      async () =>
+        await updateDOM(
+          prepEvent,
+          options,
+          currentTransition,
+          historyState,
+          undefined,
+          historyCommittedEarly,
+        ),
     );
   } else {
     // Simulation mode requires a bit more manual work.
@@ -806,6 +845,7 @@ async function transition(
         currentTransition,
         historyState,
         hasUAVisualTransition ? "swap" : getFallback(),
+        historyCommittedEarly,
       );
       return undefined;
     })();

@@ -282,3 +282,51 @@ test("syncHistoryEntry pathname dialog: Back triggers a normal soft navigation w
   const indexAfterBack = await page.evaluate(() => /** @type {any} */ (history.state)?.index);
   expect(Number.isFinite(indexAfterBack)).toBe(true);
 });
+
+// ===========================================================================
+// Spec 5 — syncHistoryEntry same-pathname (hash) dialog: Forward-reopen after
+// a fast-path Back preserves scroll — NOT reset to (0,0). (#1398)
+//
+// Unlike spec 4 (a DIFFERENT pathname, full lifecycle), #open-dialog-samepage
+// keeps the current pathname and only changes the hash, so samePage() is true
+// and Back/Forward takes the traverse fast path — the exact path
+// syncHistoryEntry's scroll-stamping fix needs a real-browser proof for.
+// Before the fix, syncHistoryEntry stamped the pushed entry's scroll as
+// (0,0), so re-entering it via Forward would scrollTo(0,0) and snap the
+// underlying page to the top under the reopened modal.
+// ===========================================================================
+test("syncHistoryEntry same-pathname (hash) dialog: Forward-reopen preserves scroll, not reset to (0,0)", async ({
+  page,
+}) => {
+  await page.goto("/sync-dialog.html");
+  await waitForInitialLoad(page);
+
+  // Scroll the underlying page down before opening the dialog.
+  await page.evaluate(() => window.scrollTo(0, 600));
+  await page.waitForFunction(() => window.scrollY === 600);
+
+  await page.click("#open-dialog-samepage");
+  await page.waitForFunction(() => location.hash === "#modal");
+  // syncHistoryEntry is side-effect free — scroll is unchanged by the push itself.
+  expect(await page.evaluate(() => window.scrollY)).toBe(600);
+
+  // Back: the same-page traverse fast path restores the pre-dialog entry's
+  // persisted scroll (600) — already correct before this fix (updateScrollPosition
+  // persists the OUTGOING entry's live scroll before the push).
+  let s = await seqNow(page);
+  await page.goBack();
+  await page.waitForFunction(() => location.hash === "");
+  expect(await eventNamesSince(page, s)).toEqual([]);
+  expect(await page.evaluate(() => window.scrollY)).toBe(600);
+
+  // Forward: reopen the dialog. Before the fix, syncHistoryEntry had stamped
+  // THIS entry's scroll as (0,0), so the fast path's scrollTo(historyState.scrollX,
+  // historyState.scrollY) would snap the page to the top here. After the fix,
+  // the entry carries the CURRENT scroll at push time (600), so Forward
+  // preserves it.
+  s = await seqNow(page);
+  await page.goForward();
+  await page.waitForFunction(() => location.hash === "#modal");
+  expect(await eventNamesSince(page, s)).toEqual([]);
+  expect(await page.evaluate(() => window.scrollY)).toBe(600);
+});
