@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Required by ClientRouter: enables SPA mode + real View Transitions on this page. -->
+    <meta name="zfb-view-transitions-enabled" content="" />
+    <meta name="zfb-view-transitions-fallback" content="animate" />
+    <title>Search</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 0;
+      }
+      nav {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        display: flex;
+        gap: 1rem;
+        padding: 0.75rem 1rem;
+        background: #fff;
+        border-bottom: 1px solid #ccc;
+        z-index: 10;
+      }
+      main {
+        padding: 4rem 1rem 1rem;
+      }
+    </style>
+    <!-- Import map: see index.html's header comment for the full rationale. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@takazudo/zfb/runtime": "/island-stubs.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <nav>
+      <a href="/index.html" id="to-home">Home</a>
+    </nav>
+    <main>
+      <h1>Search</h1>
+      <!--
+        A search-style GET form: submitting it must serialize its fields into
+        the target URL's query string via a SPA nav (client-router/router.ts's
+        handleSubmit), not a full page load. A hidden field alongside the
+        visible search input proves ALL of the form's fields get serialized,
+        not just the one the user typed into.
+      -->
+      <form id="search-form" action="/search-results.html" method="get">
+        <input type="search" name="q" id="q" />
+        <input type="hidden" name="category" value="docs" />
+        <button type="submit" id="search-submit">Search</button>
+      </form>
+    </main>
+    <script type="module">
+      import { init } from "/dist/client-router/router.js";
+      init();
+    </script>
+  </body>
+</html>

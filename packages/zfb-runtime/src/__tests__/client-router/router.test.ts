@@ -60,6 +60,14 @@ if (typeof document.getAnimations !== "function") {
 if (typeof (globalThis as { KeyframeEffect?: unknown }).KeyframeEffect === "undefined") {
   (globalThis as { KeyframeEffect: unknown }).KeyframeEffect = class KeyframeEffect {};
 }
+// `instanceof SVGAElement` check inside handleClick's link-type guard (#1400)
+// — happy-dom implements most SVG*Element globals but omits SVGAElement
+// specifically. Without this stand-in, dispatching ANY real "click" event
+// (even on a plain HTMLButtonElement, which never satisfies the check) throws
+// "SVGAElement is not defined" before the instanceof check can return false.
+if (typeof (globalThis as { SVGAElement?: unknown }).SVGAElement === "undefined") {
+  (globalThis as { SVGAElement: unknown }).SVGAElement = class SVGAElement {};
+}
 
 // Late import after the document is primed.
 import {
@@ -1350,5 +1358,300 @@ describe("syncHistoryEntry() — public history bookkeeping API (#1377)", () => 
     // Compile-time proof that the public option type covers { replace, state }.
     const opts: SyncHistoryEntryOptions = { replace: true, state: { modal: "x" } };
     expect(() => syncHistoryEntry("/sync-base/typed", opts)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleSubmit — form intercept (#1400)
+// ---------------------------------------------------------------------------
+//
+// `handleSubmit` (router.ts ~:1127-1176) had zero behavioral coverage before
+// this describe: the only submit-related test was the listener-count
+// idempotency check above. These tests dispatch real `submit` events (via
+// `form.requestSubmit(submitter)`, which happy-dom builds into a real
+// cancelable SubmitEvent with the right `.submitter`) through the
+// document-level listener `init()` installs, and observe the resulting
+// network call (or its absence) via the mocked global `fetch` — the same
+// "dispatch → observe fetch" pattern the rest of this file uses for
+// navigate()/onPopState.
+describe("handleSubmit — form intercept (#1400)", () => {
+  // handleSubmit calls navigate() without awaiting it (fire-and-forget, same
+  // shape as onPopState above) — drain one macrotask so the fetch mock has
+  // been called by the time we assert. Mirrors the `drain` helper used by the
+  // same-page traverse fast-path describe above for the identical shape.
+  const drain = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  function createForm(opts: {
+    action?: string;
+    method?: string;
+    fields?: Record<string, string>;
+  }): HTMLFormElement {
+    const form = document.createElement("form");
+    if (opts.action !== undefined) form.setAttribute("action", opts.action);
+    if (opts.method !== undefined) form.setAttribute("method", opts.method);
+    for (const [name, value] of Object.entries(opts.fields ?? {})) {
+      const input = document.createElement("input");
+      input.setAttribute("name", name);
+      input.setAttribute("value", value);
+      form.appendChild(input);
+    }
+    document.body.appendChild(form);
+    return form;
+  }
+
+  it("GET: serializes form fields into the URL's query string via URLSearchParams", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Results", "results content")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = createForm({
+      action: "/search-target",
+      method: "get",
+      fields: { q: "hello world", page: "2" },
+    });
+    form.requestSubmit();
+    await drain();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(calledUrl));
+    expect(url.pathname).toBe("/search-target");
+    expect(url.searchParams.get("q")).toBe("hello world");
+    expect(url.searchParams.get("page")).toBe("2");
+    // GET never sets a body or an explicit method — fetchHTML's init object
+    // only gains `method`/`body` when handleSubmit resolves to POST.
+    expect(calledInit?.method).toBeUndefined();
+    expect(calledInit?.body).toBeUndefined();
+    expect(document.querySelector("main")?.textContent).toBe("results content");
+  });
+
+  it("POST: passes a FormData body to fetch (no query-string rewrite)", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Submitted", "posted content")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = createForm({ action: "/submit-target", method: "post", fields: { k: "v" } });
+    form.requestSubmit();
+    await drain();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(calledUrl));
+    expect(url.pathname).toBe("/submit-target");
+    expect(url.search).toBe(""); // untouched — the GET query-rewrite branch never runs
+    expect(calledInit?.method).toBe("POST");
+    expect(calledInit?.body).toBeInstanceOf(FormData);
+    expect((calledInit?.body as FormData).get("k")).toBe("v");
+    expect(document.querySelector("main")?.textContent).toBe("posted content");
+  });
+
+  it("a submitter's formaction/formmethod attributes override the form's own action/method", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Overridden", "override content")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    // The form itself is POST to /form-default; the submitter overrides both
+    // to a GET at a different URL.
+    const form = createForm({ action: "/form-default", method: "post", fields: { q: "x" } });
+    const submitter = document.createElement("button");
+    submitter.setAttribute("type", "submit");
+    submitter.setAttribute("formaction", "/override-target");
+    submitter.setAttribute("formmethod", "get");
+    form.appendChild(submitter);
+
+    form.requestSubmit(submitter);
+    await drain();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [calledUrl, calledInit] = fetchMock.mock.calls[0]!;
+    const url = new URL(String(calledUrl));
+    // formaction won over the form's own action ...
+    expect(url.pathname).toBe("/override-target");
+    // ... and formmethod's "get" won over the form's own "post", so the field
+    // was serialized into the query string rather than sent as a body.
+    expect(url.searchParams.get("q")).toBe("x");
+    expect(calledInit?.method).toBeUndefined();
+    expect(calledInit?.body).toBeUndefined();
+  });
+
+  it('method="dialog" is not intercepted — the SPA transition is skipped', async () => {
+    const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Should not load", "n/a")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = createForm({ action: "/dialog-target", method: "dialog", fields: { x: "1" } });
+    form.requestSubmit();
+    await drain();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a modifier-key click on the submit button lets the browser handle the submit natively", async () => {
+    const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Should not load", "n/a")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = createForm({ action: "/should-not-navigate", method: "get", fields: { x: "1" } });
+    const submitter = document.createElement("button");
+    submitter.setAttribute("type", "submit");
+    form.appendChild(submitter);
+
+    // Dispatching a "click" on a type=submit button is enough on its own:
+    // happy-dom's HTMLButtonElement (mirroring real browser activation
+    // behavior) triggers `form.requestSubmit(this)` itself once the click
+    // isn't defaultPrevented — so this one dispatch reproduces the real
+    // sequence (click on document, THEN the resulting submit) without an
+    // extra manual requestSubmit() call, which would fire a second,
+    // unflagged submit and defeat the test. handleClick flags the clicked
+    // element during the click's bubble phase (synchronously before the
+    // button's own post-click activation fires requestSubmit), so
+    // handleSubmit sees the flagged submitter and steps aside for the
+    // browser's native new-tab handling.
+    submitter.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true, button: 0 }),
+    );
+    await drain();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // --- Bonus: the remaining branches of handleSubmit's single early-return
+  // guard (not explicitly listed in #1400, but free to cover from the same
+  // harness since they sit in the identical `if` as the dialog-method skip).
+  it("bonus: data-zfb-reload on the form skips the SPA intercept", async () => {
+    const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Should not load", "n/a")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = createForm({ action: "/reload-target", method: "get", fields: { x: "1" } });
+    form.dataset["zfbReload"] = "";
+    form.requestSubmit();
+    await drain();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("bonus: an earlier submit listener calling preventDefault() also skips the SPA intercept", async () => {
+    const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Should not load", "n/a")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = createForm({ action: "/prevented-target", method: "get", fields: { x: "1" } });
+    // A target-phase listener runs before document's bubble-phase handleSubmit.
+    form.addEventListener("submit", (e) => e.preventDefault());
+    form.requestSubmit();
+    await drain();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("bonus: a cross-origin form action skips the SPA intercept", async () => {
+    const fetchMock = vi.fn(async () => htmlResponse(pageHtml("Should not load", "n/a")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = createForm({
+      action: "https://external.example.com/target",
+      method: "get",
+      fields: { x: "1" },
+    });
+    form.requestSubmit();
+    await drain();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// transition() defaultLoader — form body consumption (#1400, router.ts ~:628-653)
+// ---------------------------------------------------------------------------
+//
+// defaultLoader is not exported — it is a closure inside transition() — so
+// these tests reach it the way the rest of this file reaches internal loader
+// behavior: call the exported navigate() directly with `options.formData` set
+// and observe the RequestInit handed to the mocked global fetch.
+describe("transition() defaultLoader — form body consumption (#1400)", () => {
+  it("reads enctype from the real HTML attribute — not a shadowed .enctype property", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Posted", "posted content")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = document.createElement("form");
+    form.setAttribute("method", "post");
+    form.setAttribute("enctype", "application/x-www-form-urlencoded");
+    document.body.appendChild(form);
+
+    // happy-dom's HTMLFormElement proxy always resolves `.enctype` to its own
+    // IDL getter (it doesn't implement the real-browser [OverrideBuiltins]
+    // quirk that lets a same-named `<input name="enctype">` control shadow
+    // the property) — so we monkeypatch an own property directly to simulate
+    // that shadow. defaultLoader reads enctype via
+    // `Reflect.get(HTMLFormElement.prototype, "attributes", form)` rather
+    // than `form.enctype`, precisely so a shadowed property like this cannot
+    // fool it; this proves that.
+    Object.defineProperty(form, "enctype", {
+      configurable: true,
+      value: "multipart/form-data",
+    });
+    expect(form.enctype).toBe("multipart/form-data"); // the shadow is in effect
+
+    const formData = new FormData();
+    formData.append("k", "v");
+
+    await navigate("/submit-target", { formData, sourceElement: form });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init?.body).toBeInstanceOf(URLSearchParams);
+    expect((init?.body as URLSearchParams).get("k")).toBe("v");
+  });
+
+  it("keeps the raw FormData body when no enctype attribute is present (Astro-compat default)", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Posted", "posted content")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = document.createElement("form");
+    form.setAttribute("method", "post");
+    document.body.appendChild(form);
+
+    const formData = new FormData();
+    formData.append("k", "v");
+
+    await navigate("/submit-target", { formData, sourceElement: form });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [, init] = fetchMock.mock.calls[0]!;
+    // Untouched — only an EXPLICIT url-encoded enctype triggers the
+    // URLSearchParams conversion; a default/absent enctype (and any other
+    // enctype, e.g. multipart/form-data) leaves the raw FormData in place.
+    expect(init?.body).toBe(formData);
+  });
+
+  it("resolves the form via a submitter's `.form` reference, not just a direct form sourceElement", async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo, _init?: RequestInit) =>
+      htmlResponse(pageHtml("Posted", "posted content")),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = document.createElement("form");
+    form.setAttribute("method", "post");
+    form.setAttribute("enctype", "application/x-www-form-urlencoded");
+    const submitter = document.createElement("button");
+    submitter.setAttribute("type", "submit");
+    form.appendChild(submitter);
+    document.body.appendChild(form);
+
+    const formData = new FormData();
+    formData.append("k", "v");
+
+    // handleSubmit passes `submitter ?? form` as sourceElement — mirror that
+    // directly to prove defaultLoader's `"form" in sourceElement` branch
+    // resolves the owning form rather than treating the button as formless.
+    await navigate("/submit-target", { formData, sourceElement: submitter });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(init?.body).toBeInstanceOf(URLSearchParams);
   });
 });
