@@ -122,12 +122,22 @@ jobs:
       # rust-cache bump (PR #250).
       #
       # GitHub enforces a 10GB-per-repo actions-cache eviction budget, LRU
-      # across every prefix in the repo. This workflow adds a THIRD and
-      # FOURTH Swatinem/rust-cache prefix alongside the two that already
-      # exist in health.yml: "v2-zfb" (main job, V8-enabled) and
-      # "v2-zfb-no-v8" (build-no-v8, no-v8 fallback) — see
-      # `grep -rn "Swatinem/rust-cache" .github/workflows/`. Four
-      # moderately-sized target/ caches should stay well under budget; if
+      # across every prefix in the repo. Stale count fixed (issue #1394): this
+      # comment used to say "four" families total, counting only health.yml's
+      # two plus this workflow's two matrix legs — it missed exam.yml, which
+      # also calls Swatinem/rust-cache (`grep -rn "Swatinem/rust-cache"
+      # .github/workflows/` — 5 call sites today). The real, current count of
+      # distinct cache families is FIVE: health.yml's `health` job
+      # (V8-enabled) and exam.yml's `quarantine-heavy` job now deliberately
+      # SHARE one family via a common `shared-key` (both run the identical
+      # `cargo build --workspace --all-targets`, so the target/ tree really is
+      # interchangeable — see exam.yml's rust-cache step); health.yml's
+      # `build-no-v8` job is its own family ("v2-zfb-no-v8"); exam.yml's
+      # `macos-exam` job is its own family ("v2-zfb-macos-exam", different
+      # OS/arch); and this workflow's two matrix legs
+      # ("v2-zfb-smoke-x86_64-unknown-linux-gnu" /
+      # "v2-zfb-smoke-aarch64-unknown-linux-gnu") are each their own family.
+      # Five moderately-sized target/ caches should stay well under budget; if
       # repo-wide cache pressure or eviction thrashing appears, this is the
       # first place to look.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1

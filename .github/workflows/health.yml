@@ -127,6 +127,14 @@ jobs:
           # will take 15-30 min for V8 first-compile; subsequent runs hit the
           # restored cache and are fast.
           prefix-key: "v2-zfb"
+          # shared-key (issue #1394): without it, Swatinem/rust-cache appends
+          # github.job to the key, so this job's cache and exam.yml's
+          # quarantine-heavy job's cache never actually shared despite both
+          # using `prefix-key: "v2-zfb"` — they run the identical `cargo build
+          # --workspace --all-targets` on the same toolchain/lockfiles, so the
+          # target/ tree is genuinely interchangeable. Must stay identical to
+          # the `shared-key` on exam.yml's quarantine-heavy rust-cache step.
+          shared-key: "workspace-all-targets"
 
       - run: pnpm install --frozen-lockfile
 

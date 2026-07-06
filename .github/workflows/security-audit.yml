@@ -84,3 +84,92 @@ jobs:
       # surfaces them without failing the job on non-advisory findings.
       - name: cargo deny check
         run: cargo deny check
+
+  file-or-close-issue:
+    # Paper-trail guard (issue #1394): this was the only scheduled T3 lane
+    # (exam.yml, drift-net.yml, this workflow) with no file/close tracking
+    # issue — a red weekly audit sat silently in the Actions tab. Single
+    # deduped tracking issue per workflow, drop-in from drift-net.yml's
+    # `file-or-close-issue` job (issue #1342). Unlike exam.yml's jobs, `audit`
+    # and `cargo-deny` fail NORMALLY (no synthetic rc-capture-then-exit-0
+    # trick), so this reads `needs.*.result` directly instead of a job output.
+    name: File/close security-audit tracking issue
+    needs: [audit, cargo-deny]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: File or comment on tracking issue (failure)
+        if: ${{ needs.audit.result == 'failure' || needs.cargo-deny.result == 'failure' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LEG: >-
+            ${{
+              (needs.audit.result == 'failure' && needs.cargo-deny.result == 'failure') && 'pnpm audit (prod) AND cargo deny (both failed)' ||
+              (needs.audit.result == 'failure' && 'pnpm audit (prod)') ||
+              'cargo deny (Rust supply chain)'
+            }}
+        run: bash scripts/file-exam-issue.sh "Security Audit"
+
+      - name: Close tracking issue (green)
+        if: ${{ needs.audit.result == 'success' && needs.cargo-deny.result == 'success' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/file-exam-issue.sh "Security Audit" --green
+
+  notify:
+    # Alerting guard: a red audit leg otherwise sits unseen between someone
+    # actually checking the Actions tab — nobody watches a scheduled run the
+    # way a release is watched live. Same IFTTT pattern as release.yml's /
+    # drift-net.yml's / exam.yml's `notify` job (issue #1335), keyed on
+    # needs.*.result for the same reason as the file-or-close job above.
+    name: Notify via IFTTT on failure
+    needs: [audit, cargo-deny]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
+    steps:
+      - name: Notify via IFTTT on failure
+        if: env.IFTTT_PROD_NOTIFY != ''
+        env:
+          AUDIT_RESULT: ${{ needs.audit.result }}
+          CARGO_DENY_RESULT: ${{ needs.cargo-deny.result }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          FAILED_JOB=""
+          if [ "$AUDIT_RESULT" = "failure" ]; then
+            FAILED_JOB="pnpm audit (prod)"
+          fi
+          if [ "$CARGO_DENY_RESULT" = "failure" ]; then
+            if [ -n "$FAILED_JOB" ]; then
+              FAILED_JOB="${FAILED_JOB}, cargo deny"
+            else
+              FAILED_JOB="cargo deny"
+            fi
+          fi
+
+          if [ -z "$FAILED_JOB" ]; then
+            echo "No failed job among audit/cargo-deny — skipping notification."
+            exit 0
+          fi
+
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+
+          curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"value1\": \"Security audit failed (${FAILED_JOB})\",
+              \"value2\": \"weekly pnpm audit + cargo deny\",
+              \"value3\": \"${RUN_URL}\"
+            }" || echo "::warning::IFTTT notification failed"
