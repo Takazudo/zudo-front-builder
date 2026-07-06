@@ -77,47 +77,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use markdown::mdast::Node as MdastNode;
-use zfb_md_ast::{
-    AttrSchema, AttrType, BuildContext, DirectiveDef, MdastVisitor, ReadOutcome, ReadRecorder,
-};
+use zfb_md_ast::{BuildContext, MdastVisitor, ReadOutcome, ReadRecorder};
 
 use crate::TranscludeConfig;
 
 // ── Public API ──────────────────────────────────────────────────────────────
-
-/// Return the `DirectiveDef` for the `:::include` directive.
-///
-/// Declares the required `file` attribute (string) and optional `lines`,
-/// `code`, and `lang` attributes.
-#[must_use]
-pub fn include_directive_def() -> DirectiveDef {
-    DirectiveDef::container("include", "include").with_attrs(vec![
-        AttrSchema {
-            name: "file".to_string(),
-            ty: AttrType::String,
-            default: None,
-            required: true,
-        },
-        AttrSchema {
-            name: "lines".to_string(),
-            ty: AttrType::String,
-            default: None,
-            required: false,
-        },
-        AttrSchema {
-            name: "code".to_string(),
-            ty: AttrType::Boolean,
-            default: None,
-            required: false,
-        },
-        AttrSchema {
-            name: "lang".to_string(),
-            ty: AttrType::String,
-            default: None,
-            required: false,
-        },
-    ])
-}
 
 /// Mdast visitor that replaces `:::include{file="…"}` directive paragraphs
 /// with the parsed mdast nodes from the referenced file.
@@ -252,23 +216,43 @@ fn expand_includes_in_children(
 ) {
     let mut i = 0;
     while i < children.len() {
-        if let Some(attrs) = extract_include_attrs(&children[i]) {
-            // Found an `:::include` paragraph at `i`.
-            let replacement = resolve_and_expand(&attrs, source_dir, env, visited, depth, ctx);
+        match extract_include_attrs(&children[i]) {
+            IncludeMatch::Ok(attrs) => {
+                // Found an `:::include` paragraph at `i`.
+                let replacement =
+                    resolve_and_expand(&attrs, source_dir, env, visited, depth, ctx);
 
-            // Remove the directive paragraph.
-            children.remove(i);
+                // Remove the directive paragraph.
+                children.remove(i);
 
-            // Insert the replacement nodes at `i`.
-            let insert_count = replacement.len();
-            for (offset, new_node) in replacement.into_iter().enumerate() {
-                children.insert(i + offset, new_node);
+                // Insert the replacement nodes at `i`.
+                let insert_count = replacement.len();
+                for (offset, new_node) in replacement.into_iter().enumerate() {
+                    children.insert(i + offset, new_node);
+                }
+                i += insert_count;
             }
-            i += insert_count;
-        } else {
-            // Not an include directive — recurse into container children.
-            expand_includes_in_node(&mut children[i], source_dir, env, visited, depth, ctx);
-            i += 1;
+            IncludeMatch::Malformed => {
+                // Shaped like `:::include{...}` (the `:::include` marker text
+                // plus an attrs expression) but the attrs failed to parse —
+                // e.g. a misspelled `fil="./x.md"` instead of `file="./x.md"`.
+                // Previously this fell through as "not an include directive"
+                // and was left untouched: the literal `:::include{...}` text
+                // leaked into rendered HTML, or blew up as an opaque JS
+                // syntax error on the JSX-emit path (the MdxTextExpression's
+                // raw attr string is not valid JS on its own). Emit a clear
+                // diagnostic and drop the node instead (#1392).
+                emit_error(
+                    ctx,
+                    "transclude: missing required file attribute".to_string(),
+                );
+                children.remove(i);
+            }
+            IncludeMatch::NotInclude => {
+                // Not an include directive — recurse into container children.
+                expand_includes_in_node(&mut children[i], source_dir, env, visited, depth, ctx);
+                i += 1;
+            }
         }
     }
 }
@@ -507,28 +491,52 @@ struct IncludeAttrs {
     lang: Option<String>,
 }
 
+/// Outcome of matching a node against the `:::include{...}` shape.
+///
+/// Distinguishes "not this directive at all" (the caller should keep
+/// recursing into the node as an ordinary container) from "this IS an
+/// `:::include` paragraph but its attrs failed to parse" (the caller should
+/// emit a diagnostic and drop the node rather than leaving the raw
+/// `:::include{...}` text/expression in the tree — see #1392).
+#[derive(Debug)]
+enum IncludeMatch {
+    /// Not shaped like `:::include` — recurse as normal.
+    NotInclude,
+    /// Shaped like `:::include{...}` but the attrs expression failed to
+    /// parse (e.g. missing/misspelled `file`).
+    Malformed,
+    /// Successfully parsed.
+    Ok(IncludeAttrs),
+}
+
 /// Check if `node` is an `:::include` paragraph and extract its attributes.
 ///
-/// Returns `Some(attrs)` iff the node is a `Paragraph` with exactly two
-/// children: `Text(":::include")` + `MdxTextExpression(attrs_str)`.
-fn extract_include_attrs(node: &MdastNode) -> Option<IncludeAttrs> {
+/// Returns [`IncludeMatch::Ok`] iff the node is a `Paragraph` with exactly
+/// two children — `Text(":::include")` + `MdxTextExpression(attrs_str)` —
+/// AND the attrs string parses with a required `file` attribute.
+/// [`IncludeMatch::Malformed`] when the paragraph shape matches but the
+/// attrs don't (see #1392); [`IncludeMatch::NotInclude`] otherwise.
+fn extract_include_attrs(node: &MdastNode) -> IncludeMatch {
     let MdastNode::Paragraph(p) = node else {
-        return None;
+        return IncludeMatch::NotInclude;
     };
     if p.children.len() != 2 {
-        return None;
+        return IncludeMatch::NotInclude;
     }
     let MdastNode::Text(t) = &p.children[0] else {
-        return None;
+        return IncludeMatch::NotInclude;
     };
     if first_line(&t.value).trim() != ":::include" {
-        return None;
+        return IncludeMatch::NotInclude;
     }
     let MdastNode::MdxTextExpression(expr) = &p.children[1] else {
-        return None;
+        return IncludeMatch::NotInclude;
     };
 
-    parse_attrs_from_expression(&expr.value)
+    match parse_attrs_from_expression(&expr.value) {
+        Some(attrs) => IncludeMatch::Ok(attrs),
+        None => IncludeMatch::Malformed,
+    }
 }
 
 /// Parse key="value" / key=value / key=true/false attributes from an
@@ -786,10 +794,19 @@ mod tests {
         })
     }
 
+    /// Unwrap an [`IncludeMatch::Ok`], panicking with the actual variant
+    /// otherwise — keeps the extraction tests below readable.
+    fn expect_ok(m: IncludeMatch) -> IncludeAttrs {
+        match m {
+            IncludeMatch::Ok(attrs) => attrs,
+            other => panic!("expected IncludeMatch::Ok, got: {other:?}"),
+        }
+    }
+
     #[test]
     fn extract_basic_include() {
         let node = make_include_paragraph(r#"file="./snippet.md""#);
-        let attrs = extract_include_attrs(&node).expect("should match");
+        let attrs = expect_ok(extract_include_attrs(&node));
         assert_eq!(attrs.file, "./snippet.md");
         assert!(!attrs.code);
         assert!(attrs.lines.is_none());
@@ -799,7 +816,7 @@ mod tests {
     #[test]
     fn extract_include_with_lines() {
         let node = make_include_paragraph(r#"file="./foo.md" lines="10-30""#);
-        let attrs = extract_include_attrs(&node).expect("should match");
+        let attrs = expect_ok(extract_include_attrs(&node));
         assert_eq!(attrs.file, "./foo.md");
         assert_eq!(attrs.lines.as_deref(), Some("10-30"));
     }
@@ -807,10 +824,25 @@ mod tests {
     #[test]
     fn extract_include_with_code_and_lang() {
         let node = make_include_paragraph(r#"file="./foo.rs" code=true lang="rust""#);
-        let attrs = extract_include_attrs(&node).expect("should match");
+        let attrs = expect_ok(extract_include_attrs(&node));
         assert_eq!(attrs.file, "./foo.rs");
         assert!(attrs.code);
         assert_eq!(attrs.lang.as_deref(), Some("rust"));
+    }
+
+    // #1392: `:::include{fil="./x.md"}` (misspelled `file` attr) is shaped
+    // exactly like a real include directive — the paragraph has the
+    // `:::include` marker text plus an MdxTextExpression — but the attrs
+    // parse to no `file` key. This must be distinguished from "not an
+    // include directive at all" so the caller can emit a diagnostic instead
+    // of silently leaving broken syntax in the tree.
+    #[test]
+    fn extract_missing_file_attr_is_malformed() {
+        let node = make_include_paragraph(r#"fil="./x.md""#);
+        match extract_include_attrs(&node) {
+            IncludeMatch::Malformed => {}
+            other => panic!("expected IncludeMatch::Malformed, got: {other:?}"),
+        }
     }
 
     #[test]
@@ -822,14 +854,20 @@ mod tests {
             })],
             position: None,
         });
-        assert!(extract_include_attrs(&node).is_none());
+        assert!(matches!(
+            extract_include_attrs(&node),
+            IncludeMatch::NotInclude
+        ));
     }
 
     #[test]
     fn non_include_directive_returns_none() {
         // `:::note` is not an include directive
         let node = make_include_paragraph_with_text(":::note", r#"file="./foo.md""#);
-        assert!(extract_include_attrs(&node).is_none());
+        assert!(matches!(
+            extract_include_attrs(&node),
+            IncludeMatch::NotInclude
+        ));
     }
 
     fn make_include_paragraph_with_text(text: &str, expr_value: &str) -> MdastNode {
@@ -847,38 +885,6 @@ mod tests {
             ],
             position: None,
         })
-    }
-
-    // ── include_directive_def ─────────────────────────────────────────────
-
-    #[test]
-    fn directive_def_validates_file_attr() {
-        let def = include_directive_def();
-        let (result, warnings) =
-            def.validate_attrs(&[("file".to_string(), "./foo.md".to_string())]);
-        assert!(result.is_ok(), "valid file attr must pass: {result:?}");
-        assert!(warnings.is_empty());
-    }
-
-    #[test]
-    fn directive_def_rejects_missing_required_file() {
-        let def = include_directive_def();
-        let (result, _) = def.validate_attrs(&[]);
-        assert!(result.is_err(), "missing required `file` must fail");
-    }
-
-    #[test]
-    fn directive_def_accepts_all_attrs() {
-        let def = include_directive_def();
-        let attrs = vec![
-            ("file".to_string(), "./foo.rs".to_string()),
-            ("lines".to_string(), "1-10".to_string()),
-            ("code".to_string(), "true".to_string()),
-            ("lang".to_string(), "rust".to_string()),
-        ];
-        let (result, warnings) = def.validate_attrs(&attrs);
-        assert!(result.is_ok(), "all valid attrs must pass: {result:?}");
-        assert!(warnings.is_empty());
     }
 
     // ── Integration: file resolution (using tempdir) ──────────────────────
@@ -938,6 +944,55 @@ mod tests {
         );
         assert!(matches!(root.children[0], MdastNode::Heading(_)));
         assert!(matches!(root.children[1], MdastNode::Paragraph(_)));
+    }
+
+    // #1392: `:::include{fil="./x.md"}` (misspelled `file`) used to fall
+    // through as "not an include directive" — the literal `:::include{...}`
+    // text/expression stayed in the tree, which either leaked onto the HTML
+    // page or blew up as an opaque JS syntax error on the JSX-emit path.
+    // Now it must emit a clear diagnostic and drop the node.
+    #[test]
+    fn malformed_attrs_emit_diagnostic_and_drop_node() {
+        let dir = tempfile::Builder::new()
+            .prefix("transclude_test_malformed")
+            .tempdir()
+            .unwrap();
+
+        let input = r#":::include{fil="./x.md"}"#;
+        let source = dir.path().join("input.md");
+        std::fs::write(&source, input).unwrap();
+
+        let (tree, diags) = run_transclude(
+            input,
+            source,
+            dir.path().to_path_buf(),
+            TranscludeConfig::default(),
+        );
+
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic: {diags:?}");
+        match &diags[0] {
+            zfb_md_ast::diagnostics::MarkdownDiagnostic::Generic { severity, message, .. } => {
+                assert_eq!(
+                    *severity,
+                    zfb_md_ast::diagnostics::DiagnosticSeverity::Error
+                );
+                assert!(
+                    message.contains("missing required file attribute"),
+                    "got: {message}"
+                );
+            }
+            other => panic!("expected a Generic diagnostic, got: {other:?}"),
+        }
+
+        // The malformed directive paragraph must be dropped, not left in
+        // the tree as literal `:::include{...}` text.
+        let MdastNode::Root(root) = &tree else {
+            panic!("expected Root")
+        };
+        assert!(
+            root.children.is_empty(),
+            "malformed include must be dropped, got: {root:?}"
+        );
     }
 
     #[test]
