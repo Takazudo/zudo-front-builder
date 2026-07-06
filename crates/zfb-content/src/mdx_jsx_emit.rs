@@ -1104,22 +1104,45 @@ fn emit_table_jsx(emitter: &mut JsxEmitter, rows: &[MdastNode], align: &[AlignKi
 /// Returns `true` if `s` is a module-level ESM statement that must appear
 /// at column 0 in the emitted JS module.
 ///
-/// Recognises the four forms that unambiguously open a module declaration:
-/// - `export const` — named constant export (e.g. `export const toc = …`)
+/// Recognises every declaration-keyword export form, plus default exports,
+/// named re-exports, star re-exports, and imports:
+/// - `export const` / `export let` / `export var` — variable exports
+/// - `export function` / `export async function` — function exports
+///   (`export default function`/`export default async function` are
+///   already covered by the `export default` prefix below)
+/// - `export class` — class export (`export default class` likewise
+///   covered by `export default`)
 /// - `export default` — default export
 /// - `export {` — re-export / named-export shorthand
+/// - `export *` — star re-export (`export * from "mod"`,
+///   `export * as ns from "mod"`)
 /// - `import ` — import declaration (note the trailing space to avoid
 ///   matching `importFoo`)
 ///
-/// The check is intentionally conservative: it only matches these four
-/// prefixes (not a bare `export ` or `import`) so a JsxRaw node that
-/// merely mentions "export" in its first line (e.g. a comment) is not
-/// mis-hoisted.
+/// The declaration-keyword prefixes (`export let`/`var`/`function`/`async
+/// function`/`class`) mirror the list in
+/// `zfb_diagnostics::locate_export_ident` (`crates/zfb-diagnostics/src/lib.rs`
+/// ~:360-370) — that function's own doc comment notes `export * from` is
+/// deliberately unmatched THERE because a star re-export has no local
+/// binding name to locate; this function has no such constraint (it only
+/// asks "is this a module-level statement", not "where is `ident`
+/// declared"), so `export *` is matched here too.
+///
+/// The check is intentionally conservative: each prefix requires the
+/// keyword to be followed by a space (not a bare `export`/`import`) so a
+/// JsxRaw node that merely mentions "export" in its first line (e.g. a
+/// comment) is not mis-hoisted.
 fn is_module_level_esm(s: &str) -> bool {
     let trimmed = s.trim_start();
     trimmed.starts_with("export const ")
+        || trimmed.starts_with("export let ")
+        || trimmed.starts_with("export var ")
+        || trimmed.starts_with("export function ")
+        || trimmed.starts_with("export async function ")
+        || trimmed.starts_with("export class ")
         || trimmed.starts_with("export default ")
         || trimmed.starts_with("export {")
+        || trimmed.starts_with("export * ")
         || trimmed.starts_with("import ")
 }
 
@@ -2670,6 +2693,50 @@ mod tests {
 
     fn emit(src: &str) -> String {
         mdx_to_jsx_module(src, MdxJsxOptions::default()).expect("emit ok")
+    }
+
+    // #1392: is_module_level_esm used to match only `export const`,
+    // `export default`, `export {`, and `import ` — a top-level JsxRaw node
+    // carrying `export let`/`export var`/`export function`/`export async
+    // function`/`export class`/`export * from` would NOT be hoisted to
+    // column 0, so MDX/esbuild would reject the emitted module (or silently
+    // treat the declaration as indented content). Pin every newly-matched
+    // form, plus the pre-existing forms so this test doubles as a
+    // regression guard for those too.
+    #[test]
+    fn is_module_level_esm_matches_every_export_and_import_form() {
+        let matching = [
+            r#"export const toc = [];"#,
+            r#"export let counter = 0;"#,
+            r#"export var legacy = 0;"#,
+            r#"export function helper() {}"#,
+            r#"export async function fetchIt() {}"#,
+            r#"export class Thing {}"#,
+            r#"export default function Page() {}"#,
+            r#"export default class Page {}"#,
+            r#"export default 42;"#,
+            r#"export { a, b };"#,
+            r#"export * from "./mod";"#,
+            r#"export * as ns from "./mod";"#,
+            r#"import foo from "./mod";"#,
+        ];
+        for s in matching {
+            assert!(is_module_level_esm(s), "expected a match for: {s}");
+        }
+    }
+
+    #[test]
+    fn is_module_level_esm_rejects_non_module_level_text() {
+        let non_matching = [
+            "just a paragraph",
+            "// export const fake = 1 (a comment mentioning export)",
+            "exported",
+            "importantThing",
+            "const x = 1;",
+        ];
+        for s in non_matching {
+            assert!(!is_module_level_esm(s), "expected NO match for: {s}");
+        }
     }
 
     /// Default feature-aware production pipeline (the shape the bundler,
