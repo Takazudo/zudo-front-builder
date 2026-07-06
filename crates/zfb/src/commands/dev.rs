@@ -193,6 +193,44 @@ fn derive_watch_roots(cfg: &config::Config) -> Vec<PathBuf> {
     roots
 }
 
+/// Compute which derived watch roots + `extraWatchPaths` targets are
+/// absent from disk at boot (issue #1391).
+///
+/// `zfb_watcher::Watcher::start_with_extras` already skips a missing
+/// path and does NOT re-register it if it appears later — but the only
+/// signal is a `tracing::warn!`, which a user running `zfb dev` from a
+/// terminal never sees (this crate's user-facing messages go through
+/// [`crate::output`]). Absent a warning here, "run `zfb dev` before
+/// `mkdir content`" silently degrades into a no-reload mode for that
+/// root until the user restarts.
+///
+/// Kept as a pure function (returns the missing paths rather than
+/// printing them) so the boot path's `output::warn` side effect stays a
+/// thin, untested wrapper around unit-testable logic — mirroring the
+/// `fmt_*` / `warn` split in `crate::output`.
+fn missing_watch_targets(
+    project_root: &Path,
+    watch_roots: &[PathBuf],
+    extra_watch_paths: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut missing = Vec::new();
+    for root in watch_roots {
+        let full = project_root.join(root);
+        if !full.exists() {
+            missing.push(full);
+        }
+    }
+    // `extra_watch_paths` are already absolute by this point (resolved via
+    // `resolve_extra_watch_paths`, `session.out_of_root_watch_targets()`, or
+    // `resolve_css_import_watch_targets` — all canonicalise before adding).
+    for extra in extra_watch_paths {
+        if !extra.exists() {
+            missing.push(extra.clone());
+        }
+    }
+    missing
+}
+
 /// Entry point for `zfb dev`.
 ///
 /// Available only when the `embed_v8` cargo feature is on (issue #371,
@@ -553,6 +591,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         if !extra_watch_paths.contains(real) {
             extra_watch_paths.push(real.clone());
         }
+    }
+    // Issue #1391 — every watch root + extra target is now finalised;
+    // warn about any that don't exist yet so the silent no-reload mode
+    // (see `missing_watch_targets` doc) is at least visible in the
+    // dev server's own console output before the user hits it.
+    for missing in missing_watch_targets(&project_root, &watch_roots, &extra_watch_paths) {
+        output::warn(format!(
+            "watch target {} does not exist yet — it will not be watched \
+             until you restart `zfb dev` after creating it",
+            missing.display(),
+        ));
     }
     // Configured collection roots classify as Content ahead of the
     // standard root-segment walk — without this, a collection under
@@ -6093,6 +6142,42 @@ mod tests {
         let roots = derive_watch_roots(&cfg);
         assert!(roots.contains(&PathBuf::from("articles")));
         assert_eq!(roots.len(), DEFAULT_WATCH_ROOTS.len() + 1);
+    }
+
+    /// Issue #1391 — a configured-but-missing derived watch root (e.g.
+    /// `content/` never created) AND a missing extra watch path must both
+    /// be reported so the boot path can warn the user. A present root and
+    /// a present extra path must NOT show up.
+    #[test]
+    fn missing_watch_targets_flags_absent_root_and_extra_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // `content` is a derived watch root that does not exist under `dir`.
+        let watch_roots = vec![PathBuf::from("content"), PathBuf::from("pages")];
+        std::fs::create_dir_all(dir.path().join("pages")).unwrap();
+
+        let present_extra = dir.path().join("present-extra");
+        std::fs::create_dir_all(&present_extra).unwrap();
+        let missing_extra = dir.path().join("missing-extra");
+        let extra_watch_paths = vec![present_extra, missing_extra.clone()];
+
+        let missing = missing_watch_targets(dir.path(), &watch_roots, &extra_watch_paths);
+
+        assert_eq!(
+            missing,
+            vec![dir.path().join("content"), missing_extra],
+            "must flag exactly the missing root and the missing extra path"
+        );
+    }
+
+    /// Everything present ⇒ no warnings — the common case (a freshly
+    /// scaffolded project with all default roots created) must not spam
+    /// the console.
+    #[test]
+    fn missing_watch_targets_empty_when_everything_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("content")).unwrap();
+        let missing = missing_watch_targets(dir.path(), &[PathBuf::from("content")], &[]);
+        assert!(missing.is_empty());
     }
 
     /// Issue #534 regression — dev's per-route HTML output dir must live

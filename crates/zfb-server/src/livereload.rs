@@ -35,12 +35,17 @@
 //! ## Event mapping rules
 //!
 //! - `outcome.pages_written.len() > 0` **or** `outcome.pages_stale.len() > 0`
-//!   **or** `outcome.client_scripts_changed`
+//!   **or** `outcome.pages_pruned.len() > 0` **or**
+//!   `outcome.client_scripts_changed`
 //!   ⇒  emit one [`ReloadEvent::Page`] (deduplicated — at most one per tick).
 //!   `pages_stale` (issue #1027) covers the lazy dev-render default: a tick
 //!   that rendered nothing eagerly but marked routes stale must still tell
 //!   the browser to reload — the reload's GET is what triggers the
-//!   request-time re-render.
+//!   request-time re-render. `pages_pruned` (issue #1391) covers a
+//!   prune-only tick (a route's HTML was deleted, e.g. a coalesced macOS
+//!   FSEvents directory delete, with no page written or marked stale) — a
+//!   tab still sitting on that now-deleted route must reload so it hits
+//!   the dev server's 404 path instead of showing stale content forever.
 //! - `outcome.css_changed`              ⇒  emit one [`ReloadEvent::Css`].
 //! - `outcome.islands_bundle.is_some()` ⇒  emit one
 //!   [`ReloadEvent::Islands`] per re-bundled component, carrying the
@@ -147,11 +152,17 @@ pub fn outcome_to_events(outcome: &BuildOutcome) -> Vec<ReloadEvent> {
     // rendered eagerly this tick, but the browser must reload so its
     // GET triggers the request-time re-render; #1025 pins the ordering
     // so the stale map and route tables are committed before this
-    // outcome exists), OR the client-scripts bundle changed (a changed
+    // outcome exists), OR routes were pruned (issue #1391 — a
+    // prune-only tick, e.g. macOS FSEvents coalescing a directory
+    // delete so `remove_node` returns empty consumers and nothing else
+    // fires; a tab sitting on the deleted route must still reload so it
+    // hits the dev 404 path instead of rendering deleted content
+    // forever), OR the client-scripts bundle changed (a changed
     // `dist/assets/client/<name>.js` file is only picked up on a full
     // document reload — v1 has no hot-swap event for client scripts).
     if !outcome.pages_written.is_empty()
         || !outcome.pages_stale.is_empty()
+        || !outcome.pages_pruned.is_empty()
         || outcome.client_scripts_changed
     {
         events.push(ReloadEvent::Page);
@@ -373,6 +384,21 @@ mod tests {
                 std::path::PathBuf::from("index.html"),
                 std::path::PathBuf::from("posts/b/index.html"),
             ],
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
+    }
+
+    /// Issue #1391 — a prune-only tick (a route's HTML was deleted and
+    /// nothing else changed — the shape a coalesced macOS FSEvents
+    /// directory delete produces, where `remove_node` returns empty
+    /// consumers) must still emit exactly ONE `Page` event. Without this,
+    /// a tab left open on the deleted route never reloads and keeps
+    /// rendering content that no longer exists.
+    #[test]
+    fn pages_pruned_only_emits_single_page_event() {
+        let outcome = BuildOutcome {
+            pages_pruned: vec![std::path::PathBuf::from("dist/posts/old/index.html")],
             ..Default::default()
         };
         assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);

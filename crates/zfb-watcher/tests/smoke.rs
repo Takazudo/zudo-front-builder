@@ -98,3 +98,33 @@ async fn touching_file_emits_change() {
         file_change.kind
     );
 }
+
+/// Issue #1391 — pin the module-doc'd skip behavior for a missing
+/// **in-tree relative** watch root passed to [`Watcher::start`] (the
+/// counterpart to `extra_paths::missing_extra_path_is_skipped_without_panic`,
+/// which covers the absolute-extra-path variant). Starting the watcher
+/// must NOT error or panic when one of the requested relative roots does
+/// not exist on disk yet — the dev command layer now surfaces a
+/// user-visible warning for this case (`crate::commands::dev`'s
+/// `missing_watch_targets`, issue #1391) rather than relying on the
+/// tracing-only `warn!` this crate logs internally.
+#[tokio::test]
+async fn missing_relative_root_is_skipped_without_panic() {
+    let root = tempdir().expect("tempdir");
+
+    // "content" exists; "data" deliberately does not.
+    fs::create_dir_all(root.path().join("content")).expect("create content dir");
+    let missing_root = root.path().join("data");
+    assert!(
+        !missing_root.exists(),
+        "test precondition: data dir is missing"
+    );
+
+    let result = Watcher::start(root.path(), ["content", "data"]);
+
+    assert!(
+        result.is_ok(),
+        "starting with a missing in-tree relative root should not error, got: {:?}",
+        result.err()
+    );
+}
