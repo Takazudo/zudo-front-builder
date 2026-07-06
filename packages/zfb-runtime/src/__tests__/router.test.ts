@@ -338,6 +338,31 @@ describe("createPageRouter", () => {
     });
   });
 
+  it("passes URL params through for a dynamic route with no paths() export (issue #1397)", async () => {
+    // A dynamic route with no `paths()` export is the natural shape for a
+    // per-request SSR page whose slugs can't be enumerated ahead of time
+    // (e.g. slugs sourced from an external API at request time). Before
+    // this fix, neither the paths() branch nor the getStaticProps branch
+    // applied — the component was invoked with `{}`, leaving it with no
+    // way to know which slug it was serving.
+    let received: unknown = null;
+    const ssrPage: PageModule = {
+      default: (input) => {
+        received = input;
+        return null;
+      },
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/blog/:slug", module: () => Promise.resolve(ssrPage) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    const res = await router(new Request("http://test.local/blog/hello"));
+    expect(res.status).toBe(200);
+    expect(received).toEqual({ params: { slug: "hello" } });
+  });
+
   it("returns 404 when paths() exists but the URL does not match any entry", async () => {
     const dynamicPage: PageModule & { paths: () => unknown[] } = {
       default: () => null,
