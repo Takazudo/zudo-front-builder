@@ -1356,8 +1356,7 @@ fn materialise_islands_shadow(
         {
             let entry =
                 entry.with_context(|| format!("walking glob module subtree {}", dir.display()))?;
-            if entry.file_type().is_file()
-                && project_local_shadow_rel(entry.path(), root).is_some()
+            if entry.file_type().is_file() && project_local_shadow_rel(entry.path(), root).is_some()
             {
                 to_mirror.insert(entry.path().to_path_buf());
             }
