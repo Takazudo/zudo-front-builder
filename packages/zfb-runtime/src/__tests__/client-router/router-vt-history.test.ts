@@ -259,3 +259,63 @@ describe("history entry is committed outside the startViewTransition callback (z
     expect(pushSpy).not.toHaveBeenCalled();
   });
 });
+
+describe("zfb:before-swap `to` mutation does not double-push the history entry (#1398)", () => {
+  it("a before-swap listener redirecting `to` produces exactly ONE new entry — the redirect corrects the URL via replaceState, not a second pushState", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => htmlResponse(pageHtml("B", "page b"))),
+    );
+
+    const pushCalls: Array<{ index: number; url: string }> = [];
+    const origPush = History.prototype.pushState.bind(history);
+    vi.spyOn(history, "pushState").mockImplementation(
+      (...args: Parameters<History["pushState"]>) => {
+        const [state, , url] = args;
+        pushCalls.push({ index: (state as { index: number }).index, url: String(url) });
+        return origPush(...args);
+      },
+    );
+
+    const replaceCalls: Array<{ index: number; url: string }> = [];
+    const origReplace = History.prototype.replaceState.bind(history);
+    vi.spyOn(history, "replaceState").mockImplementation(
+      (...args: Parameters<History["replaceState"]>) => {
+        const [state, , url] = args;
+        if (url != null) {
+          replaceCalls.push({ index: (state as { index: number }).index, url: String(url) });
+        }
+        return origReplace(...args);
+      },
+    );
+
+    // A zfb:before-swap listener redirects the destination — `to` is writable
+    // on the event per Astro parity (events.ts BeforeEvent). By this point
+    // transition()'s early WebKit-workaround commit has ALREADY pushed a new
+    // entry for the ORIGINAL (pre-redirect) target.
+    const redirectedTo = new URL("/page-b-redirected", location.href);
+    const onBeforeSwap = (ev: Event) => {
+      (ev as unknown as { to: URL }).to = redirectedTo;
+    };
+    document.addEventListener("zfb:before-swap", onBeforeSwap);
+
+    await navigate("/page-b");
+
+    document.removeEventListener("zfb:before-swap", onBeforeSwap);
+
+    // Exactly one NEW entry for this navigation — the early commit. A second
+    // pushState here would be the bug: one navigation, two entries, a phantom
+    // Back stop.
+    expect(pushCalls).toHaveLength(1);
+    expect(pushCalls[0]!.url).toContain("/page-b");
+
+    // The redirect still lands: moveToLocation corrects the already-committed
+    // entry's URL to the listener-mutated `to` via replaceState — same index,
+    // not a fresh one.
+    const correctingReplace = replaceCalls.find((r) => r.url.includes("/page-b-redirected"));
+    expect(correctingReplace).toBeDefined();
+    expect(correctingReplace!.index).toBe(pushCalls[0]!.index);
+
+    expect(location.pathname).toBe("/page-b-redirected");
+  });
+});

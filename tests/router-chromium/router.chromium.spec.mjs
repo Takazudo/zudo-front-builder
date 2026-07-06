@@ -420,6 +420,66 @@ test("prefetch inserts a real <link rel=prefetch> for a tap-strategy link", asyn
 });
 
 // ===========================================================================
+// Spec 7b — hover-prefetch on a NESTED-markup link survives moving between
+// its own children (no cancel+requeue churn on intra-link pointer moves).
+// (#1398)
+//
+// happy-dom's L2 vitest suite pins the guard with a SYNTHETIC relatedTarget
+// (dispatchEvent has no notion of a real hover trajectory), which proves the
+// guard's logic but not that a genuine browser hover ever produces the
+// relatedTarget shape the guard reads. This spec drives a real Playwright
+// `.hover()` from one child <span> to a sibling <span>, both inside the same
+// <a>, and counts real `requestIdleCallback` registrations: the eventual
+// <link rel=prefetch> insertion alone can't distinguish "queued once, fired
+// once" from "canceled and requeued on every intra-link move, fired on the
+// last one" — both converge to the same end state once the pointer stops
+// moving. Counting rIC calls is the only way to observe the churn directly.
+// ===========================================================================
+test("hover prefetch on a nested-child link survives moving between its own children (no cancel+requeue churn)", async ({
+  page,
+}) => {
+  // Wrap the native requestIdleCallback to count registrations. Installed
+  // via its own addInitScript call (in addition to the shared HARNESS_INIT
+  // from beforeEach) BEFORE goto, so it wraps the native function before the
+  // page's own <script type="module"> (and thus prefetchInit()) ever runs.
+  await page.addInitScript(() => {
+    // @ts-expect-error - test-only global
+    window.__ricCount = 0;
+    const nativeRic = window.requestIdleCallback.bind(window);
+    // @ts-expect-error - override with a call-counting wrapper
+    window.requestIdleCallback = (cb, opts) => {
+      // @ts-expect-error - test-only global
+      window.__ricCount++;
+      return nativeRic(cb, opts);
+    };
+  });
+
+  await page.goto("/index.html");
+  await waitForInitialLoad(page);
+
+  const target = 'head link[rel="prefetch"][href*="/prefetch-target.html?via=nested-hover"]';
+  await expect(page.locator(target)).toHaveCount(0);
+
+  const icon = page.locator("#prefetch-link-nested-icon");
+  const label = page.locator("#prefetch-link-nested-label");
+
+  // Enter via the icon child, then move to the sibling label child — a real
+  // pointerenter/pointerleave pair with a real relatedTarget, both still
+  // inside the SAME link (#prefetch-link-nested).
+  await icon.hover();
+  await label.hover();
+
+  // toHaveCount is a web-first assertion (auto-retrying, no bare sleep) —
+  // requestIdleCallback timing isn't ours to control.
+  await expect(page.locator(target)).toHaveCount(1);
+  // Exactly ONE registration for the whole hover sequence: the guard kept
+  // the handle queued by the icon's pointerenter instead of canceling it on
+  // the icon->label pointerleave and re-queuing a fresh one on the label's
+  // pointerenter. Without the fix this would be 2.
+  expect(await page.evaluate(() => /** @type {any} */ (window).__ricCount)).toBe(1);
+});
+
+// ===========================================================================
 // Spec 8 — Forward after Back restores the entry's LIVE-tracked scroll offset.
 // ===========================================================================
 test("Forward after Back restores the router's live-tracked scroll position", async ({ page }) => {

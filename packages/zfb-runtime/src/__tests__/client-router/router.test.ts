@@ -1136,13 +1136,22 @@ describe("syncHistoryEntry() — public history bookkeeping API (#1377)", () => 
     };
   }
 
-  it("push: writes a new same-page entry with a finite index and scroll reset to 0", () => {
+  it("push: writes a new same-page entry with a finite index, stamping the CURRENT scroll position (#1398)", () => {
+    // The user has scrolled since the last scrollend flush. The freshly-pushed
+    // (same-page) entry must carry THIS scroll, not a hardcoded (0,0) — a
+    // later Forward-reopen of the dialog/photo-viewer pattern traverses to
+    // this entry via the fast path (moveToLocation's historyState branch),
+    // which would otherwise snap the underlying page to the top under the
+    // reopened dialog.
+    vi.stubGlobal("scrollX", 42);
+    vi.stubGlobal("scrollY", 360);
+
     syncHistoryEntry("/sync-base/modal-a");
     const first = history.state;
     expect(location.pathname).toBe("/sync-base/modal-a");
     expect(Number.isFinite(first.index)).toBe(true);
-    expect(first.scrollX).toBe(0);
-    expect(first.scrollY).toBe(0);
+    expect(first.scrollX).toBe(42);
+    expect(first.scrollY).toBe(360);
 
     // A second push increments the tracked index by exactly 1 — the bookkeeping
     // popstate direction detection relies on.
@@ -1150,6 +1159,8 @@ describe("syncHistoryEntry() — public history bookkeeping API (#1377)", () => 
     const second = history.state;
     expect(location.pathname).toBe("/sync-base/modal-b");
     expect(second.index).toBe(first.index + 1);
+
+    vi.unstubAllGlobals();
   });
 
   it("replace: keeps the current entry's index (no increment) and swaps the URL in place", () => {
@@ -1176,6 +1187,12 @@ describe("syncHistoryEntry() — public history bookkeeping API (#1377)", () => 
   });
 
   it("merges consumer state, with router keys (index/scrollX/scrollY) winning", () => {
+    // Distinct from both the consumer's values (555/777) and (0,0), so this
+    // pins that the router stamps the CURRENT scroll position — not the
+    // consumer's, and not a hardcoded reset (#1398).
+    vi.stubGlobal("scrollX", 11);
+    vi.stubGlobal("scrollY", 22);
+
     syncHistoryEntry("/sync-base/dialog", {
       state: { modal: "photo", index: 999, scrollX: 555, scrollY: 777 },
     });
@@ -1185,8 +1202,10 @@ describe("syncHistoryEntry() — public history bookkeeping API (#1377)", () => 
     // Router bookkeeping keys override the consumer's colliding values.
     expect(s.index).not.toBe(999);
     expect(Number.isFinite(s.index)).toBe(true);
-    expect(s.scrollX).toBe(0);
-    expect(s.scrollY).toBe(0);
+    expect(s.scrollX).toBe(11);
+    expect(s.scrollY).toBe(22);
+
+    vi.unstubAllGlobals();
   });
 
   it("throws on a cross-origin target (never a silent full-page load)", () => {
@@ -1246,9 +1265,11 @@ describe("syncHistoryEntry() — public history bookkeeping API (#1377)", () => 
     expect(replaced.scrollY).toBe(480);
     // It updated the outgoing entry (same index), not a fresh one.
     expect(replaced.index).toBe(outgoingIndex);
-    // The freshly pushed entry itself starts at scroll (0,0).
-    expect(history.state.scrollX).toBe(0);
-    expect(history.state.scrollY).toBe(0);
+    // The freshly pushed entry ALSO carries the current scroll (24, 480) —
+    // NOT a hardcoded (0,0) reset. Both entries share the same scroll because
+    // this is a same-page push: the page itself never moved. #1398.
+    expect(history.state.scrollX).toBe(24);
+    expect(history.state.scrollY).toBe(480);
 
     replaceSpy.mockRestore();
     vi.unstubAllGlobals();

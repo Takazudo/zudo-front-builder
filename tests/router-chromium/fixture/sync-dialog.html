@@ -45,6 +45,18 @@
       <h1>Sync Dialog</h1>
       <!-- Stands in for a photo-viewer's deep-linkable "dialog" URL. -->
       <button id="open-dialog">Open Photo</button>
+      <!--
+        Same-pathname (hash-only) variant of the dialog pattern (#1398): unlike
+        #open-dialog above (a DIFFERENT pathname, so samePage() is false and
+        Back/Forward takes the full-lifecycle path per spec 4 below), this one
+        keeps the CURRENT pathname and only changes the hash — samePage() is
+        true, so Back/Forward on it takes the traverse FAST path
+        (moveToLocation's historyState branch), which is exactly what the
+        syncHistoryEntry scroll-stamping fix needs a real-browser proof for.
+      -->
+      <button id="open-dialog-samepage">Open Same-Page Modal</button>
+      <!-- Tall enough to actually scroll in a real viewport. -->
+      <div style="height: 3000px"></div>
     </main>
     <script type="module">
       import { init } from "/dist/client-router/router.js";
@@ -64,6 +76,11 @@
       // scroll/lifecycle side effect, just a router-managed history entry.
       document.getElementById("open-dialog").addEventListener("click", () => {
         syncHistoryEntry("/photos/photo-1/");
+      });
+
+      // Same-pathname (hash-only) dialog — see the button's comment above.
+      document.getElementById("open-dialog-samepage").addEventListener("click", () => {
+        syncHistoryEntry(`${location.pathname}#modal`);
       });
     </script>
   </body>
