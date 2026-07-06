@@ -1632,10 +1632,18 @@ fn rebundle_islands(
     // (Package-owned build routes are a build-time concern; dev's
     // injected routes are served live, not materialised — #1193.) No
     // package-route entrypoints to seed in dev (codex P1 is build-only).
-    // Issue #1387 — `WarnAndSkip`: `import.meta.glob` reachable from an
-    // island warns and skips this rebundle tick instead of failing the
-    // whole watcher loop (unlike `zfb build`'s `HardError`); the dev
-    // server stays up so the author can fix the file and save again.
+    // Issue #1404 — the islands-shadow `import.meta.glob` fix is applied
+    // inside `build_default_islands_payload`, so the dev path gets it for
+    // free by routing through the same function: a supported eager
+    // string-literal glob reachable from an island is expanded into a
+    // per-rebundle shadow and bundles normally. Only the UNSUPPORTED-form
+    // remainder falls back to the #1387 stopgap, and here that stopgap is
+    // `WarnAndSkip`: it warns and skips this rebundle tick instead of
+    // failing the whole watcher loop (unlike `zfb build`'s `HardError`), so
+    // the dev server stays up while the author fixes the file and saves
+    // again. The shadow TempDir is created and dropped entirely within the
+    // call below (esbuild runs synchronously inside it), so no shadow state
+    // leaks across dev ticks.
     let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
         project_root,
         &project_root.join("pages"),
