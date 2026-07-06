@@ -202,6 +202,27 @@ pub struct BundleConfig {
     /// byte-identical to a pre-#289 build, so a project not using
     /// `<ClientRouter />` sees zero new bytes in its islands bundle.
     pub client_router: bool,
+
+    /// When `true`, esbuild is invoked with `--preserve-symlinks` so it
+    /// keeps every importer anchored at its on-disk location instead of
+    /// canonicalising symlinks back to their real target (issue #1404).
+    ///
+    /// This is the load-bearing flag of the islands shadow: the shadow
+    /// tree symlinks plain source files and writes REAL expanded copies of
+    /// `import.meta.glob`-using files. Without `--preserve-symlinks`,
+    /// esbuild would resolve a symlinked island file to its real project
+    /// path and then resolve THAT file's relative imports against the real
+    /// tree — skipping the in-shadow expanded glob copy entirely and
+    /// shipping the raw `import.meta.glob(` call to the browser again. With
+    /// the flag, esbuild stays at `<shadow>/…` so the expanded copies win.
+    ///
+    /// Default `false` — the no-shadow path (no `import.meta.glob` reachable
+    /// from an island, the overwhelming common case) never sets it, so the
+    /// esbuild argv and bundle bytes are byte-identical to a pre-#1404
+    /// build. Only `build_default_islands_payload` sets it, and only after
+    /// it has materialised a shadow and remapped the island `source_path`s
+    /// into it.
+    pub preserve_symlinks: bool,
 }
 
 impl Default for BundleConfig {
@@ -213,6 +234,7 @@ impl Default for BundleConfig {
             base_url: "/".to_string(),
             jsx_import_source: FrameworkKind::default().jsx_import_source().to_string(),
             client_router: false,
+            preserve_symlinks: false,
         }
     }
 }
@@ -272,6 +294,15 @@ impl BundleConfig {
     /// See [`BundleConfig::client_router`].
     pub fn with_client_router(mut self, client_router: bool) -> Self {
         self.client_router = client_router;
+        self
+    }
+
+    /// Toggle `--preserve-symlinks` on the esbuild invocation (chainable).
+    ///
+    /// See [`BundleConfig::preserve_symlinks`] — set by the islands-shadow
+    /// path (#1404) and left `false` everywhere else.
+    pub fn with_preserve_symlinks(mut self, preserve_symlinks: bool) -> Self {
+        self.preserve_symlinks = preserve_symlinks;
         self
     }
 }
