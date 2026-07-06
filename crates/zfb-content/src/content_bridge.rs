@@ -210,6 +210,24 @@ pub enum BridgeError {
         /// Every registered collection name, sorted ascending.
         available: Vec<String>,
     },
+    /// Two entries in the same collection derived the same slug (e.g.
+    /// `foo.md` and `foo.tsx` sitting side by side) — `getEntry` would
+    /// otherwise resolve to whichever one the arbitrary walk/sort order
+    /// happened to place last, silently dropping the other. Caught right
+    /// after the slug-ascending sort in [`build_snapshot_with_config`].
+    #[error(
+        "collection `{collection}` has two entries with the same slug {slug:?}: {rel_path_a} and {rel_path_b}"
+    )]
+    DuplicateSlug {
+        /// Name of the collection containing the collision.
+        collection: String,
+        /// The slug shared by both entries.
+        slug: String,
+        /// `rel_path` of the first colliding entry (sort order).
+        rel_path_a: String,
+        /// `rel_path` of the second colliding entry (sort order).
+        rel_path_b: String,
+    },
 }
 
 /// Build a deterministic [`ContentSnapshot`] from the configured
@@ -362,6 +380,21 @@ pub fn build_snapshot_with_config(
         // different file extensions on the same slug, etc.) so we
         // re-sort explicitly to match the documented bridge contract.
         snapshots.sort_by(|a, b| a.slug.cmp(&b.slug));
+
+        // A duplicate slug (e.g. `foo.md` + `foo.tsx`) would otherwise
+        // silently coexist in the sorted vec, and `getEntry` would
+        // resolve to whichever one the sort happened to place first —
+        // arbitrary from the caller's point of view. Adjacent-pair scan
+        // is sufficient because the vec is already slug-sorted: any two
+        // entries sharing a slug are neighbours.
+        if let Some(w) = snapshots.windows(2).find(|w| w[0].slug == w[1].slug) {
+            return Err(BridgeError::DuplicateSlug {
+                collection: cfg.name.clone(),
+                slug: w[0].slug.clone(),
+                rel_path_a: w[0].rel_path.clone(),
+                rel_path_b: w[1].rel_path.clone(),
+            });
+        }
 
         out.insert(cfg.name.clone(), snapshots);
     }
@@ -712,6 +745,35 @@ mod tests {
         match err {
             BridgeError::Walk { collection, .. } => assert_eq!(collection, "blog"),
             other => panic!("expected BridgeError::Walk, got: {other:?}"),
+        }
+    }
+
+    // #1392: `foo.md` and `foo.tsx` sitting side by side derive the same
+    // slug ("foo") — the walker's extension-based slug derivation is
+    // otherwise happy to admit both, and the pre-fix code silently
+    // sorted them next to each other with no signal that `getEntry`
+    // would resolve to an arbitrary one of the two.
+    #[test]
+    fn duplicate_slug_across_extensions_is_rejected() {
+        let tmp = TmpDir::new("duplicate-slug");
+        tmp.write("blog/foo.md", &md("Foo Md"));
+        tmp.write("blog/foo.tsx", &tsx("Foo Tsx"));
+        let cfg = CollectionConfig::new("blog", tmp.path.join("blog"));
+        let err = build_snapshot(&[cfg]).expect_err("duplicate slug must fail");
+        match err {
+            BridgeError::DuplicateSlug {
+                collection,
+                slug,
+                rel_path_a,
+                rel_path_b,
+            } => {
+                assert_eq!(collection, "blog");
+                assert_eq!(slug, "foo");
+                let mut paths = [rel_path_a, rel_path_b];
+                paths.sort();
+                assert_eq!(paths, ["foo.md".to_string(), "foo.tsx".to_string()]);
+            }
+            other => panic!("expected BridgeError::DuplicateSlug, got: {other:?}"),
         }
     }
 
