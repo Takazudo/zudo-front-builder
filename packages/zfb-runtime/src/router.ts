@@ -63,7 +63,10 @@ export interface PageHeading {
  * - `default`: the JSX page component. Called with the props returned by
  *   `getStaticProps` (if exported) or the `props` from the matching
  *   `paths()` entry (for dynamic routes). The return value is fed straight
- *   to the framework adapter's `renderToString`.
+ *   to the framework adapter's `renderToString`. A dynamic route with no
+ *   `paths()` export is called with `{ params: urlParams }` instead of
+ *   `{}` — see `createPageRouter`'s JSDoc for the full componentInput
+ *   derivation table.
  * - `prerender`: literal `false` opts a route OUT of build-time SSG (T5
  *   contract). The page router still serves it under the embedded V8 host
  *   so dev mode behaves identically; SSG callers filter the route list before
@@ -224,6 +227,17 @@ async function getOrEvalPaths(
  *      `pages[i].route`. The handler imports the page module, calls
  *      `framework.renderToString(module.default({}))`, and returns the
  *      string in a `Response` with the appropriate `Content-Type`.
+ *
+ * Per-route `componentInput` (the object passed to `module.default(...)`) is
+ * derived from the route pattern and the page module's exports:
+ *   - Dynamic route + `paths()` export: match the URL params against the
+ *     `paths()` entries and pass `{ params, ...props }` (404 on no match).
+ *   - Static route + `getStaticProps()` export: pass the returned `props`.
+ *   - Dynamic route with NO `paths()` export (e.g. a per-request SSR page
+ *     whose slugs can't be enumerated ahead of time): pass `{ params:
+ *     urlParams }` so the component still knows which URL params it is
+ *     serving, rather than being invoked with `{}`.
+ *   - Anything else (static route, no `getStaticProps`): pass `{}`.
  *
  * The returned function is a plain `(request) => Promise<Response>` so a
  * Worker entry point can `export default { fetch: createPageRouter(...) }`
@@ -461,6 +475,15 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
           params: match.params,
           ...(match.props ?? {}),
         };
+      } else if (isDynamicRoute) {
+        // Dynamic route with no `paths()` export: the natural shape for a
+        // per-request SSR page whose slugs can't be enumerated ahead of
+        // time. Neither branch above applies (no paths() to match against,
+        // and getStaticProps only fires for static routes), so without this
+        // the component would be invoked with `{}` — no params, no
+        // diagnostic, and no way to know which slug it is serving. Pass the
+        // URL params through directly instead.
+        componentInput = { params: urlParams };
       } else if (!isDynamicRoute && typeof mod.getStaticProps === "function") {
         // Static route with `getStaticProps`: call it to fetch build-time
         // data and pass the returned props to the default component. This
