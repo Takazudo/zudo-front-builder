@@ -1104,20 +1104,42 @@ fn emit_table_jsx(emitter: &mut JsxEmitter, rows: &[MdastNode], align: &[AlignKi
 /// Returns `true` if `s` is a module-level ESM statement that must appear
 /// at column 0 in the emitted JS module.
 ///
-/// Recognises every declaration-keyword export form, plus default exports,
-/// named re-exports, star re-exports, and imports:
+/// Input domain (why the covered set is deliberately bounded): the ONLY
+/// strings reaching this classifier are the payloads of
+/// hast-plugin-injected `HastNode::JsxRaw` nodes (see
+/// [`HastJsxBridge::emit_root`]). User-authored MDX ESM never reaches here —
+/// it is partitioned out and DROPPED upstream (the bundler handles it), and
+/// synthesized `/* zfb-synth-export */` nodes take a separate emit path. The
+/// only shipped injector is `zfb-md-extras`'s `TocExportPlugin`, which emits
+/// `export const toc = …`; the broader prefix list below is defensive
+/// headroom for future zfb-internal hast plugins that inject other
+/// value/re-export/import forms.
+///
+/// COVERED forms (each prefix requires a trailing space / `{` / `*` so a
+/// JsxRaw node that merely mentions "export" in a comment is not
+/// mis-hoisted):
 /// - `export const` / `export let` / `export var` — variable exports
-/// - `export function` / `export async function` — function exports
-///   (`export default function`/`export default async function` are
-///   already covered by the `export default` prefix below)
-/// - `export class` — class export (`export default class` likewise
-///   covered by `export default`)
+/// - `export function` / `export async function` — NON-generator function
+///   exports (`export default function`/`… async function` are covered by
+///   the `export default` prefix below)
+/// - `export class` — class export (`export default class` likewise covered
+///   by `export default`)
 /// - `export default` — default export
 /// - `export {` — re-export / named-export shorthand
 /// - `export *` — star re-export (`export * from "mod"`,
 ///   `export * as ns from "mod"`)
-/// - `import ` — import declaration (note the trailing space to avoid
-///   matching `importFoo`)
+/// - `import ` — import declaration (trailing space avoids matching
+///   `importFoo`)
+///
+/// INTENTIONALLY NOT covered (no shipped or planned hast plugin injects
+/// them, so classifying them would be dead code): generator exports
+/// (`export function* …` / `export async function* …` — note there is no
+/// space after `function`, so the function prefixes above deliberately miss
+/// them) and TS type-only exports (`export type` / `export interface` /
+/// `export enum`, erased before runtime). If a future hast plugin ever
+/// injects one of these at module level, add its prefix here AND extend the
+/// test — otherwise the declaration would be emitted indented inside the
+/// Fragment body instead of hoisted to column 0.
 ///
 /// The declaration-keyword prefixes (`export let`/`var`/`function`/`async
 /// function`/`class`) mirror the list in
@@ -1127,11 +1149,6 @@ fn emit_table_jsx(emitter: &mut JsxEmitter, rows: &[MdastNode], align: &[AlignKi
 /// binding name to locate; this function has no such constraint (it only
 /// asks "is this a module-level statement", not "where is `ident`
 /// declared"), so `export *` is matched here too.
-///
-/// The check is intentionally conservative: each prefix requires the
-/// keyword to be followed by a space (not a bare `export`/`import`) so a
-/// JsxRaw node that merely mentions "export" in its first line (e.g. a
-/// comment) is not mis-hoisted.
 fn is_module_level_esm(s: &str) -> bool {
     let trimmed = s.trim_start();
     trimmed.starts_with("export const ")
@@ -2736,6 +2753,34 @@ mod tests {
         ];
         for s in non_matching {
             assert!(!is_module_level_esm(s), "expected NO match for: {s}");
+        }
+    }
+
+    // #1404 review (doc-accuracy): `is_module_level_esm` INTENTIONALLY does
+    // not classify generator exports or TS type-only exports as module-level
+    // ESM — no shipped/planned hast plugin injects them (see the fn doc's
+    // "INTENTIONALLY NOT covered" section). This pins that documented
+    // boundary: if a future change starts matching one of these, it must
+    // reconcile the fn doc (and decide whether hoisting is actually correct)
+    // rather than let the doc silently drift back into over-claiming.
+    #[test]
+    fn is_module_level_esm_excludes_generator_and_ts_type_exports() {
+        let excluded = [
+            // Generator exports — no space after `function`, so the
+            // `export function `/`export async function ` prefixes miss them.
+            r#"export function* gen() {}"#,
+            r#"export async function* gen() {}"#,
+            // TS type-only exports — erased before runtime, never injected.
+            r#"export type Foo = string;"#,
+            r#"export interface Foo {}"#,
+            r#"export enum Color { Red }"#,
+        ];
+        for s in excluded {
+            assert!(
+                !is_module_level_esm(s),
+                "form is intentionally NOT classified as module-level ESM; if \
+                 this changed, update the is_module_level_esm doc: {s}"
+            );
         }
     }
 

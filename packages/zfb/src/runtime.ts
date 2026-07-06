@@ -753,9 +753,10 @@ export function unmountIslands(
   // survive the swap: skip their framework unmount here or the persist contract
   // preserves nothing (port-spec §12.3.1 case (a) / issue #1389). A persisted
   // island whose props changed is skipped here too — its refreshed remount runs
-  // later in mountNewIslands via the `ssr` flag swapBodyElement sets. With no
-  // incoming body (a call outside a swap) nothing is preserved, so the walk is
-  // byte-identical to the pre-#1389 behavior.
+  // later in mountNewIslands via the `data-zfb-island-remount` flag (see
+  // `clearMountedForRemount`) swapBodyElement sets. With no incoming body (a
+  // call outside a swap) nothing is preserved, so the walk is byte-identical to
+  // the pre-#1389 behavior.
   const preservedPersistIds = collectPersistIds(incomingBody);
   const elements = root.querySelectorAll<HTMLElement>(selector);
   for (const el of Array.from(elements)) {

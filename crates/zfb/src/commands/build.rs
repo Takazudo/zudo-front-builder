@@ -1217,6 +1217,12 @@ fn project_local_shadow_rel<'a>(p: &'a Path, root: &Path) -> Option<&'a Path> {
 /// whole instead) and top-level build outputs. Mirrors zfb-build's private
 /// `is_pruned_infra_dir` prune list plus the top-level `dist`/`target` dirs
 /// so a glob-in-island build never symlinks a large output tree.
+///
+/// The extra top-level `dist`/`target` prune is what makes this predicate
+/// diverge from the expander's `is_pruned_infra_dir` match-walk, so the
+/// expansion is fed [`matched_target_under_pruned_build_output`] as its
+/// `is_excluded` predicate to drop the same files — the two MUST stay in
+/// sync or the expander references a target the mirror never materialises.
 fn is_islands_shadow_pruned_dir(entry: &walkdir::DirEntry) -> bool {
     if !entry.file_type().is_dir() {
         return false;
@@ -1239,6 +1245,39 @@ fn is_islands_shadow_pruned_dir(entry: &walkdir::DirEntry) -> bool {
         return true;
     }
     false
+}
+
+/// Companion to [`is_islands_shadow_pruned_dir`] for the glob EXPANSION
+/// match-walk.
+///
+/// The shadow MIRROR walk (set (b)) prunes a top-level `dist`/`target`
+/// directory via [`is_islands_shadow_pruned_dir`]. The expander's OWN
+/// match-walk (`zfb_build::glob_expand`, which prunes with the SSR
+/// bundler's `is_pruned_infra_dir`) deliberately does NOT prune those, so
+/// a glob like `./**/*.tsx` next to a `dist/` would be matched + imported by
+/// the expander but pruned from the mirror → "Could not resolve ./dist/…"
+/// at esbuild time. Passing this as the expander's `is_excluded` predicate
+/// drops exactly those build-output matches, keeping the matched set ⊆ the
+/// mirrored set (and keeping compiled output out of an island bundle, which
+/// is correct on its own).
+///
+/// It mirrors ONLY the depth-1 `dist`/`target` rule — the sole divergence
+/// between the two prune predicates — and MUST be kept in sync with it.
+fn matched_target_under_pruned_build_output(abs: &Path, file_dir: &Path) -> bool {
+    let rel = match abs.strip_prefix(file_dir) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let mut comps = rel.components();
+    let first = match comps.next() {
+        Some(c) => c.as_os_str().to_string_lossy().into_owned(),
+        None => return false,
+    };
+    // Only a file UNDER a top-level `dist/`/`target/` dir (there must be a
+    // further path component) — a file literally named `dist`/`target` at
+    // depth 1 is not build output, matching the directory-only prune in
+    // `is_islands_shadow_pruned_dir`.
+    comps.next().is_some() && matches!(first.as_str(), "dist" | "target")
 }
 
 /// Create a symlink at `to` pointing at `from`, removing any pre-existing
@@ -1297,9 +1336,6 @@ fn materialise_islands_shadow(
     use std::collections::{BTreeSet, HashMap};
 
     let root = project_root;
-    // The Wave-1 no-op exclude predicate (bundle.exclude is out of scope for
-    // the islands path); the glob helpers take an absolute-path predicate.
-    let no_exclude = |_: &Path| false;
 
     // --- Pre-flight: every glob module must be shadow-expandable. ---------
     // A glob module outside the mirrorable tree (outside project_root, or
@@ -1325,7 +1361,18 @@ fn materialise_islands_shadow(
         let source = std::fs::read_to_string(g)
             .with_context(|| format!("read glob module {}", g.display()))?;
         let file_dir = g.parent().unwrap_or(root);
-        match zfb_build::glob_expand::expand_import_meta_glob(&source, file_dir, &no_exclude) {
+        // Keep the expander's match-walk in lockstep with the shadow mirror
+        // walk (set (b) below): drop any matched target under a top-level
+        // `dist`/`target` so the expansion never references a file the mirror
+        // (which prunes those via `is_islands_shadow_pruned_dir`) won't
+        // materialise. See `matched_target_under_pruned_build_output`.
+        let exclude_build_output =
+            |abs: &Path| matched_target_under_pruned_build_output(abs, file_dir);
+        match zfb_build::glob_expand::expand_import_meta_glob(
+            &source,
+            file_dir,
+            &exclude_build_output,
+        ) {
             Ok(expanded) => {
                 expanded_by_path.insert(g.clone(), expanded);
             }
@@ -5252,6 +5299,101 @@ mod tests {
         assert!(
             std::fs::symlink_metadata(shadow_root.join("components/widgets/a.tsx")).is_ok(),
             "glob target must be present in the shadow"
+        );
+    }
+
+    /// Issue #1404 review (prune-predicate divergence): the glob EXPANSION
+    /// match-walk and the shadow MIRROR walk must agree on pruning a
+    /// top-level `dist`/`target` under the glob module's directory, so the
+    /// expander never references a matched target the mirror won't
+    /// materialise (which would surface as an esbuild "Could not resolve").
+    /// A `./**/*.tsx` glob next to a `dist/` subdir must therefore (a) NOT
+    /// reference `./dist/…` in the expanded output AND (b) NOT mirror
+    /// `dist/…` into the shadow — while still handling the ordinary
+    /// `./widgets/a.tsx` target in BOTH. Pins the two walks in lockstep.
+    #[test]
+    fn materialise_islands_shadow_prunes_build_output_consistently() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("components/widgets")).unwrap();
+        std::fs::create_dir_all(project_root.join("components/dist")).unwrap();
+        // Island file (plain) importing the glob data module.
+        let island_src = project_root.join("components/gallery.tsx");
+        std::fs::write(
+            &island_src,
+            "\"use client\";\n\
+             import { widgets } from \"./gallery-data\";\n\
+             export function Gallery() { return null; }\n",
+        )
+        .unwrap();
+        // Glob data module — a recursive `**` pattern that WOULD reach into
+        // the sibling `dist/` build-output dir if the match-walk did not
+        // prune it.
+        std::fs::write(
+            project_root.join("components/gallery-data.tsx"),
+            "export const widgets = import.meta.glob('./**/*.tsx', { eager: true });\n",
+        )
+        .unwrap();
+        // An ordinary matched target — expected in BOTH the expansion and
+        // the shadow.
+        std::fs::write(
+            project_root.join("components/widgets/a.tsx"),
+            "export const a = 1;\n",
+        )
+        .unwrap();
+        // Build output under a top-level `dist/` — must be pruned from BOTH.
+        std::fs::write(
+            project_root.join("components/dist/generated.tsx"),
+            "export const generated = 1;\n",
+        )
+        .unwrap();
+
+        let islands = vec![zfb_islands::Island::new("Gallery", island_src.clone())];
+        let scan_meta = zfb_islands::ScanMeta {
+            uses_client_router: false,
+            near_miss_candidates: 0,
+            glob_reachable_from_islands: vec![project_root.join("components/gallery-data.tsx")],
+            island_reachable_modules: vec![
+                island_src.clone(),
+                project_root.join("components/gallery-data.tsx"),
+            ],
+        };
+
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let shadow = match outcome {
+            IslandsShadowOutcome::Ready(s) => s,
+            IslandsShadowOutcome::KeepStopgap(o) => {
+                panic!("supported glob must NOT keep the stopgap; offenders: {o:?}")
+            }
+        };
+        let shadow_island = shadow
+            .remap
+            .get(&island_src)
+            .expect("island source_path must be remapped into the shadow");
+        let shadow_root = shadow_island.parent().unwrap().parent().unwrap();
+
+        let expanded =
+            std::fs::read_to_string(shadow_root.join("components/gallery-data.tsx")).unwrap();
+        // (a) MATCH-walk: ordinary target referenced, build output NOT.
+        assert!(
+            expanded.contains("./widgets/a.tsx"),
+            "expanded glob must reference the ordinary target: {expanded}"
+        );
+        assert!(
+            !expanded.contains("./dist/"),
+            "expanded glob must NOT reference build output under dist/: {expanded}"
+        );
+        // (b) MIRROR-walk: ordinary target present, build output absent —
+        // consistent with the expansion so esbuild can resolve every
+        // referenced target and never a pruned one.
+        assert!(
+            std::fs::symlink_metadata(shadow_root.join("components/widgets/a.tsx")).is_ok(),
+            "ordinary glob target must be present in the shadow"
+        );
+        assert!(
+            std::fs::symlink_metadata(shadow_root.join("components/dist/generated.tsx")).is_err(),
+            "build output under dist/ must be pruned from the shadow (matched set ⊆ mirrored set)"
         );
     }
 
