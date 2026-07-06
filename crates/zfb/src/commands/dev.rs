@@ -147,6 +147,12 @@ const DEFAULT_WATCH_ROOTS: &[&str] = &[
     "zfb.config.ts",
 ];
 
+/// Watch-root basenames excluded from the missing-target boot warning
+/// (issue #1391). These are the mutually-exclusive `zfb.config.*` files:
+/// a project has at most one, so warning about the absent variant(s)
+/// would be pure noise on every boot. See [`missing_watch_targets`].
+const WATCH_WARN_SKIP: &[&str] = &["zfb.config.json", "zfb.config.ts"];
+
 /// Strip `.` components so `./src/mdx` and `src/mdx` compare equal in
 /// the dedupe / coverage checks below.
 fn normalize_relative(path: &Path) -> PathBuf {
@@ -191,6 +197,61 @@ fn derive_watch_roots(cfg: &config::Config) -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+/// Compute which derived watch roots + `extraWatchPaths` targets are
+/// absent from disk at boot (issue #1391).
+///
+/// `zfb_watcher::Watcher::start_with_extras` already skips a missing
+/// path and does NOT re-register it if it appears later — but the only
+/// signal is a `tracing::warn!`, which a user running `zfb dev` from a
+/// terminal never sees (this crate's user-facing messages go through
+/// [`crate::output`]). Absent a warning here, "run `zfb dev` before
+/// `mkdir content`" silently degrades into a no-reload mode for that
+/// root until the user restarts.
+///
+/// Kept as a pure function (returns the missing paths rather than
+/// printing them) so the boot path's `output::warn` side effect stays a
+/// thin, untested wrapper around unit-testable logic — mirroring the
+/// `fmt_*` / `warn` split in `crate::output`.
+///
+/// The two `zfb.config.*` entries in [`DEFAULT_WATCH_ROOTS`] are
+/// deliberately EXCLUDED from the warning: they are mutually-exclusive
+/// config *files* (a project carries at most one, and a defaults-only
+/// project carries neither), so at least one is ALWAYS absent. Warning
+/// about them would fire on every single boot and drown out the real
+/// signal this exists for — a missing content/source *directory* that
+/// silently degrades into no-reload. A missing config file is the normal
+/// steady state, not a degraded mode.
+fn missing_watch_targets(
+    project_root: &Path,
+    watch_roots: &[PathBuf],
+    extra_watch_paths: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut missing = Vec::new();
+    for root in watch_roots {
+        let is_config_file = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| WATCH_WARN_SKIP.contains(&n))
+            .unwrap_or(false);
+        if is_config_file {
+            continue;
+        }
+        let full = project_root.join(root);
+        if !full.exists() {
+            missing.push(full);
+        }
+    }
+    // `extra_watch_paths` are already absolute by this point (resolved via
+    // `resolve_extra_watch_paths`, `session.out_of_root_watch_targets()`, or
+    // `resolve_css_import_watch_targets` — all canonicalise before adding).
+    for extra in extra_watch_paths {
+        if !extra.exists() {
+            missing.push(extra.clone());
+        }
+    }
+    missing
 }
 
 /// Entry point for `zfb dev`.
@@ -559,6 +620,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         if !extra_watch_paths.contains(real) {
             extra_watch_paths.push(real.clone());
         }
+    }
+    // Issue #1391 — every watch root + extra target is now finalised;
+    // warn about any that don't exist yet so the silent no-reload mode
+    // (see `missing_watch_targets` doc) is at least visible in the
+    // dev server's own console output before the user hits it.
+    for missing in missing_watch_targets(&project_root, &watch_roots, &extra_watch_paths) {
+        output::warn(format!(
+            "watch target {} does not exist yet — it will not be watched \
+             until you restart `zfb dev` after creating it",
+            missing.display(),
+        ));
     }
     // Configured collection roots classify as Content ahead of the
     // standard root-segment walk — without this, a collection under
@@ -6111,6 +6183,68 @@ mod tests {
         let roots = derive_watch_roots(&cfg);
         assert!(roots.contains(&PathBuf::from("articles")));
         assert_eq!(roots.len(), DEFAULT_WATCH_ROOTS.len() + 1);
+    }
+
+    /// Issue #1391 — a configured-but-missing derived watch root (e.g.
+    /// `content/` never created) AND a missing extra watch path must both
+    /// be reported so the boot path can warn the user. A present root and
+    /// a present extra path must NOT show up.
+    #[test]
+    fn missing_watch_targets_flags_absent_root_and_extra_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // `content` is a derived watch root that does not exist under `dir`.
+        let watch_roots = vec![PathBuf::from("content"), PathBuf::from("pages")];
+        std::fs::create_dir_all(dir.path().join("pages")).unwrap();
+
+        let present_extra = dir.path().join("present-extra");
+        std::fs::create_dir_all(&present_extra).unwrap();
+        let missing_extra = dir.path().join("missing-extra");
+        let extra_watch_paths = vec![present_extra, missing_extra.clone()];
+
+        let missing = missing_watch_targets(dir.path(), &watch_roots, &extra_watch_paths);
+
+        assert_eq!(
+            missing,
+            vec![dir.path().join("content"), missing_extra],
+            "must flag exactly the missing root and the missing extra path"
+        );
+    }
+
+    /// Everything present ⇒ no warnings — the common case (a freshly
+    /// scaffolded project with all default roots created) must not spam
+    /// the console.
+    #[test]
+    fn missing_watch_targets_empty_when_everything_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("content")).unwrap();
+        let missing = missing_watch_targets(dir.path(), &[PathBuf::from("content")], &[]);
+        assert!(missing.is_empty());
+    }
+
+    /// Issue #1391 — the mutually-exclusive `zfb.config.*` entries in
+    /// `DEFAULT_WATCH_ROOTS` must NOT be reported as missing: at least
+    /// one is always absent, so warning about them would spam every boot
+    /// and bury the real content/source-dir signal. Passing the real
+    /// default roots against an empty project must surface the missing
+    /// *directories* but never the config files.
+    #[test]
+    fn missing_watch_targets_never_flags_config_files() {
+        let dir = tempfile::tempdir().unwrap();
+        // Empty project: no default dirs, no config files exist.
+        let roots: Vec<PathBuf> = DEFAULT_WATCH_ROOTS.iter().map(PathBuf::from).collect();
+        let missing = missing_watch_targets(dir.path(), &roots, &[]);
+        for m in &missing {
+            let name = m.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            assert!(
+                !WATCH_WARN_SKIP.contains(&name),
+                "config file {m:?} must never be reported as a missing watch target"
+            );
+        }
+        // Sanity: the directory roots ARE still reported (e.g. `content`).
+        assert!(
+            missing.contains(&dir.path().join("content")),
+            "a missing content/ dir must still be flagged; got {missing:?}"
+        );
     }
 
     /// Issue #534 regression — dev's per-route HTML output dir must live
