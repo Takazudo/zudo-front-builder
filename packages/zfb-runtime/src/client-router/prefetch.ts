@@ -221,6 +221,20 @@ function makeEnterLeaveHandlers(
     // resetting indefinitely. #1398.
     if (cancelHandles.has(link)) return;
 
+    // The pending debounce already FIRED for this link — its idle callback ran
+    // prefetch(link.href), so the handle is gone from cancelHandles but the
+    // href is now prefetched (or in-flight). A later enter on the SAME link
+    // (e.g. an intra-link child->child move whose first callback fired in the
+    // gap between the two pointer moves — which the synchronous-dispatch L2
+    // suite cannot reproduce but a real browser does) must NOT queue a second,
+    // redundant idle callback whose prefetch() would only no-op. This is the
+    // fire+requeue companion to the cancel+requeue guard above. A failed
+    // prefetch leaves the href in NEITHER set (executePrefetch deletes it from
+    // inFlight without adding it to prefetched), so retry-after-error still
+    // works. #1398.
+    const resolvedHref = resolveHref(link.href);
+    if (resolvedHref && (prefetched.has(resolvedHref) || inFlight.has(resolvedHref))) return;
+
     // Use requestIdleCallback if available, else a small timeout.
     const fire = () => {
       cancelHandles.delete(link);
