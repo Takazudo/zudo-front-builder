@@ -384,13 +384,32 @@ const moveToLocation = (
 
 let syncHistoryEntryOnServerWarned = false;
 
-// Public: write a router-managed history entry (push or replace) WITHOUT any
-// navigation, DOM, scroll, or lifecycle side effect. This is the supported path
-// for consumers deep-linking transient UI state (dialogs/modals, a photo
-// viewer's /photos/<slug>/ URL). Hand-rolled raw history.pushState desyncs
-// `originalLocation` and the index bookkeeping that popstate direction detection
-// (derivePopDirection) and the same-page traverse fast-path depend on; navigate()
-// can't be used because it forces a fetch. See #1377 / #1374.
+/**
+ * Write a router-managed history entry (push or replace) WITHOUT any
+ * navigation, DOM, or lifecycle side effect. This is the supported path for
+ * consumers deep-linking transient UI state (dialogs/modals, a photo
+ * viewer's `/photos/<slug>/` URL). Hand-rolled raw `history.pushState`
+ * desyncs `originalLocation` and the index bookkeeping that popstate
+ * direction detection ({@link derivePopDirection}) and the same-page
+ * traverse fast-path depend on; `navigate()` can't be used instead because
+ * it forces a fetch. See #1377 / #1374.
+ *
+ * Never scrolls the viewport itself — but the entry it writes IS stamped
+ * with the CURRENT scroll position (`scrollX`/`scrollY` at call time), not
+ * `(0, 0)` (issue #1398). This matters only for a later Forward-traversal
+ * back to this entry: the same-page traverse fast-path restores whatever
+ * scroll position was stamped on the entry, so a same-page push (e.g.
+ * opening a dialog) does not snap the underlying page to the top when the
+ * dialog is later reopened via Forward.
+ *
+ * @param url - The URL to write. Cross-origin URLs throw rather than
+ *   silently falling back to a full-page load.
+ * @param options.replace - Use `history.replaceState` instead of
+ *   `history.pushState` (no new Back-button entry). Default: push.
+ * @param options.state - Merged into the entry's `history.state`; the
+ *   router's own bookkeeping keys (`index`, `scrollX`, `scrollY`) always win
+ *   on a colliding key.
+ */
 export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOptions = {}): void {
   // SSR guard: no window/history to touch. Mirror navigate()'s server no-op +
   // one-time console warning. Checked at call time via `typeof document` (not the

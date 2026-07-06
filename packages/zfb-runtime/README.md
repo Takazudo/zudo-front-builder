@@ -204,6 +204,50 @@ on its own. See the [Client-Side Routing concept
 guide](https://takazudomodular.com/pj/zudo-front-builder/docs/concepts/client-side-routing/)
 for the full API.
 
+#### `navigate()` needs `<ClientRouter />` mounted on the current page
+
+The root barrel exports `navigate` and `syncHistoryEntry`, but **not** `init`
+— importing either of those two on their own is not enough to get soft
+navigation. `navigate()` checks for the `<meta
+name="zfb-view-transitions-enabled">` tag that `<ClientRouter />` renders into
+`<head>` before it will do a soft swap; with that tag absent it silently falls
+back to a full `location.href` load. Mount `<ClientRouter />` in the layout
+`<head>` of every page that should be soft-navigable — it both renders that
+meta tag and calls `init()` (click/form interception) as a side effect. `init`
+itself is exported from the `@takazudo/zfb-runtime/client-router` subpath, not
+the root barrel, for the rare case where you want to call it directly instead
+of mounting the component.
+
+#### Persisting elements and island state across navigations (`data-zfb-transition-persist`)
+
+Add `data-zfb-transition-persist="<id>"` to an element (matched by the same
+`id` on both the outgoing and incoming page) to keep it alive across a soft
+navigation instead of letting it be discarded and re-created — the router
+lifts it out of the old body and reattaches it into the new one. This works
+on plain elements (`<video>`, `<canvas>`) and on island wrapper elements
+(`[data-zfb-island]`) alike; for an island, the live component instance (and
+its internal state) survives too, not just the DOM node.
+
+```tsx
+<div data-zfb-island="SidebarTree" data-zfb-transition-persist="sidebar-tree" data-props={props}>
+  <SidebarTree {...props} />
+</div>
+```
+
+By default, a persisted island still gets its `data-props` refreshed to match
+the incoming page on every swap; if the refreshed props differ from what the
+live instance currently holds, the island is unmounted and remounted fresh
+with the new props (so it can't get stuck showing stale data), otherwise
+nothing happens and the instance's state carries over untouched. Set
+`data-zfb-transition-persist-props` to any value other than `"false"`
+(conventionally `"true"`) to opt OUT of that props refresh and keep the
+island's current props/state exactly as they are, regardless of what the
+incoming page's props would have been — the attribute's absence, or the
+literal string `"false"`, is what makes props refresh (mirrors Astro's
+`data-astro-transition-persist-props`). See the [Client-Side Routing concept
+guide](https://takazudomodular.com/pj/zudo-front-builder/docs/concepts/client-side-routing/)
+for the full walkthrough, including when to reach for the opt-out.
+
 ### `createPageRouter(options) → PageRouter`
 
 Build a fetch-handler that serves the supplied pages. The returned

@@ -77,6 +77,14 @@ await navigate("/about");
 await navigate("/search?q=zfb", { history: "replace" });
 ```
 
+<Warning title="`<ClientRouter />` must be mounted on the CURRENT page">
+
+`navigate()` only soft-navigates when the page it is called from has `<ClientRouter />` mounted. Internally it checks for the `<meta name="zfb-view-transitions-enabled">` tag that `<ClientRouter />` renders into `<head>`; when that tag is absent it falls back to a plain `location.href` assignment — a full page load, not a soft navigation, with no error or warning.
+
+Importing `navigate` (or `syncHistoryEntry`) from the root `@takazudo/zfb-runtime` barrel is **not** enough by itself — that barrel deliberately does not export `init()` (the function that wires up click/form interception; see the "Enabling SPA soft-navigation" section of the [runtime README](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb-runtime/README.md)). Mount `<ClientRouter />` in the layout `<head>` of every page you want soft-navigable — it renders the required meta tag AND calls `init()` as a side effect. If you have a reason to call `init()` yourself instead of mounting the component, import it from the `@takazudo/zfb-runtime/client-router` subpath.
+
+</Warning>
+
 `navigate()` accepts an optional `Options` object:
 
 ```ts
@@ -113,7 +121,7 @@ Add `data-zfb-reload` to any `<a>` or `<form>` to force a full browser reload fo
 
 Modals, dialogs, and viewers often want their own URL — so Back closes them, and the state is shareable and bookmarkable — without performing a real page navigation. Don't reach for raw `history.pushState()` / `history.replaceState()` for this: the router tracks its own history index and the URL it navigated *from* to detect Back/Forward direction and same-page traversals (see [Same-page traversal](#same-page-traversal) below), and a hand-rolled history entry desyncs that bookkeeping.
 
-`syncHistoryEntry()` writes a router-managed history entry without navigating — no fetch, no swap, no DOM or scroll changes:
+`syncHistoryEntry()` writes a router-managed history entry without navigating — no fetch, no swap, no DOM changes, and it never scrolls the viewport (though it does stamp the entry with the current scroll position — see below):
 
 ```ts
 import { syncHistoryEntry } from "@takazudo/zfb-runtime/client-router";
@@ -136,7 +144,8 @@ type SyncHistoryEntryOptions = {
 - **`state` is merged, router keys win** — your own keys survive, but the router's bookkeeping keys (`index`, `scrollX`, `scrollY`) always take precedence if your `state` object happens to reuse those names.
 - **Throws on a cross-origin URL** — never silently falls back to a full-page load; a mistaken cross-origin call is a bug you want to see immediately.
 - **No-ops during SSR**, emitting the same one-time console warning as calling `navigate()` on the server.
-- **Never touches the DOM, scroll position, or `document.title`** — it is pure history bookkeeping. Your component is responsible for rendering the modal/dialog itself based on the current URL.
+- **Never scrolls the viewport or touches the DOM / `document.title`** — it is pure history bookkeeping. Your component is responsible for rendering the modal/dialog itself based on the current URL.
+- **Stamps the entry with the CURRENT scroll position, not `(0, 0)`.** A pushed (or replaced) entry records `scrollX`/`scrollY` as they are *right now*, not the top of the page. This matters for the traverse fast-path: if the user later Forward-navigates back to this entry (see [Same-page traversal](#same-page-traversal) below), the page restores to the scroll position it actually had when you called `syncHistoryEntry()` — not a jarring snap to the top under a reopened dialog.
 
 ### Example: a hash-based modal
 
@@ -381,6 +390,41 @@ Add `data-zfb-transition-persist="<id>"` to an element you want to keep alive ac
 ```
 
 The router lifts persisted elements to `<html>` before the body swap (using the zero-detachment `moveBefore()` API on Chrome 133+ or a fallback `appendChild`) and reattaches them to their matching target in the new body. This is the mechanism Astro uses to keep `<canvas>` and `<video>` alive without losing WebGL context or playback state.
+
+#### Persisting an island's component state with `data-zfb-transition-persist-props`
+
+The same `data-zfb-transition-persist` attribute works on an island wrapper (a `[data-zfb-island]` marker), not just plain elements like `<video>`. When the marker survives the swap, its live component instance survives too — internal state (open/collapsed, scroll offset inside a nested list, a focused input) is not reset, because the framework never unmounted it.
+
+```tsx
+// A layout component — the sidebar tree keeps its expand/collapse state
+// and its scroll position across every SPA navigation.
+<div data-zfb-island="SidebarTree" data-zfb-transition-persist="sidebar-tree" data-props={props}>
+  <SidebarTree {...props} />
+</div>
+```
+
+By default, a swap still refreshes the persisted island's props to match the incoming page (the router always knows what the new page *would* have rendered, even though it discards that markup). If the refreshed props are identical to what the live instance already has, nothing else happens — full continuity, silently. If they differ, the island is unmounted and remounted fresh with the new props, so it never gets stuck showing a stale render from the previous page — but any internal state not derived from props (like an open/closed toggle) is lost in that remount, same as an ordinary (non-persisted) island would be.
+
+Set `data-zfb-transition-persist-props` to any value **other than** `"false"` (conventionally `"true"`) to opt out of that props refresh entirely and keep the island's current props (and therefore its current rendered state) exactly as they were, regardless of what the incoming page's props would have been:
+
+```tsx
+<div
+  data-zfb-island="SidebarTree"
+  data-zfb-transition-persist="sidebar-tree"
+  data-zfb-transition-persist-props="true"
+  data-props={props}
+>
+  <SidebarTree {...props} />
+</div>
+```
+
+Use this for chrome-zone islands whose props are effectively invariant across pages (a sidebar, a header) where you want to guarantee zero re-render, ever — not for content-area islands whose props are expected to change with the page (a table of contents, a "last updated" widget), since opting out means the island would keep showing the *previous* page's data after a navigation whose incoming props actually differed.
+
+<Note title="Attribute default is the opposite of what the name suggests">
+
+`data-zfb-transition-persist-props` absent, or explicitly `"false"`, means props ARE refreshed (the common case: state persists, but data stays current). Any other value opts OUT of the refresh — `"true"` by convention, but the check is only ever against the literal string `"false"`. This mirrors Astro's `data-astro-transition-persist-props` behavior exactly.
+
+</Note>
 
 ## `<ViewTransitions />` — deprecated
 

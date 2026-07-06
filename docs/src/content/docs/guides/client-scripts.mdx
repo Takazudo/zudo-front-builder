@@ -107,6 +107,23 @@ For the typical use-case of generating a `<script src="…">` tag at render
 time, this is not a problem: the tag is written once by the SSR renderer and
 the URL is correct.
 
+## `import.meta.glob` is not supported
+
+Client scripts do not support Vite's `import.meta.glob(...)` macro — not even
+the eager, string-literal form that [islands support](../concepts/islands.mdx#import-meta-glob-support).
+Client scripts bundle directly against the real project tree with no
+shadow-copy step, so a `import.meta.glob(...)` call (in the `.client.*` file
+itself, or in any module it imports) ships to the browser unexpanded. This is
+**not caught at build time** — `zfb build` succeeds, and the browser throws
+when the script runs, because `import.meta.glob` is `undefined` outside of
+Vite.
+
+If you need a glob-like file list inside a client script, compute it
+yourself (a plugin virtual module, or a small pre-build script that writes a
+real `.ts` file) rather than reaching for `import.meta.glob`. See
+[Islands: `import.meta.glob` support](../concepts/islands.mdx#import-meta-glob-support)
+for the full support matrix and alternatives.
+
 ## `.html`-source-page limitation
 
 Pages authored as plain `.html` files (Option B, `pages/my-page.html`) bypass

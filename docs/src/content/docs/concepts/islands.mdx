@@ -149,6 +149,66 @@ zfb does not support Vue, Svelte, or Solid. The `FrameworkKind` enum is intentio
 
 For a deeper look at how the two adapters work, see [Framework adapters](../architecture/framework-adapters.mdx).
 
+## `import.meta.glob` support
+
+zfb supports Vite's `import.meta.glob(...)` macro — importing every file matching a pattern in one call, handy for auto-registering a directory of sub-components or data files. Support is intentionally narrow: esbuild (which bundles islands) has no native knowledge of this Vite-only macro, so zfb expands it Rust-side, at build time, before esbuild ever sees the file. Only the one shape that expansion understands is accepted; anything else is a build error rather than a silent miscompile.
+
+### Supported form
+
+```tsx
+"use client";
+
+// Eager + string-literal pattern, anchored at this file's own directory.
+const pages = import.meta.glob("./items/*.tsx", { eager: true });
+```
+
+This expands, at build time, into a plain object literal mapping each matched relative path to that module's namespace object — the same shape Vite produces:
+
+```ts
+{
+  "./items/a.tsx": /* module namespace */,
+  "./items/b.tsx": /* module namespace */,
+}
+```
+
+Requirements for the supported form:
+
+- The second argument must be **exactly `{ eager: true }`** — Vite's default (no second argument) is the *lazy* form, which is not supported here.
+- The pattern must be a **string literal** — a variable, a template literal, or an array of patterns is not supported.
+- The pattern must resolve **under the importing file's own directory** — a `../`-escaping pattern is rejected outright.
+- **No `import`, `query`, or `as` options** — only the bare `{ eager: true }` object is recognised; any other key fails the build.
+
+### Where it works
+
+| Location | Supported |
+|---|---|
+| A server-only page, layout, or component (never reachable from a `"use client"` island) | Yes — always has been, via the general SSR shadow-copy bundler |
+| A `"use client"` island's own file | Yes, since issue #1404 |
+| A module transitively imported from a `"use client"` island | Yes, since #1404, same restrictions as above |
+| A `*.client.{ts,tsx,js,jsx}` [client script](../guides/client-scripts.mdx) (or anything it imports) | **No** — see "Client scripts" below |
+
+Before #1404, *any* `import.meta.glob` reachable from an island — even the supported eager + string-literal form — was a hard build error (a stopgap from issue #1387). The islands build now materialises a temporary shadow copy of the island-reachable source tree with each supported glob call already expanded, the same trick the SSR bundler has used for server-only modules since issues #665/#670.
+
+### Unsupported forms fail the build (or, in dev, warn and skip)
+
+Any of the following — found anywhere in the module graph reachable from a `"use client"` island — fails `zfb build` with a message naming the offending file. During `zfb dev` the same message is logged as a warning and that rebundle tick is skipped, so the dev server stays up while you fix the file and save again:
+
+- the default lazy form — `import.meta.glob("./items/*.tsx")` with no options
+- `{ eager: false }`
+- a non-literal pattern (a variable, a template literal, a computed expression)
+- the `import`, `query`, or `as` options
+- a pattern that escapes the file's own directory (`../`)
+- a glob module that lives outside the project root, or under `node_modules`, while still being reachable from an island (nothing to mirror into the shadow copy)
+
+### Client scripts: not supported, and not caught at build time
+
+`import.meta.glob` is **not supported** in [client scripts](../guides/client-scripts.mdx) (`*.client.{ts,tsx,js,jsx}`, or any module they import). Client scripts bundle directly against the real project tree — no shadow copy runs on this path — so the call ships to the browser byte-for-byte, unexpanded. Unlike the island case above, **this is not caught at build time**: `zfb build` succeeds, and the browser throws when the script actually runs, because `import.meta.glob` is `undefined` outside of Vite. If you need a glob-like file list inside a client script, use one of the alternatives below.
+
+### Alternatives
+
+- **A plugin virtual module** — compute the file list yourself in Node (e.g. with `node:fs` or a glob library) inside a plugin's `setup` hook, and expose it via `addVirtualModule`. See [Plugins](./plugins.mdx) for the full hook contract and a worked virtual-module example.
+- **Explicit static imports** — write the `import` statements out by hand, or generate a real `.ts`/`.tsx` file with a small pre-build script that zfb then bundles normally.
+
 ## Escape hatches for non-island client JS
 
 Islands cover stateful UI components. For other client-side JavaScript needs, use the standard HTML mechanisms directly.
