@@ -458,6 +458,13 @@ fn validate_file_with_fragment(
     env: &ValidationEnv<'_>,
     ctx: &mut BuildContext<'_>,
 ) {
+    // Same false-positive as `validate_file_exists`: a percent-encoded path
+    // (`./my%20file.md#anchor`) probed verbatim never matches the decoded
+    // on-disk name. Skip rather than decode, mirroring the percent-encoded
+    // rule already applied to the fragment part below (#1392).
+    if file_ref.contains('%') {
+        return;
+    }
     let resolved = match resolve_relative(env.source_path, file_ref) {
         Some(p) => p,
         None => return,
@@ -729,6 +736,50 @@ mod tests {
         assert!(
             diags.is_empty(),
             "percent-encoded file path must not be reported broken: {diags:?}"
+        );
+    }
+
+    /// Same guard on the `path#fragment` variant: `./my%20file.md#anchor`
+    /// probes the same decoded on-disk file, so the `%`-containing path must
+    /// be skipped in `validate_file_with_fragment` too, not just
+    /// `validate_file_exists`.
+    #[test]
+    fn percent_encoded_file_path_with_fragment_is_not_reported_broken() {
+        use zfb_md_ast::{diagnostics::CollectingSink, HastVisitor};
+
+        let dir = tempfile::Builder::new()
+            .prefix("link_val_percent_path_frag")
+            .tempdir()
+            .unwrap();
+        std::fs::write(dir.path().join("my file.md"), "# Hi\n").unwrap();
+        let source_path = dir.path().join("page.md");
+        std::fs::write(&source_path, "").unwrap();
+
+        let mut root = HastNode::Root {
+            children: vec![HastNode::Element {
+                tag: "a".to_string(),
+                attrs: vec![("href".to_string(), "./my%20file.md#hi".to_string())],
+                children: vec![],
+                void: false,
+            }],
+        };
+
+        let mut sink = CollectingSink::new();
+        let mut ctx = BuildContext {
+            source_path: Some(source_path),
+            project_root: dir.path().to_path_buf(),
+            public_dir: dir.path().to_path_buf(),
+            heading_registry: None,
+            diagnostics: Some(&mut sink),
+            cross_file_links: None,
+        };
+        let mut plugin = LinkValidationPlugin::new(LinkValidationConfig::default());
+        plugin.visit_with_context(&mut root, &mut ctx);
+
+        let diags = sink.take();
+        assert!(
+            diags.is_empty(),
+            "percent-encoded file path with fragment must not be reported broken: {diags:?}"
         );
     }
 
