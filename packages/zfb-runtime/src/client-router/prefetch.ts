@@ -195,6 +195,17 @@ type CancelHandleMap = Map<Element, ReturnType<typeof setTimeout> | number>;
  * the only difference between them is which map tracks their pending handles.
  * Parameterising by the map eliminates that duplication.
  */
+// pointerenter/pointerleave (and focusin/focusout) fire on every element the
+// pointer/focus enters or leaves, including nested descendants — not just the
+// delegated document listener's eventual `closest("a[href]")` target. For
+// `<a><span>text</span></a>`, moving the pointer between the link's own
+// children fires a leave on the child being left and an enter on the child
+// being entered, even though the pointer never left the LINK itself.
+// `relatedTarget` is where the pointer/focus is going (leave) or came from
+// (enter); reading it lets the two handlers below tell an intra-link move
+// apart from a real leave/first-enter. #1398.
+type RelatedTargetEvent = Event & { relatedTarget?: EventTarget | null };
+
 function makeEnterLeaveHandlers(
   cancelHandles: CancelHandleMap,
 ): [enterHandler: (e: Event) => void, leaveHandler: (e: Event) => void] {
@@ -202,6 +213,13 @@ function makeEnterLeaveHandlers(
     const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
     if (!link) return;
     if (!shouldPrefetchLink(link, "hover")) return;
+
+    // A handle is already queued for this link — the pointer/focus moved
+    // between nested descendants of the SAME link, which re-fires enter on
+    // each one. Keep the original debounce window instead of overwriting it
+    // with a fresh requestIdleCallback/timeout that a busy pointer could keep
+    // resetting indefinitely. #1398.
+    if (cancelHandles.has(link)) return;
 
     // Use requestIdleCallback if available, else a small timeout.
     const fire = () => {
@@ -221,6 +239,12 @@ function makeEnterLeaveHandlers(
   function leaveHandler(e: Event): void {
     const link = (e.target as Element).closest("a[href]") as HTMLAnchorElement | null;
     if (!link) return;
+
+    // The pointer/focus is moving to relatedTarget. If that's still inside
+    // the same link (a nested descendant), this is NOT a real leave — skip
+    // the cancel so the pending prefetch survives intra-link moves. #1398.
+    const related = (e as RelatedTargetEvent).relatedTarget;
+    if (related instanceof Node && link.contains(related)) return;
 
     const handle = cancelHandles.get(link);
     if (handle === undefined) return;
