@@ -9,14 +9,20 @@ name: router-chromium
 # Level-4 (real Chromium) smoke suite for the client router (issue #1346). It
 # closes the happy-dom blind spots the L2 vitest suite documents in-file — real
 # View Transitions, real scroll restoration, real popstate direction, the
-# aria-live route announcer, and real <link rel=prefetch> insertion.
+# aria-live route announcer, and real <link rel=prefetch> insertion. Since
+# #1399, island-a.html / island-b.html also drive a REAL (non-stub) island
+# mount/unmount module through a swap, proving the data-zfb-transition-persist
+# contract (#1389) — packages/zfb/src/runtime.ts is the package that owns that
+# contract's mount/unmount half, so its path is filtered in below alongside the
+# router runtime.
 #
-# Path-filtered: this only runs when the router runtime or its L4 suite changes,
-# so pure-Rust / docs PRs never pay for it. Like docs-checks.yml, that means this
-# workflow is NOT — and must not become — a required status check: a required
-# check that legitimately does not run on unrelated PRs would hang them forever
-# (see the #1333 branch-ruleset note in CLAUDE.md). `base/**` covers the
-# long-lived integration branches used by /x-wt-teams epics.
+# Path-filtered: this only runs when the router runtime, the islands runtime,
+# or its L4 suite changes, so pure-Rust / docs PRs never pay for it. Like
+# docs-checks.yml, that means this workflow is NOT — and must not become — a
+# required status check: a required check that legitimately does not run on
+# unrelated PRs would hang them forever (see the #1333 branch-ruleset note in
+# CLAUDE.md). `base/**` covers the long-lived integration branches used by
+# /x-wt-teams epics.
 on:
   pull_request:
     branches:
@@ -28,6 +34,7 @@ on:
       - reopened
     paths:
       - "packages/zfb-runtime/**"
+      - "packages/zfb/src/runtime.ts"
       - "tests/router-chromium/**"
       - ".github/workflows/router-chromium.yml"
       - "pnpm-lock.yaml"
@@ -38,6 +45,7 @@ on:
       - "base/**"
     paths:
       - "packages/zfb-runtime/**"
+      - "packages/zfb/src/runtime.ts"
       - "tests/router-chromium/**"
       - ".github/workflows/router-chromium.yml"
       - "pnpm-lock.yaml"
