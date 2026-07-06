@@ -51,6 +51,7 @@
 pub mod adapter;
 pub mod atomic;
 pub mod bundler;
+pub mod glob_expand;
 pub mod head_inject;
 pub mod link_base_rewrite;
 pub mod metafile_deps;
