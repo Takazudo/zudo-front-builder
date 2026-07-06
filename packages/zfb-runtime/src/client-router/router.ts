@@ -528,7 +528,13 @@ async function updateDOM(
   // trees receive render(null, element) / root.unmount() and their useEffect
   // cleanups fire. Must happen after cancelPendingIslands() and before doSwap()
   // so document.body still points to the old body.
-  unmountIslands();
+  //
+  // Pass the incoming body so unmountIslands can SKIP islands that swapBodyElement
+  // will lift into the new body (a persisted marker matched on both sides). Those
+  // nodes are physically moved, not discarded, so their component instance and
+  // state must survive the swap — unmounting them here would empty the container
+  // before the lift and defeat data-zfb-transition-persist entirely (issue #1389).
+  unmountIslands(document.body, preparationEvent.newDocument.body);
   const swapEvent = await doSwap(
     preparationEvent,
     currentTransition.viewTransition!,

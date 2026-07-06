@@ -160,8 +160,8 @@ describe("swapBodyElement — persist lift", () => {
     swapBodyElement(newDoc.body, document.body);
 
     const persisted = document.querySelector(`[${PERSIST_ATTR}="island1"]`)!;
-    // Branch fired: ssr attribute should be present
-    expect(persisted.hasAttribute("ssr")).toBe(true);
+    // Branch fired: remount flag should be present
+    expect(persisted.hasAttribute("data-zfb-island-remount")).toBe(true);
     // data-props must be removed — NOT written as string "null"
     expect(persisted.hasAttribute("data-props")).toBe(false);
     expect(persisted.getAttribute("data-props")).not.toBe("null");
@@ -180,13 +180,13 @@ describe("swapBodyElement — persist lift", () => {
     swapBodyElement(newDoc.body, document.body);
 
     const persisted = document.querySelector(`[${PERSIST_ATTR}="island2"]`)!;
-    // Branch fired: ssr attribute should be present
-    expect(persisted.hasAttribute("ssr")).toBe(true);
+    // Branch fired: remount flag should be present
+    expect(persisted.hasAttribute("data-zfb-island-remount")).toBe(true);
     // data-props must be set to the new target's value
     expect(persisted.getAttribute("data-props")).toBe('{"count":2}');
   });
 
-  it("persisted island with same data-props on both sides → isSameProps returns true, ssr not set", () => {
+  it("persisted island with same data-props on both sides → isSameProps returns true, remount flag not set", () => {
     // Both old and new have identical data-props → branch should NOT fire
     document.body.innerHTML = `
       <div ${PERSIST_ATTR}="island3" data-zfb-island data-props='{"count":3}'>island</div>
@@ -199,8 +199,8 @@ describe("swapBodyElement — persist lift", () => {
     swapBodyElement(newDoc.body, document.body);
 
     const persisted = document.querySelector(`[${PERSIST_ATTR}="island3"]`)!;
-    // isSameProps → branch did NOT fire, ssr attribute must be absent
-    expect(persisted.hasAttribute("ssr")).toBe(false);
+    // isSameProps → branch did NOT fire, remount flag must be absent
+    expect(persisted.hasAttribute("data-zfb-island-remount")).toBe(false);
     // data-props should still equal the original value
     expect(persisted.getAttribute("data-props")).toBe('{"count":3}');
   });

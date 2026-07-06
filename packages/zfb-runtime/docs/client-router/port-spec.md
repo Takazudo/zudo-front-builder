@@ -370,6 +370,23 @@ For islands specifically (Astro's branch around line 124–132 detects `astro-is
 
 - **Hybrid case — content-area islands that DO want state preservation across navs (rare):** carry `data-zfb-transition-persist` AND `data-zfb-transition-persist-props` (default — copy props). The persist-merge branch (above) updates `data-props` on the surviving element. W3D MUST then call `scheduleMount` against the persisted element with the new props so the component re-renders. Concretely: after the persist-merge branch updates `data-props`, push the affected element into a "needs-remount" queue, then in `mountNewIslands()` clear the `mounted` WeakSet entry for those queued elements before walking. **Caveat:** this is a niche path; if no zudo-doc island opts in for v1, W3D MAY mark this branch as `// TODO post-v1` with a unit test asserting it throws or no-ops cleanly. **Recommended for v1: leave the niche path unimplemented.** Document the gap in the v1 release notes.
 
+  > **Post-spec note (2026-07, issue #1389):** SHIPPED — the hybrid path is now
+  > implemented, not left unimplemented. The "needs-remount queue" is realized
+  > **through the DOM**, not an in-memory array: `swapBodyElement`'s persist-merge
+  > branch marks the surviving element with a `data-zfb-island-remount` attribute
+  > (and refreshes `data-props`), and `@takazudo/zfb`'s `mountNewIslands()` consumes
+  > that flag in `clearMountedForRemount()` — it fires the stale instance's unmount
+  > thunk, drops the `mounted` entry, strips the flag, and lets the following
+  > `scheduleMount` re-mount with the new props. A cross-package in-memory queue is
+  > impossible because the `mounted` map is module-private to `runtime.ts` (a
+  > different package from the swap functions); the flagged DOM node IS the queue.
+  > The original Astro port set a bare `ssr` attribute here that nothing consumed
+  > (zfb islands are marker divs, not `<astro-island>` custom elements) — #1389
+  > replaces it with the namespaced `data-zfb-island-remount` flag and wires the
+  > consumer. Two v1 limitations remain for this niche path (tracked as a
+  > follow-up issue): a persisted island still mid-import at swap time, or one with
+  > deferred `data-when`, does not remount seamlessly with fresh props.
+
 #### 12.3.2 Boundary table (W3D pins this)
 
 | Island | Persist? | Persist-props? | Behavior |
@@ -425,6 +442,16 @@ Pinned in this order:
 4. Persisted island markers (`data-zfb-transition-persist`) follow the boundary table in 12.3.2.
 5. Persist-props branch is V1-out-of-scope; keep the marker check stub but no-op.
 6. Deferred-hydration cancellation: track cancel handles in `pendingCancels: Map<Element, () => void>`; cancel for old body elements on `zfb:before-swap`.
+
+> **Post-spec note (2026-07, issue #1389):** Items 4 and 5 are superseded by the
+> shipped persist implementation. The pre-swap `unmountIslands()` walk now takes
+> the incoming body as a second argument and **skips** any old-body island whose
+> persist id matches an incoming marker — without this, the walk unmounted every
+> island (persisted ones included) and emptied the container before
+> `swapBodyElement` lifted it, so `data-zfb-transition-persist` preserved nothing
+> (the case-(a) "component instance preserved" promise was never actually met).
+> Item 5's "no-op stub" is now the fully-wired hybrid remount path — see the
+> §12.3.1 post-spec note above.
 
 W6B writes tests for: (1) mount-after-swap, (2) double-mount-prevention, (3) persisted-skip path, (4) deferred-cancel-on-swap.
 
