@@ -169,14 +169,24 @@ jobs:
       # upstream by crates/zfb/build.rs before staging; the `--version` run here is
       # just a smoke test that the staged binary actually executes on this runner's
       # architecture — a corrupt or wrong-arch binary fails the step.)
-      - name: Assert esbuild was provisioned for the test suite
+      #
+      # Extended (issue #1393) to also assert the tailwindcss-v4 slot, which
+      # crates/zfb/build.rs stages as the same side effect of the
+      # `cargo build --workspace --all-targets` step above — it was already
+      # staged here, just never asserted or exercised by any T1 step. Mirrors
+      # exam.yml's combined esbuild+tailwindcss assert step.
+      - name: Assert esbuild + tailwindcss binaries were provisioned for the test suite
         run: |
-          SLOT="crates/zfb/binaries/esbuild/esbuild"
-          if [ ! -x "$SLOT" ]; then
-            echo "::error::esbuild not staged at $SLOT — the esbuild-gated tests would silently skip (issue #638). Failing the job instead."
-            exit 1
-          fi
-          "$SLOT" --version
+          ESBUILD_SLOT="crates/zfb/binaries/esbuild/esbuild"
+          TAILWIND_SLOT="crates/zfb/binaries/tailwindcss-v4"
+          for slot in "$ESBUILD_SLOT" "$TAILWIND_SLOT"; do
+            if [ ! -x "$slot" ]; then
+              echo "::error::$slot not staged — the env-gated tests would silently skip (issue #638). Failing the job instead."
+              exit 1
+            fi
+          done
+          "$ESBUILD_SLOT" --version
+          "$TAILWIND_SLOT" --version
 
       # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 5
       # `#[ignore]`d tests (tagged `env-gate:` per CLAUDE.md's taxonomy) were
@@ -197,6 +207,34 @@ jobs:
         env:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
         run: cargo test -p zfb-islands --tests -- --ignored
+
+      # Run the 3 tailwindcss-v4 env-gate tests (issue #1393): the binary is
+      # staged by the assert step above but, like the zfb-islands suite before
+      # #1337 fixed it, was never actually executed by any T1 step —
+      # `cargo nextest run --workspace` below does not pass `--ignored`, so a
+      # green run proves nothing about these. Same ABSOLUTE-path requirement
+      # as ZFB_ESBUILD_BIN above: `cargo test` runs each test binary with its
+      # CWD set to the owning package directory, not the workspace root.
+      # Three separate steps (one per crate) so a failure is individually
+      # attributable, mirroring the per-crate structure of the
+      # `#[ignore]` manifest table in CLAUDE.md.
+      - name: Run zfb-css tailwindcss-v4 env-gate integration test
+        env:
+          ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
+        run: cargo test -p zfb-css --test integration -- --ignored
+
+      - name: Run zfb-build tailwindcss-v4 env-gate integration test
+        env:
+          ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
+        run: cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored
+
+      - name: Run zfb tailwindcss-v4 env-gate unit test (commands::build)
+        env:
+          ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
+        # Quoted: a bare `commands::build:: -- --ignored` plain scalar trips
+        # YAML's colon-space mapping-indicator rule (the trailing `:: ` reads
+        # as a key/value separator to a strict parser).
+        run: "cargo test -p zfb --lib commands::build:: -- --ignored"
 
       # Run the workspace test suite under cargo-nextest (issue #1340). CI
       # previously only *compiled* the test code (the cargo build --all-targets
