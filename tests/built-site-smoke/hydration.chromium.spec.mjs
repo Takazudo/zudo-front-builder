@@ -25,6 +25,14 @@
  * the same marker attribute crates/zfb-islands/src/hydration.rs documents
  * and crates/zfb/src/commands/island_marker_check.rs cross-checks against
  * the islands registry at build time.
+ *
+ * The second test (issue #1405) is the direct #1385 pt.1 repro: the Gallery
+ * island imports a module that calls `import.meta.glob(...)`. Before #1404 the
+ * emitted client bundle carried the raw `import.meta.glob(...)` call and threw
+ * at hydration; after #1404's islands-shadow materialisation the glob is
+ * expanded at build time. "Gallery items: 2" proves the two ./gallery/*.tsx
+ * modules were collected; the button responding to a click proves the
+ * glob-consuming island actually hydrated.
  */
 
 // @ts-check
@@ -61,6 +69,48 @@ test("built site loads with zero page errors and its island hydrates", async ({ 
 
   await counterButton.click();
   await expect(counterButton).toHaveText("Count: 2");
+
+  expect(pageErrors, `page errors fired during load/hydration: ${pageErrors.join("; ")}`).toEqual(
+    [],
+  );
+  expect(
+    consoleErrors,
+    `console.error calls fired during load/hydration: ${consoleErrors.join("; ")}`,
+  ).toEqual([]);
+});
+
+test("glob-consuming island (import.meta.glob) builds, expands, and hydrates — #1385 pt.1", async ({
+  page,
+}) => {
+  /** @type {string[]} */
+  const pageErrors = [];
+  /** @type {string[]} */
+  const consoleErrors = [];
+  page.on("pageerror", (err) => {
+    pageErrors.push(err.message);
+  });
+  page.on("console", (msg) => {
+    if (msg.type() === "error") {
+      consoleErrors.push(msg.text());
+    }
+  });
+
+  await page.goto("/");
+
+  // Build-time proof: import.meta.glob expanded to the two ./gallery/*.tsx
+  // modules (red + blue). Rendered in SSR markup and again after hydration.
+  const count = page.locator('[data-zfb-island="Gallery"] #gallery-count');
+  await expect(count).toHaveText("Gallery items: 2");
+
+  // Hydration proof: the glob-consuming island's button only cycles the
+  // selection if the emitted bundle loaded and ran. A pre-#1404 bundle would
+  // have thrown at hydration on the raw import.meta.glob(...) call.
+  const nextButton = page.locator('[data-zfb-island="Gallery"] #gallery-next');
+  await expect(nextButton).toHaveText("Selected: blue");
+  await nextButton.click();
+  await expect(nextButton).toHaveText("Selected: red");
+  await nextButton.click();
+  await expect(nextButton).toHaveText("Selected: blue");
 
   expect(pageErrors, `page errors fired during load/hydration: ${pageErrors.join("; ")}`).toEqual(
     [],

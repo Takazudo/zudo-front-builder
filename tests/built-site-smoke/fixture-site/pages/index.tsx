@@ -1,6 +1,7 @@
 import { Island } from "@takazudo/zfb";
 
 import { Counter } from "../components/counter";
+import { Gallery } from "../components/gallery";
 
 /**
  * Minimal built-site-smoke fixture page (issue #1401). Deliberately tiny —
@@ -25,6 +26,9 @@ export default function HomePage() {
         <h1>built-site-smoke fixture</h1>
         <Island when="load">
           <Counter />
+        </Island>
+        <Island when="load">
+          <Gallery />
         </Island>
       </body>
     </html>
