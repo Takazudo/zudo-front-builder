@@ -5797,13 +5797,137 @@ fn run_esbuild(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let friendly = friendly_esbuild_error(stderr.trim(), shadow, &input.project_root);
         bail!(
             "bundler: esbuild exited with status {}: {}",
             output.status,
-            stderr.trim()
+            friendly
         );
     }
     Ok(())
+}
+
+/// Extracts `<specifier>` from an esbuild `Could not resolve "<specifier>"`
+/// diagnostic line (the first line of a resolve-failure block). Returns
+/// `None` for any other line.
+fn could_not_resolve_specifier(line: &str) -> Option<&str> {
+    const MARKER: &str = "Could not resolve \"";
+    let start = line.find(MARKER)? + MARKER.len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
+/// Extracts the file-path portion of an esbuild source-location line, e.g.
+/// `"    pages/foo.tsx:1:19:"` -> `Some("pages/foo.tsx")`.
+///
+/// Esbuild's location lines are `<indent><path>:<line>:<col>:`; a POSIX
+/// path has no other colons, so splitting from the right by `:` twice
+/// isolates the path. Windows drive-letter paths (`C:\...`) are not
+/// handled — this is a diagnostic-message nicety, not a resolution-
+/// affecting code path, and zfb has no CI coverage running the Rust suite
+/// on Windows yet (see the T3 cutover manifest).
+fn esbuild_location_path(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let without_trailing_colon = trimmed.strip_suffix(':')?;
+    let mut parts = without_trailing_colon.rsplitn(3, ':');
+    let col = parts.next()?;
+    let row = parts.next()?;
+    let path = parts.next()?;
+    if path.is_empty() || col.parse::<u32>().is_err() || row.parse::<u32>().is_err() {
+        return None;
+    }
+    Some(path)
+}
+
+/// Post-processes esbuild's captured stderr from `run_esbuild`'s failure
+/// branch so a build failure is actionable instead of naming the ephemeral
+/// shadow-copy tempdir the user never created (#1385 pt.2 / issue #1388).
+///
+/// This is **diagnose-only** — the owner decision recorded on the #1386
+/// epic is that a relative import which escapes the project root under
+/// shadow-copy bundling stays unsupported; this function only changes the
+/// REPORTED message, never resolution behaviour.
+///
+/// Two independent passes:
+///
+/// 1. **Defensive catch-all** — any literal absolute `shadow` path embedded
+///    in the text (e.g. a malformed-tsconfig diagnostic can echo the
+///    `--tsconfig=<shadow>/…` flag verbatim) is rewritten to the real
+///    `project_root`, so no ephemeral tempdir path ever reaches the user.
+/// 2. **Escape detection** — for every `Could not resolve "<specifier>"`
+///    failure where `specifier` is relative (`./` or `../`) and — joined
+///    lexically against the reported importer's directory — falls outside
+///    the shadow root, append a note naming the importer's REAL
+///    project-root path, explaining the shadow-copy build boundary, and
+///    pointing at the package-specifier + wildcard-`exports` workaround.
+///    The join is purely lexical (string arithmetic, no filesystem access)
+///    — it does not matter whether the target actually exists.
+fn friendly_esbuild_error(stderr: &str, shadow: &Path, project_root: &Path) -> String {
+    let shadow_display = shadow.to_string_lossy();
+    let mut out = if shadow_display.is_empty() {
+        stderr.to_string()
+    } else {
+        stderr.replace(shadow_display.as_ref(), &project_root.to_string_lossy())
+    };
+
+    let lines: Vec<&str> = stderr.lines().collect();
+    let mut notes: Vec<String> = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        let Some(specifier) = could_not_resolve_specifier(line) else {
+            continue;
+        };
+        if !(specifier.starts_with("./") || specifier.starts_with("../")) {
+            // Bare/package specifiers (`preact`, `@scope/pkg`) are never a
+            // shadow-root escape — nothing to annotate.
+            continue;
+        }
+        let Some(location_line) = lines[idx + 1..].iter().find(|l| !l.trim().is_empty()) else {
+            continue;
+        };
+        let Some(importer_rel) = esbuild_location_path(location_line) else {
+            continue;
+        };
+        let importer_abs = normalize_path_lexical(&shadow.join(importer_rel));
+        let Some(importer_dir) = importer_abs.parent() else {
+            continue;
+        };
+        let target = normalize_path_lexical(&importer_dir.join(specifier));
+        if target.strip_prefix(shadow).is_ok() {
+            // Stays inside the shadow root (e.g. `../sibling/file.ts`
+            // resolving to a valid project-relative location) — not an
+            // escape, so the raw esbuild message is left to speak for
+            // itself.
+            continue;
+        }
+        let real_importer = match importer_abs.strip_prefix(shadow) {
+            Ok(rel) => project_root.join(rel),
+            // Already outside the shadow (can happen when
+            // `--preserve-symlinks` is off and the importer is a
+            // symlink whose realpath esbuild reports) — that path IS
+            // the real one already.
+            Err(_) => importer_abs.clone(),
+        };
+        notes.push(format!(
+            "zfb: \"{specifier}\" (imported from {}) escapes the project \
+             root's shadow-copy build boundary. zfb bundles from a \
+             temporary copy of {}; a relative import that walks above the \
+             project root cannot be followed there. Move the target inside \
+             the project, or expose it as a package import instead: add a \
+             wildcard `exports` entry to the target package's \
+             `package.json` (e.g. `\"./src/*\": \"./src/*\"`) and import it \
+             by package specifier (e.g. `@scope/pkg/src/button.ts`) — \
+             `node_modules` IS included in the shadow copy.",
+            real_importer.display(),
+            project_root.display(),
+        ));
+    }
+
+    if !notes.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&notes.join("\n\n"));
+    }
+    out
 }
 
 fn resolve_esbuild_binary(explicit: Option<&Path>) -> Result<PathBuf> {
@@ -5952,6 +6076,93 @@ mod tests {
         );
         // external: single target, unchanged (keeps bundler_exact_match_resolution semantics)
         assert_eq!(out["@ext/*"], vec!["/other/pkg/*".to_string()]);
+    }
+
+    // ── friendly_esbuild_error + its parsing helpers (#1388) ────────────────
+
+    #[test]
+    fn could_not_resolve_specifier_extracts_quoted_specifier() {
+        assert_eq!(
+            could_not_resolve_specifier(
+                "\u{2718} [ERROR] Could not resolve \"../../outside/shared.ts\""
+            ),
+            Some("../../outside/shared.ts")
+        );
+        assert_eq!(could_not_resolve_specifier("some unrelated line"), None);
+    }
+
+    #[test]
+    fn esbuild_location_path_extracts_path_before_line_col() {
+        assert_eq!(
+            esbuild_location_path("    pages/foo.tsx:1:19:"),
+            Some("pages/foo.tsx")
+        );
+        // Not a location line: no trailing colon / non-numeric row-col.
+        assert_eq!(esbuild_location_path("1 error"), None);
+        assert_eq!(esbuild_location_path(""), None);
+    }
+
+    #[test]
+    fn friendly_esbuild_error_annotates_escaping_relative_import() {
+        let shadow = Path::new("/tmp/zfb-bundler-abc123");
+        let project_root = Path::new("/Users/dev/my-project");
+        // Exact shape captured from a real esbuild 0.27.3 run against a
+        // shadow-copied fixture whose page imports
+        // `../../outside/shared.ts` (two levels up from `pages/foo.tsx`
+        // escapes the shadow root, matching the #1385 pt.2 repro shape).
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/shared.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import Button from \"../../outside/shared.ts\";\n        \u{2575}                    ~~~~~~~~~~~~~~~~~~~~~~~~~\n\n1 error";
+
+        let friendly = friendly_esbuild_error(stderr, shadow, project_root);
+
+        // Names the REAL source path, not a tempdir.
+        assert!(
+            friendly.contains("/Users/dev/my-project/pages/foo.tsx"),
+            "should name the real project path: {friendly}"
+        );
+        // States the boundary rule.
+        assert!(
+            friendly.to_lowercase().contains("shadow-copy"),
+            "should explain the shadow-copy boundary: {friendly}"
+        );
+        // Mentions the exports-map workaround.
+        assert!(
+            friendly.contains("exports"),
+            "should mention the package.json exports workaround: {friendly}"
+        );
+        // Never leaks the shadow tempdir's own directory name.
+        assert!(
+            !friendly.contains("zfb-bundler-abc123"),
+            "should not leak the shadow tempdir name: {friendly}"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_leaves_non_escaping_resolve_failure_unannotated() {
+        let shadow = Path::new("/tmp/zfb-bundler-abc123");
+        let project_root = Path::new("/Users/dev/my-project");
+        // `../sibling/file.ts` from `pages/foo.tsx` resolves to
+        // `<root>/sibling/file.ts` — still inside the project root, so this
+        // is an ordinary (non-escaping) unresolved import and must get no
+        // boundary annotation.
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../sibling/file.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import Button from \"../sibling/file.ts\";\n\n1 error";
+
+        let friendly = friendly_esbuild_error(stderr, shadow, project_root);
+        assert_eq!(
+            friendly, stderr,
+            "non-escaping resolve failures should pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_replaces_leaked_shadow_root_prefix() {
+        let shadow = Path::new("/tmp/zfb-bundler-abc123");
+        let project_root = Path::new("/Users/dev/my-project");
+        let stderr = "some diagnostic mentioning /tmp/zfb-bundler-abc123/tsconfig.json directly";
+        let friendly = friendly_esbuild_error(stderr, shadow, project_root);
+        assert_eq!(
+            friendly,
+            "some diagnostic mentioning /Users/dev/my-project/tsconfig.json directly"
+        );
     }
 
     #[test]
