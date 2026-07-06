@@ -983,7 +983,10 @@ fn islands_shadow_expands_glob_and_executes() {
         .with_minify(false)
         .with_preserve_symlinks(true);
     let out = bundler
-        .bundle(&[Island::new("Gallery", shadow_island.clone())], &bundle_cfg)
+        .bundle(
+            &[Island::new("Gallery", shadow_island.clone())],
+            &bundle_cfg,
+        )
         .expect("glob island must bundle via the shadow");
     let js = String::from_utf8(out.bytes).expect("bundle is utf-8");
 

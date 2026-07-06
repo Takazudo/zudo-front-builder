@@ -21,7 +21,7 @@
 //! `"use client"` islands are allowed to `import "./x.css"` (and
 //! `import styles from "./x.module.css"`), same as any other component in
 //! the project. [`build_esbuild_args_with_entry_name`] passes
-//! `--loader:.css=empty`, mirroring the SSR bundler's
+//! `--loader:.css=empty` **and** `--loader:.module.css=empty`, mirroring the SSR bundler's
 //! `ESBUILD_LOADER_ARGS` (`crates/zfb-build/src/bundler.rs`): the loader
 //! substitutes an empty exports object for the CSS module at compile time,
 //! so the import resolves and esbuild does not emit a sibling CSS output
@@ -31,10 +31,12 @@
 //!
 //! **Out of scope (deliberately):** unlike the SSR bundler,
 //! `.module.css` imports inside an island do NOT get a scoped
-//! class-name map. `--loader:.css=empty` also matches `.module.css` (no
-//! more specific rule is registered), so `import styles from
-//! "./x.module.css"` resolves to `styles === undefined` in the client
-//! bundle rather than the real scoped names. Extracting a real client-side
+//! class-name map. On esbuild 0.25 a bare `--loader:.css=empty` does NOT
+//! cover `.module.css` — esbuild's native `local-css` loader claims that
+//! extension unless a more specific rule is registered (issue #1410) — so
+//! `.module.css` gets its own explicit `--loader:.module.css=empty`; then
+//! `import styles from "./x.module.css"` resolves to `styles === undefined`
+//! in the client bundle rather than the real scoped names. Extracting a real client-side
 //! class map is tracked by the shadow-materialisation follow-up (#1404);
 //! the docs wave (#1406) documents this limitation for users.
 
@@ -1281,15 +1283,18 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     // Authored CSS (including `.css` bytes reachable from an island) is
     // already shipped separately via the zfb CSS pipeline's
     // `styles-<hash>.css` — islands never need to carry those bytes
-    // themselves. esbuild matches `.css=empty` against `.module.css` files
-    // too (no more specific `.module.css` rule is registered here), so a
-    // `import styles from "./x.module.css"` resolves to `styles ===
-    // undefined` rather than a scoped class-name map: the SSR bundler's
-    // per-file class-map extraction is deliberately OUT OF SCOPE for the
-    // islands client bundle (see #1404 for the shadow-materialisation
-    // follow-up and #1406 for the docs wave that documents this
-    // limitation to users).
+    // themselves. NOTE (issue #1410): on esbuild 0.25 a bare
+    // `--loader:.css=empty` does NOT cover `.module.css` — esbuild's native
+    // `local-css` loader claims the `.module.css` extension and emits a
+    // sibling CSS output file (+ a scoped class-name map) unless a MORE
+    // SPECIFIC extension rule is registered. So `.module.css` needs its own
+    // explicit `--loader:.module.css=empty`. Both then resolve the import to
+    // `styles === undefined` rather than a scoped class-name map: the SSR
+    // bundler's per-file class-map extraction is deliberately OUT OF SCOPE
+    // for the islands client bundle (see #1404 for the shadow-materialisation
+    // follow-up and #1406 for the docs wave that documents this limitation).
     args.push(OsString::from("--loader:.css=empty"));
+    args.push(OsString::from("--loader:.module.css=empty"));
     // Issue #151: route esbuild through the automatic JSX transform
     // pointed at the host framework's import source (typically
     // `"preact"`). Without these two flags esbuild defaults to the
@@ -2981,13 +2986,16 @@ mod tests {
         );
     }
 
-    /// Issue #1395: the islands esbuild arg set must carry
-    /// `--loader:.css=empty` (mirroring the SSR bundler's
-    /// `ESBUILD_LOADER_ARGS`) so an island's `import "./x.css"` neutralises
-    /// at compile time instead of esbuild writing a sibling CSS output file
-    /// that `read_back_outdir` would reject. Checked on both the
-    /// shared-bundle (`splitting = true`) and per-island (`splitting =
-    /// false`) arg shapes since both call the same builder.
+    /// Issue #1395 + #1410: the islands esbuild arg set must carry BOTH
+    /// `--loader:.css=empty` and `--loader:.module.css=empty` (mirroring the
+    /// SSR bundler's `ESBUILD_LOADER_ARGS`) so an island's `import "./x.css"`
+    /// / `import styles from "./x.module.css"` neutralises at compile time
+    /// instead of esbuild writing a sibling CSS output file that
+    /// `read_back_outdir` would reject. The explicit `.module.css` rule is
+    /// load-bearing on esbuild 0.25: its native `local-css` loader claims
+    /// `.module.css` unless a more specific rule overrides it (#1410).
+    /// Checked on both the shared-bundle (`splitting = true`) and per-island
+    /// (`splitting = false`) arg shapes since both call the same builder.
     #[test]
     fn build_esbuild_args_includes_css_empty_loader() {
         let cfg = BundleConfig::default();
@@ -2996,6 +3004,10 @@ mod tests {
             assert!(
                 args.iter().any(|a| a == "--loader:.css=empty"),
                 "missing --loader:.css=empty (splitting={splitting}) in args: {args:?}"
+            );
+            assert!(
+                args.iter().any(|a| a == "--loader:.module.css=empty"),
+                "missing --loader:.module.css=empty (splitting={splitting}) in args: {args:?}"
             );
         }
     }

@@ -2105,7 +2105,7 @@ fn collect_import_specifiers(module: &Module) -> Vec<String> {
 /// resolvable literal becomes a scanner edge (see [`collect_import_specifiers`]
 /// for why dynamic imports are followed at all).
 fn collect_dynamic_import_specifiers(module: &Module) -> Vec<String> {
-    use swc_core::ecma::ast::{Callee, CallExpr, Expr, Lit};
+    use swc_core::ecma::ast::{CallExpr, Callee, Expr, Lit};
     use swc_core::ecma::visit::{Visit, VisitWith};
 
     struct DynImportCollector {
