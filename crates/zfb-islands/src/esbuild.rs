@@ -958,10 +958,22 @@ impl EsbuildSubprocessBundler {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let friendly = redact_temp_path(
+                &stderr,
+                entry_tmp.path(),
+                &self.config.working_dir,
+                "<synthesized zfb-islands bundle entry, not a project file>",
+            );
+            let friendly = redact_temp_path(
+                &friendly,
+                out_dir.path(),
+                &self.config.working_dir,
+                "<zfb-islands internal esbuild output directory>",
+            );
             return Err(anyhow!(
                 "esbuild exited with status {}: {}",
                 output.status,
-                stderr.trim()
+                friendly.trim()
             ));
         }
 
@@ -994,6 +1006,37 @@ impl OneEntryOutput {
             chunks: Vec::new(),
         }
     }
+}
+
+/// Redacts one ephemeral internal temp path from an esbuild subprocess's
+/// captured stderr, replacing it with a stable, self-explanatory `label`
+/// (#1385 pt.2 / issue #1388 — same treatment as the bundler's
+/// `friendly_esbuild_error` in `zfb-build`, applied here to the islands
+/// pipeline's own leaks: the synthesized `.zfb-esbuild-entry-*.tsx` wrapper
+/// [`bundle_one_entry`] writes beside the project, and the system-tempdir
+/// `--outdir` both entry points use).
+///
+/// Unlike the main SSR/page bundler, `zfb-islands` never shadow-copies the
+/// project — `working_dir` (`cmd.current_dir`) IS the real project root, so
+/// there is no project-root escape boundary to explain here; the only leak
+/// is a meaningless generated filename the user never created. `leak_path`
+/// is redacted in both forms esbuild's diagnostics might show it in: the
+/// `cwd`-relative form (esbuild's normal source-location display) and the
+/// full absolute path (a defensive catch-all for non-source-location
+/// diagnostics, e.g. an outdir write failure).
+fn redact_temp_path(stderr: &str, leak_path: &Path, cwd: &Path, label: &str) -> String {
+    let mut out = stderr.to_string();
+    if let Ok(rel) = leak_path.strip_prefix(cwd) {
+        let rel_str = rel.to_string_lossy();
+        if !rel_str.is_empty() {
+            out = out.replace(rel_str.as_ref(), label);
+        }
+    }
+    let abs_str = leak_path.to_string_lossy();
+    if !abs_str.is_empty() {
+        out = out.replace(abs_str.as_ref(), label);
+    }
+    out
 }
 
 /// Read every file esbuild staged into `out_dir` back into memory, split
@@ -1902,11 +1945,17 @@ impl EsbuildSubprocessBundler {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let friendly = redact_temp_path(
+                &stderr,
+                out_dir.path(),
+                &self.config.working_dir,
+                "<zfb-islands internal esbuild output directory>",
+            );
             return Err(anyhow!(
                 "esbuild exited with status {} bundling client script {:?}: {}",
                 output.status,
                 entry_path,
-                stderr.trim()
+                friendly.trim()
             ));
         }
 
@@ -1952,6 +2001,43 @@ mod tests {
         let before = hash_8("export const x = 1;");
         let after = hash_8("export const x = 2;");
         assert_ne!(before, after);
+    }
+
+    // ── redact_temp_path (#1388) ─────────────────────────────────────────────
+
+    #[test]
+    fn redact_temp_path_replaces_cwd_relative_form() {
+        let cwd = Path::new("/Users/dev/my-project");
+        let leak_path = cwd.join(".zfb-esbuild-entry-a1b2c3.tsx");
+        let stderr = "\u{2718} [ERROR] Could not resolve \"preact\"\n\n    .zfb-esbuild-entry-a1b2c3.tsx:2:9:\n";
+        let friendly = redact_temp_path(stderr, &leak_path, cwd, "<synthesized entry>");
+        assert!(
+            friendly.contains("<synthesized entry>"),
+            "should replace the leaked filename with the label: {friendly}"
+        );
+        assert!(
+            !friendly.contains(".zfb-esbuild-entry-a1b2c3.tsx"),
+            "should not leak the synthesized entry filename: {friendly}"
+        );
+    }
+
+    #[test]
+    fn redact_temp_path_replaces_absolute_form() {
+        let cwd = Path::new("/Users/dev/my-project");
+        let leak_path = Path::new("/tmp/zfb-esbuild-out-xyz789/islands.js");
+        let stderr = "error writing /tmp/zfb-esbuild-out-xyz789/islands.js: disk full";
+        let friendly = redact_temp_path(stderr, leak_path, cwd, "<internal outdir>");
+        assert_eq!(friendly, "error writing <internal outdir>: disk full");
+    }
+
+    #[test]
+    fn redact_temp_path_is_a_no_op_when_leak_path_never_appears() {
+        let cwd = Path::new("/Users/dev/my-project");
+        let leak_path = cwd.join(".zfb-esbuild-entry-a1b2c3.tsx");
+        let stderr =
+            "\u{2718} [ERROR] Could not resolve \"preact\"\n\n    components/counter.tsx:2:9:\n";
+        let friendly = redact_temp_path(stderr, &leak_path, cwd, "<synthesized entry>");
+        assert_eq!(friendly, stderr);
     }
 
     #[test]
