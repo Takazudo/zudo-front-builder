@@ -695,6 +695,7 @@ impl BuildRunner for DefaultRunner {
             outdir,
             config.framework,
             &self.islands_plugin_config,
+            IslandsGlobPolicy::HardError,
         )
         .context("islands emitter (DefaultRunner) failed")?;
         let client_scripts = build_default_client_scripts_payloads(
@@ -1132,6 +1133,27 @@ pub(crate) fn compute_css_module_class_maps(
     Ok(out.class_maps)
 }
 
+/// How `build_default_islands_payload` reacts when the scanner reports
+/// [`zfb_islands::ScanMeta::glob_reachable_from_islands`] non-empty (issue
+/// #1387, stopgap for #1385 pt.1: `import.meta.glob` reachable from a
+/// `"use client"` island ships to the browser unexpanded and throws at
+/// hydration).
+///
+/// Both `zfb build` and `zfb dev` route through the same
+/// `build_default_islands_payload` function, but the two surfaces need
+/// different failure modes: a one-shot build should fail loudly and stop,
+/// while a live dev server must keep running so the author can fix the
+/// file and save again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IslandsGlobPolicy {
+    /// `zfb build` — return a hard `Err` naming the offending file(s).
+    HardError,
+    /// `zfb dev` — warn (naming the offending file(s)) and skip this
+    /// rebundle tick; the caller sees `Ok((None, ..))`, same shape as the
+    /// "no islands found" short-circuit, and the dev server stays up.
+    WarnAndSkip,
+}
+
 /// Run the real `build_production_islands_asset` against the
 /// project's discovered island set and return its bytes packaged for
 /// [`ProductionAssetPipeline`].
@@ -1143,7 +1165,18 @@ pub(crate) fn compute_css_module_class_maps(
 /// - the islands scanner returned a transient error (we surface a
 ///   warning so the build keeps going — a missing island bundle is
 ///   an authoring concern, not a hard failure of the build's CSS or
-///   page paths).
+///   page paths), OR
+/// - `islands_glob_policy` is [`IslandsGlobPolicy::WarnAndSkip`] and the
+///   scanner found `import.meta.glob` reachable from an island (#1387) —
+///   a warning is emitted and the rebundle is skipped for this tick.
+///
+/// Returns `Err` when `islands_glob_policy` is
+/// [`IslandsGlobPolicy::HardError`] and the scanner found
+/// `import.meta.glob` reachable from an island (#1387) — this is the
+/// build-time stopgap for #1385 pt.1: the islands esbuild pipeline does
+/// not expand `import.meta.glob` in any form yet, so shipping the literal
+/// call to the browser would throw a `TypeError` at hydration instead of
+/// failing the build with a clear message.
 ///
 /// On `Ok(Some(_))` the orchestrator hashes the bytes and writes
 /// `dist/assets/islands-<hash>.js`. The renderer's HTML references
@@ -1186,6 +1219,9 @@ pub(crate) fn build_default_islands_payload(
     outdir: &Path,
     framework: crate::config::Framework,
     plugin_config: &IslandsPluginConfig,
+    // Issue #1387 — see [`IslandsGlobPolicy`]: `zfb build` passes
+    // `HardError`, `zfb dev`'s `rebundle_islands` passes `WarnAndSkip`.
+    islands_glob_policy: IslandsGlobPolicy,
 ) -> Result<(
     Option<AssetEmitterPayload>,
     std::collections::BTreeSet<String>,
@@ -1242,6 +1278,45 @@ pub(crate) fn build_default_islands_payload(
             return Ok((None, std::collections::BTreeSet::new()));
         }
     };
+
+    // Issue #1387 (stopgap for #1385 pt.1): the islands esbuild pipeline
+    // does not expand `import.meta.glob` in ANY form yet, so a module
+    // reachable from a `"use client"` island that calls it would ship the
+    // literal call to the browser and throw a `TypeError` at hydration.
+    // Turn that runtime crash into a build-time failure (or, in dev, a
+    // warning that skips this rebundle) BEFORE spending any work on
+    // esbuild setup below. When the full islands-shadow fix lands, only
+    // this condition needs to relax — the detection in the scanner does
+    // not need to change.
+    if !scan_meta.glob_reachable_from_islands.is_empty() {
+        let files = scan_meta
+            .glob_reachable_from_islands
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message = format!(
+            "`import.meta.glob(...)` is not supported yet in files reachable from a \
+             \"use client\" island — the islands bundler ships the call to the browser \
+             unexpanded and it throws at hydration. Offending file(s): {files}. Replace \
+             `import.meta.glob` in the listed file(s) with explicit static imports, or move \
+             the glob usage to a server-only (non-\"use client\") module. Full support is \
+             tracked at https://github.com/Takazudo/zudo-front-builder/issues/1385."
+        );
+        match islands_glob_policy {
+            IslandsGlobPolicy::HardError => {
+                return Err(anyhow!("zfb islands: {message}"));
+            }
+            IslandsGlobPolicy::WarnAndSkip => {
+                output::warn(format!(
+                    "zfb islands: {message} Skipping this islands rebundle; the dev server \
+                     stays up — fix the file(s) above and save again."
+                ));
+                return Ok((None, std::collections::BTreeSet::new()));
+            }
+        }
+    }
+
     // Issue #289: a project may use `<ClientRouter />` without any
     // `"use client"` islands (a static page that only wants View
     // Transitions). When the scanner detected client-router usage, the
@@ -4601,6 +4676,7 @@ mod tests {
             &project_root.join("dist"),
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
+            IslandsGlobPolicy::HardError,
         )
         .expect("should not error");
         assert!(
@@ -4634,6 +4710,7 @@ mod tests {
             &project_root.join("dist"),
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
+            IslandsGlobPolicy::HardError,
         )
         .expect("should not error");
         assert!(
@@ -4681,6 +4758,7 @@ mod tests {
             &project_root.join("dist"),
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
+            IslandsGlobPolicy::HardError,
         )
         .expect("should not error");
         assert!(
@@ -4692,6 +4770,66 @@ mod tests {
             "expected empty names for near-miss directive; got {names:?}"
         );
     }
+
+    /// Issue #1387 (stopgap for #1385 pt.1): a `"use client"` island whose
+    /// source calls `import.meta.glob(...)` must fail the build with a
+    /// targeted message — instead of silently shipping a call the islands
+    /// esbuild pipeline cannot expand, which would throw a `TypeError` at
+    /// hydration. The check runs BEFORE any esbuild setup, so this test
+    /// needs no subprocess/binary.
+    #[test]
+    fn build_default_islands_payload_errors_on_glob_reachable_from_island() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::create_dir_all(project_root.join("components")).unwrap();
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "import { Gallery } from \"../components/gallery\";\n\
+             export default function Index() { return <Gallery/>; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project_root.join("components/gallery.tsx"),
+            "\"use client\";\n\
+             const images = import.meta.glob('./images/*.png', { eager: true });\n\
+             export function Gallery() { return null; }\n",
+        )
+        .unwrap();
+        let err = build_default_islands_payload(
+            project_root,
+            &project_root.join("pages"),
+            &[],
+            &project_root.join("dist"),
+            crate::config::Framework::Preact,
+            &IslandsPluginConfig::default(),
+            IslandsGlobPolicy::HardError,
+        )
+        .expect_err("a glob-using island must fail the build");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("import.meta.glob"),
+            "error must name the unsupported construct; got: {message}"
+        );
+        assert!(
+            message.contains("gallery.tsx"),
+            "error must name the offending file; got: {message}"
+        );
+        assert!(
+            message.contains("1385"),
+            "error must link the tracked follow-up issue #1385; got: {message}"
+        );
+    }
+
+    // Zero-regression coverage for "no glob anywhere" is already provided by
+    // `default_runner_returns_none_islands_when_no_pages_dir`,
+    // `_when_no_use_client_components`, and `_for_near_miss_directive`
+    // above — all three now thread `IslandsGlobPolicy::HardError` and still
+    // assert `.expect("should not error")`. A companion test using a REAL
+    // (non-empty) island set here would exercise the real esbuild
+    // subprocess via `build_production_islands_asset`, which none of this
+    // module's other non-`#[ignore]`d tests do — see the doc comments on
+    // the three tests above ("esbuild is never invoked").
 
     /// End-to-end check that `DefaultRunner::emit_prod_assets`
     /// invokes the real Tailwind v4 CLI and returns non-empty CSS
