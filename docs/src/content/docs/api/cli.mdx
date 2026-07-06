@@ -35,13 +35,17 @@ zfb new <name> [--template <template>]
 
 ### Templates
 
-v0 ships a single template: `basic-blog`, baked into the binary at compile time from `crates/zfb/templates/basic-blog/`.
+v0 ships two templates, both baked into the binary at compile time from `crates/zfb/templates/`:
+
+- `basic-blog` (default) — full-featured blog scaffold with `package.json`; `zfb new` runs `pnpm install` for it automatically when pnpm is on `PATH`.
+- `node-free` — ships no `package.json` and skips the post-scaffold `pnpm install` step entirely, for projects run with no Node/pnpm on `PATH`. See [Install without Node](../install/node-free.mdx).
 
 ### Example
 
 ```sh
 zfb new my-site
 zfb new my-site --template basic-blog
+zfb new my-site --template node-free
 ```
 
 ## `zfb dev`
@@ -73,6 +77,8 @@ To restore the pre-lazy behavior and re-render every affected route eagerly on e
 |---|---|---|
 | `ZFB_DEV_EAGER` | `1` | Disable lazy dev rendering. Re-renders every affected route eagerly on each file change. |
 | `ZFB_LAZY_DEV_RENDER` | `0` or `1` | Precise override of the lazy dev-render switch. `1` forces lazy; `0` forces eager. Takes precedence over `ZFB_DEV_EAGER` when both are set. |
+| `ZFB_DEV_BOOT_LAZY` | `1` | Opt-in fast boot: when a valid prebuilt `dist/` exists, serve it immediately and defer per-route rendering to the first request instead of rendering every route at boot. Requires lazy rendering (no-op when `ZFB_DEV_EAGER` is set). Off by default. |
+| `ZFB_DEV_DEFER_BUNDLE` | `0` | Opt out of the boot-lazy bundle deferral: build the renderer before bind (no SSR-only 404 window) at the cost of a slower first-accept. On by default when boot-lazy is active. |
 
 ### Example
 
@@ -118,6 +124,8 @@ Serve a previously built site locally. Run `zfb build` first.
 ```sh
 zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 ```
+
+When `zfb.config.json`'s `adapter` field names a supported adapter (e.g. `@takazudo/zfb-adapter-cloudflare`), `zfb preview` hands off to `wrangler dev` instead of zfb's own static server — `--outdir` then only pre-checks that the directory exists, since wrangler's own config controls what it actually serves. See [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx).
 
 ### Flags
 
@@ -182,6 +190,8 @@ The following environment variables affect `zfb` globally (not specific to one s
 |---|---|---|
 | `ZFB_DEV_EAGER` | unset | Set to `1` to disable lazy dev rendering in `zfb dev`. Re-renders every affected route eagerly on each file change. |
 | `ZFB_LAZY_DEV_RENDER` | unset | Set to `0` or `1` for precise control over the lazy dev-render switch. Takes precedence over `ZFB_DEV_EAGER` when both are set. |
+| `ZFB_DEV_BOOT_LAZY` | unset | Set to `1` to opt in to fast dev-server boot: serve a valid prebuilt `dist/` immediately and defer each route's rendering to its first request. Requires lazy rendering; no-op when `ZFB_DEV_EAGER` is set. |
+| `ZFB_DEV_DEFER_BUNDLE` | unset | Set to `0` to opt out of the boot-lazy bundle deferral (build the renderer before bind instead of after the first request). On by default when boot-lazy is active. |
 | `ZFB_PLUGIN_HOOK_TIMEOUT` | `120` (seconds) | Maximum time (in seconds) any single plugin hook reply is awaited before the plugin host is force-killed and the build fails. Precedence: `pluginHookTimeoutSecs` in config > this env var > 120s built-in default. |
 
 <Note>

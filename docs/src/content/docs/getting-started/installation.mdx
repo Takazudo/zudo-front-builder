@@ -19,6 +19,29 @@ You will need:
 - **Node.js ≥ 22** — the config loader and some build steps invoke Node.
 - **pnpm** — install via the [official installer](https://pnpm.io/installation). zfb scaffolds projects that use pnpm and will run `pnpm install` for you when it can find pnpm on your `PATH`.
 
+## Supported platforms
+
+`@takazudo/zfb` ships a prebuilt platform binary via npm optional-deps for:
+
+| Platform | Architecture | npm optional dependency |
+| --- | --- | --- |
+| Linux (glibc) | x64 | `@takazudo/zfb-linux-x64-gnu` |
+| Linux (glibc) | arm64 | `@takazudo/zfb-linux-arm64-gnu` |
+| macOS | x64 | `@takazudo/zfb-darwin-x64` |
+| macOS | arm64 (Apple Silicon) | `@takazudo/zfb-darwin-arm64` |
+| Windows | x64 | `@takazudo/zfb-win32-x64-msvc` |
+
+<Note title="musl/Alpine Linux is not supported yet">
+
+No `@takazudo/zfb-linux-*-musl` package exists. On Alpine (or another
+musl-based distro), the `zfb` wrapper detects the musl runtime at startup and
+exits with a friendly error — `musl/Alpine is not supported yet — no
+@takazudo/zfb-linux-*-musl package exists` — instead of the confusing
+dynamic-loader failure the glibc binary would otherwise produce. Use a
+glibc-based Linux image (e.g. Debian/Ubuntu) instead.
+
+</Note>
+
 ## Install the CLI
 
 Install `@takazudo/zfb` as a dev dependency in your project:

@@ -14,6 +14,16 @@ pnpm create zfb@latest my-site
 npm create zfb@latest my-site
 ```
 
+<Note title="pnpm 11 に関する注意">
+
+pnpm 11 の `minimumReleaseAge` により、新しいリリースから約 48 時間以内は
+`create-zfb` の一つ前のリリースがインストールされることがあります。
+`create-zfb` が起動時に古いインストールについて警告する場合は、
+`pnpm create zfb@latest --config.minimumReleaseAge=0` で再実行するか、
+代わりに `npm create zfb@latest` を使ってください。
+
+</Note>
+
 これは `create-zfb` イニシャライザを実行します。内部では `zfb new` を呼び出し、同梱の `basic-blog` テンプレートを `my-site/` にコピーします。`PATH` 上に pnpm があれば、zfb はテンプレートのコピー直後に `pnpm install` を自動実行します。なければ、自分で実行するよう促す短いメッセージを表示します。
 
 ```bash
