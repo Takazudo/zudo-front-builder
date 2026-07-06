@@ -219,8 +219,7 @@ fn expand_includes_in_children(
         match extract_include_attrs(&children[i]) {
             IncludeMatch::Ok(attrs) => {
                 // Found an `:::include` paragraph at `i`.
-                let replacement =
-                    resolve_and_expand(&attrs, source_dir, env, visited, depth, ctx);
+                let replacement = resolve_and_expand(&attrs, source_dir, env, visited, depth, ctx);
 
                 // Remove the directive paragraph.
                 children.remove(i);
@@ -971,7 +970,9 @@ mod tests {
 
         assert_eq!(diags.len(), 1, "expected exactly one diagnostic: {diags:?}");
         match &diags[0] {
-            zfb_md_ast::diagnostics::MarkdownDiagnostic::Generic { severity, message, .. } => {
+            zfb_md_ast::diagnostics::MarkdownDiagnostic::Generic {
+                severity, message, ..
+            } => {
                 assert_eq!(
                     *severity,
                     zfb_md_ast::diagnostics::DiagnosticSeverity::Error

@@ -3298,8 +3298,13 @@ mod tests {
         let diags = p.take_markdown_diagnostics();
         assert_eq!(diags.len(), 1, "expected exactly one diagnostic: {diags:?}");
         match &diags[0] {
-            MarkdownDiagnostic::Generic { severity, message, .. } => {
-                assert_eq!(*severity, zfb_md_ast::diagnostics::DiagnosticSeverity::Error);
+            MarkdownDiagnostic::Generic {
+                severity, message, ..
+            } => {
+                assert_eq!(
+                    *severity,
+                    zfb_md_ast::diagnostics::DiagnosticSeverity::Error
+                );
                 assert!(
                     message.contains("githubAutolinks requires repo"),
                     "got: {message}"
