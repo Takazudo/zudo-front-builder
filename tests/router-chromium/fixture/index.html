@@ -58,6 +58,22 @@
       <a href="/page-b.html" id="to-page-b">Page B</a>
       <!-- tap-strategy prefetch: mousedown fires prefetch() synchronously (no rIC). -->
       <a href="/prefetch-target.html" id="prefetch-link" data-zfb-prefetch="tap">Prefetch target</a>
+      <!--
+        hover-strategy prefetch with NESTED markup (#1398): pointerenter/
+        pointerleave delegation resolves to this link via a CHILD <span>, not
+        the link itself. `white-space: nowrap` keeps the two spans on one
+        line regardless of container width, so a real mouse-hover path moving
+        from one child to the other never leaves the link's bounding box.
+      -->
+      <a
+        href="/prefetch-target.html?via=nested-hover"
+        id="prefetch-link-nested"
+        data-zfb-prefetch="hover"
+        style="white-space: nowrap"
+      >
+        <span id="prefetch-link-nested-icon">icon</span>
+        <span id="prefetch-link-nested-label">label</span>
+      </a>
     </nav>
     <main>
       <h1>Home</h1>
