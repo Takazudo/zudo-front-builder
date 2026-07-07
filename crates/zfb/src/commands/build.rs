@@ -1431,7 +1431,7 @@ fn materialise_islands_shadow(
     }
     // (b) every file under each glob module's directory subtree (its matched
     //     targets live here).
-    for g in &scan_meta.glob_reachable_from_islands {
+    for g in expanded_by_path.keys() {
         let dir = g.parent().unwrap_or(root);
         for entry in walkdir::WalkDir::new(dir)
             .follow_links(false)
@@ -5383,6 +5383,33 @@ mod tests {
         assert!(
             std::fs::symlink_metadata(shadow_root.join("components/widgets/a.tsx")).is_ok(),
             "glob target must be present in the shadow"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_does_not_walk_unmirrorable_glob_module_subtree() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outside = tempdir().unwrap();
+        let outside_glob = outside.path().join("missing-dir/glob.tsx");
+        let island_src = write_shadow_fixture(
+            project_root,
+            "components/gallery.tsx",
+            "\"use client\";\nexport function Gallery() { return null; }\n",
+        );
+
+        let (islands, scan_meta) =
+            basic_shadow_inputs(project_root, vec![outside_glob], vec![island_src]);
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("unmirrorable glob modules should keep the stopgap, not walk their subtree");
+        let offenders = match outcome {
+            IslandsShadowOutcome::KeepStopgap(o) => o,
+            IslandsShadowOutcome::Ready(_) => panic!("outside-root glob must keep stopgap"),
+        };
+        let message = offenders.join("\n");
+        assert!(
+            message.contains("outside the mirrorable project tree"),
+            "names unmirrorable glob reason: {message}"
         );
     }
 
