@@ -79,6 +79,24 @@ function consumerPreservedAttrs(): string[] {
   return content ? content.toLowerCase().split(/\s+/).filter(Boolean) : [];
 }
 
+const attrValueSelector = (attr: string, value: string): string =>
+  value === "" ? `[${attr}=""]` : `[${attr}=${CSS.escape(value)}]`;
+
+const querySelectorWithAttrValue = (
+  root: ParentNode,
+  selectorPrefix: string,
+  attr: string,
+  value: string,
+): Element | null => {
+  const escapedMatch = root.querySelector(`${selectorPrefix}${attrValueSelector(attr, value)}`);
+  if (escapedMatch) return escapedMatch;
+  return (
+    Array.from(root.querySelectorAll(`${selectorPrefix}[${attr}]`)).find(
+      (el) => el.getAttribute(attr) === value,
+    ) ?? null
+  );
+};
+
 /*
  * swap attributes of the html element
  * delete all attributes from the current document
@@ -148,7 +166,7 @@ export function swapBodyElement(newElement: Element, oldElement: Element) {
 
   for (const el of oldElement.querySelectorAll(`[${PERSIST_ATTR}]`)) {
     const id = el.getAttribute(PERSIST_ATTR);
-    const newEl = newElement.querySelector(`[${PERSIST_ATTR}="${id}"]`);
+    const newEl = id !== null ? querySelectorWithAttrValue(newElement, "", PERSIST_ATTR, id) : null;
     if (!newEl) continue; // no matching target — leave in old body to be discarded
     persistPairs.push({ old: el, newTarget: newEl });
     if (moveBefore) {
@@ -260,13 +278,15 @@ export const vueScopedStyleId = (el: HTMLStyleElement): string => {
 // either because it has the data attribute or because replacing it would cause avoidable FOUC.
 const persistedHeadElement = (el: HTMLElement, newDoc: Document): Element | null => {
   const id = el.getAttribute(PERSIST_ATTR);
-  const newEl = id && newDoc.head.querySelector(`[${PERSIST_ATTR}="${id}"]`);
+  const newEl = id !== null ? querySelectorWithAttrValue(newDoc.head, "", PERSIST_ATTR, id) : null;
   if (newEl) {
     return newEl;
   }
   if (el.matches("link[rel=stylesheet]")) {
     const href = el.getAttribute("href");
-    return newDoc.head.querySelector(`link[rel=stylesheet][href="${href}"]`);
+    return href !== null
+      ? querySelectorWithAttrValue(newDoc.head, "link[rel=stylesheet]", "href", href)
+      : null;
   }
   // In dev mode, Vite injects <style data-vite-dev-id="..."> elements whose
   // textContent may later be transformed (especially Vue's `:deep()` → `[data-v-xxx]`).
@@ -279,7 +299,7 @@ const persistedHeadElement = (el: HTMLElement, newDoc: Document): Element | null
   if ((import.meta as any).env?.DEV && el instanceof HTMLStyleElement) {
     const viteDevId = vueScopedStyleId(el);
     if (viteDevId) {
-      return newDoc.head.querySelector(`style[data-vite-dev-id="${viteDevId}"]`);
+      return querySelectorWithAttrValue(newDoc.head, "style", "data-vite-dev-id", viteDevId);
     }
   }
   // Preserve inline <style> elements with identical content across navigations.
@@ -297,7 +317,9 @@ const persistedHeadElement = (el: HTMLElement, newDoc: Document): Element | null
   // Preserve font preload links across navigations to avoid re-fetching cached fonts.
   if (el.matches("link[rel=preload][as=font]")) {
     const href = el.getAttribute("href");
-    return newDoc.head.querySelector(`link[rel=preload][as=font][href="${href}"]`);
+    return href !== null
+      ? querySelectorWithAttrValue(newDoc.head, "link[rel=preload][as=font]", "href", href)
+      : null;
   }
   return null;
 };

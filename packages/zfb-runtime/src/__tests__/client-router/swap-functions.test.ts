@@ -62,6 +62,90 @@ describe("swapHeadElements — head dedup", () => {
     expect(metas[0]).toBe(oldMeta);
   });
 
+  it("preserves a persist-id'd head element with selector-special characters", () => {
+    const persistId = 'theme"] [name="injected]';
+    const oldMeta = document.createElement("meta");
+    oldMeta.setAttribute(PERSIST_ATTR, persistId);
+    oldMeta.setAttribute("name", "color-scheme");
+    oldMeta.setAttribute("content", "dark");
+    document.head.append(oldMeta);
+
+    const newDoc = document.implementation.createHTMLDocument();
+    const newMeta = newDoc.createElement("meta");
+    newMeta.setAttribute(PERSIST_ATTR, persistId);
+    newMeta.setAttribute("name", "color-scheme");
+    newMeta.setAttribute("content", "dark");
+    newDoc.head.append(newMeta);
+
+    swapHeadElements(newDoc);
+
+    const metas = document.head.querySelectorAll("meta[name=color-scheme]");
+    expect(metas).toHaveLength(1);
+    expect(metas[0]).toBe(oldMeta);
+  });
+
+  it("keeps an existing stylesheet when the href contains selector-special characters", () => {
+    const href = '/assets/site"] [data-x="bad].css';
+    const oldLink = document.createElement("link");
+    oldLink.setAttribute("rel", "stylesheet");
+    oldLink.setAttribute("href", href);
+    document.head.append(oldLink);
+
+    const newDoc = document.implementation.createHTMLDocument();
+    const newLink = newDoc.createElement("link");
+    newLink.setAttribute("rel", "stylesheet");
+    newLink.setAttribute("href", href);
+    newDoc.head.append(newLink);
+
+    swapHeadElements(newDoc);
+
+    const links = document.head.querySelectorAll('link[rel="stylesheet"]');
+    expect(links).toHaveLength(1);
+    expect(links[0]).toBe(oldLink);
+  });
+
+  it("keeps an existing font preload when the href contains selector-special characters", () => {
+    const href = '/fonts/body"] [data-x="bad].woff2';
+    const oldLink = document.createElement("link");
+    oldLink.setAttribute("rel", "preload");
+    oldLink.setAttribute("as", "font");
+    oldLink.setAttribute("href", href);
+    document.head.append(oldLink);
+
+    const newDoc = document.implementation.createHTMLDocument();
+    const newLink = newDoc.createElement("link");
+    newLink.setAttribute("rel", "preload");
+    newLink.setAttribute("as", "font");
+    newLink.setAttribute("href", href);
+    newDoc.head.append(newLink);
+
+    swapHeadElements(newDoc);
+
+    const links = document.head.querySelectorAll('link[rel="preload"][as="font"]');
+    expect(links).toHaveLength(1);
+    expect(links[0]).toBe(oldLink);
+  });
+
+  it("preserves a Vue scoped dev style when data-vite-dev-id contains selector-special characters", () => {
+    const viteDevId = '/src/App.vue?vue&type=style&scoped=true&path="bad]';
+    const oldStyle = document.createElement("style");
+    oldStyle.dataset["viteDevId"] = viteDevId;
+    oldStyle.textContent = ".old[data-v]{}";
+    document.head.append(oldStyle);
+
+    const newDoc = document.implementation.createHTMLDocument();
+    const newStyle = newDoc.createElement("style");
+    newStyle.dataset["viteDevId"] = viteDevId;
+    newStyle.textContent = ".new[data-v]{}";
+    newDoc.head.append(newStyle);
+
+    swapHeadElements(newDoc);
+
+    const styles = document.head.querySelectorAll("style");
+    expect(styles).toHaveLength(1);
+    expect(styles[0]).toBe(oldStyle);
+  });
+
   it("removes head elements that the new document does not contain", () => {
     document.head.innerHTML = `
       <link rel="stylesheet" href="/old.css">
@@ -135,6 +219,26 @@ describe("swapBodyElement — persist lift", () => {
     // Surrounding markup is the new content.
     expect(document.querySelector("h1")?.textContent).toBe("New Title");
     expect(document.querySelector("main")?.textContent).toBe("new content");
+  });
+
+  it("preserves a persist-id'd body element when the id contains quotes and brackets", () => {
+    const persistId = 'player"] [data-x="bad]';
+    const keptOriginal = document.createElement("div");
+    keptOriginal.setAttribute(PERSIST_ATTR, persistId);
+    keptOriginal.id = "kept";
+    keptOriginal.textContent = "state";
+    document.body.append(keptOriginal);
+
+    const newDoc = document.implementation.createHTMLDocument();
+    const incoming = newDoc.createElement("div");
+    incoming.setAttribute(PERSIST_ATTR, persistId);
+    incoming.id = "incoming";
+    newDoc.body.append(incoming);
+
+    swapBodyElement(newDoc.body, document.body);
+
+    expect(document.getElementById("kept")).toBe(keptOriginal);
+    expect(document.getElementById("incoming")).toBeNull();
   });
 
   it("discards an old persist element when the new body has no matching id", () => {
