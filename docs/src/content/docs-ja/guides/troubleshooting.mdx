@@ -55,15 +55,21 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 **症状**（`zfb build` から。または `zfb dev` からは警告 + リバンドルのスキップ）:
 
 ```
-zfb islands: `import.meta.glob(...)` is only supported in the eager string-literal
-form (`import.meta.glob('<literal>', { eager: true })`) in files reachable from a
-"use client" island. The following remain unsupported and would ship to the browser
-unexpanded (throwing at hydration): <file> — ...
+zfb islands: `import.meta.glob(...)` cannot be safely shipped from one or more
+files reachable from a "use client" island. zfb can currently expand eager
+string-literal globs only when the glob call is in an island-reachable module
+that is written as a real shadow copy; unsupported forms and globs found only in
+raw-mirrored glob target/subtree files would ship to the browser unexpanded and
+throw at hydration: <file> — ... Follow the remediation above for each file,
+use the eager string-literal form where applicable, replace the glob with
+explicit static imports, or move the usage to a server-only (non-"use client")
+module. Tracked at https://github.com/Takazudo/zudo-front-builder/issues/1385
+and https://github.com/Takazudo/zudo-front-builder/issues/1412.
 ```
 
-**原因:** `import.meta.glob` は Vite 専用のビルド時マクロです。島をバンドルする esbuild はこれをネイティブには理解しないため、zfb は esbuild がファイルを目にする前に、サポートされる唯一の形式を自分で展開します。`"use client"` 島から到達可能なファイルでサポートされるのは、パターンがインポート元ファイル自身のディレクトリ配下に解決される `import.meta.glob("<string-literal>", { eager: true })` だけです。それ以外のすべて — デフォルトの lazy 形式、`{ eager: false }`、リテラルでないパターン、`import`/`query`/`as` オプション、`../` でディレクトリを抜け出すパターン — は拒否されます。
+**原因:** `import.meta.glob` は Vite 専用のビルド時マクロです。島をバンドルする esbuild はこれをネイティブには理解しないため、zfb は esbuild がファイルを目にする前に、サポートされる唯一の形式を自分で展開します。サポートされるのは、glob 呼び出しが島から到達可能なモジュール内にあり、そのモジュールが展開済みの実体あるシャドウコピーファイルとして書き出される場合の `import.meta.glob("<string-literal>", { eager: true })` だけです。パターンはインポート元ファイル自身のディレクトリ配下に解決される必要があります。それ以外のすべて — デフォルトの lazy 形式、`{ eager: false }`、リテラルでないパターン、`import`/`query`/`as` オプション、`../` でディレクトリを抜け出すパターン — は拒否されます。JS 風のファイルが raw-mirrored な glob ターゲット、またはサブツリー内の companion ファイルとしてだけ到達していて、その中に glob がある場合も拒否されます。そうしなければ、そのファイルは未展開のままブラウザへ配信され、hydration 中に例外を投げるためです。
 
-**対処:** 完全なサポートマトリクスと代替手段（プラグインの仮想モジュール、または明示的な静的インポート）は [Islands: `import.meta.glob` のサポート](../concepts/islands.mdx#import-meta-glob-のサポート) を参照してください。なお **クライアントスクリプト**（`*.client.ts`）は `import.meta.glob` を一切サポートせず、しかも島とは異なり、その失敗はビルド時には検出され *ません*。[クライアントスクリプト: `import.meta.glob` はサポートされていません](./client-scripts.mdx#import-meta-glob-はサポートされていません) を参照してください。
+**対処:** 完全なサポートマトリクスと代替手段は [Islands: `import.meta.glob` のサポート](../concepts/islands.mdx#import-meta-glob-のサポート) を参照してください。使える場所では eager + 文字列リテラル形式に直し、ネストした glob は島から到達可能なモジュールへ hoist するか、raw-mirrored な glob ターゲット／サブツリー内ファイルを glob されたサブツリーの外へ移動するか、明示的な静的インポートへ置き換えてください。なお **クライアントスクリプト**（`*.client.ts`）は `import.meta.glob` を一切サポートせず、しかも島とは異なり、その失敗はビルド時には検出され *ません*。[クライアントスクリプト: `import.meta.glob` はサポートされていません](./client-scripts.mdx#import-meta-glob-はサポートされていません) を参照してください。
 
 ## プロジェクトルート外への相対インポートが "Could not resolve" になる
 
