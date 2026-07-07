@@ -57,6 +57,21 @@ handle.shutdown()?;
 
 すでに独自の tokio ランタイムを駆動しているホスト向けに、非同期の終端 `Server::serve(self, shutdown).await` も利用できます。
 
+### 設定形式: `zfb.config.json` を優先する
+
+`config_path` は `zfb.config.json` と `zfb.config.ts` の両方を受け付けます。組み込みサーバーでは、**`zfb.config.json` が推奨形式です**。ビルドステップなしで直接読み込まれます（このガイドのすべての例もこれを使っています）。
+
+`zfb.config.ts` もサポートされていますが、TypeScript 設定を評価するには、まず **esbuild** でバンドルする必要があります。そして組み込みの `zfb-server` は、`zfb` CLI とは異なり、自前の esbuild バイナリを同梱していません。そのため、リポジトリ外の組み込み側が `.ts` ファイルを `config_path` に指定する場合は、次のいずれかが必要です。
+
+- 代わりに `zfb.config.json` を同梱または生成する — esbuild が一切不要で、最もシンプルな道です。
+- `build()` を呼び出す前に、環境変数 `ZFB_ESBUILD_BIN` を利用可能な esbuild CLI バイナリに設定する。
+
+<Note>
+
+`.ts` 設定が "esbuild binary not found" エラーで失敗する場合、原因はこれです。`zfb.config.json` に切り替えるか、`ZFB_ESBUILD_BIN` を設定してください。
+
+</Note>
+
 ## リクエスト拡張の注入
 
 `ServerBuilder::with_request_extension::<T>(value)` は、受信するすべてのリクエストの `http::Extensions` マップにクローンされるプロセス単位の値を登録します。ハンドラは `req.extensions().get::<T>()` でそれを読みます:
@@ -153,9 +168,96 @@ handle.join()??;
 
 `shutdown()` はグレースフルシャットダウンのシグナルを一度だけ送ります。それ以降の呼び出しは何もしません。`join()` はシングルショットで、スレッドを待てるのは 1 つの呼び出し元だけです。
 
+## ライブコンテンツ / ファイル監視
+
+ここまでで説明したのは、**静的 dist** サーバーです。`build()` が `zfb.config.json` を読み、ルートテーブルは `dist/` 内のファイルへフォールスルーします。これは、コンテンツがビルド時に固定されるパッケージ済みアプリに適した形です。
+
+一方で、ホストが実行時にサーバーへコンテンツを押し込みたい場合があります。たとえば、ファイル監視のコールバックから書き込む `PageCache` や、再ビルドごとのライブリロードシグナルです。その場合は、必要な制御の度合いに応じて 2 つのレベルを選べます。
+
+### レベル 1: ビルダー経由で `PageCache` を投入する
+
+`ServerBuilder::with_page_cache(cache)` は、`build()` がデフォルトで割り当てる空のものではなく、あなたが所有する [`PageCache`](https://docs.rs/zfb-server) をサーバーに渡します。`PageCache` は `Clone` です（内部的には `Arc<RwLock<…>>`）。そのため、手元にハンドルを保持し、クローンをビルダーに渡してから、実行時に*同じ*共有マップへ書き込めます。稼働中のサーバーはすべての insert を見ます。
+
+```rust
+use zfb_server::{Server, ServerMode, PageCache};
+
+let cache = PageCache::new();
+cache.insert("/", "<h1>initial</h1>").await; // seed before serving
+
+let server = Server::builder()
+    .config_path("./zfb.config.json")
+    .mode(ServerMode::Embed)
+    .with_page_cache(cache.clone())
+    .build()?;
+
+let handle = server.serve_in_thread()?;
+
+// later — from your own file-watcher callback or rebuild loop:
+cache.insert("/blog/foo", rebuilt_html).await;   // add or replace one URL
+cache.remove(["/blog/stale"]).await;             // drop a vanished route
+```
+
+キャッシュキーは、ブラウザが要求する先頭スラッシュ付きの URL パスです（`/`、`/blog/foo`、`/sitemap.xml`）。ページキャッシュのレイヤーは、上の優先順位リストでディスク上の `dist/` フォールバックより上にあるため、キャッシュヒットは同じ URL の静的ファイルを覆い、ミスした場合はそのままディスクへフォールスルーします。`PageCache` は、HTML 以外や一括再ビルドの用途向けに、`insert_with_content_type`、`insert_bytes_with_content_type`（バイナリボディ）、`replace_all`（アトミックな全置換）も公開しています。
+
+必要なのが動的なページバイトだけなら、これで十分です。これが**提供しない**のはライブリロードチャンネルです。`ServerMode::Embed` はライブリロードスクリプトを注入せず、`/__zfb/reload` SSE エンドポイントもマウントしません。また、ビルダーは `broadcast` センダーを内部で所有します。
+
+### レベル 2: `ServeOpts` + `serve_with_listener` へ降りる
+
+ページキャッシュ以上のものが必要な場合、たとえば稼働中のライブリロード `broadcast` チャンネル、リクエスト時 SSR ルート（`SsrRoutesHandle`）、プラグイン dev-middleware が必要な場合、ビルダーは意図的に入口ではありません。自分で [`ServeOpts`](https://docs.rs/zfb-server) を構築し、低レベルの `serve_with_listener(opts, listener, shutdown)`（またはリスナーもバインドする `serve(opts, shutdown)`）を呼び出します。どちらも公開され安定しています。`zfb dev` 自身が使っているのと同じ入口です。
+
+`ServeOpts` は直接フィールドを埋めるプレーンな構造体です。ライブコンテンツに関係するフィールドは次のとおりです。
+
+- **`pages: PageCache`** — レベル 1 と同じ共有キャッシュです。監視側からこれに書き込みます。
+- **`broadcast: ReloadTx`** — ライブリロードのセンダーです。`ReloadTx` は `tokio::sync::broadcast::Sender<ReloadEvent>` です。再ビルドごとに `ReloadEvent` を送ると、SSE ストリームを受信している接続済みクライアントがリロードします。（`tokio::sync::broadcast::channel::<ReloadEvent>(capacity)` でチャンネルを作り、`Sender` を保持します。選んだ `mode` によって SSE エンドポイントがマウントされるかが決まります。）
+- **`ssr_routes: Option<SsrRoutesHandle>`** — `prerender = false` ページ向けのリクエスト時 JS SSR で、セッション中に差し替え可能です。
+- **`mode: ServerMode`** — ライブリロードのスクリプト注入と `/__zfb/reload` SSE エンドポイントのマウントが必要なら `ServerMode::Dev` を選びます。`Embed`/`Preview` ではこれらはオフです。
+
+```rust
+use zfb_server::{serve_with_listener, ServeOpts, ServerMode, PageCache, ReloadEvent};
+use tokio::net::TcpListener;
+
+let pages = PageCache::new();
+let (broadcast, _rx) = tokio::sync::broadcast::channel::<ReloadEvent>(64);
+
+let opts = ServeOpts {
+    project_root: project_root.clone(),
+    dist_root: dist_root.clone(),
+    html_root: dist_root.clone(), // embed/preview callers alias dist_root
+    public_root,
+    addr: "127.0.0.1:0".parse()?,
+    pages: pages.clone(),
+    broadcast: broadcast.clone(),
+    mode: ServerMode::Dev, // Dev mounts the livereload SSE endpoint
+    plugins: None,
+    injected_routes: None,
+    ssr_routes: None,
+    base: None,
+    trailing_slash: false,
+    islands_bundle_url: None,
+    css_bundle_url: None,
+    allowed_hosts: Vec::new(),
+    bound_host: None,
+    render_on_request_hook: None,
+};
+
+let listener = TcpListener::bind(opts.addr).await?;
+// from your watcher: pages.insert(url, html).await;  then  broadcast.send(reload_event);
+serve_with_listener(opts, listener, std::future::pending()).await?;
+```
+
+`ServeOpts` 内のすべてのパスは絶対パスである必要があり、自分で解決します（ビルダーの `config_path` ローダーはこれを代行します。レベル 1 で足りる場合にそちらを優先する理由の 1 つです）。これは最も低い公開レイヤーです。`zfb dev` の bin クレートが、ファイル監視と再ビルドのオーケストレーターを差し込んでいる場所そのものです。
+
+<Note title="MDX 監視再ビルドの全体">
+
+キャッシュ投入は動的な*バイト列*の配信を扱いますが、zfb の MDX コンパイル / island バンドルパイプラインを実行してくれるわけではありません。それは `zfb` bin クレート側にあります。ユーザーがローカルで Markdown を編集し、完全に再レンダーされたプレビューを見る必要がある場合は、[Desktop Deployment](./desktop-deployment.mdx#より難しいケース-アプリ内でコンテンツをリビルドする) の「より難しいケース」の注記が、そのフルパイプライン向けに `zfb dev` をサイドカー（Mode B）として起動する方法を扱っています。
+
+</Note>
+
 ## メソッド予算
 
 組み込みの API 表面は意図的に小さく保たれています。`Server` 型と `ServerBuilder` 型を合わせて公開するメソッドは 9 個です。`Server::builder`、`Server::serve`、`Server::serve_in_thread`、それに 6 つのビルダーメソッド（`config_path`、`mode`、`bind`、`with_request_extension`、`with_ssr_handler`、`build`）です。`ServerHandle::addr`、`ServerHandle::shutdown`、`ServerHandle::join` は意図的に別の型に置かれており、この予算からは除外されています。
+
+`with_page_cache`（上記）はライブコンテンツ向けの脱出口であり、これも設計上このカウントから除外されています。これは `ServeOpts` へ降りることに対応するビルダーレベルの手段であって、静的 dist 向けの中核 API 表面の一部ではありません。
 
 将来の機能で合計 10 個を超える必要が生じた場合、正しい対応は継ぎ目を再設計するフォローアップイシューであって、10 個目のメソッドを付け足すことではありません。
 
