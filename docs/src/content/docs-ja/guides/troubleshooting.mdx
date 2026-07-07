@@ -79,4 +79,4 @@ unexpanded (throwing at hydration): <file> — ...
 
 **原因:** TypeScript の設定を評価するには、まずそれを esbuild でバンドルする必要がありますが、組み込みの `zfb-server` は `zfb` CLI のように自前の esbuild バイナリを同梱していません。
 
-**対処:** `config_path` を `zfb.config.json` ファイルに切り替える（esbuild は一切不要 — 最もシンプルな修正）か、`build()` を呼び出す前に環境変数 `ZFB_ESBUILD_BIN` を利用可能な esbuild CLI バイナリに設定してください。完全な説明は [ライブラリとして組み込む](./embed-as-library.mdx) を参照してください。
+**対処:** `config_path` を `zfb.config.json` ファイルに切り替える（esbuild は一切不要 — 最もシンプルな修正）か、`build()` を呼び出す前に環境変数 `ZFB_ESBUILD_BIN` を利用可能な esbuild CLI バイナリに設定してください。完全な説明は [ライブラリとして組み込む: 設定形式](./embed-as-library.mdx#設定形式-zfb-config-json-を優先する) を参照してください。
