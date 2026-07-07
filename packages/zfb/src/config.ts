@@ -784,7 +784,7 @@ export type GithubAutolinksConfig = {
    * (e.g. `"owner/repo"` renders `#123` as
    * `https://github.com/owner/repo/issues/123`). Required — see above.
    */
-  repo?: string;
+  repo: string;
 };
 
 /**
