@@ -184,14 +184,17 @@ Requirements for the supported form:
 |---|---|
 | A server-only page, layout, or component (never reachable from a `"use client"` island) | Yes — always has been, via the general SSR shadow-copy bundler |
 | A `"use client"` island's own file | Yes, since issue #1404 |
-| A module transitively imported from a `"use client"` island | Yes, since #1404, same restrictions as above |
+| A module transitively imported from a `"use client"` island | Yes, since #1404, same restrictions as above, when the module is part of the island import graph and is written as a real expanded shadow-copy file |
+| A file reachable only because it is matched by another island-reachable glob (a raw-mirrored glob target or subtree companion) | **No** — see "Unsupported forms" below |
 | A `*.client.{ts,tsx,js,jsx}` [client script](../guides/client-scripts.mdx) (or anything it imports) | **No** — see "Client scripts" below |
 
 Before #1404, *any* `import.meta.glob` reachable from an island — even the supported eager + string-literal form — was a hard build error (a stopgap from issue #1387). The islands build now materialises a temporary shadow copy of the island-reachable source tree with each supported glob call already expanded, the same trick the SSR bundler has used for server-only modules since issues #665/#670.
 
+There is one important boundary: the shadow also raw-mirrors files under each island-reachable glob module's directory so matched target files exist for esbuild, but those raw-mirrored target/subtree files are not recursively expanded. If one of those files contains its own `import.meta.glob(...)`, zfb rejects it instead of shipping an unexpanded Vite-only macro to the browser. If the same file is also imported from the island graph in the normal way, it is a real expanded shadow copy and its supported glob keeps working.
+
 ### Unsupported forms fail the build (or, in dev, warn and skip)
 
-Any of the following — found anywhere in the module graph reachable from a `"use client"` island — fails `zfb build` with a message naming the offending file. During `zfb dev` the same message is logged as a warning and that rebundle tick is skipped, so the dev server stays up while you fix the file and save again:
+Any of the following fails `zfb build` with a message naming the offending file. During `zfb dev` the same message is logged as a warning and that rebundle tick is skipped, so the dev server stays up while you fix the file and save again:
 
 - the default lazy form — `import.meta.glob("./items/*.tsx")` with no options
 - `{ eager: false }`
@@ -199,6 +202,9 @@ Any of the following — found anywhere in the module graph reachable from a `"u
 - the `import`, `query`, or `as` options
 - a pattern that escapes the file's own directory (`../`)
 - a glob module that lives outside the project root, or under `node_modules`, while still being reachable from an island (nothing to mirror into the shadow copy)
+- an `import.meta.glob(...)` call inside a JS-like file that is reachable only as a raw-mirrored glob target or subtree companion
+
+The raw-mirrored check is intentionally conservative. An unused JS-like sibling (`.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`, `.mts`, or `.cts`) under a globbed subtree is still flagged if it contains a real glob call, because the shadow cannot prove whether esbuild will read that raw file later. Hoist the glob into an island-reachable module, move it out of the globbed subtree, or replace it with explicit static imports.
 
 ### Client scripts: not supported, and not caught at build time
 

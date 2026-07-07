@@ -58,15 +58,21 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 **Symptom**, from `zfb build` (or a warning + skipped rebundle from `zfb dev`):
 
 ```
-zfb islands: `import.meta.glob(...)` is only supported in the eager string-literal
-form (`import.meta.glob('<literal>', { eager: true })`) in files reachable from a
-"use client" island. The following remain unsupported and would ship to the browser
-unexpanded (throwing at hydration): <file> — ...
+zfb islands: `import.meta.glob(...)` cannot be safely shipped from one or more
+files reachable from a "use client" island. zfb can currently expand eager
+string-literal globs only when the glob call is in an island-reachable module
+that is written as a real shadow copy; unsupported forms and globs found only in
+raw-mirrored glob target/subtree files would ship to the browser unexpanded and
+throw at hydration: <file> — ... Follow the remediation above for each file,
+use the eager string-literal form where applicable, replace the glob with
+explicit static imports, or move the usage to a server-only (non-"use client")
+module. Tracked at https://github.com/Takazudo/zudo-front-builder/issues/1385
+and https://github.com/Takazudo/zudo-front-builder/issues/1412.
 ```
 
-**Cause:** `import.meta.glob` is a Vite-only build-time macro; esbuild (which bundles islands) has no native understanding of it, so zfb expands the one supported shape itself before esbuild ever sees the file. Only `import.meta.glob("<string-literal>", { eager: true })`, with the pattern resolving under the importing file's own directory, is supported for a file reachable from a `"use client"` island. Everything else — the default lazy form, `{ eager: false }`, a non-literal pattern, the `import`/`query`/`as` options, or a `../`-escaping pattern — is rejected.
+**Cause:** `import.meta.glob` is a Vite-only build-time macro; esbuild (which bundles islands) has no native understanding of it, so zfb expands the one supported shape itself before esbuild ever sees the file. Only `import.meta.glob("<string-literal>", { eager: true })`, with the pattern resolving under the importing file's own directory, is supported when the glob call is in an island-reachable module that zfb writes as a real expanded shadow-copy file. Everything else — the default lazy form, `{ eager: false }`, a non-literal pattern, the `import`/`query`/`as` options, or a `../`-escaping pattern — is rejected. zfb also rejects a glob inside a JS-like file that is reachable only as a raw-mirrored glob target or subtree companion, because that file would otherwise ship to the browser unexpanded and throw during hydration.
 
-**Fix:** see [Islands: `import.meta.glob` support](../concepts/islands.mdx#import-meta-glob-support) for the full support matrix and alternatives (a plugin virtual module, or explicit static imports). Note that **client scripts** (`*.client.ts`) don't support `import.meta.glob` at all, and — unlike islands — that failure is *not* caught at build time; see [Client Scripts: `import.meta.glob` is not supported](./client-scripts.mdx#import-meta-glob-is-not-supported).
+**Fix:** see [Islands: `import.meta.glob` support](../concepts/islands.mdx#import-meta-glob-support) for the full support matrix and alternatives. Use the eager string-literal form where applicable, hoist nested globs into island-reachable modules, move raw-mirrored glob target/subtree files out of the globbed subtree, or replace the glob with explicit static imports. Note that **client scripts** (`*.client.ts`) don't support `import.meta.glob` at all, and — unlike islands — that failure is *not* caught at build time; see [Client Scripts: `import.meta.glob` is not supported](./client-scripts.mdx#import-meta-glob-is-not-supported).
 
 ## A relative import "Could not resolve" outside the project root
 
