@@ -168,6 +168,24 @@ const announce = () => {
 };
 
 const PERSIST_ATTR = "data-zfb-transition-persist";
+
+const attrValueSelector = (attr: string, value: string): string =>
+  value === "" ? `[${attr}=""]` : `[${attr}=${CSS.escape(value)}]`;
+
+const querySelectorWithAttrValue = (
+  root: ParentNode,
+  selectorPrefix: string,
+  attr: string,
+  value: string,
+): Element | null => {
+  const escapedMatch = root.querySelector(`${selectorPrefix}${attrValueSelector(attr, value)}`);
+  if (escapedMatch) return escapedMatch;
+  return (
+    Array.from(root.querySelectorAll(`${selectorPrefix}[${attr}]`)).find(
+      (el) => el.getAttribute(attr) === value,
+    ) ?? null
+  );
+};
 const DIRECTION_ATTR = "data-zfb-transition";
 const OLD_NEW_ATTR = "data-zfb-transition-fallback";
 
@@ -486,18 +504,27 @@ export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOpt
 function preloadStyleLinks(newDocument: Document) {
   const links: Promise<any>[] = [];
   for (const el of newDocument.querySelectorAll("head link[rel=stylesheet]")) {
+    const persistId = el.getAttribute(PERSIST_ATTR);
+    const href = el.getAttribute("href");
+    const existingSelectors = [
+      persistId !== null ? attrValueSelector(PERSIST_ATTR, persistId) : null,
+      href !== null ? `link[rel=stylesheet]${attrValueSelector("href", href)}` : null,
+    ].filter((selector): selector is string => selector !== null);
+    const existingLink =
+      (existingSelectors.length ? document.querySelector(existingSelectors.join(", ")) : null) ??
+      (persistId !== null
+        ? querySelectorWithAttrValue(document, "", PERSIST_ATTR, persistId)
+        : null) ??
+      (href !== null
+        ? querySelectorWithAttrValue(document, "link[rel=stylesheet]", "href", href)
+        : null);
+
     // Do not preload links that are already on the page.
-    if (
-      !document.querySelector(
-        `[${PERSIST_ATTR}="${el.getAttribute(
-          PERSIST_ATTR,
-        )}"], link[rel=stylesheet][href="${el.getAttribute("href")}"]`,
-      )
-    ) {
+    if (href !== null && !existingLink) {
       const c = document.createElement("link");
       c.setAttribute("rel", "preload");
       c.setAttribute("as", "style");
-      c.setAttribute("href", el.getAttribute("href")!);
+      c.setAttribute("href", href);
       links.push(
         new Promise<any>((resolve) => {
           ["load", "error"].forEach((evName) => c.addEventListener(evName, resolve));

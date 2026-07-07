@@ -83,6 +83,8 @@ import {
 // test environment.
 import type { SyncHistoryEntryOptions } from "../../client-router/index.js";
 
+const PERSIST_ATTR = "data-zfb-transition-persist";
+
 beforeEach(() => {
   resetDocument();
   // Re-inject opt-in meta tag for each test (resetDocument clears head).
@@ -154,6 +156,38 @@ describe("navigate() — happy path with mocked fetch", () => {
     const calls = fetchMock.mock.calls;
     expect(calls).toHaveLength(1);
     expect(String(calls[0]![0])).toContain("/about");
+  });
+
+  it("preloads without throwing when stylesheet persist id and href need CSS escaping", async () => {
+    const persistId = 'style"] [data-x="bad]';
+    const href = '/assets/app"] [data-x="bad].css';
+    const fetchMock = vi.fn(async (url: RequestInfo) => {
+      const u = String(url);
+      if (u.endsWith("/styled")) {
+        return htmlResponse(`<!doctype html><html><head>
+          <meta name="zfb-view-transitions-enabled" content="true">
+          <title>Styled</title>
+          <link rel="stylesheet" data-zfb-transition-persist='${persistId}' href='${href}'>
+        </head><body>
+          <main>styled content</main>
+        </body></html>`);
+      }
+      throw new Error(`unexpected fetch: ${u}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const oldLink = document.createElement("link");
+    oldLink.setAttribute("rel", "stylesheet");
+    oldLink.setAttribute(PERSIST_ATTR, persistId);
+    oldLink.setAttribute("href", href);
+    document.head.append(oldLink);
+
+    await navigate("/styled");
+
+    const stylesheets = document.head.querySelectorAll('link[rel="stylesheet"]');
+    expect(stylesheets).toHaveLength(1);
+    expect(stylesheets[0]).toBe(oldLink);
+    expect(document.querySelector("main")?.textContent).toBe("styled content");
   });
 
   it("dispatches the lifecycle events in order: before-preparation, after-preparation, before-swap, after-swap", async () => {
