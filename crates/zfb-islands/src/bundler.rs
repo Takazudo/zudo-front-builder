@@ -207,21 +207,30 @@ pub struct BundleConfig {
     /// keeps every importer anchored at its on-disk location instead of
     /// canonicalising symlinks back to their real target (issue #1404).
     ///
-    /// This is the load-bearing flag of the islands shadow: the shadow
-    /// tree symlinks plain source files and writes REAL expanded copies of
-    /// `import.meta.glob`-using files. Without `--preserve-symlinks`,
-    /// esbuild would resolve a symlinked island file to its real project
-    /// path and then resolve THAT file's relative imports against the real
-    /// tree — skipping the in-shadow expanded glob copy entirely and
-    /// shipping the raw `import.meta.glob(` call to the browser again. With
-    /// the flag, esbuild stays at `<shadow>/…` so the expanded copies win.
+    /// This is the load-bearing flag for the islands shadow's symlink mode:
+    /// that shadow symlinks plain source files and writes REAL expanded
+    /// copies of `import.meta.glob`-using files. Without
+    /// `--preserve-symlinks`, esbuild would resolve a symlinked island file
+    /// to its real project path and then resolve THAT file's relative imports
+    /// against the real tree — skipping the in-shadow expanded glob copy
+    /// entirely and shipping the raw `import.meta.glob(` call to the browser
+    /// again. With the flag, esbuild stays at `<shadow>/…` so the expanded
+    /// copies win.
+    ///
+    /// Some islands shadows use copy-mode instead: project-local source files
+    /// are real copied files, so the expanded copies remain visible without
+    /// this flag. That mirrors the SSR bundler's fallback for project
+    /// `node_modules` plus tsconfig `paths`, where preserving symlinks can
+    /// pin workspace-package importers under `<shadow>/node_modules/...` and
+    /// break non-hoisted pnpm resolution.
     ///
     /// Default `false` — the no-shadow path (no `import.meta.glob` reachable
     /// from an island, the overwhelming common case) never sets it, so the
     /// esbuild argv and bundle bytes are byte-identical to a pre-#1404
     /// build. Only `build_default_islands_payload` sets it, and only after
     /// it has materialised a shadow and remapped the island `source_path`s
-    /// into it.
+    /// into it, and only when that shadow used symlink mode rather than
+    /// copy-mode.
     pub preserve_symlinks: bool,
 }
 
@@ -300,7 +309,7 @@ impl BundleConfig {
     /// Toggle `--preserve-symlinks` on the esbuild invocation (chainable).
     ///
     /// See [`BundleConfig::preserve_symlinks`] — set by the islands-shadow
-    /// path (#1404) and left `false` everywhere else.
+    /// path (#1404/#1413) and left `false` everywhere else.
     pub fn with_preserve_symlinks(mut self, preserve_symlinks: bool) -> Self {
         self.preserve_symlinks = preserve_symlinks;
         self

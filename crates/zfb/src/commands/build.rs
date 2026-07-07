@@ -66,8 +66,8 @@ use zfb_css::{
 };
 use zfb_islands::{
     build_production_client_scripts, build_production_islands_asset, discover_client_scripts,
-    scan_islands_with_meta, BundleConfig, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
-    FrameworkKind, FsResolver,
+    scan_islands_with_meta, scan_reachable_modules, BundleConfig, EsbuildSubprocessBundler,
+    EsbuildSubprocessConfig, FrameworkKind, FsResolver,
 };
 use zfb_router::Router;
 
@@ -1160,16 +1160,19 @@ pub(crate) enum IslandsGlobPolicy {
 /// Built by [`materialise_islands_shadow`] only when `import.meta.glob` is
 /// reachable from a `"use client"` island. It mirrors the project's source
 /// tree under a throwaway `TempDir` keyed by project-root-relative path:
-/// plain files are symlinked, files that call `import.meta.glob` are written
-/// as REAL, expanded copies (the Vite macro expanded Rust-side via
-/// `zfb_build::glob_expand`, the same trick the SSR bundler's
-/// `materialise_source_file` uses), and `node_modules` is symlinked as a
-/// whole. The island `source_path`s are then remapped into the shadow so
-/// esbuild — invoked with `--preserve-symlinks` — resolves each island's
-/// transitive imports through the shadow, reaching the expanded glob copies
-/// instead of the raw project files. Raw-mirrored JS-like glob target/subtree
-/// files are scanned before materialisation so a nested `import.meta.glob`
-/// that would otherwise ship unexpanded keeps the stopgap instead.
+/// files that call `import.meta.glob` are written as REAL, expanded copies
+/// (the Vite macro expanded Rust-side via `zfb_build::glob_expand`, the same
+/// trick the SSR bundler's `materialise_source_file` uses), and `node_modules`
+/// is symlinked as a whole. Plain source files are symlinked when esbuild will
+/// run with `--preserve-symlinks`; in the project-`node_modules` + tsconfig
+/// `paths` shape they are copied instead, mirroring the SSR bundler's
+/// copy-mode fallback so non-hoisted pnpm/workspace resolution is not pinned
+/// under `<shadow>/node_modules/...`. The island `source_path`s are then
+/// remapped into the shadow so esbuild resolves transitive imports through the
+/// materialised tree, reaching the expanded glob copies instead of the raw
+/// project files. Raw-mirrored JS-like glob target/subtree files are scanned
+/// before materialisation so a nested `import.meta.glob` that would otherwise
+/// ship unexpanded keeps the stopgap instead.
 struct IslandsShadow {
     /// Kept alive so the tempdir (and every symlink / real file inside it)
     /// survives until esbuild has finished bundling. Dropping it deletes the
@@ -1182,6 +1185,10 @@ struct IslandsShadow {
     /// absent — left pointing at the real file, resolved through the shadow's
     /// `node_modules` symlink.
     remap: std::collections::HashMap<PathBuf, PathBuf>,
+    /// Whether the islands esbuild invocation must receive
+    /// `--preserve-symlinks` for this shadow. False only when source files were
+    /// copied into the shadow instead of symlinked.
+    preserve_symlinks: bool,
 }
 
 /// Outcome of attempting to build the islands shadow for a project whose
@@ -1338,6 +1345,11 @@ fn shadow_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+fn shadow_copy_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    let _ = std::fs::remove_file(to);
+    std::fs::copy(from, to).map(|_| ())
+}
+
 /// Materialise the islands shadow tree for a project whose scan reported
 /// `import.meta.glob` reachable from a `"use client"` island (issue #1404).
 ///
@@ -1388,6 +1400,7 @@ fn materialise_islands_shadow(
     // the walk below.
     let mut offenders: Vec<String> = Vec::new();
     let mut expanded_by_path: HashMap<PathBuf, String> = HashMap::new();
+    let mut matched_glob_targets: BTreeSet<PathBuf> = BTreeSet::new();
     for g in &scan_meta.glob_reachable_from_islands {
         if project_local_shadow_rel(g, root).is_none() {
             offenders.push(format!(
@@ -1409,13 +1422,14 @@ fn materialise_islands_shadow(
         // materialise. See `matched_target_under_pruned_build_output`.
         let exclude_build_output =
             |abs: &Path| matched_target_under_pruned_build_output(abs, file_dir);
-        match zfb_build::glob_expand::expand_import_meta_glob(
+        match zfb_build::glob_expand::expand_import_meta_glob_with_matches(
             &source,
             file_dir,
             &exclude_build_output,
         ) {
-            Ok(expanded) => {
-                expanded_by_path.insert(g.clone(), expanded);
+            Ok(expansion) => {
+                matched_glob_targets.extend(expansion.matched_files);
+                expanded_by_path.insert(g.clone(), expansion.expanded_source);
             }
             Err(e) => offenders.push(format!("{}: {e:#}", g.display())),
         }
@@ -1443,6 +1457,47 @@ fn materialise_islands_shadow(
             if entry.file_type().is_file() && project_local_shadow_rel(entry.path(), root).is_some()
             {
                 to_mirror.insert(entry.path().to_path_buf());
+            }
+        }
+    }
+    // (c) every project-local module reachable from each expanded glob target.
+    //     These are real esbuild edges after macro expansion, but they are not
+    //     present in the page/island scanner graph and may live outside the
+    //     glob module's own directory subtree.
+    if !matched_glob_targets.is_empty() {
+        let target_roots: Vec<PathBuf> = matched_glob_targets.iter().cloned().collect();
+        let resolver = FsResolver::new();
+        match scan_reachable_modules(&target_roots, &resolver) {
+            Ok(modules) => {
+                for m in modules {
+                    if project_local_shadow_rel(&m, root).is_some() {
+                        to_mirror.insert(m);
+                    }
+                }
+            }
+            Err(zfb_islands::ScanError::Parse { path, message }) => {
+                let bytes = std::fs::read(&path).with_context(|| {
+                    format!(
+                        "read parse-error islands shadow glob target {}",
+                        path.display()
+                    )
+                })?;
+                if bytes_contain_import_meta_glob(&bytes)
+                    && project_local_shadow_rel(&path, root).is_some()
+                {
+                    // Let the raw-mirrored nested-glob preflight below produce
+                    // the intended #1412 KeepStopgap message, including the
+                    // parse-error detail, instead of turning this into an IO-ish
+                    // shadow materialisation failure.
+                    to_mirror.insert(path);
+                } else {
+                    return Err(zfb_islands::ScanError::Parse { path, message }.into());
+                }
+            }
+            Err(e) => {
+                return Err(anyhow!(
+                    "scan imports reachable from islands shadow glob targets: {e}"
+                ));
             }
         }
     }
@@ -1495,6 +1550,9 @@ fn materialise_islands_shadow(
         .tempdir()
         .context("failed to allocate islands shadow tempdir")?;
     let shadow_root = tempdir.path();
+    let project_node_modules = detect_project_node_modules(root);
+    let source_copy_mode = project_node_modules.is_some() && !read_tsconfig_paths(root).is_empty();
+    let preserve_symlinks = !source_copy_mode;
 
     for from in &to_mirror {
         let rel = match project_local_shadow_rel(from, root) {
@@ -1507,10 +1565,15 @@ fn materialise_islands_shadow(
                 .with_context(|| format!("create shadow dir {}", parent.display()))?;
         }
         if let Some(expanded) = expanded_by_path.get(from) {
-            // Real expanded copy — NOT a symlink, so esbuild (under
-            // --preserve-symlinks) reads the expanded macro from the shadow.
+            // Real expanded copy — NOT a symlink, so esbuild reads the
+            // expanded macro from the shadow in both preserve-symlinks and
+            // copy-mode branches.
             std::fs::write(&to, expanded.as_bytes())
                 .with_context(|| format!("write expanded glob module {}", to.display()))?;
+        } else if source_copy_mode {
+            shadow_copy_file(from, &to).with_context(|| {
+                format!("copy shadow file {} -> {}", from.display(), to.display())
+            })?;
         } else {
             shadow_symlink(from, &to).with_context(|| {
                 format!("symlink shadow file {} -> {}", from.display(), to.display())
@@ -1521,7 +1584,7 @@ fn materialise_islands_shadow(
     // Symlink node_modules as a whole so shadow files' bare imports
     // (`preact`, `@takazudo/zfb/runtime`, …) resolve — esbuild walks up from
     // each shadow file to `<shadow>/node_modules`.
-    if let Some(nm) = detect_project_node_modules(root) {
+    if let Some(nm) = project_node_modules {
         let shadow_nm = shadow_root.join("node_modules");
         shadow_symlink(&nm, &shadow_nm).with_context(|| {
             format!(
@@ -1531,13 +1594,12 @@ fn materialise_islands_shadow(
             )
         })?;
     }
-    // Note: the user's `tsconfig.json` / `jsconfig.json` need no special
-    // handling — they are ordinary project-root files, already symlinked
-    // into the shadow root by the mirror walk when the project has them, so
-    // esbuild's upward walk from a shadow source file finds them (with
-    // `baseUrl: "."` resolving relative to the shadow root, whose mirror of
-    // the project tree makes relative `compilerOptions.paths` targets resolve
-    // in-shadow).
+    // Note: the user's `tsconfig.json` / `jsconfig.json` are not source files
+    // in this mirror set. Islands esbuild still runs with `project_root` as its
+    // working dir, and its synthetic-tsconfig path (when plugin aliases or
+    // virtual modules require one) is seeded from that project config. The
+    // shadow only controls whether project source files are symlinked or real
+    // copies before esbuild follows their relative imports.
 
     // --- Remap island source_paths into the shadow. ----------------------
     let mut remap: HashMap<PathBuf, PathBuf> = HashMap::new();
@@ -1550,6 +1612,7 @@ fn materialise_islands_shadow(
     Ok(IslandsShadowOutcome::Ready(IslandsShadow {
         _tempdir: tempdir,
         remap,
+        preserve_symlinks,
     }))
 }
 
@@ -1683,8 +1746,11 @@ pub(crate) fn build_default_islands_payload(
     // the island graph mirrored under a TempDir with the Vite macro expanded
     // Rust-side (the islands esbuild pipeline cannot expand it itself), the
     // same trick the SSR bundler already uses — and remap the island
-    // `source_path`s into it so esbuild (run with `--preserve-symlinks`)
-    // bundles the expanded copies. Supported forms (eager + string-literal)
+    // `source_path`s into it so esbuild bundles the expanded copies. Most
+    // shadows run with `--preserve-symlinks`; the project-node_modules +
+    // tsconfig-paths shape copies source files instead and omits the flag,
+    // mirroring the SSR bundler's copy-mode fallback. Supported forms (eager
+    // + string-literal)
     // now WORK; unsupported forms (lazy/default, non-literal, `import()`
     // mode) and glob modules outside the mirrorable tree keep the #1387
     // stopgap below. The no-glob common case takes the fast path (this whole
@@ -1702,7 +1768,7 @@ pub(crate) fn build_default_islands_payload(
     if !scan_meta.glob_reachable_from_islands.is_empty() {
         match materialise_islands_shadow(project_root, &islands_set, &scan_meta)? {
             IslandsShadowOutcome::Ready(shadow) => {
-                islands_preserve_symlinks = true;
+                islands_preserve_symlinks = shadow.preserve_symlinks;
                 _islands_shadow = Some(shadow);
             }
             IslandsShadowOutcome::KeepStopgap(offenders) => {
@@ -1913,9 +1979,10 @@ pub(crate) fn build_default_islands_payload(
         .with_outdir(outdir.to_path_buf())
         .with_jsx_import_source(islands_jsx_import_source)
         .with_client_router(scan_meta.uses_client_router)
-        // Issue #1404: `--preserve-symlinks` iff a glob-expanding shadow was
-        // materialised above — keeps esbuild anchored at the shadow's
-        // expanded copies. `false` on the fast path ⇒ byte-identical argv.
+        // Issue #1413: the shadow carries the exact symlink-mode decision.
+        // Most shadows need `--preserve-symlinks`; copy-mode shadows use real
+        // source copies and deliberately omit it to mirror the SSR bundler.
+        // `false` on the no-shadow fast path keeps byte-identical argv.
         .with_preserve_symlinks(islands_preserve_symlinks);
 
     // Issue #1404: remap island `source_path`s into the shadow ONLY for the
@@ -5349,6 +5416,10 @@ mod tests {
                 panic!("supported eager glob must NOT keep the stopgap; offenders: {o:?}")
             }
         };
+        assert!(
+            shadow.preserve_symlinks,
+            "default islands shadow uses symlinked source files plus --preserve-symlinks"
+        );
 
         // The island's source_path was remapped into the shadow.
         let shadow_island = shadow
@@ -5505,6 +5576,204 @@ mod tests {
         assert!(
             std::fs::symlink_metadata(shadow_root.join("components/dist/generated.tsx")).is_err(),
             "build output under dist/ must be pruned from the shadow (matched set ⊆ mirrored set)"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_mirrors_glob_target_transitive_project_imports() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let (island_src, glob_src, target) = write_basic_glob_shadow_project(project_root);
+        std::fs::write(
+            &target,
+            "import { helper } from '../shared/helper';\nexport const a = helper;\n",
+        )
+        .unwrap();
+        write_shadow_fixture(
+            project_root,
+            "components/shared/helper.ts",
+            "export const helper = 1;\n",
+        );
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src.clone(), glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let shadow = match outcome {
+            IslandsShadowOutcome::Ready(s) => s,
+            IslandsShadowOutcome::KeepStopgap(o) => {
+                panic!("supported glob target closure must NOT keep stopgap: {o:?}")
+            }
+        };
+        let shadow_island = shadow
+            .remap
+            .get(&island_src)
+            .expect("island source_path must be remapped into the shadow");
+        let shadow_root = shadow_island.parent().unwrap().parent().unwrap();
+        assert!(
+            std::fs::symlink_metadata(shadow_root.join("components/shared/helper.ts")).is_ok(),
+            "project-local helper imported only by a glob target must be mirrored"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_mirrors_glob_target_tsconfig_alias_imports() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::write(
+            project_root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["components/*"]}}}"#,
+        )
+        .unwrap();
+        let (island_src, glob_src, target) = write_basic_glob_shadow_project(project_root);
+        std::fs::write(
+            &target,
+            "import { helper } from '@/shared/helper';\nexport const a = helper;\n",
+        )
+        .unwrap();
+        write_shadow_fixture(
+            project_root,
+            "components/shared/helper.ts",
+            "export const helper = 1;\n",
+        );
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src.clone(), glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let shadow = match outcome {
+            IslandsShadowOutcome::Ready(s) => s,
+            IslandsShadowOutcome::KeepStopgap(o) => {
+                panic!("supported alias import closure must NOT keep stopgap: {o:?}")
+            }
+        };
+        let shadow_island = shadow
+            .remap
+            .get(&island_src)
+            .expect("island source_path must be remapped into the shadow");
+        let shadow_root = shadow_island.parent().unwrap().parent().unwrap();
+        assert!(
+            std::fs::symlink_metadata(shadow_root.join("components/shared/helper.ts")).is_ok(),
+            "tsconfig-aliased helper imported only by a glob target must be mirrored"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_flags_glob_in_transitive_target_import() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let (island_src, glob_src, target) = write_basic_glob_shadow_project(project_root);
+        std::fs::write(
+            &target,
+            "import { helper } from '../shared/helper';\nexport const a = helper;\n",
+        )
+        .unwrap();
+        write_shadow_fixture(
+            project_root,
+            "components/shared/helper.ts",
+            "export const helper = import.meta.glob('./nested/*.tsx', { eager: true });\n",
+        );
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src, glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let offenders = match outcome {
+            IslandsShadowOutcome::KeepStopgap(o) => o,
+            IslandsShadowOutcome::Ready(_) => {
+                panic!("transitive raw-mirrored target glob must keep stopgap")
+            }
+        };
+        let message = offenders.join("\n");
+        assert!(
+            message.contains("components/shared/helper.ts"),
+            "names transitive helper offender: {message}"
+        );
+        assert!(
+            message.contains("raw-mirrored glob target/subtree"),
+            "preserves #1412 loudness language: {message}"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_keeps_symlink_mode_with_project_node_modules_without_paths() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("node_modules")).unwrap();
+        let (island_src, glob_src, _target) = write_basic_glob_shadow_project(project_root);
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src.clone(), glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let shadow = match outcome {
+            IslandsShadowOutcome::Ready(s) => s,
+            IslandsShadowOutcome::KeepStopgap(o) => panic!("supported glob must be ready: {o:?}"),
+        };
+        let shadow_island = shadow
+            .remap
+            .get(&island_src)
+            .expect("island source_path must be remapped into the shadow");
+        assert!(
+            shadow.preserve_symlinks,
+            "project node_modules without tsconfig paths keeps --preserve-symlinks"
+        );
+        assert!(
+            std::fs::symlink_metadata(shadow_island)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "plain source remains symlinked when preserve-symlinks is safe"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_uses_copy_mode_with_project_node_modules_and_paths() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("node_modules")).unwrap();
+        std::fs::write(
+            project_root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        )
+        .unwrap();
+        let (island_src, glob_src, _target) = write_basic_glob_shadow_project(project_root);
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src.clone(), glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let shadow = match outcome {
+            IslandsShadowOutcome::Ready(s) => s,
+            IslandsShadowOutcome::KeepStopgap(o) => panic!("supported glob must be ready: {o:?}"),
+        };
+        let shadow_island = shadow
+            .remap
+            .get(&island_src)
+            .expect("island source_path must be remapped into the shadow");
+        let meta = std::fs::symlink_metadata(shadow_island).unwrap();
+        assert!(
+            !shadow.preserve_symlinks,
+            "project node_modules plus tsconfig paths uses copy-mode and omits --preserve-symlinks"
+        );
+        assert!(
+            meta.file_type().is_file() && !meta.file_type().is_symlink(),
+            "plain source is a real copied file in copy-mode"
         );
     }
 
