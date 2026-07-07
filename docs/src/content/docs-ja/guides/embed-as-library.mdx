@@ -172,7 +172,7 @@ handle.join()??;
 
 ここまでで説明したのは、**静的 dist** サーバーです。`build()` が `zfb.config.json` を読み、ルートテーブルは `dist/` 内のファイルへフォールスルーします。これは、コンテンツがビルド時に固定されるパッケージ済みアプリに適した形です。
 
-一方で、ホストが実行時にサーバーへコンテンツを押し込みたい場合があります。たとえば、ファイル監視のコールバックから書き込む `PageCache` や、再ビルドごとの livereload シグナルです。その場合は、必要な制御の度合いに応じて 2 つのレベルを選べます。
+一方で、ホストが実行時にサーバーへコンテンツを押し込みたい場合があります。たとえば、ファイル監視のコールバックから書き込む `PageCache` や、再ビルドごとのライブリロードシグナルです。その場合は、必要な制御の度合いに応じて 2 つのレベルを選べます。
 
 ### レベル 1: ビルダー経由で `PageCache` を投入する
 
@@ -199,18 +199,18 @@ cache.remove(["/blog/stale"]).await;             // drop a vanished route
 
 キャッシュキーは、ブラウザが要求する先頭スラッシュ付きの URL パスです（`/`、`/blog/foo`、`/sitemap.xml`）。ページキャッシュのレイヤーは、上の優先順位リストでディスク上の `dist/` フォールバックより上にあるため、キャッシュヒットは同じ URL の静的ファイルを覆い、ミスした場合はそのままディスクへフォールスルーします。`PageCache` は、HTML 以外や一括再ビルドの用途向けに、`insert_with_content_type`、`insert_bytes_with_content_type`（バイナリボディ）、`replace_all`（アトミックな全置換）も公開しています。
 
-必要なのが動的なページバイトだけなら、これで十分です。これが**提供しない**のは livereload チャンネルです。`ServerMode::Embed` はライブリロードスクリプトを注入せず、`/__zfb/reload` SSE エンドポイントもマウントしません。また、ビルダーは `broadcast` センダーを内部で所有します。
+必要なのが動的なページバイトだけなら、これで十分です。これが**提供しない**のはライブリロードチャンネルです。`ServerMode::Embed` はライブリロードスクリプトを注入せず、`/__zfb/reload` SSE エンドポイントもマウントしません。また、ビルダーは `broadcast` センダーを内部で所有します。
 
 ### レベル 2: `ServeOpts` + `serve_with_listener` へ降りる
 
-ページキャッシュ以上のものが必要な場合、たとえばライブの livereload `broadcast` チャンネル、リクエスト時 SSR ルート（`SsrRoutesHandle`）、プラグイン dev-middleware が必要な場合、ビルダーは意図的に入口ではありません。自分で [`ServeOpts`](https://docs.rs/zfb-server) を構築し、低レベルの `serve_with_listener(opts, listener, shutdown)`（またはリスナーもバインドする `serve(opts, shutdown)`）を呼び出します。どちらも公開され安定しています。`zfb dev` 自身が使っているのと同じ入口です。
+ページキャッシュ以上のものが必要な場合、たとえば稼働中のライブリロード `broadcast` チャンネル、リクエスト時 SSR ルート（`SsrRoutesHandle`）、プラグイン dev-middleware が必要な場合、ビルダーは意図的に入口ではありません。自分で [`ServeOpts`](https://docs.rs/zfb-server) を構築し、低レベルの `serve_with_listener(opts, listener, shutdown)`（またはリスナーもバインドする `serve(opts, shutdown)`）を呼び出します。どちらも公開され安定しています。`zfb dev` 自身が使っているのと同じ入口です。
 
 `ServeOpts` は直接フィールドを埋めるプレーンな構造体です。ライブコンテンツに関係するフィールドは次のとおりです。
 
 - **`pages: PageCache`** — レベル 1 と同じ共有キャッシュです。監視側からこれに書き込みます。
 - **`broadcast: ReloadTx`** — ライブリロードのセンダーです。`ReloadTx` は `tokio::sync::broadcast::Sender<ReloadEvent>` です。再ビルドごとに `ReloadEvent` を送ると、SSE ストリームを受信している接続済みクライアントがリロードします。（`tokio::sync::broadcast::channel::<ReloadEvent>(capacity)` でチャンネルを作り、`Sender` を保持します。選んだ `mode` によって SSE エンドポイントがマウントされるかが決まります。）
 - **`ssr_routes: Option<SsrRoutesHandle>`** — `prerender = false` ページ向けのリクエスト時 JS SSR で、セッション中に差し替え可能です。
-- **`mode: ServerMode`** — livereload スクリプト注入と `/__zfb/reload` SSE エンドポイントのマウントが必要なら `ServerMode::Dev` を選びます。`Embed`/`Preview` ではこれらはオフです。
+- **`mode: ServerMode`** — ライブリロードのスクリプト注入と `/__zfb/reload` SSE エンドポイントのマウントが必要なら `ServerMode::Dev` を選びます。`Embed`/`Preview` ではこれらはオフです。
 
 ```rust
 use zfb_server::{serve_with_listener, ServeOpts, ServerMode, PageCache, ReloadEvent};
@@ -249,7 +249,7 @@ serve_with_listener(opts, listener, std::future::pending()).await?;
 
 <Note title="MDX 監視再ビルドの全体">
 
-キャッシュ投入は動的な*バイト列*の配信を扱いますが、zfb の MDX コンパイル / island バンドルパイプラインを実行してくれるわけではありません。それは `zfb` bin クレート側にあります。ユーザーがローカルで Markdown を編集し、完全に再レンダーされたプレビューを見る必要がある場合は、[Desktop Deployment](./desktop-deployment.mdx#the-harder-case-rebuild-content-inside-the-app) の「より難しいケース」の注記が、そのフルパイプライン向けに `zfb dev` をサイドカー（Mode B）として起動する方法を扱っています。
+キャッシュ投入は動的な*バイト列*の配信を扱いますが、zfb の MDX コンパイル / island バンドルパイプラインを実行してくれるわけではありません。それは `zfb` bin クレート側にあります。ユーザーがローカルで Markdown を編集し、完全に再レンダーされたプレビューを見る必要がある場合は、[Desktop Deployment](./desktop-deployment.mdx#より難しいケース-アプリ内でコンテンツをリビルドする) の「より難しいケース」の注記が、そのフルパイプライン向けに `zfb dev` をサイドカー（Mode B）として起動する方法を扱っています。
 
 </Note>
 
