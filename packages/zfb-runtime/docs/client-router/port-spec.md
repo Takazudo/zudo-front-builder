@@ -383,9 +383,16 @@ For islands specifically (Astro's branch around line 124–132 detects `astro-is
   > The original Astro port set a bare `ssr` attribute here that nothing consumed
   > (zfb islands are marker divs, not `<astro-island>` custom elements) — #1389
   > replaces it with the namespaced `data-zfb-island-remount` flag and wires the
-  > consumer. Two v1 limitations remain for this niche path (tracked as a
-  > follow-up issue): a persisted island still mid-import at swap time, or one with
-  > deferred `data-when`, does not remount seamlessly with fresh props.
+  > consumer.
+  >
+  > **Post-spec update (2026-07, issue #1432):** the niche mid-import/deferred
+  > gaps in that consumer are fixed. If a URL-bundle island is still importing
+  > when the swap refreshes `data-props`, the pending import consumes the flag
+  > after resolution and re-reads the refreshed props before mounting. If an
+  > already-mounted deferred island is flagged for a props-change remount,
+  > `mountNewIslands()` bypasses the deferred scheduler for the replacement mount
+  > so the island is not left blank while waiting for idle/visible/media to fire
+  > again. Ordinary first-time deferred hydration remains deferred.
 
 #### 12.3.2 Boundary table (W3D pins this)
 
