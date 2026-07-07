@@ -196,6 +196,67 @@ fn wtf8_atom_to_string(atom: &swc_core::atoms::Wtf8Atom) -> String {
     }
 }
 
+fn collect_import_meta_glob_calls(source: &str) -> Result<Vec<GlobCall>> {
+    use swc_core::common::sync::Lrc;
+    use swc_core::common::{FileName, SourceMap};
+    use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
+    use swc_core::ecma::visit::VisitWith;
+
+    // Fast path: if the literal substring never appears, there is nothing to
+    // collect. This keeps callers cheap while still making the parser the
+    // source of truth for string/comment-only occurrences when it is present.
+    if !source.contains("import.meta.glob") {
+        return Ok(Vec::new());
+    }
+
+    let cm: Lrc<SourceMap> = Default::default();
+    let fm = cm.new_source_file(FileName::Anon.into(), source.to_string());
+    // Base offset for converting global `BytePos` → 0-based string index.
+    let base = fm.start_pos.0;
+
+    let lexer = Lexer::new(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            decorators: false,
+            dts: false,
+            no_early_errors: false,
+            disallow_ambiguous_jsx_like: false,
+        }),
+        swc_core::ecma::ast::EsVersion::Es2022,
+        StringInput::from(&*fm),
+        None,
+    );
+    let mut parser = Parser::new_from(lexer);
+    let module = parser.parse_module().map_err(|e| {
+        anyhow!("zfb bundler: failed to parse module for import.meta.glob expansion: {e:?}")
+    })?;
+
+    let mut collector = GlobCallCollector {
+        base,
+        calls: Vec::new(),
+    };
+    module.visit_with(&mut collector);
+
+    Ok(collector.calls)
+}
+
+/// Return whether `source` contains a real `import.meta.glob(...)` call.
+///
+/// The literal substring is used only as a fast path. When present, the
+/// source is parsed as TSX and inspected with the same [`GlobCallCollector`]
+/// used by [`expand_import_meta_glob`], so occurrences inside strings and
+/// comments do not count. Unsupported call forms still count as presence:
+/// callers that only need to know whether the Vite macro exists must not
+/// silently ignore a lazy/dynamic form.
+///
+/// # Errors
+///
+/// Returns an error when `source` contains the substring but cannot be parsed
+/// as a TSX module.
+pub fn source_contains_import_meta_glob(source: &str) -> anyhow::Result<bool> {
+    Ok(!collect_import_meta_glob_calls(source)?.is_empty())
+}
+
 /// Expand Vite's eager `import.meta.glob(...)` macro in `source`.
 ///
 /// Parses `source` as a TSX module (so JSX / TS syntax is accepted), collects
@@ -232,47 +293,9 @@ pub fn expand_import_meta_glob(
     file_dir: &Path,
     is_excluded: &dyn Fn(&Path) -> bool,
 ) -> Result<String> {
-    use swc_core::common::sync::Lrc;
-    use swc_core::common::{FileName, SourceMap};
-    use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
-    use swc_core::ecma::visit::VisitWith;
+    let calls = collect_import_meta_glob_calls(source)?;
 
-    // Fast path: if the literal substring never appears, there is nothing to
-    // do. Callers already gate on this, but keep the function self-contained
-    // and cheap when invoked directly (e.g. in unit tests).
-    if !source.contains("import.meta.glob") {
-        return Ok(source.to_string());
-    }
-
-    let cm: Lrc<SourceMap> = Default::default();
-    let fm = cm.new_source_file(FileName::Anon.into(), source.to_string());
-    // Base offset for converting global `BytePos` → 0-based string index.
-    let base = fm.start_pos.0;
-
-    let lexer = Lexer::new(
-        Syntax::Typescript(TsSyntax {
-            tsx: true,
-            decorators: false,
-            dts: false,
-            no_early_errors: false,
-            disallow_ambiguous_jsx_like: false,
-        }),
-        swc_core::ecma::ast::EsVersion::Es2022,
-        StringInput::from(&*fm),
-        None,
-    );
-    let mut parser = Parser::new_from(lexer);
-    let module = parser.parse_module().map_err(|e| {
-        anyhow!("zfb bundler: failed to parse module for import.meta.glob expansion: {e:?}")
-    })?;
-
-    let mut collector = GlobCallCollector {
-        base,
-        calls: Vec::new(),
-    };
-    module.visit_with(&mut collector);
-
-    if collector.calls.is_empty() {
+    if calls.is_empty() {
         // The substring was present but only inside strings/comments — no
         // real call. Return the source unchanged.
         return Ok(source.to_string());
@@ -287,7 +310,7 @@ pub fn expand_import_meta_glob(
     let mut replacements: Vec<(usize, usize, String)> = Vec::new();
     let mut glob_counter: usize = 0;
 
-    for call in &collector.calls {
+    for call in &calls {
         let pattern = match &call.parsed {
             Ok(p) => p.clone(),
             Err(reason) => bail!("{reason}"),
@@ -762,6 +785,58 @@ mod tests {
         assert!(
             msg.contains("parent-directory") || msg.contains(".."),
             "names the limit: {msg}"
+        );
+    }
+
+    #[test]
+    fn source_contains_import_meta_glob_positive_eager() {
+        let src = r#"const m = import.meta.glob('./widgets/*.tsx', { eager: true });"#;
+        assert!(
+            source_contains_import_meta_glob(src).unwrap(),
+            "eager call must count as present"
+        );
+    }
+
+    #[test]
+    fn source_contains_import_meta_glob_positive_lazy() {
+        let src = r#"const m = import.meta.glob('./widgets/*.tsx');"#;
+        assert!(
+            source_contains_import_meta_glob(src).unwrap(),
+            "unsupported lazy call must still count as present"
+        );
+    }
+
+    #[test]
+    fn source_contains_import_meta_glob_negative_absent() {
+        let src = "export const x = 1;\n";
+        assert!(
+            !source_contains_import_meta_glob(src).unwrap(),
+            "source without the substring must be absent"
+        );
+    }
+
+    #[test]
+    fn source_contains_import_meta_glob_negative_string_and_comment_only() {
+        let src = r#"
+            // import.meta.glob('./comment.tsx', { eager: true })
+            const doc = "import.meta.glob('./string.tsx', { eager: true })";
+            /* import.meta.glob('./block.tsx') */
+        "#;
+        assert!(
+            !source_contains_import_meta_glob(src).unwrap(),
+            "string/comment-only occurrences must not count as calls"
+        );
+    }
+
+    #[test]
+    fn source_contains_import_meta_glob_parse_failure_is_err() {
+        let src = "const m = import.meta.glob('./widgets/*.tsx', { eager: true ";
+        let err =
+            source_contains_import_meta_glob(src).expect_err("parse failure must be surfaced");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("failed to parse module"),
+            "parse error should be explicit: {msg}"
         );
     }
 }

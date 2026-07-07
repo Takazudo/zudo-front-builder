@@ -1167,7 +1167,9 @@ pub(crate) enum IslandsGlobPolicy {
 /// whole. The island `source_path`s are then remapped into the shadow so
 /// esbuild — invoked with `--preserve-symlinks` — resolves each island's
 /// transitive imports through the shadow, reaching the expanded glob copies
-/// instead of the raw project files.
+/// instead of the raw project files. Raw-mirrored JS-like glob target/subtree
+/// files are scanned before materialisation so a nested `import.meta.glob`
+/// that would otherwise ship unexpanded keeps the stopgap instead.
 struct IslandsShadow {
     /// Kept alive so the tempdir (and every symlink / real file inside it)
     /// survives until esbuild has finished bundling. Dropping it deletes the
@@ -1190,11 +1192,13 @@ enum IslandsShadowOutcome {
     /// One or more glob-using modules reachable from an island cannot be
     /// expanded into the shadow — an unsupported `import.meta.glob` form
     /// (lazy/default, non-literal pattern, `import()` mode, …), a parse
-    /// error, or a glob module located outside the mirrorable project tree
-    /// (outside the project root, or under `node_modules`). The caller keeps
-    /// the #1387 stopgap (build-time error / dev warn-and-skip) for these,
-    /// naming the offenders carried here — glob in a SUPPORTED form still
-    /// expands; only the unsupported remainder falls back.
+    /// error, a glob module located outside the mirrorable project tree
+    /// (outside the project root, or under `node_modules`), or a nested glob
+    /// in a raw-mirrored glob target/subtree companion. The caller keeps the
+    /// #1387 stopgap (build-time error / dev warn-and-skip) for these,
+    /// naming the offenders carried here — glob in a SUPPORTED island-
+    /// reachable module still expands; only the unsupported/unsafe remainder
+    /// falls back.
     KeepStopgap(Vec<String>),
 }
 
@@ -1210,6 +1214,33 @@ fn project_local_shadow_rel<'a>(p: &'a Path, root: &Path) -> Option<&'a Path> {
         Some(_) => Some(rel),
         None => None,
     }
+}
+
+fn is_islands_shadow_js_like_file(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    ["js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts"]
+        .iter()
+        .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+}
+
+fn bytes_contain_import_meta_glob(bytes: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"import.meta.glob";
+    bytes.windows(NEEDLE.len()).any(|window| window == NEEDLE)
+}
+
+fn raw_mirrored_import_meta_glob_offender(path: &Path, parse_error: Option<String>) -> String {
+    let parse_note = parse_error
+        .map(|e| format!(" (the file could not be parsed to rule out a real call: {e})"))
+        .unwrap_or_default();
+    format!(
+        "{} — contains `import.meta.glob`{parse_note} but is only reachable as a \
+         raw-mirrored glob target/subtree file in the islands shadow, so it would ship \
+         unexpanded and throw at hydration. Hoist the glob into an island-reachable \
+         module so zfb can expand it, or replace it with explicit static imports.",
+        path.display()
+    )
 }
 
 /// True when the walk must NOT descend into this directory while mirroring
@@ -1324,9 +1355,19 @@ fn shadow_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
 /// without re-running the match. Every mirrored file is symlinked EXCEPT the
 /// island-reachable glob modules, which are written as expanded real copies.
 ///
+/// Before creating the tempdir, raw-mirrored JS-like files in that union are
+/// scanned for real `import.meta.glob(...)` calls. If one is found, the shadow
+/// keeps the stopgap because recursive expansion is intentionally out of
+/// scope: the raw symlink would otherwise ship the Vite-only macro to the
+/// browser and throw at hydration. This is conservative by design. An unused
+/// JS-like sibling in a globbed subtree is flagged if it contains a real glob,
+/// while a glob target that is also island-reachable is expanded as its own
+/// glob module and is not flagged.
+///
 /// Returns [`IslandsShadowOutcome::KeepStopgap`] (not an `Err`) when a
-/// glob module uses an unsupported form or lies outside the mirrorable tree,
-/// so the caller can apply the #1387 policy (hard error / dev warn-and-skip).
+/// glob module uses an unsupported form, lies outside the mirrorable tree, or
+/// a raw-mirrored JS-like companion file contains a nested glob, so the caller
+/// can apply the #1387 policy (hard error / dev warn-and-skip).
 /// A genuine filesystem error propagates as `Err`.
 fn materialise_islands_shadow(
     project_root: &Path,
@@ -1379,10 +1420,6 @@ fn materialise_islands_shadow(
             Err(e) => offenders.push(format!("{}: {e:#}", g.display())),
         }
     }
-    if !offenders.is_empty() {
-        return Ok(IslandsShadowOutcome::KeepStopgap(offenders));
-    }
-
     // --- Collect the file set to mirror. ---------------------------------
     let mut to_mirror: BTreeSet<PathBuf> = BTreeSet::new();
     // (a) the island-reachable closure (project-local files only; the rest
@@ -1408,6 +1445,48 @@ fn materialise_islands_shadow(
                 to_mirror.insert(entry.path().to_path_buf());
             }
         }
+    }
+
+    // --- Pre-flight: raw-mirrored JS-like companions must not contain a
+    // nested glob. ---------------------------------------------------------
+    let glob_reachable: BTreeSet<PathBuf> = scan_meta
+        .glob_reachable_from_islands
+        .iter()
+        .cloned()
+        .collect();
+    for from in &to_mirror {
+        if expanded_by_path.contains_key(from) || glob_reachable.contains(from) {
+            continue;
+        }
+        if !is_islands_shadow_js_like_file(from) {
+            continue;
+        }
+        let bytes = std::fs::read(from)
+            .with_context(|| format!("read raw-mirrored islands shadow file {}", from.display()))?;
+        if !bytes_contain_import_meta_glob(&bytes) {
+            continue;
+        }
+        let source = match String::from_utf8(bytes) {
+            Ok(source) => source,
+            Err(e) => {
+                offenders.push(raw_mirrored_import_meta_glob_offender(
+                    from,
+                    Some(format!("file is not valid UTF-8: {e}")),
+                ));
+                continue;
+            }
+        };
+        match zfb_build::glob_expand::source_contains_import_meta_glob(&source) {
+            Ok(true) => offenders.push(raw_mirrored_import_meta_glob_offender(from, None)),
+            Ok(false) => {}
+            Err(e) => offenders.push(raw_mirrored_import_meta_glob_offender(
+                from,
+                Some(format!("{e:#}")),
+            )),
+        }
+    }
+    if !offenders.is_empty() {
+        return Ok(IslandsShadowOutcome::KeepStopgap(offenders));
     }
 
     // --- Materialise. ----------------------------------------------------
@@ -1627,22 +1706,27 @@ pub(crate) fn build_default_islands_payload(
                 _islands_shadow = Some(shadow);
             }
             IslandsShadowOutcome::KeepStopgap(offenders) => {
-                // Unsupported `import.meta.glob` form(s) / glob module(s)
-                // outside the mirrorable tree remain — retain the #1387
-                // stopgap for exactly these files (hard error for `zfb
-                // build`, warn-and-skip for `zfb dev`). The islands esbuild
-                // pipeline still ships an unsupported call to the browser
-                // unexpanded, so shipping it would throw at hydration.
+                // Unsupported `import.meta.glob` form(s), glob module(s)
+                // outside the mirrorable tree, or nested globs in raw-
+                // mirrored companions remain — retain the #1387 stopgap for
+                // exactly these files (hard error for `zfb build`, warn-and-
+                // skip for `zfb dev`). Shipping any of them would leave a
+                // Vite-only macro in the browser bundle and throw at
+                // hydration.
                 let files = offenders.join("; ");
                 let message = format!(
-                    "`import.meta.glob(...)` is only supported in the eager string-literal \
-                     form (`import.meta.glob('<literal>', {{ eager: true }})`) in files \
-                     reachable from a \"use client\" island. The following remain \
-                     unsupported and would ship to the browser unexpanded (throwing at \
-                     hydration): {files}. Use the eager string-literal form, replace the \
-                     glob with explicit static imports, or move the usage to a server-only \
+                    "`import.meta.glob(...)` cannot be safely shipped from one or more \
+                     files reachable from a \"use client\" island. zfb can currently \
+                     expand eager string-literal globs only when the glob call is in an \
+                     island-reachable module that is written as a real shadow copy; \
+                     unsupported forms and globs found only in raw-mirrored glob \
+                     target/subtree files would ship to the browser unexpanded and throw \
+                     at hydration: {files}. Follow the remediation above for each file, \
+                     use the eager string-literal form where applicable, replace the glob \
+                     with explicit static imports, or move the usage to a server-only \
                      (non-\"use client\") module. Tracked at \
-                     https://github.com/Takazudo/zudo-front-builder/issues/1385."
+                     https://github.com/Takazudo/zudo-front-builder/issues/1385 and \
+                     https://github.com/Takazudo/zudo-front-builder/issues/1412."
                 );
                 match islands_glob_policy {
                     IslandsGlobPolicy::HardError => {
@@ -5394,6 +5478,402 @@ mod tests {
         assert!(
             std::fs::symlink_metadata(shadow_root.join("components/dist/generated.tsx")).is_err(),
             "build output under dist/ must be pruned from the shadow (matched set ⊆ mirrored set)"
+        );
+    }
+
+    fn write_shadow_fixture(project_root: &Path, rel: &str, body: &str) -> PathBuf {
+        let path = project_root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn basic_shadow_inputs(
+        project_root: &Path,
+        glob_reachable: Vec<PathBuf>,
+        island_reachable: Vec<PathBuf>,
+    ) -> (Vec<zfb_islands::Island>, zfb_islands::ScanMeta) {
+        let island_src = project_root.join("components/gallery.tsx");
+        let islands = vec![zfb_islands::Island::new("Gallery", island_src)];
+        let scan_meta = zfb_islands::ScanMeta {
+            uses_client_router: false,
+            near_miss_candidates: 0,
+            glob_reachable_from_islands: glob_reachable,
+            island_reachable_modules: island_reachable,
+        };
+        (islands, scan_meta)
+    }
+
+    fn write_basic_glob_shadow_project(project_root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let island_src = write_shadow_fixture(
+            project_root,
+            "components/gallery.tsx",
+            "\"use client\";\n\
+             import { widgets } from \"./gallery-data\";\n\
+             export function Gallery() { return null; }\n",
+        );
+        let glob_src = write_shadow_fixture(
+            project_root,
+            "components/gallery-data.tsx",
+            "export const widgets = import.meta.glob('./widgets/*.tsx', { eager: true });\n",
+        );
+        let target = write_shadow_fixture(
+            project_root,
+            "components/widgets/a.tsx",
+            "export const a = 1;\n",
+        );
+        (island_src, glob_src, target)
+    }
+
+    #[test]
+    fn materialise_islands_shadow_flags_nested_glob_in_target_file() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let (island_src, glob_src, target) = write_basic_glob_shadow_project(project_root);
+        std::fs::write(
+            &target,
+            "export const nested = import.meta.glob('./nested/*.tsx', { eager: true });\n",
+        )
+        .unwrap();
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src, glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let offenders = match outcome {
+            IslandsShadowOutcome::KeepStopgap(o) => o,
+            IslandsShadowOutcome::Ready(_) => panic!("nested target glob must keep stopgap"),
+        };
+        let message = offenders.join("\n");
+        assert!(message.contains("widgets/a.tsx"), "names target: {message}");
+        assert!(
+            message.contains("raw-mirrored glob target/subtree"),
+            "explains raw mirror location: {message}"
+        );
+        assert!(
+            message.contains("Hoist the glob") && message.contains("explicit static imports"),
+            "gives remediation: {message}"
+        );
+    }
+
+    fn write_nested_glob_build_project(project_root: &Path, nested_body: &str) -> PathBuf {
+        write_shadow_fixture(
+            project_root,
+            "pages/index.tsx",
+            "import { Gallery } from \"../components/gallery\";\n\
+             export default function Index() { return <Gallery/>; }\n",
+        );
+        write_shadow_fixture(
+            project_root,
+            "components/gallery.tsx",
+            "\"use client\";\n\
+             import { widgets } from \"./gallery-data\";\n\
+             export function Gallery() { return null; }\n",
+        );
+        write_shadow_fixture(
+            project_root,
+            "components/gallery-data.tsx",
+            "export const widgets = import.meta.glob('./widgets/*.tsx', { eager: true });\n",
+        );
+        write_shadow_fixture(project_root, "components/widgets/a.tsx", nested_body)
+    }
+
+    #[test]
+    fn build_default_islands_payload_hard_errors_on_nested_raw_mirrored_glob() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        write_nested_glob_build_project(
+            project_root,
+            "export const nested = import.meta.glob('./nested/*.tsx', { eager: true });\n",
+        );
+
+        let err = build_default_islands_payload(
+            project_root,
+            &project_root.join("pages"),
+            &[],
+            &project_root.join("dist"),
+            crate::config::Framework::Preact,
+            &IslandsPluginConfig::default(),
+            IslandsGlobPolicy::HardError,
+        )
+        .expect_err("nested raw-mirrored glob must hard-error in build");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("import.meta.glob"),
+            "names glob: {message}"
+        );
+        assert!(
+            message.contains("widgets/a.tsx"),
+            "names offender: {message}"
+        );
+        assert!(message.contains("1385"), "links #1385: {message}");
+        assert!(message.contains("1412"), "links #1412: {message}");
+    }
+
+    #[test]
+    fn build_default_islands_payload_warn_and_skip_on_nested_raw_mirrored_glob() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        write_nested_glob_build_project(
+            project_root,
+            "export const nested = import.meta.glob('./nested/*.tsx', { eager: true });\n",
+        );
+
+        let (payload, names) = build_default_islands_payload(
+            project_root,
+            &project_root.join("pages"),
+            &[],
+            &project_root.join("dist"),
+            crate::config::Framework::Preact,
+            &IslandsPluginConfig::default(),
+            IslandsGlobPolicy::WarnAndSkip,
+        )
+        .expect("warn-and-skip must not hard-error");
+        assert!(payload.is_none(), "warn-and-skip returns no payload");
+        assert!(names.is_empty(), "warn-and-skip returns empty marker set");
+    }
+
+    #[test]
+    fn materialise_islands_shadow_flags_lazy_nested_glob_in_target_file() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let (island_src, glob_src, target) = write_basic_glob_shadow_project(project_root);
+        std::fs::write(
+            &target,
+            "export const nested = import.meta.glob('./nested/*.tsx');\n",
+        )
+        .unwrap();
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src, glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let offenders = match outcome {
+            IslandsShadowOutcome::KeepStopgap(o) => o,
+            IslandsShadowOutcome::Ready(_) => panic!("lazy nested target glob must keep stopgap"),
+        };
+        let message = offenders.join("\n");
+        assert!(message.contains("widgets/a.tsx"), "names target: {message}");
+        assert!(
+            message.contains("import.meta.glob"),
+            "names glob: {message}"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_ignores_string_and_comment_only_in_target_file() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let (island_src, glob_src, target) = write_basic_glob_shadow_project(project_root);
+        std::fs::write(
+            &target,
+            "// import.meta.glob('./comment.tsx', { eager: true })\n\
+             const doc = \"import.meta.glob('./string.tsx')\";\n",
+        )
+        .unwrap();
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src, glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        match outcome {
+            IslandsShadowOutcome::Ready(_) => {}
+            IslandsShadowOutcome::KeepStopgap(o) => {
+                panic!("string/comment-only target occurrences must not flag: {o:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn materialise_islands_shadow_allows_benign_glob_subtree() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let (island_src, glob_src, _target) = write_basic_glob_shadow_project(project_root);
+        write_shadow_fixture(
+            project_root,
+            "components/widgets/readme.md",
+            "import.meta.glob('./not-real.tsx')\n",
+        );
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src, glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        match outcome {
+            IslandsShadowOutcome::Ready(_) => {}
+            IslandsShadowOutcome::KeepStopgap(o) => panic!("benign subtree must be ready: {o:?}"),
+        }
+    }
+
+    #[test]
+    fn materialise_islands_shadow_treats_parse_error_as_nested_glob_offender() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let (island_src, glob_src, target) = write_basic_glob_shadow_project(project_root);
+        std::fs::write(
+            &target,
+            "export const nested = import.meta.glob('./nested/*.tsx', { eager: true ",
+        )
+        .unwrap();
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src, glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let offenders = match outcome {
+            IslandsShadowOutcome::KeepStopgap(o) => o,
+            IslandsShadowOutcome::Ready(_) => panic!("parse-error target glob must keep stopgap"),
+        };
+        let message = offenders.join("\n");
+        assert!(message.contains("widgets/a.tsx"), "names target: {message}");
+        assert!(
+            message.contains("could not be parsed"),
+            "surfaces conservative parse handling: {message}"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_js_like_extension_gate_batches_offenders() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let (island_src, glob_src, _target) = write_basic_glob_shadow_project(project_root);
+        write_shadow_fixture(
+            project_root,
+            "components/widgets/module.mts",
+            "export const nested = import.meta.glob('./nested/*.tsx', { eager: true });\n",
+        );
+        write_shadow_fixture(
+            project_root,
+            "components/widgets/common.cts",
+            "export const nested = import.meta.glob('./nested/*.tsx', { eager: true });\n",
+        );
+        write_shadow_fixture(
+            project_root,
+            "components/widgets/Upper.TSX",
+            "export const nested = import.meta.glob('./nested/*.tsx', { eager: true });\n",
+        );
+        write_shadow_fixture(
+            project_root,
+            "components/widgets/notes.md",
+            "export const nested = import.meta.glob('./nested/*.tsx', { eager: true });\n",
+        );
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src, glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let offenders = match outcome {
+            IslandsShadowOutcome::KeepStopgap(o) => o,
+            IslandsShadowOutcome::Ready(_) => panic!("JS-like nested globs must keep stopgap"),
+        };
+        let message = offenders.join("\n");
+        assert_eq!(
+            offenders.len(),
+            3,
+            "batches only JS-like offenders: {message}"
+        );
+        assert!(message.contains("module.mts"), "flags .mts: {message}");
+        assert!(message.contains("common.cts"), "flags .cts: {message}");
+        assert!(
+            message.contains("Upper.TSX"),
+            "flags uppercase ext: {message}"
+        );
+        assert!(!message.contains("notes.md"), "skips .md: {message}");
+    }
+
+    #[test]
+    fn materialise_islands_shadow_flags_unused_js_like_sibling_in_glob_subtree() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let (island_src, glob_src, _target) = write_basic_glob_shadow_project(project_root);
+        write_shadow_fixture(
+            project_root,
+            "components/unused.tsx",
+            "export const unused = import.meta.glob('./unused/*.tsx', { eager: true });\n",
+        );
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone()],
+            vec![island_src, glob_src],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let offenders = match outcome {
+            IslandsShadowOutcome::KeepStopgap(o) => o,
+            IslandsShadowOutcome::Ready(_) => panic!("unused sibling glob must keep stopgap"),
+        };
+        let message = offenders.join("\n");
+        assert!(
+            message.contains("components/unused.tsx"),
+            "conservative sibling flag names file: {message}"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_does_not_flag_glob_target_that_is_also_island_reachable() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let (island_src, glob_src, target) = write_basic_glob_shadow_project(project_root);
+        std::fs::create_dir_all(project_root.join("components/widgets/nested")).unwrap();
+        std::fs::write(
+            &target,
+            "export const nested = import.meta.glob('./nested/*.tsx', { eager: true });\n",
+        )
+        .unwrap();
+        write_shadow_fixture(
+            project_root,
+            "components/widgets/nested/leaf.tsx",
+            "export const leaf = 1;\n",
+        );
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            project_root,
+            vec![glob_src.clone(), target.clone()],
+            vec![island_src.clone(), glob_src, target.clone()],
+        );
+        let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let shadow = match outcome {
+            IslandsShadowOutcome::Ready(s) => s,
+            IslandsShadowOutcome::KeepStopgap(o) => {
+                panic!("island-reachable target glob must be expanded, not flagged: {o:?}")
+            }
+        };
+        let shadow_island = shadow
+            .remap
+            .get(&island_src)
+            .expect("island source_path must be remapped into the shadow");
+        let shadow_root = shadow_island.parent().unwrap().parent().unwrap();
+        let expanded =
+            std::fs::read_to_string(shadow_root.join("components/widgets/a.tsx")).unwrap();
+        assert!(
+            !expanded.contains("import.meta.glob("),
+            "also-island-reachable target must be expanded: {expanded}"
+        );
+        assert!(
+            expanded.contains("./nested/leaf.tsx"),
+            "expanded target glob references its match: {expanded}"
         );
     }
 
