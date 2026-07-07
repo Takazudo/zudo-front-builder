@@ -1338,12 +1338,12 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     if config.sourcemap {
         args.push(OsString::from("--sourcemap=linked"));
     }
-    // Issue #1404: keep esbuild anchored at each importer's on-disk
-    // location instead of canonicalising symlinks. Set ONLY by the
-    // islands-shadow path (`BundleConfig::preserve_symlinks`), so the
-    // default no-shadow argv is byte-identical to a pre-#1404 build. See
-    // [`crate::bundler::BundleConfig::preserve_symlinks`] for why the
-    // shadow's expanded-glob copies would otherwise be bypassed.
+    // Issue #1404/#1413: keep esbuild anchored at each importer's on-disk
+    // location when the islands shadow uses symlink mode. Copy-mode shadows
+    // omit this flag because their source files are real shadow copies,
+    // mirroring the SSR bundler's project-node_modules + tsconfig-paths
+    // fallback. The default no-shadow argv remains byte-identical to a
+    // pre-#1404 build.
     if config.preserve_symlinks {
         args.push(OsString::from("--preserve-symlinks"));
     }

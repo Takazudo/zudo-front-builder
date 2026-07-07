@@ -29,7 +29,8 @@
 //!     is an explicit `Err` — silently mis-expanding user code is the failure
 //!     mode this whole task exists to avoid.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Result};
 use walkdir::WalkDir;
@@ -63,6 +64,18 @@ pub struct GlobCallCollector {
     pub base: u32,
     /// Every `import.meta.glob(...)` call found so far, in source order.
     pub calls: Vec<GlobCall>,
+}
+
+/// Result of expanding `import.meta.glob(...)` in one source file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobExpansion {
+    /// Source with supported eager string-literal glob calls rewritten into
+    /// namespace imports plus object literals.
+    pub expanded_source: String,
+    /// Absolute paths of every file matched by any expanded glob call, sorted
+    /// and deduped. Shadow materialisers use this to mirror the target graph
+    /// without parsing generated import strings.
+    pub matched_files: Vec<PathBuf>,
 }
 
 impl swc_core::ecma::visit::Visit for GlobCallCollector {
@@ -293,12 +306,29 @@ pub fn expand_import_meta_glob(
     file_dir: &Path,
     is_excluded: &dyn Fn(&Path) -> bool,
 ) -> Result<String> {
+    Ok(expand_import_meta_glob_with_matches(source, file_dir, is_excluded)?.expanded_source)
+}
+
+/// Expand Vite's eager `import.meta.glob(...)` macro and return the matched
+/// target files alongside the rewritten source.
+///
+/// See [`expand_import_meta_glob`] for the supported syntax and error
+/// contract. This richer form exists for callers that need to mirror the
+/// expanded target graph into a shadow tree.
+pub fn expand_import_meta_glob_with_matches(
+    source: &str,
+    file_dir: &Path,
+    is_excluded: &dyn Fn(&Path) -> bool,
+) -> Result<GlobExpansion> {
     let calls = collect_import_meta_glob_calls(source)?;
 
     if calls.is_empty() {
         // The substring was present but only inside strings/comments — no
         // real call. Return the source unchanged.
-        return Ok(source.to_string());
+        return Ok(GlobExpansion {
+            expanded_source: source.to_string(),
+            matched_files: Vec::new(),
+        });
     }
 
     // Calls are collected in source order (visit is pre-order, left-to-right
@@ -309,6 +339,7 @@ pub fn expand_import_meta_glob(
     // (lo, hi, replacement_object_literal) per call, source order.
     let mut replacements: Vec<(usize, usize, String)> = Vec::new();
     let mut glob_counter: usize = 0;
+    let mut matched_files: BTreeSet<PathBuf> = BTreeSet::new();
 
     for call in &calls {
         let pattern = match &call.parsed {
@@ -323,6 +354,9 @@ pub fn expand_import_meta_glob(
         // already sorted + deduped by `glob_match_relative`.
         let mut entries: Vec<String> = Vec::with_capacity(matches.len());
         for rel in &matches {
+            let rel_path = rel.strip_prefix("./").unwrap_or(rel.as_str());
+            matched_files.insert(file_dir.join(rel_path));
+
             let ident = format!("__glob_{glob_counter}");
             glob_counter += 1;
             // serde_json string-quotes the specifier/key so any exotic char
@@ -368,17 +402,23 @@ pub fn expand_import_meta_glob(
     // shebang (`#!…`) MUST stay on line 1, so insert the imports AFTER it
     // rather than before — prepending before a shebang would break a Node
     // script. (Rare for a bundled module, but cheap to get right.)
-    if import_decls.is_empty() {
-        return Ok(out);
-    }
-    let decls = import_decls.join("\n");
-    if out.starts_with("#!") {
-        let nl = out.find('\n').map(|i| i + 1).unwrap_or(out.len());
-        let (shebang, rest) = out.split_at(nl);
-        Ok(format!("{shebang}{decls}\n{rest}"))
+    let expanded_source = if import_decls.is_empty() {
+        out
     } else {
-        Ok(format!("{decls}\n{out}"))
-    }
+        let decls = import_decls.join("\n");
+        if out.starts_with("#!") {
+            let nl = out.find('\n').map(|i| i + 1).unwrap_or(out.len());
+            let (shebang, rest) = out.split_at(nl);
+            format!("{shebang}{decls}\n{rest}")
+        } else {
+            format!("{decls}\n{out}")
+        }
+    };
+
+    Ok(GlobExpansion {
+        expanded_source,
+        matched_files: matched_files.into_iter().collect(),
+    })
 }
 
 /// Walk `file_dir` and return the POSIX `./`-prefixed relative paths of every
@@ -513,7 +553,8 @@ mod tests {
     fn import_meta_glob_one_match_expands_with_namespace_import() {
         let dir = fixture_dir(&[("widgets/a.tsx", "export const a = 1;")]);
         let src = r#"const m = import.meta.glob('./widgets/*.tsx', { eager: true });"#;
-        let out = expand_import_meta_glob(src, dir.path(), &no_exclude).unwrap();
+        let expansion = expand_import_meta_glob_with_matches(src, dir.path(), &no_exclude).unwrap();
+        let out = &expansion.expanded_source;
         assert!(!out.contains("import.meta.glob("), "macro removed:\n{out}");
         assert!(
             out.contains(r#"import * as __glob_0 from "./widgets/a.tsx";"#),
@@ -522,6 +563,11 @@ mod tests {
         assert!(
             out.contains(r#""./widgets/a.tsx": __glob_0"#),
             "object key → namespace mapping:\n{out}"
+        );
+        assert_eq!(
+            expansion.matched_files,
+            vec![dir.path().join("widgets/a.tsx")],
+            "matched target paths are exposed for shadow materialisation"
         );
     }
 

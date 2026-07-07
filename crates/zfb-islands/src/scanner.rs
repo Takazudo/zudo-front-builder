@@ -70,7 +70,7 @@
 //! the `(source_path, component_name)` pair via a `BTreeMap`, which also
 //! gives us the sort order on output for free.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -1364,6 +1364,57 @@ impl Resolver for InMemoryResolver {
 /// on it stay unchanged.
 pub fn scan_islands<R: Resolver>(pages: &[PathBuf], resolver: &R) -> ScanResult<IslandsSet> {
     scan_islands_with_meta(pages, resolver).map(|(islands, _meta)| islands)
+}
+
+/// Walk ordinary JS/TS module imports from arbitrary roots and return the
+/// sorted, deduped resolved module closure.
+///
+/// This intentionally reuses the same import-edge collector as
+/// [`scan_islands_with_meta`] (`import`, `export ... from`, `export *`, and
+/// string-literal dynamic `import()`). It does not inspect `"use client"` or
+/// collect island metadata; callers use it when they need the esbuild-reachable
+/// closure for generated entry roots such as expanded `import.meta.glob`
+/// targets.
+pub fn scan_reachable_modules<R: Resolver>(
+    roots: &[PathBuf],
+    resolver: &R,
+) -> ScanResult<Vec<PathBuf>> {
+    let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut stack: Vec<PathBuf> = roots.to_vec();
+
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        reachable.insert(current.clone());
+
+        if !is_scannable_source(&current) {
+            continue;
+        }
+
+        let source = resolver
+            .read(&current)
+            .map_err(|message| ScanError::Resolver {
+                path: current.clone(),
+                message,
+            })?;
+        let module = parse_module(&current, &source)?;
+        let importer_dir = current
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        for specifier in collect_import_specifiers(&module) {
+            if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                if !visited.contains(&resolved) {
+                    stack.push(resolved);
+                }
+            }
+        }
+    }
+
+    Ok(reachable.into_iter().collect())
 }
 
 /// Like [`scan_islands`], but also returns [`ScanMeta`] — side-channel
@@ -7130,6 +7181,60 @@ mod tests {
                 "dynamic import literal {want} must be an edge: {out:?}"
             );
         }
+    }
+
+    #[test]
+    fn scan_reachable_modules_walks_import_closure_from_arbitrary_roots() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("components/widgets/a.tsx"),
+                r#"import { shared } from "../shared";
+                   export * from "../barrel";
+                   export async function load() { return import("../lazy"); }
+                   import type { OnlyType } from "../types";
+                   export const a = shared;
+                "#,
+            )
+            .with_file(
+                root().join("components/shared.ts"),
+                "export const shared = 1;\n",
+            )
+            .with_file(
+                root().join("components/barrel.ts"),
+                "export { value } from './value';\n",
+            )
+            .with_file(
+                root().join("components/value.ts"),
+                "export const value = 2;\n",
+            )
+            .with_file(
+                root().join("components/lazy.ts"),
+                "export const lazy = 3;\n",
+            )
+            .with_file(
+                root().join("components/types.ts"),
+                "export type OnlyType = string;\n",
+            );
+
+        let out =
+            scan_reachable_modules(&[root().join("components/widgets/a.tsx")], &resolver).unwrap();
+
+        for want in [
+            "components/widgets/a.tsx",
+            "components/shared.ts",
+            "components/barrel.ts",
+            "components/value.ts",
+            "components/lazy.ts",
+        ] {
+            assert!(
+                out.contains(&root().join(want)),
+                "reachable closure missing {want}: {out:?}"
+            );
+        }
+        assert!(
+            !out.contains(&root().join("components/types.ts")),
+            "type-only imports must not be runtime reachability edges: {out:?}"
+        );
     }
 
     #[test]
