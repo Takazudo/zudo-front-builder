@@ -1,0 +1,74 @@
+---
+title: v0.1.0-next.77
+sidebar_position: 1077
+---
+
+# v0.1.0-next.77
+
+Released: 2026-07-08
+
+## Features
+
+- feat(zfb): materialise islands shadow so import.meta.glob works in islands (#1404) (397dd53)
+- feat(zfb-islands): add BundleConfig::preserve_symlinks + islands-shadow L3 tests (#1404) (448f81a)
+- feat(zfb-islands): expose island_reachable_modules + follow dynamic-import edges (#1404) (d8c64a0)
+- feat(ci): add built-site browser smoke lane (L4) — issue #1401 (7a8ed53)
+- feat(ci): wire tailwindcss-v4 env-gate tests into health.yml T1 gate (5f0ba68)
+- feat(bundler): map esbuild "Could not resolve" to real paths + boundary hint (a47f46d)
+- feat(islands): build-time error for import.meta.glob reachable from islands (#1387) (d123e99)
+- feat(dev): warn on missing watch roots; livereload on prune-only ticks (6cc2d52)
+
+## Bug Fixes
+
+- fix(islands): normalize shadow root path checks (df09925)
+- fix: handle persist remount pending and deferred edges (9a285b7)
+- fix(islands): harden shadow target closure and symlink mode (#1429) (105edcb)
+- fix(islands,content): address deep-review findings on Health Sweep epic (7edaed5)
+- fix(client-router): stop redundant hover-prefetch requeue + fix sync-dialog L4 fixture (40f4ffb)
+- fix(islands): neutralise .module.css imports on esbuild 0.25 (#1410) + #1404 fmt drift (f7bb2e8)
+- fix(client-router): prefetch hover/focus delegation ignores intra-link moves (23d2fa9)
+- fix(client-router): stamp current scroll on syncHistoryEntry push; fix before-swap double-push (4253e62)
+- fix(create-zfb, zfb-runtime): surface spawn errors + pass params to paths()-less dynamic routes (a8b028e)
+- fix(islands): add --loader:.css=empty for island CSS imports (#1395) (a5cf9bb)
+- fix(ci): exam.yml telemetry/robustness, security-audit notify, nextest tweaks (9cf5820)
+- fix(dev-server): implement boot-lazy prebuilt dist/ seed leg (#1390) (2e7bf7d)
+- fix(zfb-md-extras): also skip percent-encoded paths in file+fragment probe (0d7b492)
+- fix(runtime): honor data-zfb-transition-persist across island swaps (#1389) (428984c)
+- fix(zfb-content): recognize more export forms in is_module_level_esm (148743c)
+- fix(zfb-md-extras): skip percent-encoded paths in link existence check (690db16)
+- fix(zfb-md-extras): surface diagnostic for malformed transclude attrs (95d62df)
+- fix(zfb-content): reject duplicate collection slugs in bridge snapshot (ce2b2de)
+- fix(zfb-content): emit config error for githubAutolinks without repo (d5c7c03)
+
+## Other Changes
+
+- chore: start islands shadow canonical root fix #1436 [skip ci] (4b34b27)
+- chore: start persist remount edges #1432 [skip ci] (87f5a07)
+- start islands shadow robustness #1429 [skip ci] (93bcc92)
+- Avoid walking unmirrorable glob subtrees (7d5544b)
+- Document nested raw-mirrored glob limits (45e81d2)
+- Detect nested raw-mirrored island globs (8065429)
+- Escape router selector values (597581b)
+- Make github autolinks repo required (3b66706)
+- docs-ja: fix embed guide deep-link + livereload term consistency (125f940)
+- docs-ja: sync embed-as-library guide (21e3dd1)
+- docs(ja): translate wave-5 docs into docs-ja (#1407) (2106120)
+- style(zfb): cargo fmt drift in materialise_islands_shadow (#1404) (80912ce)
+- docs: document persist-props, syncHistoryEntry scroll fix, ClientRouter requirement (24fbf8a)
+- docs: document import.meta.glob support matrix + troubleshooting page (2d9c39a)
+- test(built-site-smoke): add glob-consuming island (#1385 pt.1 repro) to L4 smoke fixture (#1405) (d614716)
+- test(zfb-runtime): cover client-router form-submit interception (L2 + L4) (3adf091)
+- test(client-router): add L4 hover spec for the nested-child prefetch guard (bb000d8)
+- refactor(zfb-build): relocate import.meta.glob helpers to glob_expand module (b997f55)
+- test(router-chromium): add real-island L4 persist fixture; fix islands-runtime path filter (#1399) (a8502f0)
+- docs(ja): add JA translation of api/cli.mdx (#1403) (7ed8f47)
+- docs: add pnpm 11 minimumReleaseAge caveat to your-first-site (#1396) (3bcfc3b)
+- docs: warn that extraWatchPaths does not make out-of-root imports work (#1396) (33ac5d7)
+- docs: sync api/cli.mdx with actual CLI surface (#1396) (d9be6a2)
+- docs: fix install failure, add supported-platforms tables (#1396) (d938f4c)
+- style: cargo fmt fixes for #1392 test additions (04995eb)
+- docs(config): fix stale/incorrect markdown feature config doc comments (bb29c72)
+- docs(islands): fix garbled sentence in glob_reachable_from_islands doc (#1387) (a46bda1)
+- refactor(dev): exclude zfb.config.* from missing-watch-root warning (c9fc3c5)
+- = start health-sweep dev = [skip ci] (c7535de)
+- chore(docs): bump @takazudo/zudo-doc to 2.5.0 (85d77c9)
