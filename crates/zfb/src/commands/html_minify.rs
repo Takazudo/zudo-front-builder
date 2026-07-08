@@ -4,16 +4,13 @@
 //! HTML" API. Build/config wiring can decide whether to call it; callers
 //! should not thread through the upstream option matrix.
 
-// This sub-issue adds the helper before the later production build wiring
-// starts calling it.
-#![allow(dead_code)]
-
 use minify_html::{minify, Cfg};
 
 pub(crate) fn minify_rendered_html_bytes(html: &[u8]) -> Vec<u8> {
     minify(html, &conservative_cfg())
 }
 
+#[cfg(test)]
 pub(crate) fn minify_rendered_html_string(html: &str) -> String {
     String::from_utf8(minify_rendered_html_bytes(html.as_bytes()))
         .expect("minify-html returned non-UTF-8 for UTF-8 HTML input")
