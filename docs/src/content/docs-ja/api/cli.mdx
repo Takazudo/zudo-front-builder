@@ -101,7 +101,7 @@ zfb dev --host 192.168.1.10 --port 4321
 プロジェクトをプロダクション向けにビルドします。静的 HTML（およびアダプタが設定されている場合はサーバーエントリ）を出力ディレクトリに出力します。
 
 ```sh
-zfb build [--outdir <dir>]
+zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 ```
 
 ### フラグ
@@ -109,12 +109,18 @@ zfb build [--outdir <dir>]
 | フラグ | 型 | デフォルト | 説明 |
 |---|---|---|---|
 | `--outdir` | path | `dist` | プロダクションビルドの出力ディレクトリ。 |
+| `--minify-html` | boolean flag | config/default | このビルドでプロダクション HTML ミニファイを有効にします。`minifyHtml: false` または設定の省略より優先されます。 |
+| `--no-minify-html` | boolean flag | config/default | このビルドでプロダクション HTML ミニファイを無効にします。config や preset の `minifyHtml: true` より優先されます。 |
+
+HTML ミニファイは、`minifyHtml: true` を設定するか `--minify-html` を渡さない限りデフォルトでオフです。zfb の Rust 側の後処理パイプライン内で実行され、Node.js のミニファイ subprocess は起動しません。初回バージョンは保守的で、レンダリングされた HTML ページだけを対象候補にし、ソースが `.html` の passthrough ページはそのまま残し、HTML 以外の出力はスキップします。
 
 ### 例
 
 ```sh
 zfb build
 zfb build --outdir public
+zfb build --minify-html
+zfb build --no-minify-html
 ```
 
 ## `zfb preview`
