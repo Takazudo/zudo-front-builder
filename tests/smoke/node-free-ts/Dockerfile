@@ -46,11 +46,21 @@ ENV PATH="/root/.local/bin:${PATH}"
 # so that COPY succeeds, and install.sh then replaces it below.
 COPY zfb-bin /root/.local/bin/zfb
 
-RUN if [ "$ZFB_SMOKE_MODE" = "released" ]; then \
+RUN set -eu; \
+    if [ "$ZFB_SMOKE_MODE" = "released" ]; then \
         # released mode: fetch and install from the public GitHub Releases URL.
         # This validates the exact curl-pipe path that end users run. ZFB_VERSION
         # pins the tag so install.sh downloads that exact release's assets.
-        curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION="$ZFB_VERSION" sh; \
+        install_script="$(mktemp)"; \
+        curl -fsSL \
+            --retry 5 \
+            --retry-delay 2 \
+            --retry-connrefused \
+            --retry-all-errors \
+            -o "$install_script" \
+            https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh; \
+        ZFB_VERSION="$ZFB_VERSION" sh "$install_script"; \
+        rm -f "$install_script"; \
     fi
 
 RUN chmod +x /root/.local/bin/zfb
