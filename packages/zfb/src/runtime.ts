@@ -416,9 +416,9 @@ export function mountNewIslands(): void {
     // for remount by swap-functions.swapBodyElement. Clear its surviving mounted
     // entry BEFORE scheduleMount's already-mounted guard so it re-mounts fresh
     // with the refreshed data-props. No-op for every other element.
-    clearMountedForRemount(el);
+    const forceRemount = clearMountedForRemount(el);
     warnIfNestedIsland(el, name);
-    scheduleMount(manifest, el, name, "hydrate");
+    scheduleMount(manifest, el, name, "hydrate", { force: forceRemount });
   }
 
   const skipSsrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island-skip-ssr]");
@@ -440,31 +440,38 @@ export function mountNewIslands(): void {
  * in-memory "needs-remount" queue between the two packages is impossible; the
  * live DOM node carrying the flag IS the queue.
  *
- * On a flagged element: fire the old instance's unmount thunk (so its
+ * On a flagged mounted element: fire the old instance's unmount thunk (so its
  * useEffect/framework cleanups run against the still-connected node), drop the
- * `mounted` entry so `scheduleMount`'s guard no longer short-circuits, and strip
- * the flag so the remount happens exactly once. A no-op for elements without the
- * flag (the common case: fresh markers and props-unchanged persisted islands).
+ * `mounted` entry so `scheduleMount`'s guard no longer short-circuits, strip the
+ * flag, and ask the caller to force the replacement mount through immediately
+ * instead of re-entering any deferred scheduler. This keeps a deferred persisted
+ * island from blanking while it waits for idle/visible/media to fire again.
+ *
+ * On a flagged element whose URL import is still pending, leave the flag in
+ * place. The already-running import's success handler consumes it after the
+ * module resolves and re-reads `data-props` at that point, so a props refresh
+ * that happened during the import wins without starting a duplicate import.
+ *
+ * A no-op for elements without the flag (the common case: fresh markers and
+ * props-unchanged persisted islands).
  *
  * Scope: only the `[data-zfb-island]` (hydrated) loop calls this, mirroring the
  * writer side — swapBodyElement sets the flag only for `newTarget.matches(
- * "[data-zfb-island]")`, never for skip-ssr islands. Known v1 limitations for the
- * niche props-changed hybrid path (tracked as a follow-up): (1) if the island's
- * per-island bundle import is still in `pending` at swap time, the follow-up
- * scheduleMount is blocked by the pending guard and the eventual mount uses the
- * props captured before the swap; (2) a deferred (`data-when` idle/visible/media)
- * island is unmounted synchronously here but re-mounts only when its scheduler
- * next fires, so it can briefly blank. Both require the rare persist-props path
- * plus a deferred/in-flight island; the common `data-when="load"` case is exact.
+ * "[data-zfb-island]")`, never for skip-ssr islands.
  */
-function clearMountedForRemount(el: Element): void {
-  if (!el.hasAttribute(ISLAND_REMOUNT_ATTR)) return;
-  el.removeAttribute(ISLAND_REMOUNT_ATTR);
+function clearMountedForRemount(el: Element): boolean {
+  if (!el.hasAttribute(ISLAND_REMOUNT_ATTR)) return false;
+  if (pending.has(el)) return false;
+
   const thunk = mounted.get(el);
   if (thunk) {
     thunk();
     mounted.delete(el);
+    el.removeAttribute(ISLAND_REMOUNT_ATTR);
+    return true;
   }
+  el.removeAttribute(ISLAND_REMOUNT_ATTR);
+  return false;
 }
 
 /**
@@ -521,6 +528,7 @@ function scheduleMount(
   element: Element,
   componentName: string,
   mode: "hydrate" | "render",
+  options: { force?: boolean } = {},
 ): void {
   // Skip elements already mounted OR currently importing — the latter
   // prevents two concurrent `mountIslands` calls from each firing a
@@ -550,7 +558,7 @@ function scheduleMount(
   //     constructed a mount function for it. Skip the dynamic import
   //     and call the supplied function directly.
   if (typeof entry !== "string") {
-    fireInlineMount(element, entry, mode);
+    fireInlineMount(element, entry, mode, options);
     return;
   }
 
@@ -619,6 +627,9 @@ function scheduleMount(
           pending.delete(element);
           return;
         }
+        const shouldRefreshProps = element.hasAttribute(ISLAND_REMOUNT_ATTR);
+        const propsForMount = shouldRefreshProps ? readProps(element) : props;
+        if (shouldRefreshProps) element.removeAttribute(ISLAND_REMOUNT_ATTR);
         const unmountThunk = mod.unmount
           ? () => mod.unmount!(element)
           : () => {
@@ -626,7 +637,7 @@ function scheduleMount(
             };
         mounted.set(element, unmountThunk);
         pending.delete(element);
-        fn(props, element, mode);
+        fn(propsForMount, element, mode);
       },
       (err: unknown) => {
         // Surface the error in dev so the user notices, then clear
@@ -644,6 +655,11 @@ function scheduleMount(
     // SSR-skip islands ignore data-when: there is nothing to defer
     // hydration of, just an empty container we paint into. Mount
     // immediately so the user sees output.
+    fire();
+    return;
+  }
+
+  if (options.force) {
     fire();
     return;
   }
@@ -667,7 +683,12 @@ function scheduleMount(
  * coordinate around — we just call `mount` / `default` directly,
  * gated by the same `data-when` semantics as the URL path.
  */
-function fireInlineMount(element: Element, mod: IslandModule, mode: "hydrate" | "render"): void {
+function fireInlineMount(
+  element: Element,
+  mod: IslandModule,
+  mode: "hydrate" | "render",
+  options: { force?: boolean } = {},
+): void {
   const fn = mod.mount ?? mod.default;
   if (typeof fn !== "function") {
     if (typeof process !== "undefined" && process.env && process.env["NODE_ENV"] !== "production") {
@@ -702,6 +723,11 @@ function fireInlineMount(element: Element, mod: IslandModule, mode: "hydrate" | 
   };
 
   if (mode === "render") {
+    fire();
+    return;
+  }
+
+  if (options.force) {
     fire();
     return;
   }

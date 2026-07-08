@@ -920,6 +920,128 @@ describe("scheduleHydrate", () => {
         expect(el.hasAttribute("data-zfb-island-remount")).toBe(false);
       });
 
+      it("pending URL remount keeps the flag until import resolves and mounts with refreshed props", async () => {
+        document.body.innerHTML = `
+          <div ${PERSIST}="panel" data-zfb-island="Panel" data-props='{"v":1}' data-when="load"></div>
+        `;
+        const el = document.querySelector(`[${PERSIST}="panel"]`)!;
+        const mount = vi.fn();
+
+        let resolveImport: ((mod: { mount: typeof mount }) => void) | undefined;
+        const importPromise = new Promise<{ mount: typeof mount }>((resolve) => {
+          resolveImport = resolve;
+        });
+        restoreImporter = __setIslandImporterForTests(() => importPromise);
+
+        mountIslands({ Panel: "/islands/panel.js" });
+        expect(mount).not.toHaveBeenCalled();
+
+        // Simulate swapBodyElement refreshing props while the URL import is still pending.
+        el.setAttribute("data-props", '{"v":2}');
+        el.setAttribute("data-zfb-island-remount", "");
+
+        mountNewIslands();
+
+        // The pending import owns the eventual mount, so the flag must not be
+        // consumed before that import can re-read fresh data-props.
+        expect(el.hasAttribute("data-zfb-island-remount")).toBe(true);
+        expect(mount).not.toHaveBeenCalled();
+
+        resolveImport!({ mount });
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(mount).toHaveBeenCalledTimes(1);
+        expect(mount.mock.calls[0]![0]).toEqual({ v: 2 });
+        expect(el.hasAttribute("data-zfb-island-remount")).toBe(false);
+
+        mountNewIslands();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(mount).toHaveBeenCalledTimes(1);
+      });
+
+      it("mounted inline deferred remount bypasses the scheduler and runs synchronously", () => {
+        vi.useFakeTimers();
+        try {
+          vi.stubGlobal("requestIdleCallback", undefined);
+          document.body.innerHTML = `
+            <div ${PERSIST}="panel" data-zfb-island="Panel" data-props='{"v":1}' data-when="idle"></div>
+          `;
+          const el = document.querySelector(`[${PERSIST}="panel"]`)!;
+          const mount = vi.fn();
+          const unmount = vi.fn();
+
+          mountIslands({ Panel: { mount, unmount } });
+          expect(mount).not.toHaveBeenCalled();
+
+          vi.advanceTimersByTime(0);
+          expect(mount).toHaveBeenCalledTimes(1);
+          expect(mount.mock.calls[0]![0]).toEqual({ v: 1 });
+
+          el.setAttribute("data-props", '{"v":2}');
+          el.setAttribute("data-zfb-island-remount", "");
+
+          mountNewIslands();
+
+          // No second timer advance: a persisted props-change remount must not
+          // wait for idle again after the old instance has been unmounted.
+          expect(unmount).toHaveBeenCalledTimes(1);
+          expect(mount).toHaveBeenCalledTimes(2);
+          expect(mount.mock.calls[1]![0]).toEqual({ v: 2 });
+          expect(el.hasAttribute("data-zfb-island-remount")).toBe(false);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("mounted URL deferred remount starts immediately instead of waiting for idle again", async () => {
+        vi.useFakeTimers();
+        try {
+          vi.stubGlobal("requestIdleCallback", undefined);
+          document.body.innerHTML = `
+            <div ${PERSIST}="panel" data-zfb-island="Panel" data-props='{"v":1}' data-when="idle"></div>
+          `;
+          const el = document.querySelector(`[${PERSIST}="panel"]`)!;
+          const mount = vi.fn();
+          const unmount = vi.fn();
+          const importer = vi.fn(async () => ({ mount, unmount }));
+          restoreImporter = __setIslandImporterForTests(importer);
+
+          mountIslands({ Panel: "/islands/panel.js" });
+          expect(importer).not.toHaveBeenCalled();
+
+          vi.advanceTimersByTime(0);
+          await Promise.resolve();
+          await Promise.resolve();
+
+          expect(importer).toHaveBeenCalledTimes(1);
+          expect(mount).toHaveBeenCalledTimes(1);
+          expect(mount.mock.calls[0]![0]).toEqual({ v: 1 });
+
+          el.setAttribute("data-props", '{"v":2}');
+          el.setAttribute("data-zfb-island-remount", "");
+
+          mountNewIslands();
+
+          // No second timer advance: the replacement URL import should start
+          // immediately even though the actual mount remains promise-timed.
+          expect(unmount).toHaveBeenCalledTimes(1);
+          expect(importer).toHaveBeenCalledTimes(2);
+
+          await Promise.resolve();
+          await Promise.resolve();
+
+          expect(mount).toHaveBeenCalledTimes(2);
+          expect(mount.mock.calls[1]![0]).toEqual({ v: 2 });
+          expect(el.hasAttribute("data-zfb-island-remount")).toBe(false);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
       it("mountNewIslands leaves a persisted island with unchanged props (no remount flag) mounted — no unmount, no re-mount", () => {
         document.body.innerHTML = `
           <div ${PERSIST}="chrome" data-zfb-island="Sidebar" data-props='{"open":true}' data-when="load"></div>
