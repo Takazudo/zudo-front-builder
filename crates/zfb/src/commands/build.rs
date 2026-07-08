@@ -101,10 +101,10 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // routes were registered.
     let pages_dir = project_root.join("pages");
 
-    let mut config = crate::config::load_from_dir(&project_root)
+    let config = crate::config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
-    config.minify_html = resolve_minify_html(args.minify_html(), &config);
+    let minify_html = resolve_minify_html(args.minify_html(), &config);
 
     let outdir = resolve_outdir(&project_root, &args.outdir);
 
@@ -250,6 +250,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
             adapter_runner: &DefaultAdapterRunner,
             plugin_alias_entries: main_bundler_alias_entries,
             plugin_virtual_modules: main_bundler_virtual_modules,
+            minify_html,
         })
     })?;
 
@@ -463,6 +464,9 @@ struct BuildArgsResolved<'a, R: BuildRunner, A: AdapterRunner> {
     /// `setup_registries.virtual_modules` (sources pre-fetched before
     /// `block_in_place`). Empty vec when no plugins are active.
     plugin_virtual_modules: Vec<(String, String)>,
+    /// Effective production HTML minification decision after resolving
+    /// CLI override > config/preset > default.
+    minify_html: bool,
 }
 
 /// Indirection seam over the heavy bundler + renderer calls.
@@ -2440,6 +2444,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         adapter_runner,
         plugin_alias_entries,
         plugin_virtual_modules,
+        minify_html,
     } = args;
 
     // Resolve the adapter choice up front so we can fail fast if the
@@ -2830,7 +2835,18 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     )
     .context("link base rewrite failed")?;
 
-    // 3.7. Island-marker check (issue #984 / #990).
+    // 3.7. Optional production HTML minification.
+    //
+    // This intentionally runs after the production asset URL rewrite and
+    // link-base rewrite, but before island-marker validation and postBuild.
+    // The target set is still renderer-reported SSG files minus `.html`
+    // passthrough pages; filter it further to HTML-ish extensions so XML feeds
+    // and other non-HTML SSG outputs are never passed to the HTML minifier.
+    if minify_html {
+        minify_rendered_html_files(&post_processable_pages).context("HTML minification failed")?;
+    }
+
+    // 3.8. Island-marker check (issue #984 / #990).
     //
     // Walk the post-processed HTML pages and warn for every
     // `data-zfb-island="X"` / `data-zfb-island-skip-ssr="X"` marker
@@ -3214,6 +3230,30 @@ fn build_prod_rendered_files(
     out
 }
 
+fn minify_rendered_html_files(paths: &[std::path::PathBuf]) -> Result<()> {
+    for path in paths {
+        if !is_html_output_path(path) {
+            continue;
+        }
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("failed to read HTML for minification: {}", path.display()))?;
+        let minified = crate::commands::html_minify::minify_rendered_html_bytes(&bytes);
+        zfb_build::atomic_write(path, &minified).with_context(|| {
+            format!(
+                "failed to write minified HTML atomically: {}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn is_html_output_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"))
+}
+
 fn warn_deferred_dynamic(routes: &[DeferredDynamicRoute]) {
     for r in routes {
         output::warn(format!(
@@ -3578,6 +3618,11 @@ mod tests {
         /// hash-rewrite. This is independent of `prod_head_assets` — client
         /// scripts are NOT auto-injected into the head (#971 P2).
         page_client_script_refs: RefCell<Vec<String>>,
+        /// Relative output paths the fake should report as `.html` passthrough
+        /// files. Real renderer output uses absolute paths in
+        /// `static_html_files_written`, so `render_all` joins these against the
+        /// input `dist_dir`.
+        static_html_output_paths: RefCell<Vec<PathBuf>>,
     }
 
     impl FakeRunner {
@@ -3589,6 +3634,7 @@ mod tests {
                 mock_bundle_path,
                 prod_asset_inputs: RefCell::new(ProdAssetEmitterInputs::default()),
                 page_client_script_refs: RefCell::new(Vec::new()),
+                static_html_output_paths: RefCell::new(Vec::new()),
             }
         }
 
@@ -3607,6 +3653,11 @@ mod tests {
         /// auto-injection is gone (#971 P2).
         fn with_page_client_script_refs(self, urls: Vec<String>) -> Self {
             *self.page_client_script_refs.borrow_mut() = urls;
+            self
+        }
+
+        fn with_static_html_output_paths(self, paths: Vec<PathBuf>) -> Self {
+            *self.static_html_output_paths.borrow_mut() = paths;
             self
         }
     }
@@ -3704,7 +3755,7 @@ mod tests {
                 std::fs::write(
                     &dest,
                     format!(
-                        "<html><head>{head_extra}</head><body><main>rendered {}</main>{body_extra}</body></html>",
+                        "<html>\n  <head>{head_extra}</head>\n  <body>\n    <main> rendered {} </main>\n    <a href=\"/about\">About</a>{body_extra}\n  </body>\n</html>\n",
                         entry.url_path,
                     ),
                 )
@@ -3715,10 +3766,16 @@ mod tests {
                 .iter()
                 .map(|e| input.dist_dir.join(&e.output_path))
                 .collect::<Vec<_>>();
+            let static_html_files_written = self
+                .static_html_output_paths
+                .borrow()
+                .iter()
+                .map(|rel| input.dist_dir.join(rel))
+                .collect::<Vec<_>>();
             self.render_calls.borrow_mut().push(input);
             Ok(RendererOutput {
                 ssg_files_written: written,
-                static_html_files_written: Vec::new(),
+                static_html_files_written,
                 ssr_manifest: SsrManifest::default(),
                 runtime_logs: String::new(),
             })
@@ -3863,6 +3920,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -3884,6 +3942,182 @@ mod tests {
             );
             assert!(body.contains("<main>"), "expected non-empty <main>");
         }
+    }
+
+    #[test]
+    fn run_build_minify_html_disabled_preserves_rendered_html_shape() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "export default function Page() { return null; }\n",
+        )
+        .unwrap();
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+
+        run_build(BuildArgsResolved {
+            project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: false,
+        })
+        .unwrap();
+
+        let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        assert!(
+            html.contains("\n  <body>"),
+            "disabled minify path must preserve rendered formatting:\n{html}",
+        );
+        assert!(
+            html.contains("<main> rendered / </main>"),
+            "disabled minify path must preserve rendered text spacing:\n{html}",
+        );
+    }
+
+    #[test]
+    fn run_build_minify_html_enabled_runs_after_asset_and_base_rewrites() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "export default function Page() { return null; }\n",
+        )
+        .unwrap();
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_prod_asset_inputs(ProdAssetEmitterInputs {
+                css: Some(AssetEmitterPayload {
+                    bytes: b"body { color: red; }".to_vec(),
+                    relative_path: PathBuf::from("assets/styles.css"),
+                    stable_url: "/assets/styles.css".to_string(),
+                    companions: Vec::new(),
+                }),
+                islands: None,
+                client_scripts: Vec::new(),
+            });
+        let cfg = Config {
+            base: Some("/docs/".to_string()),
+            ..Config::default()
+        };
+        let fake_adapter = FakeAdapterRunner::new();
+
+        run_build(BuildArgsResolved {
+            project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: true,
+        })
+        .unwrap();
+
+        let asset_name = std::fs::read_dir(outdir.join("assets"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .find(|name| name.starts_with("styles-") && name.ends_with(".css"))
+            .expect("hashed stylesheet emitted");
+        let html = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        assert!(
+            !html.contains("\n  <body>"),
+            "enabled minify path must compact rendered HTML:\n{html}",
+        );
+        assert!(
+            html.contains(&format!("/docs/assets/{asset_name}")),
+            "minified HTML must contain the base-prefixed hashed asset URL:\n{html}",
+        );
+        assert!(
+            !html.contains("/docs/assets/styles.css"),
+            "stable asset URL must be rewritten before minification:\n{html}",
+        );
+        assert!(
+            html.contains("/docs/about"),
+            "link-base rewrite must run before minification:\n{html}",
+        );
+    }
+
+    #[test]
+    fn run_build_minify_html_skips_static_passthrough_and_non_html_outputs() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "export default function Page() { return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project_root.join("pages/feed.xml.tsx"),
+            "export default function Feed() { return null; }\n",
+        )
+        .unwrap();
+        let mut feed = static_route(vec!["feed.xml"], "pages/feed.xml.tsx");
+        feed.output_extension = Some("xml".to_string());
+        let mut raw = static_route(vec!["raw"], "pages/raw.html");
+        raw.static_html = true;
+        let routes = vec![static_route(vec![], "pages/index.tsx"), raw, feed];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_static_html_output_paths(vec![PathBuf::from("raw/index.html")]);
+        let cfg = Config::default();
+        let fake_adapter = FakeAdapterRunner::new();
+
+        run_build(BuildArgsResolved {
+            project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: true,
+        })
+        .unwrap();
+
+        let rendered = std::fs::read_to_string(outdir.join("index.html")).unwrap();
+        assert!(
+            !rendered.contains("\n  <body>"),
+            "ordinary rendered HTML should be minified:\n{rendered}",
+        );
+
+        let passthrough = std::fs::read_to_string(outdir.join("raw/index.html")).unwrap();
+        assert!(
+            passthrough.contains("\n  <body>"),
+            "static .html passthrough output must stay verbatim:\n{passthrough}",
+        );
+
+        let feed = std::fs::read_to_string(outdir.join("feed.xml")).unwrap();
+        assert!(
+            feed.contains("\n  <body>"),
+            "non-HTML SSG output must not be sent through HTML minification:\n{feed}",
+        );
     }
 
     /// zfb#231 regression — the SSR worker bundle (`bundle.mjs` + its
@@ -3917,6 +4151,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -3975,6 +4210,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
         // Only the static route reaches the renderer; the dynamic one
@@ -4036,6 +4272,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
         // 1 static + 2 expanded dynamic.
@@ -4082,6 +4319,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
         assert_eq!(pages, 0);
@@ -4173,6 +4411,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap_err();
         let msg = format!("{err:#}");
@@ -4214,6 +4453,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
         assert!(
@@ -4262,6 +4502,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap_err();
         let msg = format!("{err:#}");
@@ -4327,6 +4568,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
         let calls = fake_adapter.calls.borrow();
@@ -4369,6 +4611,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap_err();
         let msg = format!("{err:#}");
@@ -4415,6 +4658,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -4512,6 +4756,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -4598,6 +4843,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -4794,6 +5040,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -4897,6 +5144,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -5002,6 +5250,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -6577,6 +6826,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -6637,6 +6887,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -7018,6 +7269,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap_err();
         let msg = format!("{err:#}");
@@ -7080,6 +7332,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap_err();
         let msg = format!("{err:#}");
@@ -7157,6 +7410,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
         // Two bundle calls: the full SSG bundle, then the runtime-only
@@ -7267,6 +7521,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -7405,6 +7660,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -7480,6 +7736,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
@@ -7558,6 +7815,7 @@ mod tests {
             adapter_runner: &fake_adapter,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
+            minify_html: false,
         })
         .unwrap();
 
