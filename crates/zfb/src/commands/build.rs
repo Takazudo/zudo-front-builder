@@ -1209,17 +1209,51 @@ enum IslandsShadowOutcome {
     KeepStopgap(Vec<String>),
 }
 
-/// Return the project-root-relative path of `p` when `p` is a project-local
-/// source file the islands shadow mirrors individually — i.e. it lives under
-/// `root` and NOT under `root/node_modules` (which is symlinked whole). A
-/// path outside `root`, under `node_modules`, or equal to `root` returns
-/// `None`.
-fn project_local_shadow_rel<'a>(p: &'a Path, root: &Path) -> Option<&'a Path> {
-    let rel = p.strip_prefix(root).ok()?;
-    match rel.components().next() {
-        Some(c) if c.as_os_str() == "node_modules" => None,
-        Some(_) => Some(rel),
-        None => None,
+struct IslandsShadowPaths<'a> {
+    root: &'a Path,
+    canonical_root: Option<PathBuf>,
+}
+
+impl<'a> IslandsShadowPaths<'a> {
+    fn new(root: &'a Path) -> Self {
+        Self {
+            root,
+            canonical_root: root.canonicalize().ok(),
+        }
+    }
+
+    /// Return the project-root-relative path of `p` when `p` is a
+    /// project-local source file the islands shadow mirrors individually —
+    /// i.e. it lives under `root` and NOT under `root/node_modules` (which is
+    /// symlinked whole). A path outside `root`, under `node_modules`, or equal
+    /// to `root` returns `None`.
+    ///
+    /// The scanner records canonicalized module paths, while callers may pass
+    /// a raw project root whose ancestor resolves differently (macOS `/var` ->
+    /// `/private/var`, symlinked tempdirs, etc.). Try the cheap raw comparison
+    /// first, then fall back to canonicalized path comparison.
+    fn project_local_rel(&self, p: &Path) -> Option<PathBuf> {
+        if let Ok(rel) = p.strip_prefix(self.root) {
+            return Self::usable_rel(rel);
+        }
+
+        let canonical_root = self.canonical_root.as_ref()?;
+        let canonical_p = p.canonicalize().ok()?;
+        let rel = canonical_p.strip_prefix(canonical_root).ok()?;
+        Self::usable_rel(rel)
+    }
+
+    fn path_key(&self, p: &Path) -> PathBuf {
+        self.project_local_rel(p)
+            .unwrap_or_else(|| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
+    }
+
+    fn usable_rel(rel: &Path) -> Option<PathBuf> {
+        match rel.components().next() {
+            Some(c) if c.as_os_str() == "node_modules" => None,
+            Some(_) => Some(rel.to_path_buf()),
+            None => None,
+        }
     }
 }
 
@@ -1389,6 +1423,7 @@ fn materialise_islands_shadow(
     use std::collections::{BTreeSet, HashMap};
 
     let root = project_root;
+    let paths = IslandsShadowPaths::new(root);
 
     // --- Pre-flight: every glob module must be shadow-expandable. ---------
     // A glob module outside the mirrorable tree (outside project_root, or
@@ -1399,10 +1434,11 @@ fn materialise_islands_shadow(
     // is skipped entirely when any is unsupported; cache the expansion for
     // the walk below.
     let mut offenders: Vec<String> = Vec::new();
-    let mut expanded_by_path: HashMap<PathBuf, String> = HashMap::new();
+    let mut expanded_glob_modules: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut expanded_by_key: HashMap<PathBuf, String> = HashMap::new();
     let mut matched_glob_targets: BTreeSet<PathBuf> = BTreeSet::new();
     for g in &scan_meta.glob_reachable_from_islands {
-        if project_local_shadow_rel(g, root).is_none() {
+        if paths.project_local_rel(g).is_none() {
             offenders.push(format!(
                 "{} — reachable from a \"use client\" island but located outside the \
                  mirrorable project tree (outside the project root, or under \
@@ -1429,7 +1465,8 @@ fn materialise_islands_shadow(
         ) {
             Ok(expansion) => {
                 matched_glob_targets.extend(expansion.matched_files);
-                expanded_by_path.insert(g.clone(), expansion.expanded_source);
+                expanded_glob_modules.insert(g.clone());
+                expanded_by_key.insert(paths.path_key(g), expansion.expanded_source);
             }
             Err(e) => offenders.push(format!("{}: {e:#}", g.display())),
         }
@@ -1439,13 +1476,13 @@ fn materialise_islands_shadow(
     // (a) the island-reachable closure (project-local files only; the rest
     //     are covered by the node_modules symlink).
     for m in &scan_meta.island_reachable_modules {
-        if project_local_shadow_rel(m, root).is_some() {
+        if paths.project_local_rel(m).is_some() {
             to_mirror.insert(m.clone());
         }
     }
     // (b) every file under each glob module's directory subtree (its matched
     //     targets live here).
-    for g in expanded_by_path.keys() {
+    for g in &expanded_glob_modules {
         let dir = g.parent().unwrap_or(root);
         for entry in walkdir::WalkDir::new(dir)
             .follow_links(false)
@@ -1454,8 +1491,7 @@ fn materialise_islands_shadow(
         {
             let entry =
                 entry.with_context(|| format!("walking glob module subtree {}", dir.display()))?;
-            if entry.file_type().is_file() && project_local_shadow_rel(entry.path(), root).is_some()
-            {
+            if entry.file_type().is_file() && paths.project_local_rel(entry.path()).is_some() {
                 to_mirror.insert(entry.path().to_path_buf());
             }
         }
@@ -1470,7 +1506,7 @@ fn materialise_islands_shadow(
         match scan_reachable_modules(&target_roots, &resolver) {
             Ok(modules) => {
                 for m in modules {
-                    if project_local_shadow_rel(&m, root).is_some() {
+                    if paths.project_local_rel(&m).is_some() {
                         to_mirror.insert(m);
                     }
                 }
@@ -1483,7 +1519,7 @@ fn materialise_islands_shadow(
                     )
                 })?;
                 if bytes_contain_import_meta_glob(&bytes)
-                    && project_local_shadow_rel(&path, root).is_some()
+                    && paths.project_local_rel(&path).is_some()
                 {
                     // Let the raw-mirrored nested-glob preflight below produce
                     // the intended #1412 KeepStopgap message, including the
@@ -1507,10 +1543,11 @@ fn materialise_islands_shadow(
     let glob_reachable: BTreeSet<PathBuf> = scan_meta
         .glob_reachable_from_islands
         .iter()
-        .cloned()
+        .map(|p| paths.path_key(p))
         .collect();
     for from in &to_mirror {
-        if expanded_by_path.contains_key(from) || glob_reachable.contains(from) {
+        let from_key = paths.path_key(from);
+        if expanded_by_key.contains_key(&from_key) || glob_reachable.contains(&from_key) {
             continue;
         }
         if !is_islands_shadow_js_like_file(from) {
@@ -1555,7 +1592,7 @@ fn materialise_islands_shadow(
     let preserve_symlinks = !source_copy_mode;
 
     for from in &to_mirror {
-        let rel = match project_local_shadow_rel(from, root) {
+        let rel = match paths.project_local_rel(from) {
             Some(r) => r,
             None => continue,
         };
@@ -1564,7 +1601,8 @@ fn materialise_islands_shadow(
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create shadow dir {}", parent.display()))?;
         }
-        if let Some(expanded) = expanded_by_path.get(from) {
+        let from_key = paths.path_key(from);
+        if let Some(expanded) = expanded_by_key.get(&from_key) {
             // Real expanded copy — NOT a symlink, so esbuild reads the
             // expanded macro from the shadow in both preserve-symlinks and
             // copy-mode branches.
@@ -1604,7 +1642,7 @@ fn materialise_islands_shadow(
     // --- Remap island source_paths into the shadow. ----------------------
     let mut remap: HashMap<PathBuf, PathBuf> = HashMap::new();
     for island in islands {
-        if let Some(rel) = project_local_shadow_rel(&island.source_path, root) {
+        if let Some(rel) = paths.project_local_rel(&island.source_path) {
             remap.insert(island.source_path.clone(), shadow_root.join(rel));
         }
     }
@@ -5854,6 +5892,48 @@ mod tests {
         assert!(
             message.contains("Hoist the glob") && message.contains("explicit static imports"),
             "gives remediation: {message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialise_islands_shadow_accepts_canonical_paths_under_symlinked_root() {
+        let real = tempdir().unwrap();
+        let link_parent = tempdir().unwrap();
+        let project_root = link_parent.path().join("project-link");
+        std::os::unix::fs::symlink(real.path(), &project_root).unwrap();
+
+        let (island_src, glob_src, target) = write_basic_glob_shadow_project(&project_root);
+        std::fs::write(
+            &target,
+            "export const nested = import.meta.glob('./nested/*.tsx', { eager: true });\n",
+        )
+        .unwrap();
+
+        let island_src = island_src.canonicalize().unwrap();
+        let glob_src = glob_src.canonicalize().unwrap();
+        let islands = vec![zfb_islands::Island::new("Gallery", island_src.clone())];
+        let scan_meta = zfb_islands::ScanMeta {
+            uses_client_router: false,
+            near_miss_candidates: 0,
+            glob_reachable_from_islands: vec![glob_src.clone()],
+            island_reachable_modules: vec![island_src, glob_src],
+        };
+
+        let outcome = materialise_islands_shadow(&project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let offenders = match outcome {
+            IslandsShadowOutcome::KeepStopgap(o) => o,
+            IslandsShadowOutcome::Ready(_) => panic!("nested target glob must keep stopgap"),
+        };
+        let message = offenders.join("\n");
+        assert!(
+            !message.contains("outside the mirrorable project tree"),
+            "does not misclassify canonical in-tree glob module: {message}"
+        );
+        assert!(
+            message.contains("widgets/a.tsx"),
+            "names nested raw-mirrored offender: {message}"
         );
     }
 
