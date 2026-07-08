@@ -6,7 +6,7 @@ import { translations } from "./src/config/i18n";
 import { colorSchemes } from "./src/config/color-schemes";
 
 // The canonical seven directives for this showcase. Keys are directive names;
-// values are the JSX component names — under zudo-doc v2 package-owned routes,
+// values are the JSX component names — under zudo-doc package-owned routes,
 // these all resolve to package-provided mdx-components (deriveMdxComponents),
 // so the host no longer registers them. "details" is a collapsible, NOT an
 // admonition.
@@ -25,7 +25,7 @@ export default defineConfig({
   tailwind: { enabled: true },
   base: settings.base,
   adapter: "@takazudo/zfb-adapter-cloudflare",
-  // translations + colorSchemes are consumed by zudo-doc v2's package-owned
+  // translations + colorSchemes are consumed by zudo-doc package-owned
   // routes (packageOwnedRoutes) so /404 etc. inherit host i18n/theme; optional
   // in v1, required-in-practice once packageOwnedRoutes is on (zudo-doc #2404).
   ...zudoDocPreset({ settings, buildDocsSchema, directiveVocabulary, translations, colorSchemes }),

@@ -43,6 +43,7 @@ export const settings = {
     "The Rust engine under your content-site framework — router, renderer, content pipeline. Author in TypeScript/JSX, runs as a single binary." as string,
   base: "/",
   trailingSlash: false as boolean,
+  minifyHtml: true as boolean,
   noindex: false as boolean,
   editUrl: false as string | false,
   githubUrl: "https://github.com/Takazudo/zudo-front-builder" as string | false,

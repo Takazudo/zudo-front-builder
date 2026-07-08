@@ -1,173 +1,97 @@
-/** A color reference: palette index (number) or direct color value (string) */
-export type ColorRef = number | string;
-
-export interface ColorScheme {
-  background: ColorRef;
-  foreground: ColorRef;
-  cursor: ColorRef;
-  selectionBg: ColorRef;
-  selectionFg: ColorRef;
-  palette: [
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-  ];
-  /** Optional, vestigial. Carried only in the optional color-scheme config
-   *  envelope consumed by the design token panel tooling (falls back to
-   *  DEFAULT_SHIKI_THEME when omitted), but has no visible effect: that
-   *  tooling's Shiki integration is a no-op stub, and page code highlighting is
-   *  done by syntect (dual-theme, configured via `codeHighlight` in
-   *  zfb.config.ts), not Shiki. */
-  shikiTheme?: string;
-  /** Optional semantic overrides — when omitted, defaults are used:
-   *  surface=p0, muted=p8, accent=p5, accentHover=p14
-   *  codeBg=p10, codeFg=p11, success=p2, danger=p1, warning=p3, info=p4
-   *  Each field accepts a palette index (number) or a direct color value (string). */
-  semantic?: {
-    surface?: ColorRef;
-    muted?: ColorRef;
-    accent?: ColorRef;
-    accentHover?: ColorRef;
-    codeBg?: ColorRef;
-    codeFg?: ColorRef;
-    success?: ColorRef;
-    danger?: ColorRef;
-    warning?: ColorRef;
-    info?: ColorRef;
-    mermaidNodeBg?: ColorRef;
-    mermaidText?: ColorRef;
-    mermaidLine?: ColorRef;
-    mermaidLabelBg?: ColorRef;
-    mermaidNoteBg?: ColorRef;
-    chatUserBg?: ColorRef;
-    chatUserText?: ColorRef;
-    chatAssistantBg?: ColorRef;
-    chatAssistantText?: ColorRef;
-    /** UI chrome over user images — enlarge/close overlay buttons */
-    imageOverlayBg?: ColorRef;
-    imageOverlayFg?: ColorRef;
-    /** <mark> highlight for matched keywords in search results */
-    matchedKeywordBg?: ColorRef;
-    matchedKeywordFg?: ColorRef;
-  };
-}
-
 /**
- * Standard palette index convention (all schemes should follow this):
+ * Ramp-native color schemes (zudo-doc v3).
  *
- * | Index | Role              | Description                              |
- * |-------|-------------------|------------------------------------------|
- * | p0    | Dark surface      | Deepest surface (code blocks, mermaid)   |
- * | p1    | Danger            | Red family — errors, destructive actions  |
- * | p2    | Success           | Green family — confirmations, tips        |
- * | p3    | Warning           | Yellow/amber — caution messages           |
- * | p4    | Info              | Blue family — informational highlights    |
- * | p5    | Accent            | Primary interactive color (links, CTA)    |
- * | p6    | Neutral           | Slate/cyan — borders, secondary elements  |
- * | p7    | Secondary neutral | Gray or muted accent                      |
- * | p8    | Muted             | Gray — borders, secondary text, comments  |
- * | p9    | Background        | Page background                           |
- * | p10   | Surface           | Elevated surface (panels, sidebars)       |
- * | p11   | Text primary      | Main body text                            |
- * | p12   | Accent variant    | Brighter or alternate accent              |
- * | p13   | Decorative        | Purple/lavender — non-semantic decoration  |
- * | p14   | Accent hover      | Hover state for interactive elements      |
- * | p15   | Text secondary    | Secondary text or muted foreground         |
+ * A `ColorScheme` is `{ ramps, map }`:
+ *   - `ramps` is the shared Tier-1 source of truth.
+ *   - `map` is the per-mode wiring from UI roles to ramp stops.
  */
+
+import type { ColorScheme, ModeMap, Ramps } from "./color-scheme-utils";
+
+export type { ColorScheme } from "./color-scheme-utils";
+
+const ramps: Ramps = {
+  base: [
+    "oklch(.965 .004 65)",
+    "oklch(.705 .008 65)",
+    "oklch(.480 .008 65)",
+    "oklch(.300 .006 65)",
+    "oklch(.185 .005 65)",
+  ],
+  accent: ["oklch(.755 .130 64)", "oklch(.700 .158 62)", "oklch(.470 .120 56)"],
+  state: {
+    danger: "oklch(.640 .170 25)",
+    success: "oklch(.680 .145 145)",
+    warning: "oklch(.760 .135 82)",
+    info: "oklch(.680 .130 245)",
+  },
+};
+
+const darkMap: ModeMap = {
+  bg: { base: 4 },
+  fg: { base: 0 },
+  selectionBg: { base: 2 },
+  selectionFg: { base: 0 },
+  semantic: {
+    surface: { base: 4 },
+    muted: { base: 1 },
+    accent: { accent: 1 },
+    accentHover: { accent: 0 },
+    codeBg: { base: 3 },
+    codeFg: { base: 0 },
+    success: { state: "success" },
+    danger: "oklch(.655 .170 25)",
+    warning: { state: "warning" },
+    info: { state: "info" },
+    mermaidNodeBg: { base: 3 },
+    mermaidText: { base: 0 },
+    mermaidLine: { base: 1 },
+    mermaidLabelBg: { base: 3 },
+    mermaidNoteBg: { base: 2 },
+    chatUserBg: { accent: 1 },
+    chatUserText: { base: 4 },
+    chatAssistantBg: { base: 4 },
+    chatAssistantText: { base: 0 },
+    imageOverlayBg: { base: 4 },
+    imageOverlayFg: { base: 0 },
+    matchedKeywordBg: "oklch(.700 .158 62)",
+    matchedKeywordFg: "oklch(.300 .003 65)",
+  },
+};
+
+const lightMap: ModeMap = {
+  bg: { base: 0 },
+  fg: { base: 4 },
+  selectionBg: { base: 1 },
+  selectionFg: { base: 4 },
+  semantic: {
+    surface: { base: 0 },
+    muted: { base: 2 },
+    accent: { accent: 2 },
+    accentHover: "oklch(.400 .096 56)",
+    codeBg: { base: 0 },
+    codeFg: { base: 4 },
+    success: "oklch(.470 .140 145)",
+    danger: "oklch(.505 .170 25)",
+    warning: "oklch(.490 .100 82)",
+    info: "oklch(.485 .122 245)",
+    mermaidNodeBg: { base: 1 },
+    mermaidText: { base: 4 },
+    mermaidLine: { base: 2 },
+    mermaidLabelBg: { base: 1 },
+    mermaidNoteBg: { base: 1 },
+    chatUserBg: { accent: 1 },
+    chatUserText: { base: 4 },
+    chatAssistantBg: { base: 0 },
+    chatAssistantText: { base: 4 },
+    imageOverlayBg: { base: 4 },
+    imageOverlayFg: { base: 0 },
+    matchedKeywordBg: "oklch(.700 .158 62)",
+    matchedKeywordFg: "oklch(.300 .003 65)",
+  },
+};
+
 export const colorSchemes: Record<string, ColorScheme> = {
-  "Default Light": {
-    background: 9,
-    foreground: 11,
-    cursor: 6,
-    selectionBg: 11,
-    selectionFg: 10,
-    palette: [
-      "#303030",
-      "#a01515",
-      "#1f5429",
-      "#903030", // p0-3: dark surface, danger, success, warning — darkened for WCAG AA (#2298)
-      "#174fa0",
-      "#7d470b",
-      "#90a1b9",
-      "#7a5218", // p4-7: info, accent, neutral, secondary — darkened for WCAG AA (#2298)
-      "#6b6b6b",
-      "#e2ddda",
-      "#ece9e9",
-      "#303030", // p8-11: muted, background, surface, text
-      "#5b99dc",
-      "#b89ee7",
-      "#8590a0",
-      "#654516", // p12-15: accent variant, decorative, hover, muted foreground
-    ],
-    semantic: {
-      surface: 10,
-      muted: 8,
-      accent: 5,
-      accentHover: 14,
-      codeBg: 10,
-      codeFg: 11,
-      success: 2,
-      danger: 1,
-      warning: 3,
-      info: 4,
-      imageOverlayBg: 11,
-      imageOverlayFg: 10,
-      matchedKeywordBg: "#fff59d",
-      matchedKeywordFg: "#000000",
-    },
-  },
-  "Default Dark": {
-    background: 9,
-    foreground: 15,
-    cursor: 6,
-    selectionBg: 10,
-    selectionFg: 11,
-    palette: [
-      "#1c1c1c",
-      "#da6871",
-      "#93bb77",
-      "#dfbb77", // p0-3: dark surface, danger, success, warning
-      "#5caae9",
-      "#c074d6",
-      "#90a1b9",
-      "#a0a0a0", // p4-7: info, accent, neutral, secondary
-      "#888888",
-      "#181818",
-      "#383838",
-      "#e0e0e0", // p8-11: muted, background, surface, text
-      "#d69a66",
-      "#c074d6",
-      "#a7c0e3",
-      "#b8b8b8", // p12-15: accent variant, decorative, hover, text secondary
-    ],
-    semantic: {
-      surface: 0,
-      muted: 8,
-      accent: 12,
-      accentHover: 14,
-      codeBg: 10,
-      codeFg: 11,
-      success: 2,
-      danger: 1,
-      warning: 3,
-      info: 4,
-      imageOverlayBg: 0,
-      imageOverlayFg: 11,
-      matchedKeywordBg: "#fff59d",
-      matchedKeywordFg: "#000000",
-    },
-  },
+  "Default Light": { ramps, map: lightMap },
+  "Default Dark": { ramps, map: darkMap },
 };

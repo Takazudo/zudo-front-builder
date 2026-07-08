@@ -26,6 +26,8 @@ export type {
   FrontmatterPreviewConfig,
   TagPlacement,
   VersionConfig,
+  ChangelogConfig,
   MetaTagsConfig,
+  SiteHeadConfig,
   Settings,
 } from "@takazudo/zudo-doc/settings";

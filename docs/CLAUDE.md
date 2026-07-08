@@ -28,7 +28,7 @@ All commands run from the **repo root** with the `--filter docs` workspace flag,
 
 ## Key Directories
 
-This site uses **zudo-doc v2 package-owned routes** (`settings.packageOwnedRoutes: true`).
+This site uses **zudo-doc package-owned routes** (`settings.packageOwnedRoutes: true`).
 `@takazudo/zudo-doc/plugins/routes` injects and owns every route — `/docs/[[...slug]]`,
 `/[locale]`, `/[locale]/docs/**`, `/404`, `/sitemap.xml`, `/robots.txt`, tags, versions — and
 renders all page chrome (header/sidebar/TOC/footer) from package defaults, reconstructed from a
@@ -51,7 +51,7 @@ docs/
 ```
 
 The former v1 host-owned route/chrome layer (`pages/lib/**`, `pages/docs/**`, `pages/[locale]/**`,
-`src/components/**`, `src/utils/**`, `src/hooks/**`) was **deleted** when this site adopted v2
+`src/components/**`, `src/utils/**`, `src/hooks/**`) was **deleted** when this site adopted
 package-owned routes — the package now provides all of it. Do not reintroduce those stubs; extend
 via zudo-doc's `hostBindings`/preset seams instead.
 
