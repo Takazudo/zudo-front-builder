@@ -101,7 +101,7 @@ zfb dev --host 192.168.1.10 --port 4321
 Build the project for production. Emits static HTML (and, when an adapter is configured, a server entry) to the output directory.
 
 ```sh
-zfb build [--outdir <dir>]
+zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 ```
 
 ### Flags
@@ -109,12 +109,18 @@ zfb build [--outdir <dir>]
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--outdir` | path | `dist` | Output directory for the production build. |
+| `--minify-html` | boolean flag | config/default | Enable production HTML minification for this build. Overrides `minifyHtml: false` or an omitted config value. |
+| `--no-minify-html` | boolean flag | config/default | Disable production HTML minification for this build. Overrides `minifyHtml: true` from config or presets. |
+
+HTML minification is off by default unless `minifyHtml: true` is set or `--minify-html` is passed. It runs inside zfb's Rust post-processing pipeline and does not spawn a Node.js minifier subprocess. The first version is conservative: rendered HTML pages are candidates, source `.html` passthrough pages remain verbatim, and non-HTML outputs are skipped.
 
 ### Example
 
 ```sh
 zfb build
 zfb build --outdir public
+zfb build --minify-html
+zfb build --no-minify-html
 ```
 
 ## `zfb preview`

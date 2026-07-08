@@ -73,7 +73,7 @@ use zfb_router::Router;
 
 use zfb_render::paths::PathsCache;
 
-use crate::cli::BuildArgs;
+use crate::cli::{BuildArgs, BuildMinifyHtml};
 use crate::commands::resolve::{resolve_outdir, validate_outdir_safety, wipe_outdir_contents};
 use crate::config::{Config, OutputMode};
 use crate::output;
@@ -101,9 +101,10 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // routes were registered.
     let pages_dir = project_root.join("pages");
 
-    let config = crate::config::load_from_dir(&project_root)
+    let mut config = crate::config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
+    config.minify_html = resolve_minify_html(args.minify_html(), &config);
 
     let outdir = resolve_outdir(&project_root, &args.outdir);
 
@@ -402,6 +403,16 @@ pub(crate) fn resolve_v8_mode(
             }
         }
     }
+}
+
+/// Resolve the effective production HTML-minification switch.
+///
+/// CLI flags are tri-state so an omitted flag can defer to the
+/// config/preset value. `Config::minify_html` itself is already
+/// defaulted to `false` by serde, so this function returns the single
+/// boolean the build orchestration should carry.
+pub(crate) fn resolve_minify_html(cli: BuildMinifyHtml, config: &Config) -> bool {
+    cli.as_option().unwrap_or(config.minify_html)
 }
 
 // ---------------------------------------------------------------------------
@@ -3794,6 +3805,36 @@ mod tests {
                 stderr: String::new(),
             })
         }
+    }
+
+    #[test]
+    fn resolve_minify_html_defaults_false_when_cli_and_config_omit() {
+        let cfg = Config::default();
+        assert!(!resolve_minify_html(BuildMinifyHtml::Unspecified, &cfg));
+    }
+
+    #[test]
+    fn resolve_minify_html_uses_config_when_cli_omits() {
+        let cfg = Config {
+            minify_html: true,
+            ..Config::default()
+        };
+        assert!(resolve_minify_html(BuildMinifyHtml::Unspecified, &cfg));
+    }
+
+    #[test]
+    fn resolve_minify_html_cli_enable_beats_config_false() {
+        let cfg = Config::default();
+        assert!(resolve_minify_html(BuildMinifyHtml::Enabled, &cfg));
+    }
+
+    #[test]
+    fn resolve_minify_html_cli_disable_beats_config_true() {
+        let cfg = Config {
+            minify_html: true,
+            ..Config::default()
+        };
+        assert!(!resolve_minify_html(BuildMinifyHtml::Disabled, &cfg));
     }
 
     #[test]

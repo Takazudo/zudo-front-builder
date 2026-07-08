@@ -205,6 +205,17 @@ export type ZfbConfig = {
    */
   prefetch?: PrefetchConfig;
   /**
+   * Minify production HTML output from `zfb build`. Default: `false`.
+   *
+   * The implementation is Rust-only and does not spawn a Node.js minifier
+   * subprocess. The first version is intentionally conservative: rendered
+   * `.html` pages are candidates, source `.html` passthrough pages remain
+   * verbatim, and non-HTML outputs are skipped.
+   *
+   * Mirrors `Config::minify_html` in `crates/zfb/src/config.rs`.
+   */
+  minifyHtml?: boolean;
+  /**
    * Bundler options. `bundle.exclude` lists project-relative globs of
    * source files to keep out of the esbuild graph (e.g.
    * `["components/*.stories.tsx"]`) — see {@link BundleConfig.exclude} for
