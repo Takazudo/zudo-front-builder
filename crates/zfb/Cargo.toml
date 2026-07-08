@@ -67,6 +67,7 @@ indicatif = "0.18"
 # island-marker-check pass (`commands/island_marker_check.rs`).  Same
 # workspace pin as the existing users (`zfb-build`, `zfb-islands`).
 lol_html = "2.8.1"
+minify-html = "0.18.1"
 owo-colors = { version = "4", features = ["supports-colors"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
