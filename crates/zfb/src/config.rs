@@ -278,6 +278,18 @@ pub struct Config {
     #[serde(default)]
     pub prefetch: Option<PrefetchConfig>,
 
+    /// Whether production HTML pages should be minified after render.
+    ///
+    /// Default: `false` (off) for compatibility. `zfb build
+    /// --minify-html` / `--no-minify-html` can override this value for a
+    /// single build; the build command resolves that CLI tri-state before
+    /// handing the config to orchestration, so downstream code only sees the
+    /// effective boolean.
+    ///
+    /// Mirrors `ZfbConfig::minifyHtml` in `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub minify_html: bool,
+
     /// Bundler options. `bundle.exclude` lists project-relative globs of
     /// source files the bundler must keep out of the esbuild graph (see
     /// [`BundleConfig::exclude`]). Absent / `None` → no files are skipped
@@ -586,6 +598,7 @@ impl Default for Config {
             collections: Vec::new(),
             tailwind: None,
             prefetch: None,
+            minify_html: false,
             bundle: None,
             plugins: Vec::new(),
             adapter: None,
@@ -2795,6 +2808,36 @@ mod tests {
             .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         assert_eq!(cfg, Config::default());
+        assert!(
+            !cfg.minify_html,
+            "omitted minifyHtml must default to compatibility-off"
+        );
+    }
+
+    #[tokio::test]
+    async fn loads_minify_html_true_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "minifyHtml": true }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(cfg.minify_html);
+    }
+
+    #[tokio::test]
+    async fn loads_minify_html_false_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "minifyHtml": false }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(!cfg.minify_html);
     }
 
     #[tokio::test]
@@ -5549,6 +5592,30 @@ mod tests {
         assert!(
             cfg.copy_public_with_base,
             "user's explicit `true` (== type default) must beat the preset's `false`"
+        );
+    }
+
+    #[test]
+    fn preset_minify_html_true_fills_when_user_omits() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({ "minifyHtml": true })],
+            serde_json::json!({}),
+        );
+        assert!(
+            cfg.minify_html,
+            "preset minifyHtml:true must apply when the user omits the field"
+        );
+    }
+
+    #[test]
+    fn preset_user_minify_html_false_beats_preset_true() {
+        let cfg = merge_presets_to_config(
+            vec![serde_json::json!({ "minifyHtml": true })],
+            serde_json::json!({ "minifyHtml": false }),
+        );
+        assert!(
+            !cfg.minify_html,
+            "user's explicit minifyHtml:false must beat preset true"
         );
     }
 

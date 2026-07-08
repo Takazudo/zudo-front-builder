@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand};
 
 /// Top-level CLI for the `zfb` binary.
 #[derive(Debug, Parser)]
@@ -110,6 +110,57 @@ pub struct BuildArgs {
     /// Output directory for the production build.
     #[arg(long, default_value = "dist")]
     pub outdir: PathBuf,
+
+    /// Enable production HTML minification for this build.
+    #[arg(
+        long = "minify-html",
+        action = ArgAction::SetTrue,
+        conflicts_with = "no_minify_html"
+    )]
+    minify_html: bool,
+
+    /// Disable production HTML minification for this build.
+    #[arg(
+        long = "no-minify-html",
+        action = ArgAction::SetTrue,
+        conflicts_with = "minify_html"
+    )]
+    no_minify_html: bool,
+}
+
+impl BuildArgs {
+    /// The user-facing HTML-minification CLI state.
+    ///
+    /// Kept as a tri-state so command orchestration can layer
+    /// "explicit CLI > config/preset > default" without treating an omitted
+    /// flag as an explicit `false`.
+    pub fn minify_html(&self) -> BuildMinifyHtml {
+        match (self.minify_html, self.no_minify_html) {
+            (true, false) => BuildMinifyHtml::Enabled,
+            (false, true) => BuildMinifyHtml::Disabled,
+            (false, false) => BuildMinifyHtml::Unspecified,
+            // clap rejects this via `conflicts_with`; keep the branch
+            // deterministic for direct struct construction in tests.
+            (true, true) => BuildMinifyHtml::Disabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildMinifyHtml {
+    Unspecified,
+    Enabled,
+    Disabled,
+}
+
+impl BuildMinifyHtml {
+    pub fn as_option(self) -> Option<bool> {
+        match self {
+            Self::Unspecified => None,
+            Self::Enabled => Some(true),
+            Self::Disabled => Some(false),
+        }
+    }
 }
 
 /// Arguments for `zfb preview`.
@@ -183,6 +234,13 @@ mod tests {
         }
     }
 
+    fn build_minify_html(argv: &[&str]) -> BuildMinifyHtml {
+        match Cli::try_parse_from(argv).expect("parse").command {
+            Command::Build(args) => args.minify_html(),
+            other => panic!("expected build subcommand, got {other:?}"),
+        }
+    }
+
     // Absent `--host` must stay `None` so the command body's
     // "CLI > config > built-in default" layering still kicks in.
     #[test]
@@ -222,6 +280,55 @@ mod tests {
         assert_eq!(
             preview_host(&["zfb", "preview", "--host", "10.0.0.1"]),
             Some("10.0.0.1".into())
+        );
+    }
+
+    #[test]
+    fn build_minify_html_absent_is_unspecified() {
+        assert_eq!(
+            build_minify_html(&["zfb", "build"]),
+            BuildMinifyHtml::Unspecified
+        );
+    }
+
+    #[test]
+    fn build_minify_html_flag_enables() {
+        assert_eq!(
+            build_minify_html(&["zfb", "build", "--minify-html"]),
+            BuildMinifyHtml::Enabled
+        );
+    }
+
+    #[test]
+    fn build_no_minify_html_flag_disables() {
+        assert_eq!(
+            build_minify_html(&["zfb", "build", "--no-minify-html"]),
+            BuildMinifyHtml::Disabled
+        );
+    }
+
+    #[test]
+    fn build_minify_html_flags_conflict() {
+        let err = Cli::try_parse_from(["zfb", "build", "--minify-html", "--no-minify-html"])
+            .expect_err("conflicting minify flags must be rejected");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn build_help_documents_html_minify_flags() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let build = cmd
+            .find_subcommand_mut("build")
+            .expect("build subcommand exists");
+        let help = build.render_long_help().to_string();
+        assert!(
+            help.contains("--minify-html"),
+            "build help must document --minify-html:\n{help}"
+        );
+        assert!(
+            help.contains("--no-minify-html"),
+            "build help must document --no-minify-html:\n{help}"
         );
     }
 

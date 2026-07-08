@@ -7,6 +7,7 @@ pub mod build;
 pub mod bundler_input;
 pub mod check;
 pub mod dev;
+pub(crate) mod html_minify;
 pub mod island_marker_check;
 pub mod link_base_rewrite;
 pub mod new;
