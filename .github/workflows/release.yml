@@ -600,7 +600,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build TypeScript packages
-        run: pnpm -r build
+        run: pnpm -r --filter '!./examples/*' build
 
       - name: Sync platform package versions (lockstep verification — should be no-op)
         shell: bash
