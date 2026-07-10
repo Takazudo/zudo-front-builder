@@ -33,7 +33,7 @@
 #     exact-match filterset alone is sufficient scoping — no `-p`/package
 #     qualifier is needed for correctness. `test(=NAME)` matches nextest's
 #     FULL qualified test name (module path included), not just the bare fn
-#     name — the 11 top-level integration-test functions need no prefix, but
+#     name — the 15 top-level integration-test functions need no prefix, but
 #     `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project`
 #     lives inside `#[cfg(test)] mod tests` in crates/zfb/src/commands/build.rs
 #     (filtered as `commands::build::tests::<name>`) and
@@ -182,7 +182,7 @@ jobs:
           "$ESBUILD_SLOT" --version
           "$TAILWIND_SLOT" --version
 
-      # The #1337 manifest, env-gate + heavy tags only (13 tests — see
+      # The #1337 manifest, env-gate + heavy tags only (17 tests — see
       # CLAUDE.md's "`#[ignore]` manifest (Rust)" table for the authoritative
       # list). No pending-feature-tagged tests exist as of #1363's
       # reconciliation, so there is nothing left to deliberately exclude here
@@ -216,6 +216,10 @@ jobs:
               | test(=splitting_emits_chunk_for_dynamic_import)
               | test(=no_dynamic_import_yields_single_file)
               | test(=client_script_real_esbuild_bundles_discovered_entry)
+              | test(=island_css_import_bundles_without_error)
+              | test(=island_module_css_import_bundles_without_error)
+              | test(=islands_shadow_expands_glob_and_executes)
+              | test(=islands_shadow_preserve_symlinks_is_load_bearing)
               | test(=subprocess_engine_against_real_binary)
               | test(=prod_asset_graph_with_real_tailwind_binary_against_fixture)
               | test(=commands::build::tests::default_runner_emit_prod_assets_returns_non_empty_css_for_real_project)
