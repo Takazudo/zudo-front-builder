@@ -32,6 +32,7 @@
 //!   `component_name` of each entry; bundlers MAY widen the list to also
 //!   include shared chunks). Order MUST be stable across runs.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -151,9 +152,35 @@ impl std::hash::Hash for Island {
     }
 }
 
+/// `import.meta.env.{PROD,DEV}` / `process.env.NODE_ENV` substitution mode.
+///
+/// This is deliberately independent of [`BundleConfig::minify`]: development
+/// builds may opt into minification without becoming production builds, and
+/// production builds may disable minification for diagnostics without seeing
+/// development globals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BundleMode {
+    /// Production build: `PROD=true`, `DEV=false`, `NODE_ENV="production"`.
+    Production,
+    /// Development build: `PROD=false`, `DEV=true`, `NODE_ENV="development"`.
+    #[default]
+    Development,
+}
+
+impl BundleMode {
+    /// Whether this mode represents a production build.
+    #[must_use]
+    pub const fn is_prod(self) -> bool {
+        matches!(self, Self::Production)
+    }
+}
+
 /// Bundle configuration handed to [`ClientBundler::bundle`].
 #[derive(Debug, Clone)]
 pub struct BundleConfig {
+    /// Production / development mode for compile-time environment defines.
+    pub mode: BundleMode,
+
     /// Minify the output. Production: `true`. Dev: `false`.
     pub minify: bool,
 
@@ -232,11 +259,25 @@ pub struct BundleConfig {
     /// into it, and only when that shadow used symlink mode rather than
     /// copy-mode.
     pub preserve_symlinks: bool,
+
+    /// Additional inline esbuild loaders keyed by extension.
+    ///
+    /// The command-layer config validator restricts values to loaders that do
+    /// not emit sibling assets. A [`BTreeMap`] keeps the argv deterministic.
+    pub loaders: BTreeMap<String, String>,
+
+    /// Operator-authored esbuild `--define` expressions.
+    ///
+    /// Values are forwarded verbatim (string values therefore need to be
+    /// pre-quoted JSON). Reserved mode keys are rejected by the command-layer
+    /// config validator. A [`BTreeMap`] keeps the argv deterministic.
+    pub define: BTreeMap<String, String>,
 }
 
 impl Default for BundleConfig {
     fn default() -> Self {
         Self {
+            mode: BundleMode::Development,
             minify: false,
             sourcemap: true,
             outdir: PathBuf::from("dist"),
@@ -244,6 +285,8 @@ impl Default for BundleConfig {
             jsx_import_source: FrameworkKind::default().jsx_import_source().to_string(),
             client_router: false,
             preserve_symlinks: false,
+            loaders: BTreeMap::new(),
+            define: BTreeMap::new(),
         }
     }
 }
@@ -252,6 +295,7 @@ impl BundleConfig {
     /// Production preset: minify on, sourcemap off.
     pub fn production() -> Self {
         Self {
+            mode: BundleMode::Production,
             minify: true,
             sourcemap: false,
             ..Self::default()
@@ -312,6 +356,18 @@ impl BundleConfig {
     /// path (#1404/#1413) and left `false` everywhere else.
     pub fn with_preserve_symlinks(mut self, preserve_symlinks: bool) -> Self {
         self.preserve_symlinks = preserve_symlinks;
+        self
+    }
+
+    /// Set additional inline esbuild loaders (chainable).
+    pub fn with_loaders(mut self, loaders: BTreeMap<String, String>) -> Self {
+        self.loaders = loaders;
+        self
+    }
+
+    /// Set operator-authored raw esbuild define expressions (chainable).
+    pub fn with_define(mut self, define: BTreeMap<String, String>) -> Self {
+        self.define = define;
         self
     }
 }
@@ -705,10 +761,12 @@ mod tests {
     #[test]
     fn bundle_config_presets() {
         let prod = BundleConfig::production();
+        assert_eq!(prod.mode, BundleMode::Production);
         assert!(prod.minify);
         assert!(!prod.sourcemap);
 
         let dev = BundleConfig::dev();
+        assert_eq!(dev.mode, BundleMode::Development);
         assert!(!dev.minify);
         assert!(dev.sourcemap);
     }
@@ -719,11 +777,22 @@ mod tests {
             .with_outdir("build")
             .with_base_url("https://cdn.example.com/")
             .with_minify(false)
-            .with_sourcemap(true);
+            .with_sourcemap(true)
+            .with_loaders(BTreeMap::from([(".txt".to_string(), "text".to_string())]))
+            .with_define(BTreeMap::from([(
+                "__APP_NAME__".to_string(),
+                "\"zfb\"".to_string(),
+            )]));
         assert_eq!(cfg.outdir, PathBuf::from("build"));
         assert_eq!(cfg.base_url, "https://cdn.example.com/");
         assert!(!cfg.minify);
         assert!(cfg.sourcemap);
+        assert_eq!(cfg.mode, BundleMode::Production);
+        assert_eq!(cfg.loaders.get(".txt").map(String::as_str), Some("text"));
+        assert_eq!(
+            cfg.define.get("__APP_NAME__").map(String::as_str),
+            Some("\"zfb\"")
+        );
     }
 
     #[test]

@@ -435,6 +435,18 @@ pub(crate) fn assemble_bundler_input(
             config.bundle.as_ref(),
         ));
 
+    // #1498 — append validated inline loaders after the SSR bundler's
+    // reserved loader flags. `BTreeMap` iteration keeps argv deterministic.
+    bundler_input.extra_loader_args = crate::config::resolve_bundle_loaders(config.bundle.as_ref())
+        .into_iter()
+        .map(|(extension, loader)| format!("--loader:{extension}={loader}"))
+        .collect();
+
+    // #1498 — operator-authored raw esbuild expressions. This is distinct
+    // from `public_env_vars`: values are not JSON-encoded and keys are not
+    // filtered by `PUBLIC_`. Config validation reserves the mode-owned keys.
+    bundler_input.define_vars = crate::config::resolve_bundle_define(config.bundle.as_ref());
+
     // #268 — thread plugin-registered aliases and virtual modules into the
     // main bundler's esbuild invocation so page / layout / shared SSR-only
     // modules can consume them.  Both build and dev derive these from the same

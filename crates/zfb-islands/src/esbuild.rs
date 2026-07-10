@@ -1295,6 +1295,9 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     // follow-up and #1406 for the docs wave that documents this limitation).
     args.push(OsString::from("--loader:.css=empty"));
     args.push(OsString::from("--loader:.module.css=empty"));
+    for (extension, loader) in &config.loaders {
+        args.push(OsString::from(format!("--loader:{extension}={loader}")));
+    }
     // Issue #151: route esbuild through the automatic JSX transform
     // pointed at the host framework's import source (typically
     // `"preact"`). Without these two flags esbuild defaults to the
@@ -1369,10 +1372,10 @@ pub(crate) fn build_esbuild_args_with_entry_name(
             "--chunk-names={ESBUILD_CHUNK_NAME_TEMPLATE}"
         )));
     }
-    // Inline NODE_ENV so React/Preact pick their production build
-    // when minifying. esbuild expects the define value to be a JS
-    // literal, hence the embedded quotes.
-    if config.minify {
+    // Inline NODE_ENV so React/Preact pick their mode-specific build.
+    // Mode is intentionally independent from minification. esbuild expects
+    // the define value to be a JS literal, hence the embedded quotes.
+    if config.mode.is_prod() {
         args.push(OsString::from(
             "--define:process.env.NODE_ENV=\"production\"",
         ));
@@ -1392,7 +1395,7 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     // browser and `import.meta.env.DEV` throws
     // `TypeError: Cannot read properties of undefined (reading 'DEV')`
     // before any island can hydrate (issue #287).
-    let prod = config.minify;
+    let prod = config.mode.is_prod();
     args.push(OsString::from(format!(
         "--define:import.meta.env.PROD={}",
         prod
@@ -1401,6 +1404,9 @@ pub(crate) fn build_esbuild_args_with_entry_name(
         "--define:import.meta.env.DEV={}",
         !prod
     )));
+    for (key, value) in &config.define {
+        args.push(OsString::from(format!("--define:{key}={value}")));
+    }
     for extra in extra_args {
         args.push(extra.clone());
     }
@@ -3153,13 +3159,12 @@ mod tests {
     /// rather than shipped to the browser where `import.meta.env` is
     /// `undefined` and `import.meta.env.DEV` throws at module init.
     ///
-    /// Production mode (`config.minify == true`) → `PROD=true`,
-    /// `DEV=false`. The values are JS literal booleans, not quoted
-    /// strings, matching the form already used by
-    /// `crates/zfb-build/src/bundler.rs::2395`.
+    /// Production mode, regardless of minification, → `PROD=true`,
+    /// `DEV=false`, and `NODE_ENV="production"`. The values are JS literals,
+    /// not quoted strings (except the string-valued `NODE_ENV`).
     #[test]
     fn build_esbuild_args_defines_import_meta_env_in_prod() {
-        let cfg = BundleConfig::default().with_minify(true);
+        let cfg = BundleConfig::production().with_minify(false);
         let args = args_as_strings(&cfg, true);
         assert!(
             args.iter()
@@ -3171,16 +3176,19 @@ mod tests {
                 .any(|a| a == "--define:import.meta.env.DEV=false"),
             "missing --define:import.meta.env.DEV=false in args: {args:?}"
         );
+        assert!(
+            args.iter()
+                .any(|a| a == "--define:process.env.NODE_ENV=\"production\""),
+            "missing production NODE_ENV in args: {args:?}"
+        );
     }
 
-    /// Dev mode (`config.minify == false`) flips both flags so the
-    /// `if (import.meta.env.DEV) …` branch is preserved in unminified
-    /// builds. Mirrors the `bundler.rs` semantics so consumers see the
-    /// same `PROD`/`DEV` substitution in both pipelines.
+    /// Development mode, even when minification is requested, flips both
+    /// flags and pins `NODE_ENV="development"`. This keeps mode independent
+    /// of output-size optimization across all client pipelines.
     #[test]
     fn build_esbuild_args_defines_import_meta_env_in_dev() {
-        let cfg = BundleConfig::default();
-        assert!(!cfg.minify, "default BundleConfig must be dev mode");
+        let cfg = BundleConfig::dev().with_minify(true);
         let args = args_as_strings(&cfg, true);
         assert!(
             args.iter()
@@ -3192,6 +3200,82 @@ mod tests {
                 .any(|a| a == "--define:import.meta.env.DEV=true"),
             "missing --define:import.meta.env.DEV=true in args: {args:?}"
         );
+        assert!(
+            args.iter()
+                .any(|a| a == "--define:process.env.NODE_ENV=\"development\""),
+            "missing development NODE_ENV in args: {args:?}"
+        );
+    }
+
+    #[test]
+    fn client_script_args_use_the_same_explicit_dev_mode_contract() {
+        let cfg = BundleConfig::dev().with_minify(true);
+        let args: Vec<String> = build_esbuild_args_with_entry_name(
+            &cfg,
+            &[],
+            &PathBuf::from("/tmp/zfb-client-out"),
+            &PathBuf::from("/tmp/widget.client.ts"),
+            false,
+            "widget",
+        )
+        .into_iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+
+        assert!(args.iter().any(|arg| arg == "--entry-names=widget"));
+        assert!(
+            args.iter()
+                .any(|arg| arg == "--define:import.meta.env.DEV=true"),
+            "client-script DEV must be mode-driven: {args:?}"
+        );
+        assert!(
+            args.iter()
+                .any(|arg| arg == "--define:import.meta.env.PROD=false"),
+            "client-script PROD must be mode-driven: {args:?}"
+        );
+        assert!(
+            args.iter()
+                .any(|arg| arg == "--define:process.env.NODE_ENV=\"development\""),
+            "client-script NODE_ENV must be mode-driven: {args:?}"
+        );
+    }
+
+    #[test]
+    fn build_esbuild_args_appends_sorted_inline_loaders_and_raw_defines() {
+        let cfg = BundleConfig::production()
+            .with_loaders(std::collections::BTreeMap::from([
+                (".txt".to_string(), "text".to_string()),
+                (".bin".to_string(), "binary".to_string()),
+            ]))
+            .with_define(std::collections::BTreeMap::from([
+                ("__ZETA__".to_string(), "true".to_string()),
+                ("__ALPHA__".to_string(), "\"zfb\"".to_string()),
+            ]));
+        let args = args_as_strings(&cfg, true);
+
+        let css_idx = args
+            .iter()
+            .position(|arg| arg == "--loader:.module.css=empty")
+            .expect("reserved module CSS loader");
+        let bin_idx = args
+            .iter()
+            .position(|arg| arg == "--loader:.bin=binary")
+            .expect("configured .bin loader");
+        let txt_idx = args
+            .iter()
+            .position(|arg| arg == "--loader:.txt=text")
+            .expect("configured .txt loader");
+        assert!(css_idx < bin_idx && bin_idx < txt_idx, "args: {args:?}");
+
+        let alpha_idx = args
+            .iter()
+            .position(|arg| arg == "--define:__ALPHA__=\"zfb\"")
+            .expect("raw __ALPHA__ define");
+        let zeta_idx = args
+            .iter()
+            .position(|arg| arg == "--define:__ZETA__=true")
+            .expect("raw __ZETA__ define");
+        assert!(alpha_idx < zeta_idx, "args: {args:?}");
     }
 
     /// `BundleConfig::jsx_import_source` is honoured verbatim — the

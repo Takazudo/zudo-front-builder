@@ -724,6 +724,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let dev_assets_root_for_islands = dev_assets_root.clone();
         let plugin_cfg = islands_plugin_config.clone();
         let framework = cfg.framework;
+        let bundle_config = cfg.bundle.clone();
         let url_prefix = dev_islands_url_prefix.clone();
         let url_handle = Arc::clone(&islands_bundle_url_handle);
         let chunk_names = Arc::clone(&live_chunk_filenames);
@@ -739,6 +740,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &project_root,
                 &dev_assets_root_for_islands,
                 framework,
+                bundle_config.as_ref(),
                 &plugin_cfg,
                 &url_prefix,
                 &url_handle,
@@ -874,6 +876,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // Issue #1189: client scripts go to the isolated dev-assets root.
         &dev_assets_root,
         cfg.framework,
+        cfg.bundle.as_ref(),
         &std::collections::HashSet::new(),
         &registered_client_entries,
     ) {
@@ -896,6 +899,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // Issue #1189: rebuild client scripts into the isolated dev-assets root.
         let dev_assets_root_for_cs = dev_assets_root.clone();
         let framework = cfg.framework;
+        let bundle_config = cfg.bundle.clone();
         let entry_names = Arc::clone(&live_client_script_names);
         // #1196 — capture registered entries for the watcher closure.
         let registered_for_cs = registered_client_entries.clone();
@@ -914,6 +918,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &project_root_for_cs,
                 &dev_assets_root_for_cs,
                 framework,
+                bundle_config.as_ref(),
                 &prev,
                 &registered_for_cs,
             )?;
@@ -1075,6 +1080,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let islands_plugin_config_for_boot = islands_plugin_config.clone();
     let islands_url_prefix_for_boot = dev_islands_url_prefix.clone();
     let framework_for_boot = cfg.framework;
+    let bundle_config_for_boot = cfg.bundle.clone();
     // Issue #1182 — the deferred boot task publishes the live SSR route handle
     // after the deferred bundle lands (`refresh_bundle_and_routes` swaps the
     // session's tables but NOT the server's `ssr_route_set` handle — its
@@ -1428,6 +1434,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &project_root_for_boot,
                 &dev_assets_root_for_boot,
                 framework_for_boot,
+                bundle_config_for_boot.as_ref(),
                 &islands_plugin_config_for_boot,
                 &islands_url_prefix_for_boot,
                 &islands_url_handle_for_boot,
@@ -1623,6 +1630,7 @@ fn rebundle_islands(
     // `.zfb-build/dev-assets` root, NOT the build-shared `dist/`).
     assets_root: &Path,
     framework: crate::config::Framework,
+    bundle_config: Option<&crate::config::BundleConfig>,
     plugin_config: &crate::commands::build::IslandsPluginConfig,
     url_prefix: &str,
     url_handle: &zfb_server::IslandsBundleUrl,
@@ -1647,15 +1655,18 @@ fn rebundle_islands(
     // again. The shadow TempDir is created and dropped entirely within the
     // call below (esbuild runs synchronously inside it), so no shadow state
     // leaks across dev ticks.
-    let (payload, _marker_names) = crate::commands::build::build_default_islands_payload(
-        project_root,
-        &project_root.join("pages"),
-        &[],
-        assets_root,
-        framework,
-        plugin_config,
-        crate::commands::build::IslandsGlobPolicy::WarnAndSkip,
-    )?;
+    let (payload, _marker_names) =
+        crate::commands::build::build_default_islands_payload_with_bundle_options(
+            project_root,
+            &project_root.join("pages"),
+            &[],
+            assets_root,
+            framework,
+            bundle_config,
+            zfb_islands::BundleMode::Development,
+            plugin_config,
+            crate::commands::build::IslandsGlobPolicy::WarnAndSkip,
+        )?;
     // Rewrite the shared handle so the next initial GET (a fresh browser
     // tab, or a page that has not yet hydrated) sees the current bundle URL.
     // The dev server holds the same Arc, so this is visible without
