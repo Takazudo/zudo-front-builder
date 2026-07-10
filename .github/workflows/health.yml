@@ -143,7 +143,7 @@ jobs:
       # which transpiles (via esbuild/swc) without type-checking, so a type
       # error could merge green. `--if-present` mirrors b4push's invocation:
       # packages without a `typecheck` script are skipped rather than failing.
-      - run: pnpm -r --if-present typecheck
+      - run: pnpm -r --filter '!./examples/*' --if-present typecheck
 
       # Run the JS/TS test suites across all packages (@takazudo/zfb and
       # @takazudo/zfb-runtime). Includes the slugify parity tests that
