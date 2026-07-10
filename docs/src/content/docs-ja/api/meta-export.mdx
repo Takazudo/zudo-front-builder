@@ -1,48 +1,178 @@
 ---
-title: meta export
-description: meta エクスポートでページごとの head メタデータを宣言します。
+title: ページモジュールのエクスポート
+description: zfb がページモジュールから読み取る named export のリファレンス。
 sidebar_position: 5
 ---
 
-## パターン
+`pages/` 配下のすべてのファイルは、ページコンポーネントを default export する必要があります。zfb はそれに加えて、ページモジュールからいくつかの named export を読み取り、どの URL が存在するか、コンポーネントへどの props を渡すか、ルートを prerender するか、どのレスポンスメタデータを使うかを決定します。
 
-すべてのページモジュールは、ページごとのメタデータ（タイトル、説明、レイアウトの上書き）を記述する `meta` 定数（または同じレコードを返す async 関数）をエクスポートできます。ビルドはこのエクスポートを読み取り、型付きレコードとしてパースし（`crates/zfb-render/src/meta.rs`）、ページをラップするレイアウトモジュールを解決します。レンダラ自体は `<head>` タグを出力しません。レイアウトコンポーネントが `<head>` を所有し、受け取った値を使って何をレンダリングするかを決定します。
-
-## 例
-
-```tsx
-export const meta = {
-  title: "Blog — My Site",
-  description: "Latest writing on web development.",
-};
-
-export default function BlogPage() {
-  return <article>{/* ... */}</article>;
+```ts
+export default function Page(props: Record<string, unknown>) {
+  return <main>{/* ... */}</main>;
 }
 ```
 
-meta を計算するためにコレクションや async ソースからのデータが必要な場合（例: CMS フィールドから導出するタイトル）は、`meta` を async 関数としてエクスポートします。レンダラはページシェルをレンダリングする前にそれを await します。
+出荷されている named export は、`paths()`、`getStaticProps()`、`prerender`、`contentType`、`headings` です。
+
+<Warning>
+
+`export const meta` は、出荷済みのページモジュール API ではありません。head タグ、レイアウト選択、Open Graph データ、ページメタデータのために依存しないでください。head マークアップはコンポーネント / レイアウトコードに置くか、`paths()` / `getStaticProps()` の props 経由でデータを渡してください。
+
+</Warning>
+
+## `paths()`
+
+```ts
+export function paths():
+  | Array<{ params: Record<string, string | string[]>; props?: Record<string, unknown> }>
+  | Promise<Array<{ params: Record<string, string | string[]>; props?: Record<string, unknown> }>>;
+```
+
+`pages/blog/[slug].tsx`、`pages/docs/[...slug].tsx`、`pages/docs/[[...slug]].tsx` のような動的ルートは、`paths()` を使って具体的な URL を列挙します。各エントリは、ルート内のすべての動的セグメントに対応するキーを持つ `params` オブジェクトを含む必要があります。任意の `props` は `params` とともに、ページコンポーネントのトップレベル props へ展開されます。
+
+SSG ルートでは、zfb はまずリテラルな `paths()` 結果を静的に抽出しようとします。リテラルではない関数は、ビルド中にバンドル済みランタイムを通じて評価されます。`prerender = false` の動的ルートはリクエスト時に配信されるため、ビルド時の具体的な URL 一覧は不要です。
 
 ```tsx
-export async function meta() {
-  const post = getCollection("blog")[0];
+import { getCollection } from "@takazudo/zfb/content";
+
+export async function paths() {
+  const posts = getCollection<{ title: string }>("blog");
+  return posts.map((post) => ({
+    params: { slug: post.slug },
+    props: { title: post.data.title },
+  }));
+}
+
+export default function PostPage({
+  params,
+  title,
+}: {
+  params: { slug: string };
+  title: string;
+}) {
+  return <h1>{title}</h1>;
+}
+```
+
+## `getStaticProps()`
+
+```ts
+export function getStaticProps():
+  | { props: Record<string, unknown> }
+  | Promise<{ props: Record<string, unknown> }>;
+```
+
+静的ルートは `getStaticProps()` をエクスポートして、ページコンポーネントがレンダリングされる前に props を計算できます。これは静的な非動的ルート向けです。動的ルートでは、代わりに `paths()` からエントリごとの props を返してください。
+
+```tsx
+import { getCollection } from "@takazudo/zfb/content";
+
+export function getStaticProps() {
+  const posts = getCollection<{ title: string }>("blog");
   return {
-    title: post.data.title,
-    description: post.data.description,
+    props: {
+      postCount: posts.length,
+      latestTitle: posts.at(-1)?.data.title ?? "No posts",
+    },
   };
 }
+
+export default function BlogIndex({
+  postCount,
+  latestTitle,
+}: {
+  postCount: number;
+  latestTitle: string;
+}) {
+  return (
+    <main>
+      <h1>Blog</h1>
+      <p>{postCount} posts</p>
+      <p>Latest: {latestTitle}</p>
+    </main>
+  );
+}
 ```
 
-## サポートされるキー
+## `prerender`
 
-`PageMeta` は以下のキーのみを受け付けます。未知のキーはパース時に **拒否される**（`deny_unknown_fields`）ため、タイプミスは黙って捨てられるのではなくビルドエラーとして表面化します。
+```ts
+export const prerender: boolean;
+```
 
-- `title?: string` — このページについてレイアウトのデフォルトを上書きします。
-- `description?: string` — レイアウトコンポーネントに渡され、コンポーネントが `<meta name="description">` タグを出力するかどうかを決定します。バンドルされているデフォルトレイアウトは現在これを出力しません。
-- `layout?: string` — ページレイアウトコンポーネントのモジュール specifier（相対パスまたはベア specifier）。指定がない場合はプロジェクトのデフォルトレイアウトが使われます。
+ルートはデフォルトでディスクへ prerender されます。ページを SSG から外して、代わりにランタイム SSR アダプタ経由で配信するには、`prerender = false` を設定します。SSR 対応アダプタのないプロジェクトに `prerender = false` ルートが含まれている場合は、早い段階で失敗します。
 
-<Note>
+静的 extractor が尊重するのはリテラルの boolean export だけです。計算された値はデフォルト（`true`）として扱われます。
 
-正規 URL、Open Graph、Twitter Card タグは `PageMeta` の一部ではありません。meta から `<head>` への出力パイプラインは存在せず（`<head>` はレイアウトが所有します）、これらのタグを追加するにはレイアウトコンポーネントで直接注入するか、ビルド時プラグインを使って `<head>` コンテンツを出力してください。
+```tsx
+export const prerender = false;
 
-</Note>
+export default function PreviewPage() {
+  return <h1>This route is rendered at request time</h1>;
+}
+```
+
+## `contentType`
+
+```ts
+export const contentType: string;
+```
+
+`contentType` は TSX ページのレスポンス `Content-Type` を上書きします。HTML 以外のページや、ファイル名拡張子だけでは足りない場合に使います。省略すると、zfb は出力拡張子から型を導出し、最後は `text/html; charset=utf-8` にフォールバックします。
+
+```tsx
+export const contentType = "application/xml";
+
+export default function Sitemap() {
+  return (
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url>
+        <loc>https://example.com/</loc>
+      </url>
+    </urlset>
+  );
+}
+```
+
+## `headings`
+
+```ts
+export const headings: readonly Array<{
+  depth: number;
+  slug: string;
+  text: string;
+}>;
+```
+
+MDX コンパイルは、コンパイル済みのすべての Markdown / MDX モジュールに `headings` export を出力します。これはソース内の見出しから導出される、文書順の目次です。空の文書でも `[]` を export するため、利用側は無条件に import できます。
+
+通常、TSX ページで `headings` を手書きすることはありません。MDX モジュールから import するか、フレームワークレベルの UI を構築するときにページモジュール namespace から読み取ってください。
+
+```tsx
+import DocsPage, { headings } from "../content/docs/intro.mdx";
+
+export function getStaticProps() {
+  return {
+    props: {
+      tableOfContents: headings.filter((heading) => heading.depth <= 3),
+    },
+  };
+}
+
+export default function IntroPage({
+  tableOfContents,
+}: {
+  tableOfContents: typeof headings;
+}) {
+  return (
+    <main>
+      <nav>
+        {tableOfContents.map((heading) => (
+          <a href={`#${heading.slug}`}>{heading.text}</a>
+        ))}
+      </nav>
+      <DocsPage />
+    </main>
+  );
+}
+```

@@ -1,13 +1,12 @@
 ---
 title: コードブロックのタイトル
-description: title= メタ属性から、フェンス付きコードブロックの上にファイル名やラベルを表示する。
+description: title= メタ属性を持つフェンス付きコードブロックを、表示されるファイル名やラベル付きのコンテナで包む。
 tier: Core
 sidebar_position: 52
 ---
 
 `CodeTitlePlugin` は常に有効です。フェンス付きコードブロックの情報文字列から
-`title="…"` トークンを読み取り、ブロックの直上に `<div class="code-title">`
-ラベルを描画します。
+`title="…"` トークンを読み取り、描画されたブロックを `.code-block-container` で包み、`.code-block-title` の後に `<pre>` を続けます。
 
 ## 使い方
 
@@ -24,8 +23,10 @@ export default defineConfig({
 描画される出力:
 
 ```html
-<div class="code-title">zfb.config.ts</div>
-<pre class="syntect-…"><code>…</code></pre>
+<div class="code-block-container">
+  <div class="code-block-title">zfb.config.ts</div>
+  <pre class="syntect-…"><code>…</code></pre>
+</div>
 ```
 
 ## 設定
@@ -38,7 +39,7 @@ export default defineConfig({
 `SyntectPlugin` は `<pre>` 要素全体を生の HTML フラグメントに置き換えるため、
 それが起きると `title="…"` を保持する `data-meta` 属性は構造化された AST として
 到達できなくなります。`CodeTitlePlugin` を先に実行することで、syntect が
-メタ情報を消去する前にそれを読み取れるようにしています。
+メタ情報を消去する前にそれを読み取り、コンテナを作成し、その内側の `<pre>` を syntect が後からハイライトできるようにしています。
 
 ## 関連項目
 

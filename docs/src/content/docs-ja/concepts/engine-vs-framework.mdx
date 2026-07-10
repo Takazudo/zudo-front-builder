@@ -11,7 +11,7 @@ zfb の対象範囲が、**エンジンプリミティブ**（zfb が責任を�
 
 </Info>
 
-zfb は静的サイト**エンジン**です。`pages/` をスキャンし、コンテンツコレクションを走査し、MDX パイプラインを実行し、TSX を評価し、ページのメタ情報をレイアウトに通し、ファイルをディスクに書き出します。ここまでがエンジンです。
+zfb は静的サイト**エンジン**です。`pages/` をスキャンし、コンテンツコレクションを走査し、MDX パイプラインを実行し、TSX を評価し、`paths()`、`getStaticProps()`、`prerender`、`contentType`、`headings` のようなページモジュール export を読み取り、ファイルをディスクに書き出します。ここまでがエンジンです。
 
 **フレームワーク** — 将来の zudo-doc-v2 や、ブログキット、あるいは誰かが下流で公開するもの — は、こうしたエンジンプリミティブの寄せ集めを、完成したサイト体験へと仕上げるものです。サイドバーの生成、検索、バージョン管理 UI、テーマ操作、ブログのルーティング、i18n ルーティング。これらはすべてフレームワークの関心事です。
 
@@ -45,45 +45,37 @@ zfb v1 がコミットするのは、ちょうど 6 つのプリミティブで�
 
 原則はこうです。*「zfb 上に構築された 2 つのフレームワークが、これをそれぞれ異なるやり方で行うか？」*の答えが「はい」なら、それは zfb ではなくフレームワークに属します。
 
-## 小さな例: レイアウトがエンジンの `meta` を消費する
+## 小さな例: ページモジュールが head データを props として渡す
 
-エンジンはページのメタデータを `PageMeta` を通して受け渡します。レイアウト — これはエンジンのコードではなく*あなたの*コードです — は `meta` を読み取り、それを `<head>` に投影します。次は小さなデフォルトレイアウトです。
+head タグとレイアウト合成はフレームワークの関心事です。zfb は `export const meta` というページモジュール契約を出荷していません。代わりに、エンジンのデータ読み込み export を使ってフレームワーク / レイアウトが必要とするデータを渡し、通常のコンポーネントコードで `<head>` をレンダリングしてください。
 
 ```tsx
-// layouts/default.tsx
-export default function DefaultLayout({ meta, children }) {
-  const og = meta?.openGraph ?? {};
+// pages/about.tsx
+export function getStaticProps() {
+  return {
+    props: {
+      title: "About",
+      description: "Who we are.",
+    },
+  };
+}
+
+export default function AboutPage({ title, description }) {
   return (
-    <html lang={meta?.lang ?? "en"}>
+    <html lang="en">
       <head>
-        <title>{meta?.title ?? "Untitled"}</title>
-        {meta?.description && (
-          <meta name="description" content={meta.description} />
-        )}
-        {og.image && <meta property="og:image" content={og.image} />}
+        <title>{title}</title>
+        <meta name="description" content={description} />
       </head>
-      <body>{children}</body>
+      <body>
+        <h2>{title}</h2>
+      </body>
     </html>
   );
 }
 ```
 
-ページ側はメタを宣言するだけです。
-
-```tsx
-// pages/about.tsx
-export const meta = {
-  title: "About",
-  description: "Who we are.",
-  openGraph: { image: "/og/about.png" },
-};
-
-export default function AboutPage() {
-  return <h2>About us</h2>;
-}
-```
-
-ここでエンジンが何をして何をしないかに注目してください。エンジンは `meta` をパースし、レイアウトを解決し、ページの出力をそれでラップします。`og:image` を描画するかどうか、どのフォールバックを使うか、タイトルをどう整形するか — これらはすべてフレームワークレベルの判断です。zfb は「型付けされた `PageMeta` をレイアウトに渡す」ところで止まります。
+ここでエンジンが何をして何をしないかに注目してください。エンジンは `getStaticProps()` をパースし、その props でページコンポーネントを呼び出し、結果をレンダリングします。`og:image` を描画するかどうか、どのフォールバックを使うか、タイトルをどう整形するか、レイアウトコンポーネントをどこに置くか — これらはすべてフレームワークレベルの判断です。
 
 ## オプトインの Markdown 拡張
 
@@ -97,4 +89,4 @@ export default function AboutPage() {
 
 - 各エンジンプリミティブについては、上記でリンクした各コンセプトページを参照してください。
 - Markdown 拡張カタログについては [Markdown 機能](/ja/docs/markdown-features/) を参照してください。
-- head/meta の表面そのものについては、[`meta` エクスポート](../api/meta-export.mdx) が、どのフィールドが第一級でどう `extra` が残りを運ぶかを文書化しています。
+- ページモジュールの表面そのものについては、[ページモジュールのエクスポート](../api/meta-export.mdx) が、zfb が今日読み取る named export を文書化しています。

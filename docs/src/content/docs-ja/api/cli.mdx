@@ -79,6 +79,7 @@ dev サーバーはデフォルトで **遅延レンダリング** を行いま�
 | `ZFB_LAZY_DEV_RENDER` | `0` または `1` | 遅延 dev レンダリングスイッチの厳密なオーバーライド。`1` は遅延を強制し、`0` は即時を強制します。両方が設定されている場合は `ZFB_DEV_EAGER` より優先されます。 |
 | `ZFB_DEV_BOOT_LAZY` | `1` | 高速起動のオプトイン: 有効なビルド済み `dist/` が存在する場合、それを即座に配信し、起動時にすべてのルートをレンダリングする代わりに、ルートごとのレンダリングを最初のリクエストまで遅延します。遅延レンダリングが必要です（`ZFB_DEV_EAGER` が設定されている場合は無効）。デフォルトでは無効です。 |
 | `ZFB_DEV_DEFER_BUNDLE` | `0` | boot-lazy のバンドル遅延をオプトアウトします: 最初の accept が遅くなる代わりに、bind 前にレンダラーをビルドします（SSR のみの 404 ウィンドウが発生しません）。boot-lazy が有効なときはデフォルトで有効です。 |
+| `ZFB_DEV_TIMING` | `1` または `true` | dev モードのプロファイリング用に、tick ごとのタイミング行を出力します。デフォルトでは無効です。 |
 
 ### 例
 
@@ -132,6 +133,8 @@ zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 ```
 
 `zfb.config.json` の `adapter` フィールドがサポート対象のアダプタ（例: `@takazudo/zfb-adapter-cloudflare`）を指定している場合、`zfb preview` は zfb 自身の静的サーバーではなく `wrangler dev` に処理を引き渡します。この場合 `--outdir` はディレクトリが存在するかを事前確認するだけになります。実際に何を配信するかは wrangler 自身の設定が制御するためです。[SSR と Cloudflare バインディング](../guides/ssr-and-cloudflare-bindings.mdx) を参照してください。
+
+アダプタの preview は、処理を引き渡す前に `pnpm exec wrangler --version` の事前チェックを実行します。その pin を更新している間の一時的な escape hatch としてのみ、`ZFB_SKIP_WRANGLER_VERSION_CHECK=1` を設定してください。
 
 ### フラグ
 
@@ -198,7 +201,10 @@ zfb check --skip-tsc
 | `ZFB_LAZY_DEV_RENDER` | 未設定 | `0` または `1` を設定して、遅延 dev レンダリングスイッチを厳密に制御します。両方が設定されている場合は `ZFB_DEV_EAGER` より優先されます。 |
 | `ZFB_DEV_BOOT_LAZY` | 未設定 | `1` を設定すると dev サーバーの高速起動をオプトインします: 有効なビルド済み `dist/` を即座に配信し、各ルートのレンダリングを最初のリクエストまで遅延します。遅延レンダリングが必要で、`ZFB_DEV_EAGER` が設定されている場合は無効です。 |
 | `ZFB_DEV_DEFER_BUNDLE` | 未設定 | `0` を設定すると boot-lazy のバンドル遅延をオプトアウトします（最初のリクエスト後ではなく bind 前にレンダラーをビルドします）。boot-lazy が有効なときはデフォルトで有効です。 |
+| `ZFB_DEV_TIMING` | 未設定 | `1` または `true` を設定すると、ファイル変更 tick ごとの dev モードのフェーズタイミングを出力します。 |
 | `ZFB_PLUGIN_HOOK_TIMEOUT` | `120`（秒） | 単一のプラグインフックの応答を待つ最大時間（秒）。これを超えるとプラグインホストが強制終了され、ビルドが失敗します。優先順位: 設定の `pluginHookTimeoutSecs` > この環境変数 > 組み込みのデフォルト 120 秒。 |
+| `ZFB_ESBUILD_BIN` | 未設定 | esbuild バイナリへの絶対パス。埋め込み / staged 済みの esbuild バイナリが利用できない、または上書きしたい場合に、バンドラ、islands コンパイラ、テスト、TypeScript 設定ロード（`zfb.config.ts`）で使用されます。 |
+| `ZFB_SKIP_WRANGLER_VERSION_CHECK` | 未設定 | `1`、`true`、または `yes` を設定すると、`zfb preview` のアダプタモードにおける wrangler バージョンゲートを迂回します。一時的なリリースエンジニアリング用途を意図しています。 |
 
 <Note>
 

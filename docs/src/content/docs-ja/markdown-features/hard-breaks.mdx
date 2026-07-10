@@ -1,0 +1,59 @@
+---
+title: ハード改行
+description: Markdown 段落内の soft line break を br 要素に変換する。
+tier: Opt-in
+sidebar_position: 56
+---
+
+`hardBreaks` はトップレベルの Markdown パースオプションです。デフォルトは `false` です。省略した場合、または `false` に設定した場合、soft line break は標準の CommonMark の挙動に従い、通常の空白に折りたたまれます。
+
+ソースの改行を、レンダリング後の HTML でも改行として保持したい場合に有効化します。
+
+## 有効化
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    hardBreaks: true,
+  },
+});
+```
+
+## 挙動
+
+`markdown.hardBreaks: true` の場合、段落内の単一の改行はすべて hard break に変換されます。
+
+```md
+first line
+second line
+```
+
+次を生成します:
+
+```html
+<p>first line<br />second line</p>
+```
+
+空行による段落分割には影響しません。
+
+```md
+first paragraph
+
+second paragraph
+```
+
+これは、複数の `<br>` 要素を持つ 1 つの段落ではなく、引き続き 2 つの段落としてレンダリングされます。
+
+## スコープ
+
+このオプションが書き換えるのは、prose-like な Markdown node 内の soft line break だけです。フェンス付きコード、インラインコード、生 HTML、MDX JSX / expression content は分割しません。
+
+## 順序に関する注意
+
+`HardBreaksPlugin` は mdast フェーズで [CJK フレンドリーな強調](./cjk-friendly.mdx) の後に実行されます。これにより、soft line break が明示的な break node に分割される前に、CJK emphasis の再トークン化が intact な text node を検査できます。
+
+## 関連項目
+
+- [CJK フレンドリーな強調](./cjk-friendly.mdx) — 両方が有効なときに hard breaks の直前に実行される mdast pass。

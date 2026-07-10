@@ -84,7 +84,16 @@ zfb の静的な出力は意図的にランタイム非依存に設計されて�
 
 **選ぶべきとき。** zfb のランタイムの動的機能と緊密な Tauri 統合（IPC、ファイルシステムアクセス、コンテンツのホットリロード）を、モード B のサイドカーのライフサイクル配線なしに使いたい場合。
 
-**必要な作業。** `zfb-server` を Cargo の依存として追加し、Tauri の同期的な `setup` コールバックの中で `Server::builder()` を呼び出します:
+**必要な作業。** `zfb-server` を Cargo の依存として追加し、Tauri の同期的な `setup` コールバックの中で `Server::builder()` を呼び出します。
+
+`zfb-server` はまだ crates.io に公開されていません。このパッケージング作業は [issue #1475](https://github.com/Takazudo/zudo-front-builder/issues/1475) で追跡されています。それまでは、workspace crate に git から依存し、タグまたはコミットを pin してください。
+
+```toml
+[dependencies]
+zfb-server = { git = "https://github.com/Takazudo/zudo-front-builder", package = "zfb-server", rev = "<commit>" }
+```
+
+`Server::builder()` を Tauri の同期的な `setup` コールバックの中で呼び出します:
 
 ```rust
 use zfb_server::{Server, ServerMode};

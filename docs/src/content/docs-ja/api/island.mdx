@@ -24,7 +24,7 @@ export default function Page() {
 }
 ```
 
-SSR 時、`<Island>` ラッパーは `<div data-zfb-island="Counter" data-when="visible">` マーカーを発行し、その内側にサーバーレンダリングされた子要素を配置します。クライアントランタイム（`@takazudo/zfb-runtime`）はこれらのマーカーを問い合わせ、`when` 条件が発火したときにコンポーネントをマウントします。
+SSR 時、`<Island>` ラッパーは `<div data-zfb-island="Counter" data-when="visible">` マーカーを発行し、その内側にサーバーレンダリングされた子要素を配置します。生成されるハイドレーション bootstrap は `"@takazudo/zfb/runtime"` から `mountIslands` をインポートし、これらのマーカーを問い合わせ、`when` 条件が発火したときにコンポーネントをマウントします。
 
 ## IslandProps
 
@@ -140,6 +140,9 @@ import type { VNode as ZfbVNode } from "@takazudo/zfb";
 - `HYDRATE_MARKER_ATTR` — `data-zfb-island` 属性名。
 - `SKIP_SSR_MARKER_ATTR` — `data-zfb-island-skip-ssr` 属性名。
 - `ANONYMOUS_COMPONENT_NAME` — ラップした子要素の素性を特定できないときに使われるフォールバック名。
+- `DEFAULT_WHEN` — デフォルトのハイドレーション戦略（`"load"`）。
+- `WHEN_VALUES` — 有効なハイドレーション戦略の readonly リスト: `"visible"`、`"idle"`、`"load"`、`"media"`。
+- `isWhen(value: unknown): value is When` — ハイドレーション戦略値の型ガード。
 - `resolveWhen(when: unknown): When` — `when` 値を検証して正規化します。不明な入力は `"load"` にフォールバックします（開発時は警告つき）。
 
 ## "use client" ディレクティブ

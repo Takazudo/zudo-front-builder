@@ -5,7 +5,7 @@ tier: Core
 sidebar_position: 50
 ---
 
-`CjkFriendlyPlugin` は常に有効です。パース済みの Markdown AST を後処理し、CJK コンテンツに対して強調のフランキング規則を再トークン化します。
+`CjkFriendlyPlugin` はデフォルトで有効です。パース済みの Markdown AST を後処理し、CJK コンテンツに対して強調のフランキング規則を再トークン化します。同じ `cjkFriendly` ゲートは、GFM の bare URL autolink が隣接する CJK テキストを飲み込むことを防ぐ `CjkAutolinkBoundaryPlugin` も制御します。
 
 ## なぜこれが必要か
 
@@ -18,12 +18,14 @@ CommonMark の強調フランキング規則は、CJK の表意文字やかな�
 再トークン化します。その結果は、日本語・中国語・韓国語のコンテンツサイトにおける
 直感的な期待と一致します。
 
+GFM autolink literal には関連する境界問題があります。`詳細はhttps://example.com参照` のように CJK テキストに密着して URL を書くと、末尾の CJK の並びがリンクの一部として扱われることがあります。`cjkFriendly` が有効で、`gfm.autolinkLiteral` が on のとき、`CjkAutolinkBoundaryPlugin` は最初に隣接する CJK 文字の位置で autolink を分割します。
+
 ## 挙動
 
 **デフォルト:** 常に有効。設定キーは不要です。
 
-**オプトアウト**（まれ）: 厳密な CommonMark 出力が必要で、かつコンテンツに
-CJK の強調が含まれない場合に限り、`zfb.config.ts` で `cjkFriendly: false` を
+**オプトアウト**（まれ）: 厳密な CommonMark / GFM 出力が必要で、かつコンテンツに
+CJK の強調や bare URL の境界ケースが含まれない場合に限り、`zfb.config.ts` で `cjkFriendly: false` を
 設定します:
 
 ```ts title="zfb.config.ts"
@@ -38,7 +40,11 @@ export default defineConfig({
 
 ## スコープ
 
-このプラグインは、CJK 文字に隣接する `**bold**` と `_italic_` を処理します。
+このオプションは次を処理します:
+
+- CJK 文字に隣接する `**bold**` と `_italic_`。
+- `gfm.autolinkLiteral` が有効なときの、CJK 文字に隣接する GFM bare URL autolink 境界。
+
 GFM の打ち消し線（`~~foo~~`）にはこのトグルは不要です — markdown-rs の GFM
 トークナイザーが `~~` のデリミタ連続を独立して処理するため、両方のモードで
 CJK の境界においても打ち消し線は正しく機能します。
