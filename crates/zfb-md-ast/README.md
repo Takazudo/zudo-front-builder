@@ -10,11 +10,13 @@ This crate is the dependency boundary that lets `zfb-md-extras` (and other downs
 - **`MdastVisitor`** / **`HastVisitor`** — in-place mutation traits for mdast and hast trees. The pipeline does not auto-recurse; each visitor decides its own traversal strategy.
   - `visit_with_context(&mut node, &mut BuildContext)` — wave-6 seam for visitors that need source path, project root, or diagnostics. Defaults to calling `visit`.
   - `HastVisitor::reset()` — called between documents to clear per-document state (e.g. duplicate-slug counters). Default is a no-op.
-- **`BuildContext<'a>`** — per-document context threaded into pipeline visitors by `Pipeline::run_with_context`. Carries `source_path`, `project_root`, `public_dir`, an optional `HeadingRegistry` reference, and an optional `DiagnosticsSink` reference.
+- **`BuildContext<'a>`** — per-document context threaded into pipeline visitors by `Pipeline::run_with_context`. Carries `source_path`, `project_root`, `public_dir`, an optional `HeadingRegistry` reference, an optional `DiagnosticsSink` reference, and an optional `cross_file_links` buffer.
 - **`diagnostics`** — `MarkdownDiagnostic` enum (`BrokenLink`, `Generic`), `DiagnosticSeverity`, `SourceLocation`, `DiagnosticsSink` trait, and `CollectingSink` (Vec-backed sink for tests and batch processing).
 - **`directives`** — `DirectiveDef`, `DirectiveKind`, `AttrSchema`, `AttrType`, `ValidatedAttrValue`, `AttrValidationResult`, `DirectiveDiagnostic`. Shared between `zfb-content` and `zfb-md-extras` so the latter can produce `Vec<DirectiveDef>` presets without a cycle.
 - **`features_config`** — `MarkdownFeaturesConfig`, `FeatureToggle`, `FeatureOptions`, and supporting types for per-feature markdown pipeline configuration. Re-exported by `zfb` from its `config` module for backwards compatibility.
 - **`heading_registry`** — `HeadingRegistry` (build-scoped heading-ID registry; used by `HeadingLinksPlugin` and link-validation plugins).
+- **`read_recorder`** — `ReadRecorder`, `ReadOutcome`, and `sha256_hex`; filesystem-reading feature plugins use this to record external file dependencies so `zfb-content` can validate MDX compile-cache hits.
+- **Cross-file links** — `BuildContext::cross_file_links` plus `CrossFileLinkCandidate` and `FileHeadings`; compile side channels used by the post-compile cross-file anchor checker. Paths are normalised with `zfb_types::normalize_path_lexical` so heading-map lookups and deferred link candidates agree.
 - **`hast_text::extract_text`** — utility that extracts plain text content from a `HastNode` subtree.
 
 ## Why this crate exists

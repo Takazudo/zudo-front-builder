@@ -1,6 +1,7 @@
 # zfb
 
-Frontend build orchestrator — the `zfb` CLI binary and its supporting library crate.
+Frontend build orchestrator - the `zfb` CLI binary and its supporting
+library crate.
 
 ## Subcommands
 
@@ -11,10 +12,16 @@ Scaffold a new project from a template.
 ```sh
 zfb new my-site
 zfb new my-site --template basic-blog
+zfb new my-site --template node-free
 ```
 
-The `basic-blog` template (the only template in v0) is baked into the binary at
-compile time from `crates/zfb/templates/basic-blog/`.
+v0 ships two templates, both baked into the binary at compile time from
+`crates/zfb/templates/<name>/`:
+
+| Template | Role |
+| --- | --- |
+| `basic-blog` | Default starter with a `package.json` and normal Node/pnpm workflow |
+| `node-free` | Starter with no `package.json` / no install step, for environments with no Node or pnpm on `PATH` |
 
 ### `zfb dev`
 
@@ -24,11 +31,22 @@ Run the local development server.
 zfb dev
 zfb dev --port 8080
 zfb dev --host 0.0.0.0
+zfb dev --host
 ```
 
-`--port` and `--host` layer over config: CLI > `zfb.config.json` > built-in
-default (`localhost:3000`). Neither has a clap default value so the command
-body can distinguish "user passed a value" from "user accepted the default".
+`--port` and `--host` layer over config: CLI > `zfb.config.*` > built-in
+default (`localhost:3000`). Both fields stay optional in clap so the command
+body can distinguish "user passed a value" from "use the next fallback".
+Bare `--host` is a Vite-style shortcut for `0.0.0.0`.
+
+Dev-render environment switches:
+
+| Env var | Effect |
+| --- | --- |
+| `ZFB_DEV_EAGER=1` | Disable lazy dev rendering and render affected routes eagerly on every file change |
+| `ZFB_LAZY_DEV_RENDER=0|1` | Precise lazy/eager override; wins over `ZFB_DEV_EAGER` |
+| `ZFB_DEV_BOOT_LAZY=1` | Serve a valid prebuilt `dist/` immediately and render each route on first request |
+| `ZFB_DEV_DEFER_BUNDLE=0` | Opt out of boot-lazy bundle deferral; build the renderer before bind |
 
 ### `zfb build`
 
@@ -37,9 +55,12 @@ Build the project for production.
 ```sh
 zfb build
 zfb build --outdir dist
+zfb build --minify-html
+zfb build --no-minify-html
 ```
 
-Default `--outdir` is `dist`.
+Default `--outdir` is `dist`. `--minify-html` / `--no-minify-html` are an
+explicit tri-state (`BuildMinifyHtml`) layered over `minifyHtml` config.
 
 ### `zfb preview`
 
@@ -48,10 +69,12 @@ Preview a previously built project.
 ```sh
 zfb preview
 zfb preview --port 4321 --outdir dist
+zfb preview --host
 ```
 
-Default port falls back to `zfb.config.json` then to `4321`. Default `--outdir`
-is `dist`. Pass `--host 0.0.0.0` to expose the preview to other LAN devices.
+Default port falls back to `zfb.config.*` then to `4321`. Default `--outdir`
+is `dist`. Bare `--host` is the same LAN shortcut as `zfb dev --host`:
+`0.0.0.0`.
 
 ### `zfb check`
 
@@ -64,87 +87,118 @@ zfb check --skip-tsc
 
 Two failure modes:
 
-1. TypeScript errors — `tsc --noEmit` subprocess. Any error tsc would flag in
+1. TypeScript errors - `tsc --noEmit` subprocess. Any error tsc would flag in
    normal CI is flagged here.
-2. Content collection schema violations — every entry's frontmatter is validated
-   against the JSON Schema in `zfb.config.json`'s `collections[].schema` (when
-   present).
+2. Content collection schema violations - every entry's frontmatter is
+   validated against the JSON Schema in `collections[].schema` when present.
 
-`--skip-tsc` skips the tsc subprocess; schema validation still runs. Useful in
-CI lanes that have no TypeScript dependency installed or for schema-only checks.
+`--skip-tsc` skips the tsc subprocess; schema validation still runs.
 
 ## Architecture
 
-```
+```text
 main.rs
-  Cli::parse()                    ← clap (crate::cli)
+  Cli::parse()                    <- clap (crate::cli)
   match Command variant
-    ├── commands::new::run()
-    ├── commands::dev::run()
-    ├── commands::build::run()
-    ├── commands::preview::run()
-    └── commands::check::run()
-  Err → report_error() → stderr + exit(1)
+    |-- commands::new::run()
+    |-- commands::dev::run()
+    |-- commands::build::run()
+    |-- commands::preview::run()
+    `-- commands::check::run()
+  Err -> report_error() -> stderr + exit(1)
 ```
 
-Each `commands/<name>.rs` module exposes one `async fn run(args: &FooArgs) -> anyhow::Result<()>`. Errors propagate with `?` and are rendered once at the top level by `report_error`, avoiding double-printing.
+Each `commands/<name>.rs` module exposes one `async fn run(args: &FooArgs) ->
+anyhow::Result<()>`. Errors propagate with `?` and are rendered once at the
+top level by `report_error`, avoiding double-printing.
 
 ## Configuration
 
 Config is loaded at the start of every command via `Config::load_from_dir()`.
 Resolution order:
 
-1. `zfb.config.ts` — bundled by pinned esbuild, evaluated in-process by V8 (default build) or by a node subprocess (slim build).
-2. `zfb.config.json` — parsed directly by serde.
-3. `Config::default()` — built-in defaults (see below).
+1. `zfb.config.ts` - bundled by pinned esbuild and evaluated by
+   `zfb-config-loader` (embedded V8 in default builds, node subprocess in
+   slim builds).
+2. `zfb.config.json` - parsed directly by serde.
+3. `Config::default()` - built-in defaults.
+
+TypeScript wins over JSON when both files are present.
 
 ### Key `Config` fields and defaults
 
-| Field | Default | Notes |
-|---|---|---|
-| `out_dir` | `"dist"` | Production output directory |
-| `public_dir` | `"public"` | Static assets directory |
-| `host` | — | Dev/preview host; CLI flag takes precedence |
-| `port` | — | Dev/preview port; CLI flag takes precedence |
-| `framework` | `Preact` | `Preact` or `React` |
-| `collections` | `[]` | Content collection definitions |
-| `output` | `Auto` | `Static`, `Hybrid`, or `Auto` |
-| `base` | — | Base path prefix for all URLs |
-| `strip_md_ext` | — | Strip `.md`/`.mdx` from generated links |
-| `trailing_slash` | — | Add/remove trailing slashes |
-| `emit_routes_manifest` | — | Write a JSON routes manifest to dist |
-| `plugin_hook_timeout_secs` | — | Max time per plugin hook |
+| Rust field | Config key | Default | Notes |
+| --- | --- | --- | --- |
+| `out_dir` | `outDir` | `"dist"` | Production output directory |
+| `public_dir` | `publicDir` | `"public"` | Static assets directory |
+| `host` | `host` | `None` | Dev/preview bind host; CLI flag takes precedence |
+| `port` | `port` | `None` | Dev/preview port; CLI flag takes precedence |
+| `allowed_hosts` | `allowedHosts` | `[]` | DNS-rebinding allowlist for non-loopback binds |
+| `framework` | `framework` | `Preact` | `Preact` or `React` |
+| `collections` | `collections` | `[]` | Content collection definitions |
+| `tailwind` | `tailwind` | enabled | `enabled: false` opts out of Tailwind |
+| `prefetch` | `prefetch` | `None` | `disabled: true` disables runtime prefetch wiring |
+| `minify_html` | `minifyHtml` | `false` | Can be overridden per build by CLI flags |
+| `bundle` | `bundle` | `None` | `exclude` globs for files kept out of the esbuild graph |
+| `plugins` | `plugins` | `[]` | User plugin entries, with resolved module URLs on the TS path |
+| `adapter` | `adapter` | `None` | Deploy-target adapter package; `None` / `"none"` means static |
+| `strip_md_ext` | `stripMdExt` | `false` | Rewrite authored `.md` / `.mdx` links to route URLs |
+| `code_highlight` | `codeHighlight` | `None` | Syntect theme / theme directory options |
+| `resolve_markdown_links` | `resolveMarkdownLinks` | `None` | Markdown link resolver and broken-link policy |
+| `base` | `base` | `None` | URL prefix for emitted asset/page URLs |
+| `trailing_slash` | `trailingSlash` | `false` | Append `/` to extensionless rewritten hrefs |
+| `markdown` | `markdown` | `None` | GFM, TOC, external-link, CJK, and feature plugin options |
+| `site` | `site` | `None` | Absolute canonical site origin emitted to runtime globals |
+| `emit_routes_manifest` | `emitRoutesManifest` | `None` (emit) | `false` skips `<outDir>/__zfb/routes.json` |
+| `extra_watch_paths` | `extraWatchPaths` | `[]` | Absolute external directories watched by `zfb dev` |
+| `output` | `output` | `Auto` | `Static`, `Hybrid`, or detection-driven `Auto` |
+| `plugin_hook_timeout_secs` | `pluginHookTimeoutSecs` | `None` | Overrides env/built-in plugin hook timeout |
+| `copy_public_with_base` | `copyPublicWithBase` | `true` | Copy `public/` under the base path in production output |
+| `presets` | `presets` | `[]` | Partial config presets merged before validation |
 
-`OutputMode::Auto` selects `Static` or `Hybrid` based on what the project uses.
+`OutputMode::Auto` selects the V8/SSR topology from detected
+`prerender = false` routes, while `Static` and `Hybrid` are explicit
+precondition choices.
 
 ### `embed_v8` feature flag
 
-The default build enables the `embed_v8` cargo feature, which compiles in
-`deno_core` / V8 for in-process config evaluation and SSR. Without this
-feature the binary is lighter ("slim build") but falls back to a node
-subprocess for config loading and fails loudly if any code path requires SSR.
-The two code paths gated behind the feature are `ssr_adapter` and
-`v8_host_adapter`.
+The default build enables `embed_v8`, which propagates to `zfb-render`,
+`zfb-build`, `zfb-server`, and `zfb-config-loader`. It compiles in
+`deno_core` / V8 for in-process TS-config evaluation and SSR dispatch.
+
+`cargo build --no-default-features -p zfb` produces the slim build. In that
+mode, TS config evaluation falls back to a `node` subprocess and SSR-required
+paths fail loudly. The V8-bearing adapter modules gated in this crate are
+`lazy_render_adapter`, `ssr_adapter`, and `v8_host_adapter`.
 
 ## Public library surface
 
-The library crate (`lib.rs`) exposes the following items to adapter authors
-and integration tests:
+The library crate (`lib.rs`) exposes the CLI parser, command modules,
+configuration types, diagnostics, render-planning helpers, and the top-level
+error renderer:
 
 ```rust,ignore
 use zfb::{
-    // CLI parsing
-    cli::{Cli, Command, NewArgs, DevArgs, BuildArgs, PreviewArgs, CheckArgs},
-    // Command dispatch
+    bounded_join,
+    cli::{
+        BuildArgs, BuildMinifyHtml, CheckArgs, Cli, Command, DevArgs, NewArgs,
+        PreviewArgs,
+    },
     commands,
-    // Configuration
-    config::Config,
-    // Dynamic-route planning (for adapter authors)
+    config::{
+        BundleConfig, CodeHighlightConfig, CollectionDef, Config, Framework,
+        JsonSchema, MarkdownConfig, OutputMode, PluginConfig, PrefetchConfig,
+        ResolveMarkdownLinksConfig, TailwindConfig,
+    },
+    diagnostics,
+    render_pipeline,
     DeferredDynamicRoute, PendingDynamicRoute,
-    // Top-level error renderer
     report_error,
 };
 ```
+
+`render_pipeline` also defines the dynamic-route expansion and SSR dispatch
+planning types used by adapter-facing code.
 
 ## Tests
 
@@ -152,7 +206,6 @@ use zfb::{
 cargo test -p zfb
 ```
 
-Integration tests live in `crates/zfb/tests/` and cover build lifecycle
-(`build_cleans_outdir`, `build_terminates`), the `check` command, content
-snapshot behaviour (`content_snapshot_no_deferred`), CSS module components,
-framework package resolution, and version stamping.
+Integration tests live in `crates/zfb/tests/` and cover build lifecycle,
+`check`, content snapshots, CSS module components, framework package
+resolution, dev-server behavior, and version stamping.

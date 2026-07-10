@@ -28,15 +28,31 @@ than an ESTree), the output feeds through the existing SWC pipeline in
 `crates/zfb-render`, keeping JSX → JS codegen in one place.
 
 ```rust,ignore
-use zfb_content::{compile_mdx_to_jsx_module, MdxJsxOptions, MdxModuleCache};
+use std::path::Path;
+use zfb_content::{
+    compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached,
+    MdxModuleCache,
+};
 
-let cache = MdxModuleCache::default();
-let compiled: CompiledMdx = compile_mdx_to_jsx_module(
+let compiled = compile_mdx_to_jsx_module(
     source,
-    &MdxJsxOptions::default(),
-    &cache,
+    Path::new("content/docs/intro.mdx"),
+)?;
+
+let cache = MdxModuleCache::new();
+let cached = compile_mdx_to_jsx_module_cached(
+    source,
+    Path::new("content/docs/intro.mdx"),
+    Some(&cache),
+    None,
 )?;
 ```
+
+`compile_mdx_to_jsx_module(input, file_path)` is intentionally the uncached
+convenience wrapper. Opt into the compile cache through
+`compile_mdx_to_jsx_module_cached(input, file_path, cache, pipeline)` or
+`compile_mdx_to_jsx_module_cached_with_deps(...)` when callers need cache
+hits and recorded external dependency paths.
 
 ### 3. Frontmatter extraction (`frontmatter`, `tsx_frontmatter`)
 
@@ -62,7 +78,7 @@ markdown/MDX/TSX entries walking to validated `Entry<T: Validate>` values.
 page modules can call `getCollection("docs")` synchronously during SSR:
 
 ```rust,ignore
-use zfb_content::{build_snapshot, ContentSnapshot, CollectionConfig};
+use zfb_content::{build_snapshot, CollectionConfig, ContentSnapshot};
 
 let snapshot: ContentSnapshot = build_snapshot(&configs)?;
 // snapshot.collections: BTreeMap<String, Vec<EntrySnapshot>>
@@ -92,8 +108,10 @@ preserved inside.
 | `build_snapshot` | `content_bridge` | Build the JS-bridge snapshot |
 | `ContentSnapshot` | `content_bridge` | `BTreeMap`-keyed collection map |
 | `EntrySnapshot` | `content_bridge` | Serializable entry (slug, frontmatter, body, specifier) |
-| `CollectionConfig` | `collection` | Per-collection directory + schema config |
-| `compile_mdx_to_jsx_module` | `mdx_jsx_emit` | MDX → JSX module string |
+| `CollectionConfig` | `content_bridge` | Snapshot collection config: name, root, include/exclude filters, `id_strip_suffix` |
+| `compile_mdx_to_jsx_module` | `mdx_jsx_emit` | Uncached MDX → JSX module convenience wrapper: `(input, file_path)` |
+| `compile_mdx_to_jsx_module_cached` | `mdx_jsx_emit` | Cached MDX → JSX module wrapper with optional `MdxModuleCache` and `Pipeline` |
+| `compile_mdx_to_jsx_module_cached_with_deps` | `mdx_jsx_emit` | Cached wrapper that also returns recorded external dependency paths |
 | `CompiledMdx` | `mdx_jsx_emit` | Output of the MDX emitter |
 | `MdxJsxOptions` | `mdx_jsx_emit` | Options for the JSX emitter |
 | `MdxModuleCache` | `mdx_jsx_emit` | Compilation cache (reuse across files) |
