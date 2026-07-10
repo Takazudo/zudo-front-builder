@@ -1,13 +1,13 @@
 ---
 title: Code block title
-description: Renders a visible filename or label above a fenced code block from the title= meta attribute.
+description: Wraps a titled fenced code block in a code-block container with a visible filename or label.
 tier: Core
 sidebar_position: 52
 ---
 
 `CodeTitlePlugin` is always active. It reads the `title="…"` token from a
-fenced code block's info string and renders a `<div class="code-title">`
-label immediately above the block.
+fenced code block's info string and wraps the rendered block in a
+`.code-block-container` with a `.code-block-title` followed by the `<pre>`.
 
 ## Usage
 
@@ -24,8 +24,10 @@ export default defineConfig({
 Rendered output:
 
 ```html
-<div class="code-title">zfb.config.ts</div>
-<pre class="syntect-…"><code>…</code></pre>
+<div class="code-block-container">
+  <div class="code-block-title">zfb.config.ts</div>
+  <pre class="syntect-…"><code>…</code></pre>
+</div>
 ```
 
 ## Config
@@ -38,7 +40,8 @@ Always on, no config key.
 `SyntectPlugin` replaces the entire `<pre>` element with a raw HTML fragment;
 once that happens, the `data-meta` attribute carrying `title="…"` is no
 longer reachable as structured AST. Running `CodeTitlePlugin` first ensures
-it reads the meta before syntect erases it.
+it reads the meta, creates the container, and leaves the inner `<pre>` for
+syntect to highlight afterward.
 
 ## See also
 

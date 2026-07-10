@@ -4,7 +4,10 @@ description: Render Mermaid flowcharts and diagrams directly in Markdown.
 tier: Opt-in
 ---
 
-The `mermaid` feature renders [Mermaid](https://mermaid.js.org/) diagrams from fenced code blocks at build time.
+The `mermaid` feature marks [Mermaid](https://mermaid.js.org/) fenced code
+blocks at build time. zfb replaces the code block with a `<div
+class="mermaid">`; diagram rendering happens client-side when your Mermaid
+runtime processes that element.
 
 ## Enable
 
@@ -33,13 +36,17 @@ graph TD;
 ```
 ````
 
-The plugin replaces the `<pre><code class="language-mermaid">` block with:
+At build time, the plugin replaces the `<pre><code class="language-mermaid">`
+block with:
 
 ```html
 <div class="mermaid" data-mermaid="">graph TD; ...</div>
 ```
 
-The `data-mermaid` attribute signals a client-side Mermaid renderer to process the block. The raw diagram source is embedded verbatim (angle brackets and other characters are NOT HTML-escaped) so the renderer receives the unmodified Mermaid DSL.
+The `data-mermaid` attribute and `mermaid` class signal a client-side Mermaid
+renderer to process the block. The raw diagram source is embedded verbatim
+(angle brackets and other characters are NOT HTML-escaped) so the renderer
+receives the unmodified Mermaid DSL.
 
 ## Visitor ordering
 

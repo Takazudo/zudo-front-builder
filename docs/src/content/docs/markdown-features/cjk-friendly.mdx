@@ -5,7 +5,10 @@ tier: Core
 sidebar_position: 50
 ---
 
-`CjkFriendlyPlugin` is always active. It post-processes the parsed markdown AST and re-tokenises emphasis flanking rules for CJK content.
+`CjkFriendlyPlugin` is on by default. It post-processes the parsed markdown
+AST and re-tokenises emphasis flanking rules for CJK content. The same
+`cjkFriendly` gate also controls `CjkAutolinkBoundaryPlugin`, which prevents
+GFM bare URL autolinks from swallowing adjacent CJK text.
 
 ## Why this exists
 
@@ -18,12 +21,19 @@ parser, and renders as literal stars instead of `<strong>`.
 re-tokenises these cases. The result matches the intuitive expectation for
 Japanese, Chinese, and Korean content sites.
 
+GFM autolink literals have a related boundary problem: a URL written flush
+against CJK text, such as `詳細はhttps://example.com参照`, can treat the trailing
+CJK run as part of the link. When `cjkFriendly` is enabled and
+`gfm.autolinkLiteral` is on, `CjkAutolinkBoundaryPlugin` splits the autolink
+at the first adjacent CJK character.
+
 ## Behaviour
 
 **Default:** always on. No configuration key required.
 
 **Opt-out** (rare): set `cjkFriendly: false` in `zfb.config.ts` only when
-you need strict CommonMark output and your content has no CJK emphasis:
+you need strict CommonMark/GFM output and your content has no CJK emphasis
+or bare-URL boundary cases:
 
 ```ts title="zfb.config.ts"
 import { defineConfig } from "zfb/config";
@@ -37,7 +47,12 @@ export default defineConfig({
 
 ## Scope
 
-This plugin handles `**bold**` and `_italic_` adjacent to CJK characters.
+This option handles:
+
+- `**bold**` and `_italic_` adjacent to CJK characters.
+- GFM bare URL autolink boundaries adjacent to CJK characters, when
+  `gfm.autolinkLiteral` is enabled.
+
 GFM strikethrough (`~~foo~~`) does not need the toggle — markdown-rs's GFM
 tokeniser handles `~~` delimiter runs independently, so strikethrough works
 correctly at CJK boundaries in both modes.
