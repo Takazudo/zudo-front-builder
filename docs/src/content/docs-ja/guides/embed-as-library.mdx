@@ -233,18 +233,18 @@ let (broadcast, _rx) = tokio::sync::broadcast::channel::<ReloadEvent>(64);
 let opts = ServeOpts {
     project_root: project_root.clone(),
     dist_root: dist_root.clone(),
+    dev_assets_root: None,
     html_root: dist_root.clone(), // embed/preview callers alias dist_root
     public_root,
     addr: "127.0.0.1:0".parse()?,
     pages: pages.clone(),
     broadcast: broadcast.clone(),
-    mode: ServerMode::Dev, // Dev mounts the livereload SSE endpoint
-    dev_assets_root: None,
     plugins: None,
     injected_routes: None,
     ssr_routes: None,
     base: None,
     trailing_slash: false,
+    mode: ServerMode::Dev, // Dev mounts the livereload SSE endpoint
     islands_bundle_url: None,
     css_bundle_url: None,
     allowed_hosts: Vec::new(),

@@ -240,12 +240,12 @@ let opts = ServeOpts {
     addr: "127.0.0.1:0".parse()?,
     pages: pages.clone(),
     broadcast: broadcast.clone(),
-    mode: ServerMode::Dev, // Dev mounts the livereload SSE endpoint
     plugins: None,
     injected_routes: None,
     ssr_routes: None,
     base: None,
     trailing_slash: false,
+    mode: ServerMode::Dev, // Dev mounts the livereload SSE endpoint
     islands_bundle_url: None,
     css_bundle_url: None,
     allowed_hosts: Vec::new(),
