@@ -76,12 +76,13 @@ use std::sync::{Arc, Mutex};
 
 use swc_core::atoms::Wtf8Atom;
 use swc_core::common::sync::Lrc;
-use swc_core::common::{FileName, SourceMap};
+use swc_core::common::{FileName, Globals, Mark, SourceMap, SyntaxContext, GLOBALS};
 use swc_core::ecma::ast::{
     BlockStmt, Callee, Decl, DefaultDecl, EsVersion, ExportSpecifier, Expr, ImportSpecifier, Lit,
-    Module, ModuleDecl, ModuleExportName, ModuleItem, Pat, Stmt, VarDeclarator,
+    Module, ModuleDecl, ModuleExportName, ModuleItem, Pat, Program, Stmt, VarDeclarator,
 };
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
+use swc_core::ecma::transforms::base::resolver as swc_resolver;
 use thiserror::Error;
 use zfb_plugin_resolver::{read_tsconfig_paths, TsConfigPaths, TsPathAlias};
 use zfb_types::normalize_path_lexical;
@@ -188,7 +189,8 @@ pub struct ModuleWorkerEdge {
 pub struct ReachableModulesMeta {
     /// Sorted, deduplicated ordinary module closure.
     pub modules: Vec<PathBuf>,
-    /// Sorted, deduplicated raw terminal edges discovered in that closure.
+    /// Sorted, deduplicated raw terminal edges discovered in the ordinary
+    /// closure and its browser-only first-party worker graphs.
     pub raw_import_edges: Vec<RawImportEdge>,
     /// Sorted, deduplicated module-worker edges found in the root closure and
     /// recursively in each first-party worker graph. Worker sources are not
@@ -326,7 +328,8 @@ pub struct ScanMeta {
     pub island_reachable_modules: Vec<PathBuf>,
 
     /// Sorted, deduplicated terminal raw edges reachable from a `"use
-    /// client"` island. Targets are intentionally absent from
+    /// client"` island, including raw imports inside its browser-only worker
+    /// graphs. Targets are intentionally absent from
     /// [`Self::island_reachable_modules`]: they are mirrored as assets but
     /// never traversed or parsed as executable source.
     pub raw_import_edges_from_islands: Vec<RawImportEdge>,
@@ -1539,7 +1542,8 @@ pub fn scan_reachable_modules<R: Resolver>(
 }
 
 /// Walk ordinary JS/TS module imports from arbitrary roots while preserving
-/// typed terminal `?raw` edges.
+/// typed terminal `?raw` edges, including those inside discovered worker
+/// graphs.
 ///
 /// Raw targets are resolved through [`Resolver::resolve_raw`] and recorded in
 /// the returned metadata, but are never put on the DFS stack. This prevents a
@@ -1608,11 +1612,12 @@ pub fn scan_reachable_modules_with_meta<R: Resolver>(
     }
 
     let modules: Vec<PathBuf> = reachable.into_iter().collect();
-    let module_worker_edges = discover_module_workers(&modules, resolver)?;
+    let worker_discovery = discover_module_workers(&modules, resolver)?;
+    raw_import_edges.extend(worker_discovery.raw_import_edges);
     Ok(ReachableModulesMeta {
         modules,
         raw_import_edges: raw_import_edges.into_iter().collect(),
-        module_worker_edges,
+        module_worker_edges: worker_discovery.worker_edges,
     })
 }
 
@@ -1831,8 +1836,8 @@ pub fn scan_islands_with_meta<R: Resolver>(
     }
 
     let island_reachable_modules: Vec<PathBuf> = island_reachable_modules.into_iter().collect();
-    let module_worker_edges_from_islands =
-        discover_module_workers(&island_reachable_modules, resolver)?;
+    let worker_discovery = discover_module_workers(&island_reachable_modules, resolver)?;
+    raw_import_edges_from_islands.extend(worker_discovery.raw_import_edges);
 
     Ok((
         found.into_values().collect(),
@@ -1842,7 +1847,7 @@ pub fn scan_islands_with_meta<R: Resolver>(
             glob_reachable_from_islands: glob_reachable_from_islands.into_iter().collect(),
             island_reachable_modules,
             raw_import_edges_from_islands: raw_import_edges_from_islands.into_iter().collect(),
-            module_worker_edges_from_islands,
+            module_worker_edges_from_islands: worker_discovery.worker_edges,
         },
     ))
 }
@@ -1923,13 +1928,34 @@ struct WorkerConstructor {
 /// sets `type: "module"`; `SharedWorker` with the same literal `new URL(...)`
 /// shape is retained regardless of options so the relevant graph can fail
 /// loudly instead of shipping a URL that would 404.
-fn collect_worker_constructors(module: &Module) -> Vec<WorkerConstructor> {
+fn resolve_worker_bindings(module: Module) -> (Module, SyntaxContext) {
+    let globals = Globals::new();
+    GLOBALS.set(&globals, || {
+        let unresolved_mark = Mark::new();
+        let top_level_mark = Mark::new();
+        let program =
+            Program::Module(module).apply(swc_resolver(unresolved_mark, top_level_mark, true));
+        let module = match program {
+            Program::Module(module) => module,
+            Program::Script(_) => unreachable!("the scanner parser produced an ES module"),
+        };
+        (module, SyntaxContext::empty().apply_mark(unresolved_mark))
+    })
+}
+
+fn collect_worker_constructors(
+    module: &Module,
+    unresolved_ctxt: SyntaxContext,
+) -> Vec<WorkerConstructor> {
     use swc_core::ecma::ast::{
         ExprOrSpread, MemberProp, MetaPropKind, NewExpr, Prop, PropName, PropOrSpread,
     };
     use swc_core::ecma::visit::{Visit, VisitWith};
 
-    fn literal_url_specifier(args: &[ExprOrSpread]) -> Option<String> {
+    fn literal_url_specifier(
+        args: &[ExprOrSpread],
+        unresolved_ctxt: SyntaxContext,
+    ) -> Option<String> {
         let first = args.first()?;
         if first.spread.is_some() {
             return None;
@@ -1937,7 +1963,8 @@ fn collect_worker_constructors(module: &Module) -> Vec<WorkerConstructor> {
         let Expr::New(url) = &*first.expr else {
             return None;
         };
-        if !matches!(&*url.callee, Expr::Ident(ident) if ident.sym == "URL") {
+        if !matches!(&*url.callee, Expr::Ident(ident) if ident.sym == "URL" && ident.ctxt == unresolved_ctxt)
+        {
             return None;
         }
         let url_args = url.args.as_ref()?;
@@ -1979,6 +2006,10 @@ fn collect_worker_constructors(module: &Module) -> Vec<WorkerConstructor> {
             let is_type = match &property.key {
                 PropName::Ident(ident) => ident.sym == "type",
                 PropName::Str(value) => value.value == *"type",
+                PropName::Computed(computed) => match &*computed.expr {
+                    Expr::Lit(Lit::Str(value)) => value.value == *"type",
+                    _ => return false,
+                },
                 _ => false,
             };
             if is_type {
@@ -1995,20 +2026,27 @@ fn collect_worker_constructors(module: &Module) -> Vec<WorkerConstructor> {
     }
 
     struct Collector {
+        unresolved_ctxt: SyntaxContext,
         constructors: Vec<WorkerConstructor>,
     }
 
     impl Visit for Collector {
         fn visit_new_expr(&mut self, node: &NewExpr) {
             let kind = match &*node.callee {
-                Expr::Ident(ident) if ident.sym == "Worker" => Some(WorkerConstructorKind::Worker),
-                Expr::Ident(ident) if ident.sym == "SharedWorker" => {
+                Expr::Ident(ident)
+                    if ident.sym == "Worker" && ident.ctxt == self.unresolved_ctxt =>
+                {
+                    Some(WorkerConstructorKind::Worker)
+                }
+                Expr::Ident(ident)
+                    if ident.sym == "SharedWorker" && ident.ctxt == self.unresolved_ctxt =>
+                {
                     Some(WorkerConstructorKind::SharedWorker)
                 }
                 _ => None,
             };
             if let (Some(kind), Some(args)) = (kind, node.args.as_deref()) {
-                if let Some(specifier) = literal_url_specifier(args) {
+                if let Some(specifier) = literal_url_specifier(args, self.unresolved_ctxt) {
                     if kind == WorkerConstructorKind::SharedWorker || is_module_options(args) {
                         self.constructors
                             .push(WorkerConstructor { kind, specifier });
@@ -2020,6 +2058,7 @@ fn collect_worker_constructors(module: &Module) -> Vec<WorkerConstructor> {
     }
 
     let mut collector = Collector {
+        unresolved_ctxt,
         constructors: Vec::new(),
     };
     module.visit_with(&mut collector);
@@ -2032,6 +2071,54 @@ fn path_is_inside_node_modules(path: &Path) -> bool {
     )
 }
 
+#[derive(Default)]
+struct ModuleWorkerDiscovery {
+    worker_edges: Vec<ModuleWorkerEdge>,
+    raw_import_edges: Vec<RawImportEdge>,
+}
+
+fn collect_global_require_specifiers(
+    module: &Module,
+    unresolved_ctxt: SyntaxContext,
+) -> Vec<String> {
+    use swc_core::ecma::visit::{Visit, VisitWith};
+
+    struct Collector {
+        unresolved_ctxt: SyntaxContext,
+        specifiers: Vec<String>,
+    }
+    impl Visit for Collector {
+        fn visit_call_expr(&mut self, node: &swc_core::ecma::ast::CallExpr) {
+            let is_require = matches!(
+                &node.callee,
+                Callee::Expr(callee)
+                    if matches!(&**callee, Expr::Ident(ident)
+                        if ident.sym == "require" && ident.ctxt == self.unresolved_ctxt)
+            );
+            if is_require {
+                if let Some(argument) = node.args.first() {
+                    if argument.spread.is_none() {
+                        if let Expr::Lit(Lit::Str(value)) = &*argument.expr {
+                            let specifier = atom_to_string(&value.value);
+                            if query_suffix(&specifier).is_none() {
+                                self.specifiers.push(specifier);
+                            }
+                        }
+                    }
+                }
+            }
+            node.visit_children_with(self);
+        }
+    }
+
+    let mut collector = Collector {
+        unresolved_ctxt,
+        specifiers: Vec::new(),
+    };
+    module.visit_with(&mut collector);
+    collector.specifiers
+}
+
 /// Discover workers from a first-party module closure, then recurse through
 /// each worker's own ordinary imports so nested workers are returned too.
 ///
@@ -2042,8 +2129,9 @@ fn path_is_inside_node_modules(path: &Path) -> bool {
 fn discover_module_workers<R: Resolver>(
     roots: &[PathBuf],
     resolver: &R,
-) -> ScanResult<Vec<ModuleWorkerEdge>> {
+) -> ScanResult<ModuleWorkerDiscovery> {
     let mut found: BTreeSet<ModuleWorkerEdge> = BTreeSet::new();
+    let mut raw_import_edges: BTreeSet<RawImportEdge> = BTreeSet::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut stack = roots.to_vec();
 
@@ -2061,12 +2149,13 @@ fn discover_module_workers<R: Resolver>(
                 message,
             })?;
         let module = parse_module(&current, &source)?;
+        let (module, unresolved_ctxt) = resolve_worker_bindings(module);
         let importer_dir = current
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        for constructor in collect_worker_constructors(&module) {
+        for constructor in collect_worker_constructors(&module, unresolved_ctxt) {
             if constructor.kind == WorkerConstructorKind::SharedWorker {
                 return Err(ScanError::SharedWorker {
                     path: current.clone(),
@@ -2105,16 +2194,41 @@ fn discover_module_workers<R: Resolver>(
                 message,
             })?;
         for edge in import_edges {
-            if let CollectedImportEdge::Module(specifier) = edge {
-                if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
-                    if !visited.contains(&resolved) {
-                        stack.push(resolved);
+            match edge {
+                CollectedImportEdge::Module(specifier) => {
+                    if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                        if !visited.contains(&resolved) {
+                            stack.push(resolved);
+                        }
                     }
+                }
+                CollectedImportEdge::Raw(specifier) => {
+                    let target = resolver.resolve_raw(&importer_dir, &specifier).ok_or_else(|| {
+                        ScanError::RawImport {
+                            path: current.clone(),
+                            specifier: specifier.clone(),
+                            message: "terminal target must be an existing exact relative file; no JS extension probing is applied".to_string(),
+                        }
+                    })?;
+                    raw_import_edges.insert(RawImportEdge {
+                        importer: current.clone(),
+                        target,
+                    });
+                }
+            }
+        }
+        for specifier in collect_global_require_specifiers(&module, unresolved_ctxt) {
+            if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                if !visited.contains(&resolved) {
+                    stack.push(resolved);
                 }
             }
         }
     }
-    Ok(found.into_iter().collect())
+    Ok(ModuleWorkerDiscovery {
+        worker_edges: found.into_iter().collect(),
+        raw_import_edges: raw_import_edges.into_iter().collect(),
+    })
 }
 
 /// Bare specifier of the `@takazudo/zfb-runtime` barrel package.
@@ -8239,6 +8353,78 @@ mod tests {
     }
 
     #[test]
+    fn nested_worker_raw_edges_are_public_terminal_metadata() {
+        let page = root().join("pages/index.tsx");
+        let island = root().join("components/Island.tsx");
+        let worker = root().join("components/worker.ts");
+        let nested = root().join("components/nested.ts");
+        let payload = root().join("components/payload.txt");
+        let nested_payload = root().join("components/nested-payload.txt");
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                &page,
+                "import { Island } from '../components/Island'; export default Island;",
+            )
+            .with_file(
+                &island,
+                "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }",
+            )
+            .with_file(
+                &worker,
+                "import text from './payload.txt?raw'; new Worker(new URL('./nested.ts', import.meta.url), { type: 'module' }); self.postMessage(text);",
+            )
+            .with_file(
+                &nested,
+                "import text from './nested-payload.txt?raw'; self.postMessage(text);",
+            )
+            .with_file(&payload, "worker payload")
+            .with_file(&nested_payload, "nested payload");
+
+        let (_, meta) = scan_islands_with_meta(&[page], &resolver).unwrap();
+        assert_eq!(
+            meta.raw_import_edges_from_islands,
+            vec![
+                RawImportEdge {
+                    importer: nested.clone(),
+                    target: nested_payload.clone(),
+                },
+                RawImportEdge {
+                    importer: worker.clone(),
+                    target: payload.clone(),
+                },
+            ]
+        );
+        assert!(!meta.island_reachable_modules.contains(&worker));
+        assert!(!meta.island_reachable_modules.contains(&nested));
+        assert!(!meta.island_reachable_modules.contains(&payload));
+        assert!(!meta.island_reachable_modules.contains(&nested_payload));
+    }
+
+    #[test]
+    fn require_edges_inside_worker_graph_reach_nested_workers() {
+        let entry = root().join("src/app.client.ts");
+        let worker = root().join("src/worker.ts");
+        let helper = root().join("src/helper.ts");
+        let nested = root().join("src/nested.ts");
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                &entry,
+                "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            )
+            .with_file(&worker, "require('./helper');")
+            .with_file(
+                &helper,
+                "new Worker(new URL('./nested.ts', import.meta.url), { type: 'module' });",
+            )
+            .with_file(&nested, "self.postMessage('nested');");
+        let meta = scan_reachable_modules_with_meta(&[entry], &resolver).unwrap();
+        assert!(meta.module_worker_edges.contains(&ModuleWorkerEdge {
+            importer: helper,
+            source_path: nested,
+        }));
+    }
+
+    #[test]
     fn arbitrary_client_root_discovers_nested_workers_without_polluting_modules() {
         let entry = root().join("src/app.client.ts");
         let worker = root().join("src/worker.ts");
@@ -8331,6 +8517,35 @@ mod tests {
             "new Worker(new URL('./worker.ts', import.meta.url), { type: 'classic' });",
             "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', type: 'classic' });",
             "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', ...options });",
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', ['type']: 'classic' });",
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', [kind]: 'classic' });",
+        ] {
+            let entry = root().join("src/app.client.ts");
+            let resolver = InMemoryResolver::new()
+                .with_file(&entry, source)
+                .with_file(root().join("src/worker.ts"), "self.postMessage(1);");
+            let meta = scan_reachable_modules_with_meta(&[entry], &resolver).unwrap();
+            assert!(meta.module_worker_edges.is_empty(), "{source}");
+        }
+
+        let entry = root().join("src/app.client.ts");
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                &entry,
+                "new Worker(new URL('./worker.ts', import.meta.url), { type: 'classic', ['type']: 'module' });",
+            )
+            .with_file(root().join("src/worker.ts"), "self.postMessage(1);");
+        let meta = scan_reachable_modules_with_meta(&[entry], &resolver).unwrap();
+        assert_eq!(meta.module_worker_edges.len(), 1);
+    }
+
+    #[test]
+    fn shadowed_worker_shared_worker_and_url_bindings_are_not_claimed() {
+        for source in [
+            "import Worker from './fake'; new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            "function start(Worker) { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); }",
+            "const URL = LocalURL; new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            "import SharedWorker from './fake'; new SharedWorker(new URL('./worker.ts', import.meta.url));",
         ] {
             let entry = root().join("src/app.client.ts");
             let resolver = InMemoryResolver::new()

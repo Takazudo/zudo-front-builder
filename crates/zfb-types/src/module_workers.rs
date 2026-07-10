@@ -38,13 +38,14 @@ impl std::error::Error for ModuleWorkerPathError {}
 
 /// Return the stable flat filename for a project-local module-worker source.
 ///
-/// The name is a pure function of the complete project-relative source path:
-/// path separators and dots become dashes, while the remaining portable
-/// filename characters are retained. A short hash of the unsanitized relative
-/// path is appended so otherwise-ambiguous spellings (`a/b.ts` and `a-b.ts`)
-/// remain collision-free without any discovery-order suffix. For example,
+/// The name is a pure, injective function of the complete project-relative
+/// source path. Portable ASCII letters, digits, and underscores are retained;
+/// separators, dots, and literal hyphens use distinct dash-delimited escape
+/// tokens, and every other raw path byte is hex-escaped. Unlike a truncated
+/// digest, this encoding is reversible and therefore collision-free by
+/// construction, including for non-UTF-8 Unix filenames. For example,
 /// `src/search/index.worker.ts` becomes
-/// `worker-src-search-index-worker-ts-<path-hash>.js`.
+/// `worker-src-s-search-s-index-d-worker-d-ts.js`.
 ///
 /// This helper deliberately does not inspect the emitted bundle. The SSR pass
 /// runs before client asset discovery, so an emission-order-based dedupe name
@@ -69,41 +70,63 @@ pub fn module_worker_filename(
             source_path: source_path.to_path_buf(),
         })?;
 
-    let mut sanitized = String::new();
-    let mut logical_relative = String::new();
+    let mut encoded = String::new();
     for (component_index, component) in relative.components().enumerate() {
         if component_index > 0 {
-            sanitized.push('-');
-            logical_relative.push('/');
+            encoded.push_str("-s-");
         }
         let Component::Normal(value) = component else {
             unreachable!("relative path was validated above")
         };
-        let value = value.to_string_lossy();
-        logical_relative.push_str(&value);
-        for ch in value.chars() {
-            match ch {
-                '.' => sanitized.push('-'),
-                ch if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') => sanitized.push(ch),
-                // Keep the filename portable and deterministic for unusual
-                // source names. Repeated punctuation is intentionally not
-                // collapsed: doing so would create avoidable collisions.
-                _ => sanitized.push('-'),
-            }
-        }
+        encode_os_component(value, &mut encoded);
     }
 
-    if sanitized.is_empty() {
+    if encoded.is_empty() {
         return Err(ModuleWorkerPathError {
             project_root: project_root.to_path_buf(),
             source_path: source_path.to_path_buf(),
         });
     }
-    let path_digest = hex::encode(Sha256::digest(logical_relative.as_bytes()));
-    Ok(format!(
-        "{MODULE_WORKER_FILENAME_PREFIX}{sanitized}-{}.js",
-        &path_digest[..8]
-    ))
+    Ok(format!("{MODULE_WORKER_FILENAME_PREFIX}{encoded}.js"))
+}
+
+#[cfg(unix)]
+fn encode_os_component(value: &std::ffi::OsStr, out: &mut String) {
+    use std::os::unix::ffi::OsStrExt;
+
+    for &byte in value.as_bytes() {
+        encode_path_byte(byte, out);
+    }
+}
+
+#[cfg(not(unix))]
+fn encode_os_component(value: &std::ffi::OsStr, out: &mut String) {
+    // Valid Unicode paths use UTF-8 on every host, keeping ordinary project
+    // filenames byte-stable across platforms. Windows' rare ill-formed
+    // UTF-16 spellings are encoded by code unit instead of going through a
+    // lossy replacement character.
+    if let Some(value) = value.to_str() {
+        for &byte in value.as_bytes() {
+            encode_path_byte(byte, out);
+        }
+        return;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        for unit in value.encode_wide() {
+            out.push_str(&format!("-u{unit:04x}-"));
+        }
+    }
+}
+
+fn encode_path_byte(byte: u8, out: &mut String) {
+    match byte {
+        b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' => out.push(byte as char),
+        b'.' => out.push_str("-d-"),
+        b'-' => out.push_str("-h-"),
+        _ => out.push_str(&format!("-x{byte:02x}-")),
+    }
 }
 
 /// Return the deterministic eight-hex cache key for worker content bytes.
@@ -141,11 +164,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filename_is_pure_path_derived_and_sanitized() {
+    fn filename_is_pure_path_derived_and_injectively_encoded() {
         let root = Path::new("/app");
         let source = root.join("src/search/index.worker.ts");
         let filename = module_worker_filename(root, &source).unwrap();
-        assert!(filename.starts_with("worker-src-search-index-worker-ts-"));
+        assert_eq!(filename, "worker-src-s-search-s-index-d-worker-d-ts.js");
         assert!(filename.ends_with(".js"));
         assert_eq!(
             filename,
@@ -159,19 +182,19 @@ mod tests {
         let root = Path::new("/app");
         let left = module_worker_filename(root, &root.join("src/a/worker.ts")).unwrap();
         let right = module_worker_filename(root, &root.join("src/b/worker.ts")).unwrap();
-        assert!(left.starts_with("worker-src-a-worker-ts-"));
-        assert!(right.starts_with("worker-src-b-worker-ts-"));
+        assert!(left.starts_with("worker-src-s-a-s-worker-d-ts"));
+        assert!(right.starts_with("worker-src-s-b-s-worker-d-ts"));
         assert_ne!(left, right);
     }
 
     #[test]
-    fn path_fingerprint_disambiguates_sanitized_collision() {
+    fn escape_tokens_disambiguate_previously_sanitized_collision() {
         let root = Path::new("/app");
         let nested = module_worker_filename(root, &root.join("a/b.ts")).unwrap();
         let dashed = module_worker_filename(root, &root.join("a-b.ts")).unwrap();
         assert_ne!(nested, dashed);
-        assert!(nested.starts_with("worker-a-b-ts-"));
-        assert!(dashed.starts_with("worker-a-b-ts-"));
+        assert_eq!(nested, "worker-a-s-b-d-ts.js");
+        assert_eq!(dashed, "worker-a-h-b-d-ts.js");
     }
 
     #[test]
@@ -193,7 +216,7 @@ mod tests {
         let second = module_worker_url_specifier(root, &source_path, &first_hash).unwrap();
         let changed = module_worker_url_specifier(root, &source_path, &changed_hash).unwrap();
         assert_eq!(first, second);
-        assert!(first.starts_with("./worker-src-worker-ts-"));
+        assert!(first.starts_with("./worker-src-s-worker-d-ts.js"));
         assert!(first.contains(".js?v="));
         assert_ne!(first, changed);
         assert_eq!(module_worker_content_hash(b"x").len(), 8);
@@ -207,5 +230,24 @@ mod tests {
                 .unwrap()
                 .starts_with(MODULE_WORKER_FILENAME_PREFIX)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_unix_paths_are_encoded_without_lossy_collisions() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = Path::new("/app");
+        let left = root.join(std::ffi::OsString::from_vec(vec![
+            b'w', 0x80, b'.', b't', b's',
+        ]));
+        let right = root.join(std::ffi::OsString::from_vec(vec![
+            b'w', 0x81, b'.', b't', b's',
+        ]));
+        let left_name = module_worker_filename(root, &left).unwrap();
+        let right_name = module_worker_filename(root, &right).unwrap();
+        assert_eq!(left_name, "worker-w-x80--d-ts.js");
+        assert_eq!(right_name, "worker-w-x81--d-ts.js");
+        assert_ne!(left_name, right_name);
     }
 }

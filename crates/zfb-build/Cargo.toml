@@ -89,6 +89,7 @@ swc_core = { workspace = true, features = [
     "ecma_ast",
     "ecma_parser",
     "ecma_parser_typescript",
+    "ecma_transforms",
     "ecma_visit",
 ] }
 # Build-time render orchestrator (T6). `blocking` keeps the renderer

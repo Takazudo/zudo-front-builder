@@ -8632,7 +8632,8 @@ mod tests {
 
         let staged_island = shadow_components.join("Island.tsx");
         let staged = fs::read_to_string(&staged_island).unwrap();
-        assert!(staged.contains("new Worker(new URL(\"./worker-components-search-worker-ts-"));
+        assert!(staged
+            .contains("new Worker(new URL(\"./worker-components-s-search-d-worker-d-ts.js?v="));
         assert!(staged.contains(".js?v="), "{staged}");
         assert!(!staged.contains("new URL('./search.worker.ts'"), "{staged}");
 
@@ -8660,7 +8661,7 @@ mod tests {
             String::from_utf8_lossy(&result.stderr)
         );
         let bundled = fs::read_to_string(output).unwrap();
-        assert!(bundled.contains("worker-components-search-worker-ts-"));
+        assert!(bundled.contains("worker-components-s-search-d-worker-d-ts.js?v="));
         assert!(!bundled.contains("BROWSER_ONLY_SENTINEL"), "{bundled}");
         assert!(!bundled.contains("worker-must-not-enter-ssr"), "{bundled}");
     }
@@ -9050,31 +9051,57 @@ mod tests {
         let importer = root.join("components/Island.tsx");
         let worker = root.join("components/search.worker.ts");
         let helper = root.join("components/search-helper.ts");
-        for path in [&page, &importer, &worker, &helper] {
+        let required = root.join("components/required.ts");
+        let css = root.join("components/search.css");
+        let tokens = root.join("components/tokens.css");
+        let payload = root.join("components/payload.txt");
+        for path in [
+            &page, &importer, &worker, &helper, &required, &css, &tokens, &payload,
+        ] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, "source").unwrap();
         }
+        fs::write(&page, "page").unwrap();
+        let importer_source =
+            "new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });";
+        fs::write(&importer, importer_source).unwrap();
+        fs::write(
+            &root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["components/*"]}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            &worker,
+            "import { helper } from '@/search-helper'; require('./required'); import './search.css'; import payload from './payload.txt?raw'; self.postMessage([helper, payload]);",
+        )
+        .unwrap();
+        fs::write(&helper, "export const helper = 1;").unwrap();
+        fs::write(&required, "module.exports = 2;").unwrap();
+        fs::write(&css, "@import './tokens.css'; .worker { color: red; }").unwrap();
+        fs::write(&tokens, ":root { --worker: red; }").unwrap();
+        fs::write(&payload, "worker payload").unwrap();
         let importer_real = importer.canonicalize().unwrap();
-        let worker_real = worker.canonicalize().unwrap();
-        let helper_real = helper.canonicalize().unwrap();
         let mut deps = vec![crate::metafile_deps::RouteModuleDeps {
             source_path: PathBuf::from("pages/index.tsx"),
             module_deps: BTreeSet::from([importer_real.clone()]),
         }];
-        let worker_dependencies = BTreeSet::from([
-            ModuleWorkerDependency {
-                importer: importer.clone(),
-                dependency: worker,
-            },
-            ModuleWorkerDependency {
-                importer,
-                dependency: helper,
-            },
-        ]);
+        let worker_dependencies: BTreeSet<_> =
+            rewrite_module_worker_urls(importer_source, &importer, root)
+                .unwrap()
+                .dependencies
+                .into_iter()
+                .collect();
         augment_route_deps_with_worker_targets(&mut deps, &worker_dependencies, root);
         assert!(deps[0].module_deps.contains(&importer_real));
-        assert!(deps[0].module_deps.contains(&worker_real));
-        assert!(deps[0].module_deps.contains(&helper_real));
+        for dependency in [&worker, &helper, &required, &css, &tokens, &payload] {
+            assert!(
+                deps[0]
+                    .module_deps
+                    .contains(&dependency.canonicalize().unwrap()),
+                "route closure omitted {}: {:?}",
+                dependency.display(),
+                deps[0].module_deps
+            );
+        }
     }
 
     #[test]

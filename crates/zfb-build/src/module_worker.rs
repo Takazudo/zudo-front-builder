@@ -17,13 +17,15 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use swc_core::common::sync::Lrc;
-use swc_core::common::{FileName, SourceMap, Spanned};
+use swc_core::common::{FileName, Globals, Mark, SourceMap, Spanned, SyntaxContext, GLOBALS};
 use swc_core::ecma::ast::{
     Callee, Expr, ExprOrSpread, ImportSpecifier, Lit, MemberProp, MetaPropKind, Module, ModuleDecl,
-    ModuleItem, NewExpr, Prop, PropName, PropOrSpread,
+    ModuleItem, NewExpr, Program, Prop, PropName, PropOrSpread,
 };
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
+use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::visit::{Visit, VisitWith};
+use zfb_plugin_resolver::{read_tsconfig_paths, TsConfigPaths};
 use zfb_types::{module_worker_content_hash, module_worker_url_specifier, normalize_path_lexical};
 
 /// A direct `new Worker(...)` edge discovered while rewriting a source.
@@ -77,7 +79,7 @@ fn atom_to_string(value: &swc_core::atoms::Wtf8Atom) -> String {
     value.to_atom_lossy().to_string()
 }
 
-fn parse_module(path: &Path, source: &str) -> Result<(Module, u32)> {
+fn parse_module(path: &Path, source: &str) -> Result<(Module, u32, SyntaxContext)> {
     let cm: Lrc<SourceMap> = Default::default();
     let fm = cm.new_source_file(
         FileName::Real(path.to_path_buf()).into(),
@@ -103,10 +105,25 @@ fn parse_module(path: &Path, source: &str) -> Result<(Module, u32)> {
             path.display()
         )
     })?;
-    Ok((module, base))
+    let globals = Globals::new();
+    let (module, unresolved_ctxt) = GLOBALS.set(&globals, || {
+        let unresolved_mark = Mark::new();
+        let top_level_mark = Mark::new();
+        let program =
+            Program::Module(module).apply(resolver(unresolved_mark, top_level_mark, true));
+        let module = match program {
+            Program::Module(module) => module,
+            Program::Script(_) => unreachable!("the parser produced an ES module"),
+        };
+        (module, SyntaxContext::empty().apply_mark(unresolved_mark))
+    });
+    Ok((module, base, unresolved_ctxt))
 }
 
-fn literal_url_arg(args: &[ExprOrSpread]) -> Option<&swc_core::ecma::ast::Str> {
+fn literal_url_arg(
+    args: &[ExprOrSpread],
+    unresolved_ctxt: SyntaxContext,
+) -> Option<&swc_core::ecma::ast::Str> {
     let first = args.first()?;
     if first.spread.is_some() {
         return None;
@@ -114,7 +131,8 @@ fn literal_url_arg(args: &[ExprOrSpread]) -> Option<&swc_core::ecma::ast::Str> {
     let Expr::New(url) = &*first.expr else {
         return None;
     };
-    if !matches!(&*url.callee, Expr::Ident(ident) if ident.sym == "URL") {
+    if !matches!(&*url.callee, Expr::Ident(ident) if ident.sym == "URL" && ident.ctxt == unresolved_ctxt)
+    {
         return None;
     }
     let url_args = url.args.as_deref()?;
@@ -156,6 +174,12 @@ fn has_module_options(args: &[ExprOrSpread]) -> bool {
         let is_type = match &property.key {
             PropName::Ident(ident) => ident.sym == "type",
             PropName::Str(value) => value.value == *"type",
+            PropName::Computed(computed) => match &*computed.expr {
+                Expr::Lit(Lit::Str(value)) => value.value == *"type",
+                // A runtime-computed key might overwrite `type`; claiming the
+                // constructor would risk rewriting a classic worker.
+                _ => return false,
+            },
             _ => false,
         };
         if is_type {
@@ -168,23 +192,34 @@ fn has_module_options(args: &[ExprOrSpread]) -> bool {
     type_is_module
 }
 
-fn collect_constructor_occurrences(module: &Module, base: u32) -> Vec<ConstructorOccurrence> {
+fn collect_constructor_occurrences(
+    module: &Module,
+    base: u32,
+    unresolved_ctxt: SyntaxContext,
+) -> Vec<ConstructorOccurrence> {
     struct Collector {
         base: u32,
+        unresolved_ctxt: SyntaxContext,
         occurrences: Vec<ConstructorOccurrence>,
     }
 
     impl Visit for Collector {
         fn visit_new_expr(&mut self, node: &NewExpr) {
             let kind = match &*node.callee {
-                Expr::Ident(ident) if ident.sym == "Worker" => Some(ConstructorKind::Worker),
-                Expr::Ident(ident) if ident.sym == "SharedWorker" => {
+                Expr::Ident(ident)
+                    if ident.sym == "Worker" && ident.ctxt == self.unresolved_ctxt =>
+                {
+                    Some(ConstructorKind::Worker)
+                }
+                Expr::Ident(ident)
+                    if ident.sym == "SharedWorker" && ident.ctxt == self.unresolved_ctxt =>
+                {
                     Some(ConstructorKind::SharedWorker)
                 }
                 _ => None,
             };
             if let (Some(kind), Some(args)) = (kind, node.args.as_deref()) {
-                if let Some(specifier) = literal_url_arg(args) {
+                if let Some(specifier) = literal_url_arg(args, self.unresolved_ctxt) {
                     if kind == ConstructorKind::SharedWorker || has_module_options(args) {
                         let span = specifier.span();
                         self.occurrences.push(ConstructorOccurrence {
@@ -202,6 +237,7 @@ fn collect_constructor_occurrences(module: &Module, base: u32) -> Vec<Constructo
 
     let mut collector = Collector {
         base,
+        unresolved_ctxt,
         occurrences: Vec::new(),
     };
     module.visit_with(&mut collector);
@@ -216,6 +252,12 @@ fn is_js_like(path: &Path) -> bool {
             .as_deref(),
         Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts")
     )
+}
+
+fn is_css_like(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("css"))
 }
 
 fn is_inside_node_modules(path: &Path) -> bool {
@@ -299,89 +341,356 @@ fn ts_swap_candidates(path: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn resolve_graph_import(
-    importer: &Path,
-    specifier: &str,
-    project_root: &Path,
-) -> Result<Option<PathBuf>> {
-    if !(specifier.starts_with("./") || specifier.starts_with("../")) {
-        return Ok(None);
+fn probe_graph_candidate(candidate: &Path, exact: bool) -> Option<PathBuf> {
+    if exact {
+        return candidate.is_file().then(|| candidate.to_path_buf());
     }
-    if specifier.contains('#') {
-        bail!(
-            "zfb bundler: unsupported fragment-bearing import {specifier:?} in module-worker graph at {}",
-            importer.display()
-        );
-    }
-    let importer_dir = importer.parent().unwrap_or_else(|| Path::new("."));
-    let mut raw = false;
-    let path_specifier = match specifier.split_once('?') {
-        None => specifier,
-        Some((path, "raw")) if !path.contains('?') => {
-            raw = true;
-            path
-        }
-        Some(_) => {
-            bail!(
-                "zfb bundler: unsupported query-bearing import {specifier:?} in module-worker graph at {}",
-                importer.display()
-            )
-        }
-    };
-    let candidate = normalize_path_lexical(&importer_dir.join(path_specifier));
-    let found = if raw {
-        candidate.is_file().then_some(candidate)
-    } else {
-        ts_swap_candidates(&candidate)
+    ts_swap_candidates(candidate)
+        .into_iter()
+        .find(|path| path.is_file())
+        .or_else(|| candidate.is_file().then(|| candidate.to_path_buf()))
+        .or_else(|| {
+            [
+                "tsx", "ts", "jsx", "js", "mjs", "cjs", "mts", "cts", "json", "css",
+            ]
             .into_iter()
+            .map(|extension| {
+                let mut path = candidate.to_path_buf();
+                let name = format!(
+                    "{}.{}",
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(""),
+                    extension
+                );
+                path.set_file_name(name);
+                path
+            })
             .find(|path| path.is_file())
-            .or_else(|| candidate.is_file().then_some(candidate.clone()))
-            .or_else(|| {
-                [
-                    "tsx", "ts", "jsx", "js", "mjs", "cjs", "mts", "cts", "json", "css",
-                ]
-                .into_iter()
-                .map(|extension| {
-                    let mut path = candidate.clone();
-                    let name = format!(
-                        "{}.{}",
-                        path.file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or(""),
-                        extension
-                    );
-                    path.set_file_name(name);
-                    path
-                })
-                .find(|path| path.is_file())
-            })
-            .or_else(|| {
-                candidate.is_dir().then(|| {
-                    ["tsx", "ts", "jsx", "js", "mjs", "cjs", "mts", "cts"]
-                        .into_iter()
-                        .map(|extension| candidate.join(format!("index.{extension}")))
-                        .find(|path| path.is_file())
-                })?
-            })
-    };
-    let Some(found) = found else {
-        return Ok(None);
-    };
-    let resolves_under_node_modules = is_inside_node_modules(&found)
-        || found
-            .canonicalize()
-            .ok()
-            .is_some_and(|canonical| is_inside_node_modules(&canonical));
-    if resolves_under_node_modules {
-        return Ok(None);
-    }
-    match validate_first_party_path(&found, project_root, "module-worker dependency") {
-        Ok(path) => Ok(Some(path)),
-        Err(error) => Err(error),
+        })
+        .or_else(|| {
+            candidate.is_dir().then(|| {
+                ["tsx", "ts", "jsx", "js", "mjs", "cjs", "mts", "cts", "css"]
+                    .into_iter()
+                    .map(|extension| candidate.join(format!("index.{extension}")))
+                    .find(|path| path.is_file())
+            })?
+        })
+}
+
+fn match_tsconfig_pattern(pattern: &str, specifier: &str) -> Option<Option<String>> {
+    match pattern.matches('*').count() {
+        0 => (pattern == specifier).then_some(None),
+        1 => {
+            let star = pattern.find('*')?;
+            let prefix = &pattern[..star];
+            let suffix = &pattern[star + 1..];
+            if specifier.len() < prefix.len() + suffix.len()
+                || !specifier.starts_with(prefix)
+                || !specifier.ends_with(suffix)
+            {
+                return None;
+            }
+            Some(Some(
+                specifier[prefix.len()..specifier.len().saturating_sub(suffix.len())].to_string(),
+            ))
+        }
+        _ => None,
     }
 }
 
-fn collect_import_specifiers(module: &Module) -> Vec<String> {
+fn tsconfig_pattern_specificity(pattern: &str) -> usize {
+    pattern
+        .find('*')
+        .map(|star| star.max(pattern.len().saturating_sub(star + 1)))
+        .unwrap_or(pattern.len())
+}
+
+fn substitute_tsconfig_target(target: &str, capture: Option<&str>) -> String {
+    match (target.find('*'), capture) {
+        (Some(star), Some(capture)) => {
+            let mut out = String::with_capacity(target.len() + capture.len());
+            out.push_str(&target[..star]);
+            out.push_str(capture);
+            out.push_str(&target[star + 1..]);
+            out
+        }
+        _ => target.to_string(),
+    }
+}
+
+fn resolve_tsconfig_graph_alias(
+    paths: Option<&TsConfigPaths>,
+    specifier: &str,
+) -> Result<Option<Option<PathBuf>>> {
+    let Some(paths) = paths else {
+        return Ok(None);
+    };
+    let mut matches = paths
+        .aliases
+        .iter()
+        .filter_map(|alias| {
+            match_tsconfig_pattern(&alias.pattern, specifier)
+                .map(|capture| (alias, capture, tsconfig_pattern_specificity(&alias.pattern)))
+        })
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    matches.sort_by_key(|(_, _, specificity)| std::cmp::Reverse(*specificity));
+    for (alias, capture, _) in matches {
+        for target in &alias.targets {
+            let target = substitute_tsconfig_target(target, capture.as_deref());
+            let candidate = normalize_path_lexical(&paths.base_dir.join(target));
+            if let Some(found) = probe_graph_candidate(&candidate, false) {
+                return Ok(Some(Some(found)));
+            }
+        }
+    }
+    Ok(Some(None))
+}
+
+fn bare_package_name(specifier: &str) -> Option<PathBuf> {
+    let mut parts = specifier.split('/');
+    let first = parts.next()?;
+    if first.is_empty() {
+        return None;
+    }
+    if first.starts_with('@') {
+        let second = parts.next()?;
+        Some(PathBuf::from(first).join(second))
+    } else {
+        Some(PathBuf::from(first))
+    }
+}
+
+fn installed_package_exists(importer_dir: &Path, project_root: &Path, specifier: &str) -> bool {
+    let Some(package) = bare_package_name(specifier) else {
+        return false;
+    };
+    let mut current = Some(importer_dir);
+    while let Some(dir) = current {
+        if dir.join("node_modules").join(&package).exists() {
+            return true;
+        }
+        current = dir.parent();
+    }
+    project_root.join("node_modules").join(package).exists()
+}
+
+struct ProjectGraphResolver {
+    project_root: PathBuf,
+    tsconfig_paths: Option<TsConfigPaths>,
+}
+
+impl ProjectGraphResolver {
+    fn new(project_root: &Path) -> Self {
+        Self {
+            project_root: project_root.to_path_buf(),
+            tsconfig_paths: read_tsconfig_paths(project_root),
+        }
+    }
+
+    fn resolve(
+        &self,
+        importer: &Path,
+        specifier: &str,
+        css_import: bool,
+    ) -> Result<Option<PathBuf>> {
+        if specifier.starts_with("http://")
+            || specifier.starts_with("https://")
+            || specifier.starts_with("data:")
+            || specifier.starts_with("//")
+        {
+            return Ok(None);
+        }
+        if specifier.find('#').is_some_and(|fragment| fragment != 0) {
+            bail!(
+                "zfb bundler: unsupported fragment-bearing import {specifier:?} in module-worker graph at {}",
+                importer.display()
+            );
+        }
+        let importer_dir = importer.parent().unwrap_or_else(|| Path::new("."));
+        let mut raw = false;
+        let path_specifier = match specifier.split_once('?') {
+            None => specifier,
+            Some((path, "raw")) if !path.contains('?') => {
+                raw = true;
+                path
+            }
+            Some(_) => {
+                bail!(
+                "zfb bundler: unsupported query-bearing import {specifier:?} in module-worker graph at {}",
+                importer.display()
+            )
+            }
+        };
+        let css_plain_relative = css_import
+            && !path_specifier.starts_with('@')
+            && !path_specifier.contains('/')
+            && Path::new(path_specifier).extension().is_some();
+        let is_relative = path_specifier.starts_with("./")
+            || path_specifier.starts_with("../")
+            || css_plain_relative;
+        let found = if is_relative {
+            let candidate = normalize_path_lexical(&importer_dir.join(path_specifier));
+            probe_graph_candidate(&candidate, raw).ok_or_else(|| {
+                anyhow!(
+                    "zfb bundler: module-worker dependency {specifier:?} in {} cannot be resolved exactly enough to produce a safe cache key (looked from {})",
+                    importer.display(),
+                    importer_dir.display()
+                )
+            })?
+        } else {
+            if path_specifier.starts_with('/') {
+                bail!(
+                    "zfb bundler: absolute module-worker dependency {specifier:?} in {} is outside the project graph contract",
+                    importer.display()
+                );
+            }
+            match resolve_tsconfig_graph_alias(self.tsconfig_paths.as_ref(), path_specifier)? {
+                Some(Some(found)) => found,
+                Some(None) => {
+                    bail!(
+                        "zfb bundler: tsconfig path alias {specifier:?} imported by {} matched a first-party mapping but no target resolved; refusing to produce a stale worker cache key",
+                        importer.display()
+                    )
+                }
+                None if path_specifier.starts_with("node:")
+                    || installed_package_exists(
+                        importer_dir,
+                        &self.project_root,
+                        path_specifier,
+                    ) =>
+                {
+                    return Ok(None);
+                }
+                None => {
+                    bail!(
+                        "zfb bundler: non-relative dependency {specifier:?} imported by {} is neither a resolvable project tsconfig alias nor an installed package; refusing to omit it from the worker cache key",
+                        importer.display()
+                    )
+                }
+            }
+        };
+        let resolves_under_node_modules = is_inside_node_modules(&found)
+            || found
+                .canonicalize()
+                .ok()
+                .is_some_and(|canonical| is_inside_node_modules(&canonical));
+        if resolves_under_node_modules {
+            return Ok(None);
+        }
+        match validate_first_party_path(&found, &self.project_root, "module-worker dependency") {
+            Ok(path) => Ok(Some(path)),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn collect_css_import_specifiers(css: &str, path: &Path) -> Result<Vec<String>> {
+    let without_comments = strip_css_block_comments(css);
+    let bytes = without_comments.as_bytes();
+    let mut specifiers = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'@' || !ascii_ci_starts_with(bytes, index, b"@import") {
+            index += 1;
+            continue;
+        }
+        let mut cursor = index + "@import".len();
+        let keyword_boundary = bytes.get(cursor).is_none_or(|byte| {
+            byte.is_ascii_whitespace() || matches!(*byte, b'\'' | b'"' | b'u' | b'U')
+        });
+        if !keyword_boundary {
+            index += 1;
+            continue;
+        }
+        while bytes
+            .get(cursor)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            cursor += 1;
+        }
+        if ascii_ci_starts_with(bytes, cursor, b"url(") {
+            cursor += "url(".len();
+            while bytes
+                .get(cursor)
+                .is_some_and(|byte| byte.is_ascii_whitespace())
+            {
+                cursor += 1;
+            }
+        }
+        let Some((specifier, next)) = read_css_import_target(&without_comments, cursor) else {
+            bail!(
+                "zfb bundler: unsupported CSS @import syntax in module-worker dependency {}; refusing to omit a possibly bundled edge from the cache key",
+                path.display()
+            );
+        };
+        if specifier.is_empty() {
+            bail!(
+                "zfb bundler: empty CSS @import in module-worker dependency {}",
+                path.display()
+            );
+        }
+        specifiers.push(specifier);
+        index = next;
+    }
+    Ok(specifiers)
+}
+
+fn read_css_import_target(css: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = css.as_bytes();
+    let quote = *bytes.get(start)?;
+    if matches!(quote, b'\'' | b'"') {
+        let mut end = start + 1;
+        while end < bytes.len() && bytes[end] != quote {
+            if bytes[end] == b'\\' {
+                end = end.saturating_add(1);
+            }
+            end += 1;
+        }
+        if end >= bytes.len() {
+            return None;
+        }
+        return Some((css[start + 1..end].to_string(), end + 1));
+    }
+    let mut end = start;
+    while end < bytes.len()
+        && bytes[end] != b')'
+        && bytes[end] != b';'
+        && !bytes[end].is_ascii_whitespace()
+    {
+        end += 1;
+    }
+    (end > start).then(|| (css[start..end].trim().to_string(), end))
+}
+
+fn ascii_ci_starts_with(bytes: &[u8], at: usize, needle: &[u8]) -> bool {
+    bytes.len() >= at + needle.len() && bytes[at..at + needle.len()].eq_ignore_ascii_case(needle)
+}
+
+fn strip_css_block_comments(css: &str) -> String {
+    let bytes = css.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+            index += 2;
+            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
+                index += 1;
+            }
+            index = (index + 2).min(bytes.len());
+            out.push(b' ');
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| css.to_string())
+}
+
+fn collect_import_specifiers(module: &Module, unresolved_ctxt: SyntaxContext) -> Vec<String> {
     let mut specifiers = Vec::new();
     for item in &module.body {
         let ModuleItem::ModuleDecl(declaration) = item else {
@@ -411,12 +720,20 @@ fn collect_import_specifiers(module: &Module) -> Vec<String> {
         }
     }
 
-    struct DynamicImports {
+    struct RuntimeCalls {
+        unresolved_ctxt: SyntaxContext,
         specifiers: Vec<String>,
     }
-    impl Visit for DynamicImports {
+    impl Visit for RuntimeCalls {
         fn visit_call_expr(&mut self, node: &swc_core::ecma::ast::CallExpr) {
-            if matches!(node.callee, Callee::Import(_)) {
+            let is_dynamic_import = matches!(node.callee, Callee::Import(_));
+            let is_global_require = matches!(
+                &node.callee,
+                Callee::Expr(callee)
+                    if matches!(&**callee, Expr::Ident(ident)
+                        if ident.sym == "require" && ident.ctxt == self.unresolved_ctxt)
+            );
+            if is_dynamic_import || is_global_require {
                 if let Some(argument) = node.args.first() {
                     if argument.spread.is_none() {
                         if let Expr::Lit(Lit::Str(value)) = &*argument.expr {
@@ -428,11 +745,12 @@ fn collect_import_specifiers(module: &Module) -> Vec<String> {
             node.visit_children_with(self);
         }
     }
-    let mut dynamic = DynamicImports {
+    let mut runtime_calls = RuntimeCalls {
+        unresolved_ctxt,
         specifiers: Vec::new(),
     };
-    module.visit_with(&mut dynamic);
-    specifiers.extend(dynamic.specifiers);
+    module.visit_with(&mut runtime_calls);
+    specifiers.extend(runtime_calls.specifiers);
     specifiers
 }
 
@@ -443,6 +761,7 @@ struct WorkerGraph {
 }
 
 fn inspect_worker_graph(entry: &Path, project_root: &Path) -> Result<WorkerGraph> {
+    let resolver = ProjectGraphResolver::new(project_root);
     let mut visited = BTreeSet::new();
     let mut stack = vec![entry.to_path_buf()];
     let mut file_bytes: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
@@ -455,7 +774,7 @@ fn inspect_worker_graph(entry: &Path, project_root: &Path) -> Result<WorkerGraph
         let bytes = std::fs::read(&current)
             .with_context(|| format!("read module-worker dependency {}", current.display()))?;
         file_bytes.insert(current.clone(), bytes.clone());
-        if !is_js_like(&current) {
+        if !is_js_like(&current) && !is_css_like(&current) {
             continue;
         }
         let source = String::from_utf8(bytes).map_err(|error| {
@@ -464,8 +783,18 @@ fn inspect_worker_graph(entry: &Path, project_root: &Path) -> Result<WorkerGraph
                 current.display()
             )
         })?;
-        let (module, base) = parse_module(&current, &source)?;
-        for occurrence in collect_constructor_occurrences(&module, base) {
+        if is_css_like(&current) {
+            for specifier in collect_css_import_specifiers(&source, &current)? {
+                if let Some(dependency) = resolver.resolve(&current, &specifier, true)? {
+                    if !visited.contains(&dependency) {
+                        stack.push(dependency);
+                    }
+                }
+            }
+            continue;
+        }
+        let (module, base, unresolved_ctxt) = parse_module(&current, &source)?;
+        for occurrence in collect_constructor_occurrences(&module, base, unresolved_ctxt) {
             if occurrence.kind == ConstructorKind::SharedWorker {
                 bail!(
                     "zfb bundler: unsupported SharedWorker in {} for {:?}. Only module `Worker` constructors are supported.",
@@ -482,8 +811,8 @@ fn inspect_worker_graph(entry: &Path, project_root: &Path) -> Result<WorkerGraph
                 stack.push(nested);
             }
         }
-        for specifier in collect_import_specifiers(&module) {
-            if let Some(dependency) = resolve_graph_import(&current, &specifier, project_root)? {
+        for specifier in collect_import_specifiers(&module, unresolved_ctxt) {
+            if let Some(dependency) = resolver.resolve(&current, &specifier, false)? {
                 if !visited.contains(&dependency) {
                     stack.push(dependency);
                 }
@@ -528,7 +857,7 @@ fn inspect_worker_graph(entry: &Path, project_root: &Path) -> Result<WorkerGraph
 /// Only the first string-literal argument of the exact
 /// `new Worker(new URL("./x.ts", import.meta.url), { type: "module" })`
 /// shape changes. The replacement is
-/// `./worker-<sanitized-relative-path>-<path-hash>.js?v=<graph-hash>`.
+/// `./worker-<injectively-encoded-relative-path>.js?v=<graph-hash>`.
 /// The filename is stable and CSP-matchable; the query changes when the entry,
 /// a first-party transitive import, or a nested worker changes.
 ///
@@ -549,8 +878,8 @@ pub fn rewrite_module_worker_urls(
         });
     }
     validate_first_party_path(importer, project_root, "module-worker importer")?;
-    let (module, base) = parse_module(importer, source)?;
-    let occurrences = collect_constructor_occurrences(&module, base);
+    let (module, base, unresolved_ctxt) = parse_module(importer, source)?;
+    let occurrences = collect_constructor_occurrences(&module, base, unresolved_ctxt);
     if occurrences.is_empty() {
         return Ok(ModuleWorkerRewrite {
             expanded_source: source.to_string(),
@@ -638,7 +967,7 @@ mod tests {
             .contains("const url = './workers/search.ts'"));
         assert!(rewrite
             .expanded_source
-            .contains("new Worker(new URL(\"./worker-src-workers-search-ts-"));
+            .contains("new Worker(new URL(\"./worker-src-s-workers-s-search-d-ts.js?v="));
         assert!(rewrite.expanded_source.contains(".js?v="));
         assert!(rewrite
             .expanded_source
@@ -682,6 +1011,90 @@ mod tests {
             .dependencies
             .iter()
             .any(|edge| edge.dependency == helper));
+    }
+
+    #[test]
+    fn alias_require_and_css_subimports_join_hash_and_invalidation_closure() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.ts");
+        let worker = project.path().join("src/worker.ts");
+        let alias = project.path().join("src/aliased.ts");
+        let required = project.path().join("src/required.ts");
+        let css = project.path().join("src/styles.css");
+        let tokens = project.path().join("src/tokens.css");
+        let raw = project.path().join("src/payload.txt");
+        write(&importer, "placeholder");
+        write(
+            &project.path().join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        );
+        write(
+            &worker,
+            "import { value } from '@/aliased'; const required = require('./required'); import './styles.css'; import payload from './payload.txt?raw'; self.postMessage([value, required, payload]);",
+        );
+        write(&alias, "export const value = 'alias-a';");
+        write(&required, "module.exports = 'required-a';");
+        write(&css, "@import './tokens.css';\n.worker { color: red; }");
+        write(&tokens, ":root { --worker: a; }");
+        write(&raw, "raw-a");
+        let source = "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });";
+
+        let first = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        for expected in [&alias, &required, &css, &tokens, &raw] {
+            assert!(
+                first
+                    .dependencies
+                    .iter()
+                    .any(|edge| edge.dependency == *expected),
+                "missing graph dependency {}: {:?}",
+                expected.display(),
+                first.dependencies
+            );
+        }
+
+        write(&alias, "export const value = 'alias-b';");
+        let alias_changed = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        assert_ne!(first.expanded_source, alias_changed.expanded_source);
+        write(&required, "module.exports = 'required-b';");
+        let require_changed =
+            rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        assert_ne!(
+            alias_changed.expanded_source,
+            require_changed.expanded_source
+        );
+        write(&tokens, ":root { --worker: b; }");
+        let css_changed = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        assert_ne!(require_changed.expanded_source, css_changed.expanded_source);
+        write(&raw, "raw-b");
+        let raw_changed = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        assert_ne!(css_changed.expanded_source, raw_changed.expanded_source);
+    }
+
+    #[test]
+    fn unresolved_local_worker_dependency_fails_instead_of_hashing_partial_graph() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.ts");
+        let worker = project.path().join("src/worker.ts");
+        write(&importer, "placeholder");
+        write(&worker, "import './missing'; self.postMessage('ready');");
+        let error = rewrite_module_worker_urls(
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            &importer,
+            project.path(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("cannot be resolved"), "{error}");
+        assert!(error.contains("missing"), "{error}");
+    }
+
+    #[test]
+    fn overlapping_tsconfig_pattern_does_not_panic_or_false_match() {
+        assert_eq!(match_tsconfig_pattern("a*a", "a"), None);
+        assert_eq!(
+            match_tsconfig_pattern("a*a", "aba"),
+            Some(Some("b".to_string()))
+        );
     }
 
     #[test]
@@ -751,6 +1164,31 @@ mod tests {
             "new Worker(new URL('./worker.ts', import.meta.url), { type: 'classic' });",
             "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', type: 'classic' });",
             "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', ...options });",
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', ['type']: 'classic' });",
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', [kind]: 'classic' });",
+        ] {
+            let rewrite = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+            assert_eq!(rewrite.expanded_source, source);
+            assert!(rewrite.worker_edges.is_empty());
+        }
+        let computed_last_module = "new Worker(new URL('./worker.ts', import.meta.url), { type: 'classic', ['type']: 'module' });";
+        let rewrite =
+            rewrite_module_worker_urls(computed_last_module, &importer, project.path()).unwrap();
+        assert_ne!(rewrite.expanded_source, computed_last_module);
+    }
+
+    #[test]
+    fn shadowed_worker_shared_worker_and_url_bindings_are_not_claimed() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.ts");
+        let worker = project.path().join("src/worker.ts");
+        write(&importer, "placeholder");
+        write(&worker, "self.postMessage(1);");
+        for source in [
+            "import Worker from './fake'; new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            "function start(Worker) { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); }",
+            "const URL = LocalURL; new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            "import SharedWorker from './fake'; new SharedWorker(new URL('./worker.ts', import.meta.url));",
         ] {
             let rewrite = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
             assert_eq!(rewrite.expanded_source, source);

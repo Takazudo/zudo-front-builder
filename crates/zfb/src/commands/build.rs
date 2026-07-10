@@ -6555,6 +6555,8 @@ mod tests {
         let helper = root.join("components/start-worker.ts");
         let worker = root.join("components/workers/search.ts");
         let nested = root.join("components/workers/tokenize.ts");
+        let worker_payload = root.join("components/workers/search.txt");
+        let nested_payload = root.join("components/workers/tokenize.txt");
         std::fs::write(
             &page,
             "import { Island } from '../components/Island'; export default Island;\n",
@@ -6572,13 +6574,20 @@ mod tests {
         .unwrap();
         std::fs::write(
             &worker,
-            "new Worker(new URL('./tokenize.ts', import.meta.url), { type: 'module' }); self.postMessage('search');\n",
+            "import text from './search.txt?raw'; new Worker(new URL('./tokenize.ts', import.meta.url), { type: 'module' }); self.postMessage(text);\n",
         )
         .unwrap();
-        std::fs::write(&nested, "self.postMessage('tokenize');\n").unwrap();
+        std::fs::write(
+            &nested,
+            "import text from './tokenize.txt?raw'; self.postMessage(text);\n",
+        )
+        .unwrap();
+        std::fs::write(&worker_payload, "search payload").unwrap();
+        std::fs::write(&nested_payload, "tokenize payload").unwrap();
 
         let (islands, scan_meta) = scan_islands_with_meta(&[page], &FsResolver::new()).unwrap();
         assert_eq!(scan_meta.module_worker_edges_from_islands.len(), 2);
+        assert_eq!(scan_meta.raw_import_edges_from_islands.len(), 2);
         let shadow = match materialise_islands_shadow(root, &islands, &scan_meta).unwrap() {
             IslandsShadowOutcome::Ready(shadow) => shadow,
             IslandsShadowOutcome::KeepStopgap(offenders) => {
@@ -6590,7 +6599,8 @@ mod tests {
         let rewritten_helper =
             std::fs::read_to_string(shadow_root.join("components/start-worker.ts")).unwrap();
         assert!(
-            rewritten_helper.contains("new URL(\"./worker-components-workers-search-ts-"),
+            rewritten_helper
+                .contains("new URL(\"./worker-components-s-workers-s-search-d-ts.js?v="),
             "{rewritten_helper}"
         );
         assert!(rewritten_helper.contains(".js?v="), "{rewritten_helper}");
@@ -6601,12 +6611,21 @@ mod tests {
         let rewritten_worker =
             std::fs::read_to_string(shadow_root.join("components/workers/search.ts")).unwrap();
         assert!(
-            rewritten_worker.contains("new URL(\"./worker-components-workers-tokenize-ts-"),
+            rewritten_worker
+                .contains("new URL(\"./worker-components-s-workers-s-tokenize-d-ts.js?v="),
             "{rewritten_worker}"
         );
+        assert!(!rewritten_worker.contains("?raw"), "{rewritten_worker}");
+        let rewritten_nested =
+            std::fs::read_to_string(shadow_root.join("components/workers/tokenize.ts")).unwrap();
+        assert!(!rewritten_nested.contains("?raw"), "{rewritten_nested}");
         assert!(
             shadow_root.join("components/workers/tokenize.ts").exists(),
             "nested worker entry is mirrored for the later emission pass"
+        );
+        assert_eq!(
+            shadow.raw_targets,
+            std::collections::BTreeSet::from([worker_payload, nested_payload])
         );
     }
 
@@ -6669,13 +6688,19 @@ mod tests {
         let entry = root.join("pages/widget.client.ts");
         let helper = root.join("src/start.ts");
         let worker = root.join("src/search.worker.ts");
+        let payload = root.join("src/search.txt");
         std::fs::write(&entry, "import { start } from '../src/start'; start();\n").unwrap();
         std::fs::write(
             &helper,
             "export const start = () => new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });\n",
         )
         .unwrap();
-        std::fs::write(&worker, "self.postMessage('ready');\n").unwrap();
+        std::fs::write(
+            &worker,
+            "import text from './search.txt?raw'; self.postMessage(text);\n",
+        )
+        .unwrap();
+        std::fs::write(&payload, "ready payload").unwrap();
         let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
             entry_name: "widget".into(),
             source_path: entry,
@@ -6684,14 +6709,19 @@ mod tests {
         let stage = stage_client_script_preprocessing(root, &entries)
             .unwrap()
             .expect("worker-only graph needs the shared preprocessing stage");
-        assert!(stage.raw_targets.is_empty());
+        assert_eq!(
+            stage.raw_targets,
+            std::collections::BTreeSet::from([payload])
+        );
         let rewritten = std::fs::read_to_string(stage.root.join("src/start.ts")).unwrap();
         assert!(
-            rewritten.contains("new URL(\"./worker-src-search-worker-ts-"),
+            rewritten.contains("new URL(\"./worker-src-s-search-d-worker-d-ts.js?v="),
             "{rewritten}"
         );
         assert!(rewritten.contains(".js?v="), "{rewritten}");
-        assert!(stage.root.join("src/search.worker.ts").exists());
+        let rewritten_worker =
+            std::fs::read_to_string(stage.root.join("src/search.worker.ts")).unwrap();
+        assert!(!rewritten_worker.contains("?raw"), "{rewritten_worker}");
         assert!(stage.entries[0].source_path.starts_with(&stage.root));
     }
 
