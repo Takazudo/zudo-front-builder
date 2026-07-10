@@ -1,74 +1,45 @@
 ---
 name: zudo-doc-design-system
-description: "Project-specific CSS and component rules for zudo-doc. Must be consulted before writing or editing CSS, Tailwind classes, color tokens, or component markup in this project. Covers: component-first strategy, design token system, three-tier color architecture, and palette index convention. Triggered by 'design system', 'zudo-doc-design-system', 'zudo-doc-css-wisdom' (old name)."
+description: Consumer-docs CSS and token rules for this zudo-doc-powered docs site. Consult before editing docs/src/styles/global.css, Tailwind classes, color tokens, or host-authored markup.
 user-invocable: true
-argument-hint: "[topic: tokens, colors, component-first, palette]"
+argument-hint: "[topic: tokens, colors, imports, host-markup]"
 ---
 
-# zudo-doc CSS & Component Rules
+# zudo-doc Consumer Design System
 
-**IMPORTANT**: These rules are mandatory for all code changes in this project that touch CSS, Tailwind classes, color tokens, or component markup. Read the relevant section before making changes.
+This repo is a consumer docs site for `@takazudo/zudo-doc`, not the upstream package implementation. Package-owned routes render the header, sidebar, TOC, footer, search, doc history, and most chrome. The host owns content, config, assets, `pages/index.tsx`, and `docs/src/styles/global.css`.
 
-## How to Use
+## Source of Truth
 
-Based on the topic, read the specific reference doc:
+- Read `docs/src/styles/global.css` before changing CSS or token usage.
+- Do not follow old reference-page pointers for design-system, component-first, or color topics. Those pages no longer exist in this consumer site.
+- Do not reintroduce the old host-owned route/chrome layer (`pages/lib/**`, `pages/docs/**`, `pages/[locale]/**`, `src/components/**`, `src/utils/**`, `src/hooks/**`) for package chrome changes. Change the package upstream or use supported zudo-doc host bindings.
 
-| Topic | File |
-|-------|------|
-| Spacing, typography, layout tokens | `src/content/docs/reference/design-system.mdx` |
-| Component-first methodology | `src/content/docs/reference/component-first.mdx` |
-| Color tokens, palette, schemes | `src/content/docs/reference/color.mdx` |
+## What `global.css` Owns
 
-Read ONLY the file relevant to your task. Apply its rules strictly.
+- CSS import ordering for Tailwind and package CSS.
+- Explicit Tailwind `@source` globs for non-git or copied build contexts.
+- Host token registrations in `@theme`: semantic colors, spacing, icon sizes, typography, radius, breakpoints, shadows, and z-index utilities.
+- `:root` constants consumed by imported package CSS.
 
-## Quick Rules (always apply)
+## Token Rules
 
-### Component First (no custom CSS classes)
+- Tailwind default colors are reset with `--color-*: initial`; do not use classes such as `text-gray-500` or `bg-blue-600`.
+- Prefer semantic color utilities backed by `global.css`, such as `text-fg`, `bg-bg`, `bg-surface`, `border-muted`, `text-accent`, `text-success`, `text-danger`, `text-warning`, and `text-info`.
+- Use dedicated highlight tokens for distinct roles. Search result marks use `matched-keyword-bg` / `matched-keyword-fg`; warning UI uses `warning`.
+- Use spacing tokens from the host scale: `hsp-*` for horizontal spacing, `vsp-*` for vertical spacing, and `icon-*` for icon dimensions.
+- Use semantic type tokens (`text-micro`, `text-caption`, `text-small`, `text-body`, `text-title`, `text-heading`, `text-display`) instead of arbitrary font-size utilities when a token fits.
+- Avoid arbitrary values unless the value is genuinely one-off and no existing token expresses the role.
 
-- **NEVER** create CSS module files, custom class names, or separate stylesheets
-- **ALWAYS** use Tailwind utility classes directly in component markup
-- The component itself is the abstraction — `.card`, `.btn-primary` are forbidden
-- Use props for variants, not CSS modifiers
+## Import and Package CSS Rules
 
-### Design Tokens (no arbitrary values)
+- Keep `@layer zd-preflight, zd-flow;` before the Tailwind and package imports.
+- Keep `@import` rules near the top of `global.css`; CSS requires imports to precede normal rules.
+- Keep `@import "@takazudo/zudo-doc/safelist.css";` with the package imports so Tailwind v4 sees package-emitted utilities.
+- The imported package CSS (`content.css`, `features.css`, `page-loading.css`) is the source of truth for package chrome styling. Do not vendor-copy or fork those rules into this repo.
 
-- **NEVER** use Tailwind default colors (`bg-gray-500`, `text-blue-600`) — they are reset to `initial`
-- **NEVER** use arbitrary values (`text-[0.875rem]`, `p-[1.2rem]`) when a token exists
-- **ALWAYS** use project tokens: `text-fg`, `bg-surface`, `border-muted`, `p-hsp-md`, `text-small`
-- Spacing: `hsp-*` (horizontal), `vsp-*` (vertical) — see design-system.mdx for full list
-- Typography: `text-caption`, `text-small`, `text-body`, `text-heading` etc.
+## Host Markup Rules
 
-### Color Tokens (three-tier system)
-
-- **Tier 1** (palette): `p0`–`p15` — raw colors, use only when no semantic token fits
-- **Tier 2** (semantic): `text-fg`, `bg-surface`, `border-muted`, `text-accent` — prefer these
-- **NEVER** use hardcoded hex values in components
-- Palette index convention (consistent across all themes):
-  - p1=danger, p2=success, p3=warning, p4=info, p5=accent
-  - p8=muted, p9=background, p10=surface, p11=text primary
-
-### Search & highlight tokens (role-split)
-
-Highlight roles are deliberately split across dedicated semantic tokens — do **not** share one token across unrelated highlight UIs.
-
-- `matched-keyword-bg` / `matched-keyword-fg` — background and foreground of the search panel `<mark>` element. Driven by `--color-matched-keyword-bg` / `--color-matched-keyword-fg`; live-editable in the Design Token Panel. This is the single source of truth for "why is this color yellow in the search results" — the panel swatch matches the rendered highlight 1:1.
-- `warning` — drives admonitions (`:::warning`), find-in-page (`.find-match`, `.find-match-active`), and any UI that is semantically a warning. Do **not** reuse it for new UI-chrome highlights.
-
-**Rule**: when a new highlight role appears (new kind of mark, new pill, new callout), add a dedicated semantic token rather than bolting it onto `--color-warning` or another existing token. Each visible highlight color should map to exactly one panel swatch.
-
-### Hover-state underline for link-like elements
-
-Any element that navigates (rendered as `<a href>` or behaves as a link) MUST have `hover:underline focus-visible:underline`. Keyboard users need the same affordance as mouse users — never add `hover:underline` without the `focus-visible:underline` pair.
-
-- **Links (do underline)**: doc content links, sidebar items, header main-nav, header overflow menu items, color-tweak panel unselected tabs, search result rows, footer links, doc history entries, breadcrumb trails, mobile TOC entries.
-- **Controls (do NOT underline)**: buttons, toggles, sidebar resizer, palette selectors, color swatches, close icons. These use border/bg hover instead.
-
-Precedents to copy the pattern from: any current `.tsx` component in `src/components/` (e.g. `site-tree-nav.tsx`).
-
-See also: `/css-wisdom` for light-mode / dark-mode contrast rules and the broader three-tier token strategy.
-
-### Server-rendered Preact vs client islands
-
-- Default to **server-rendered Preact `.tsx`** (no `client:*` directive) — emits zero JS. See `src/CLAUDE.md` for the canonical rule: "All components are Preact `.tsx` — there are no `.astro` files."
-- Promote to a **client island** only when interactivity is needed
-- Both follow the same utility-class approach
+- For any host-authored TSX/MDX that navigates, pair `hover:underline` with `focus-visible:underline`.
+- Controls such as buttons, toggles, resize handles, swatches, and close icons should use border/background/focus treatment rather than link underlines.
+- Default to server-rendered Preact for host markup. Add a client island only for real interactivity.

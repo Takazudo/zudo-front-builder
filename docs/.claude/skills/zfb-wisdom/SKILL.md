@@ -52,7 +52,7 @@ The user has new information and wants to add or update documentation in this re
 5. **Update Japanese docs**: Create or update the corresponding file under
    `docs-ja/` mirroring the English directory structure. Keep code blocks and
    diagrams identical — only translate surrounding prose.
-6. **Format**: Run `pnpm format:md` inside `docs/` to format the changed files.
+6. **Format**: From the repo root, run `pnpm format:mdx` to format changed Markdown/MDX files.
 7. **Verify**: Run `pnpm build` inside `docs/` to confirm the site builds correctly.
 
 ## Documentation Structure
