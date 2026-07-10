@@ -15,7 +15,7 @@ they differ is the templating story. Read the
 `layout:` keys. zfb reads layouts from `layouts/` and you import them
 directly into your page TSX:
 
-```tsx
+```ts
 import BlogLayout from "../../layouts/blog-layout.tsx";
 
 export default function Page({ post }) {
@@ -70,17 +70,32 @@ export function paths() {
 ## Pagination
 
 11ty's `pagination` front-matter key becomes a `paginate()` helper inside
-`paths()`. See /api/paginate for the full surface, but the shape is:
+`paths()`. See [`paginate`](../api/paginate.mdx) for the full surface, but
+the shape is:
 
-```ts
+```tsx
+import { getCollection } from "zfb/content";
+import { paginate } from "zfb/paginate";
+
 export function paths() {
   const posts = getCollection("blog");  // synchronous — no await
-  return paginate(posts, { pageSize: 10 });
+  return paginate(posts, { pageSize: 10, param: "page" });
+}
+
+export default function BlogPage({ page }) {
+  const { data, page: currentPage, lastPage, pageSize, total } = page;
+  return (
+    <p>
+      Page {currentPage} of {lastPage}; showing {data.length} of {total}
+      posts at {pageSize} per page.
+    </p>
+  );
 }
 ```
 
-You get one route per page, plus the standard `currentPage`,
-`totalPages`, and `data` props.
+The `param` value must match your dynamic route segment (`[page].tsx` in
+this example). Each generated route receives `props.page` with the shape
+`{ data, page, lastPage, pageSize, total }`.
 
 ## Markdown front matter
 
@@ -88,6 +103,10 @@ This part is largely unchanged. Use `---` as a separator at the top of
 your `.md` files; zfb-content parses the front matter into `entry.data`
 and the body into `entry.body`. The fields available depend on the
 collection schema you declared in `zfb.config`.
+
+Content collections only enumerate `.md`, `.mdx`, and `.tsx` entries.
+Other files in the collection directory are ignored rather than surfaced
+through `getCollection()`.
 
 ## Honest caveat
 

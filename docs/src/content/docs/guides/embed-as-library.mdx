@@ -8,6 +8,18 @@ The `zfb-server` crate ships a small builder API so a Rust host can run zfb's HT
 
 This guide covers the public builder shape, the request-extension injection point, and the host-handler seam (`with_ssr_handler`).
 
+<Note title="Crate availability">
+
+`zfb-server` is not published to crates.io yet, so `docs.rs/zfb-server` links
+do not resolve. Depend on the workspace crate from git and pin a tag or commit:
+
+```toml
+[dependencies]
+zfb-server = { git = "https://github.com/Takazudo/zudo-front-builder", package = "zfb-server", rev = "<commit>" }
+```
+
+</Note>
+
 ## When to reach for this
 
 Pick the embed-as-library path when the host needs to:
@@ -176,7 +188,7 @@ If instead the host needs to push content into the server at runtime — a `Page
 
 ### Level 1: seed a `PageCache` through the builder
 
-`ServerBuilder::with_page_cache(cache)` hands the server a [`PageCache`](https://docs.rs/zfb-server) you own instead of the empty one `build()` allocates by default. `PageCache` is `Clone` (internally an `Arc<RwLock<…>>`), so you keep a handle, give a clone to the builder, and then write into the *same* shared map at runtime — the running server sees every insert:
+`ServerBuilder::with_page_cache(cache)` hands the server a `PageCache` you own instead of the empty one `build()` allocates by default. `PageCache` is `Clone` (internally an `Arc<RwLock<…>>`), so you keep a handle, give a clone to the builder, and then write into the *same* shared map at runtime — the running server sees every insert:
 
 ```rust
 use zfb_server::{Server, ServerMode, PageCache};
@@ -203,7 +215,7 @@ This is enough when all you need is dynamic page bytes. What it does **not** giv
 
 ### Level 2: drop to `ServeOpts` + `serve_with_listener`
 
-When you need more than a page cache — a live livereload `broadcast` channel, request-time SSR routes (`SsrRoutesHandle`), plugin dev-middleware — the builder is deliberately not the entry point. Construct a [`ServeOpts`](https://docs.rs/zfb-server) yourself and call the lower-level `serve_with_listener(opts, listener, shutdown)` (or `serve(opts, shutdown)`, which binds the listener for you). Both are public and stable — they are the same entry points `zfb dev` itself uses.
+When you need more than a page cache — a live livereload `broadcast` channel, request-time SSR routes (`SsrRoutesHandle`), plugin dev-middleware — the builder is deliberately not the entry point. Construct a `ServeOpts` yourself and call the lower-level `serve_with_listener(opts, listener, shutdown)` (or `serve(opts, shutdown)`, which binds the listener for you). Both are public and stable — they are the same entry points `zfb dev` itself uses.
 
 `ServeOpts` is a plain struct you fill in directly. The fields relevant to live content are:
 
@@ -222,6 +234,7 @@ let (broadcast, _rx) = tokio::sync::broadcast::channel::<ReloadEvent>(64);
 let opts = ServeOpts {
     project_root: project_root.clone(),
     dist_root: dist_root.clone(),
+    dev_assets_root: None,
     html_root: dist_root.clone(), // embed/preview callers alias dist_root
     public_root,
     addr: "127.0.0.1:0".parse()?,
