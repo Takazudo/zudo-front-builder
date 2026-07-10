@@ -7,6 +7,11 @@ packages:
   # also publishes a tiny npm package for JS-side helpers). None exist today; the
   # glob is reserved so adding one later requires no workspace-config change.
   - "crates/*/npm"
+  # examples/* — runnable examples must install published registry
+  # @takazudo/* packages, not link to local workspace packages.
+  - "examples/*"
+
+linkWorkspacePackages: false
 
 # pnpm 11 only reads auth/registry from .npmrc and ignores pnpm.* in package.json.
 # Everything else (peer-deps policy, engine strictness, supply-chain delays,

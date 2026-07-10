@@ -1,0 +1,12 @@
+name = "zfb-example-reverse-proxy"
+main = "./dist/_worker.js"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "404-page"
+
+[vars]
+PROXY_ORIGIN = "https://httpbingo.org"

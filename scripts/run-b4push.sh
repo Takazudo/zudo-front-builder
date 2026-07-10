@@ -19,7 +19,7 @@ set -uo pipefail
 #      step per test file, mirrors health.yml:47-50
 #   3. cargo fmt --check                          — near-free, no compilation
 #   4. pnpm format:check (prettier + mdx)         — fast
-#   5. pnpm typecheck (TS, --if-present)          — fast
+#   5. pnpm typecheck (TS, --if-present, excluding examples) — fast
 #   6. pnpm -r test (vitest)                      — fast
 #   7. cargo clippy -D warnings                   — fast on a WARM tree
 #   8. cargo nextest run --workspace (or cargo test)       — opt-in (B4PUSH_FULL=1)
@@ -166,8 +166,8 @@ else
 fi
 
 # ── TypeScript typecheck ───────────────────────────────
-step "TypeScript typecheck (pnpm -r typecheck)"
-if pnpm -r --if-present typecheck; then
+step "TypeScript typecheck (pnpm -r typecheck, excluding examples)"
+if pnpm -r --filter '!./examples/*' --if-present typecheck; then
   pass "typecheck"
 else
   fail "typecheck"
