@@ -177,5 +177,6 @@ extension changes between builds.
   walker (errors point at file + line:column).
 - `crates/zfb-router/src/route.rs` — the filename-convention side of
   the output-extension precedence.
-- `crates/zfb-render/src/meta.rs` — `derive_output_extension` /
-  `derive_content_type` apply the rule to a final filename.
+- `crates/zfb-server/src/routes.rs` —
+  `content_type_for_extension` defines the extension-to-`Content-Type`
+  table used by the server.

@@ -2,7 +2,7 @@
 //!
 //! The orchestrator is intentionally thin: it owns a `ModuleLoader` and a
 //! `RenderHost`, and stitches them together. Smart bits (path resolution,
-//! `paths()` evaluation, `meta` extraction) live in their own modules.
+//! `paths()` evaluation) live in their own modules.
 
 use serde_json::Value as JsonValue;
 
@@ -159,7 +159,7 @@ impl<H: RenderHost> Renderer<H> {
     }
 
     /// Compile the request's source and hand it to the host. Exposed so
-    /// `paths()` / `meta` can reuse the same module handle.
+    /// `paths()` can reuse the same module handle.
     pub async fn compile_and_load(&mut self, req: &RenderRequest) -> Result<ModuleHandle> {
         let compiled = self
             .loader

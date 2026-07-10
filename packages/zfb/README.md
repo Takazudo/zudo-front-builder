@@ -4,8 +4,8 @@
 
 The public SDK module for [zfb][zfb-site]: islands, content collections,
 pagination, config, plugins, and frontmatter helpers. User pages reach this
-package through the bare specifier `"zfb"` — the `zfb-render` runtime loader
-registers the source under that name at build time so user TSX can write:
+package through the bare specifier `"zfb"` — the build pipeline aliases that
+specifier to `@takazudo/zfb` so user TSX can write:
 
 ```tsx
 import { Island } from "zfb";

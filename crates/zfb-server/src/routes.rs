@@ -2791,13 +2791,9 @@ mod tests {
         assert_eq!(content_type_for_extension("wasm"), "application/wasm");
     }
 
-    // ---- parity: server table must agree with zfb-render's derive_content_type
-    // for extensions present in derive_content_type's explicit match arm.
-    // derive_content_type has a different catch-all (HTML), so only the
-    // explicitly-matched extensions are in scope here.
-    // Mirror: zfb_render::meta::derive_content_type.
+    // ---- canonical content-type table -----------------------------------
     #[test]
-    fn content_type_for_extension_parity_with_render_table() {
+    fn content_type_for_extension_matches_canonical_table() {
         let cases: &[(&str, &str)] = &[
             ("html", "text/html; charset=utf-8"),
             ("htm", "text/html; charset=utf-8"),
@@ -2823,7 +2819,7 @@ mod tests {
             assert_eq!(
                 content_type_for_extension(ext),
                 *expected,
-                "content_type_for_extension({ext:?}) should match render table"
+                "content_type_for_extension({ext:?}) should match the canonical table"
             );
         }
     }

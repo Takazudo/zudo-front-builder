@@ -199,9 +199,8 @@ impl BuildMode {
 ///    `api.v2.json.tsx` → `json`),
 /// 3. Default `.html`.
 ///
-/// See `zfb_router::route::Route::output_filename` and
-/// `zfb_render::meta::derive_output_extension` for the canonical
-/// helpers.
+/// See `zfb_router::route::Route::output_filename` for the precedence
+/// implementation.
 ///
 /// ## Stale-output cleanup
 ///
@@ -234,8 +233,8 @@ pub struct RenderedPage {
     /// HTTP response header.
     ///
     /// `None` means "let the consumer derive a default from the
-    /// extension". See `zfb_render::meta::derive_content_type` for
-    /// the canonical extension-to-content-type table.
+    /// extension". The dev server uses
+    /// `zfb_server::routes::content_type_for_extension` for that lookup.
     pub content_type: Option<String>,
 }
 
