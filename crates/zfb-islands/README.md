@@ -14,28 +14,31 @@ and code-splitting. The `NativeRustBundler` placeholder lives in
 
 This crate invokes the **esbuild standalone CLI** as a subprocess.
 
-| Field                | Value                                                          |
-| -------------------- | -------------------------------------------------------------- |
-| Pinned version       | **`0.25.12`**                                                  |
-| Major line           | esbuild 0.25.x                                                 |
-| Distribution         | Standalone CLI binary (Go-built; no Node.js required)          |
-| Expected binary path | `crates/zfb/binaries/esbuild` (in the release tarball)         |
-| Upstream             | <https://github.com/evanw/esbuild/releases>                    |
+| Field                 | Value                                                        |
+| --------------------- | ------------------------------------------------------------ |
+| Pinned version        | **`0.25.12`**                                                |
+| Major line            | esbuild 0.25.x                                               |
+| Distribution          | Standalone CLI binary (Go-built; no Node.js required)        |
+| Version source        | `EXPECTED_ESBUILD_VERSION` in `crates/zfb-toolchain-pins`    |
+| Workspace fallback    | `crates/zfb/binaries/esbuild/esbuild` (or `.exe` on Windows) |
+| Embedded runtime name | `bin/esbuild` inside the `include_dir!` vendor snapshot       |
+| Upstream              | <https://github.com/evanw/esbuild/releases>                  |
 
 > The pin **must be reviewed and refreshed before each `zfb` release**.
 > Bump `0.25.12` to whatever the latest stable esbuild 0.x is at
-> release-cut time. Update the SHA-256 constants in `crates/zfb/build.rs`
-> and the `EXPECTED_ESBUILD_VERSION` / `EXPECTED_ESBUILD_SHA256` constants
-> in `crates/zfb-islands/src/esbuild.rs` in the same commit.
+> release-cut time. Update `EXPECTED_ESBUILD_VERSION` in
+> `crates/zfb-toolchain-pins/src/lib.rs`, `EXPECTED_ESBUILD_SHA256` in
+> `crates/zfb-islands/src/esbuild.rs`, and the esbuild SHA-256 table in
+> `crates/zfb/build.rs` in the same commit.
 
 ### Why a pinned version
 
 - **Reproducible builds.** A fixed esbuild version means the same source
   tree produces byte-identical bundles regardless of when or where it is
   built — the SHA-256 hash that drives `islands-{hash}.js` depends on this.
-- **Bundled binary.** The release tarball ships the exact binary
-  `zfb-islands` expects — no `npx`, no `node_modules`, no network calls at
-  user build time.
+- **Embedded binary.** The compiled `zfb` executable embeds the exact binary
+  `zfb-islands` expects and extracts it to a tempdir at runtime — no `npx`,
+  no `node_modules`, no network calls while building a user site.
 - **Subprocess contract.** The CLI flags this crate calls for the shared
   bundle path (`--bundle`, `--format=esm`, `--splitting=true`,
   `--tree-shaking=true`, `--entry-names=islands`,
@@ -57,16 +60,16 @@ implementation; a hypothetical Rust-native crate would be another, with no
 changes required at call sites. See `src/future_rust_native.rs` for the
 `NativeRustBundler` stub.
 
-### Why the binary lives at `crates/zfb/binaries/esbuild`
+### Why the workspace fallback lives at `crates/zfb/binaries/esbuild/esbuild`
 
-The `zfb` CLI is the single user-facing executable; bundled tooling needs
-to sit in a path the `zfb` runtime can locate relative to its own
-executable. Placing the binary inside `crates/zfb/` keeps the
-release-tarball layout colocated with the crate that owns the runtime
-contract. See `crates/zfb/binaries/README.md` for the slot-level details
-(this slot mirrors the Tailwind v4 slot reserved by Epic 4 / Sub 4).
+The `zfb` CLI owns both the Cargo build script that downloads helper binaries
+and the `include_dir!` snapshot that embeds them. Placing the workspace
+fallback under `crates/zfb/` keeps download, checksum, embedding, and runtime
+extraction details colocated with the crate that owns the runtime contract.
+See `crates/zfb/binaries/README.md` for the staging-path details.
 
 The binary file itself is **not** committed to git — `.gitignore` excludes
 it. `crates/zfb/build.rs` downloads and SHA-verifies the esbuild binary
-from the npm registry at `cargo build` / `cargo install` time, so no
-manual fetch step is needed for a standard build.
+from the npm registry at `cargo build` / `cargo install` time, embeds it via
+`$OUT_DIR/vendor/bin/`, and leaves the workspace copy as the
+direct-development fallback.

@@ -47,8 +47,14 @@ the committed file — `gen-fixture.mjs` is never called by CI.
 ### Running the integration test
 
 ```sh
-cargo test --package zfb-md-extras
+cargo test -p zfb-md-extras --features test-utils
 ```
+
+The fixture integration tests in `Cargo.toml` declare
+`required-features = ["test-utils"]` because they import
+`zfb_md_extras::test_harness::run_fixture`. Without `--features test-utils`,
+Cargo compiles the crate's ordinary tests but skips those fixture test
+binaries, so the snapshot fixtures are not exercised.
 
 ### Writing a new fixture test
 
