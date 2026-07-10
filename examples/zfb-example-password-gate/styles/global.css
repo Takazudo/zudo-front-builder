@@ -1,0 +1,275 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f6f7f8;
+  --panel: #ffffff;
+  --ink: #20242a;
+  --muted: #606873;
+  --line: #d9dee3;
+  --accent: #176a55;
+  --accent-soft: #e8f2ee;
+  --warn: #9a5f13;
+  --warn-soft: #fff3da;
+  --ready: #25714f;
+  --open: #9b4a36;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+}
+
+a {
+  color: inherit;
+}
+
+.site-shell {
+  width: min(calc(100% - 32px), 980px);
+  margin-inline: auto;
+  padding-block: 22px 48px;
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding-block-end: 18px;
+  border-block-end: 1px solid var(--line);
+}
+
+.site-title {
+  font-weight: 760;
+  text-decoration: none;
+  letter-spacing: 0;
+}
+
+.site-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.site-nav a {
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 650;
+  line-height: 1;
+  padding: 9px 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.site-nav a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.page-heading {
+  max-width: 740px;
+  padding-block: 44px 28px;
+}
+
+.eyebrow {
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+p {
+  margin-block-start: 0;
+}
+
+h1 {
+  font-size: clamp(2rem, 5vw, 3.4rem);
+  line-height: 1.05;
+  margin-block-end: 14px;
+  letter-spacing: 0;
+}
+
+h2 {
+  font-size: 1.08rem;
+  line-height: 1.3;
+  margin-block-end: 10px;
+}
+
+p {
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-block-end: 22px;
+}
+
+.metric-card,
+.split-layout,
+.table-panel,
+.timeline-item {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.metric-card {
+  min-height: 126px;
+  padding: 18px;
+}
+
+.metric-card span,
+.row-owner,
+time,
+.count-badge {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.metric-card strong {
+  display: block;
+  font-size: 1.5rem;
+  margin-block: 10px 6px;
+}
+
+.metric-card p,
+.timeline-item p {
+  font-size: 0.94rem;
+  margin: 0;
+}
+
+.split-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 0.85fr);
+  gap: 28px;
+  padding: 24px;
+}
+
+.compact-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-inline-start: 20px;
+  color: var(--ink);
+  line-height: 1.55;
+}
+
+.timeline {
+  display: grid;
+  gap: 12px;
+}
+
+.timeline-item {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 18px;
+  padding: 18px;
+}
+
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-block-end: 1px solid var(--line);
+}
+
+.section-title-row h2 {
+  margin: 0;
+}
+
+.count-badge {
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.checklist-table {
+  display: grid;
+}
+
+.check-row {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr) 82px;
+  gap: 14px;
+  align-items: center;
+  min-height: 64px;
+  padding: 14px 20px;
+}
+
+.check-row + .check-row {
+  border-block-start: 1px solid var(--line);
+}
+
+.status {
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 760;
+  padding: 6px 10px;
+  text-align: center;
+}
+
+.status.ready {
+  background: var(--accent-soft);
+  color: var(--ready);
+}
+
+.status.open {
+  background: #fff0ec;
+  color: var(--open);
+}
+
+@media (max-width: 720px) {
+  .site-header,
+  .split-layout,
+  .timeline-item,
+  .check-row {
+    grid-template-columns: 1fr;
+  }
+
+  .site-header {
+    align-items: stretch;
+  }
+
+  .site-nav {
+    overflow-x: auto;
+  }
+
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .check-row {
+    align-items: start;
+  }
+
+  .status {
+    width: fit-content;
+  }
+}
