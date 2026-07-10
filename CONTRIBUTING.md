@@ -14,12 +14,17 @@ The first `cargo build --workspace` on a clean machine takes **15–30 minutes**
 To minimise the wait on your first checkout:
 
 ```sh
-# Compile workspace crates + test harnesses, skip recompiling
-# third-party deps that haven't changed.
-cargo build --workspace --tests --no-deps
+pnpm install --frozen-lockfile
+cargo build --workspace
 ```
 
-After this, incremental rebuilds and `cargo test` runs are fast.
+This is executable as written and is the supported first build. It also runs `crates/zfb/build.rs`, which downloads, SHA-256-verifies, and stages the pinned host-platform `esbuild` and `tailwindcss` binaries. After this, incremental rebuilds and test runs are fast.
+
+If you want to compile test harnesses during the warm-up build, use Cargo's all-targets mode:
+
+```sh
+cargo build --workspace --all-targets
+```
 
 ### Cargo feature gate — `embed_v8`
 
@@ -49,11 +54,17 @@ Add the exports to your shell profile to persist them.
 
 ### Faster test runs with cargo-nextest
 
-If the workspace test suite becomes slow, [cargo-nextest](https://nexte.st/) is a drop-in replacement for `cargo test` that runs tests in parallel and streams output efficiently:
+[cargo-nextest](https://nexte.st/) is the adopted CI runner for Rust tests. It runs tests in parallel, applies the repo's retry/timeout policy from [`.config/nextest.toml`](./.config/nextest.toml), and emits JUnit telemetry.
 
 ```sh
 cargo install cargo-nextest
 cargo nextest run --workspace
+```
+
+nextest does not run doctests, so run the doctest lane separately when you need local parity with CI:
+
+```sh
+cargo test --workspace --doc
 ```
 
 ## Workspace layout
@@ -71,8 +82,8 @@ cargo run -p zfb
 
 - Branch off `main` (or the relevant base branch for an in-flight epic).
 - Keep commits focused; conventional commit-style messages are appreciated but not strictly enforced.
-- `lefthook` runs the pre-commit pipeline: Prettier over JS/TS/JSON/YAML (no Rust) and `@takazudo/mdx-formatter` over MD/MDX. Rust formatting is not enforced automatically — run `cargo fmt` and `cargo clippy --workspace` manually before opening a PR.
-- Open a PR against `main` (or the relevant epic base branch). CI is a strict superset of the pre-commit pipeline: it also runs `cargo build`, `cargo clippy -D warnings`, the full test suite, and actionlint.
+- `lefthook` runs the pre-commit pipeline: Prettier over JS/TS/JSON/YAML (no Rust) and `@takazudo/mdx-formatter` over MD/MDX. Rust formatting is not enforced automatically — run `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` manually before opening a PR.
+- Open a PR against `main` (or the relevant epic base branch). CI is a strict superset of the pre-commit pipeline. The main PR gate includes `cargo fmt --all --check`, `pnpm -r --if-present typecheck`, `pnpm -r test`, `pnpm format:check`, `cargo build --workspace --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, the env-gated binary integration tests, `cargo nextest run --workspace --profile ci`, `cargo test --workspace --doc`, and actionlint.
 
 ## Formatting
 
@@ -110,16 +121,14 @@ The Cloudflare Workers deploy workflows expect the following GitHub Actions secr
 
 zfb shells out to a small set of third-party tools (esbuild for the islands bundler, wrangler/workerd for Cloudflare Workers preview, Tailwind v4 for the CSS engine). Every one of those tools is **exact-pinned** so that the same source tree produces byte-identical output regardless of when or where it is built — this matters for asset-hash stability and for keeping the SSR pipeline from drifting under our feet when upstream cuts a patch release.
 
-The pin lives in two places that **must move together**:
+The pin sources are:
 
-1. The npm-side declaration in [`package.json`](./package.json) (no `^`/`~` for these entries).
-2. The Rust-side constant that the subprocess wrapper checks against at startup.
-
-| Tool        | Rust constant                                                                                       | Where                                          | npm-side pin                          |
-| ----------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------- |
-| esbuild     | `EXPECTED_ESBUILD_VERSION`, `EXPECTED_ESBUILD_SHA256`                                               | `crates/zfb-islands/src/esbuild.rs`            | (binary; populated by release engineering into `crates/zfb/binaries/esbuild/esbuild`) |
-| wrangler    | `EXPECTED_WRANGLER_VERSION`                                                                         | `crates/zfb-toolchain-pins/src/lib.rs`         | `wrangler` in `package.json`          |
-| workerd     | `EXPECTED_WORKERD_VERSION` (informational; pinned transitively via wrangler → `pnpm-lock.yaml`)     | `crates/zfb-toolchain-pins/src/lib.rs`         | (transitive; resolved in `pnpm-lock.yaml`) |
+| Tool        | Version source                                                                                  | Checksum / lock source                                                                                                      | Package-side pin                                      |
+| ----------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| esbuild     | `EXPECTED_ESBUILD_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`                            | `EXPECTED_ESBUILD_SHA256` 5-platform `cfg` block in `crates/zfb-islands/src/esbuild.rs`; matching `ESBUILD_SHA256_*` constants in `crates/zfb/build.rs` | No root `package.json` pin; `build.rs` downloads the matching `@esbuild/<platform>` tarball |
+| tailwindcss | `TAILWIND_VERSION` in `crates/zfb/build.rs`; mirrored by `TAILWIND_VERSION` in `scripts/fetch-tailwind.mjs` | `TAILWIND_SHA256_*` constants in `crates/zfb/build.rs`                                                                       | No root `package.json` pin; `build.rs` downloads the standalone GitHub release asset |
+| wrangler    | `EXPECTED_WRANGLER_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`                           | `pnpm-lock.yaml`                                                                                                            | Exact `wrangler` devDependency in root `package.json` |
+| workerd     | `EXPECTED_WORKERD_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`                            | `pnpm-lock.yaml` transitive dependency from wrangler                                                                         | Transitive only                                       |
 
 ### Bumping wrangler / workerd
 
@@ -134,16 +143,28 @@ If you ever need to bypass the wrangler version gate (e.g. while a bump is mid-f
 
 ### Bumping esbuild
 
-esbuild is shipped as a Go-built standalone CLI binary that release engineering downloads into `crates/zfb/binaries/esbuild/esbuild` at release-tarball assembly time — the binary is **not** committed to this repo. To bump:
+esbuild is shipped as a Go-built standalone CLI binary. The binary is **not** committed to this repo; `crates/zfb/build.rs` downloads the platform-specific `@esbuild/*` tarball during Cargo builds, verifies the extracted binary, and stages it under `crates/zfb/binaries/esbuild/`. To bump:
 
 1. Pick the new esbuild version (the latest stable 0.x at release-cut time; see <https://github.com/evanw/esbuild/releases>).
-2. Edit `EXPECTED_ESBUILD_VERSION` in `crates/zfb-islands/src/esbuild.rs`.
-3. Compute the SHA-256 of the platform-specific binary you intend to ship (e.g. `sha256sum esbuild` on Linux, `shasum -a 256 esbuild` on macOS) and edit `EXPECTED_ESBUILD_SHA256` to that lowercase hex digest. Leave the constant as the empty string (`""`) only if you are explicitly handing the SHA-pin step off to the next release-engineering pass — the version gate still runs in that case, but the checksum gate is skipped (with a clear log line).
-4. Update the `## esbuild Version` table in `crates/zfb-islands/README.md`.
-5. Run `cargo test -p zfb-islands` — the unit tests use the mock-subprocess code path and do not require the real binary.
-6. Drop the new binary into `crates/zfb/binaries/esbuild/esbuild` locally to test the end-to-end gate, but do not commit it (`.gitignore` already excludes the path).
+2. Edit `EXPECTED_ESBUILD_VERSION` in `crates/zfb-toolchain-pins/src/lib.rs`.
+3. Compute the SHA-256 of the extracted binary in each supported `@esbuild/*` package (`linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`, `win32-x64`) and update the corresponding entries in the `EXPECTED_ESBUILD_SHA256` 5-platform `cfg` block in `crates/zfb-islands/src/esbuild.rs`.
+4. Update the matching `ESBUILD_SHA256_LINUX_X64`, `ESBUILD_SHA256_LINUX_ARM64`, `ESBUILD_SHA256_MACOS_ARM64`, `ESBUILD_SHA256_MACOS_X64`, and `ESBUILD_SHA256_WIN_X64` constants in `crates/zfb/build.rs` in the same commit.
+5. Update the `## esbuild Version` table in `crates/zfb-islands/README.md`.
+6. Run `cargo build --workspace --all-targets` so the host-platform binary is downloaded, SHA-256-verified, and staged by `build.rs`.
+7. Run `cargo test -p zfb-islands` — the unit tests use the mock-subprocess code path and do not require the real binary.
 
 The verification gate is implemented in `ensure_binary_verified` in `crates/zfb-islands/src/esbuild.rs` and runs once per binary path per process: it spawns `esbuild --version`, asserts the reported version equals `EXPECTED_ESBUILD_VERSION`, and (when populated) hashes the binary and asserts the SHA-256 equals `EXPECTED_ESBUILD_SHA256`. A mismatch on either gate aborts with a clear, actionable error pointing back at this section.
+
+### Bumping Tailwind
+
+Tailwind v4 is shipped as the upstream standalone CLI binary. The binary is **not** committed to this repo; `crates/zfb/build.rs` downloads the platform-specific GitHub release asset during Cargo builds, verifies it, and stages it as `crates/zfb/binaries/tailwindcss-v4` (or `.exe` on Windows). To bump:
+
+1. Pick the new Tailwind v4 version from <https://github.com/tailwindlabs/tailwindcss/releases>.
+2. Edit `TAILWIND_VERSION` in `crates/zfb/build.rs`.
+3. Edit the mirrored `TAILWIND_VERSION` in `scripts/fetch-tailwind.mjs` so the optional Tailwind-only prefetch helper stays aligned.
+4. Update the `TAILWIND_SHA256_LINUX_X64`, `TAILWIND_SHA256_LINUX_ARM64`, `TAILWIND_SHA256_MACOS_ARM64`, `TAILWIND_SHA256_MACOS_X64`, and `TAILWIND_SHA256_WIN_X64` constants in `crates/zfb/build.rs` from the release's `sha256sums.txt`.
+5. Update any Tailwind version tables in `crates/zfb-css/README.md`.
+6. Run `cargo build --workspace --all-targets` so the host-platform binary is downloaded, SHA-256-verified, and staged by `build.rs`.
 
 ## Supply chain
 
