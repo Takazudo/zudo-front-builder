@@ -1,9 +1,0 @@
-{
-  "framework": "preact",
-  "output": "static",
-  "outDir": "dist",
-  "publicDir": "public",
-  "tailwind": {
-    "enabled": true
-  }
-}
