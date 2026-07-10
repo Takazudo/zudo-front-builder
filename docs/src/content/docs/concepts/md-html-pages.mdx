@@ -134,12 +134,11 @@ mode.
 
 ## Shared: SSG-only constraint
 
-`.md`, `.mdx`, and `.html` pages are all build-time (SSG) only. Dynamic
-routes using `[param]` or `[...param]` brackets in `.md`, `.mdx`, or
-`.html` file names are **not supported** — the scanner skips them with a
-warning and produces no output pages. There is no `paths()` story for
-these extensions in v1 (a `paths()` export requires a `.tsx` module).
-If you need dynamic routes, author them as `.tsx` pages instead. Static
+`.md`, `.mdx`, and `.html` pages are build-time (SSG) page sources. The
+dynamic-route skip gate only applies to `.md` and `.html`: bracketed
+`.md` / `.html` filenames are skipped with a warning because they cannot
+export `paths()`. A bracketed `.mdx` page is accepted by the scanner and
+can use the MDX module export surface for `paths()`. Static
 (non-parameterised) `.md`, `.mdx`, and `.html` page paths work correctly.
 
 ## Choosing the right extension

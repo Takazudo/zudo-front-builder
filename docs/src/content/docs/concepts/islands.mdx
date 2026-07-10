@@ -97,7 +97,22 @@ After render, each island's server-rendered HTML is wrapped in a `<div>` that ca
 </div>
 ```
 
-The `data-when` attribute controls hydration timing and is only emitted when you request a non-default timing. The `"load"` timing (hydrate immediately) is the default and produces no `data-when` attribute. The `"visible"`, `"idle"`, and `"media"` strategies each emit a `data-when` attribute; `"media"` also emits a companion `data-media` attribute carrying the CSS query string:
+The `data-when` attribute controls hydration timing and is only emitted when you request a non-default timing. The `"load"` timing (hydrate immediately) is the default and produces no `data-when` attribute. The JSX API for non-default timing is the [`<Island>` wrapper](../api/island.mdx); for media-query hydration, pass both `when="media"` and a `media` query:
+
+```tsx
+import { Island } from "@takazudo/zfb";
+import MobileMenu from "./MobileMenu";
+
+export default function Header() {
+  return (
+    <Island when="media" media="(max-width: 768px)">
+      <MobileMenu />
+    </Island>
+  );
+}
+```
+
+The `"visible"`, `"idle"`, and `"media"` strategies each emit a `data-when` attribute; `"media"` also emits a companion `data-media` attribute carrying the CSS query string:
 
 ```html
 <!-- visible timing -->
@@ -123,7 +138,7 @@ The shared islands bundle (`islands-<hash>.js`) contains all island components. 
 Because all islands are bundled together into a single file:
 
 - **Every page with any island loads all islands' code.** The single `islands-<hash>.js` bundle contains every island component in the project. A page that only uses `ThemeToggle` still downloads the code for `Counter` and `SearchBox`. This trades per-page load granularity for a simpler build pipeline and better cache efficiency across pages.
-- **Pages with no islands get no script.** If a project's pages contain no `"use client"` components, the build pipeline skips the `<script>` injection entirely. Zero bytes of JavaScript land on a fully static page.
+- **Pages with no islands get no islands script.** If a page contains no island markers, the build pipeline skips the shared islands `<script>` injection for that page. Other client-script mechanisms, if used, can still add JavaScript.
 - **Any island change rehashes the single bundle.** Adding or modifying any island component produces a new content hash, which invalidates the browser's cached bundle for all pages. The tradeoff is that one cache entry covers all islands — once the bundle is cached, every page in the project benefits from the same cache hit.
 
 ## Framework choices
@@ -274,4 +289,4 @@ CSS-only approaches (`:target`, `:checked` + `<label>`, `@starting-style`) handl
 
 If the honest answer is "I just want a class toggled on click", reach for CSS or a tiny inline script first. Islands for "stateful UI you'd build twice" is the right heuristic.
 
-For more on the pipeline shape, see [Build pipeline](./build-pipeline.mdx) and [Build engine](../architecture/build-engine.mdx).
+For more on the JSX wrapper and hydration options, see [`<Island>`](../api/island.mdx). For more on the pipeline shape, see [Build pipeline](./build-pipeline.mdx) and [Build engine](../architecture/build-engine.mdx).
