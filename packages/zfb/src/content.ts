@@ -566,9 +566,10 @@ export function getCollection<T = Record<string, unknown>>(name: string): Collec
  *
  * **Runtime vs. generated types divergence.** The generated `types.d.ts`
  * emits a keyed overload (`K extends keyof ZfbCollections`) that ties the
- * return type to the collection's declared schema. This runtime form is
- * intentionally structural — it does not reference `ZfbCollections` and
- * does not attempt to reconcile with the keyed shape. (#857)
+ * return type to the collection's declared schema. That schema is enforced
+ * by `zfb check`; this runtime form is intentionally structural — it does
+ * not reference `ZfbCollections` and does not attempt to reconcile with the
+ * keyed shape. (#857)
  *
  * @example
  *   const post = getEntry<{ title: string }>("blog", "hello-zfb");
