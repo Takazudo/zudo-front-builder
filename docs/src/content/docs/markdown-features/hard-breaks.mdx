@@ -1,0 +1,70 @@
+---
+title: Hard breaks
+description: Convert soft line breaks inside Markdown paragraphs into br elements.
+tier: Opt-in
+sidebar_position: 56
+---
+
+`hardBreaks` is a top-level Markdown parsing option. It defaults to `false`;
+when omitted or set to `false`, soft line breaks follow standard CommonMark
+behavior and collapse into normal whitespace.
+
+Enable it when source newlines should be preserved as line breaks in rendered
+HTML.
+
+## Enable
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  markdown: {
+    hardBreaks: true,
+  },
+});
+```
+
+## Behavior
+
+With `markdown.hardBreaks: true`, every single newline inside a paragraph is
+converted to a hard break:
+
+```md
+first line
+second line
+```
+
+Produces:
+
+```html
+<p>first line<br />second line</p>
+```
+
+Blank-line paragraph separation is unaffected:
+
+```md
+first paragraph
+
+second paragraph
+```
+
+still renders as two paragraphs, not as one paragraph with multiple `<br>`
+elements.
+
+## Scope
+
+The option only rewrites soft line breaks in prose-like Markdown nodes. It
+does not split fenced code, inline code, raw HTML, or MDX JSX/expression
+content.
+
+## Ordering note
+
+`HardBreaksPlugin` runs in the mdast phase after
+[CJK-friendly emphasis](./cjk-friendly.mdx). This lets CJK emphasis
+re-tokenisation inspect intact text nodes before soft line breaks are split
+into explicit break nodes.
+
+## See also
+
+- [CJK-friendly emphasis](./cjk-friendly.mdx) — the mdast pass that runs
+  immediately before hard breaks when both are enabled.

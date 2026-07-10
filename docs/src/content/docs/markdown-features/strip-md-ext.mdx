@@ -1,41 +1,64 @@
 ---
 title: Strip .md extension
-description: Removes the .md or .mdx suffix from internal link hrefs at build time.
-tier: Core
+description: Opt-in top-level config that removes .md or .mdx suffixes from internal link hrefs at build time.
+tier: Opt-in
 sidebar_position: 55
 ---
 
-`StripMdExtensionPlugin` removes the `.md` or `.mdx` suffix from internal
-link `href` values so that links authored as `[page](./other.md)` produce
-clean output URLs like `/docs/other`.
+`stripMdExt` is an opt-in top-level `zfb.config.ts` field, not a
+`markdown.features` entry. It defaults to `false`; when omitted or set to
+`false`, author-written `.md` and `.mdx` hrefs are preserved.
+
+When enabled, `StripMdExtensionPlugin` removes the `.md` or `.mdx` suffix
+from internal link `href` values and appends a trailing slash, so links
+authored as `[page](./other.md)` produce clean output URLs like
+`./other/`.
 
 ## What it does
 
-In the hast phase, the plugin walks every `<a>` element. For each link whose
-`href` ends with `.md` or `.mdx`:
+In the hast phase, the plugin walks every `<a>` element. For each internal
+link whose path ends with `.md` or `.mdx`:
 
 1. Strips the extension.
-2. Leaves the rest of the path, query string, and fragment intact.
+2. Appends a trailing `/` to the stripped path.
+3. Preserves the query string and fragment after the slash.
 
-The plugin only touches relative and root-relative paths — absolute URLs
-(`https://…`) and non-link elements are left unchanged.
+The plugin touches internal relative and root-relative paths. Absolute URLs
+(`https://…`), anchor-only links (`#section`), non-link elements, and hrefs
+with non-markdown file extensions are left unchanged. In trailing-slash mode,
+extensionless relative hrefs such as `./guide` and `../guide` also become
+`./guide/` and `../guide/`.
 
 ## Config
 
-Always on when a source map is available, no config key. The plugin runs
-after `ResolveLinksPlugin` so it sees the already-resolved paths.
+Enable it at the top level:
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  stripMdExt: true,
+});
+```
+
+The plugin runs after `ResolveLinksPlugin` when both are configured, so it
+sees already-resolved paths before cleaning up any remaining markdown
+extensions.
 
 ## Example
 
 ```md
-See [setup](./installation.mdx) for details.
+See [setup](./installation.mdx#requirements) for details.
 ```
 
-Produces:
+With `stripMdExt: true`, produces:
 
 ```html
-<a href="./installation">See setup for details.</a>
+<p>See <a href="./installation/#requirements">setup</a> for details.</p>
 ```
+
+With `stripMdExt: false` or an omitted config field, the authored
+`./installation.mdx#requirements` href is preserved.
 
 ## See also
 

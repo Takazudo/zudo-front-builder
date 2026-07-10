@@ -10,7 +10,9 @@ This mirrors the autolink behaviour that GitHub renders natively in README files
 
 ## Enable
 
-The `repo` field is required. The feature is silently inactive when it is absent.
+The `repo` field is required. If `githubAutolinks` is configured without
+`repo`, the build emits a config error (`githubAutolinks requires repo:
+"owner/repo"`) instead of silently skipping the feature.
 
 ```ts
 // zfb.config.ts

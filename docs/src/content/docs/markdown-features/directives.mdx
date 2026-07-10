@@ -107,9 +107,24 @@ export default defineConfig({
 - **Leaf** — `::name[label]{attrs}` produces a self-closing component with no children. Used for embeds (video, code playgrounds, etc.).
 - **Text** — `:name[label]{attrs}` is an inline component, mixed into prose.
 
-## Blank-line requirement
+## Fence spacing
 
-Each fence line (`:::name` and the closing `:::`) **must** be separated from surrounding content by blank lines so the Markdown parser treats them as separate paragraphs. Without blank lines the content is not recognised as a directive and a warning diagnostic is emitted at build time.
+Blank lines around container fences are supported but not required. zfb also
+handles the collapsed form that `markdown-rs` produces when an opener, body,
+and closer land in one paragraph:
+
+```md
+:::note
+Body text.
+:::
+:::tip
+Another block.
+:::
+```
+
+Both sibling collapsed directives and nested collapsed directives are
+rewritten when their names are registered. Unknown directive names still emit
+a warning diagnostic and leave their source text unchanged.
 
 ## Registering a directive does not provide a component
 
@@ -127,6 +142,6 @@ The directive-name key follows the directive grammar `[A-Za-z_][A-Za-z0-9_-]*`. 
 
 ## See also
 
-- [Directives registry](./directives-registry.mdx) — the underlying Core primitive (always active, handles parsing).
+- [Directives registry](./directives-registry.mdx) — the underlying Core primitive wired when `markdown.features.directives` is supplied.
 - [Recipe: Admonitions](../recipes/admonitions.mdx) — a worked example registering `note`, `tip`, `info`, `warning`, `danger`, `caution`, and `details` with minimal component stubs and CSS.
 - [Custom Directives](../concepts/custom-directives.mdx) — register directives via the Rust pipeline API.

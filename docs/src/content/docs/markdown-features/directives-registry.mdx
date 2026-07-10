@@ -9,10 +9,14 @@ sidebar_position: 57
 syntax — container (`:::name`), leaf (`::name[label]`), and text
 (`:name[label]`) — to JSX component calls in the compiled output.
 
-It is always active. You interact with it in two ways:
+The primitive exists in Core, but the registry visitor is not added to the
+normal pipeline by default. It runs only when `markdown.features.directives`
+is supplied, or when Rust code inserts a `DirectiveRegistry` manually. You
+interact with it in two ways:
 
 - **From config** — use the opt-in [`directives`](./directives.mdx)
-  feature to register directive names without writing Rust.
+  feature to register directive names without writing Rust. Supplying
+  `directives: {}` still wires an empty registry.
 - **From Rust** — populate a `DirectiveRegistry` directly and insert it into
   the pipeline. See [Custom Directives](../concepts/custom-directives.mdx).
 
@@ -31,8 +35,9 @@ The registry handles three directive shapes:
 The registry ships with **no directive names pre-registered**. Every
 `:::name` you use must be explicitly registered — either via the
 [`directives`](./directives.mdx) feature in `zfb.config.ts` or
-by populating the registry in Rust. An unrecognised directive name emits a
-warning diagnostic and leaves the source paragraph unchanged.
+by populating the registry in Rust. When the registry is active, an
+unrecognised directive name emits a warning diagnostic and leaves the source
+paragraph unchanged.
 
 ## Typed attribute schemas (from #584)
 

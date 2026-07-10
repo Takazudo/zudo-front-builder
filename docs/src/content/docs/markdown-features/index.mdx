@@ -1,14 +1,15 @@
 ---
 title: Markdown Features
-description: "Every feature zfb's Markdown pipeline provides — Core (always-on) and Opt-in (enabled via zfb.config.ts)."
+description: "Every feature and config surface zfb's Markdown pipeline provides, including Core pipeline behavior and opt-in features."
 sidebar_position: 0
 ---
 
 zfb's Markdown pipeline is layered. A set of **Core** features runs
-unconditionally for every content collection, giving you heading anchors,
-server-side syntax highlighting, CJK-friendly emphasis, and more.
-On top of that, a catalog of **Opt-in** features can be enabled one-by-one
-in `zfb.config.ts` under `markdown.features.*`.
+in the engine's main markdown pipeline/config surface, giving you heading
+anchors, server-side syntax highlighting, CJK-friendly handling, and more.
+Some Core rows are always on; others are top-level or `markdown.*` config
+knobs implemented in the core pipeline. The table below is authoritative for
+each row's default and config key.
 
 This page is the map. Each feature has its own page with a usage example,
 config key, and ordering notes.
@@ -27,21 +28,27 @@ traits.
 
 ## Tier convention
 
-- **Core** — active in every build. No config key. Lives in `zfb-content`.
-- **Opt-in** — inactive by default. Enable via `markdown.features.*` in
-  `zfb.config.ts`. Lives in `zfb-md-extras`.
+- **Core** — implemented in `zfb-content` or the top-level markdown config
+  surface. Core does not always mean "unconfigurable"; check the config key
+  and default in the table.
+- **Opt-in** — inactive unless enabled in config. Most opt-in feature entries
+  live under `markdown.features.*`, but `stripMdExt` and
+  `markdown.hardBreaks` are opt-in top-level options.
 
 Each feature page shows a `Core` or `Opt-in` badge near its title.
 
-## Enabling Opt-in features
+## Config shape
 
 ```ts title="zfb.config.ts"
 import { defineConfig } from "zfb/config";
 
 export default defineConfig({
+  stripMdExt: true,
   markdown: {
+    hardBreaks: true,
     features: {
       mermaid: true,
+      githubAutolinks: { repo: "owner/repo" },
       directives: {
         note: "Note",
         tip: "Tip",
@@ -51,39 +58,38 @@ export default defineConfig({
 });
 ```
 
-Pass `true` (use defaults) or a config object (override specific options).
-Omitting a key means the feature is off; no extra bytes are emitted.
+Boolean shorthand is **not universal**. It works only for rows whose value
+shape includes `boolean`. Object-only rows, such as `githubAutolinks`,
+`codeEnrichment`, `tocExport`, `imageDimensions`, `linkValidation`,
+`transclude`, and `headingIds`, require an object. Unknown keys are rejected
+at config load time.
 
-## Core features
+## Feature map
 
-These always-on plugins ship as part of `zfb-content`'s default pipeline.
-
-- [CJK-friendly emphasis](./cjk-friendly.mdx) — re-tokenises bold/italic adjacent to CJK ideographs and kana.
-- [Heading links](./heading-links.mdx) — slugified `id` attributes and self-referencing anchor links on every heading.
-- [Code block title](./code-title.mdx) — renders a filename label above a fenced code block from `title="…"`.
-- [External links](./external-links.mdx) — adds `target` and `rel` attributes to outbound links (configurable).
-- [Resolve links](./resolve-links.mdx) — rewrites internal link targets using the content source map.
-- [Strip .md extension](./strip-md-ext.mdx) — removes `.md`/`.mdx` suffixes from internal link hrefs.
-- [Syntax highlighting](./syntax-highlighting.mdx) — server-side highlighting via syntect; always on, theme-configurable.
-- [Directives registry](./directives-registry.mdx) — maps `:::name`/`::name`/`:name` directive syntax to JSX components.
-
-## Opt-in features
-
-Enable each in `markdown.features.*`. All live in `zfb-md-extras`.
-
-- [Directives](./directives.mdx) — register `:::name` / `::name` / `:name` directive syntax that maps to your own JSX components (zero defaults — you supply the vocabulary).
-- [Mermaid diagrams](./mermaid.mdx) — renders Mermaid flowcharts from fenced code blocks.
-- [Heading-marker TOC](./heading-marker-toc.mdx) — auto-inserts a table of contents after a designated heading.
-- [GitHub alerts](./github-alerts.mdx) — renders `> [!NOTE]` / `> [!WARNING]` blockquotes as styled components.
-- [Reading time](./reading-time.mdx) — computes estimated reading time and injects it into frontmatter.
-- [GitHub autolinks](./github-autolinks.mdx) — links GitHub issue/PR/commit references (`#123`, `org/repo#456`, `abc1234`) automatically.
-- [Code-block enrichment](./code-enrichment.mdx) — adds diff markers and per-line highlighting to fenced code blocks.
-- [Code tabs](./code-tabs.mdx) — groups consecutive fenced code blocks into a tabbed switcher.
-- [Ruby annotation](./ruby.mdx) — renders `{これは}^{これ}` (caret, primary) or `{漢字|かんじ}` (pipe, legacy alias) syntax as HTML `<ruby>` elements.
-- [TOC export](./toc-export.mdx) — exports a structured heading tree into the compiled JSX module for framework-side rendering.
-- [Image dimensions](./image-dimensions.mdx) — injects `width` and `height` attributes on `<img>` elements from the actual file.
-- [Link validation](./link-validation.mdx) — warns on broken internal links by default; hard build errors with `failOnBroken: true`.
-- [Transclusion](./transclude.mdx) — inlines the content of another file using the `:::include` directive.
+| Feature | Tier | Config key | Value shape | Default / gating |
+|---|---|---|---|---|
+| [CJK-friendly emphasis](./cjk-friendly.mdx) | Core | `markdown.cjkFriendly` | `boolean` | `true`; set `false` to opt out. |
+| [Heading links](./heading-links.mdx) | Core | `markdown.features.headingIds` | `{ strategy?: "flat" \| "hierarchical" }` | Plugin always on; default strategy is `"flat"`. |
+| [Code block title](./code-title.mdx) | Core | none | n/a | Always on. |
+| [External links](./external-links.mdx) | Core | `markdown.externalLinks` | `{ target?: string; rel?: string[] }` | Off unless supplied. |
+| [Resolve links](./resolve-links.mdx) | Core | `resolveMarkdownLinks` | `{ enabled?: boolean; docsDir?: string; dirs?: { dir: string; routePrefix: string }[]; onBrokenLinks?: "warn" \| "error" \| "ignore" }` | Off unless `enabled: true`. |
+| [Strip .md extension](./strip-md-ext.mdx) | Opt-in | `stripMdExt` | `boolean` | `false`; when `true`, strips `.md`/`.mdx` and appends `/`. |
+| [Hard breaks](./hard-breaks.mdx) | Opt-in | `markdown.hardBreaks` | `boolean` | `false`; when `true`, soft line breaks become `<br>`. |
+| [Syntax highlighting](./syntax-highlighting.mdx) | Core | `codeHighlight` | `{ theme?: string; themesDir?: string; themeLight?: string; themeDark?: string }` | On with the default syntect theme. |
+| [Directives registry](./directives-registry.mdx) | Core primitive | `markdown.features.directives` or Rust API | `Record<string, DirectiveSpec>` | Registry visitor runs only when supplied; zero default names. |
+| [Directives](./directives.mdx) | Opt-in | `markdown.features.directives` | `Record<string, string \| { component: string; kind?: "container" \| "leaf" \| "text"; titleFromLabel?: boolean }>` | Off when absent; `{}` wires an empty registry. |
+| [Mermaid diagrams](./mermaid.mdx) | Opt-in | `markdown.features.mermaid` | `boolean \| {}` | Off when absent or `false`; marks blocks as `<div class="mermaid">`. |
+| [Heading-marker TOC](./heading-marker-toc.mdx) | Opt-in | `markdown.features.headingMarkerToc` | `boolean \| { heading?: string; maxDepth?: number }` | Off when absent or `false`. |
+| [GitHub alerts](./github-alerts.mdx) | Opt-in | `markdown.features.githubAlerts` | `boolean \| {}` | Off when absent or `false`. |
+| [Reading time](./reading-time.mdx) | Opt-in | `markdown.features.readingTime` | `boolean \| { wpm?: number }` | Off when absent or `false`; emits `export const readingTimeMinutes`. |
+| [GitHub autolinks](./github-autolinks.mdx) | Opt-in | `markdown.features.githubAutolinks` | `{ repo: string }` | Off when absent; missing `repo` is a build-blocking config error. |
+| [Code-block enrichment](./code-enrichment.mdx) | Opt-in | `markdown.features.codeEnrichment` | `{ diffMarkers?: boolean; lineHighlight?: boolean }` | Off when absent; object form enables it, with both subfeatures on by default. |
+| [Code tabs](./code-tabs.mdx) | Opt-in | `markdown.features.codeTabs` | `boolean \| {}` | Off when absent or `false`. |
+| [Ruby annotation](./ruby.mdx) | Opt-in | `markdown.features.ruby` | `boolean \| {}` | Off when absent or `false`. |
+| [TOC export](./toc-export.mdx) | Opt-in | `markdown.features.tocExport` | `{ maxDepth?: number }` | Off when absent; default `maxDepth` is `3`. |
+| [Image dimensions](./image-dimensions.mdx) | Opt-in | `markdown.features.imageDimensions` | `{ skipRemote?: boolean }` | Off when absent; `skipRemote` defaults to `true`. |
+| [Link validation](./link-validation.mdx) | Opt-in | `markdown.features.linkValidation` | `{ failOnBroken?: boolean }` | Off when absent; warns by default, errors with `failOnBroken: true`. |
+| [Transclusion](./transclude.mdx) | Opt-in | `markdown.features.transclude` | `{ maxDepth?: number }` | Off when absent; default `maxDepth` is `5`. |
 
 ## See also
 
