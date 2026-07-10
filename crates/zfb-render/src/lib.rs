@@ -13,13 +13,11 @@
 //! - [`paths_extract`] — static `paths()` literal extractor; the
 //!   build-time fast path that pairs with [`paths::resolve_paths`] when
 //!   the page's `paths()` return value is statically analyzable.
-//! - [`meta`] — `meta` export extraction.
 //! - [`error`] — crate-wide `RenderError`.
 
 pub mod adapters;
 pub mod error;
 pub mod loader;
-pub mod meta;
 pub mod paths;
 pub mod paths_extract;
 pub mod render;

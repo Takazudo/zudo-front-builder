@@ -61,7 +61,7 @@ pages/about.tsx                         → .html (default)
 pages/about.tsx + extension="json"      → .json (frontmatter override)
 ```
 
-このルールは `zfb-content::tsx_frontmatter`（`extension` リテラルを抽出）と `zfb-router::route::Route`（ファイル名規約をパース）が共同で適用します。小さなヘルパー `zfb_render::meta::derive_output_extension(frontmatter, route)` が、呼び出し側で優先順位を適用します。
+このルールは `zfb-content::tsx_frontmatter`（`extension` リテラルを抽出）と `zfb-router::route::Route`（ファイル名規約をパース）が共同で適用します。呼び出し側は抽出した上書き値を `Route::output_filename` に渡し、出力ファイル名を組み立てるときに優先順位を適用します。
 
 ## `Content-Type` メタデータ
 

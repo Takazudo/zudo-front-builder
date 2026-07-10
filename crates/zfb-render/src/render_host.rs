@@ -76,7 +76,7 @@ pub trait RenderHost {
     /// result (the rendered HTML for the current page).
     async fn call_default(&mut self, handle: &ModuleHandle, props: JsonValue) -> Result<String>;
 
-    /// Read a named export from `handle` and return it as JSON. Used for the
-    /// `meta` and `paths` exports.
+    /// Read a named export from `handle` and return it as JSON. Used for
+    /// exports such as `paths`.
     async fn get_export(&mut self, handle: &ModuleHandle, name: &str) -> Result<JsonValue>;
 }

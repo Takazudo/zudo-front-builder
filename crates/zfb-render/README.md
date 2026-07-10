@@ -8,7 +8,7 @@ TSX → JS compile pipeline (SWC), JS runtime host, and page render orchestrator
 2. [`loader`](src/loader.rs) — module resolver that compiles on demand, caches results, and funnels `.mdx` / `mdx://` specifiers through `zfb-content`'s MDX→JSX emitter before the SWC pass.
 3. [`embedded_v8`](src/embedded_v8/mod.rs) — in-process V8 host (`deno_core 0.399`) that loads and evaluates the compiled bundle, drives `dispatch_fetch`, and surfaces V8 stack traces for source-map re-projection.
 
-The orchestrator ([`render`](src/render.rs)) is intentionally thin: it owns a `ModuleLoader` and a `RenderHost` and stitches them together. Smart bits (path resolution, `paths()` evaluation, `meta` extraction) live in their own modules.
+The orchestrator ([`render`](src/render.rs)) is intentionally thin: it owns a `ModuleLoader` and a `RenderHost` and stitches them together. Smart bits (path resolution and `paths()` evaluation) live in their own modules.
 
 ## Public API
 
@@ -22,7 +22,7 @@ The orchestrator ([`render`](src/render.rs)) is intentionally thin: it owns a `M
 - **Embedded V8 host** (`embed_v8` feature, default-on) — `EmbeddedV8RenderHost`, `BundleModuleLoader`, `AliasHook`, `VirtualModuleHook`, `PluginRegistryHooks`, `HttpRequestLike`, `HttpResponseLike`
 - **Config evaluator** (`embed_v8` feature) — `ThreadedConfigEvaluator`, `ConfigEvalError`
 
-Additional public modules: [`adapters`](src/adapters/) (Preact / React JSX runtime adapters), [`paths`](src/paths.rs) (`paths()` runtime resolver), [`paths_extract`](src/paths_extract.rs) (static literal extractor), [`meta`](src/meta.rs) (`meta` export extraction), [`sourcemap`](src/sourcemap.rs) (V8 frame → original TSX line re-projection).
+Additional public modules: [`adapters`](src/adapters/) (Preact / React JSX runtime adapters), [`paths`](src/paths.rs) (`paths()` runtime resolver), [`paths_extract`](src/paths_extract.rs) (static literal extractor), [`sourcemap`](src/sourcemap.rs) (V8 frame → original TSX line re-projection).
 
 ```rust,ignore
 use zfb_render::{

@@ -283,13 +283,6 @@ matching.
 Astro lets pages inject arbitrary `<head>` elements via `<Fragment slot="head">`.
 zfb does not have a slot mechanism at the engine level.
 
-<Note>
-
-  `PageMeta` currently rejects unknown fields; if that constraint relaxes
-  later, this recipe will get simpler.
-
-</Note>
-
 The userland pattern is a **Preact context-based helmet**. The layout renders
 the page body first (populating the collector), then emits the collected head
 nodes. This avoids a second render pass:
