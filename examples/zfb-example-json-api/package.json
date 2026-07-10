@@ -1,0 +1,27 @@
+{
+  "name": "zfb-example-json-api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "rm -rf build dist .zfb output worker",
+    "dev": "zfb dev",
+    "build": "zfb build",
+    "preview": "zfb preview",
+    "typecheck": "zfb check"
+  },
+  "dependencies": {
+    "@takazudo/zfb": "0.1.0-next.78",
+    "@takazudo/zfb-adapter-cloudflare": "0.1.0-next.78",
+    "@takazudo/zfb-runtime": "0.1.0-next.78",
+    "minisearch": "^7.2.0",
+    "preact": "^10.29.0",
+    "preact-render-to-string": "^6.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tailwindcss": "4.2.4",
+    "typescript": "^5.9.0",
+    "wrangler": "4.85.0"
+  }
+}
