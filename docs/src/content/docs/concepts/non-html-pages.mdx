@@ -99,12 +99,18 @@ correctly:
 | `xml` | `application/xml` |
 | `rss` | `application/rss+xml` |
 | `atom` | `application/atom+xml` |
-| `json` | `application/json` |
+| `json`, `map` | `application/json` |
+| `webmanifest` | `application/manifest+json` |
 | `txt` | `text/plain; charset=utf-8` |
 | `css` | `text/css; charset=utf-8` |
 | `js`, `mjs`, `cjs` | `application/javascript; charset=utf-8` |
+| `wasm` | `application/wasm` |
 | `svg` | `image/svg+xml` |
-| anything else | `text/html; charset=utf-8` (permissive fallback — set `contentType` explicitly) |
+| `png`, `jpg`, `jpeg`, `webp`, `avif`, `gif`, `ico` | matching image media type |
+| `woff`, `woff2`, `ttf`, `otf`, `eot` | matching font media type |
+| `mp4`, `webm`, `mp3`, `ogg` | matching video/audio media type |
+| `pdf` | `application/pdf` |
+| unknown extension | `text/html; charset=utf-8` (permissive fallback — set `contentType` explicitly) |
 
 Override per page with `export const contentType = "..."`:
 

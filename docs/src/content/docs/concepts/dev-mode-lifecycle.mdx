@@ -27,9 +27,10 @@ tab to see the updated SSR output. For context on the dev-side SSR path, see
 
 The moment you save, the operating system fires a filesystem event on the file's
 path. `crates/zfb-watcher` is watching every relevant directory — `pages/`,
-`components/`, `content/`, `layouts/`, `styles/`, `data/`, and the two
-config files `zfb.config.json` and `zfb.config.ts` — plus each configured
-collection's `path` when it lives outside those default roots — via the
+`content/`, `components/`, `layouts/`, `styles/`, `data/`, `src/`, and the
+two config files `zfb.config.json` and `zfb.config.ts` — plus each configured
+collection's `path` when it lives outside those default roots, and any
+absolute paths listed in `extraWatchPaths` — via the
 [`notify`](https://crates.io/crates/notify) crate. (See `DEFAULT_WATCH_ROOTS` and
 `derive_watch_roots` in `crates/zfb/src/commands/dev.rs` for the canonical list.)
 
@@ -115,7 +116,7 @@ are also documented in `zfb dev --help`.
 
 | Outcome trigger | Event | Browser behaviour |
 |---|---|---|
-| `pages_written` non-empty **or** `pages_stale` non-empty | `Page` | Full `location.reload()` |
+| `pages_written`, `pages_stale`, or `pages_pruned` non-empty **or** `client_scripts_changed` | `Page` | Full `location.reload()` |
 | `css_changed` | `Css` | Hot-swap every `<link rel="stylesheet">` — appends `?v=<timestamp>` to bust the browser cache without reloading the document |
 | `islands_bundle.is_some()` | `Islands { component, bundle_url }` | Dynamic `import()` of the new bundle URL (with a cache-busting `?v=<timestamp>`). The newly-imported module runs its hydration, which by default re-mounts **every** `[data-zfb-island]` element on the current page — no document reload |
 

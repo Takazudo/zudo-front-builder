@@ -1,6 +1,6 @@
 ---
 title: Plugins
-description: Author and consume zfb plugins — the four lifecycle hooks, virtual modules, import aliases, and dev-only injected routes.
+description: Author and consume zfb plugins — the four lifecycle hooks, virtual modules, import aliases, injected routes, and client entries.
 sidebar_position: 12
 category: Concepts
 ---
@@ -15,8 +15,10 @@ Reach for a plugin when you need one of the four capabilities that `setup` provi
 
 - **Virtual module backing a synthetic data source.** If your pages need to `import` from a specifier that has no real file on disk — a metadata DB, a content index, a generated config blob — `addVirtualModule` is the only way to inject that source into the module graph. Example: `import metadata from "virtual:metadata-db"` across every page.
 - **Alias rewrite that must apply across all bundlers.** `addAlias` registers an exact-match import rewrite that is honored by all three consumers: the embedded V8 host, the main page/layout bundler, and the islands esbuild bundler. A `tsconfig.json` `paths` entry only reaches the type-checker. If the alias has to work at runtime in all three bundlers, it belongs in a plugin.
-- **Dev-only injected route that lives outside `pages/`.** `injectRoute` registers a TSX/TS file under a URL pattern the dev server recognises — a synthetic page that has no counterpart in the on-disk `pages/` tree, gated on `command === "dev"` so it never escapes into a production build.
-- **Dev middleware HTTP handler.** `devMiddleware` is for responses that aren't pages at all: a JSON API endpoint, a hot-reload bridge, an upload handler. No JSX pipeline, no page renderer — just a function returning `{ status, headers, body }`.
+- **Injected page route that lives outside `pages/`.** `injectRoute` registers a TSX/TS file under a URL pattern. In build mode, package-owned routes are materialised into the normal page pipeline; in dev mode, the dev server renders matching static and dynamic injected routes. Gate the call on `command === "dev"` only when the route is truly dev-only.
+- **Package-owned client entry.** `addClientEntry` registers a `*.client.{ts,tsx,js,jsx}` side-effect entry that should be bundled with the project's client scripts.
+
+For responses that are not pages, use the separate `devMiddleware` hook: a JSON API endpoint, a hot-reload bridge, an upload handler. No JSX pipeline, no page renderer — just a function returning `{ status, headers, body }`.
 
 ## The four hooks
 
@@ -34,19 +36,31 @@ export default definePlugin({
 
 Hooks run sequentially in the order plugins appear in `zfb.config.ts`'s `plugins` array. A throw in any hook aborts the build (or the dev boot) and surfaces the plugin name + the hook that threw in the error banner.
 
-## `setup` — register virtual modules, aliases, and injected routes
+## `setup` — register virtual modules, aliases, injected routes, and client entries
 
-Runs **once** per `zfb build` and once per `zfb dev` host boot, before `preBuild`. The hook is where a plugin contributes to the module-resolution pipeline (virtual modules + import aliases) and registers any dev-only synthetic routes. After `setup` completes, the registries are frozen for the remainder of the run.
+Runs **once** per `zfb build` and once per `zfb dev` host boot, before `preBuild`. The hook is where a plugin contributes to the module-resolution pipeline (virtual modules + import aliases), synthetic page routes, and package-owned client entries. After `setup` completes, the registries are frozen for the remainder of the run.
 
 ```ts
-setup({ command, projectRoot, config, options, logger, addAlias, addVirtualModule, injectRoute }) {
+setup({
+  command,
+  projectRoot,
+  config,
+  options,
+  logger,
+  addAlias,
+  addVirtualModule,
+  injectRoute,
+  addClientEntry,
+}) {
   // `command` is "build" or "dev". Gate dev-only registrations on it.
   addAlias("@/components/foo", "./src/components/foo.tsx");
   addVirtualModule("virtual:my-data", () =>
     `export default ${JSON.stringify(myJson)}`,
   );
+  injectRoute("/preset-page", "./preset/page.tsx");
+  addClientEntry("./client/analytics.client.ts");
   if (command === "dev") {
-    injectRoute("/api/dev/x", "./scripts/dev-x.ts");
+    injectRoute("/dev/preview", "./scripts/dev-preview.tsx");
   }
 }
 ```
@@ -81,38 +95,58 @@ There is **one** loader contract. There is no alternate "loader returns JSON and
 
 **Conflict detection.** Two plugins registering the same `specifier` raises `VirtualModuleConflict` and aborts the build.
 
-### `injectRoute(pattern, entrypoint)` — dev-only synthetic page routes
+### `injectRoute(pattern, entrypoint, opts?)` — synthetic page routes
 
-Registers a TSX/TS file under a URL pattern the dev server is aware of, **conceptually** routed through the same page-rendering pipeline as `pages/<...>.tsx`. The pattern follows the `pages/` filename grammar (`/blog/[slug]`, `/api/dev/x`, `/docs/[...rest]`); `entrypoint` is resolved relative to the project root.
+Registers a TSX/TS file under a URL pattern routed through the same page-rendering pipeline as `pages/<...>.tsx`. The pattern follows the `pages/` filename grammar (`/blog/[slug]`, `/api/dev/x`, `/docs/[...rest]`); `entrypoint` is resolved relative to the project root.
 
 ```ts
-injectRoute("/api/dev/x", "./scripts/dev-x.ts");
+injectRoute("/preset-page", "./preset/page.tsx");
+injectRoute("/docs/[slug]", "./preset/doc.tsx", { prerender: true });
+injectRoute("/account", "./preset/account.tsx", { prerender: false });
 ```
 
-<Warning title="Renderer integration is a follow-up">
+In **build** mode, injected routes are materialised into a per-build overlay pages root and go through the normal scan -> bundle -> render pipeline. `opts.prerender` controls the build shape: omitted or `true` means the route is prerendered; `false` marks an SSR-shaped route, which `output: "static"` rejects. User-authored `pages/` routes with the same URL shape win over package routes.
 
-The registry, conflict detection, dev-only guard, and pattern-matching plumbing are all shipping in v1. **Full evaluation of the matched entrypoint through the page renderer is a follow-up issue.** Today the dev server logs a structured match on the `zfb_plugin` tracing target when the URL matches an injected pattern, so you can confirm the registration landed end-to-end — but the request then falls through to the existing dist / public fallbacks (and 404s if no other file claims the URL). The renderer-side wiring will land without changing the public API documented here.
+In **dev** mode, static and dynamic injected routes are rendered by `zfb dev`. Static routes are seeded into the dev route universe at boot; dynamic routes are rendered on first request. `opts.prerender` is build-only metadata and is ignored in dev.
 
-</Warning>
+If a route is intended only for local development, gate that registration yourself:
 
-**Dev-only.** Calling `injectRoute` when `command === "build"` raises `InjectRouteInBuildMode` and aborts the build. Static builds should not surface SSR-shaped routes; if you need dev-only HTML on a real URL, gate the call with `if (command === "dev")`.
+```ts
+setup({ command, injectRoute }) {
+  if (command === "dev") {
+    injectRoute("/dev/preview", "./scripts/dev-preview.tsx");
+  }
+}
+```
 
-**Conflict detection.** Two plugins registering the same `pattern` raises `InjectRouteConflict` and aborts the dev boot.
+**Conflict detection.** Two plugins registering the same `pattern` with different entrypoints raises `InjectRouteConflict` and aborts the build/dev boot.
+
+### `addClientEntry(entrypoint)` — package-owned client scripts
+
+Registers a client-side side-effect entry owned by a plugin or preset:
+
+```ts
+addClientEntry("./client/analytics.client.ts");
+```
+
+`entrypoint` must point to a `*.client.{ts,tsx,js,jsx}` file. The client entry name is derived from the filename stem minus `.client` (`analytics.client.ts` -> `analytics`), and the output follows the normal client-script shape: stable dev URL `/assets/client/<name>.js`, hashed production URL `/assets/client/<name>-<hash>.js`. Relative entrypoints resolve from the project root.
+
+User-authored client entries with the same name win over package-owned entries. Two plugins registering the same derived name with different entrypoints raises `ClientEntryConflict`; a path that does not match the `*.client.*` entry convention raises `InvalidClientEntry`.
 
 ### `injectRoute` vs `devMiddleware` — pick the right hook
 
-Both add new URLs that only exist during `zfb dev`, but they aim at different problems:
+Both can add URLs during `zfb dev`, but they aim at different problems:
 
 | Hook | Returns | Use when |
 | --- | --- | --- |
-| `injectRoute(pattern, entrypoint)` | a TSX/TS module that the page renderer evaluates and rasterises to HTML | you want a real, JSX-shaped page on a dev-only URL (matching zmod's Astro `injectRoute`). |
+| `injectRoute(pattern, entrypoint, opts?)` | a TSX/TS module that the page renderer evaluates and rasterises to HTML | you want a real, JSX-shaped page that lives outside the on-disk `pages/` tree, including package-owned build routes. |
 | `devMiddleware(ctx)` → `ctx.register(path, handler)` | a JS function that returns `{ status, headers, body }` per request | you want an HTTP handler — JSON API, a hot-reload bridge, an upload endpoint. No page pipeline, no JSX. |
 
 `devMiddleware` is the right answer when the response is not a page; `injectRoute` is the right answer when you want a synthetic `pages/foo.tsx` that lives outside the on-disk `pages/` tree.
 
 ### Closed surface — no markdown extension hooks
 
-`SetupContext` exposes exactly three registration methods: `addAlias`, `addVirtualModule`, `injectRoute`. The deliberate omissions:
+`SetupContext` exposes exactly four registration methods: `addAlias`, `addVirtualModule`, `injectRoute`, and `addClientEntry`. The deliberate omissions:
 
 - no `addRemarkPlugin` / `addRehypePlugin` / `addMarkdownVisitor`,
 - no `addModuleLoader` / `addModuleTransform`,
@@ -273,17 +307,17 @@ The loader runs once at the start of `zfb build`; the bundler caches the result 
 
 ## Conflict-detection summary
 
-When two plugins clash on a registration, zfb aborts the build/dev with one of three errors that names both offending plugins:
+When setup registrations clash or are invalid, zfb aborts the build/dev with one of these errors:
 
 - `AliasConflict` — same `from`, different `to`.
 - `VirtualModuleConflict` — same specifier, different plugins.
 - `InjectRouteConflict` — same URL pattern, different plugins.
-
-`InjectRouteInBuildMode` is raised when any plugin calls `injectRoute` during `zfb build` (regardless of who registered first).
+- `ClientEntryConflict` — same derived client-entry name, different entrypoints.
+- `InvalidClientEntry` — an `addClientEntry` path is not a valid `*.client.{ts,tsx,js,jsx}` entry.
 
 ## When you don't — write a recipe
 
-Not everything that runs at build time needs a plugin. If your task doesn't require `setup`-level capabilities (no virtual module, no alias, no injected route, no dev middleware), a plain Node.js script in `scripts/` wired into `pnpm build` is simpler, easier to test in isolation, and less coupled to zfb's internals. The [Design Philosophy](./design-philosophy.mdx) and [Engine vs Framework](./engine-vs-framework.mdx) pages explain the broader principle.
+Not everything that runs at build time needs a plugin. If your task doesn't require `setup`-level capabilities (no virtual module, no alias, no injected route, no client entry) or dev middleware, a plain Node.js script in `scripts/` wired into `pnpm build` is simpler, easier to test in isolation, and less coupled to zfb's internals. The [Design Philosophy](./design-philosophy.mdx) and [Engine vs Framework](./engine-vs-framework.mdx) pages explain the broader principle.
 
 Common candidates that do not need a plugin:
 
