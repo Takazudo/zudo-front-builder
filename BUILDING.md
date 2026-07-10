@@ -18,13 +18,18 @@ CI uses Node 22 and Rust stable on `ubuntu-latest`.
 
 The first `cargo build --workspace` on a clean machine takes **15–30 minutes**. The dominant cost is compiling the V8 JavaScript engine (pulled in via `deno_core` by the `zfb-render` crate). This is a one-time cost: subsequent incremental builds are fast because Cargo only recompiles changed crates.
 
-To make the wait productive, start with:
+After installing JS deps, start with the normal workspace build:
 
 ```sh
-cargo build --workspace --tests --no-deps
+pnpm install --frozen-lockfile
+cargo build --workspace
 ```
 
-`--no-deps` skips recompiling external dependencies (useful when you only changed workspace crate code). `--tests` also compiles test harnesses so the first `cargo test` run is faster.
+That command is intentionally plain: it builds every workspace crate for your host target, and the `crates/zfb/build.rs` build script automatically downloads, SHA-256-verifies, and stages the pinned `esbuild` and `tailwindcss` binaries before the `zfb` crate compiles. If you also want to precompile test harnesses after the first dependency install, use:
+
+```sh
+cargo build --workspace --all-targets
+```
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for tips on speeding up local Rust compilation with `sccache`.
 
@@ -34,24 +39,26 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for tips on speeding up local Rust comp
 # 1. Install JS deps
 pnpm install --frozen-lockfile
 
-# 2. Fetch the pinned tailwindcss v4 standalone CLI binary into
-#    crates/zfb/binaries/tailwindcss-v4 (idempotent — fast no-op on re-run)
-pnpm fetch:tailwind
-
-# 3. Build the Rust workspace (first run: 15-30 min; subsequent runs: fast)
+# 2. Build the Rust workspace (first run: 15-30 min; subsequent runs: fast).
+#    This also provisions the pinned esbuild and tailwindcss binaries.
 cargo build --workspace
 ```
 
-## The Tailwind binary
+## Provisioned external binaries
 
-The CSS pipeline shells out to the Tailwind v4 standalone CLI as a subprocess. The binary file is **not** committed to git — it is materialized on demand.
+The islands bundler shells out to `esbuild`, and the CSS pipeline shells out to the Tailwind v4 standalone CLI. These binary files are **not** committed to git; they are materialized on demand.
 
-There are two supported ways to provide it:
+The default path is Cargo-driven. Any normal build that compiles `crates/zfb` runs [`crates/zfb/build.rs`](./crates/zfb/build.rs), which:
 
-1. **Default — `pnpm fetch:tailwind`**: downloads the pinned asset from the upstream GitHub release, verifies SHA-256 against `sha256sums.txt`, and places it at `crates/zfb/binaries/tailwindcss-v4` (or `tailwindcss-v4.exe` on Windows). Supported platforms: `darwin-x64`, `darwin-arm64`, `linux-x64`, `linux-arm64`, `win32-x64`. For musl-libc Linux, use the override below.
-2. **Override — `ZFB_TAILWIND_BIN`**: set this env var to an absolute path of any tailwindcss v4 standalone binary you already have on disk. The engine uses it directly and `pnpm fetch:tailwind` becomes a no-op. This is the right choice for CI images that already bundle tailwind, or for musl-libc systems.
+- downloads the pinned platform-specific `@esbuild/*` npm tarball, extracts the standalone `esbuild` binary, verifies it against the `ESBUILD_SHA256_*` constants, and stages it under `crates/zfb/binaries/esbuild/`;
+- downloads the pinned Tailwind v4 standalone binary from the upstream GitHub release, verifies it against the `TAILWIND_SHA256_*` constants, and stages it as `crates/zfb/binaries/tailwindcss-v4` (or `.exe` on Windows);
+- copies both verified binaries into the embedded vendor snapshot so installed `zfb` binaries can run without a workspace checkout.
 
-See [`crates/zfb-css/README.md`](./crates/zfb-css/README.md) ("Getting the binary") for the full contract and the [`crates/zfb/binaries/README.md`](./crates/zfb/binaries/README.md) for the runtime resolution layout.
+Supported build platforms are `darwin-x64`, `darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, and `win32-x64-msvc`. For unsupported targets such as musl-libc Linux, set both `ZFB_ESBUILD_BIN` and `ZFB_TAILWIND_BIN` to absolute paths for pre-verified binaries.
+
+`pnpm fetch:tailwind` still exists as a Tailwind-only developer convenience, but it is not part of first-build setup. Plain `cargo build --workspace` provisions both binaries.
+
+See [`crates/zfb-css/README.md`](./crates/zfb-css/README.md) ("Getting the binary") for the Tailwind runtime contract and the [`crates/zfb/binaries/README.md`](./crates/zfb/binaries/README.md) for the runtime resolution layout.
 
 ## Embedded npm packages
 
@@ -74,7 +81,7 @@ To bump a framework-runtime version:
 ## Running tests
 
 ```sh
-# Default — fast, mock-only, no external binary required
+# Default — non-ignored workspace suite; Cargo provisions host binaries as needed
 cargo test --workspace
 
 # Heavyweight — runs the previously-`#[ignore]`-gated tests that exercise
@@ -97,7 +104,7 @@ pnpm format               # apply
 ```sh
 pnpm docs:dev             # zfb dev server for the docs site
 pnpm docs:build           # static build into docs/dist/
-pnpm fetch:tailwind       # (re-)materialize the Tailwind v4 binary
+pnpm fetch:tailwind       # optional Tailwind-only prefetch; cargo build is authoritative
 ```
 
 ## Release builds and cross-compilation

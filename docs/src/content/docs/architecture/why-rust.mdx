@@ -22,9 +22,9 @@ The visible win is error quality. zfb uses `anyhow` end-to-end, so every error r
 
 ## Concurrency that fits
 
-The build orchestrator schedules across CPUs; the dev server runs an `axum` listener and an SSE broadcast at the same time. Rayon handles parallel-page rendering; tokio handles the async I/O. They coexist without ceremony — Rust's type system enforces the boundaries, so threads never share state they should not share.
+The build orchestrator can do Rust-side bookkeeping, file I/O, and dev-server work without blocking the HTTP listener. Request handling, file serving, and the SSE broadcast live on tokio; heavier render dispatch is isolated from that async edge.
 
-The same code in Node would need worker threads or child processes for equivalent isolation. Workers do not share modules; child processes do not share memory. Either way, you pay coordination overhead on every page that the Rust version does for free.
+Page rendering itself is not Rayon-parallel today. User TSX runs through a single embedded V8 isolate thread, both for build-time SSG and dev-side `prerender = false` dispatch. The concurrency win is the clean boundary around that isolate and the rest of the Rust pipeline, not parallel execution of multiple page renders in one build.
 
 ## Distribution
 

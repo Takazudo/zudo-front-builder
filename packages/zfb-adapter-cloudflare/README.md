@@ -62,7 +62,7 @@ export default async function Products() {
 See the [SSR and Cloudflare Bindings guide][ssr-guide] for the full D1
 lifecycle (`wrangler d1 create`, migrations, preview-vs-prod).
 
-[ssr-guide]: https://takazudomodular.com/pj/zudo-front-builder/guides/ssr-and-cloudflare-bindings/
+[ssr-guide]: https://takazudomodular.com/pj/zudo-front-builder/docs/guides/ssr-and-cloudflare-bindings/
 
 `zfb build` will:
 

@@ -10,7 +10,7 @@ Eleventy と zfb は大きな点で一致しています。小さな依存フッ
 
 11ty はレイアウトを `_includes/` に置き、フロントマターの `layout:` キーで参照します。zfb はレイアウトを `layouts/` から読み込み、それをページの TSX に直接インポートします:
 
-```tsx
+```ts
 import BlogLayout from "../../layouts/blog-layout.tsx";
 
 export default function Page({ post }) {
@@ -56,20 +56,35 @@ export function paths() {
 
 ## ページネーション
 
-11ty の `pagination` フロントマターキーは、`paths()` の内部で使う `paginate()` ヘルパーになります。全体の API については /ja/api/paginate を参照してください。形は次のとおりです:
+11ty の `pagination` フロントマターキーは、`paths()` の内部で使う `paginate()` ヘルパーになります。全体の API については [`paginate`](../api/paginate.mdx) を参照してください。形は次のとおりです:
 
-```ts
+```tsx
+import { getCollection } from "zfb/content";
+import { paginate } from "zfb/paginate";
+
 export function paths() {
   const posts = getCollection("blog");  // synchronous — no await
-  return paginate(posts, { pageSize: 10 });
+  return paginate(posts, { pageSize: 10, param: "page" });
+}
+
+export default function BlogPage({ page }) {
+  const { data, page: currentPage, lastPage, pageSize, total } = page;
+  return (
+    <p>
+      Page {currentPage} of {lastPage}; showing {data.length} of {total}
+      posts at {pageSize} per page.
+    </p>
+  );
 }
 ```
 
-ページごとに 1 つのルートが得られ、加えて標準の `currentPage`、`totalPages`、`data` の props が渡されます。
+`param` 値は動的ルートセグメント（この例では `[page].tsx`）と一致する必要があります。生成された各ルートは、`{ data, page, lastPage, pageSize, total }` 形状の `props.page` を受け取ります。
 
 ## Markdown フロントマター
 
 この部分はほとんど変わりません。`.md` ファイルの先頭で区切りとして `---` を使います。zfb-content はフロントマターを `entry.data` に、本文を `entry.body` にパースします。利用できるフィールドは、`zfb.config` で宣言したコレクションスキーマに依存します。
+
+Content collections が列挙するのは `.md`、`.mdx`、`.tsx` エントリだけです。コレクションディレクトリ内のその他のファイルは、`getCollection()` に表面化されるのではなく無視されます。
 
 ## 率直な注記
 

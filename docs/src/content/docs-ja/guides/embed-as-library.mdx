@@ -8,6 +8,17 @@ sidebar_position: 7
 
 このガイドでは、公開ビルダーの形、リクエスト拡張の注入ポイント、そしてホストハンドラの継ぎ目（`with_ssr_handler`）を解説します。
 
+<Note title="Crate availability">
+
+`zfb-server` はまだ crates.io に公開されていないため、`docs.rs/zfb-server` リンクは解決されません。workspace crate に git から依存し、タグまたはコミットを pin してください。
+
+```toml
+[dependencies]
+zfb-server = { git = "https://github.com/Takazudo/zudo-front-builder", package = "zfb-server", rev = "<commit>" }
+```
+
+</Note>
+
 ## どんなときに使うか
 
 ホストが次のことを必要とするとき、ライブラリとして組み込む方法を選びます。
@@ -176,7 +187,7 @@ handle.join()??;
 
 ### レベル 1: ビルダー経由で `PageCache` を投入する
 
-`ServerBuilder::with_page_cache(cache)` は、`build()` がデフォルトで割り当てる空のものではなく、あなたが所有する [`PageCache`](https://docs.rs/zfb-server) をサーバーに渡します。`PageCache` は `Clone` です（内部的には `Arc<RwLock<…>>`）。そのため、手元にハンドルを保持し、クローンをビルダーに渡してから、実行時に*同じ*共有マップへ書き込めます。稼働中のサーバーはすべての insert を見ます。
+`ServerBuilder::with_page_cache(cache)` は、`build()` がデフォルトで割り当てる空のものではなく、あなたが所有する `PageCache` をサーバーに渡します。`PageCache` は `Clone` です（内部的には `Arc<RwLock<…>>`）。そのため、手元にハンドルを保持し、クローンをビルダーに渡してから、実行時に*同じ*共有マップへ書き込めます。稼働中のサーバーはすべての insert を見ます。
 
 ```rust
 use zfb_server::{Server, ServerMode, PageCache};
@@ -203,7 +214,7 @@ cache.remove(["/blog/stale"]).await;             // drop a vanished route
 
 ### レベル 2: `ServeOpts` + `serve_with_listener` へ降りる
 
-ページキャッシュ以上のものが必要な場合、たとえば稼働中のライブリロード `broadcast` チャンネル、リクエスト時 SSR ルート（`SsrRoutesHandle`）、プラグイン dev-middleware が必要な場合、ビルダーは意図的に入口ではありません。自分で [`ServeOpts`](https://docs.rs/zfb-server) を構築し、低レベルの `serve_with_listener(opts, listener, shutdown)`（またはリスナーもバインドする `serve(opts, shutdown)`）を呼び出します。どちらも公開され安定しています。`zfb dev` 自身が使っているのと同じ入口です。
+ページキャッシュ以上のものが必要な場合、たとえば稼働中のライブリロード `broadcast` チャンネル、リクエスト時 SSR ルート（`SsrRoutesHandle`）、プラグイン dev-middleware が必要な場合、ビルダーは意図的に入口ではありません。自分で `ServeOpts` を構築し、低レベルの `serve_with_listener(opts, listener, shutdown)`（またはリスナーもバインドする `serve(opts, shutdown)`）を呼び出します。どちらも公開され安定しています。`zfb dev` 自身が使っているのと同じ入口です。
 
 `ServeOpts` は直接フィールドを埋めるプレーンな構造体です。ライブコンテンツに関係するフィールドは次のとおりです。
 
@@ -222,17 +233,18 @@ let (broadcast, _rx) = tokio::sync::broadcast::channel::<ReloadEvent>(64);
 let opts = ServeOpts {
     project_root: project_root.clone(),
     dist_root: dist_root.clone(),
+    dev_assets_root: None,
     html_root: dist_root.clone(), // embed/preview callers alias dist_root
     public_root,
     addr: "127.0.0.1:0".parse()?,
     pages: pages.clone(),
     broadcast: broadcast.clone(),
-    mode: ServerMode::Dev, // Dev mounts the livereload SSE endpoint
     plugins: None,
     injected_routes: None,
     ssr_routes: None,
     base: None,
     trailing_slash: false,
+    mode: ServerMode::Dev, // Dev mounts the livereload SSE endpoint
     islands_bundle_url: None,
     css_bundle_url: None,
     allowed_hosts: Vec::new(),

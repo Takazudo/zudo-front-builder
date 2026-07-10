@@ -28,10 +28,10 @@ SSR のみの編集は SSG の HTML 書き込みを生まないため、`Page` S
 ## `.tsx` ファイルを保存する。それから？
 
 保存した瞬間、オペレーティングシステムがそのファイルのパスに対してファイルシステムイベントを
-発火します。`crates/zfb-watcher` は関連するすべてのディレクトリ — `pages/`・`components/`・
-`content/`・`layouts/`・`styles/`・`data/`、そして 2 つの設定ファイル
+発火します。`crates/zfb-watcher` は関連するすべてのディレクトリ — `pages/`・`content/`・
+`components/`・`layouts/`・`styles/`・`data/`・`src/`、そして 2 つの設定ファイル
 `zfb.config.json` と `zfb.config.ts`、加えて設定された各コレクションの `path` がそれらの
-デフォルトルートの外にある場合はそれも — を [`notify`](https://crates.io/crates/notify)
+デフォルトルートの外にある場合と、`extraWatchPaths` に列挙された絶対パス — を [`notify`](https://crates.io/crates/notify)
 クレート経由で監視しています。（正規のリストは `crates/zfb/src/commands/dev.rs` の
 `DEFAULT_WATCH_ROOTS` と `derive_watch_roots` を参照してください。）
 
@@ -117,7 +117,7 @@ OS が分類できないイベント種別はすべて `Modified` に折りた�
 
 | 結果のトリガー | イベント | ブラウザの振る舞い |
 |---|---|---|
-| `pages_written` が非空 **または** `pages_stale` が非空 | `Page` | 完全な `location.reload()` |
+| `pages_written`、`pages_stale`、`pages_pruned` が非空 **または** `client_scripts_changed` | `Page` | 完全な `location.reload()` |
 | `css_changed` | `Css` | すべての `<link rel="stylesheet">` をホットスワップ — ドキュメントをリロードせずにブラウザキャッシュを破棄するため `?v=<timestamp>` を付加 |
 | `islands_bundle.is_some()` | `Islands { component, bundle_url }` | 新しいバンドル URL の動的 `import()`（キャッシュ破棄の `?v=<timestamp>` 付き）。新しくインポートされたモジュールがハイドレーションを実行し、デフォルトでは現在のページ上の **すべての** `[data-zfb-island]` 要素を再マウント — ドキュメントのリロードなし |
 

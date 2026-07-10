@@ -14,14 +14,14 @@ Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) �
 
 Two scripts in `docs/scripts/` each install a Claude Code skill that symlinks this docs tree (`src/content/docs` + `docs-ja`) into the user-scope skills dir (`~/.claude/skills/`) for AI lookup access. They produce **distinct** skills:
 
-- **zfb-wisdom skill** — run `bash docs/scripts/setup-zfb-wisdom.sh` once. Fixed skill name `zfb-wisdom` (see `src/content/docs/claude-skills/zfb-wisdom.mdx`).
+- **zfb-wisdom skill** — run `bash docs/scripts/setup-zfb-wisdom.sh` once. Fixed skill name `zfb-wisdom` (generated Claude-resource page: `src/content/docs/claude-skills/zfb-wisdom/index.mdx`).
 - **{project}-wisdom skill** — run `pnpm --filter docs setup:doc-skill` (wired to `bash scripts/setup-doc-skill.sh`). Interactive; default skill name is `<package.json name>-wisdom` (currently `docs-wisdom`).
 
 ## Commands
 
 All commands run from the **repo root** with the `--filter docs` workspace flag, or directly inside `docs/`:
 
-- `pnpm docs:dev` — zfb dev server (port 4321)
+- `pnpm docs:dev` — zfb dev server (default port 3000)
 - `pnpm docs:build` — static HTML export to `docs/dist/`
 - `pnpm docs:check` — zfb type checking (`tsc --noEmit` over `zfb.config.ts`, collection schemas, and `src/`). Note: `pages/` is excluded in `tsconfig.json`, so page modules are NOT type-checked here — they are checked when `zfb build` bundles them.
 - `pnpm docs:preview` — serve the built `docs/dist/` locally
@@ -38,9 +38,8 @@ renders all page chrome (header/sidebar/TOC/footer) from package defaults, recon
 
 ```
 docs/
-├── pages/               # Host owns only the root home + island registration
-│   ├── index.tsx        # "/" — re-exports @takazudo/zudo-doc/routes/index (package default home)
-│   └── _register-islands.ts  # registers the DocHistory client island for package-owned routes
+├── pages/               # Host owns only the root home route
+│   └── index.tsx        # "/" — re-exports @takazudo/zudo-doc/routes/index (package default home)
 ├── public/              # Static assets copied flat to dist/ (favicons, img/)
 └── src/
     ├── config/          # settings, i18n (+ translations), docs-schema, color-schemes, tag-vocabulary
@@ -103,9 +102,10 @@ The following flags are set in `src/config/settings.ts` and are currently enable
 
 ## Package CSS generation (`@takazudo/zudo-doc`)
 
-`@takazudo/zudo-doc` 0.2.0 ships **`safelist.css`** (zudolab/zudo-doc#1996), which lists every
-Tailwind class the package emits as `@source` inline values. Importing it in `global.css` is all
-that is needed for Tailwind v4 to generate the package utilities:
+`docs/package.json` depends on `@takazudo/zudo-doc` `^3.2.0`. The package ships
+**`safelist.css`** (zudolab/zudo-doc#1996), which lists every Tailwind class the
+package emits as `@source` inline values. Importing it in `global.css` is all that
+is needed for Tailwind v4 to generate the package utilities:
 
 ```css
 @import "@takazudo/zudo-doc/safelist.css";

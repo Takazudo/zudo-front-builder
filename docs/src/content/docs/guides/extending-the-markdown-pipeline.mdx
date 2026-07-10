@@ -47,10 +47,15 @@ The pipeline runs two distinct passes over two different ASTs:
    markdown-rs with MDX-aware options.
 2. **mdast visitors** — `MdastVisitor` implementations rewrite the
    markdown AST in place. Run first because some transforms only
-   make sense before HTML structure exists. The directive registry
-   is a mdast visitor: it folds runs of paragraphs delimited by
-   `:::name` / `:::` into a single MDX JSX element, which is much
-   easier on mdast than after `<p>` tags have appeared.
+   make sense before HTML structure exists. The default mdast visitors
+   are `CjkAutolinkBoundaryPlugin` (when GFM autolink literals are
+   enabled) and `CjkFriendlyPlugin`; configured extras such as
+   `TranscludePlugin`, `CodeTabsPlugin`, `GithubAlertsPlugin`,
+   `ReadingTimePlugin`, `RubyPlugin`, and `DirectiveRegistry` are
+   inserted in this phase when their feature flags are enabled. The
+   directive registry folds runs of paragraphs delimited by `:::name`
+   / `:::` into a single MDX JSX element, which is much easier on
+   mdast than after `<p>` tags have appeared.
 3. **Convert** mdast → hast via `mdast_to_hast`. hast is zfb's
    minimal HTML AST (`HastNode`).
 4. **hast visitors** — `HastVisitor` implementations rewrite the
@@ -68,16 +73,27 @@ heading level, an `<img>` with a width attribute), hast.
 
 ## Visitor trait shape
 
-Both visitor traits are intentionally small — one method, called
-once on a node, mutate in place:
+The visitor traits live in the `zfb-md-ast` crate and are re-exported from
+`zfb_content::pipeline` for local callers. Both traits are intentionally
+small: implement `visit` for context-free transforms, and override
+`visit_with_context` only when the plugin needs source paths, project roots,
+diagnostics, or heading registries from `BuildContext`.
 
 ```rust
 pub trait MdastVisitor {
     fn visit(&mut self, node: &mut MdastNode);
+
+    fn visit_with_context(&mut self, node: &mut MdastNode, _ctx: &mut BuildContext<'_>) {
+        self.visit(node);
+    }
 }
 
 pub trait HastVisitor {
     fn visit(&mut self, node: &mut HastNode);
+
+    fn visit_with_context(&mut self, node: &mut HastNode, _ctx: &mut BuildContext<'_>) {
+        self.visit(node);
+    }
 }
 ```
 
@@ -86,7 +102,7 @@ Recursion is the visitor's responsibility — there is no auto-walk.
 A typical hast visitor looks like:
 
 ```rust
-use crate::pipeline::{HastNode, HastVisitor};
+use zfb_md_ast::{HastNode, HastVisitor};
 
 pub struct MyPlugin;
 
@@ -119,8 +135,8 @@ consumers need them.
 
 **Core (wire into `Pipeline::with_defaults`)** when the behaviour is
 universal: every content-collection consumer would want it the same way,
-with no legitimate reason to opt out. Examples: `HeadingLinksPlugin`,
-`CodeTitlePlugin`, `SyntectPlugin`.
+with no legitimate reason to opt out. Examples: `CjkFriendlyPlugin`,
+`HeadingLinksPlugin`, `CodeTitlePlugin`, `SyntectPlugin`.
 
 **Opt-in (wire into `Pipeline::with_defaults_and_features`)** when the
 feature is valuable but not universally needed, or when it requires
@@ -139,6 +155,7 @@ one file per feature:
 
 ```
 crates/zfb-content/src/plugins/
+├── cjk_autolink.rs
 ├── cjk_friendly.rs
 ├── code_title.rs
 ├── directives.rs
@@ -192,18 +209,22 @@ Adding your visitor there means every caller that uses the defaults
 picks it up automatically. Append it in the right phase:
 
 ```rust
-// in crates/zfb-content/src/pipeline.rs, inside Pipeline::with_defaults()
-let mut p = Self::with_mdx();
+// in crates/zfb-content/src/pipeline.rs, inside the defaults builder
+let mut p = Self::with_resolved_gfm_constructs(resolved);
 
 // mdast phase
-p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
+if resolved.autolink_literal {
+    p.push_config_derived_mdast_visitor(Box::new(CjkAutolinkBoundaryPlugin::new()));
+}
+p.push_config_derived_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+p.push_config_derived_mdast_visitor(Box::new(MyMdastPlugin::new())); // <-- new, if mdast
 
 // hast phase
-p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
-p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
-p.add_hast_visitor(Box::new(MyPlugin));     // <-- new
-p.add_hast_visitor(Box::new(MermaidPlugin::new()));
-p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
+p.push_config_derived_hast_visitor(Box::new(HeadingLinksPlugin::new()));
+p.push_config_derived_hast_visitor(Box::new(CodeTitlePlugin::new()));
+p.push_config_derived_hast_visitor(Box::new(MyPlugin)); // <-- new
+p.push_config_derived_hast_visitor(Box::new(MermaidPlugin::new()));
+p.push_config_derived_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
 p
 ```
 
@@ -223,6 +244,11 @@ rules that bite most often:
 - **`HeadingLinksPlugin` runs first in the hast phase.** Anything
   that mutates headings later sees the slugified `id` attributes.
   `TocPlugin` and `TocExportPlugin` depend on these `id` values.
+- **`CjkAutolinkBoundaryPlugin` runs before `CjkFriendlyPlugin`** when
+  GFM autolink literals are enabled. It splits over-consumed bare URLs
+  before CJK emphasis retokenisation changes the surrounding text nodes.
+- **`CjkFriendlyPlugin` runs early in the mdast phase.** Visitors that
+  depend on CJK-adjacent emphasis being tokenised should run after it.
 - **`CodeTitlePlugin` runs before `SyntectPlugin`.** SyntectPlugin
   replaces the entire `<pre>` element with a `HastNode::Raw` HTML
   fragment; once that happens, the `data-meta` attribute that
@@ -237,9 +263,9 @@ rules that bite most often:
 - **`ImageDimensionsPlugin`** runs in the hast phase before `SyntectPlugin`.
   It only touches `<img>` elements and is order-independent relative to
   heading / code-block visitors.
-- **`GithubAlertsPlugin` runs in the mdast phase**, before the mdast
-  → hast conversion. It rewrites blockquote nodes; the `AdmonitionsPlugin`
-  (which also runs in the mdast phase) reads the results independently.
+- **`GithubAlertsPlugin` runs in the mdast phase**, before the directive
+  registry and before the mdast → hast conversion. It rewrites blockquote
+  nodes into MDX JSX elements.
 - **`TranscludePlugin` runs first in the mdast phase.** Included
   content must be merged into the AST before any other visitor sees it.
 
@@ -305,9 +331,10 @@ changes when the rest of the codebase moves.
 - [Customizing Markdown](./customizing-markdown.mdx) — what the
   Markdown rendering pipeline looks like from a content-collection
   consumer's perspective.
-- `crates/zfb-content/src/pipeline.rs` — `Pipeline`, `MdastVisitor`
-  / `HastVisitor` traits, and the `Pipeline::with_defaults()`
-  ordering rationale in its doc comment.
+- `crates/zfb-md-ast/src/lib.rs` — `MdastVisitor`, `HastVisitor`,
+  `BuildContext`, and the `visit_with_context` default methods.
+- `crates/zfb-content/src/pipeline.rs` — `Pipeline` construction and the
+  `Pipeline::with_defaults()` ordering rationale in its doc comment.
 - `crates/zfb-content/src/plugins/code_title.rs` — small, stateless
   `HastVisitor` example.
 - `crates/zfb-content/src/plugins/heading_links.rs` — stateful

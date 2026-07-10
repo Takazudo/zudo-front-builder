@@ -25,8 +25,8 @@ of a single one.
 
 ## The `paths()` contract
 
-`paths()` is a synchronous export. It returns an array of
-`{ params, props }` objects. The router consumes the array; one entry
+`paths()` returns an array of `{ params, props }` objects, either
+synchronously or as a Promise. The router consumes the array; one entry
 becomes one rendered URL.
 
 ```ts
@@ -37,7 +37,7 @@ type PathEntry<P = Record<string, unknown>> = {
   props?: P;
 };
 
-export function paths(): PathEntry[];
+export function paths(): PathEntry[] | Promise<PathEntry[]>;
 ```
 
 - `params` keys must match the bracketed names in the filename. For
@@ -80,9 +80,10 @@ export default function BlogPost({ params, props }) {
 
 A few things worth noting:
 
-- `getCollection` is synchronous — the full content
-  snapshot is pre-built in Rust before any TSX runs. `paths()` doesn't
-  need `async`, and neither does the page component.
+- `getCollection` is synchronous — the full content snapshot is pre-built
+  in Rust before any TSX runs — so this example does not need `async`.
+  Use `export async function paths()` when your route enumeration needs
+  async module loading or another Promise-backed helper.
 - `params.slug` is what hits the URL. A post with `slug: "hello-zfb"`
   becomes `/blog/hello-zfb`.
 - `props.title` is opaque to the engine — it's just data threaded to
@@ -147,10 +148,11 @@ this when it builds the route table — see
   rename the file to the optional form (`[[...slug]]`) and return an
   explicit `{ params: { slug: [] } }` entry. `[""]` and `""` stay
   invalid for both forms.
-- `paths()` is **synchronous**. The whole content snapshot is loaded
-  before any page evaluates, so there's no async boundary to wait
-  on. Keep it pure-data and deterministic — the router calls it
-  during route enumeration, well before render.
+- `paths()` may be **synchronous or async**. The whole content snapshot is
+  loaded before any page evaluates, so content-only routes can usually stay
+  synchronous; Promise-returning `paths()` exports are also supported. Keep
+  the result pure-data and deterministic — the router calls it during route
+  enumeration, well before render.
 - `paths()` is **evaluated once per route per build** — the result is
   memoised and reused for every page rendered from the same route
   template. Per-entry work inside `paths()` (such as mapping a
@@ -168,4 +170,4 @@ this when it builds the route table — see
 - [Routing](./routing.mdx) — static-route fundamentals.
 - [Content Collections](./content-collections.mdx) — the data
   source most `paths()` calls draw from; also documents the synchronous
-  `getCollection` API.
+  `getCollection` / `getEntry` API.

@@ -16,8 +16,8 @@ sidebar_position: 2
 
 以下が必要です。
 
-- **Node.js ≥ 22** — 設定ローダーや一部のビルドステップが Node を呼び出します。
-- **pnpm** — [公式インストーラー](https://pnpm.io/installation) からインストールしてください。zfb は pnpm を使うプロジェクトをスキャフォールドし、`PATH` 上に pnpm が見つかる場合は `pnpm install` を自動で実行します。
+- **Node.js ≥ 22** — npm CLI ラッパーと、`zfb check` を支える `tsc` サブプロセスに必要です。デフォルトの TypeScript 設定ローダー自体は Node ではなく、zfb の組み込み V8 ランタイム内で動きます。
+- **pnpm ≥ 11** — [公式インストーラー](https://pnpm.io/installation) からインストールしてください。zfb は pnpm を使うプロジェクトをスキャフォールドし、`PATH` 上に pnpm が見つかる場合は `pnpm install` を自動で実行します。
 
 ## サポートされているプラットフォーム
 

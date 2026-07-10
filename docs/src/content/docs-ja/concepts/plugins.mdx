@@ -1,6 +1,6 @@
 ---
 title: プラグイン
-description: zfb プラグインの作成と利用 — 4 つのライフサイクルフック、仮想モジュール、インポートエイリアス、開発専用の注入ルート。
+description: zfb プラグインの作成と利用 — 4 つのライフサイクルフック、仮想モジュール、インポートエイリアス、注入ルート、client entry。
 sidebar_position: 12
 category: Concepts
 ---
@@ -15,8 +15,10 @@ zfb プラグインは、デフォルトエクスポートが `ZfbPlugin` オブ
 
 - **合成データソースを裏付ける仮想モジュール。** ページがディスク上に実ファイルを持たない specifier から `import` する必要がある場合 — メタデータ DB、コンテンツインデックス、生成された設定ブロブなど — そのソースをモジュールグラフに注入する唯一の手段が `addVirtualModule` です。例: 全ページにわたる `import metadata from "virtual:metadata-db"`。
 - **すべてのバンドラに適用しなければならないエイリアス書き換え。** `addAlias` は完全一致のインポート書き換えを登録し、これは 3 つすべての利用者（組み込み V8 ホスト、メインのページ／レイアウトバンドラ、islands esbuild バンドラ）が尊重します。`tsconfig.json` の `paths` エントリは型チェッカにしか届きません。エイリアスを 3 つすべてのバンドラで実行時に効かせる必要があるなら、それはプラグインの領域です。
-- **`pages/` の外に存在する開発専用の注入ルート。** `injectRoute` は、dev サーバが認識する URL パターンの下に TSX/TS ファイルを登録します。これはディスク上の `pages/` ツリーに対応物を持たない合成ページで、`command === "dev"` でガードされるため、本番ビルドに漏れ出すことはありません。
-- **Dev ミドルウェアの HTTP ハンドラ。** `devMiddleware` は、そもそもページではない応答のためのものです。JSON API エンドポイント、ホットリロードのブリッジ、アップロードハンドラなど。JSX パイプラインもページレンダラもなく、ただ `{ status, headers, body }` を返す関数です。
+- **`pages/` の外に存在する注入ページルート。** `injectRoute` は、URL パターンの下に TSX/TS ファイルを登録します。build モードでは package-owned route が通常のページパイプラインに materialize されます。dev モードでは、dev サーバーが一致する静的 / 動的な注入ルートをレンダリングします。そのルートが本当に dev 専用のときだけ、`command === "dev"` で呼び出しをガードしてください。
+- **Package-owned client entry。** `addClientEntry` は、プロジェクトの client scripts と一緒にバンドルされる `*.client.{ts,tsx,js,jsx}` の side-effect entry を登録します。
+
+ページではないレスポンスには、別の `devMiddleware` フックを使ってください。JSON API エンドポイント、ホットリロードのブリッジ、アップロードハンドラなどです。JSX パイプラインもページレンダラもなく、ただ `{ status, headers, body }` を返す関数です。
 
 ## 4 つのフック
 
@@ -34,19 +36,31 @@ export default definePlugin({
 
 フックは、`zfb.config.ts` の `plugins` 配列にプラグインが現れる順序で逐次実行されます。いずれかのフックで throw されるとビルド（または dev の起動）が中断し、throw したフックとプラグイン名がエラーバナーに表示されます。
 
-## `setup` — 仮想モジュール、エイリアス、注入ルートの登録
+## `setup` — 仮想モジュール、エイリアス、注入ルート、client entry の登録
 
-`zfb build` ごとに **一度**、`zfb dev` ホストの起動ごとに一度、`preBuild` の前に実行されます。このフックは、プラグインがモジュール解決パイプライン（仮想モジュール + インポートエイリアス）に寄与し、開発専用の合成ルートを登録する場所です。`setup` が完了すると、レジストリはその実行の残りの期間中、凍結されます。
+`zfb build` ごとに **一度**、`zfb dev` ホストの起動ごとに一度、`preBuild` の前に実行されます。このフックは、プラグインがモジュール解決パイプライン（仮想モジュール + インポートエイリアス）、合成ページルート、package-owned client entry に寄与する場所です。`setup` が完了すると、レジストリはその実行の残りの期間中、凍結されます。
 
 ```ts
-setup({ command, projectRoot, config, options, logger, addAlias, addVirtualModule, injectRoute }) {
+setup({
+  command,
+  projectRoot,
+  config,
+  options,
+  logger,
+  addAlias,
+  addVirtualModule,
+  injectRoute,
+  addClientEntry,
+}) {
   // `command` is "build" or "dev". Gate dev-only registrations on it.
   addAlias("@/components/foo", "./src/components/foo.tsx");
   addVirtualModule("virtual:my-data", () =>
     `export default ${JSON.stringify(myJson)}`,
   );
+  injectRoute("/preset-page", "./preset/page.tsx");
+  addClientEntry("./client/analytics.client.ts");
   if (command === "dev") {
-    injectRoute("/api/dev/x", "./scripts/dev-x.ts");
+    injectRoute("/dev/preview", "./scripts/dev-preview.tsx");
   }
 }
 ```
@@ -81,38 +95,58 @@ loader のコントラクトは **1 つ** だけです。「loader が JSON を�
 
 **衝突検出。** 2 つのプラグインが同じ `specifier` を登録すると `VirtualModuleConflict` が発生し、ビルドを中断します。
 
-### `injectRoute(pattern, entrypoint)` — 開発専用の合成ページルート
+### `injectRoute(pattern, entrypoint, opts?)` — 合成ページルート
 
-dev サーバが認識する URL パターンの下に TSX/TS ファイルを登録します。これは **概念的には** `pages/<...>.tsx` と同じページレンダリングパイプラインを通ってルーティングされます。パターンは `pages/` のファイル名文法（`/blog/[slug]`、`/api/dev/x`、`/docs/[...rest]`）に従い、`entrypoint` はプロジェクトルートを基準に解決されます。
+`pages/<...>.tsx` と同じページレンダリングパイプラインを通る URL パターンの下に TSX/TS ファイルを登録します。パターンは `pages/` のファイル名文法（`/blog/[slug]`、`/api/dev/x`、`/docs/[...rest]`）に従い、`entrypoint` はプロジェクトルートを基準に解決されます。
 
 ```ts
-injectRoute("/api/dev/x", "./scripts/dev-x.ts");
+injectRoute("/preset-page", "./preset/page.tsx");
+injectRoute("/docs/[slug]", "./preset/doc.tsx", { prerender: true });
+injectRoute("/account", "./preset/account.tsx", { prerender: false });
 ```
 
-<Warning title="レンダラ統合は後続対応">
+**build** モードでは、注入ルートはビルドごとの overlay pages root に materialize され、通常の scan -> bundle -> render パイプラインを通ります。`opts.prerender` はビルド形状を制御します。省略または `true` はルートを prerender し、`false` は SSR 形状のルートとしてマークします。`output: "static"` はそれを拒否します。同じ URL 形状を持つユーザー作成の `pages/` ルートは、package route より優先されます。
 
-レジストリ、衝突検出、開発専用ガード、パターンマッチングの配線はすべて v1 で出荷されています。**マッチした entrypoint をページレンダラで完全に評価する処理は後続イシューです。** 現状、URL が注入されたパターンに一致すると dev サーバは `zfb_plugin` トレーシングターゲットに構造化されたマッチを記録するので、登録がエンドツーエンドで成立したことを確認できます。ただしリクエストはその後、既存の dist / public フォールバックに落ちます（他にその URL を主張するファイルがなければ 404 になります）。レンダラ側の配線は、ここで説明した公開 API を変えることなく導入されます。
+**dev** モードでは、静的および動的な注入ルートは `zfb dev` によってレンダリングされます。静的ルートは起動時に dev route universe へ seed され、動的ルートは最初のリクエスト時にレンダリングされます。`opts.prerender` は build 専用メタデータであり、dev では無視されます。
 
-</Warning>
+ルートがローカル開発だけを目的とする場合は、登録を自分でガードしてください。
 
-**開発専用。** `command === "build"` のときに `injectRoute` を呼ぶと `InjectRouteInBuildMode` が発生し、ビルドを中断します。静的ビルドは SSR 形状のルートを表面化させるべきではありません。実 URL 上に開発専用の HTML が必要なら、`if (command === "dev")` で呼び出しをガードしてください。
+```ts
+setup({ command, injectRoute }) {
+  if (command === "dev") {
+    injectRoute("/dev/preview", "./scripts/dev-preview.tsx");
+  }
+}
+```
 
-**衝突検出。** 2 つのプラグインが同じ `pattern` を登録すると `InjectRouteConflict` が発生し、dev の起動を中断します。
+**衝突検出。** 2 つのプラグインが同じ `pattern` を異なる entrypoint で登録すると `InjectRouteConflict` が発生し、build / dev の起動を中断します。
+
+### `addClientEntry(entrypoint)` — package-owned client scripts
+
+プラグインまたは preset が所有するクライアント側 side-effect entry を登録します。
+
+```ts
+addClientEntry("./client/analytics.client.ts");
+```
+
+`entrypoint` は `*.client.{ts,tsx,js,jsx}` ファイルを指す必要があります。client entry 名は `.client` を除いたファイル名 stem から導出され（`analytics.client.ts` -> `analytics`）、出力は通常の client-script 形状に従います。dev では安定 URL `/assets/client/<name>.js`、production ではハッシュ付き URL `/assets/client/<name>-<hash>.js` です。相対 entrypoint はプロジェクトルートから解決されます。
+
+同じ名前を持つユーザー作成の client entry は、package-owned entry より優先されます。2 つのプラグインが同じ導出名を異なる entrypoint で登録すると `ClientEntryConflict` が発生します。`*.client.*` entry 規約に一致しないパスは `InvalidClientEntry` を発生させます。
 
 ### `injectRoute` vs `devMiddleware` — 正しいフックを選ぶ
 
-どちらも `zfb dev` 中にだけ存在する新しい URL を追加しますが、狙う問題が異なります。
+どちらも `zfb dev` 中に URL を追加できますが、狙う問題が異なります。
 
 | Hook | Returns | Use when |
 | --- | --- | --- |
-| `injectRoute(pattern, entrypoint)` | ページレンダラが評価して HTML にラスタライズする TSX/TS モジュール | 開発専用の URL 上に実在する JSX 形状のページが欲しいとき（zmod の Astro `injectRoute` に対応）。 |
+| `injectRoute(pattern, entrypoint, opts?)` | ページレンダラが評価して HTML にラスタライズする TSX/TS モジュール | ディスク上の `pages/` ツリーの外に存在する実在する JSX 形状のページが欲しいとき。package-owned build route も含みます。 |
 | `devMiddleware(ctx)` → `ctx.register(path, handler)` | リクエストごとに `{ status, headers, body }` を返す JS 関数 | HTTP ハンドラが欲しいとき — JSON API、ホットリロードブリッジ、アップロードエンドポイントなど。ページパイプラインも JSX もなし。 |
 
 応答がページでないときは `devMiddleware` が正解、ディスク上の `pages/` ツリーの外に存在する合成的な `pages/foo.tsx` が欲しいときは `injectRoute` が正解です。
 
 ### 閉じた面 — マークダウン拡張フックはなし
 
-`SetupContext` が公開する登録メソッドは正確に 3 つだけです: `addAlias`、`addVirtualModule`、`injectRoute`。意図的に省かれているもの:
+`SetupContext` が公開する登録メソッドは正確に 4 つだけです: `addAlias`、`addVirtualModule`、`injectRoute`、`addClientEntry`。意図的に省かれているもの:
 
 - `addRemarkPlugin` / `addRehypePlugin` / `addMarkdownVisitor` はなし、
 - `addModuleLoader` / `addModuleTransform` はなし、
@@ -273,17 +307,17 @@ loader は `zfb build` の最初に一度実行されます。バンドラは結
 
 ## 衝突検出のまとめ
 
-2 つのプラグインが登録で衝突すると、zfb は両方の問題プラグインを名指しする 3 つのエラーのいずれかでビルド／dev を中断します。
+setup の登録が衝突しているか無効な場合、zfb は以下のいずれかのエラーで build / dev を中断します。
 
 - `AliasConflict` — 同じ `from`、異なる `to`。
 - `VirtualModuleConflict` — 同じ specifier、異なるプラグイン。
 - `InjectRouteConflict` — 同じ URL パターン、異なるプラグイン。
-
-`InjectRouteInBuildMode` は、いずれかのプラグインが `zfb build` 中に `injectRoute` を呼んだとき（誰が先に登録したかに関わらず）に発生します。
+- `ClientEntryConflict` — 同じ導出 client-entry 名、異なる entrypoint。
+- `InvalidClientEntry` — `addClientEntry` のパスが有効な `*.client.{ts,tsx,js,jsx}` entry ではない。
 
 ## 必要ないとき — レシピを書く
 
-ビルド時に動くものすべてがプラグインを必要とするわけではありません。タスクが `setup` レベルの機能を必要としない（仮想モジュールも、エイリアスも、注入ルートも、dev ミドルウェアも不要）なら、`scripts/` に置いて `pnpm build` に組み込む素の Node.js スクリプトのほうがシンプルで、単独でテストしやすく、zfb 内部への結合も小さくなります。より広い原則については [設計哲学](./design-philosophy.mdx) と [エンジンとフレームワーク](./engine-vs-framework.mdx) のページが説明します。
+ビルド時に動くものすべてがプラグインを必要とするわけではありません。タスクが `setup` レベルの機能を必要としない（仮想モジュールも、エイリアスも、注入ルートも、client entry も不要）、または dev ミドルウェアを必要としないなら、`scripts/` に置いて `pnpm build` に組み込む素の Node.js スクリプトのほうがシンプルで、単独でテストしやすく、zfb 内部への結合も小さくなります。より広い原則については [設計哲学](./design-philosophy.mdx) と [エンジンとフレームワーク](./engine-vs-framework.mdx) のページが説明します。
 
 プラグインを必要としない一般的な候補:
 

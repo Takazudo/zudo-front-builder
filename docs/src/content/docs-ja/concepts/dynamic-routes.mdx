@@ -25,8 +25,8 @@ category: Concepts
 
 ## `paths()` の契約
 
-`paths()` は同期的なエクスポートです。`{ params, props }` オブジェクトの
-配列を返します。ルーターはその配列を消費し、1 エントリが 1 つの
+`paths()` は `{ params, props }` オブジェクトの配列を返します。同期的に返しても、
+Promise として返しても構いません。ルーターはその配列を消費し、1 エントリが 1 つの
 レンダリング済み URL になります。
 
 ```ts
@@ -37,7 +37,7 @@ type PathEntry<P = Record<string, unknown>> = {
   props?: P;
 };
 
-export function paths(): PathEntry[];
+export function paths(): PathEntry[] | Promise<PathEntry[]>;
 ```
 
 - `params` のキーは、ファイル名の角かっこ内の名前と一致する必要があります。
@@ -82,8 +82,9 @@ export default function BlogPost({ params, props }) {
 いくつか注目すべき点があります。
 
 - `getCollection` は同期的です。完全なコンテンツのスナップショットは、
-  どの TSX が実行されるよりも前に Rust 側で事前構築されています。
-  `paths()` に `async` は不要で、ページコンポーネントにも不要です。
+  どの TSX が実行されるよりも前に Rust 側で事前構築されています。そのため、
+  この例では `async` は不要です。ルート列挙に async module loading や
+  Promise を返す別のヘルパーが必要な場合は、`export async function paths()` を使ってください。
 - `params.slug` が URL に現れるものです。`slug: "hello-zfb"` の記事は
   `/blog/hello-zfb` になります。
 - `props.title` はエンジンにとって不透明で、コンポーネントへ渡される
@@ -148,10 +149,10 @@ export default function DocsPage({ params }) {
   するには、ファイルをオプショナル形（`[[...slug]]`）にリネームし、
   明示的に `{ params: { slug: [] } }` エントリを返してください。`[""]` と
   `""` はどちらの形でも無効のままです。
-- `paths()` は **同期的** です。コンテンツのスナップショット全体は、どの
-  ページが評価されるよりも前に読み込まれるため、待つべき非同期の境界は
-  ありません。純粋なデータで決定論的に保ってください。ルーターはレンダーの
-  はるか前、ルート列挙の段階でこれを呼び出します。
+- `paths()` は **同期的にも async にも** できます。コンテンツのスナップショット全体は、どの
+  ページが評価されるよりも前に読み込まれるため、コンテンツだけのルートはたいてい同期のままで
+  十分です。Promise を返す `paths()` export もサポートされています。結果は純粋なデータで
+  決定論的に保ってください。ルーターはレンダーのはるか前、ルート列挙の段階でこれを呼び出します。
 - `paths()` は **ルートごと・ビルドごとに 1 回だけ評価されます** — 結果は
   メモ化され、同じルートテンプレートからレンダリングされるすべてのページで
   再利用されます。`paths()` 内のエントリごとの処理（コレクションのマッピング
@@ -169,4 +170,4 @@ export default function DocsPage({ params }) {
 - [Routing](./routing.mdx) — 静的ルートの基礎。
 - [Content Collections](./content-collections.mdx) — ほとんどの
   `paths()` 呼び出しがデータソースとして参照するもの。同期的な
-  `getCollection` API についても解説しています。
+  `getCollection` / `getEntry` API についても解説しています。

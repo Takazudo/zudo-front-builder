@@ -13,19 +13,21 @@ the production emitter, and the native-engine placeholder.
 
 This crate invokes the **Tailwind CSS v4 standalone CLI** as a subprocess.
 
-| Field                 | Value                                                              |
-| --------------------- | ------------------------------------------------------------------ |
-| Pinned version        | **`4.2.0`**                                                        |
-| Major line            | Tailwind CSS v4.x                                                  |
-| Distribution          | Standalone CLI binary (no Node.js required at runtime)             |
-| Expected binary path  | `crates/zfb/binaries/tailwindcss-v4` (in the release tarball)      |
-| Upstream              | <https://github.com/tailwindlabs/tailwindcss/releases>             |
+| Field                 | Value                                                         |
+| --------------------- | ------------------------------------------------------------- |
+| Pinned version        | **`4.2.0`**                                                   |
+| Major line            | Tailwind CSS v4.x                                             |
+| Distribution          | Standalone CLI binary (no Node.js required at runtime)        |
+| Workspace fallback    | `crates/zfb/binaries/tailwindcss-v4` (or `.exe` on Windows)   |
+| Embedded runtime name | `bin/tailwindcss-v4` inside the `include_dir!` vendor snapshot |
+| Upstream              | <https://github.com/tailwindlabs/tailwindcss/releases>        |
 
 > The pin **must be reviewed and refreshed before each `zfb` release**. Bump
 > `4.2.0` to whatever the latest stable Tailwind v4.x is at release-cut time.
-> Update the SHA-256 constants in `crates/zfb/build.rs` and the version
-> constant in `scripts/fetch-tailwind.mjs` in the same commit — both must
-> stay in lockstep with the version line above.
+> Update `TAILWIND_VERSION` and the Tailwind SHA-256 constants in
+> `crates/zfb/build.rs`, plus `TAILWIND_VERSION` in
+> `scripts/fetch-tailwind.mjs`, in the same commit. Both version constants
+> must stay in lockstep with the version line above.
 
 ## Getting the binary
 
@@ -39,8 +41,10 @@ When you run `cargo build` (or `cargo install zfb`), the build script
 detects your platform, downloads the pinned `tailwindcss` v4 standalone
 binary from the [tailwindlabs GitHub release](https://github.com/tailwindlabs/tailwindcss/releases),
 verifies its SHA-256, and stages it at `crates/zfb/binaries/tailwindcss-v4`
-(or `tailwindcss-v4.exe` on Windows). Re-runs are a fast no-op when the
-on-disk binary already matches the pinned checksum.
+(or `tailwindcss-v4.exe` on Windows). It then copies the staged executable to
+`$OUT_DIR/vendor/bin/tailwindcss-v4` so `include_dir!` embeds it in the
+compiled `zfb` executable. Re-runs are a fast no-op when the on-disk binary
+already matches the pinned checksum.
 
 The script `scripts/fetch-tailwind.mjs` (invoked via `pnpm fetch:tailwind`)
 performs the same download for developer convenience — useful when you
@@ -82,8 +86,9 @@ with the package directory as CWD; the engine's default relative path
 
 - **Reproducible builds.** A fixed Tailwind version means the same source tree
   produces byte-identical CSS regardless of when or where it is built.
-- **Bundled binary.** The release tarball ships the exact binary `zfb-css`
-  expects — no `npx`, no `node_modules`, no network calls at user build time.
+- **Embedded binary.** The compiled `zfb` executable embeds the exact binary
+  `zfb-css` expects and extracts it to a tempdir at runtime — no `npx`, no
+  `node_modules`, no network calls while building a user site.
 - **Subprocess contract.** The CLI flags this crate calls (`--input`,
   `--output`, `--watch`, content-scan globs) are the v4 surface area; locking
   the version prevents flag drift from breaking the wrapper.
@@ -100,18 +105,19 @@ behind an internal `CssEngine` trait. The `tailwindcss-v4` binary is one
 implementation; a hypothetical Rust-native crate would be another, with no
 changes required at call sites.
 
-### Why the binary lives at `crates/zfb/binaries/tailwindcss-v4`
+### Why the workspace fallback lives at `crates/zfb/binaries/tailwindcss-v4`
 
-The `zfb` CLI is the single user-facing executable; bundled tooling needs to
-sit in a path the `zfb` runtime can locate relative to its own executable.
-Placing the binary inside `crates/zfb/` keeps the release-tarball layout
-colocated with the crate that owns the runtime contract. See
-`crates/zfb/binaries/README.md` for the slot-level details.
+The `zfb` CLI owns both the Cargo build script that downloads helper binaries
+and the `include_dir!` snapshot that embeds them. Placing the workspace
+fallback under `crates/zfb/` keeps download, checksum, embedding, and runtime
+extraction details colocated with the crate that owns the runtime contract.
+See `crates/zfb/binaries/README.md` for the staging-path details.
 
 The binary file itself is **not** committed to git — `.gitignore` excludes it.
 `crates/zfb/build.rs` downloads and SHA-verifies it at `cargo build` /
-`cargo install` time; `pnpm fetch:tailwind` provides the same binary for
-local development without a full build.
+`cargo install` time, embeds it via `$OUT_DIR/vendor/bin/`, and leaves the
+workspace copy as the direct-development fallback. `pnpm fetch:tailwind`
+provides the same workspace copy for local development without a full build.
 
 ---
 

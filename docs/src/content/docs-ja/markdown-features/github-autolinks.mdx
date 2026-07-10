@@ -8,7 +8,7 @@ tier: Opt-in
 
 ## 有効化
 
-`repo` フィールドは必須です。これがない場合、機能は黙って無効になります。
+`repo` フィールドは必須です。`githubAutolinks` が `repo` なしで設定されている場合、機能を黙ってスキップするのではなく、ビルドは config error（`githubAutolinks requires repo: "owner/repo"`）を出力します。
 
 ```ts
 // zfb.config.ts

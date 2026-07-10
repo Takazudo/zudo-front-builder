@@ -42,7 +42,7 @@ import { getCollection } from "zfb/content";
 const posts = getCollection("blog");  // synchronous — no await
 ```
 
-返される形状も似ています。各エントリは `slug`、`data`（フロントマター）、`body` を公開します。全体の仕様については /api/get-collection を参照してください。
+返される形状も似ています。各エントリは `slug`、`data`（frontmatter）、`body` を公開します。全体の仕様については [`getCollection`](../api/get-collection.mdx) を参照してください。
 
 スキーマはインラインの Zod から宣言的な設定へと移ります。コレクションは `zfb.config.ts` で `defineConfig` を使って宣言します:
 
@@ -57,7 +57,9 @@ export default defineConfig({
 });
 ```
 
-Zod はありません。スキーマの検証には最小限の JSON-Schema 方言を使います。`schema` フィールドは `type` キーや `properties` キーを持つ JSON オブジェクトを受け付けます。`type` に指定できる値は `"string"`、`"number"`、`"integer"`、`"boolean"`、`"array"`、`"object"`、`"null"` です（`"date"` はなく、オプショナルを表す末尾の `?` もありません）。スキーマは設定読み込み時に構造が検証されますが、フロントマターのフィールドはビルド時にスキーマに対して現状では強制されません。完全な形状については [`defineConfig`](../api/define-config.mdx) を参照してください。
+Zod はありません。スキーマの検証には最小限の JSON-Schema 方言を使います。`schema` フィールドは `type` キーや `properties` キーを持つ JSON オブジェクトを受け付けます。`type` に指定できる値は `"string"`、`"number"`、`"integer"`、`"boolean"`、`"array"`、`"object"`、`"null"` です（`"date"` はなく、オプショナルを表す末尾の `?` もありません）。スキーマは設定読み込み時に構造が検証されますが、frontmatter フィールドはビルド時には強制されません。完全な形状については [`defineConfig`](../api/define-config.mdx) を参照してください。
+
+宣言したスキーマに対して collection frontmatter を検証するには `zfb check` を実行してください。CI ではこれが強制の関門です。
 
 ## アイランド
 
@@ -72,7 +74,7 @@ export default function Counter() {
 }
 ```
 
-`"use client"` ファイルからインポートされたものは、自動的にアイランドになります。/api/island を参照してください。
+`"use client"` ファイルからインポートされたものは、自動的にアイランドになります。[`island`](../api/island.mdx) を参照してください。
 
 ## スロットとレイアウト
 
@@ -113,7 +115,7 @@ export default defineConfig({
 
 設定すると、レンダリング時に `globalThis.__zfb.site` が利用可能になり、レイアウトで正規 `<link>` タグや OpenGraph メタを構築できます。[`defineConfig`](../api/define-config.mdx) を参照してください。
 
-**プラグインライフサイクル: `setup`、`addAlias`、`addVirtualModule`、`injectRoute`**
+**プラグインライフサイクル: `setup`、`addAlias`、`addVirtualModule`、`injectRoute`、`addClientEntry`**
 
 Astro インテグレーションは `astro:config:setup` フック中に `updateConfig`、`addWatchFile`、`injectRoute` を公開します。zfb での同等物は、プラグインライフサイクルの `setup` フックです:
 
@@ -122,11 +124,13 @@ import { definePlugin } from "@takazudo/zfb/plugins";
 
 export default definePlugin({
   name: "my-plugin",
-  setup({ command, addAlias, addVirtualModule, injectRoute }) {
+  setup({ command, addAlias, addVirtualModule, injectRoute, addClientEntry }) {
     addAlias("@/components/foo", "./src/components/foo.tsx");
     addVirtualModule("virtual:my-data", () =>
       `export default ${JSON.stringify({ key: "value" })}`,
     );
+    injectRoute("/preset-page", "./pages/preset-page.tsx");
+    addClientEntry("./client/analytics.client.ts");
     if (command === "dev") {
       injectRoute("/api/dev/x", "./scripts/dev-x.ts");
     }
@@ -134,7 +138,7 @@ export default definePlugin({
 });
 ```
 
-`addAlias` は完全一致のインポート書き換えを行います（プレフィックス一致は将来の改訂で対応予定です）。`addVirtualModule` は指定子（specifier）によって合成 ESM モジュールを公開します。`injectRoute` は開発専用で、`zfb build` 中に呼び出すとエラーになります。完全な契約については [プラグイン](../concepts/plugins.mdx) を参照してください。
+`addAlias` は完全一致のインポート書き換えを行います（プレフィックス一致は将来の改訂で対応予定です）。`addVirtualModule` は specifier によって合成 ESM モジュールを公開します。`injectRoute` は dev 専用ではありません。`zfb build` 中は package-owned route が build overlay に materialize され、通常の route pipeline で prerender されます。`zfb dev` 中は dev renderer が配信する合成ルートになります。dev だけに存在させたいルートのときだけ、`command === "dev"` でガードしてください。`addClientEntry` は client bundle 向けの package-owned `*.client.{ts,tsx,js,jsx}` side-effect entry を登録します。完全な契約については [プラグイン](../concepts/plugins.mdx) を参照してください。
 
 **`postBuild` でのルートマニフェスト（`ctx.routes`）**
 

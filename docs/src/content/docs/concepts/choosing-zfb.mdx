@@ -50,8 +50,10 @@ no serverless function to configure, and no adapter layer. The built
 **Light interactive islands.** Your pages are mostly static documents
 with a small number of interactive components — a search box, a
 counter, a modal trigger. zfb's islands model (`"use client"`) ships
-exactly the JS for the islands each page uses and nothing else. A page
-with no islands ships zero bytes of client JS.
+a single shared islands bundle for the project and injects it only on
+pages that contain island markers. A page with one island may download
+code for the project's other islands too; pages with no islands skip the
+islands script, though other client-script paths can still ship JavaScript.
 
 ## Comparison
 

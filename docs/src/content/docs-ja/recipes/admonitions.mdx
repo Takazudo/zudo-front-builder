@@ -7,13 +7,13 @@ category: Recipes
 
 <Info title="このページで扱うこと">
 
-汎用の [`directives`](/docs/markdown-features/directives)（英語）オプトイン機能を使って、admonition の語彙（`note`、`tip`、`info`、`warning`、`danger`、`caution`）と折りたたみ可能な `details` ディレクティブを登録する方法です。最小限のコンポーネントスタブと CSS パターンも含みます。[zudo-doc](https://github.com/zudolab/zudo-doc) が、完全に作り込まれたリファレンス実装です。
+汎用の [`directives`](/ja/docs/markdown-features/directives) オプトイン機能を使って、admonition の語彙（`note`、`tip`、`info`、`warning`、`danger`、`caution`）と折りたたみ可能な `details` ディレクティブを登録する方法です。最小限のコンポーネントスタブと CSS パターンも含みます。[zudo-doc](https://github.com/zudolab/zudo-doc) が、完全に作り込まれたリファレンス実装です。
 
 </Info>
 
 ## 背景
 
-zfb は **エンジン** です。Core プリミティブとして [ディレクティブレジストリ](/docs/markdown-features/directives-registry)（英語）を提供し、それを設定から埋めるための [`directives`](/docs/markdown-features/directives)（英語）オプトイン機能を提供します。エンジンはデフォルトで名前付きディレクティブを **一切** 同梱していません。admonition の語彙（`:::note`、`:::tip` など）はユーザーランドのポリシー判断であり、このレシピはその実装方法の一例を示します。
+zfb は **エンジン** です。Core プリミティブとして [ディレクティブレジストリ](/ja/docs/markdown-features/directives-registry) を提供し、それを設定から埋めるための [`directives`](/ja/docs/markdown-features/directives) オプトイン機能を提供します。エンジンはデフォルトで名前付きディレクティブを **一切** 同梱していません。admonition の語彙（`:::note`、`:::tip` など）はユーザーランドのポリシー判断であり、このレシピはその実装方法の一例を示します。
 
 `:::details`（折りたたみ可能なセクション）は構造的には admonition に似ていますが、意味的には異なるため、別途登録して独自のコンポーネントを与えます。
 
@@ -185,7 +185,7 @@ export default {
 
 ## 関連項目
 
-- [`directives` 機能リファレンス](/docs/markdown-features/directives)（英語） — このレシピが使うオプトイン機能です。
-- [ディレクティブレジストリ](/docs/markdown-features/directives-registry)（英語） — その下にある Core プリミティブです。
+- [`directives` 機能リファレンス](/ja/docs/markdown-features/directives) — このレシピが使うオプトイン機能です。
+- [ディレクティブレジストリ](/ja/docs/markdown-features/directives-registry) — その下にある Core プリミティブです。
 - [MDX コンポーネント](../concepts/mdx-components.mdx) — コンポーネントをグローバルにスコープへ入れる方法です。
 - [カスタムディレクティブ](../concepts/custom-directives.mdx) — フレームワーク作者向けに、Rust API でディレクティブを登録します。

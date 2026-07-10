@@ -88,11 +88,11 @@ question is "is this something 100% of zfb consumers would use the same way,
 with no legitimate reason to deviate?"
 
 **The narrow plugin API zfb ships today** — the four lifecycle hooks, virtual
-modules, import aliases, and dev-only injected routes documented in
+modules, import aliases, injected routes, and client entries documented in
 [Plugins](./plugins.mdx) — is exactly that narrow exception. The `setup`
-hook's virtual module and alias registrations, the `preBuild` / `postBuild`
-file-generation hooks, and the `devMiddleware` handler cover patterns that
-are structurally inseparable from the build pipeline: things a consumer
+hook's virtual module, alias, injected-route, and client-entry registrations,
+the `preBuild` / `postBuild` file-generation hooks, and the `devMiddleware`
+handler cover patterns that are structurally inseparable from the build pipeline: things a consumer
 cannot implement as a recipe without forking the engine itself. The surface is
 deliberately closed elsewhere — no `addRemarkPlugin`, no `addModuleTransform`,
 no `onModuleLoad` — because those patterns belong in recipes, not in a stable

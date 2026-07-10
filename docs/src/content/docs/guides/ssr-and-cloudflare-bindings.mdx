@@ -367,10 +367,10 @@ There are two ways to run the app locally, and they answer different questions:
   `prerender = false` routes through the embedded V8 isolate (see
   [dev-prod parity for `prerender = false`](#dev-prod-parity-for-prerender-false)
   above), but it exposes **no Worker bindings**: calling
-  `getCloudflareContext<Env>()` from an SSR route under `zfb dev` yields no
-  `env`, so any route that reads `env.DB` (or any other binding) cannot work
-  here. Use this for layout, styling, and routing iteration on routes that do
-  **not** touch bindings.
+  `getCloudflareContext<Env>()` from an SSR route under `zfb dev` throws
+  because there is no Cloudflare request scope, so any route that reads
+  `env.DB` (or any other binding) cannot work here. Use this for layout,
+  styling, and routing iteration on routes that do **not** touch bindings.
 - **`wrangler dev`** — binding-realistic loop. Runs the built `_worker.js`
   against a **local** D1 database (a SQLite file under `.wrangler/`), serves
   your real `compatibility_flags`, and surfaces real binding bugs. It

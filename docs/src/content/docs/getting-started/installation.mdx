@@ -16,8 +16,8 @@ sidebar_position: 2
 
 You will need:
 
-- **Node.js ≥ 22** — the config loader and some build steps invoke Node.
-- **pnpm** — install via the [official installer](https://pnpm.io/installation). zfb scaffolds projects that use pnpm and will run `pnpm install` for you when it can find pnpm on your `PATH`.
+- **Node.js ≥ 22** — required by the npm CLI wrapper and by the `tsc` subprocess that powers `zfb check`. The default TypeScript config loader itself runs inside zfb's embedded V8 runtime, not Node.
+- **pnpm ≥ 11** — install via the [official installer](https://pnpm.io/installation). zfb scaffolds projects that use pnpm and will run `pnpm install` for you when it can find pnpm on your `PATH`.
 
 ## Supported platforms
 

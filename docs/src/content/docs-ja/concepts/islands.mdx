@@ -97,7 +97,22 @@ dist/assets/islands-chunk-<hash>.js
 </div>
 ```
 
-`data-when` 属性はハイドレーションのタイミングを制御し、デフォルト以外のタイミングを要求したときにのみ出力されます。`"load"` タイミング（即座にハイドレート）がデフォルトで、`data-when` 属性は生成されません。`"visible"`・`"idle"`・`"media"` 戦略はそれぞれ `data-when` 属性を出力します。`"media"` はさらに CSS クエリ文字列を持つ `data-media` 属性も出力します。
+`data-when` 属性はハイドレーションのタイミングを制御し、デフォルト以外のタイミングを要求したときにのみ出力されます。`"load"` タイミング（即座にハイドレート）がデフォルトで、`data-when` 属性は生成されません。デフォルト以外のタイミングを指定する JSX API は [`<Island>` ラッパー](../api/island.mdx) です。メディアクエリによるハイドレーションでは、`when="media"` と `media` クエリの両方を渡します。
+
+```tsx
+import { Island } from "@takazudo/zfb";
+import MobileMenu from "./MobileMenu";
+
+export default function Header() {
+  return (
+    <Island when="media" media="(max-width: 768px)">
+      <MobileMenu />
+    </Island>
+  );
+}
+```
+
+`"visible"`・`"idle"`・`"media"` 戦略はそれぞれ `data-when` 属性を出力します。`"media"` はさらに CSS クエリ文字列を持つ `data-media` 属性も出力します。
 
 ```html
 <!-- visible timing -->
@@ -123,7 +138,7 @@ dist/assets/islands-chunk-<hash>.js
 すべての島が単一のファイルにまとめてバンドルされるため、次のことが言えます。
 
 - **いずれかの島を持つすべてのページが、全島のコードを読み込みます。** 単一の `islands-<hash>.js` バンドルには、プロジェクト内のすべての島コンポーネントが含まれます。`ThemeToggle` しか使わないページでも、`Counter` と `SearchBox` のコードをダウンロードします。これは、ページ単位の読み込み粒度を、よりシンプルなビルドパイプラインとページをまたいだ優れたキャッシュ効率と引き換えにするものです。
-- **島のないページにはスクリプトが入りません。** プロジェクトのページに `"use client"` コンポーネントが含まれない場合、ビルドパイプラインは `<script>` の注入を完全にスキップします。完全に静的なページには JavaScript が 1 バイトも届きません。
+- **島のないページには islands スクリプトが入りません。** ページに島マーカーが含まれない場合、ビルドパイプラインはそのページへの共有 islands `<script>` 注入をスキップします。使われている場合、他の client-script 仕組みは引き続き JavaScript を追加できます。
 - **いずれかの島の変更が、単一のバンドルを再ハッシュします。** いずれかの島コンポーネントを追加または変更すると新しいコンテンツハッシュが生成され、それがすべてのページについてブラウザのキャッシュされたバンドルを無効化します。トレードオフは、1 つのキャッシュエントリがすべての島をカバーすることです。バンドルが一度キャッシュされれば、プロジェクト内のすべてのページが同じキャッシュヒットの恩恵を受けます。
 
 ## フレームワークの選択
@@ -274,4 +289,4 @@ CSS のみのアプローチ（`:target`・`:checked` + `<label>`・`@starting-s
 
 正直な答えが「クリックでクラスを 1 つ切り替えたいだけ」なら、まず CSS か小さなインラインスクリプトに手を伸ばしてください。「2 回書くことになるステートフルな UI」に島を、というのが正しい判断基準です。
 
-パイプラインの形についてさらに詳しくは [Build pipeline](./build-pipeline.mdx) と [Build engine](../architecture/build-engine.mdx) を参照してください。
+JSX ラッパーとハイドレーションオプションについてさらに詳しくは [`<Island>`](../api/island.mdx) を参照してください。パイプラインの形についてさらに詳しくは [Build pipeline](./build-pipeline.mdx) と [Build engine](../architecture/build-engine.mdx) を参照してください。
