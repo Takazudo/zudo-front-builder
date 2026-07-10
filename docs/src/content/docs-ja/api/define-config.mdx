@@ -31,7 +31,7 @@ declare module "zfb/config" {
 
 すべてのキーは camelCase です。形状は Rust の serde デシリアライザ（`crates/zfb/src/config.rs`）によって強制されます。`packages/zfb/src/config.ts` の TypeScript 型は、エディタの IntelliSense のためにそれを反映しています。
 
-- `outDir?: string` — 出力ディレクトリ。デフォルト: `"dist"`。
+- `outDir?: string` — dev、build、preview が使う出力ディレクトリ。デフォルト: `"dist"`。build と preview では、明示的な `--outdir` がこの設定より優先されます。
 - `publicDir?: string` — 静的アセットのディレクトリ。そのままコピーされます。デフォルト: `"public"`。
 - `host?: string` — dev / preview サーバーがバインドするホスト。
 - `port?: number` — dev / preview サーバーのポート。

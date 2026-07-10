@@ -109,7 +109,7 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 
 | フラグ | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `--outdir` | path | `dist` | プロダクションビルドの出力ディレクトリ。 |
+| `--outdir` | path | config / `dist` | プロダクションビルドの出力ディレクトリ。config の `outDir` より優先され、どちらもない場合は `dist` を使います。 |
 | `--minify-html` | boolean flag | config/default | このビルドでプロダクション HTML ミニファイを有効にします。`minifyHtml: false` または設定の省略より優先されます。 |
 | `--no-minify-html` | boolean flag | config/default | このビルドでプロダクション HTML ミニファイを無効にします。config や preset の `minifyHtml: true` より優先されます。 |
 
@@ -132,7 +132,7 @@ zfb build --no-minify-html
 zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 ```
 
-`zfb.config.json` の `adapter` フィールドがサポート対象のアダプタ（例: `@takazudo/zfb-adapter-cloudflare`）を指定している場合、`zfb preview` は zfb 自身の静的サーバーではなく `wrangler dev` に処理を引き渡します。この場合 `--outdir` はディレクトリが存在するかを事前確認するだけになります。実際に何を配信するかは wrangler 自身の設定が制御するためです。[SSR と Cloudflare バインディング](../guides/ssr-and-cloudflare-bindings.mdx) を参照してください。
+`zfb.config.json` の `adapter` フィールドがサポート対象のアダプタ（例: `@takazudo/zfb-adapter-cloudflare`）を指定している場合、`zfb preview` は zfb 自身の静的サーバーではなく `wrangler dev` に処理を引き渡します。この場合、`--outdir` または config の `outDir` から選ばれた出力ディレクトリは、存在するかを事前確認するだけになります。実際に何を配信するかは wrangler 自身の設定が制御するためです。[SSR と Cloudflare バインディング](../guides/ssr-and-cloudflare-bindings.mdx) を参照してください。
 
 アダプタの preview は、処理を引き渡す前に `pnpm exec wrangler --version` の事前チェックを実行します。その pin を更新している間の一時的な escape hatch としてのみ、`ZFB_SKIP_WRANGLER_VERSION_CHECK=1` を設定してください。
 
@@ -142,9 +142,11 @@ zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 |---|---|---|---|
 | `--port` | u16 | `4321`* | preview サーバーがバインドするポート。 |
 | `--host` | string | `localhost`* | バインドするホストインターフェース。値なしの `--host` は `0.0.0.0` のショートカットです。 |
-| `--outdir` | path | `dist` | ビルド済み成果物を配信するディレクトリ。 |
+| `--outdir` | path | config / `dist` | ビルド済み成果物を配信するディレクトリ。config の `outDir` より優先され、どちらもない場合は `dist` を使います。 |
 
 \* 次の順にフォールバックします: CLI フラグ → `zfb.config.json` の `port`/`host` → 組み込みのデフォルト。
+
+出力ディレクトリも同様に、CLI の `--outdir` → config の `outDir` → 組み込みの `dist` の順でフォールバックします。
 
 ### 例
 

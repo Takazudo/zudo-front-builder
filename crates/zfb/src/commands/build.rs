@@ -3,8 +3,9 @@
 //! Contract:
 //!   pub async fn run(args: &crate::cli::BuildArgs) -> anyhow::Result<()>
 //!
-//! `args.outdir` is the production output directory (default `dist`).
-//! Resolved relative to the current working directory if not absolute.
+//! The production output directory resolves with CLI `--outdir` > config
+//! `outDir` > default `dist` precedence, relative to the current working
+//! directory when it is not absolute.
 //!
 //! ## Pipeline overview
 //!
@@ -32,10 +33,10 @@
 //! statically resolvable (e.g. it `await`s an `import` or queries a
 //! content collection at runtime) are surfaced via
 //! [`crate::output::warn`] with the per-page reason and skipped from
-//! `dist/`; a follow-up sub-task adds runtime evaluation for those.
+//! `<outdir>/`; a follow-up sub-task adds runtime evaluation for those.
 //!
-//! The contract for callers (project-root sanity check, `outdir`
-//! handling, `✓ N pages built in X.XXs` summary) is unchanged.
+//! The other caller contracts (project-root sanity check and
+//! `✓ N pages built in X.XXs` summary) are unchanged.
 
 // V8-off (issue #371, sub-task 4.1a): on the `!feature = "embed_v8"`
 // path the `pub async fn run` body and `DefaultRunner` are compiled
@@ -74,7 +75,9 @@ use zfb_router::Router;
 use zfb_render::paths::PathsCache;
 
 use crate::cli::{BuildArgs, BuildMinifyHtml};
-use crate::commands::resolve::{resolve_outdir, validate_outdir_safety, wipe_outdir_contents};
+use crate::commands::resolve::{
+    resolve_outdir, resolve_outdir_arg, validate_outdir_safety, wipe_outdir_contents,
+};
 use crate::config::{Config, OutputMode};
 use crate::output;
 use crate::render_pipeline::{
@@ -106,7 +109,8 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         .context("failed to load project configuration")?;
     let minify_html = resolve_minify_html(args.minify_html(), &config);
 
-    let outdir = resolve_outdir(&project_root, &args.outdir);
+    let selected_outdir = resolve_outdir_arg(args.outdir.clone(), &config.out_dir);
+    let outdir = resolve_outdir(&project_root, &selected_outdir);
 
     // Sub 3 / #108 — plugin lifecycle. Spawn the host before any heavy
     // work so `preBuild` can prepare files the bundler will see (e.g.

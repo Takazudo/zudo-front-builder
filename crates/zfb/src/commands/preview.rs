@@ -6,22 +6,23 @@
 //!
 //! ## Static-only mode (`adapter: "none"` or omitted)
 //!
-//! Serves files from `<project>/dist/` over HTTP at `args.port`.
+//! Serves files from the selected output directory (`<project>/dist/` by
+//! default) over HTTP at the selected port.
 //!
 //! Trailing-slash semantics match Workers Static Assets'
 //! `html_handling = "auto-trailing-slash"`:
 //!
-//! - `GET /` → serve `dist/index.html`.
+//! - `GET /` → serve `<outdir>/index.html`.
 //! - `GET /foo` →
-//!   - if `dist/foo` is a regular file, serve it;
-//!   - else if `dist/foo/index.html` exists, **301 redirect** to `/foo/`;
+//!   - if `<outdir>/foo` is a regular file, serve it;
+//!   - else if `<outdir>/foo/index.html` exists, **301 redirect** to `/foo/`;
 //!   - else 404.
 //! - `GET /foo/` →
-//!   - if `dist/foo/index.html` exists, serve it;
+//!   - if `<outdir>/foo/index.html` exists, serve it;
 //!   - else 404.
 //!
 //! Naked directories (no `index.html`) always 404 — never a directory
-//! listing. The 404 body is `dist/404.html` if it exists, otherwise a
+//! listing. The 404 body is `<outdir>/404.html` if it exists, otherwise a
 //! plain `404 Not Found` text response.
 //!
 //! Cache-Control is `no-store` for v0 — preview is local only and we
@@ -46,10 +47,9 @@
 //!
 //! Loads `zfb.config.json` (or surfaces a clear "ts not yet supported"
 //! error for `zfb.config.ts`) via [`crate::config::load_from_dir`].
-//! Port resolution layers as "CLI flag > config > built-in default
-//! (`4321`)" — same rule used by `zfb dev`. `--outdir` keeps a clap
-//! default because the preview command does not consult config for it
-//! today.
+//! Port and output-directory resolution layer as "CLI flag > config >
+//! built-in default" — the same rule used by `zfb dev`. The preview port
+//! defaults to `4321`; `outDir` defaults to `dist`.
 
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
@@ -63,7 +63,9 @@ use axum::Router;
 use zfb_build::AdapterChoice;
 
 use crate::cli::PreviewArgs;
-use crate::commands::resolve::{resolve_addr, resolve_host, resolve_port, resolve_under_root};
+use crate::commands::resolve::{
+    resolve_addr, resolve_host, resolve_outdir_arg, resolve_port, resolve_under_root,
+};
 use crate::config;
 use crate::output;
 
@@ -104,11 +106,11 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
         .await
         .context("failed to load project configuration")?;
 
-    // 2. Resolve `args.outdir` against the project root so the
-    //    existence check (and the static handler) operate on an
-    //    unambiguous path. CLI wins over config unconditionally — see
-    //    the precedence note in the module doc comment.
-    let outdir = resolve_under_root(&project_root, &args.outdir);
+    // 2. Select CLI > config/default before resolving against the project
+    //    root. Keep the selected value for adapter-warning logic so merely
+    //    rooting `dist` does not look like a non-default choice.
+    let selected_outdir = resolve_outdir_arg(args.outdir.clone(), &cfg.out_dir);
+    let outdir = resolve_under_root(&project_root, &selected_outdir);
     let port = resolve_port(args.port, cfg.port, DEFAULT_PREVIEW_PORT);
     let host = resolve_host(
         args.host.as_deref(),
@@ -133,14 +135,15 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
         AdapterChoice::Package(pkg) if pkg == CLOUDFLARE_ADAPTER => {
             // `wrangler dev` serves whatever the project's wrangler config
             // names (`main` + `[assets].directory`) — unlike the old
-            // `wrangler pages dev <outdir>`, the CLI outdir cannot override
-            // it. Parsing the wrangler config to verify agreement would need
-            // a TOML/JSONC parser we don't ship, so for a non-default outdir
-            // we warn loudly instead of silently previewing the wrong build.
-            if adapter_outdir_diverges_from_default(&args.outdir) {
+            // `wrangler pages dev <outdir>`, zfb's selected outdir cannot
+            // override it. Parsing the wrangler config to verify agreement
+            // would need a TOML/JSONC parser we don't ship, so for a
+            // non-default selected outdir we warn loudly instead of silently
+            // previewing the wrong build.
+            if adapter_outdir_diverges_from_default(&selected_outdir) {
                 output::warn(format!(
-                    "preview: adapter mode is driven by your wrangler config (`main` + `[assets].directory`) — `--outdir {}` only pre-checks that the directory exists and does NOT change what wrangler dev serves. Make sure your wrangler config points at the same directory.",
-                    args.outdir.display()
+                    "preview: adapter mode is driven by your wrangler config (`main` + `[assets].directory`) — zfb's selected output directory `{}` only pre-checks that the directory exists and does NOT change what wrangler dev serves. Make sure your wrangler config points at the same directory.",
+                    selected_outdir.display()
                 ));
             }
             run_via_wrangler(&project_root, &host, port).await
@@ -363,11 +366,11 @@ fn is_safe_path(url_path: &str) -> bool {
 /// path so a vanished file behaves like a missing one.
 ///
 /// Before reading, we canonicalize `path` and verify it still lives
-/// inside `dist_root` — a symlink planted inside dist that points
-/// outside the root would otherwise be followed silently. Canonicalize
-/// errors (broken symlink, missing file) are treated as not-found. The
-/// read and content-type derivation use the canonical path so a symlink
-/// swap between check and read cannot escape the root.
+/// inside `dist_root` — a symlink planted inside the selected output
+/// directory that points outside the root would otherwise be followed
+/// silently. Canonicalize errors (broken symlink, missing file) are treated
+/// as not-found. The read and content-type derivation use the canonical path
+/// so a symlink swap between check and read cannot escape the root.
 async fn serve_file(path: &Path, dist_root: &Path) -> Response {
     let Some(resolved) = resolve_within_root(path, dist_root) else {
         return not_found_response(dist_root).await;
@@ -398,7 +401,7 @@ fn redirect_response(target: &str) -> Response {
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// Serve `dist/404.html` if present, else a plain text 404 body.
+/// Serve `<outdir>/404.html` if present, else a plain text 404 body.
 async fn not_found_response(dist_root: &Path) -> Response {
     let candidate = dist_root.join("404.html");
     if candidate.is_file() {
@@ -439,11 +442,11 @@ fn content_type_for_path(path: &Path) -> String {
 /// preference (TOML, then JSONC, then plain JSON).
 const WRANGLER_CONFIG_FILENAMES: [&str; 3] = ["wrangler.toml", "wrangler.jsonc", "wrangler.json"];
 
-/// True when the user asked adapter-mode preview to serve a directory other
-/// than the clap default `dist`. `wrangler dev` cannot honor that request
-/// (the wrangler config decides what is served), so the caller warns. An
-/// explicit `--outdir dist` is indistinguishable from the default and stays
-/// silent — in practice the wrangler config points at `dist` there anyway.
+/// True when CLI/config precedence selected an adapter-mode preview directory
+/// other than the built-in default `dist`. `wrangler dev` cannot honor that
+/// selection (the wrangler config decides what is served), so the caller
+/// warns. An explicit `--outdir dist` can override a custom config value and
+/// stays silent — in practice the wrangler config points at `dist` there.
 fn adapter_outdir_diverges_from_default(outdir: &Path) -> bool {
     outdir != Path::new("dist")
 }
@@ -1229,13 +1232,27 @@ mod tests {
 
     #[test]
     fn adapter_outdir_default_dist_stays_silent() {
-        assert!(!adapter_outdir_diverges_from_default(Path::new("dist")));
+        let selected = resolve_outdir_arg(None, Path::new("dist"));
+        assert!(!adapter_outdir_diverges_from_default(&selected));
     }
 
     #[test]
-    fn adapter_outdir_non_default_triggers_warning() {
-        assert!(adapter_outdir_diverges_from_default(Path::new("build")));
-        assert!(adapter_outdir_diverges_from_default(Path::new("out/dist")));
+    fn adapter_outdir_custom_config_triggers_warning() {
+        let selected = resolve_outdir_arg(None, Path::new("configured-out"));
+        assert!(adapter_outdir_diverges_from_default(&selected));
+    }
+
+    #[test]
+    fn adapter_outdir_custom_cli_triggers_warning() {
+        let selected =
+            resolve_outdir_arg(Some(PathBuf::from("cli-out")), Path::new("configured-out"));
+        assert!(adapter_outdir_diverges_from_default(&selected));
+    }
+
+    #[test]
+    fn adapter_outdir_explicit_cli_dist_over_custom_config_stays_silent() {
+        let selected = resolve_outdir_arg(Some(PathBuf::from("dist")), Path::new("configured-out"));
+        assert!(!adapter_outdir_diverges_from_default(&selected));
     }
 
     // ---- wrangler config preflight ------------------------------------

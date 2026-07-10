@@ -24,8 +24,10 @@ pub fn resolve_under_root(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
-/// Alias of [`resolve_under_root`] for the `build` command context where
-/// the resolved value is specifically the output directory.
+/// Alias of [`resolve_under_root`] for command contexts where the selected
+/// value is specifically the output directory. Selection precedence is kept
+/// separate in [`resolve_outdir_arg`] so callers can inspect the pre-root
+/// value when needed (for example, preview's adapter warning).
 pub fn resolve_outdir(root: &Path, path: &Path) -> PathBuf {
     resolve_under_root(root, path)
 }
@@ -153,6 +155,16 @@ pub fn wipe_outdir_contents(outdir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// CLI override > configured `outDir` precedence for build and preview.
+///
+/// `Config::out_dir` already contains the built-in `dist` default, so the
+/// caller only needs this two-way fold. Returning an owned path keeps the
+/// selected value independent of either input and avoids borrowed-lifetime
+/// coupling before it is resolved against the project root.
+pub fn resolve_outdir_arg(cli: Option<PathBuf>, cfg_outdir: &Path) -> PathBuf {
+    cli.unwrap_or_else(|| cfg_outdir.to_path_buf())
+}
+
 /// CLI override > config value > built-in default precedence rule.
 ///
 /// `default_port` is the caller's built-in constant (e.g. `DEFAULT_DEV_PORT`
@@ -258,6 +270,40 @@ mod tests {
         assert_eq!(
             resolve_outdir(root, Path::new("/tmp/zfb-out")),
             PathBuf::from("/tmp/zfb-out")
+        );
+    }
+
+    // ---- resolve_outdir_arg -------------------------------------------------
+
+    #[test]
+    fn resolve_outdir_arg_uses_config_default_when_cli_absent() {
+        assert_eq!(
+            resolve_outdir_arg(None, Path::new("dist")),
+            PathBuf::from("dist")
+        );
+    }
+
+    #[test]
+    fn resolve_outdir_arg_uses_custom_config_when_cli_absent() {
+        assert_eq!(
+            resolve_outdir_arg(None, Path::new("configured-out")),
+            PathBuf::from("configured-out")
+        );
+    }
+
+    #[test]
+    fn resolve_outdir_arg_prefers_custom_cli_over_config() {
+        assert_eq!(
+            resolve_outdir_arg(Some(PathBuf::from("cli-out")), Path::new("configured-out")),
+            PathBuf::from("cli-out")
+        );
+    }
+
+    #[test]
+    fn resolve_outdir_arg_preserves_explicit_cli_dist_over_custom_config() {
+        assert_eq!(
+            resolve_outdir_arg(Some(PathBuf::from("dist")), Path::new("configured-out")),
+            PathBuf::from("dist")
         );
     }
 

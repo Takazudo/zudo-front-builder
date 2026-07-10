@@ -31,7 +31,7 @@ Re-export — do **not** hand-copy the `ZfbConfig` shape into the shim. A hand-m
 
 All keys are camelCase. The shape is enforced by the Rust serde deserializer (`crates/zfb/src/config.rs`) — the TypeScript type in `packages/zfb/src/config.ts` mirrors it for editor IntelliSense.
 
-- `outDir?: string` — output directory. Default: `"dist"`.
+- `outDir?: string` — output directory used by dev, build, and preview. Default: `"dist"`. An explicit `--outdir` overrides it for build and preview.
 - `publicDir?: string` — static assets directory, copied verbatim. Default: `"public"`.
 - `host?: string` — dev/preview server bind host.
 - `port?: number` — dev/preview server port.
