@@ -1305,7 +1305,10 @@ impl Resolver for FsResolver {
         if !candidate.is_file() {
             return None;
         }
-        Some(candidate.canonicalize().unwrap_or(candidate))
+        // Preserve the logical spelling (including a project-local symlink
+        // alias). Dev invalidation registers both this alias and its current
+        // canonical target so retarget/delete events remain observable.
+        Some(candidate)
     }
 
     fn read(&self, path: &Path) -> std::result::Result<String, String> {
@@ -2388,8 +2391,37 @@ fn collect_import_edges(module: &Module) -> std::result::Result<Vec<CollectedImp
 /// String-literal dynamic imports are already collected above; revisiting one
 /// here is harmless because the first error wins.
 fn find_unsupported_query_call(module: &Module) -> Option<String> {
-    use swc_core::ecma::ast::{CallExpr, Callee, Expr, Lit};
+    use swc_core::ecma::ast::{CallExpr, Callee, Expr};
     use swc_core::ecma::visit::{Visit, VisitWith};
+
+    fn query_fragment(expr: &Expr) -> Option<String> {
+        struct QueryFinder {
+            fragment: Option<String>,
+        }
+        impl Visit for QueryFinder {
+            fn visit_str(&mut self, node: &swc_core::ecma::ast::Str) {
+                if self.fragment.is_none() {
+                    let value = atom_to_string(&node.value);
+                    if value.contains('?') {
+                        self.fragment = Some(value);
+                    }
+                }
+            }
+
+            fn visit_tpl_element(&mut self, node: &swc_core::ecma::ast::TplElement) {
+                if self.fragment.is_none() {
+                    let value = node.raw.to_string();
+                    if value.contains('?') {
+                        self.fragment = Some(value);
+                    }
+                }
+            }
+        }
+
+        let mut finder = QueryFinder { fragment: None };
+        expr.visit_with(&mut finder);
+        finder.fragment
+    }
 
     struct Finder {
         description: Option<String>,
@@ -2407,21 +2439,7 @@ fn find_unsupported_query_call(module: &Module) -> Option<String> {
                 _ => None,
             };
             if let (Some(kind), Some(arg)) = (kind, node.args.first()) {
-                let query = match &*arg.expr {
-                    Expr::Lit(Lit::Str(value)) => {
-                        let value = atom_to_string(&value.value);
-                        query_suffix(&value).is_some().then_some(value)
-                    }
-                    Expr::Tpl(template) => {
-                        let raw = template
-                            .quasis
-                            .iter()
-                            .map(|quasi| quasi.raw.to_string())
-                            .collect::<String>();
-                        raw.contains('?').then_some(raw)
-                    }
-                    _ => None,
-                };
+                let query = query_fragment(&arg.expr);
                 if let Some(query) = query {
                     self.description = Some(format!("{kind} of {query:?} is not static"));
                     return;
@@ -7814,7 +7832,9 @@ mod tests {
             r#"import { x } from "./x.txt?raw";"#,
             r#"const x = import("./x.txt?raw");"#,
             r#"const x = import(`./x.txt?raw`);"#,
+            r#"const x = import("./x.txt?raw" + suffix);"#,
             r#"const x = require("./x.txt?raw");"#,
+            r#"const x = require(prefix + "?url");"#,
             r#"import type x from "./x.txt?raw";"#,
             r#"import x from "./x.txt?raw" with { type: "text" };"#,
             r#"import x from "/tmp/x.txt?raw";"#,
@@ -7845,5 +7865,32 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("raw import resolution failed"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fs_raw_edge_preserves_logical_symlink_target_spelling() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("entry.ts");
+        let actual = project.path().join("actual.txt");
+        let alias = project.path().join("current.txt");
+        std::fs::write(
+            &importer,
+            "import text from './current.txt?raw';\nexport default text;\n",
+        )
+        .unwrap();
+        std::fs::write(&actual, "actual").unwrap();
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+
+        let meta =
+            scan_reachable_modules_with_meta(std::slice::from_ref(&importer), &FsResolver::new())
+                .unwrap();
+        assert_eq!(
+            meta.raw_import_edges,
+            vec![RawImportEdge {
+                importer,
+                target: alias,
+            }]
+        );
     }
 }

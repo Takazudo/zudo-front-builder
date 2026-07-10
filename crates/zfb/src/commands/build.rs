@@ -1212,7 +1212,7 @@ struct IslandsShadow {
     /// `--preserve-symlinks` for this shadow. False only when source files were
     /// copied into the shadow instead of symlinked.
     preserve_symlinks: bool,
-    /// Canonical original terminal targets represented by generated modules.
+    /// Logical original terminal targets represented by generated modules.
     raw_targets: std::collections::BTreeSet<PathBuf>,
 }
 
@@ -1271,6 +1271,10 @@ impl<'a> IslandsShadowPaths<'a> {
     fn path_key(&self, p: &Path) -> PathBuf {
         self.project_local_rel(p)
             .unwrap_or_else(|| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
+    }
+
+    fn logical_project_path(&self, p: &Path) -> Option<PathBuf> {
+        self.project_local_rel(p).map(|rel| self.root.join(rel))
     }
 
     fn usable_rel(rel: &Path) -> Option<PathBuf> {
@@ -1592,12 +1596,24 @@ fn materialise_islands_shadow(
             continue;
         }
         let key = paths.path_key(&importer);
+        let logical_importer = paths.logical_project_path(&importer).ok_or_else(|| {
+            anyhow!(
+                "raw importer {} has no logical path under {}",
+                importer.display(),
+                project_root.display()
+            )
+        })?;
         let source = match expanded_by_key.get(&key) {
             Some(expanded_glob) => expanded_glob.clone(),
             None => std::fs::read_to_string(&importer)
                 .with_context(|| format!("read raw-import module {}", importer.display()))?,
         };
-        match zfb_build::raw_import_expand::expand_raw_imports(&source, &importer, &|_| false) {
+        match zfb_build::raw_import_expand::expand_raw_imports(
+            &source,
+            &logical_importer,
+            project_root,
+            &|_| false,
+        ) {
             Ok(expansion) => {
                 expanded_by_key.insert(key.clone(), expansion.expanded_source);
                 generated_raw_by_key.insert(key, expansion.generated_modules);
@@ -1748,11 +1764,7 @@ fn materialise_islands_shadow(
         preserve_symlinks,
         raw_targets: all_raw_edges
             .into_iter()
-            .map(|edge| {
-                edge.target
-                    .canonicalize()
-                    .unwrap_or_else(|_| edge.target.clone())
-            })
+            .filter_map(|edge| paths.logical_project_path(&edge.target))
             .collect(),
     }))
 }
@@ -1932,12 +1944,12 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         }
     };
     if let Some(invalidation) = raw_invalidation {
-        invalidation.replace_islands(
-            scan_meta
-                .raw_import_edges_from_islands
-                .iter()
-                .map(|edge| edge.target.clone()),
-        );
+        let paths = IslandsShadowPaths::new(project_root);
+        invalidation.replace_islands(scan_meta.raw_import_edges_from_islands.iter().map(|edge| {
+            paths
+                .logical_project_path(&edge.target)
+                .unwrap_or_else(|| edge.target.clone())
+        }));
     }
 
     // Issue #1404 (full #1385 pt.1 fix): when `import.meta.glob` is reachable
@@ -2254,6 +2266,63 @@ struct ClientScriptsRawStage {
     raw_targets: std::collections::BTreeSet<PathBuf>,
 }
 
+fn materialise_client_raw_stage_file(
+    physical: &Path,
+    logical: &Path,
+    to: &Path,
+    stage_root: &Path,
+    paths: &IslandsShadowPaths<'_>,
+    expanded_by_key: &std::collections::HashMap<
+        PathBuf,
+        zfb_build::raw_import_expand::RawImportExpansion,
+    >,
+    copy_mode: bool,
+    force_copy: bool,
+) -> Result<()> {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create client raw stage dir {}", parent.display()))?;
+    }
+    let key = paths.path_key(logical);
+    let canonical_key = physical
+        .canonicalize()
+        .ok()
+        .map(|path| paths.path_key(&path));
+    let expansion = expanded_by_key.get(&key).or_else(|| {
+        canonical_key
+            .as_ref()
+            .and_then(|key| expanded_by_key.get(key))
+    });
+    if let Some(expansion) = expansion {
+        std::fs::write(to, expansion.expanded_source.as_bytes())
+            .with_context(|| format!("write client raw importer {}", to.display()))?;
+        let parent = to.parent().unwrap_or(stage_root);
+        for module in &expansion.generated_modules {
+            let generated = parent.join(&module.filename);
+            std::fs::write(&generated, module.source.as_bytes()).with_context(|| {
+                format!("write client generated raw module {}", generated.display())
+            })?;
+        }
+    } else if copy_mode || force_copy {
+        shadow_copy_file(physical, to).with_context(|| {
+            format!(
+                "copy client raw stage {} -> {}",
+                physical.display(),
+                to.display()
+            )
+        })?;
+    } else {
+        shadow_symlink(physical, to).with_context(|| {
+            format!(
+                "symlink client raw stage {} -> {}",
+                physical.display(),
+                to.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
 fn stage_client_script_raw_imports(
     project_root: &Path,
     entries: &[zfb_islands::client_scripts::ClientScriptEntry],
@@ -2273,6 +2342,28 @@ fn stage_client_script_raw_imports(
     }
 
     let paths = IslandsShadowPaths::new(project_root);
+    let mut external_entries_without_raw = std::collections::BTreeSet::new();
+    for entry in entries {
+        if paths.project_local_rel(&entry.source_path).is_some() {
+            continue;
+        }
+        let entry_graph =
+            scan_reachable_modules_with_meta(std::slice::from_ref(&entry.source_path), &resolver)
+                .with_context(|| {
+                format!(
+                    "scan external client-script entry {} for terminal ?raw imports",
+                    entry.source_path.display()
+                )
+            })?;
+        if !entry_graph.raw_import_edges.is_empty() {
+            return Err(anyhow!(
+                "external client-script entry {} has a graph containing `?raw`; raw staging is \
+                 limited to project-local graphs",
+                entry.source_path.display()
+            ));
+        }
+        external_entries_without_raw.insert(entry.source_path.clone());
+    }
     let mut expanded_by_key: std::collections::HashMap<
         PathBuf,
         zfb_build::raw_import_expand::RawImportExpansion,
@@ -2292,14 +2383,24 @@ fn stage_client_script_raw_imports(
         }
         let source = std::fs::read_to_string(&importer)
             .with_context(|| format!("read client-script raw importer {}", importer.display()))?;
-        let expansion =
-            zfb_build::raw_import_expand::expand_raw_imports(&source, &importer, &|_| false)
-                .with_context(|| {
-                    format!(
-                        "preprocess client-script raw importer {}",
-                        importer.display()
-                    )
-                })?;
+        let logical_importer = paths.logical_project_path(&importer).ok_or_else(|| {
+            anyhow!(
+                "client-script raw importer {} has no logical project path",
+                importer.display()
+            )
+        })?;
+        let expansion = zfb_build::raw_import_expand::expand_raw_imports(
+            &source,
+            &logical_importer,
+            project_root,
+            &|_| false,
+        )
+        .with_context(|| {
+            format!(
+                "preprocess client-script raw importer {}",
+                importer.display()
+            )
+        })?;
         expanded_by_key.insert(paths.path_key(&importer), expansion);
     }
 
@@ -2314,9 +2415,9 @@ fn stage_client_script_raw_imports(
             ));
         }
         raw_targets.insert(
-            edge.target
-                .canonicalize()
-                .unwrap_or_else(|_| edge.target.clone()),
+            paths
+                .logical_project_path(&edge.target)
+                .unwrap_or_else(|| edge.target.clone()),
         );
     }
 
@@ -2363,6 +2464,69 @@ fn stage_client_script_raw_imports(
                 .with_context(|| format!("create client raw stage dir {}", to.display()))?;
             continue;
         }
+        if entry.path_is_symlink() && from.is_dir() {
+            let physical_root = from.canonicalize().with_context(|| {
+                format!(
+                    "canonicalize client raw-stage symlink dir {}",
+                    from.display()
+                )
+            })?;
+            let canonical_project = project_root.canonicalize().with_context(|| {
+                format!(
+                    "canonicalize client raw-stage root {}",
+                    project_root.display()
+                )
+            })?;
+            if !physical_root.starts_with(&canonical_project) {
+                continue;
+            }
+            std::fs::create_dir_all(&to)
+                .with_context(|| format!("create client raw stage dir {}", to.display()))?;
+            for nested in walkdir::WalkDir::new(&physical_root)
+                .follow_links(true)
+                .sort_by_file_name()
+                .into_iter()
+                .filter_entry(|nested| !is_islands_shadow_pruned_dir(nested))
+            {
+                let nested = nested.with_context(|| {
+                    format!("walk client raw-stage symlink dir {}", from.display())
+                })?;
+                let physical = nested.path();
+                let nested_rel = physical.strip_prefix(&physical_root).map_err(|_| {
+                    anyhow!(
+                        "client raw-stage symlink walk escaped {} via {}",
+                        physical_root.display(),
+                        physical.display()
+                    )
+                })?;
+                let nested_to = to.join(nested_rel);
+                let logical = from.join(nested_rel);
+                if nested.file_type().is_dir() {
+                    std::fs::create_dir_all(&nested_to).with_context(|| {
+                        format!("create client raw stage dir {}", nested_to.display())
+                    })?;
+                    continue;
+                }
+                if !nested.file_type().is_file() {
+                    continue;
+                }
+                let canonical_file = physical.canonicalize().unwrap_or_else(|_| physical.into());
+                if !canonical_file.starts_with(&canonical_project) {
+                    continue;
+                }
+                materialise_client_raw_stage_file(
+                    physical,
+                    &logical,
+                    &nested_to,
+                    &root,
+                    &paths,
+                    &expanded_by_key,
+                    copy_mode,
+                    true,
+                )?;
+            }
+            continue;
+        }
         // `WalkDir` reports a symlinked file as a symlink when link
         // following is disabled. Materialise it as a file in this temporary
         // mirror so the staged graph cannot escape back to an unexpanded raw
@@ -2371,46 +2535,16 @@ fn stage_client_script_raw_imports(
         if !entry.file_type().is_file() && !is_symlinked_file {
             continue;
         }
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create client raw stage dir {}", parent.display()))?;
-        }
-        let key = paths.path_key(from);
-        let canonical_key = is_symlinked_file
-            .then(|| from.canonicalize().ok().map(|path| paths.path_key(&path)))
-            .flatten();
-        let expansion = expanded_by_key.get(&key).or_else(|| {
-            canonical_key
-                .as_ref()
-                .and_then(|key| expanded_by_key.get(key))
-        });
-        if let Some(expansion) = expansion {
-            std::fs::write(&to, expansion.expanded_source.as_bytes())
-                .with_context(|| format!("write client raw importer {}", to.display()))?;
-            let parent = to.parent().unwrap_or(&root);
-            for module in &expansion.generated_modules {
-                let generated = parent.join(&module.filename);
-                std::fs::write(&generated, module.source.as_bytes()).with_context(|| {
-                    format!("write client generated raw module {}", generated.display())
-                })?;
-            }
-        } else if copy_mode || is_symlinked_file {
-            shadow_copy_file(from, &to).with_context(|| {
-                format!(
-                    "copy client raw stage {} -> {}",
-                    from.display(),
-                    to.display()
-                )
-            })?;
-        } else {
-            shadow_symlink(from, &to).with_context(|| {
-                format!(
-                    "symlink client raw stage {} -> {}",
-                    from.display(),
-                    to.display()
-                )
-            })?;
-        }
+        materialise_client_raw_stage_file(
+            from,
+            from,
+            &to,
+            &root,
+            &paths,
+            &expanded_by_key,
+            copy_mode,
+            is_symlinked_file,
+        )?;
     }
 
     if let Some(node_modules) = project_node_modules {
@@ -2426,12 +2560,15 @@ fn stage_client_script_raw_imports(
     let staged_entries = entries
         .iter()
         .map(|entry| {
-            let rel = paths.project_local_rel(&entry.source_path).ok_or_else(|| {
-                anyhow!(
+            let Some(rel) = paths.project_local_rel(&entry.source_path) else {
+                if external_entries_without_raw.contains(&entry.source_path) {
+                    return Ok(entry.clone());
+                }
+                return Err(anyhow!(
                     "client-script entry {} using ?raw is outside the project root",
                     entry.source_path.display()
-                )
-            })?;
+                ));
+            };
             Ok(zfb_islands::client_scripts::ClientScriptEntry {
                 entry_name: entry.entry_name.clone(),
                 source_path: root.join(rel),
@@ -2633,8 +2770,8 @@ pub(crate) fn build_default_client_scripts_payloads(
 ///   this to a `ReloadEvent::Page`.
 /// - `current_names` is the set of entry names that were just written —
 ///   pass it as `prev_entry_names` on the next call.
-/// - `raw_targets` is the canonical original terminal-target set for dev
-///   invalidation; replace the shared policy registry after success.
+/// - `raw_targets` is the logical original terminal-target set for dev
+///   invalidation; the shared registry retains lexical + canonical aliases.
 pub(crate) fn build_dev_client_scripts_to_disk(
     project_root: &Path,
     // Where dev client scripts are written + served from (issue #1189: the
@@ -6251,7 +6388,7 @@ mod tests {
         );
         assert_eq!(
             shadow.raw_targets,
-            std::collections::BTreeSet::from([raw_target.canonicalize().unwrap()])
+            std::collections::BTreeSet::from([raw_target.clone()])
         );
     }
 
@@ -6301,7 +6438,7 @@ mod tests {
             .contains("hello\\nraw\\n"));
         assert_eq!(
             stage.raw_targets,
-            std::collections::BTreeSet::from([target.canonicalize().unwrap()])
+            std::collections::BTreeSet::from([target.clone()])
         );
     }
 
@@ -6338,6 +6475,89 @@ mod tests {
         let rewritten = std::fs::read_to_string(staged_entry).unwrap();
         assert!(!rewritten.contains("?raw"), "{rewritten}");
         assert!(std::fs::read_dir(staged_entry.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .any(|path| path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".zfb-raw-") && name.ends_with(".mjs"))));
+    }
+
+    #[test]
+    fn client_raw_stage_retains_unrelated_external_registered_entry() {
+        let project = tempdir().unwrap();
+        let root = project.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        let local = root.join("pages/local.client.ts");
+        std::fs::write(
+            &local,
+            "import text from './message.txt?raw';\nconsole.log(text);\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("pages/message.txt"), "local raw").unwrap();
+        let external_dir = tempdir().unwrap();
+        let external = external_dir.path().join("package-entry.ts");
+        std::fs::write(&external, "console.log('external');\n").unwrap();
+        let entries = vec![
+            zfb_islands::client_scripts::ClientScriptEntry {
+                entry_name: "local".into(),
+                source_path: local,
+            },
+            zfb_islands::client_scripts::ClientScriptEntry {
+                entry_name: "package".into(),
+                source_path: external.clone(),
+            },
+        ];
+
+        let stage = stage_client_script_raw_imports(root, &entries)
+            .unwrap()
+            .expect("local raw graph needs a stage");
+        let staged_external = stage
+            .entries
+            .iter()
+            .find(|entry| entry.entry_name == "package")
+            .unwrap();
+        assert_eq!(staged_external.source_path, external);
+        let staged_local = stage
+            .entries
+            .iter()
+            .find(|entry| entry.entry_name == "local")
+            .unwrap();
+        assert!(staged_local.source_path.starts_with(&stage.root));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_raw_stage_preprocesses_importer_beneath_symlinked_dir() {
+        let project = tempdir().unwrap();
+        let root = project.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        let real = root.join("src-real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(
+            root.join("pages/widget.client.ts"),
+            "import text from '../src-alias/helper';\nconsole.log(text);\n",
+        )
+        .unwrap();
+        std::fs::write(
+            real.join("helper.ts"),
+            "import text from './message.txt?raw';\nexport default text;\n",
+        )
+        .unwrap();
+        std::fs::write(real.join("message.txt"), "symlink dir client raw").unwrap();
+        std::os::unix::fs::symlink(&real, root.join("src-alias")).unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: root.join("pages/widget.client.ts"),
+        }];
+
+        let stage = stage_client_script_raw_imports(root, &entries)
+            .unwrap()
+            .expect("raw graph needs a stage");
+        let alias_helper = stage.root.join("src-alias/helper.ts");
+        let staged = std::fs::read_to_string(&alias_helper).unwrap();
+        assert!(!staged.contains("?raw"), "{staged}");
+        assert!(std::fs::read_dir(alias_helper.parent().unwrap())
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .any(|path| path
