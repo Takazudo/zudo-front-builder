@@ -1,9 +1,0 @@
-node_modules
-dist
-build
-.zfb
-.zfb-build
-.wrangler
-output
-worker
-.DS_Store

@@ -1,9 +1,0 @@
-node_modules/
-dist/
-build/
-.zfb/
-.zfb-build/
-output/
-worker/
-.wrangler/
-.dev.vars
