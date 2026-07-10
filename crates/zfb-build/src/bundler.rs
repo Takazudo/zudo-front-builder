@@ -109,7 +109,7 @@
 //! binary in the slot.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -141,6 +141,7 @@ use crate::adapter::run_capturing;
 // `materialise_source_file`); `glob_match_relative` and `GlobCallCollector`
 // have no other call sites left in `bundler.rs`.
 use crate::glob_expand::expand_import_meta_glob;
+use crate::raw_import_expand::{expand_raw_imports, RawImportEdge};
 
 /// `import.meta.env.{PROD,DEV}` substitution mode.
 ///
@@ -1755,6 +1756,7 @@ pub fn bundle_with_session(
         bundle_exclude: &bundle_exclude,
         project_root: &input.project_root,
         writer: &writer,
+        raw_import_edges: RefCell::new(BTreeSet::new()),
         // #1151: the SHA-accurate collection-skip signal, parsed once per
         // bundle from the snapshot JSON the bundler already received.
         snapshot_specifiers: snapshot_specifier_set(input.content_snapshot_json.as_deref()),
@@ -2445,32 +2447,37 @@ pub fn bundle_with_session(
     // Parse the metafile into per-route `Module` edges while the shadow tree
     // still exists. A missing / malformed metafile yields an empty set (the
     // dev path then falls back to its prior selection) — never a hard error.
-    let route_module_deps: Vec<crate::metafile_deps::RouteModuleDeps> = match metafile_path.as_ref()
-    {
-        Some(meta_path) => match fs::read(meta_path) {
-            Ok(bytes) => {
-                let route_refs: Vec<crate::metafile_deps::RouteEntryRef> = routes
-                    .iter()
-                    .filter(|r| !r.static_html)
-                    .map(|r| crate::metafile_deps::RouteEntryRef {
-                        source_path: r.source_path.clone(),
-                        // The shadow mirrors the project tree by relative path,
-                        // so a route's metafile-input key equals its
-                        // project-relative source path in forward-slash form.
-                        metafile_key: rel_to_forward_slash(&r.source_path),
-                    })
-                    .collect();
-                crate::metafile_deps::route_module_deps(
-                    &bytes,
-                    &route_refs,
-                    shadow,
-                    &input.project_root,
-                )
-            }
-            Err(_) => Vec::new(),
-        },
-        None => Vec::new(),
-    };
+    let mut route_module_deps: Vec<crate::metafile_deps::RouteModuleDeps> =
+        match metafile_path.as_ref() {
+            Some(meta_path) => match fs::read(meta_path) {
+                Ok(bytes) => {
+                    let route_refs: Vec<crate::metafile_deps::RouteEntryRef> = routes
+                        .iter()
+                        .filter(|r| !r.static_html)
+                        .map(|r| crate::metafile_deps::RouteEntryRef {
+                            source_path: r.source_path.clone(),
+                            // The shadow mirrors the project tree by relative path,
+                            // so a route's metafile-input key equals its
+                            // project-relative source path in forward-slash form.
+                            metafile_key: rel_to_forward_slash(&r.source_path),
+                        })
+                        .collect();
+                    crate::metafile_deps::route_module_deps(
+                        &bytes,
+                        &route_refs,
+                        shadow,
+                        &input.project_root,
+                    )
+                }
+                Err(_) => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+    augment_route_deps_with_raw_targets(
+        &mut route_module_deps,
+        &mat_ctx.raw_import_edges.borrow(),
+        &input.project_root,
+    );
 
     let post_start = if timing_enabled {
         Some(std::time::Instant::now())
@@ -2523,6 +2530,38 @@ pub fn bundle_with_session(
         manifest,
         route_module_deps,
     })
+}
+
+/// Replace the generated-wrapper blind spot in esbuild's metafile with the
+/// original terminal target path. A route consumes a raw edge when its own
+/// page module is the importer or its metafile-derived module closure already
+/// contains that importer. This keeps invalidation precise per route while
+/// ensuring a target-only edit dirties the consumer.
+fn augment_route_deps_with_raw_targets(
+    route_deps: &mut [crate::metafile_deps::RouteModuleDeps],
+    raw_edges: &BTreeSet<RawImportEdge>,
+    project_root: &Path,
+) {
+    if raw_edges.is_empty() {
+        return;
+    }
+    for route in route_deps {
+        let route_source = project_root.join(&route.source_path);
+        let route_source = route_source.canonicalize().unwrap_or(route_source);
+        for edge in raw_edges {
+            let importer = edge
+                .importer
+                .canonicalize()
+                .unwrap_or_else(|_| edge.importer.clone());
+            if importer == route_source || route.module_deps.contains(&importer) {
+                let target = edge
+                    .target
+                    .canonicalize()
+                    .unwrap_or_else(|_| edge.target.clone());
+                route.module_deps.insert(target);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2795,6 +2834,11 @@ struct MaterialiseCtx<'a, 's> {
     /// session. Every shadow write in the materialise passes routes
     /// through this.
     writer: &'a ShadowWriter<'s>,
+    /// Raw terminal edges discovered while preprocessing source files in
+    /// every materialise pass. Used after esbuild's metafile walk to map the
+    /// generated `.zfb-raw-*.mjs` input back to the ORIGINAL target for dev
+    /// invalidation.
+    raw_import_edges: RefCell<BTreeSet<RawImportEdge>>,
     /// SHA-256-accurate skip signal for collection `.mdx` (#1151). The set
     /// of every `module_specifier` in the per-tick content snapshot the
     /// bundler already receives (`BundlerInput.content_snapshot_json`) —
@@ -3139,7 +3183,14 @@ fn materialise_shadow(
             // threaded into the glob expansion (#665's `is_excluded` seam) so
             // an excluded file is never emitted as a static import — which
             // would otherwise make esbuild error on the generated import.
-            materialise_source_file(from, &to, &is_excluded, ctx.copy_mode, ctx.writer)?;
+            materialise_source_file(
+                from,
+                &to,
+                &is_excluded,
+                ctx.copy_mode,
+                ctx.writer,
+                &ctx.raw_import_edges,
+            )?;
         }
 
         // Routes only collected from the pages root.
@@ -3556,6 +3607,11 @@ struct SourceSkipEntry {
     /// file flipping to/from using a glob changes its mtime → full path →
     /// `has_glob` re-detected.
     has_glob: bool,
+    /// Whether this importer generated one or more terminal raw modules.
+    /// Their bytes depend on another file, so the importer must be
+    /// reprocessed every persistent-shadow tick even when its own stat is
+    /// unchanged.
+    has_raw: bool,
 }
 
 /// What to do with the bridge import after a full MDX compile inside
@@ -4039,7 +4095,14 @@ fn materialise_collection(
         } else {
             // Non-MDX source in a content collection: same eager
             // `import.meta.glob(...)` expansion as the page/component pass.
-            materialise_source_file(from, &to, &|_| false, ctx.copy_mode, ctx.writer)?;
+            materialise_source_file(
+                from,
+                &to,
+                &|_| false,
+                ctx.copy_mode,
+                ctx.writer,
+                &ctx.raw_import_edges,
+            )?;
         }
     }
     Ok(())
@@ -4182,6 +4245,7 @@ fn materialise_source_file(
     is_excluded: &dyn Fn(&Path) -> bool,
     copy_mode: bool,
     writer: &ShadowWriter<'_>,
+    raw_import_edges: &RefCell<BTreeSet<RawImportEdge>>,
 ) -> Result<()> {
     // Incremental NON-MDX skip (zfb#1148). In session mode ONLY
     // (passthrough/prod never skips): a plain copy/symlink is a pure
@@ -4222,6 +4286,7 @@ fn materialise_source_file(
                         && entry.mtime == mtime
                         && entry.size == size
                         && !entry.has_glob
+                        && !entry.has_raw
                         && dest_exists
                     {
                         // Mark the un-touched dest visited so the prune pass
@@ -4239,7 +4304,14 @@ fn materialise_source_file(
     // ---- Full path: the original materialise + (re)store the skip entry. ----
     let is_js_like = matches!(
         from.extension().and_then(|s| s.to_str()),
-        Some("ts") | Some("tsx") | Some("js") | Some("jsx")
+        Some("ts")
+            | Some("tsx")
+            | Some("js")
+            | Some("jsx")
+            | Some("mjs")
+            | Some("cjs")
+            | Some("mts")
+            | Some("cts")
     );
     // `has_glob` is the skip gate: a file that uses `import.meta.glob` must
     // never be skipped (its expansion depends on other files). It is `true`
@@ -4248,27 +4320,60 @@ fn materialise_source_file(
     // branch below. Binary/asset files (non-UTF-8 or non-JS) are always
     // `false`.
     let mut has_glob = false;
+    let mut has_raw = false;
     if is_js_like {
         // Cheap pre-read of the file is only worthwhile when it might contain
         // the macro. `fs::read_to_string` fails on non-UTF-8; in that case
         // (binary masquerading as .js, etc.) fall back to copy.
         if let Ok(source) = fs::read_to_string(from) {
-            if source.contains("import.meta.glob") {
-                has_glob = true;
-                let file_dir = from.parent().unwrap_or_else(|| Path::new("."));
-                let expanded = expand_import_meta_glob(&source, file_dir, is_excluded)
-                    .with_context(|| format!("expand import.meta.glob in {}", from.display()))?;
-                // The expansion is recomputed from the LIVE project tree on
-                // every call (glob output depends on *other* files), so the
-                // #993 write-if-changed skip is sound: a glob-matched file
-                // appearing/vanishing changes `expanded` and forces the
-                // write. The writer's remove-first handles a pre-existing
-                // stale symlink at `to`.
-                writer
-                    .write_if_changed(to, expanded.as_bytes())
-                    .with_context(|| format!("write expanded source to {}", to.display()))?;
-                store_source_skip_entry(writer, dest_rel, from, has_glob);
-                return Ok(());
+            let has_query_syntax = source.contains('?');
+            if source.contains("import.meta.glob") || has_query_syntax {
+                let mut expanded = source;
+                if expanded.contains("import.meta.glob") {
+                    has_glob = true;
+                    let file_dir = from.parent().unwrap_or_else(|| Path::new("."));
+                    expanded = expand_import_meta_glob(&expanded, file_dir, is_excluded)
+                        .with_context(|| {
+                            format!("expand import.meta.glob in {}", from.display())
+                        })?;
+                }
+
+                if has_query_syntax {
+                    let raw_expansion = expand_raw_imports(&expanded, from, is_excluded)
+                        .with_context(|| format!("expand ?raw imports in {}", from.display()))?;
+                    has_raw = !raw_expansion.generated_modules.is_empty();
+                    if has_raw {
+                        let generated_dir = to.parent().unwrap_or_else(|| Path::new("."));
+                        for module in &raw_expansion.generated_modules {
+                            let generated_path = generated_dir.join(&module.filename);
+                            writer
+                                .write_if_changed(&generated_path, module.source.as_bytes())
+                                .with_context(|| {
+                                    format!(
+                                        "write generated raw module {} for {}",
+                                        generated_path.display(),
+                                        from.display()
+                                    )
+                                })?;
+                        }
+                        raw_import_edges
+                            .borrow_mut()
+                            .extend(raw_expansion.edges.iter().cloned());
+                    }
+                    expanded = raw_expansion.expanded_source;
+                }
+
+                if has_glob || has_raw {
+                    // Both transforms are recomputed from the LIVE project
+                    // tree every call. `write_if_changed` still suppresses
+                    // byte-identical writes while generated-module paths are
+                    // marked visited for persistent-shadow pruning.
+                    writer
+                        .write_if_changed(to, expanded.as_bytes())
+                        .with_context(|| format!("write expanded source to {}", to.display()))?;
+                    store_source_skip_entry(writer, dest_rel, from, has_glob, has_raw);
+                    return Ok(());
+                }
             }
         }
     }
@@ -4284,7 +4389,7 @@ fn materialise_source_file(
             .symlink_if_absent(from, to)
             .with_context(|| format!("symlink_or_copy {} -> {}", from.display(), to.display()))?;
     }
-    store_source_skip_entry(writer, dest_rel, from, has_glob);
+    store_source_skip_entry(writer, dest_rel, from, has_glob, has_raw);
     Ok(())
 }
 
@@ -4298,6 +4403,7 @@ fn store_source_skip_entry(
     dest_rel: Option<PathBuf>,
     from: &Path,
     has_glob: bool,
+    has_raw: bool,
 ) {
     if !writer.in_session() {
         return;
@@ -4311,6 +4417,7 @@ fn store_source_skip_entry(
                 mtime,
                 size,
                 has_glob,
+                has_raw,
             },
         ),
         // Could not stat the source — cannot build a sound skip key.
@@ -6945,6 +7052,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
+            raw_import_edges: RefCell::new(BTreeSet::new()),
             snapshot_specifiers,
         };
         let mut imports = Vec::new();
@@ -7007,6 +7115,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
+            raw_import_edges: RefCell::new(BTreeSet::new()),
             // This dual-pass helper exercises the source/`materialise_shadow`
             // path (`import: None`), which is not snapshot-gated; `None` here.
             snapshot_specifiers: None,
@@ -8019,12 +8128,13 @@ mod tests {
         let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
         let writer = ShadowWriter::new(shadow_root.clone(), Some(session), false, fingerprint)
             .expect("session writer construction");
+        let raw_import_edges = RefCell::new(BTreeSet::new());
         for (from, dest_rel) in files {
             let to = shadow_root.join(dest_rel);
             if let Some(parent) = to.parent() {
                 writer.ensure_dir(parent).expect("ensure dest parent dir");
             }
-            materialise_source_file(from, &to, &|_| false, false, &writer)
+            materialise_source_file(from, &to, &|_| false, false, &writer, &raw_import_edges)
                 .expect("materialise_source_file tick");
         }
         writer.prune_stale().expect("prune");
@@ -8121,6 +8231,129 @@ mod tests {
             !second.contains("import.meta.glob(") && second.contains("__glob_0"),
             "a glob file must be RE-EXPANDED every tick (never skipped); got:\n{second}"
         );
+    }
+
+    #[test]
+    fn source_skip_raw_target_change_rewrites_generated_module_on_tick_two() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("noise.frag");
+        let importer = tmp.path().join("shader.ts");
+        fs::write(&target, "AAAA\n").unwrap();
+        fs::write(
+            &importer,
+            "import shader from './noise.frag?raw';\nexport default shader;\n",
+        )
+        .unwrap();
+
+        let dest_rel = "src/shader.ts";
+        let mut session = ShadowSession::new().unwrap();
+        run_source_tick(&mut session, &[(&importer, dest_rel)]);
+        let key = PathBuf::from(dest_rel);
+        let entry = session
+            .source_skip
+            .get(&key)
+            .expect("raw importer must be skip-cached");
+        assert!(entry.has_raw, "raw importer must refuse stat-only skips");
+
+        let generated = fs::read_dir(session.shadow_root().join("src"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".zfb-raw-") && name.ends_with(".mjs"))
+            })
+            .expect("generated raw module");
+        assert!(fs::read_to_string(&generated).unwrap().contains("AAAA"));
+
+        // Same byte length; importer is untouched. The has_raw gate must
+        // still re-read the terminal target and update the generated module.
+        fs::write(&target, "BBBB\n").unwrap();
+        run_source_tick(&mut session, &[(&importer, dest_rel)]);
+        let tick_two = fs::read_to_string(&generated).unwrap();
+        assert!(tick_two.contains("BBBB"), "tick-two module: {tick_two}");
+        assert!(!tick_two.contains("AAAA"), "tick-two module: {tick_two}");
+    }
+
+    #[test]
+    fn persistent_shadow_prunes_stale_generated_raw_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("message.txt");
+        let importer = tmp.path().join("entry.ts");
+        fs::write(&target, "hello").unwrap();
+        fs::write(
+            &importer,
+            "import text from './message.txt?raw';\nexport default text;\n",
+        )
+        .unwrap();
+        let mut session = ShadowSession::new().unwrap();
+        run_source_tick(&mut session, &[(&importer, "src/entry.ts")]);
+        let generated = fs::read_dir(session.shadow_root().join("src"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".zfb-raw-"))
+            })
+            .expect("generated raw module");
+
+        fs::write(&importer, "export default 'plain';\n").unwrap();
+        run_source_tick(&mut session, &[(&importer, "src/entry.ts")]);
+        assert!(
+            !generated.exists(),
+            "generated module must be pruned when its import disappears"
+        );
+    }
+
+    #[test]
+    fn raw_target_excluded_by_bundle_exclude_is_a_named_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("components")).unwrap();
+        let target = tmp.path().join("components/secret.txt");
+        let importer = tmp.path().join("components/entry.ts");
+        fs::write(&target, "secret").unwrap();
+        fs::write(&importer, "import text from './secret.txt?raw';\n").unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, false, None).unwrap();
+        let edges = RefCell::new(BTreeSet::new());
+        let matcher = BundleExcludeMatcher::new(&["components/*.txt".to_string()]).unwrap();
+        let error = materialise_source_file(
+            &importer,
+            &shadow.path().join("entry.ts"),
+            &|path| matcher.is_excluded(path, tmp.path()),
+            false,
+            &writer,
+            &edges,
+        )
+        .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains("bundle.exclude"), "{error}");
+        assert!(error.contains("secret.txt"), "{error}");
+    }
+
+    #[test]
+    fn route_module_deps_include_original_raw_target_not_generated_wrapper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let page = root.join("pages/index.tsx");
+        let importer = root.join("components/shader.ts");
+        let target = root.join("components/noise.frag");
+        fs::create_dir_all(page.parent().unwrap()).unwrap();
+        fs::create_dir_all(importer.parent().unwrap()).unwrap();
+        fs::write(&page, "page").unwrap();
+        fs::write(&importer, "import raw").unwrap();
+        fs::write(&target, "noise").unwrap();
+        let importer_real = importer.canonicalize().unwrap();
+        let target_real = target.canonicalize().unwrap();
+        let mut deps = vec![crate::metafile_deps::RouteModuleDeps {
+            source_path: PathBuf::from("pages/index.tsx"),
+            module_deps: BTreeSet::from([importer_real.clone()]),
+        }];
+        let edges = BTreeSet::from([RawImportEdge { importer, target }]);
+        augment_route_deps_with_raw_targets(&mut deps, &edges, root);
+        assert!(deps[0].module_deps.contains(&target_real));
+        assert!(deps[0].module_deps.contains(&importer_real));
     }
 
     #[test]
@@ -10179,6 +10412,7 @@ mod tests {
             bundle_exclude: exclude,
             project_root,
             writer: leaked_passthrough_writer(),
+            raw_import_edges: RefCell::new(BTreeSet::new()),
             // Passthrough/sessionless never skips, so the snapshot gate is
             // irrelevant here.
             snapshot_specifiers: None,

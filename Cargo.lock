@@ -6109,6 +6109,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "walkdir",
+ "zfb-build",
  "zfb-plugin-resolver",
  "zfb-test-utils",
  "zfb-toolchain-pins",

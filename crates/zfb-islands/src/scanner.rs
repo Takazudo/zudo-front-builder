@@ -107,6 +107,26 @@ pub enum ScanError {
         /// Diagnostic message from SWC.
         message: String,
     },
+    /// A query-suffixed import used a form the Rust-side preprocessor cannot
+    /// materialise safely.
+    #[error("unsupported import query in {path}: {message}")]
+    ImportQuery {
+        /// Module containing the unsupported import.
+        path: PathBuf,
+        /// Helpful description including the one supported `?raw` form.
+        message: String,
+    },
+    /// A syntactically-supported terminal raw edge did not resolve to an
+    /// exact on-disk/in-memory file.
+    #[error("raw import resolution failed in {path} for {specifier:?}: {message}")]
+    RawImport {
+        /// Module containing the import.
+        path: PathBuf,
+        /// Query-free target specifier.
+        specifier: String,
+        /// Resolver/result detail.
+        message: String,
+    },
 }
 
 /// Convenience alias for scanner results.
@@ -114,6 +134,28 @@ pub type ScanResult<T> = std::result::Result<T, ScanError>;
 
 /// The result of [`scan_islands`].
 pub type IslandsSet = Vec<Island>;
+
+/// A resolved terminal `?raw` edge.
+///
+/// Unlike an ordinary module edge, `target` is never pushed onto the scanner
+/// DFS and is never parsed, even when its filename ends in `.js`. Consumers
+/// mirror/watch the target and generate an ESM text wrapper separately.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RawImportEdge {
+    /// Parsed JS/TS module containing the import declaration.
+    pub importer: PathBuf,
+    /// Exact resolved target whose text is requested.
+    pub target: PathBuf,
+}
+
+/// Metadata returned by [`scan_reachable_modules_with_meta`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReachableModulesMeta {
+    /// Sorted, deduplicated ordinary module closure.
+    pub modules: Vec<PathBuf>,
+    /// Sorted, deduplicated raw terminal edges discovered in that closure.
+    pub raw_import_edges: Vec<RawImportEdge>,
+}
 
 /// Side-channel metadata gathered during a scan that is not itself an
 /// [`Island`].
@@ -242,6 +284,12 @@ pub struct ScanMeta {
     /// individually, so the consumer filters this set to project-local
     /// paths before mirroring.
     pub island_reachable_modules: Vec<PathBuf>,
+
+    /// Sorted, deduplicated terminal raw edges reachable from a `"use
+    /// client"` island. Targets are intentionally absent from
+    /// [`Self::island_reachable_modules`]: they are mirrored as assets but
+    /// never traversed or parsed as executable source.
+    pub raw_import_edges_from_islands: Vec<RawImportEdge>,
 }
 
 /// Abstraction over module resolution + source reading.
@@ -260,6 +308,13 @@ pub trait Resolver {
     /// `preact`, `react`, `zfb`) or unresolvable paths — the scanner will
     /// then skip them.
     fn resolve(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf>;
+
+    /// Resolve an exact query-free `?raw` target as a terminal asset edge.
+    /// Implementations must not apply JS extension probing, TS source swaps,
+    /// or `index.*` module resolution to this path.
+    fn resolve_raw(&self, _importer_dir: &Path, _specifier: &str) -> Option<PathBuf> {
+        None
+    }
 
     /// Read the source content for a previously-resolved path.
     ///
@@ -1242,6 +1297,17 @@ impl Resolver for FsResolver {
         None
     }
 
+    fn resolve_raw(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
+        if !(specifier.starts_with("./") || specifier.starts_with("../")) {
+            return None;
+        }
+        let candidate = normalize_path_lexical(&importer_dir.join(specifier));
+        if !candidate.is_file() {
+            return None;
+        }
+        Some(candidate.canonicalize().unwrap_or(candidate))
+    }
+
     fn read(&self, path: &Path) -> std::result::Result<String, String> {
         std::fs::read_to_string(path).map_err(|e| e.to_string())
     }
@@ -1338,6 +1404,14 @@ impl Resolver for InMemoryResolver {
         None
     }
 
+    fn resolve_raw(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
+        if !(specifier.starts_with("./") || specifier.starts_with("../")) {
+            return None;
+        }
+        let candidate = normalize_path_lexical(&importer_dir.join(specifier));
+        self.files.contains_key(&candidate).then_some(candidate)
+    }
+
     fn read(&self, path: &Path) -> std::result::Result<String, String> {
         self.files
             .get(path)
@@ -1379,7 +1453,22 @@ pub fn scan_reachable_modules<R: Resolver>(
     roots: &[PathBuf],
     resolver: &R,
 ) -> ScanResult<Vec<PathBuf>> {
+    scan_reachable_modules_with_meta(roots, resolver).map(|meta| meta.modules)
+}
+
+/// Walk ordinary JS/TS module imports from arbitrary roots while preserving
+/// typed terminal `?raw` edges.
+///
+/// Raw targets are resolved through [`Resolver::resolve_raw`] and recorded in
+/// the returned metadata, but are never put on the DFS stack. This prevents a
+/// `foo.js?raw` target from being parsed/executed as a module while still
+/// giving shadow materialisers and dev invalidation the original path.
+pub fn scan_reachable_modules_with_meta<R: Resolver>(
+    roots: &[PathBuf],
+    resolver: &R,
+) -> ScanResult<ReachableModulesMeta> {
     let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut raw_import_edges: BTreeSet<RawImportEdge> = BTreeSet::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut stack: Vec<PathBuf> = roots.to_vec();
 
@@ -1405,16 +1494,41 @@ pub fn scan_reachable_modules<R: Resolver>(
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        for specifier in collect_import_specifiers(&module) {
-            if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
-                if !visited.contains(&resolved) {
-                    stack.push(resolved);
+        let import_edges =
+            collect_import_edges(&module).map_err(|message| ScanError::ImportQuery {
+                path: current.clone(),
+                message,
+            })?;
+        for edge in import_edges {
+            match edge {
+                CollectedImportEdge::Module(specifier) => {
+                    if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                        if !visited.contains(&resolved) {
+                            stack.push(resolved);
+                        }
+                    }
+                }
+                CollectedImportEdge::Raw(specifier) => {
+                    let resolved = resolver.resolve_raw(&importer_dir, &specifier).ok_or_else(|| {
+                        ScanError::RawImport {
+                            path: current.clone(),
+                            specifier: specifier.clone(),
+                            message: "terminal target must be an existing exact relative file; no JS extension probing is applied".to_string(),
+                        }
+                    })?;
+                    raw_import_edges.insert(RawImportEdge {
+                        importer: current.clone(),
+                        target: resolved,
+                    });
                 }
             }
         }
     }
 
-    Ok(reachable.into_iter().collect())
+    Ok(ReachableModulesMeta {
+        modules: reachable.into_iter().collect(),
+        raw_import_edges: raw_import_edges.into_iter().collect(),
+    })
 }
 
 /// Like [`scan_islands`], but also returns [`ScanMeta`] — side-channel
@@ -1450,6 +1564,9 @@ pub fn scan_islands_with_meta<R: Resolver>(
     // needs the full edge set, not just the newly-discovered frontier the
     // main DFS stack tracks.
     let mut edges: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    // Typed terminal raw edges, keyed by importer. They participate in the
+    // later island-reachability projection but never extend the DFS frontier.
+    let mut raw_edges: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
     // Per-module "does this file's source contain an `import.meta.glob`
     // call anywhere" fact, recorded once per parsed module (issue #1387).
     let mut glob_by_path: HashMap<PathBuf, bool> = HashMap::new();
@@ -1547,18 +1664,37 @@ pub fn scan_islands_with_meta<R: Resolver>(
         // workspace probe disabled) return `None` and the specifier is
         // silently skipped, matching the pre-#122 behaviour for
         // genuinely runtime-only specifiers like `preact/hooks`.
-        for specifier in collect_import_specifiers(&module) {
-            if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
-                // Issue #1387: record the edge regardless of whether
-                // `resolved` was already visited — the island-reachability
-                // walk below needs the full edge set, not just the edges
-                // that happened to extend the DFS frontier.
-                edges
-                    .entry(current.clone())
-                    .or_default()
-                    .push(resolved.clone());
-                if !visited.contains(&resolved) {
-                    stack.push(resolved);
+        let import_edges =
+            collect_import_edges(&module).map_err(|message| ScanError::ImportQuery {
+                path: current.clone(),
+                message,
+            })?;
+        for edge in import_edges {
+            match edge {
+                CollectedImportEdge::Module(specifier) => {
+                    if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                        // Issue #1387: record the edge regardless of whether
+                        // `resolved` was already visited — the island-reachability
+                        // walk below needs the full edge set, not just the edges
+                        // that happened to extend the DFS frontier.
+                        edges
+                            .entry(current.clone())
+                            .or_default()
+                            .push(resolved.clone());
+                        if !visited.contains(&resolved) {
+                            stack.push(resolved);
+                        }
+                    }
+                }
+                CollectedImportEdge::Raw(specifier) => {
+                    let resolved = resolver.resolve_raw(&importer_dir, &specifier).ok_or_else(|| {
+                        ScanError::RawImport {
+                            path: current.clone(),
+                            specifier: specifier.clone(),
+                            message: "terminal target must be an existing exact relative file; no JS extension probing is applied".to_string(),
+                        }
+                    })?;
+                    raw_edges.entry(current.clone()).or_default().push(resolved);
                 }
             }
         }
@@ -1581,6 +1717,7 @@ pub fn scan_islands_with_meta<R: Resolver>(
     // byte-stable ordering the rest of the scanner's public surface holds.
     let mut island_reachable_modules: std::collections::BTreeSet<PathBuf> =
         std::collections::BTreeSet::new();
+    let mut raw_import_edges_from_islands: BTreeSet<RawImportEdge> = BTreeSet::new();
     let mut island_reach_visited: HashSet<PathBuf> = HashSet::new();
     let mut island_reach_stack: Vec<PathBuf> = island_paths.into_iter().collect();
     while let Some(node) = island_reach_stack.pop() {
@@ -1590,6 +1727,14 @@ pub fn scan_islands_with_meta<R: Resolver>(
         island_reachable_modules.insert(node.clone());
         if glob_by_path.get(&node).copied().unwrap_or(false) {
             glob_reachable_from_islands.insert(node.clone());
+        }
+        if let Some(targets) = raw_edges.get(&node) {
+            for target in targets {
+                raw_import_edges_from_islands.insert(RawImportEdge {
+                    importer: node.clone(),
+                    target: target.clone(),
+                });
+            }
         }
         if let Some(children) = edges.get(&node) {
             for child in children {
@@ -1607,6 +1752,7 @@ pub fn scan_islands_with_meta<R: Resolver>(
             near_miss_candidates,
             glob_reachable_from_islands: glob_reachable_from_islands.into_iter().collect(),
             island_reachable_modules: island_reachable_modules.into_iter().collect(),
+            raw_import_edges_from_islands: raw_import_edges_from_islands.into_iter().collect(),
         },
     ))
 }
@@ -2093,10 +2239,29 @@ fn atom_to_string(value: &Wtf8Atom) -> String {
     value.to_atom_lossy().to_string()
 }
 
-/// Collect import-style specifiers (anything that pulls another module
-/// into the graph): plain `import`, side-effect `import "./x"`, named
-/// re-exports `export { x } from "./y"`, and `export * from "./z"`.
-fn collect_import_specifiers(module: &Module) -> Vec<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CollectedImportEdge {
+    Module(String),
+    Raw(String),
+}
+
+fn supported_raw_form(reason: impl AsRef<str>) -> String {
+    format!(
+        "{}. Only a static default import written as \
+         `import text from \"./file.ext?raw\"` is supported. Dynamic imports, \
+         `?url`, named/namespace/side-effect raw imports, and additional query \
+         parameters are not supported.",
+        reason.as_ref()
+    )
+}
+
+fn query_suffix(specifier: &str) -> Option<&str> {
+    specifier.split_once('?').map(|(_, query)| query)
+}
+
+/// Collect typed import-style edges. Ordinary JS module edges are traversed;
+/// exact `?raw` default imports become terminal asset edges.
+fn collect_import_edges(module: &Module) -> std::result::Result<Vec<CollectedImportEdge>, String> {
     let mut out = Vec::new();
     for item in &module.body {
         let ModuleItem::ModuleDecl(decl) = item else {
@@ -2104,30 +2269,90 @@ fn collect_import_specifiers(module: &Module) -> Vec<String> {
         };
         match decl {
             ModuleDecl::Import(import_decl) => {
+                let specifier = atom_to_string(&import_decl.src.value);
                 // `import type { … }` is erased at compile time — the module
                 // is never loaded at runtime, so it must not become a DFS edge.
                 if import_decl.type_only {
+                    if query_suffix(&specifier).is_some() {
+                        return Err(supported_raw_form(format!(
+                            "type-only import from {specifier:?} is not a runtime default import"
+                        )));
+                    }
                     continue;
                 }
-                out.push(atom_to_string(&import_decl.src.value));
+                match query_suffix(&specifier) {
+                    None => out.push(CollectedImportEdge::Module(specifier)),
+                    Some("raw")
+                        if !specifier[..specifier.len() - "raw".len() - 1].contains('?') =>
+                    {
+                        if import_decl.specifiers.len() != 1
+                            || !matches!(import_decl.specifiers[0], ImportSpecifier::Default(_))
+                            || import_decl.with.is_some()
+                            || import_decl.phase != swc_core::ecma::ast::ImportPhase::Evaluation
+                        {
+                            return Err(supported_raw_form(format!(
+                                "raw import {specifier:?} is not a single static default import"
+                            )));
+                        }
+                        let target = specifier
+                            .strip_suffix("?raw")
+                            .expect("exact raw query")
+                            .to_string();
+                        if !(target.starts_with("./") || target.starts_with("../")) {
+                            return Err(supported_raw_form(format!(
+                                "raw import target {target:?} is not project-local and relative"
+                            )));
+                        }
+                        out.push(CollectedImportEdge::Raw(target));
+                    }
+                    Some(query) => {
+                        return Err(supported_raw_form(format!(
+                            "import specifier {specifier:?} uses unsupported query `?{query}`"
+                        )));
+                    }
+                }
             }
             ModuleDecl::ExportNamed(named) => {
+                let query_source = named.src.as_ref().map(|src| atom_to_string(&src.value));
                 // `export type { … } from "…"` is compile-time-erased — not a
                 // runtime pull, so it must not become a DFS edge.
                 if named.type_only {
+                    if let Some(specifier) = query_source.as_deref() {
+                        if query_suffix(specifier).is_some() {
+                            return Err(supported_raw_form(format!(
+                                "type-only re-export from {specifier:?} is not a runtime default import"
+                            )));
+                        }
+                    }
                     continue;
                 }
-                if let Some(src) = &named.src {
-                    out.push(atom_to_string(&src.value));
+                if let Some(specifier) = query_source {
+                    if query_suffix(&specifier).is_some() {
+                        return Err(supported_raw_form(format!(
+                            "re-export from {specifier:?} is not a default import"
+                        )));
+                    }
+                    out.push(CollectedImportEdge::Module(specifier));
                 }
             }
             ModuleDecl::ExportAll(all) => {
+                let specifier = atom_to_string(&all.src.value);
                 // `export type * from "…"` is compile-time-erased — not a
                 // runtime pull, so it must not become a DFS edge.
                 if all.type_only {
+                    if query_suffix(&specifier).is_some() {
+                        return Err(supported_raw_form(format!(
+                            "type-only star re-export from {specifier:?} is not a runtime default import"
+                        )));
+                    }
                     continue;
                 }
-                out.push(atom_to_string(&all.src.value));
+                if query_suffix(&specifier).is_some() {
+                    return Err(supported_raw_form(format!(
+                        "star re-export from {specifier:?} is not a default import"
+                    )));
+                }
+                out.push(CollectedImportEdge::Module(specifier));
             }
             _ => {}
         }
@@ -2145,8 +2370,82 @@ fn collect_import_specifiers(module: &Module) -> Vec<String> {
     // (`import(pathVar)`) is not statically resolvable and is left for
     // esbuild's own runtime handling, exactly as `import.meta.glob`'s
     // non-literal form is rejected by the expander.
-    out.extend(collect_dynamic_import_specifiers(module));
-    out
+    for specifier in collect_dynamic_import_specifiers(module) {
+        if query_suffix(&specifier).is_some() {
+            return Err(supported_raw_form(format!(
+                "dynamic import of {specifier:?} is not static"
+            )));
+        }
+        out.push(CollectedImportEdge::Module(specifier));
+    }
+    if let Some(description) = find_unsupported_query_call(module) {
+        return Err(supported_raw_form(description));
+    }
+    Ok(out)
+}
+
+/// Find query-bearing dynamic template imports and CommonJS `require` calls.
+/// String-literal dynamic imports are already collected above; revisiting one
+/// here is harmless because the first error wins.
+fn find_unsupported_query_call(module: &Module) -> Option<String> {
+    use swc_core::ecma::ast::{CallExpr, Callee, Expr, Lit};
+    use swc_core::ecma::visit::{Visit, VisitWith};
+
+    struct Finder {
+        description: Option<String>,
+    }
+    impl Visit for Finder {
+        fn visit_call_expr(&mut self, node: &CallExpr) {
+            if self.description.is_some() {
+                return;
+            }
+            let kind = match &node.callee {
+                Callee::Import(_) => Some("dynamic import"),
+                Callee::Expr(expr) if matches!(&**expr, Expr::Ident(ident) if ident.sym == "require") => {
+                    Some("CommonJS require")
+                }
+                _ => None,
+            };
+            if let (Some(kind), Some(arg)) = (kind, node.args.first()) {
+                let query = match &*arg.expr {
+                    Expr::Lit(Lit::Str(value)) => {
+                        let value = atom_to_string(&value.value);
+                        query_suffix(&value).is_some().then_some(value)
+                    }
+                    Expr::Tpl(template) => {
+                        let raw = template
+                            .quasis
+                            .iter()
+                            .map(|quasi| quasi.raw.to_string())
+                            .collect::<String>();
+                        raw.contains('?').then_some(raw)
+                    }
+                    _ => None,
+                };
+                if let Some(query) = query {
+                    self.description = Some(format!("{kind} of {query:?} is not static"));
+                    return;
+                }
+            }
+            node.visit_children_with(self);
+        }
+    }
+    let mut finder = Finder { description: None };
+    module.visit_with(&mut finder);
+    finder.description
+}
+
+/// Backward-compatible test helper exposing only ordinary module specifiers.
+#[cfg(test)]
+fn collect_import_specifiers(module: &Module) -> Vec<String> {
+    collect_import_edges(module)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|edge| match edge {
+            CollectedImportEdge::Module(specifier) => Some(specifier),
+            CollectedImportEdge::Raw(_) => None,
+        })
+        .collect()
 }
 
 /// Collect the string-literal specifier of every dynamic `import("…")` call
@@ -5945,6 +6244,9 @@ mod tests {
                 }
                 self.inner.resolve(importer_dir, specifier)
             }
+            fn resolve_raw(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
+                self.inner.resolve_raw(importer_dir, specifier)
+            }
             fn read(&self, path: &Path) -> std::result::Result<String, String> {
                 self.inner.read(path)
             }
@@ -7413,5 +7715,135 @@ mod tests {
             "no islands ⇒ empty reachable set: {:?}",
             meta.island_reachable_modules
         );
+    }
+
+    // --- terminal `?raw` edges (issue #1499) -----------------------------
+
+    #[test]
+    fn raw_js_target_is_recorded_but_never_parsed_or_traversed() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Demo } from "../components/demo";
+                   export default function Home() { return <Demo/>; }"#,
+            )
+            .with_file(
+                root().join("components/demo.tsx"),
+                r#""use client";
+                   import source from "./intentionally-broken.js?raw";
+                   export function Demo() { return source; }"#,
+            )
+            // This is deliberately invalid JavaScript. If the raw target is
+            // pushed onto the normal DFS, SWC raises a parse error.
+            .with_file(
+                root().join("components/intentionally-broken.js"),
+                "not javascript {{{ this is raw text",
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            meta.raw_import_edges_from_islands,
+            vec![RawImportEdge {
+                importer: root().join("components/demo.tsx"),
+                target: root().join("components/intentionally-broken.js"),
+            }]
+        );
+        assert!(
+            !meta
+                .island_reachable_modules
+                .contains(&root().join("components/intentionally-broken.js")),
+            "terminal raw target must not enter the executable module closure"
+        );
+    }
+
+    #[test]
+    fn raw_edges_reachable_only_from_server_code_are_not_island_metadata() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import text from "../data/server.txt?raw";
+                   import { Demo } from "../components/demo";
+                   export default function Home() { return text + Demo(); }"#,
+            )
+            .with_file(root().join("data/server.txt"), "server text")
+            .with_file(
+                root().join("components/demo.tsx"),
+                r#""use client"; export function Demo() { return null; }"#,
+            );
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(meta.raw_import_edges_from_islands.is_empty());
+    }
+
+    #[test]
+    fn reachable_module_scan_returns_terminal_raw_edges() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/widget.client.ts"),
+                r#"import { helper } from "../src/helper";
+                   console.log(helper);"#,
+            )
+            .with_file(
+                root().join("src/helper.ts"),
+                r#"import text from "./message.txt?raw";
+                   export const helper = text;"#,
+            )
+            .with_file(root().join("src/message.txt"), "hello");
+        let meta =
+            scan_reachable_modules_with_meta(&[root().join("pages/widget.client.ts")], &resolver)
+                .unwrap();
+        assert_eq!(
+            meta.modules.len(),
+            2,
+            "raw target is not a module: {meta:?}"
+        );
+        assert_eq!(
+            meta.raw_import_edges,
+            vec![RawImportEdge {
+                importer: root().join("src/helper.ts"),
+                target: root().join("src/message.txt"),
+            }]
+        );
+    }
+
+    #[test]
+    fn unsupported_import_queries_fail_with_supported_form() {
+        for source in [
+            r#"import url from "./x.txt?url";"#,
+            r#"import { x } from "./x.txt?raw";"#,
+            r#"const x = import("./x.txt?raw");"#,
+            r#"const x = import(`./x.txt?raw`);"#,
+            r#"const x = require("./x.txt?raw");"#,
+            r#"import type x from "./x.txt?raw";"#,
+            r#"import x from "./x.txt?raw" with { type: "text" };"#,
+            r#"import x from "/tmp/x.txt?raw";"#,
+        ] {
+            let resolver = InMemoryResolver::new()
+                .with_file(root().join("pages/home.tsx"), source)
+                .with_file(root().join("pages/x.txt"), "x");
+            let error =
+                scan_reachable_modules_with_meta(&[root().join("pages/home.tsx")], &resolver)
+                    .unwrap_err()
+                    .to_string();
+            assert!(
+                error.contains("import text from"),
+                "error must teach the supported form: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_resolution_is_exact_without_js_probe() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import text from "./missing?raw";"#,
+            )
+            .with_file(root().join("pages/missing.js"), "would be probed normally");
+        let error = scan_reachable_modules_with_meta(&[root().join("pages/home.tsx")], &resolver)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("raw import resolution failed"), "{error}");
     }
 }

@@ -129,10 +129,12 @@ Audited and retagged in full during issue #1337 (2026-07); reconciled again duri
 | `crates/zfb-islands/tests/integration.rs:394` `splitting_emits_chunk_for_dynamic_import` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs:508` `no_dynamic_import_yields_single_file` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs:553` `client_script_real_esbuild_bundles_discovered_entry` | `env-gate` (esbuild) | Same as above. |
-| `crates/zfb-islands/tests/integration.rs:632` `island_css_import_bundles_without_error` | `env-gate` (esbuild) | Same as above. |
-| `crates/zfb-islands/tests/integration.rs:694` `island_module_css_import_bundles_without_error` | `env-gate` (esbuild) | Same as above. |
-| `crates/zfb-islands/tests/integration.rs:966` `islands_shadow_expands_glob_and_executes` | `env-gate` (esbuild) | Same as above. |
-| `crates/zfb-islands/tests/integration.rs:1037` `islands_shadow_preserve_symlinks_is_load_bearing` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-islands/tests/integration.rs:625` `islands_shadow_raw_import_bundles_text` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-islands/tests/integration.rs:685` `client_script_raw_import_bundles_text` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-islands/tests/integration.rs:759` `island_css_import_bundles_without_error` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-islands/tests/integration.rs:821` `island_module_css_import_bundles_without_error` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-islands/tests/integration.rs:1093` `islands_shadow_expands_glob_and_executes` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-islands/tests/integration.rs:1164` `islands_shadow_preserve_symlinks_is_load_bearing` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-css/tests/integration.rs:48` `subprocess_engine_against_real_binary` | `env-gate` (tailwindcss v4) | Local: `cargo test -p zfb-css --test integration -- --include-ignored`. **CI, T1 (issue #1393)**: `health.yml` → "Run zfb-css tailwindcss-v4 env-gate integration test" step. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job runs it via the exact-name filterset (issue #1344). |
 | `crates/zfb-build/tests/prod_asset_graph_e2e.rs:795` `prod_asset_graph_with_real_tailwind_binary_against_fixture` | `env-gate` (tailwindcss v4) | Local: `cargo test -p zfb-build --test prod_asset_graph_e2e -- --include-ignored`. **CI, T1 (issue #1393)**: `health.yml` → "Run zfb-build tailwindcss-v4 env-gate integration test" step. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job (issue #1344). |
 | `crates/zfb/src/commands/build.rs:6571` `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project` | `env-gate` (tailwindcss v4) | Local: `cargo test -p zfb --lib commands::build:: -- --include-ignored`. **CI, T1 (issue #1393)**: `health.yml` → "Run zfb tailwindcss-v4 env-gate unit test (commands::build)" step. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job (issue #1344). |
