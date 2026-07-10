@@ -234,7 +234,7 @@ pub struct RenderedPage {
     ///
     /// `None` means "let the consumer derive a default from the
     /// extension". The dev server uses
-    /// `zfb_server::content_type_for_extension` for that lookup.
+    /// `zfb_server::routes::content_type_for_extension` for that lookup.
     pub content_type: Option<String>,
 }
 
