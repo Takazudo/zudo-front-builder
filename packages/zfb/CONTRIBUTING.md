@@ -34,6 +34,8 @@ the compiled `./dist/` artifacts (`tsc` emitting `.js` + `.d.ts`).
   "./config":     { "types": "./src/config.ts",     "default": "./src/config.ts" },
   "./plugins":    { "types": "./src/plugins.ts",    "default": "./src/plugins.ts" },
   "./frontmatter":{ "types": "./src/frontmatter.ts","default": "./src/frontmatter.ts" },
+  "./slugify":    { "types": "./src/slugify.ts",    "default": "./src/slugify.ts" },
+  "./package.json": "./package.json",
 }
 ```
 
@@ -51,6 +53,8 @@ the compiled `./dist/` artifacts (`tsc` emitting `.js` + `.d.ts`).
     "./config":     { "types": "./dist/config.d.ts",     "default": "./dist/config.js" },
     "./plugins":    { "types": "./dist/plugins.d.ts",    "default": "./dist/plugins.js" },
     "./frontmatter":{ "types": "./dist/frontmatter.d.ts","default": "./dist/frontmatter.js" },
+    "./slugify":    { "types": "./dist/slugify.d.ts",    "default": "./dist/slugify.js" },
+    "./package.json": "./package.json",
   }
 }
 ```
@@ -129,3 +133,5 @@ through `import "zfb"` strings.
 | `./config` | `src/config.ts` | Project config types |
 | `./plugins` | `src/plugins.ts` | Plugin lifecycle types (`ZfbPlugin`, build/dev hooks) |
 | `./frontmatter` | `src/frontmatter.ts` | Frontmatter schema helpers |
+| `./slugify` | `src/slugify.ts` | Heading-slug parity helper (`slugify`, `SlugAllocator`) |
+| `./package.json` | `package.json` | Package metadata for tooling |
