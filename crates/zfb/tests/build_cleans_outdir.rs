@@ -19,6 +19,8 @@
 //! 5. **Safety rejection** — passing `outdir == project_root` (or an ancestor
 //!    thereof) causes `zfb build` to exit non-zero before touching the
 //!    filesystem.
+//! 6. **Output-directory precedence** — config-only `outDir` is honored and
+//!    an explicit CLI `--outdir` wins over it.
 //!
 //! All tests drive the real `zfb` binary via `Command::new(zfb_binary!())` so
 //! the full async `pub async fn run()` path — including the new
@@ -39,13 +41,8 @@ use zfb_test_utils::{locate_esbuild, zfb_binary};
 
 /// Write the minimal project fixture: `zfb.config.json` + `pages/index.tsx`
 /// (no prerender export → defaults to SSG, no V8 / adapter needed).
-fn write_minimal_fixture(root: &Path) {
-    fs::write(
-        root.join("zfb.config.json"),
-        r#"{ "framework": "preact" }
-"#,
-    )
-    .unwrap();
+fn write_minimal_fixture_with_config(root: &Path, config: &str) {
+    fs::write(root.join("zfb.config.json"), config).unwrap();
 
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(
@@ -61,6 +58,14 @@ fn write_minimal_fixture(root: &Path) {
 "#,
     )
     .unwrap();
+}
+
+fn write_minimal_fixture(root: &Path) {
+    write_minimal_fixture_with_config(
+        root,
+        r#"{ "framework": "preact" }
+"#,
+    );
 }
 
 /// Run `zfb build` in `root` with the supplied esbuild path.
@@ -98,6 +103,80 @@ fn dump(output: &std::process::Output) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Output-directory precedence regressions (#1495)
+// ---------------------------------------------------------------------------
+
+/// With no CLI override, `zfb build` writes to the configured `outDir`.
+#[test]
+fn config_outdir_is_used_when_cli_flag_is_absent() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[build_cleans_outdir] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    write_minimal_fixture_with_config(
+        root,
+        r#"{ "framework": "preact", "outDir": "configured-out" }
+"#,
+    );
+
+    let out = run_zfb_build(root, &esbuild);
+    assert!(
+        out.status.success(),
+        "build with configured outDir failed\n{}",
+        dump(&out)
+    );
+    assert!(
+        root.join("configured-out/index.html").is_file(),
+        "config-only outDir must receive the build output"
+    );
+    assert!(
+        !root.join("dist").exists(),
+        "the default dist/ must not be created when config selects another outDir"
+    );
+}
+
+/// An explicit CLI `--outdir` wins over a different configured `outDir`.
+#[test]
+fn cli_outdir_overrides_config_outdir() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[build_cleans_outdir] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    write_minimal_fixture_with_config(
+        root,
+        r#"{ "framework": "preact", "outDir": "configured-out" }
+"#,
+    );
+
+    let out = run_zfb_build_with_outdir(root, &esbuild, "cli-out");
+    assert!(
+        out.status.success(),
+        "build with CLI outdir override failed\n{}",
+        dump(&out)
+    );
+    assert!(
+        root.join("cli-out/index.html").is_file(),
+        "CLI outdir must receive the build output"
+    );
+    assert!(
+        !root.join("configured-out").exists(),
+        "configured outDir must not be created when the CLI overrides it"
+    );
 }
 
 // ---------------------------------------------------------------------------

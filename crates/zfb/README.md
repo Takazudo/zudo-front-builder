@@ -59,7 +59,8 @@ zfb build --minify-html
 zfb build --no-minify-html
 ```
 
-Default `--outdir` is `dist`. `--minify-html` / `--no-minify-html` are an
+Output-directory precedence is CLI `--outdir` > `outDir` in `zfb.config.*` >
+the built-in `dist` default. `--minify-html` / `--no-minify-html` are an
 explicit tri-state (`BuildMinifyHtml`) layered over `minifyHtml` config.
 
 ### `zfb preview`
@@ -72,9 +73,9 @@ zfb preview --port 4321 --outdir dist
 zfb preview --host
 ```
 
-Default port falls back to `zfb.config.*` then to `4321`. Default `--outdir`
-is `dist`. Bare `--host` is the same LAN shortcut as `zfb dev --host`:
-`0.0.0.0`.
+Port and host fall back to `zfb.config.*`, then to `4321` and `localhost`.
+Output-directory precedence matches build: CLI `--outdir` > config `outDir` >
+`dist`. Bare `--host` is the same LAN shortcut as `zfb dev --host`: `0.0.0.0`.
 
 ### `zfb check`
 
@@ -129,7 +130,7 @@ TypeScript wins over JSON when both files are present.
 
 | Rust field | Config key | Default | Notes |
 | --- | --- | --- | --- |
-| `out_dir` | `outDir` | `"dist"` | Production output directory |
+| `out_dir` | `outDir` | `"dist"` | Build/preview output and dev's prebuilt seed; build/preview CLI flag takes precedence |
 | `public_dir` | `publicDir` | `"public"` | Static assets directory |
 | `host` | `host` | `None` | Dev/preview bind host; CLI flag takes precedence |
 | `port` | `port` | `None` | Dev/preview port; CLI flag takes precedence |
