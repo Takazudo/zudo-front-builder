@@ -36,8 +36,8 @@ Wiring concrete renderers / engines / bundlers happens in the bin crate
   `ProductionAssetPipeline`, `apply_prod_asset_pipeline`,
   `BuildContext` (legacy transition shim — see below),
   `DevBuildContext`, `ProdBuildContext`, `BuildOutcome`, and the
-  runner types `CssRunner`, `IslandsRunner`, `PageRenderer`,
-  `RendererReloader`.
+  runner types `CssRunner`, `IslandsRunner`, `ClientScriptsRunner`,
+  `PageRenderer`, `RendererReloader`.
 - **Bundler** — `bundle`, `BundleManifest`, `BundleMode`,
   `BundlerInput`, `BundlerOutput`, and related content-collection
   types.
@@ -79,6 +79,7 @@ let ctx = BuildContext {
     }),
     run_css: None,
     run_islands: None,
+    run_client_scripts: None,
     reload_renderer: None,
 };
 

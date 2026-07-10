@@ -82,7 +82,13 @@ Index pages receive a +1 bonus on top of their segment sum.
 `RouterError::AmbiguousShape` — two routes overlap under param-name-insensitive
 comparison (issue #816), catching conflicts that differ only in parameter name.
 
-Both errors carry the conflicting source paths for precise diagnostics.
+`RouterError::OptionalCatchallConflict` — an optional catchall route overlaps
+another route. This catches the zero-segment bare-URL conflict
+(`docs/[[...slug]].tsx` vs `docs/index.tsx`) and full catchall overlap
+(`docs/[[...a]].tsx` vs `docs/[...b].tsx`).
+
+All ambiguity errors carry the conflicting source paths for precise
+diagnostics.
 
 ### Sort parity
 

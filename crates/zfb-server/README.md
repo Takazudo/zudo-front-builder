@@ -12,13 +12,16 @@ listens for `page`, `css`, and `islands` events.
 
 | Module | Purpose |
 | -------------------- | -------------------------------------------------------------------- |
+| `assets_containment` | Containment-safe layered asset serving for `/assets/*` |
 | `embed` | `Server` / `ServerBuilder` / `ServerHandle` — embed-as-library API |
 | `embed_handlers` | `EmbedHandler` / `EmbedHandlerSet` — Rust-side request handlers |
+| `host_validation` | Host / Origin allowlist guard for non-loopback binds |
 | `inject` | Byte-level live-reload `<script>` injector |
 | `injected_routes` | `InjectedRouteSet` — pattern registry + request-time matcher for plugin-owned routes |
 | `livereload` | SSE bridge: `ReloadEvent`, `outcome_to_events`, `sse_response` |
 | `middleware` | Tower middleware for request extensions |
 | `plugin_middleware` | `DevMiddlewareDispatcher` — plugin dev-middleware dispatch |
+| `render_hook` | Render-on-request hook handle used by lazy dev rendering |
 | `routes` | Axum router: `build_router`, `AppState`, `PageCache` |
 | `ssr` | `SsrDispatcher` / `SsrRouteSet` — request-time SSR dispatch |
 
@@ -38,14 +41,20 @@ use zfb_server::{
     build_router, AppState, PageCache, CachedPage, DEV_404_BODY,
     content_type_for_extension, resolve_content_type,
     // Plugin middleware
-    DevMiddlewareDispatcher, DevMiddlewareSet, PluginRegistration,
+    path_matches_prefix, DevMiddlewareDispatcher, DevMiddlewareSet,
+    PluginDispatchError, PluginDispatchOutcome, PluginRegistration,
     PluginRequest, PluginResponse, PluginResponseEncoding,
     // Embed handlers
     EmbedHandler, EmbedHandlerFn, EmbedHandlerFuture, EmbedHandlerSet, RouteParams,
+    // Host validation
+    apply_host_validation_layer, HostValidation,
     // Injected routes (InjectedRoute is re-exported from zfb-build)
     InjectedRoute, InjectedRouteSet, pattern_matches,
+    // Render-on-request hook
+    RenderOnRequestHandle, RenderOnRequestHook,
     // SSR
-    SsrDispatcher, SsrRequest, SsrResponse, SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
+    SsrDispatchError, SsrDispatcher, SsrRequest, SsrResponse, SsrRouteRecord,
+    SsrRouteSet, SsrRoutesHandle,
     // Inject helpers
     inject_livereload, inject_livereload_into_tree, LIVERELOAD_TAG,
     // Bundle URL handles
@@ -81,8 +90,10 @@ All paths must be absolute. Key fields:
 
 | Field | Role |
 | -------------------- | -------------------------------------------------------- |
+| `project_root` | Project root for diagnostics and future middleware |
 | `addr` | Bind address (default `127.0.0.1:3000`) |
 | `dist_root` | Built assets directory (`/assets/*` route root) |
+| `dev_assets_root` | Optional isolated dev-assets root; `/assets/*` checks `<dev_assets_root>/assets/` before `<dist_root>/assets/` |
 | `html_root` | Dev-only HTML root (separate from `dist_root` in `zfb dev`) |
 | `public_root` | Static files at site root (`public/logo.svg` → `/logo.svg`) |
 | `pages` | `PageCache` populated by the orchestrator render loop |
@@ -93,8 +104,15 @@ All paths must be absolute. Key fields:
 | `base` | `zfb.config.ts` `base` value (normalised internally) |
 | `trailing_slash` | `zfb.config.ts` `trailingSlash` value |
 | `mode` | `ServerMode::Dev` / `Preview` / `Embed` |
-| `islands_bundle_url` | `Arc<RwLock<Option<String>>>` — current islands bundle URL |
-| `css_bundle_url` | `Arc<RwLock<Option<String>>>` — current CSS bundle URL |
+| `islands_bundle_url` | `Option<IslandsBundleUrl>` where `IslandsBundleUrl = Arc<RwLock<Option<String>>>`; current dev islands bundle URL |
+| `css_bundle_url` | `Option<CssBundleUrl>` where `CssBundleUrl = Arc<RwLock<Option<String>>>`; current dev CSS bundle URL |
+| `allowed_hosts` | `allowedHosts` config entries for Host validation on non-loopback binds |
+| `bound_host` | Explicit user-bound host string, always allowed by host validation |
+| `render_on_request_hook` | Optional `RenderOnRequestHandle` awaited before page-cache/disk lookup in Dev mode |
+
+`None` for the outer bundle URL handle means the server has no handle to
+consult. `Some(handle)` with an inner `None` means the handle exists but the
+current build has no URL to inject.
 
 ### Route map
 
