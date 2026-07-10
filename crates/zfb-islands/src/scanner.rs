@@ -127,6 +127,28 @@ pub enum ScanError {
         /// Resolver/result detail.
         message: String,
     },
+    /// A module worker matched the supported constructor shape but its entry
+    /// could not be resolved as an exact first-party file.
+    #[error("module-worker resolution failed in {path} for {specifier:?}: {message}")]
+    ModuleWorker {
+        /// Module containing the worker constructor.
+        path: PathBuf,
+        /// Literal first argument passed to `new URL(...)`.
+        specifier: String,
+        /// Resolution/validation detail.
+        message: String,
+    },
+    /// `SharedWorker` is intentionally unsupported; leaving its authored URL
+    /// untouched would produce a runtime 404 after bundling.
+    #[error(
+        "unsupported SharedWorker in {path} for {specifier:?}: zfb supports only `new Worker(new URL(\"./worker.ts\", import.meta.url), {{ type: \"module\" }})`"
+    )]
+    SharedWorker {
+        /// Module containing the unsupported constructor.
+        path: PathBuf,
+        /// Literal first argument passed to `new URL(...)`.
+        specifier: String,
+    },
 }
 
 /// Convenience alias for scanner results.
@@ -148,6 +170,19 @@ pub struct RawImportEdge {
     pub target: PathBuf,
 }
 
+/// One statically-discovered browser-only module-worker entry edge.
+///
+/// `source_path` is deliberately not part of the ordinary parent module
+/// closure. The matched `new URL(...)` is rewritten to a flat emitted worker
+/// companion, so SSR must never import or execute this browser-only entry.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModuleWorkerEdge {
+    /// JS/TS module containing the matched `new Worker(...)` constructor.
+    pub importer: PathBuf,
+    /// Exact first-party worker entry resolved from the literal URL.
+    pub source_path: PathBuf,
+}
+
 /// Metadata returned by [`scan_reachable_modules_with_meta`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReachableModulesMeta {
@@ -155,6 +190,11 @@ pub struct ReachableModulesMeta {
     pub modules: Vec<PathBuf>,
     /// Sorted, deduplicated raw terminal edges discovered in that closure.
     pub raw_import_edges: Vec<RawImportEdge>,
+    /// Sorted, deduplicated module-worker edges found in the root closure and
+    /// recursively in each first-party worker graph. Worker sources are not
+    /// inserted into [`Self::modules`]. Installed `node_modules` graphs are a
+    /// documented boundary and are skipped.
+    pub module_worker_edges: Vec<ModuleWorkerEdge>,
 }
 
 /// Side-channel metadata gathered during a scan that is not itself an
@@ -290,17 +330,26 @@ pub struct ScanMeta {
     /// [`Self::island_reachable_modules`]: they are mirrored as assets but
     /// never traversed or parsed as executable source.
     pub raw_import_edges_from_islands: Vec<RawImportEdge>,
+
+    /// Sorted module-worker edges reachable from an island, including nested
+    /// workers reached through first-party worker imports. These browser-only
+    /// entries remain separate from [`Self::island_reachable_modules`] so the
+    /// SSR graph cannot accidentally execute them. Worker syntax inside real
+    /// `node_modules` dependency trees is intentionally not traversed.
+    pub module_worker_edges_from_islands: Vec<ModuleWorkerEdge>,
 }
 
 /// Abstraction over module resolution + source reading.
 ///
 /// The scanner doesn't know how a project lays out its files (real FS,
-/// virtual FS, an in-memory test harness) — it asks the resolver. Two
-/// methods, deliberately split:
+/// virtual FS, an in-memory test harness) — it asks the resolver. Edge
+/// semantics are deliberately split across methods:
 ///
 /// - [`Resolver::resolve`] turns a `(importer_dir, specifier)` pair into a
 ///   resolved path the scanner will use as both the visited-set key and
 ///   the [`Island::source_path`].
+/// - [`Resolver::resolve_raw`] and [`Resolver::resolve_worker`] resolve exact
+///   terminal/entry paths without ordinary JS extension probing.
 /// - [`Resolver::read`] reads a previously-resolved path back as a string.
 pub trait Resolver {
     /// Resolve a relative `specifier` (`./foo`, `../bar/baz`) against the
@@ -313,6 +362,16 @@ pub trait Resolver {
     /// Implementations must not apply JS extension probing, TS source swaps,
     /// or `index.*` module resolution to this path.
     fn resolve_raw(&self, _importer_dir: &Path, _specifier: &str) -> Option<PathBuf> {
+        None
+    }
+
+    /// Resolve an exact relative module-worker URL.
+    ///
+    /// Unlike [`Resolver::resolve`], this must not probe extensions, swap a
+    /// `.js` spelling to TypeScript, resolve a directory index, or accept a
+    /// bare/absolute/query-bearing specifier. `new URL(...)` names a concrete
+    /// browser entry and the naming contract is derived from that exact file.
+    fn resolve_worker(&self, _importer_dir: &Path, _specifier: &str) -> Option<PathBuf> {
         None
     }
 
@@ -1311,6 +1370,16 @@ impl Resolver for FsResolver {
         Some(candidate)
     }
 
+    fn resolve_worker(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
+        if !(specifier.starts_with("./") || specifier.starts_with("../"))
+            || specifier.contains(['?', '#'])
+        {
+            return None;
+        }
+        let candidate = normalize_path_lexical(&importer_dir.join(specifier));
+        candidate.is_file().then_some(candidate)
+    }
+
     fn read(&self, path: &Path) -> std::result::Result<String, String> {
         std::fs::read_to_string(path).map_err(|e| e.to_string())
     }
@@ -1409,6 +1478,16 @@ impl Resolver for InMemoryResolver {
 
     fn resolve_raw(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
         if !(specifier.starts_with("./") || specifier.starts_with("../")) {
+            return None;
+        }
+        let candidate = normalize_path_lexical(&importer_dir.join(specifier));
+        self.files.contains_key(&candidate).then_some(candidate)
+    }
+
+    fn resolve_worker(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
+        if !(specifier.starts_with("./") || specifier.starts_with("../"))
+            || specifier.contains(['?', '#'])
+        {
             return None;
         }
         let candidate = normalize_path_lexical(&importer_dir.join(specifier));
@@ -1528,9 +1607,12 @@ pub fn scan_reachable_modules_with_meta<R: Resolver>(
         }
     }
 
+    let modules: Vec<PathBuf> = reachable.into_iter().collect();
+    let module_worker_edges = discover_module_workers(&modules, resolver)?;
     Ok(ReachableModulesMeta {
-        modules: reachable.into_iter().collect(),
+        modules,
         raw_import_edges: raw_import_edges.into_iter().collect(),
+        module_worker_edges,
     })
 }
 
@@ -1748,14 +1830,19 @@ pub fn scan_islands_with_meta<R: Resolver>(
         }
     }
 
+    let island_reachable_modules: Vec<PathBuf> = island_reachable_modules.into_iter().collect();
+    let module_worker_edges_from_islands =
+        discover_module_workers(&island_reachable_modules, resolver)?;
+
     Ok((
         found.into_values().collect(),
         ScanMeta {
             uses_client_router: resolve_client_router_usage(&client_router_facts),
             near_miss_candidates,
             glob_reachable_from_islands: glob_reachable_from_islands.into_iter().collect(),
-            island_reachable_modules: island_reachable_modules.into_iter().collect(),
+            island_reachable_modules,
             raw_import_edges_from_islands: raw_import_edges_from_islands.into_iter().collect(),
+            module_worker_edges_from_islands,
         },
     ))
 }
@@ -1817,6 +1904,217 @@ fn is_import_meta_glob_callee(call: &swc_core::ecma::ast::CallExpr) -> bool {
         return false;
     }
     matches!(&*member.obj, Expr::MetaProp(mp) if mp.kind == MetaPropKind::ImportMeta)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerConstructorKind {
+    Worker,
+    SharedWorker,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkerConstructor {
+    kind: WorkerConstructorKind,
+    specifier: String,
+}
+
+/// Collect the supported literal module-worker constructor shape anywhere in
+/// a module. An ordinary `Worker` is collected only when its options object
+/// sets `type: "module"`; `SharedWorker` with the same literal `new URL(...)`
+/// shape is retained regardless of options so the relevant graph can fail
+/// loudly instead of shipping a URL that would 404.
+fn collect_worker_constructors(module: &Module) -> Vec<WorkerConstructor> {
+    use swc_core::ecma::ast::{
+        ExprOrSpread, MemberProp, MetaPropKind, NewExpr, Prop, PropName, PropOrSpread,
+    };
+    use swc_core::ecma::visit::{Visit, VisitWith};
+
+    fn literal_url_specifier(args: &[ExprOrSpread]) -> Option<String> {
+        let first = args.first()?;
+        if first.spread.is_some() {
+            return None;
+        }
+        let Expr::New(url) = &*first.expr else {
+            return None;
+        };
+        if !matches!(&*url.callee, Expr::Ident(ident) if ident.sym == "URL") {
+            return None;
+        }
+        let url_args = url.args.as_ref()?;
+        if url_args.len() < 2 || url_args[0].spread.is_some() || url_args[1].spread.is_some() {
+            return None;
+        }
+        let Expr::Lit(Lit::Str(specifier)) = &*url_args[0].expr else {
+            return None;
+        };
+        let Expr::Member(import_meta_url) = &*url_args[1].expr else {
+            return None;
+        };
+        if !matches!(&import_meta_url.prop, MemberProp::Ident(ident) if ident.sym == "url")
+            || !matches!(&*import_meta_url.obj, Expr::MetaProp(meta) if meta.kind == MetaPropKind::ImportMeta)
+        {
+            return None;
+        }
+        Some(atom_to_string(&specifier.value))
+    }
+
+    fn is_module_options(args: &[ExprOrSpread]) -> bool {
+        let Some(options) = args.get(1) else {
+            return false;
+        };
+        if options.spread.is_some() {
+            return false;
+        }
+        let Expr::Object(object) = &*options.expr else {
+            return false;
+        };
+        let mut type_is_module = false;
+        for property in &object.props {
+            let PropOrSpread::Prop(property) = property else {
+                return false;
+            };
+            let Prop::KeyValue(property) = &**property else {
+                return false;
+            };
+            let is_type = match &property.key {
+                PropName::Ident(ident) => ident.sym == "type",
+                PropName::Str(value) => value.value == *"type",
+                _ => false,
+            };
+            if is_type {
+                // Object-literal evaluation is last-write-wins. Tracking the
+                // effective value avoids accepting
+                // `{ type: "module", type: "classic" }`.
+                type_is_module = matches!(
+                    &*property.value,
+                    Expr::Lit(Lit::Str(value)) if value.value == *"module"
+                );
+            }
+        }
+        type_is_module
+    }
+
+    struct Collector {
+        constructors: Vec<WorkerConstructor>,
+    }
+
+    impl Visit for Collector {
+        fn visit_new_expr(&mut self, node: &NewExpr) {
+            let kind = match &*node.callee {
+                Expr::Ident(ident) if ident.sym == "Worker" => Some(WorkerConstructorKind::Worker),
+                Expr::Ident(ident) if ident.sym == "SharedWorker" => {
+                    Some(WorkerConstructorKind::SharedWorker)
+                }
+                _ => None,
+            };
+            if let (Some(kind), Some(args)) = (kind, node.args.as_deref()) {
+                if let Some(specifier) = literal_url_specifier(args) {
+                    if kind == WorkerConstructorKind::SharedWorker || is_module_options(args) {
+                        self.constructors
+                            .push(WorkerConstructor { kind, specifier });
+                    }
+                }
+            }
+            node.visit_children_with(self);
+        }
+    }
+
+    let mut collector = Collector {
+        constructors: Vec::new(),
+    };
+    module.visit_with(&mut collector);
+    collector.constructors
+}
+
+fn path_is_inside_node_modules(path: &Path) -> bool {
+    path.components().any(
+        |component| matches!(component, Component::Normal(name) if name == std::ffi::OsStr::new("node_modules")),
+    )
+}
+
+/// Discover workers from a first-party module closure, then recurse through
+/// each worker's own ordinary imports so nested workers are returned too.
+///
+/// Worker targets are intentionally a separate edge set: they are pushed only
+/// onto this private discovery stack and never into the caller's ordinary
+/// module closure. Real `node_modules` modules are a documented boundary; zfb
+/// does not rewrite or emit third-party-transitive workers.
+fn discover_module_workers<R: Resolver>(
+    roots: &[PathBuf],
+    resolver: &R,
+) -> ScanResult<Vec<ModuleWorkerEdge>> {
+    let mut found: BTreeSet<ModuleWorkerEdge> = BTreeSet::new();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut stack = roots.to_vec();
+
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current.clone())
+            || !is_scannable_source(&current)
+            || path_is_inside_node_modules(&current)
+        {
+            continue;
+        }
+        let source = resolver
+            .read(&current)
+            .map_err(|message| ScanError::Resolver {
+                path: current.clone(),
+                message,
+            })?;
+        let module = parse_module(&current, &source)?;
+        let importer_dir = current
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        for constructor in collect_worker_constructors(&module) {
+            if constructor.kind == WorkerConstructorKind::SharedWorker {
+                return Err(ScanError::SharedWorker {
+                    path: current.clone(),
+                    specifier: constructor.specifier,
+                });
+            }
+            let source_path = resolver
+                .resolve_worker(&importer_dir, &constructor.specifier)
+                .ok_or_else(|| ScanError::ModuleWorker {
+                    path: current.clone(),
+                    specifier: constructor.specifier.clone(),
+                    message: "the URL must name an existing exact project-local relative file; extension probing, query/fragment suffixes, absolute paths, and bare specifiers are not supported".to_string(),
+                })?;
+            if path_is_inside_node_modules(&source_path) || !is_scannable_source(&source_path) {
+                return Err(ScanError::ModuleWorker {
+                    path: current.clone(),
+                    specifier: constructor.specifier,
+                    message: format!(
+                        "resolved target {} is not a first-party JS/TS source; worker entries under node_modules are not traversed",
+                        source_path.display()
+                    ),
+                });
+            }
+            found.insert(ModuleWorkerEdge {
+                importer: current.clone(),
+                source_path: source_path.clone(),
+            });
+            if !visited.contains(&source_path) {
+                stack.push(source_path);
+            }
+        }
+
+        let import_edges =
+            collect_import_edges(&module).map_err(|message| ScanError::ImportQuery {
+                path: current.clone(),
+                message,
+            })?;
+        for edge in import_edges {
+            if let CollectedImportEdge::Module(specifier) = edge {
+                if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                    if !visited.contains(&resolved) {
+                        stack.push(resolved);
+                    }
+                }
+            }
+        }
+    }
+    Ok(found.into_iter().collect())
 }
 
 /// Bare specifier of the `@takazudo/zfb-runtime` barrel package.
@@ -7892,5 +8190,166 @@ mod tests {
                 target: alias,
             }]
         );
+    }
+
+    #[test]
+    fn island_worker_discovery_is_transitive_nested_and_browser_only() {
+        let page = root().join("pages/index.tsx");
+        let island = root().join("components/Island.tsx");
+        let helper = root().join("components/helper.ts");
+        let worker = root().join("components/workers/search.ts");
+        let nested = root().join("components/workers/nested/tokenize.ts");
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                page.clone(),
+                "import { Island } from '../components/Island'; export default Island;",
+            )
+            .with_file(
+                island.clone(),
+                "'use client'; import { start } from './helper'; export function Island() { start(); return null; }",
+            )
+            .with_file(
+                helper.clone(),
+                "export const start = () => new Worker(new URL('./workers/search.ts', import.meta.url), { type: 'module' });",
+            )
+            .with_file(
+                worker.clone(),
+                "new Worker(new URL('./nested/tokenize.ts', import.meta.url), { name: 'nested', type: 'module' });",
+            )
+            .with_file(&nested, "self.postMessage('ready');");
+
+        let (_, meta) = scan_islands_with_meta(&[page], &resolver).unwrap();
+        assert_eq!(
+            meta.module_worker_edges_from_islands,
+            vec![
+                ModuleWorkerEdge {
+                    importer: helper,
+                    source_path: worker.clone(),
+                },
+                ModuleWorkerEdge {
+                    importer: worker,
+                    source_path: nested.clone(),
+                },
+            ]
+        );
+        assert!(
+            !meta.island_reachable_modules.contains(&nested),
+            "worker sources are browser-only and must not enter the parent/SSR module graph"
+        );
+    }
+
+    #[test]
+    fn arbitrary_client_root_discovers_nested_workers_without_polluting_modules() {
+        let entry = root().join("src/app.client.ts");
+        let worker = root().join("src/worker.ts");
+        let nested = root().join("src/nested.ts");
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                &entry,
+                "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            )
+            .with_file(
+                &worker,
+                "new Worker(new URL('./nested.ts', import.meta.url), { type: 'module' });",
+            )
+            .with_file(&nested, "self.postMessage(1);");
+        let meta =
+            scan_reachable_modules_with_meta(std::slice::from_ref(&entry), &resolver).unwrap();
+        assert_eq!(meta.modules, vec![entry.clone()]);
+        assert_eq!(
+            meta.module_worker_edges,
+            vec![
+                ModuleWorkerEdge {
+                    importer: entry,
+                    source_path: worker.clone(),
+                },
+                ModuleWorkerEdge {
+                    importer: worker,
+                    source_path: nested,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn shared_worker_is_a_named_error_only_in_relevant_graph() {
+        let page = root().join("pages/index.tsx");
+        let island = root().join("components/Island.tsx");
+        let server = root().join("components/server.ts");
+        let worker = root().join("components/worker.ts");
+        let server_only = InMemoryResolver::new()
+            .with_file(&page, "import '../components/server'; export default null;")
+            .with_file(
+                &server,
+                "new SharedWorker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            )
+            .with_file(&worker, "self.onconnect = () => {};");
+        let (_, meta) = scan_islands_with_meta(std::slice::from_ref(&page), &server_only).unwrap();
+        assert!(meta.module_worker_edges_from_islands.is_empty());
+
+        let island_graph = InMemoryResolver::new()
+            .with_file(
+                &page,
+                "import { Island } from '../components/Island'; export default Island;",
+            )
+            .with_file(
+                &island,
+                "'use client'; export function Island() { new SharedWorker(new URL('./worker.ts', import.meta.url)); return null; }",
+            )
+            .with_file(&worker, "self.onconnect = () => {};");
+        let error = scan_islands_with_meta(&[page], &island_graph)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unsupported SharedWorker"), "{error}");
+        assert!(error.contains("worker.ts"), "{error}");
+    }
+
+    #[test]
+    fn worker_url_requires_an_exact_relative_query_free_file() {
+        for specifier in ["./worker", "./worker.ts?v=1", "/worker.ts", "worker.ts"] {
+            let entry = root().join("src/app.client.ts");
+            let resolver = InMemoryResolver::new()
+                .with_file(
+                    &entry,
+                    format!(
+                        "new Worker(new URL({specifier:?}, import.meta.url), {{ type: 'module' }});"
+                    ),
+                )
+                .with_file(root().join("src/worker.ts"), "self.postMessage(1);");
+            let error = scan_reachable_modules_with_meta(&[entry], &resolver)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("module-worker resolution failed"), "{error}");
+            assert!(error.contains("exact project-local relative"), "{error}");
+        }
+    }
+
+    #[test]
+    fn non_module_or_overridden_worker_options_are_not_claimed() {
+        for source in [
+            "new Worker(new URL('./worker.ts', import.meta.url));",
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'classic' });",
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', type: 'classic' });",
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', ...options });",
+        ] {
+            let entry = root().join("src/app.client.ts");
+            let resolver = InMemoryResolver::new()
+                .with_file(&entry, source)
+                .with_file(root().join("src/worker.ts"), "self.postMessage(1);");
+            let meta = scan_reachable_modules_with_meta(&[entry], &resolver).unwrap();
+            assert!(meta.module_worker_edges.is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn real_node_modules_worker_syntax_is_a_documented_skip() {
+        let entry = root().join("node_modules/pkg/index.js");
+        let resolver = InMemoryResolver::new().with_file(
+            &entry,
+            "new SharedWorker(new URL('./worker.js', import.meta.url));",
+        );
+        let meta = scan_reachable_modules_with_meta(&[entry.clone()], &resolver).unwrap();
+        assert_eq!(meta.modules, vec![entry]);
+        assert!(meta.module_worker_edges.is_empty());
     }
 }
