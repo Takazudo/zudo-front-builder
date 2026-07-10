@@ -35,14 +35,17 @@ pnpm --filter zfb-example-ai-summarizer preview
 ```
 
 Because this project configures the Cloudflare adapter, `zfb preview` hands off
-to `wrangler dev` after the build.
+to `wrangler dev` after the build. The default Wrangler environment deliberately
+has no AI binding, so preview works without a Cloudflare login and the endpoint
+returns the deterministic fallback response.
 
 ## Cloudflare Workers AI
 
-Workers AI does not need placeholder IDs in `wrangler.toml`. The binding is:
+Workers AI does not need placeholder IDs in `wrangler.toml`. The real binding
+lives in the named `ai` Wrangler environment:
 
 ```toml
-[ai]
+[env.ai.ai]
 binding = "AI"
 ```
 
@@ -59,9 +62,9 @@ Then run the binding-realistic loop:
 pnpm --filter zfb-example-ai-summarizer dev:cf
 ```
 
-`dev:cf` runs `pnpm build`, starts `wrangler dev --port 8788`, and watches the
-source files with `chokidar-cli`, rebuilding when pages, components, `lib`, or
-styles change.
+`dev:cf` runs `pnpm build`, starts `wrangler dev --env ai --port 8788`, and
+watches the source files with `chokidar-cli`, rebuilding when pages,
+components, `lib`, or styles change.
 
 Endpoint check after `pnpm build` and `wrangler dev`:
 
@@ -78,5 +81,5 @@ still returns JSON with `"fallback": true`.
 
 ```sh
 pnpm --filter zfb-example-ai-summarizer build
-pnpm --filter zfb-example-ai-summarizer exec wrangler deploy
+pnpm --filter zfb-example-ai-summarizer exec wrangler deploy --env ai
 ```

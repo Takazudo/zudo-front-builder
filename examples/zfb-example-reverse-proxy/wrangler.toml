@@ -1,6 +1,6 @@
 name = "zfb-example-reverse-proxy"
 main = "./dist/_worker.js"
-compatibility_date = "2026-07-10"
+compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
 
 [assets]
