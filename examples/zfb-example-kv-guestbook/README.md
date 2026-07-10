@@ -86,7 +86,7 @@ curl -X DELETE "http://localhost:8787/api/entries/$ENCODED_KEY" \
 
 Writes use keys shaped as `entry:<ISO timestamp>:<random hex>`, so the key name
 contains the creation time and remains sortable. Each entry uses
-`expirationTtl`, currently 30 days, so the namespace does not grow forever.
+`expirationTtl`, currently 90 days, so the namespace does not grow forever.
 
 `POST /api/entries` and the homepage form pass `KV.put(...)` to
 `ctx.waitUntil()` and return before the write settles. That keeps the response

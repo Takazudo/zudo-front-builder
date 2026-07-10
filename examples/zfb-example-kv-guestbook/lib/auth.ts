@@ -2,10 +2,6 @@ import { jsonResponse, type Env } from "./kv";
 
 type AuthResult = { ok: true } | { ok: false; response: Response };
 
-type TimingSafeSubtleCrypto = SubtleCrypto & {
-  timingSafeEqual(a: ArrayBuffer | ArrayBufferView, b: ArrayBuffer | ArrayBufferView): boolean;
-};
-
 const encoder = new TextEncoder();
 
 export async function requireAdmin(request: Request, env: Env): Promise<AuthResult> {
@@ -42,6 +38,13 @@ async function timingSafeEqual(provided: string, expected: string): Promise<bool
     crypto.subtle.digest("SHA-256", encoder.encode(provided)),
     crypto.subtle.digest("SHA-256", encoder.encode(expected)),
   ]);
+  const providedBytes = new Uint8Array(providedHash);
+  const expectedBytes = new Uint8Array(expectedHash);
+  let diff = providedBytes.length ^ expectedBytes.length;
 
-  return (crypto.subtle as TimingSafeSubtleCrypto).timingSafeEqual(providedHash, expectedHash);
+  for (let index = 0; index < providedBytes.length; index += 1) {
+    diff |= (providedBytes[index] ?? 0) ^ (expectedBytes[index] ?? 0);
+  }
+
+  return diff === 0;
 }

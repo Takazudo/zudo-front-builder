@@ -2,7 +2,7 @@ import { getCloudflareContext, type CloudflareContext } from "@takazudo/zfb-adap
 
 export const ENTRY_PREFIX = "entry:";
 export const MESSAGE_MAX_LENGTH = 240;
-export const ENTRY_TTL_SECONDS = 60 * 60 * 24 * 30;
+export const ENTRY_TTL_SECONDS = 60 * 60 * 24 * 90;
 export const LIST_WINDOW_LIMIT = 40;
 export const READ_FANOUT_LIMIT = 20;
 export const READ_CONCURRENCY = 6;

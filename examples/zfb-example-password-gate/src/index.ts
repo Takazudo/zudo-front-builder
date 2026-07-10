@@ -3,7 +3,7 @@ import { parseCookieHeader, serializeCookie } from "./cookies";
 const AUTH_PATH = "/__auth";
 const COOKIE_NAME = "zfb_preview_gate";
 const AUTH_MARKER = "pg_01_hL7G9sR4vK2pQ8mN6bD3xA";
-const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
+const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 const DEV_PASSWORD = "preview-open-sesame";
 
 // SITE_PASSWORD is a secret, not a wrangler.toml var, so keep it out of config.
