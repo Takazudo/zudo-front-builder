@@ -112,7 +112,7 @@ export type { Direction, Fallback, NavigationTypeString, Options } from "./clien
 > **Post-spec note (2026-06):** The shipped `index.ts` exports a sixth event
 > constant not listed in this spec: `TRANSITION_NAVIGATION_ABORTED =
 > "zfb:navigation-aborted"` (see `client-router/events.ts:10` and
-> `index.ts:54`). The constant is exported alongside the five constants above.
+> `index.ts:64`). The constant is exported alongside the five constants above.
 > Additionally, the spec code block above references `"./client-router.tsx"`;
 > the shipped file is `"./client-router.js"` (compiled from `client-router.ts`).
 
@@ -510,7 +510,7 @@ Lines: 103. Self-contained. No external deps.
 > **Post-spec note (2026-06):** A sixth constant was added in the shipped
 > implementation that is absent from this spec's mapping table:
 > `TRANSITION_NAVIGATION_ABORTED = "zfb:navigation-aborted"` (see
-> `packages/zfb-runtime/src/client-router/events.ts:10` and `index.ts:54`).
+> `packages/zfb-runtime/src/client-router/events.ts:10` and `index.ts:64`).
 > It is exported from both `events.ts` and the top-level `index.ts`.
 
 ### 13.4 `swap-functions.ts`
