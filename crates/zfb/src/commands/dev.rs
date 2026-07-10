@@ -645,9 +645,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         .map(|c| normalize_relative(&c.path))
         .filter(|p| !p.as_os_str().is_empty())
         .collect();
+    let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone())
         .with_extra_watch_paths(extra_watch_paths)
-        .with_policy(zfb_build::GranularityPolicy::default().with_content_roots(content_roots));
+        .with_policy(
+            zfb_build::GranularityPolicy::default()
+                .with_content_roots(content_roots)
+                .with_raw_import_invalidation(raw_import_invalidation.clone()),
+        );
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
     let render_pages: PageRenderer = match dev_session.as_ref() {
@@ -727,6 +732,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let url_prefix = dev_islands_url_prefix.clone();
         let url_handle = Arc::clone(&islands_bundle_url_handle);
         let chunk_names = Arc::clone(&live_chunk_filenames);
+        let raw_invalidation = raw_import_invalidation.clone();
         // The watcher tick and the deferred boot build (issue #1170) share
         // ONE implementation — `rebundle_islands` — so the boot-time bundle
         // and every rebundle tick write islands.js, prune chunks, and
@@ -743,6 +749,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &url_prefix,
                 &url_handle,
                 &chunk_names,
+                &raw_invalidation,
             )
         }))
     };
@@ -877,10 +884,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &std::collections::HashSet::new(),
         &registered_client_entries,
     ) {
-        Ok((_, names)) => {
+        Ok((_, names, raw_targets)) => {
             if let Ok(mut guard) = live_client_script_names.lock() {
                 *guard = names;
             }
+            raw_import_invalidation.replace_client_scripts(raw_targets);
         }
         Err(err) => {
             output::warn(format!(
@@ -899,6 +907,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let entry_names = Arc::clone(&live_client_script_names);
         // #1196 — capture registered entries for the watcher closure.
         let registered_for_cs = registered_client_entries.clone();
+        let raw_invalidation = raw_import_invalidation.clone();
         Some(Arc::new(move || -> Result<bool> {
             let prev = entry_names
                 .lock()
@@ -910,13 +919,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     p.into_inner()
                 })
                 .clone();
-            let (changed, new_names) = crate::commands::build::build_dev_client_scripts_to_disk(
-                &project_root_for_cs,
-                &dev_assets_root_for_cs,
-                framework,
-                &prev,
-                &registered_for_cs,
-            )?;
+            let (changed, new_names, raw_targets) =
+                crate::commands::build::build_dev_client_scripts_to_disk(
+                    &project_root_for_cs,
+                    &dev_assets_root_for_cs,
+                    framework,
+                    &prev,
+                    &registered_for_cs,
+                )?;
             let mut guard = entry_names.lock().unwrap_or_else(|p| {
                 tracing::warn!(
                     site = "dev.run_client_scripts.entry_names (write)",
@@ -925,6 +935,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 p.into_inner()
             });
             *guard = new_names;
+            raw_invalidation.replace_client_scripts(raw_targets);
             Ok(changed)
         }))
     };
@@ -1073,6 +1084,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let islands_url_handle_for_boot = Arc::clone(&islands_bundle_url_handle);
     let islands_chunk_names_for_boot = Arc::clone(&live_chunk_filenames);
     let islands_plugin_config_for_boot = islands_plugin_config.clone();
+    let raw_import_invalidation_for_boot = raw_import_invalidation.clone();
     let islands_url_prefix_for_boot = dev_islands_url_prefix.clone();
     let framework_for_boot = cfg.framework;
     // Issue #1182 — the deferred boot task publishes the live SSR route handle
@@ -1432,6 +1444,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &islands_url_prefix_for_boot,
                 &islands_url_handle_for_boot,
                 &islands_chunk_names_for_boot,
+                &raw_import_invalidation_for_boot,
             ) {
                 Ok(info) => info,
                 Err(e) => {
@@ -1627,6 +1640,7 @@ fn rebundle_islands(
     url_prefix: &str,
     url_handle: &zfb_server::IslandsBundleUrl,
     chunk_names: &Arc<Mutex<HashSet<String>>>,
+    raw_invalidation: &zfb_build::RawImportInvalidation,
 ) -> anyhow::Result<Option<IslandsBundleInfo>> {
     // Marker names are only needed by the production build pass; dev mode
     // already surfaces unknown-marker warnings in the browser console via
@@ -1655,6 +1669,7 @@ fn rebundle_islands(
         framework,
         plugin_config,
         crate::commands::build::IslandsGlobPolicy::WarnAndSkip,
+        Some(raw_invalidation),
     )?;
     // Rewrite the shared handle so the next initial GET (a fresh browser
     // tab, or a page that has not yet hydrated) sees the current bundle URL.

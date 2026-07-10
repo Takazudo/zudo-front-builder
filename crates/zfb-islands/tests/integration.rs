@@ -615,6 +615,130 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
 }
 
 // -----------------------------------------------------------------------------
+// Terminal `?raw` preprocessing (#1499) — real-esbuild integration
+// -----------------------------------------------------------------------------
+
+#[test]
+#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb-islands --test integration \
+            islands_shadow_raw_import_bundles_text -- --ignored"]
+fn islands_shadow_raw_import_bundles_text() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("components")).unwrap();
+    let importer = root.join("components/shader.tsx");
+    std::fs::write(
+        &importer,
+        "\"use client\";\nimport shader from './demo.frag?raw';\n\
+         export function Shader() { return shader; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("components/demo.frag"),
+        "ZFB_RAW_ISLAND_MARKER\nline-two\n",
+    )
+    .unwrap();
+
+    let expansion = zfb_build::raw_import_expand::expand_raw_imports(
+        &std::fs::read_to_string(&importer).unwrap(),
+        &importer,
+        &|_| false,
+    )
+    .unwrap();
+    let shadow = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(shadow.path().join("components")).unwrap();
+    shadow_link(
+        &root.join("node_modules"),
+        &shadow.path().join("node_modules"),
+    );
+    let shadow_importer = shadow.path().join("components/shader.tsx");
+    std::fs::write(&shadow_importer, expansion.expanded_source).unwrap();
+    for module in expansion.generated_modules {
+        std::fs::write(
+            shadow.path().join("components").join(module.filename),
+            module.source,
+        )
+        .unwrap();
+    }
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
+    );
+    let config = BundleConfig::production()
+        .with_outdir(root.join("dist"))
+        .with_minify(false)
+        .with_preserve_symlinks(true);
+    let output = bundler
+        .bundle(&[Island::new("Shader", shadow_importer)], &config)
+        .expect("raw island bundle");
+    let js = String::from_utf8(output.bytes).unwrap();
+    assert!(!js.contains("?raw"), "{js}");
+    assert!(js.contains("ZFB_RAW_ISLAND_MARKER"), "{js}");
+    assert!(js.contains("line-two"), "{js}");
+}
+
+#[test]
+#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb-islands --test integration \
+            client_script_raw_import_bundles_text -- --ignored"]
+fn client_script_raw_import_bundles_text() {
+    use zfb_islands::{build_production_client_scripts, ClientScriptEntry};
+
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    std::fs::create_dir_all(root.join("pages")).unwrap();
+    let importer = root.join("pages/raw.client.ts");
+    std::fs::write(
+        &importer,
+        "import text from './message.txt?raw';\nconsole.log(text);\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("pages/message.txt"),
+        "ZFB_RAW_CLIENT_MARKER\nsecond-line\n",
+    )
+    .unwrap();
+    let expansion = zfb_build::raw_import_expand::expand_raw_imports(
+        &std::fs::read_to_string(&importer).unwrap(),
+        &importer,
+        &|_| false,
+    )
+    .unwrap();
+    let stage = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(stage.path().join("pages")).unwrap();
+    let staged_entry = stage.path().join("pages/raw.client.ts");
+    std::fs::write(&staged_entry, expansion.expanded_source).unwrap();
+    for module in expansion.generated_modules {
+        std::fs::write(
+            stage.path().join("pages").join(module.filename),
+            module.source,
+        )
+        .unwrap();
+    }
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(stage.path().to_path_buf()),
+    );
+    let config = BundleConfig::production()
+        .with_outdir(stage.path().join("dist"))
+        .with_minify(false);
+    let assets = build_production_client_scripts(
+        &bundler,
+        &[ClientScriptEntry {
+            entry_name: "raw".into(),
+            source_path: staged_entry,
+        }],
+        &config,
+    )
+    .expect("raw client script bundle");
+    let js = String::from_utf8(assets[0].bytes.clone()).unwrap();
+    assert!(!js.contains("?raw"), "{js}");
+    assert!(js.contains("ZFB_RAW_CLIENT_MARKER"), "{js}");
+    assert!(js.contains("second-line"), "{js}");
+}
+
+// -----------------------------------------------------------------------------
 // CSS-import policy (#1395) — real-esbuild integration
 //
 // Pre-fix, an island importing a `.css` file failed the build: the islands

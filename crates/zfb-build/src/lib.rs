@@ -61,6 +61,7 @@ pub mod plan;
 pub mod plugin_registries;
 pub mod plugin_runner;
 pub mod policy;
+pub mod raw_import_expand;
 pub mod renderer;
 
 pub use adapter::{
@@ -103,6 +104,7 @@ pub use plugin_runner::{
 };
 pub use policy::{
     classify_change, classify_change_with_content_roots, GranularityPolicy, PathClass,
+    RawImportInvalidation,
 };
 pub use renderer::{
     reload, render_all, render_one, shutdown, start, Backend, EmbeddedV8Host,

@@ -416,7 +416,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 {
                     plan.mark_islands();
                 }
-                if self.config.policy.is_client_script_candidate(&path) {
+                if self.config.policy.is_islands_raw_target(&path) {
+                    plan.mark_islands();
+                }
+                if self.config.policy.is_client_script_candidate(&path)
+                    || self.config.policy.is_client_script_raw_target(&path)
+                {
                     plan.mark_client_scripts();
                 }
                 continue;
@@ -548,7 +553,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // `rerun_client_scripts = true`, so we never reach this point on a
             // Global change — the `is_client_script_candidate` guard here is
             // therefore only ever evaluated for non-Global changes.
-            if self.config.policy.is_client_script_candidate(&path) {
+            if self.config.policy.is_islands_raw_target(&path) {
+                plan.mark_islands();
+            }
+            if self.config.policy.is_client_script_candidate(&path)
+                || self.config.policy.is_client_script_raw_target(&path)
+            {
                 plan.mark_client_scripts();
             }
         }
@@ -805,6 +815,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     plan.mark_ssr_reload_needed();
                 }
                 PathClass::Asset | PathClass::Unclassified => {}
+            }
+            if self.config.policy.is_islands_raw_target(path) {
+                plan.mark_islands();
+            }
+            if self.config.policy.is_client_script_raw_target(path) {
+                plan.mark_client_scripts();
             }
         }
 
@@ -1888,6 +1904,36 @@ mod tests {
             !plan.rerun_client_scripts,
             "regular .tsx under pages/ must NOT set rerun_client_scripts"
         );
+    }
+
+    #[test]
+    fn original_raw_target_edit_reruns_islands_and_client_scripts() {
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        let target = PathBuf::from("/proj/data/noise.frag");
+        invalidation.replace_islands([target.clone()]);
+        invalidation.replace_client_scripts([target.clone()]);
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("data")]).with_policy(
+            crate::policy::GranularityPolicy::default()
+                .with_raw_import_invalidation(invalidation.clone()),
+        );
+        let orch = BuildOrchestrator::new(config, make_graph(), CountingPipeline::default());
+
+        // The importer is unchanged; only the terminal target is the watcher
+        // event. Both consumer pipelines must rerun.
+        let plan = orch.plan_for_changes([target.clone()]);
+        assert!(plan.rerun_islands, "raw target must rerun islands");
+        assert!(
+            plan.rerun_client_scripts,
+            "raw target must rerun client scripts"
+        );
+
+        // Successful graph replacement is also the stale-dependency hygiene
+        // contract: an import removal must stop old targets triggering work.
+        invalidation.replace_islands(Vec::new());
+        invalidation.replace_client_scripts(Vec::new());
+        let plan = orch.plan_for_changes([target]);
+        assert!(!plan.rerun_islands);
+        assert!(!plan.rerun_client_scripts);
     }
 
     /// `initial_build` on an empty graph (no pages) is a clean no-op,

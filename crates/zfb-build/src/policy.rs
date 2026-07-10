@@ -50,7 +50,60 @@
 //! - We do **not** decide here whether a `.tsx` is a page; we let the
 //!   graph answer that via `dirty_pages`.
 
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, RwLock};
+
+/// Live sets of ORIGINAL terminal raw targets consumed by the islands and
+/// client-script dev sub-pipelines.
+///
+/// Generated `.zfb-raw-*.mjs` files are ephemeral shadow artifacts and never
+/// watcher inputs. The successful scanner/preprocess pass replaces these sets
+/// with canonical real paths; the granularity policy consults them on every
+/// event so editing only `noise.frag` still reruns its consumer pipeline.
+#[derive(Debug, Clone, Default)]
+pub struct RawImportInvalidation {
+    islands: Arc<RwLock<BTreeSet<PathBuf>>>,
+    client_scripts: Arc<RwLock<BTreeSet<PathBuf>>>,
+}
+
+impl RawImportInvalidation {
+    fn normalize(path: PathBuf) -> PathBuf {
+        path.canonicalize().unwrap_or(path)
+    }
+
+    /// Atomically replace the island raw-target set after a successful scan.
+    pub fn replace_islands(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut set) = self.islands.write() {
+            *set = paths.into_iter().map(Self::normalize).collect();
+        }
+    }
+
+    /// Atomically replace the client-script raw-target set after a successful
+    /// staging/bundle pass.
+    pub fn replace_client_scripts(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut set) = self.client_scripts.write() {
+            *set = paths.into_iter().map(Self::normalize).collect();
+        }
+    }
+
+    fn contains(set: &RwLock<BTreeSet<PathBuf>>, path: &Path) -> bool {
+        let normalized = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        set.read()
+            .map(|paths| paths.contains(path) || paths.contains(&normalized))
+            .unwrap_or(false)
+    }
+
+    /// Whether `path` is a terminal target in the current islands graph.
+    pub fn is_islands_target(&self, path: &Path) -> bool {
+        Self::contains(&self.islands, path)
+    }
+
+    /// Whether `path` is a terminal target in the current client-script graph.
+    pub fn is_client_script_target(&self, path: &Path) -> bool {
+        Self::contains(&self.client_scripts, path)
+    }
+}
 
 /// Coarse-grained classification of a changed file. Drives which
 /// sub-pipelines the orchestrator considers running.
@@ -305,6 +358,9 @@ pub struct GranularityPolicy {
     /// hardcoded `content/` root in the walk keeps covering the
     /// conventional layout).
     pub content_roots: Vec<PathBuf>,
+
+    /// Session-live original `?raw` target sets. Empty by default.
+    pub raw_import_invalidation: RawImportInvalidation,
 }
 
 impl Default for GranularityPolicy {
@@ -312,6 +368,7 @@ impl Default for GranularityPolicy {
         Self {
             islands_roots: vec![PathBuf::from("components"), PathBuf::from("src")],
             content_roots: Vec::new(),
+            raw_import_invalidation: RawImportInvalidation::default(),
         }
     }
 }
@@ -337,6 +394,22 @@ impl GranularityPolicy {
     {
         self.content_roots = roots.into_iter().map(Into::into).collect();
         self
+    }
+
+    /// Attach the live terminal-target registry shared with the dev bundlers.
+    pub fn with_raw_import_invalidation(mut self, invalidation: RawImportInvalidation) -> Self {
+        self.raw_import_invalidation = invalidation;
+        self
+    }
+
+    /// Whether this exact changed path is an islands terminal raw target.
+    pub fn is_islands_raw_target(&self, path: &Path) -> bool {
+        self.raw_import_invalidation.is_islands_target(path)
+    }
+
+    /// Whether this exact changed path is a client-script terminal raw target.
+    pub fn is_client_script_raw_target(&self, path: &Path) -> bool {
+        self.raw_import_invalidation.is_client_script_target(path)
     }
 
     /// Decide whether a `Module` change is inside an islands root.

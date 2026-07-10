@@ -67,8 +67,8 @@ use zfb_css::{
 };
 use zfb_islands::{
     build_production_client_scripts, build_production_islands_asset, discover_client_scripts,
-    scan_islands_with_meta, scan_reachable_modules, BundleConfig, EsbuildSubprocessBundler,
-    EsbuildSubprocessConfig, FrameworkKind, FsResolver,
+    scan_islands_with_meta, scan_reachable_modules_with_meta, BundleConfig,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FrameworkKind, FsResolver,
 };
 use zfb_router::Router;
 
@@ -715,6 +715,7 @@ impl BuildRunner for DefaultRunner {
             config.framework,
             &self.islands_plugin_config,
             IslandsGlobPolicy::HardError,
+            None,
         )
         .context("islands emitter (DefaultRunner) failed")?;
         let client_scripts = build_default_client_scripts_payloads(
@@ -1176,8 +1177,8 @@ pub(crate) enum IslandsGlobPolicy {
 /// A materialised islands shadow tree (issue #1404 — the full #1385 pt.1
 /// fix).
 ///
-/// Built by [`materialise_islands_shadow`] only when `import.meta.glob` is
-/// reachable from a `"use client"` island. It mirrors the project's source
+/// Built by [`materialise_islands_shadow`] when `import.meta.glob` or a
+/// terminal `?raw` edge is reachable from a `"use client"` island. It mirrors the project's source
 /// tree under a throwaway `TempDir` keyed by project-root-relative path:
 /// files that call `import.meta.glob` are written as REAL, expanded copies
 /// (the Vite macro expanded Rust-side via `zfb_build::glob_expand`, the same
@@ -1208,6 +1209,8 @@ struct IslandsShadow {
     /// `--preserve-symlinks` for this shadow. False only when source files were
     /// copied into the shadow instead of symlinked.
     preserve_symlinks: bool,
+    /// Canonical original terminal targets represented by generated modules.
+    raw_targets: std::collections::BTreeSet<PathBuf>,
 }
 
 /// Outcome of attempting to build the islands shadow for a project whose
@@ -1403,12 +1406,12 @@ fn shadow_copy_file(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::copy(from, to).map(|_| ())
 }
 
-/// Materialise the islands shadow tree for a project whose scan reported
-/// `import.meta.glob` reachable from a `"use client"` island (issue #1404).
+/// Materialise the islands preprocessing shadow tree for a project whose scan
+/// reported `import.meta.glob` or `?raw` reachable from a `"use client"`
+/// island (issues #1404 and #1499).
 ///
-/// Precondition: `scan_meta.glob_reachable_from_islands` is non-empty (the
-/// caller takes the no-shadow fast path otherwise, so the common
-/// glob-free build is byte-identical to before).
+/// Precondition: at least one glob module or terminal raw edge is present (the
+/// caller takes the no-shadow fast path otherwise).
 ///
 /// The set of files mirrored is the union of (a) the island-reachable
 /// closure `scan_meta.island_reachable_modules` — the shadow's completeness
@@ -1456,6 +1459,11 @@ fn materialise_islands_shadow(
     let mut expanded_glob_modules: BTreeSet<PathBuf> = BTreeSet::new();
     let mut expanded_by_key: HashMap<PathBuf, String> = HashMap::new();
     let mut matched_glob_targets: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut all_raw_edges: BTreeSet<zfb_islands::RawImportEdge> = scan_meta
+        .raw_import_edges_from_islands
+        .iter()
+        .cloned()
+        .collect();
     for g in &scan_meta.glob_reachable_from_islands {
         if paths.project_local_rel(g).is_none() {
             offenders.push(format!(
@@ -1522,13 +1530,14 @@ fn materialise_islands_shadow(
     if !matched_glob_targets.is_empty() {
         let target_roots: Vec<PathBuf> = matched_glob_targets.iter().cloned().collect();
         let resolver = FsResolver::new();
-        match scan_reachable_modules(&target_roots, &resolver) {
-            Ok(modules) => {
-                for m in modules {
+        match scan_reachable_modules_with_meta(&target_roots, &resolver) {
+            Ok(meta) => {
+                for m in meta.modules {
                     if paths.project_local_rel(&m).is_some() {
                         to_mirror.insert(m);
                     }
                 }
+                all_raw_edges.extend(meta.raw_import_edges);
             }
             Err(zfb_islands::ScanError::Parse { path, message }) => {
                 let bytes = std::fs::read(&path).with_context(|| {
@@ -1557,6 +1566,56 @@ fn materialise_islands_shadow(
         }
     }
 
+    // --- Pre-flight + expansion: terminal `?raw` edges. -----------------
+    // Raw importers are executable modules and therefore receive a real
+    // rewritten shadow copy. Raw targets are mirrored/tracked as terminal
+    // assets but never scanned as JS (including `foo.js?raw`).
+    let mut generated_raw_by_key: HashMap<
+        PathBuf,
+        Vec<zfb_build::raw_import_expand::GeneratedRawModule>,
+    > = HashMap::new();
+    let mut raw_target_keys: BTreeSet<PathBuf> = BTreeSet::new();
+    let raw_importers: BTreeSet<PathBuf> = all_raw_edges
+        .iter()
+        .map(|edge| edge.importer.clone())
+        .collect();
+    for importer in raw_importers {
+        if paths.project_local_rel(&importer).is_none() {
+            offenders.push(format!(
+                "{} — contains `?raw` reachable from a \"use client\" island but is \
+                 outside the mirrorable project tree",
+                importer.display()
+            ));
+            continue;
+        }
+        let key = paths.path_key(&importer);
+        let source = match expanded_by_key.get(&key) {
+            Some(expanded_glob) => expanded_glob.clone(),
+            None => std::fs::read_to_string(&importer)
+                .with_context(|| format!("read raw-import module {}", importer.display()))?,
+        };
+        match zfb_build::raw_import_expand::expand_raw_imports(&source, &importer, &|_| false) {
+            Ok(expansion) => {
+                expanded_by_key.insert(key.clone(), expansion.expanded_source);
+                generated_raw_by_key.insert(key, expansion.generated_modules);
+            }
+            Err(error) => offenders.push(format!("{}: {error:#}", importer.display())),
+        }
+    }
+    for edge in &all_raw_edges {
+        match paths.project_local_rel(&edge.target) {
+            Some(_) => {
+                raw_target_keys.insert(paths.path_key(&edge.target));
+                to_mirror.insert(edge.target.clone());
+            }
+            None => offenders.push(format!(
+                "{} — raw target imported from {} is outside the mirrorable project tree",
+                edge.target.display(),
+                edge.importer.display()
+            )),
+        }
+    }
+
     // --- Pre-flight: raw-mirrored JS-like companions must not contain a
     // nested glob. ---------------------------------------------------------
     let glob_reachable: BTreeSet<PathBuf> = scan_meta
@@ -1566,6 +1625,11 @@ fn materialise_islands_shadow(
         .collect();
     for from in &to_mirror {
         let from_key = paths.path_key(from);
+        if raw_target_keys.contains(&from_key) {
+            // Terminal text is intentionally never parsed, even when the
+            // filename is JS-like and contains `import.meta.glob` bytes.
+            continue;
+        }
         if expanded_by_key.contains_key(&from_key) || glob_reachable.contains(&from_key) {
             continue;
         }
@@ -1627,6 +1691,15 @@ fn materialise_islands_shadow(
             // copy-mode branches.
             std::fs::write(&to, expanded.as_bytes())
                 .with_context(|| format!("write expanded glob module {}", to.display()))?;
+            if let Some(modules) = generated_raw_by_key.get(&from_key) {
+                let parent = to.parent().unwrap_or(shadow_root);
+                for module in modules {
+                    let generated = parent.join(&module.filename);
+                    std::fs::write(&generated, module.source.as_bytes()).with_context(|| {
+                        format!("write generated raw module {}", generated.display())
+                    })?;
+                }
+            }
         } else if source_copy_mode {
             shadow_copy_file(from, &to).with_context(|| {
                 format!("copy shadow file {} -> {}", from.display(), to.display())
@@ -1670,6 +1743,14 @@ fn materialise_islands_shadow(
         _tempdir: tempdir,
         remap,
         preserve_symlinks,
+        raw_targets: all_raw_edges
+            .into_iter()
+            .map(|edge| {
+                edge.target
+                    .canonicalize()
+                    .unwrap_or_else(|_| edge.target.clone())
+            })
+            .collect(),
     }))
 }
 
@@ -1741,6 +1822,8 @@ pub(crate) fn build_default_islands_payload(
     // Issue #1387 — see [`IslandsGlobPolicy`]: `zfb build` passes
     // `HardError`, `zfb dev`'s `rebundle_islands` passes `WarnAndSkip`.
     islands_glob_policy: IslandsGlobPolicy,
+    // Dev-only live invalidation registry. Production passes None.
+    raw_invalidation: Option<&zfb_build::RawImportInvalidation>,
 ) -> Result<(
     Option<AssetEmitterPayload>,
     std::collections::BTreeSet<String>,
@@ -1777,6 +1860,9 @@ pub(crate) fn build_default_islands_payload(
         }
     }
     if entries.is_empty() {
+        if let Some(invalidation) = raw_invalidation {
+            invalidation.replace_islands(Vec::new());
+        }
         return Ok((None, std::collections::BTreeSet::new()));
     }
 
@@ -1790,6 +1876,21 @@ pub(crate) fn build_default_islands_payload(
     let resolver = FsResolver::new().with_injected_route_roots(package_route_entrypoints);
     let (islands_set, scan_meta) = match scan_islands_with_meta(&entries, &resolver) {
         Ok(result) => result,
+        Err(
+            error @ (zfb_islands::ScanError::ImportQuery { .. }
+            | zfb_islands::ScanError::RawImport { .. }),
+        ) => {
+            let message = format!("zfb islands: {error}");
+            match islands_glob_policy {
+                IslandsGlobPolicy::HardError => return Err(anyhow!(message)),
+                IslandsGlobPolicy::WarnAndSkip => {
+                    output::warn(format!(
+                        "{message}. Skipping this islands rebundle; the dev server stays up."
+                    ));
+                    return Ok((None, std::collections::BTreeSet::new()));
+                }
+            }
+        }
         Err(e) => {
             output::warn(format!(
                 "islands scanner failed ({e}); skipping islands asset emission"
@@ -1797,6 +1898,14 @@ pub(crate) fn build_default_islands_payload(
             return Ok((None, std::collections::BTreeSet::new()));
         }
     };
+    if let Some(invalidation) = raw_invalidation {
+        invalidation.replace_islands(
+            scan_meta
+                .raw_import_edges_from_islands
+                .iter()
+                .map(|edge| edge.target.clone()),
+        );
+    }
 
     // Issue #1404 (full #1385 pt.1 fix): when `import.meta.glob` is reachable
     // from a `"use client"` island, materialise a minimal islands shadow —
@@ -1822,10 +1931,15 @@ pub(crate) fn build_default_islands_payload(
     // collision passes below keep seeing the real project paths.
     let mut _islands_shadow: Option<IslandsShadow> = None;
     let mut islands_preserve_symlinks = false;
-    if !scan_meta.glob_reachable_from_islands.is_empty() {
+    if !scan_meta.glob_reachable_from_islands.is_empty()
+        || !scan_meta.raw_import_edges_from_islands.is_empty()
+    {
         match materialise_islands_shadow(project_root, &islands_set, &scan_meta)? {
             IslandsShadowOutcome::Ready(shadow) => {
                 islands_preserve_symlinks = shadow.preserve_symlinks;
+                if let Some(invalidation) = raw_invalidation {
+                    invalidation.replace_islands(shadow.raw_targets.iter().cloned());
+                }
                 _islands_shadow = Some(shadow);
             }
             IslandsShadowOutcome::KeepStopgap(offenders) => {
@@ -2088,6 +2202,214 @@ pub(crate) fn build_default_islands_payload(
     }
 }
 
+/// Temporary project mirror used only when a client-script graph contains a
+/// terminal `?raw` edge. Executable importers are rewritten as real files,
+/// generated `.zfb-raw-*.mjs` wrappers sit beside them, and the rest of the
+/// project is copied/symlinked so ordinary relative imports and tsconfig paths
+/// continue to resolve from the mirrored entry.
+#[derive(Debug)]
+struct ClientScriptsRawStage {
+    _tempdir: tempfile::TempDir,
+    root: PathBuf,
+    entries: Vec<zfb_islands::client_scripts::ClientScriptEntry>,
+    preserve_symlinks: bool,
+    raw_targets: std::collections::BTreeSet<PathBuf>,
+}
+
+fn stage_client_script_raw_imports(
+    project_root: &Path,
+    entries: &[zfb_islands::client_scripts::ClientScriptEntry],
+) -> Result<Option<ClientScriptsRawStage>> {
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let roots: Vec<PathBuf> = entries
+        .iter()
+        .map(|entry| entry.source_path.clone())
+        .collect();
+    let resolver = FsResolver::new();
+    let graph = scan_reachable_modules_with_meta(&roots, &resolver)
+        .context("scan client-script graph for terminal ?raw imports")?;
+    if graph.raw_import_edges.is_empty() {
+        return Ok(None);
+    }
+
+    let paths = IslandsShadowPaths::new(project_root);
+    let mut expanded_by_key: std::collections::HashMap<
+        PathBuf,
+        zfb_build::raw_import_expand::RawImportExpansion,
+    > = std::collections::HashMap::new();
+    let raw_importers: std::collections::BTreeSet<PathBuf> = graph
+        .raw_import_edges
+        .iter()
+        .map(|edge| edge.importer.clone())
+        .collect();
+    for importer in raw_importers {
+        if paths.project_local_rel(&importer).is_none() {
+            return Err(anyhow!(
+                "client-script raw importer {} is outside the mirrorable project tree; \
+                 move it under the project root or remove `?raw`",
+                importer.display()
+            ));
+        }
+        let source = std::fs::read_to_string(&importer)
+            .with_context(|| format!("read client-script raw importer {}", importer.display()))?;
+        let expansion =
+            zfb_build::raw_import_expand::expand_raw_imports(&source, &importer, &|_| false)
+                .with_context(|| {
+                    format!(
+                        "preprocess client-script raw importer {}",
+                        importer.display()
+                    )
+                })?;
+        expanded_by_key.insert(paths.path_key(&importer), expansion);
+    }
+
+    let mut raw_targets = std::collections::BTreeSet::new();
+    for edge in &graph.raw_import_edges {
+        if paths.project_local_rel(&edge.target).is_none() {
+            return Err(anyhow!(
+                "client-script raw target {} imported from {} is outside the mirrorable \
+                 project tree",
+                edge.target.display(),
+                edge.importer.display()
+            ));
+        }
+        raw_targets.insert(
+            edge.target
+                .canonicalize()
+                .unwrap_or_else(|_| edge.target.clone()),
+        );
+    }
+
+    let tempdir = tempfile::Builder::new()
+        .prefix("zfb-client-raw-")
+        .tempdir()
+        .context("allocate client-script raw staging directory")?;
+    let root = tempdir.path().to_path_buf();
+    let project_node_modules = detect_project_node_modules(project_root);
+    let copy_mode = project_node_modules.is_some() && !read_tsconfig_paths(project_root).is_empty();
+
+    for entry in walkdir::WalkDir::new(project_root)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|entry| {
+            if is_islands_shadow_pruned_dir(entry) {
+                return false;
+            }
+            if entry.depth() == 1 && entry.file_type().is_dir() {
+                let name = entry.file_name().to_string_lossy();
+                if matches!(name.as_ref(), "worktrees" | "dist" | "target") {
+                    return false;
+                }
+            }
+            true
+        })
+    {
+        let entry = entry.context("walk project for client-script raw staging")?;
+        let from = entry.path();
+        let rel = from.strip_prefix(project_root).map_err(|_| {
+            anyhow!(
+                "client-script raw staging walked {} outside {}",
+                from.display(),
+                project_root.display()
+            )
+        })?;
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let to = root.join(rel);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&to)
+                .with_context(|| format!("create client raw stage dir {}", to.display()))?;
+            continue;
+        }
+        // `WalkDir` reports a symlinked file as a symlink when link
+        // following is disabled. Materialise it as a file in this temporary
+        // mirror so the staged graph cannot escape back to an unexpanded raw
+        // importer through the original symlink.
+        let is_symlinked_file = entry.path_is_symlink() && from.is_file();
+        if !entry.file_type().is_file() && !is_symlinked_file {
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create client raw stage dir {}", parent.display()))?;
+        }
+        let key = paths.path_key(from);
+        let canonical_key = is_symlinked_file
+            .then(|| from.canonicalize().ok().map(|path| paths.path_key(&path)))
+            .flatten();
+        let expansion = expanded_by_key.get(&key).or_else(|| {
+            canonical_key
+                .as_ref()
+                .and_then(|key| expanded_by_key.get(key))
+        });
+        if let Some(expansion) = expansion {
+            std::fs::write(&to, expansion.expanded_source.as_bytes())
+                .with_context(|| format!("write client raw importer {}", to.display()))?;
+            let parent = to.parent().unwrap_or(&root);
+            for module in &expansion.generated_modules {
+                let generated = parent.join(&module.filename);
+                std::fs::write(&generated, module.source.as_bytes()).with_context(|| {
+                    format!("write client generated raw module {}", generated.display())
+                })?;
+            }
+        } else if copy_mode || is_symlinked_file {
+            shadow_copy_file(from, &to).with_context(|| {
+                format!(
+                    "copy client raw stage {} -> {}",
+                    from.display(),
+                    to.display()
+                )
+            })?;
+        } else {
+            shadow_symlink(from, &to).with_context(|| {
+                format!(
+                    "symlink client raw stage {} -> {}",
+                    from.display(),
+                    to.display()
+                )
+            })?;
+        }
+    }
+
+    if let Some(node_modules) = project_node_modules {
+        shadow_symlink(&node_modules, &root.join("node_modules")).with_context(|| {
+            format!(
+                "symlink client raw stage node_modules {} -> {}",
+                root.join("node_modules").display(),
+                node_modules.display()
+            )
+        })?;
+    }
+
+    let staged_entries = entries
+        .iter()
+        .map(|entry| {
+            let rel = paths.project_local_rel(&entry.source_path).ok_or_else(|| {
+                anyhow!(
+                    "client-script entry {} using ?raw is outside the project root",
+                    entry.source_path.display()
+                )
+            })?;
+            Ok(zfb_islands::client_scripts::ClientScriptEntry {
+                entry_name: entry.entry_name.clone(),
+                source_path: root.join(rel),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(Some(ClientScriptsRawStage {
+        _tempdir: tempdir,
+        root,
+        entries: staged_entries,
+        preserve_symlinks: !copy_mode,
+        raw_targets,
+    }))
+}
+
 /// Discover `*.client.{ts,tsx,js,jsx}` files under the conventional
 /// project roots, bundle each with esbuild, and return their bytes-only
 /// payloads for [`ProductionAssetPipeline`].
@@ -2107,17 +2429,14 @@ pub(crate) fn build_default_islands_payload(
 ///
 /// ## `import.meta.glob` is NOT supported in client scripts (issue #1404)
 ///
-/// The islands-shadow materialisation (#1404) that makes `import.meta.glob`
-/// work in `"use client"` island modules is deliberately NOT applied to this
-/// `*.client.{ts,tsx,js,jsx}` path: client scripts are bundled by esbuild
-/// directly against the real project tree (`bundle_client_script_file`), with
-/// no shadow, so a `import.meta.glob(...)` call in a client script (or a
-/// module it imports) still ships to the browser unexpanded and throws at
-/// runtime. Glob in client scripts stays unsupported on purpose — do not
-/// extend the shadow here or over-claim support in the docs (#1406). If glob
-/// support for client scripts is ever wanted, mirror the islands path: run
-/// the scanner over the client-script graph, materialise a shadow, and set
-/// `--preserve-symlinks` on this path too.
+/// The islands `import.meta.glob` expansion remains deliberately unsupported
+/// for client scripts. A graph containing `?raw` now gets a conditional
+/// preprocessing mirror, but that mirror rewrites only typed raw importers;
+/// it does not expand a glob call. Thus a client script (or transitive module)
+/// containing `import.meta.glob(...)` still ships that macro unexpanded and
+/// throws at runtime. Do not over-claim glob support in the docs (#1406).
+/// Graphs without `?raw` keep the direct real-project-tree fast path and are
+/// byte-identical to the previous behaviour.
 pub(crate) fn build_default_client_scripts_payloads(
     project_root: &Path,
     outdir: &Path,
@@ -2171,13 +2490,22 @@ pub(crate) fn build_default_client_scripts_payloads(
         return Ok(Vec::new());
     }
 
+    let raw_stage = stage_client_script_raw_imports(project_root, &entries)?;
+    let (bundle_entries, bundler_working_dir, preserve_symlinks) = match raw_stage.as_ref() {
+        Some(stage) => (
+            stage.entries.as_slice(),
+            stage.root.clone(),
+            stage.preserve_symlinks,
+        ),
+        None => (entries.as_slice(), project_root.to_path_buf(), false),
+    };
+
     // Reuse the same embedded-esbuild + embedded-node_modules wiring as
     // `build_default_islands_payload`. Client scripts are plain TS/JS
     // files so the same NODE_PATH resolution strategy applies.
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
-    let mut esbuild_cfg =
-        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf());
+    let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
     if detect_project_node_modules(project_root).is_some() {
         _embedded_nm_handle = None;
     } else {
@@ -2224,9 +2552,10 @@ pub(crate) fn build_default_client_scripts_payloads(
     .jsx_import_source();
     let bundle_cfg = BundleConfig::production()
         .with_outdir(outdir.to_path_buf())
-        .with_jsx_import_source(client_scripts_jsx_import_source);
+        .with_jsx_import_source(client_scripts_jsx_import_source)
+        .with_preserve_symlinks(preserve_symlinks);
 
-    let assets = build_production_client_scripts(&bundler, &entries, &bundle_cfg)
+    let assets = build_production_client_scripts(&bundler, bundle_entries, &bundle_cfg)
         .context("client-script bundler failed")?;
 
     Ok(assets
@@ -2257,12 +2586,14 @@ pub(crate) fn build_default_client_scripts_payloads(
 ///
 /// ## Return value
 ///
-/// Returns `(changed, current_names)` where:
+/// Returns `(changed, current_names, raw_targets)` where:
 /// - `changed` is `true` when at least one file was written with new or
 ///   changed bytes (or any stale file was pruned). The dev-server wires
 ///   this to a `ReloadEvent::Page`.
 /// - `current_names` is the set of entry names that were just written —
 ///   pass it as `prev_entry_names` on the next call.
+/// - `raw_targets` is the canonical original terminal-target set for dev
+///   invalidation; replace the shared policy registry after success.
 pub(crate) fn build_dev_client_scripts_to_disk(
     project_root: &Path,
     // Where dev client scripts are written + served from (issue #1189: the
@@ -2271,7 +2602,11 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     framework: crate::config::Framework,
     prev_entry_names: &std::collections::HashSet<String>,
     registered: &zfb_build::ClientEntryList,
-) -> Result<(bool, std::collections::HashSet<String>)> {
+) -> Result<(
+    bool,
+    std::collections::HashSet<String>,
+    std::collections::BTreeSet<PathBuf>,
+)> {
     let (mut entries, collisions) =
         discover_client_scripts(project_root).context("client-script discovery failed")?;
 
@@ -2333,15 +2668,35 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     }
 
     if entries.is_empty() {
-        return Ok((any_changed, current_names));
+        return Ok((
+            any_changed,
+            current_names,
+            std::collections::BTreeSet::new(),
+        ));
     }
+
+    let raw_stage = stage_client_script_raw_imports(project_root, &entries)?;
+    let (bundle_entries, bundler_working_dir, preserve_symlinks, raw_targets) =
+        match raw_stage.as_ref() {
+            Some(stage) => (
+                stage.entries.as_slice(),
+                stage.root.clone(),
+                stage.preserve_symlinks,
+                stage.raw_targets.clone(),
+            ),
+            None => (
+                entries.as_slice(),
+                project_root.to_path_buf(),
+                false,
+                std::collections::BTreeSet::new(),
+            ),
+        };
 
     // Set up the esbuild subprocess — same wiring as `build_default_client_scripts_payloads`
     // but using `BundleConfig::dev()` (no minification, sourcemaps on).
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
-    let mut esbuild_cfg =
-        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf());
+    let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
     if detect_project_node_modules(project_root).is_some() {
         _embedded_nm_handle = None;
     } else {
@@ -2385,7 +2740,8 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     .jsx_import_source();
     let bundle_cfg = BundleConfig::dev()
         .with_outdir(assets_root.to_path_buf())
-        .with_jsx_import_source(jsx_import_source);
+        .with_jsx_import_source(jsx_import_source)
+        .with_preserve_symlinks(preserve_symlinks);
 
     if let Some(parent) = client_dir.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -2402,7 +2758,7 @@ pub(crate) fn build_dev_client_scripts_to_disk(
         )
     })?;
 
-    for entry in &entries {
+    for entry in bundle_entries {
         let js = bundler
             .bundle_client_script_file(&entry.entry_name, &entry.source_path, &bundle_cfg)
             .with_context(|| {
@@ -2428,7 +2784,7 @@ pub(crate) fn build_dev_client_scripts_to_disk(
         }
     }
 
-    Ok((any_changed, current_names))
+    Ok((any_changed, current_names, raw_targets))
 }
 
 /// Drive the build for a fully-resolved input set. Returns the number
@@ -5543,6 +5899,7 @@ mod tests {
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
+            None,
         )
         .expect("should not error");
         assert!(
@@ -5577,6 +5934,7 @@ mod tests {
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
+            None,
         )
         .expect("should not error");
         assert!(
@@ -5625,6 +5983,7 @@ mod tests {
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
+            None,
         )
         .expect("should not error");
         assert!(
@@ -5677,6 +6036,7 @@ mod tests {
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
+            None,
         )
         .expect_err("an unsupported-form glob-using island must fail the build");
         let message = format!("{err:#}");
@@ -5738,6 +6098,7 @@ mod tests {
                 island_src.clone(),
                 project_root.join("components/gallery-data.tsx"),
             ],
+            raw_import_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
@@ -5787,6 +6148,188 @@ mod tests {
             std::fs::symlink_metadata(shadow_root.join("components/widgets/a.tsx")).is_ok(),
             "glob target must be present in the shadow"
         );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_expands_raw_import_and_keeps_js_target_terminal() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::create_dir_all(project_root.join("components")).unwrap();
+        let page = project_root.join("pages/index.tsx");
+        let island_src = project_root.join("components/shader.tsx");
+        let raw_target = project_root.join("components/broken.js");
+        std::fs::write(
+            &page,
+            "import { Shader } from '../components/shader';\nexport default Shader;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &island_src,
+            "\"use client\";\nimport source from './broken.js?raw';\n\
+             export function Shader() { return source; }\n",
+        )
+        .unwrap();
+        // Invalid JS containing glob-looking bytes: as a raw target this is
+        // text only and must neither parse nor trip nested-glob protection.
+        std::fs::write(&raw_target, "not javascript {{{ import.meta.glob('./x')\n").unwrap();
+
+        let resolver = FsResolver::new();
+        let (islands, scan_meta) = scan_islands_with_meta(&[page], &resolver).unwrap();
+        assert_eq!(scan_meta.raw_import_edges_from_islands.len(), 1);
+        let shadow = match materialise_islands_shadow(project_root, &islands, &scan_meta).unwrap() {
+            IslandsShadowOutcome::Ready(shadow) => shadow,
+            IslandsShadowOutcome::KeepStopgap(offenders) => {
+                panic!("terminal raw target must not keep glob stopgap: {offenders:?}")
+            }
+        };
+
+        let shadow_island = shadow
+            .remap
+            .get(&island_src.canonicalize().unwrap())
+            .unwrap();
+        let rewritten = std::fs::read_to_string(shadow_island).unwrap();
+        assert!(!rewritten.contains("?raw"), "{rewritten}");
+        let generated = std::fs::read_dir(shadow_island.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".zfb-raw-") && name.ends_with(".mjs"))
+            })
+            .expect("generated raw module");
+        let module = std::fs::read_to_string(generated).unwrap();
+        assert!(module.contains("not javascript {{{ import.meta.glob"));
+        assert!(
+            shadow._tempdir.path().join("components/broken.js").exists(),
+            "original target is mirrored as a terminal asset"
+        );
+        assert_eq!(
+            shadow.raw_targets,
+            std::collections::BTreeSet::from([raw_target.canonicalize().unwrap()])
+        );
+    }
+
+    #[test]
+    fn client_script_raw_stage_rewrites_transitive_importer_and_tracks_target() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let entry = root.join("pages/widget.client.ts");
+        let helper = root.join("src/helper.ts");
+        let target = root.join("src/message.txt");
+        std::fs::write(
+            &entry,
+            "import { message } from '../src/helper';\nconsole.log(message);\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &helper,
+            "import text from './message.txt?raw';\nexport const message = text;\n",
+        )
+        .unwrap();
+        std::fs::write(&target, "hello\nraw\n").unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        let stage = stage_client_script_raw_imports(root, &entries)
+            .unwrap()
+            .expect("raw graph needs a stage");
+        assert!(stage.entries[0].source_path.exists());
+        let staged_helper = stage.root.join("src/helper.ts");
+        let rewritten = std::fs::read_to_string(&staged_helper).unwrap();
+        assert!(!rewritten.contains("?raw"), "{rewritten}");
+        let generated = std::fs::read_dir(stage.root.join("src"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".zfb-raw-") && name.ends_with(".mjs"))
+            })
+            .expect("generated raw module");
+        assert!(std::fs::read_to_string(generated)
+            .unwrap()
+            .contains("hello\\nraw\\n"));
+        assert_eq!(
+            stage.raw_targets,
+            std::collections::BTreeSet::from([target.canonicalize().unwrap()])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_script_raw_stage_materialises_symlinked_importer() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let real_entry = root.join("src/widget.client.ts");
+        let linked_entry = root.join("pages/widget.client.ts");
+        std::fs::write(
+            &real_entry,
+            "import text from './message.txt?raw';\nconsole.log(text);\n",
+        )
+        .unwrap();
+        // Resolution follows the logical symlinked entry location because
+        // this staging mode enables esbuild's preserve-symlinks behavior.
+        std::fs::write(root.join("pages/message.txt"), "from symlink\n").unwrap();
+        std::os::unix::fs::symlink(&real_entry, &linked_entry).unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: linked_entry,
+        }];
+
+        let stage = stage_client_script_raw_imports(root, &entries)
+            .unwrap()
+            .expect("raw graph needs a stage");
+        let staged_entry = &stage.entries[0].source_path;
+        let meta = std::fs::symlink_metadata(staged_entry).unwrap();
+        assert!(meta.file_type().is_file());
+        assert!(!meta.file_type().is_symlink());
+        let rewritten = std::fs::read_to_string(staged_entry).unwrap();
+        assert!(!rewritten.contains("?raw"), "{rewritten}");
+        assert!(std::fs::read_dir(staged_entry.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .any(|path| path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".zfb-raw-") && name.ends_with(".mjs"))));
+    }
+
+    #[test]
+    fn client_script_without_raw_keeps_no_stage_fast_path() {
+        let tmp = tempdir().unwrap();
+        let entry = tmp.path().join("plain.client.ts");
+        std::fs::write(&entry, "console.log('plain');\n").unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "plain".into(),
+            source_path: entry,
+        }];
+        assert!(stage_client_script_raw_imports(tmp.path(), &entries)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn client_script_unsupported_query_is_a_hard_preprocess_error() {
+        let tmp = tempdir().unwrap();
+        let entry = tmp.path().join("bad.client.ts");
+        std::fs::write(&entry, "import url from './x.txt?url';\n").unwrap();
+        std::fs::write(tmp.path().join("x.txt"), "x").unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "bad".into(),
+            source_path: entry,
+        }];
+        let error = stage_client_script_raw_imports(tmp.path(), &entries).unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains("scan client-script graph"), "{error}");
+        assert!(error.contains("unsupported import query"), "{error}");
     }
 
     #[test]
@@ -5871,6 +6414,7 @@ mod tests {
                 island_src.clone(),
                 project_root.join("components/gallery-data.tsx"),
             ],
+            raw_import_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
@@ -6130,6 +6674,7 @@ mod tests {
             near_miss_candidates: 0,
             glob_reachable_from_islands: glob_reachable,
             island_reachable_modules: island_reachable,
+            raw_import_edges_from_islands: Vec::new(),
         };
         (islands, scan_meta)
     }
@@ -6212,6 +6757,7 @@ mod tests {
             near_miss_candidates: 0,
             glob_reachable_from_islands: vec![glob_src.clone()],
             island_reachable_modules: vec![island_src, glob_src],
+            raw_import_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(&project_root, &islands, &scan_meta)
@@ -6270,6 +6816,7 @@ mod tests {
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::HardError,
+            None,
         )
         .expect_err("nested raw-mirrored glob must hard-error in build");
         let message = format!("{err:#}");
@@ -6302,6 +6849,7 @@ mod tests {
             crate::config::Framework::Preact,
             &IslandsPluginConfig::default(),
             IslandsGlobPolicy::WarnAndSkip,
+            None,
         )
         .expect("warn-and-skip must not hard-error");
         assert!(payload.is_none(), "warn-and-skip returns no payload");
