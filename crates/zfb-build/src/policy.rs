@@ -59,8 +59,9 @@ use std::sync::{Arc, RwLock};
 ///
 /// Generated `.zfb-raw-*.mjs` files are ephemeral shadow artifacts and never
 /// watcher inputs. The successful scanner/preprocess pass replaces these sets
-/// with canonical real paths; the granularity policy consults them on every
-/// event so editing only `noise.frag` still reruns its consumer pipeline.
+/// with both logical and canonical real-path aliases; the granularity policy
+/// consults them on every event so edits and symlink retarget/deletes still
+/// rerun the consumer pipeline.
 #[derive(Debug, Clone, Default)]
 pub struct RawImportInvalidation {
     islands: Arc<RwLock<BTreeSet<PathBuf>>>,
@@ -68,29 +69,38 @@ pub struct RawImportInvalidation {
 }
 
 impl RawImportInvalidation {
-    fn normalize(path: PathBuf) -> PathBuf {
-        path.canonicalize().unwrap_or(path)
+    fn aliases(path: PathBuf) -> impl Iterator<Item = PathBuf> {
+        let lexical = zfb_types::normalize_path_lexical(&path);
+        let canonical = path.canonicalize().ok();
+        std::iter::once(lexical).chain(canonical)
+    }
+
+    fn replace(set: &RwLock<BTreeSet<PathBuf>>, paths: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut set) = set.write() {
+            *set = paths.into_iter().flat_map(Self::aliases).collect();
+        }
     }
 
     /// Atomically replace the island raw-target set after a successful scan.
     pub fn replace_islands(&self, paths: impl IntoIterator<Item = PathBuf>) {
-        if let Ok(mut set) = self.islands.write() {
-            *set = paths.into_iter().map(Self::normalize).collect();
-        }
+        Self::replace(&self.islands, paths);
     }
 
     /// Atomically replace the client-script raw-target set after a successful
     /// staging/bundle pass.
     pub fn replace_client_scripts(&self, paths: impl IntoIterator<Item = PathBuf>) {
-        if let Ok(mut set) = self.client_scripts.write() {
-            *set = paths.into_iter().map(Self::normalize).collect();
-        }
+        Self::replace(&self.client_scripts, paths);
     }
 
     fn contains(set: &RwLock<BTreeSet<PathBuf>>, path: &Path) -> bool {
-        let normalized = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let lexical = zfb_types::normalize_path_lexical(path);
+        let canonical = path.canonicalize().ok();
         set.read()
-            .map(|paths| paths.contains(path) || paths.contains(&normalized))
+            .map(|paths| {
+                paths.contains(path)
+                    || paths.contains(&lexical)
+                    || canonical.as_ref().is_some_and(|path| paths.contains(path))
+            })
             .unwrap_or(false)
     }
 
@@ -968,5 +978,33 @@ mod tests {
             !policy.is_client_script_candidate(Path::new("/proj/lib/util.client.ts")),
             "lib/ must NOT be a client-script candidate (not a discovery root)"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_invalidation_keeps_lexical_and_canonical_symlink_aliases() {
+        let project = tempfile::tempdir().unwrap();
+        let first = project.path().join("first.txt");
+        let second = project.path().join("second.txt");
+        let alias = project.path().join("current.txt");
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+        std::os::unix::fs::symlink(&first, &alias).unwrap();
+
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_islands([alias.clone()]);
+        assert!(invalidation.is_islands_target(&alias));
+        assert!(invalidation.is_islands_target(&first));
+
+        // Deleting/retargeting the symlink makes canonicalize(alias) fail or
+        // point somewhere new. The retained lexical alias must still trigger
+        // the rebuild that refreshes the canonical side of the registry.
+        std::fs::remove_file(&alias).unwrap();
+        assert!(invalidation.is_islands_target(&alias));
+        std::os::unix::fs::symlink(&second, &alias).unwrap();
+        assert!(invalidation.is_islands_target(&alias));
+        invalidation.replace_islands([alias.clone()]);
+        assert!(invalidation.is_islands_target(&second));
+        assert!(!invalidation.is_islands_target(&first));
     }
 }

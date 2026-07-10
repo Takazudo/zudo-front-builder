@@ -19,7 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
 use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceMap, Spanned};
-use swc_core::ecma::ast::{Callee, Expr, ImportSpecifier, Lit, Module, ModuleDecl, ModuleItem};
+use swc_core::ecma::ast::{Callee, Expr, ImportSpecifier, Module, ModuleDecl, ModuleItem};
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use swc_core::ecma::visit::{Visit, VisitWith};
 use zfb_types::normalize_path_lexical;
@@ -168,41 +168,54 @@ fn collect_raw_occurrences(source: &str) -> Result<Vec<RawOccurrence>> {
     struct DynamicQueryFinder {
         error: Option<anyhow::Error>,
     }
+
+    fn query_fragment(expr: &Expr) -> Option<String> {
+        struct Finder {
+            fragment: Option<String>,
+        }
+        impl Visit for Finder {
+            fn visit_str(&mut self, node: &swc_core::ecma::ast::Str) {
+                if self.fragment.is_none() {
+                    let value = atom_to_string(&node.value);
+                    if value.contains('?') {
+                        self.fragment = Some(value);
+                    }
+                }
+            }
+
+            fn visit_tpl_element(&mut self, node: &swc_core::ecma::ast::TplElement) {
+                if self.fragment.is_none() {
+                    let value = node.raw.to_string();
+                    if value.contains('?') {
+                        self.fragment = Some(value);
+                    }
+                }
+            }
+        }
+
+        let mut finder = Finder { fragment: None };
+        expr.visit_with(&mut finder);
+        finder.fragment
+    }
+
     impl Visit for DynamicQueryFinder {
         fn visit_call_expr(&mut self, node: &swc_core::ecma::ast::CallExpr) {
             if self.error.is_some() {
                 return;
             }
-            let query_call = matches!(node.callee, Callee::Import(_))
-                || matches!(
-                    &node.callee,
-                    Callee::Expr(expr)
-                        if matches!(&**expr, Expr::Ident(ident) if ident.sym == "require")
-                );
-            if query_call {
+            let kind = match &node.callee {
+                Callee::Import(_) => Some("dynamic import"),
+                Callee::Expr(expr) if matches!(&**expr, Expr::Ident(ident) if ident.sym == "require") => {
+                    Some("CommonJS require")
+                }
+                _ => None,
+            };
+            if let Some(kind) = kind {
                 if let Some(arg) = node.args.first() {
-                    let query_spec = match &*arg.expr {
-                        Expr::Lit(Lit::Str(s)) => {
-                            let value = atom_to_string(&s.value);
-                            if query_suffix(&value).is_some() {
-                                Some(value)
-                            } else {
-                                None
-                            }
-                        }
-                        Expr::Tpl(tpl) => {
-                            let raw = tpl
-                                .quasis
-                                .iter()
-                                .map(|q| q.raw.to_string())
-                                .collect::<String>();
-                            raw.contains('?').then_some(raw)
-                        }
-                        _ => None,
-                    };
+                    let query_spec = query_fragment(&arg.expr);
                     if let Some(specifier) = query_spec {
                         self.error = Some(supported_form_error(format!(
-                            "dynamic import of {specifier:?} is not static"
+                            "{kind} of {specifier:?} is not static"
                         )));
                         return;
                     }
@@ -226,7 +239,11 @@ fn collect_raw_occurrences(source: &str) -> Result<Vec<RawOccurrence>> {
 /// The supported spelling is project-local and relative (`./` or `../`).  An
 /// exact file must exist; no JS extension probing or `index.*` resolution is
 /// performed because the edge is terminal and accepts any extension.
-pub fn resolve_raw_target(importer: &Path, specifier_without_query: &str) -> Result<PathBuf> {
+pub fn resolve_raw_target(
+    importer: &Path,
+    specifier_without_query: &str,
+    project_root: &Path,
+) -> Result<PathBuf> {
     if !(specifier_without_query.starts_with("./") || specifier_without_query.starts_with("../")) {
         bail!(
             "zfb bundler: unsupported ?raw target {specifier_without_query:?} in {}. \
@@ -237,6 +254,17 @@ pub fn resolve_raw_target(importer: &Path, specifier_without_query: &str) -> Res
     }
     let importer_dir = importer.parent().unwrap_or_else(|| Path::new("."));
     let candidate = normalize_path_lexical(&importer_dir.join(specifier_without_query));
+    let lexical_root = normalize_path_lexical(project_root);
+    if !candidate.starts_with(&lexical_root) {
+        bail!(
+            "zfb bundler: raw import target {specifier_without_query:?} from {} escapes the \
+             logical project root {} (resolved lexical path {}). Raw targets must remain \
+             project-local.",
+            importer.display(),
+            lexical_root.display(),
+            candidate.display()
+        );
+    }
     if !candidate.is_file() {
         bail!(
             "zfb bundler: raw import target {specifier_without_query:?} from {} does not \
@@ -245,9 +273,32 @@ pub fn resolve_raw_target(importer: &Path, specifier_without_query: &str) -> Res
             candidate.display()
         );
     }
+    let canonical_root = project_root.canonicalize().with_context(|| {
+        format!(
+            "canonicalize logical project root {} for ?raw containment",
+            project_root.display()
+        )
+    })?;
+    let canonical_target = candidate.canonicalize().with_context(|| {
+        format!(
+            "canonicalize raw import target {} before reading it",
+            candidate.display()
+        )
+    })?;
+    if !canonical_target.starts_with(&canonical_root) {
+        bail!(
+            "zfb bundler: raw import target {} from {} escapes the project root {} through \
+             a symlink (canonical target {}). Raw targets must remain project-local.",
+            candidate.display(),
+            importer.display(),
+            canonical_root.display(),
+            canonical_target.display()
+        );
+    }
     // Preserve the lexical project-root spelling for `bundle.exclude`
-    // relativisation (notably macOS `/var` -> `/private/var` temp roots).
-    // Invalidation callers canonicalise the edge separately.
+    // relativisation and invalidation aliases (notably macOS `/var` ->
+    // `/private/var` temp roots). Consumers register both this logical path
+    // and its current canonical target.
     Ok(candidate)
 }
 
@@ -260,14 +311,17 @@ fn generated_filename(specifier_without_query: &str) -> String {
 
 /// Expand supported terminal `?raw` imports in `source`.
 ///
-/// `importer` is the original source path, not its shadow copy.  Targets are
-/// resolved relative to that real path and read on every invocation, making a
-/// persistent dev shadow sensitive to target-only edits.  `is_excluded`
-/// receives the resolved absolute target and must return true for a
-/// `bundle.exclude` match; excluding a terminal target is a hard, named error.
+/// `importer` is the logical project source path, not a shadow/overlay copy.
+/// `project_root` is the matching logical root and bounds both lexical `..`
+/// traversal and canonical symlink resolution before target bytes are read.
+/// Targets are read on every invocation, making a persistent dev shadow
+/// sensitive to target-only edits. `is_excluded` receives the resolved logical
+/// target and must return true for a `bundle.exclude` match; excluding a
+/// terminal target is a hard, named error.
 pub fn expand_raw_imports(
     source: &str,
     importer: &Path,
+    project_root: &Path,
     is_excluded: &dyn Fn(&Path) -> bool,
 ) -> Result<RawImportExpansion> {
     let occurrences = collect_raw_occurrences(source)?;
@@ -289,7 +343,7 @@ pub fn expand_raw_imports(
             .specifier
             .strip_suffix("?raw")
             .expect("collector accepts only exact ?raw suffix");
-        let target = resolve_raw_target(importer, target_specifier)?;
+        let target = resolve_raw_target(importer, target_specifier, project_root)?;
         if is_excluded(&target) {
             bail!(
                 "zfb bundler: raw import target {} (imported from {}) is excluded by \
@@ -401,7 +455,7 @@ mod tests {
     fn expands_default_raw_import_and_preserves_text_exactly() {
         let source = "import shader from './demo.frag?raw';\nexport { shader };\n";
         let (dir, importer) = fixture(source, "demo.frag", b"line 1\n\"quoted\"\\tail\n");
-        let out = expand_raw_imports(source, &importer, &no_exclude).unwrap();
+        let out = expand_raw_imports(source, &importer, dir.path(), &no_exclude).unwrap();
         assert!(!out.expanded_source.contains("?raw"));
         assert_eq!(out.generated_modules.len(), 1);
         let module = &out.generated_modules[0];
@@ -419,8 +473,8 @@ mod tests {
     #[test]
     fn js_target_is_terminal_text_not_parsed() {
         let source = "import text from './broken.js?raw';\nexport default text;\n";
-        let (_dir, importer) = fixture(source, "broken.js", b"this is not valid javascript {{{\n");
-        let out = expand_raw_imports(source, &importer, &no_exclude).unwrap();
+        let (dir, importer) = fixture(source, "broken.js", b"this is not valid javascript {{{\n");
+        let out = expand_raw_imports(source, &importer, dir.path(), &no_exclude).unwrap();
         assert!(out.generated_modules[0]
             .source
             .contains("this is not valid javascript"));
@@ -431,8 +485,8 @@ mod tests {
         let source = "import a from './a.txt?raw';\nimport b from './b.txt?raw';\nimport a2 from './a.txt?raw';\n";
         let (dir, importer) = fixture(source, "a.txt", b"A");
         std::fs::write(dir.path().join("b.txt"), "B").unwrap();
-        let first = expand_raw_imports(source, &importer, &no_exclude).unwrap();
-        let second = expand_raw_imports(source, &importer, &no_exclude).unwrap();
+        let first = expand_raw_imports(source, &importer, dir.path(), &no_exclude).unwrap();
+        let second = expand_raw_imports(source, &importer, dir.path(), &no_exclude).unwrap();
         assert_eq!(first, second);
         assert_eq!(first.generated_modules.len(), 2);
         assert_eq!(first.edges.len(), 2);
@@ -448,16 +502,18 @@ mod tests {
             "const x = import('./x.txt?raw');",
             "const x = import(`./x.txt?raw`);",
             "const x = import(`./x.txt?url`);",
+            "const x = import('./x.txt?raw' + suffix);",
             "const x = require('./x.txt?raw');",
             "const x = require(`./x.txt?url`);",
+            "const x = require(prefix + '?url');",
             "export { default } from './x.txt?raw';",
             "import x from './x.txt?raw&inline';",
             "import type x from './x.txt?raw';",
             "import x from './x.txt?raw' with { type: 'text' };",
         ];
         for source in cases {
-            let (_dir, importer) = fixture(source, "x.txt", b"x");
-            let error = expand_raw_imports(source, &importer, &no_exclude)
+            let (dir, importer) = fixture(source, "x.txt", b"x");
+            let error = expand_raw_imports(source, &importer, dir.path(), &no_exclude)
                 .expect_err(source)
                 .to_string();
             assert!(
@@ -470,8 +526,8 @@ mod tests {
     #[test]
     fn strings_and_comments_are_not_imports() {
         let source = "// import x from './x?raw'\nconst x = './x?url';\n";
-        let (_dir, importer) = fixture(source, "x", b"x");
-        let out = expand_raw_imports(source, &importer, &no_exclude).unwrap();
+        let (dir, importer) = fixture(source, "x", b"x");
+        let out = expand_raw_imports(source, &importer, dir.path(), &no_exclude).unwrap();
         assert_eq!(out.expanded_source, source);
         assert!(out.generated_modules.is_empty());
     }
@@ -480,12 +536,12 @@ mod tests {
     fn excluded_and_missing_targets_are_clear_errors() {
         let source = "import x from './x.txt?raw';";
         let (dir, importer) = fixture(source, "x.txt", b"x");
-        let error = expand_raw_imports(source, &importer, &|_| true)
+        let error = expand_raw_imports(source, &importer, dir.path(), &|_| true)
             .unwrap_err()
             .to_string();
         assert!(error.contains("bundle.exclude"), "{error}");
         std::fs::remove_file(dir.path().join("x.txt")).unwrap();
-        let error = expand_raw_imports(source, &importer, &no_exclude)
+        let error = expand_raw_imports(source, &importer, dir.path(), &no_exclude)
             .unwrap_err()
             .to_string();
         assert!(error.contains("does not resolve"), "{error}");
@@ -494,10 +550,68 @@ mod tests {
     #[test]
     fn non_utf8_target_is_a_named_error() {
         let source = "import x from './x.bin?raw';";
-        let (_dir, importer) = fixture(source, "x.bin", &[0xff, 0xfe]);
-        let error = expand_raw_imports(source, &importer, &no_exclude)
+        let (dir, importer) = fixture(source, "x.bin", &[0xff, 0xfe]);
+        let error = expand_raw_imports(source, &importer, dir.path(), &no_exclude)
             .unwrap_err()
             .to_string();
         assert!(error.contains("not valid UTF-8"), "{error}");
+    }
+
+    #[test]
+    fn rejects_lexical_parent_traversal_outside_project_before_read() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("project");
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::write(outer.path().join("secret.txt"), "secret").unwrap();
+        let importer = root.join("pages/entry.ts");
+        let source = "import secret from '../../secret.txt?raw';\n";
+        std::fs::write(&importer, source).unwrap();
+
+        let error = expand_raw_imports(source, &importer, &root, &no_exclude)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("escapes the logical project root"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_target_escape_before_read() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let importer = project.path().join("entry.ts");
+        let source = "import secret from './secret.txt?raw';\n";
+        std::fs::write(&importer, source).unwrap();
+        let outside_target = outside.path().join("secret.txt");
+        std::fs::write(&outside_target, "secret").unwrap();
+        std::os::unix::fs::symlink(&outside_target, project.path().join("secret.txt")).unwrap();
+
+        let error = expand_raw_imports(source, &importer, project.path(), &no_exclude)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("escapes the project root"), "{error}");
+        assert!(error.contains("through a symlink"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn logical_symlinked_project_root_accepts_contained_target() {
+        let real = tempfile::tempdir().unwrap();
+        std::fs::write(real.path().join("message.txt"), "inside").unwrap();
+        std::fs::write(
+            real.path().join("entry.ts"),
+            "import text from './message.txt?raw';\n",
+        )
+        .unwrap();
+        let holder = tempfile::tempdir().unwrap();
+        let logical_root = holder.path().join("project");
+        std::os::unix::fs::symlink(real.path(), &logical_root).unwrap();
+        let importer = logical_root.join("entry.ts");
+        let source = std::fs::read_to_string(&importer).unwrap();
+
+        let expansion = expand_raw_imports(&source, &importer, &logical_root, &no_exclude).unwrap();
+        assert_eq!(expansion.edges[0].target, logical_root.join("message.txt"));
     }
 }

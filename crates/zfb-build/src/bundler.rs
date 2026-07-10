@@ -106,7 +106,7 @@
 //! instructing the operator to either set the env var or stage the
 //! binary in the slot.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs;
@@ -1720,15 +1720,61 @@ pub fn bundle_with_session(
         project_root: &input.project_root,
         writer: &writer,
         raw_import_edges: RefCell::new(BTreeSet::new()),
+        raw_preflight_complete: Cell::new(false),
         // #1151: the SHA-accurate collection-skip signal, parsed once per
         // bundle from the snapshot JSON the bundler already received.
         snapshot_specifiers: snapshot_specifier_set(input.content_snapshot_json.as_deref()),
     };
+    if let Some(src) = input.mdx_components_file.as_deref() {
+        preflight_raw_file(src, src, &mat_ctx);
+    }
 
     let shadow_pages = shadow.join("pages");
     let shadow_content = shadow.join("content");
     let shadow_components = shadow.join("components");
     let shadow_layouts = shadow.join("layouts");
+    let known_source_dirs: &[&str] = &[
+        "pages",
+        "content",
+        "components",
+        "layouts",
+        "node_modules",
+        "dist",
+        ".git",
+        "target",
+        ".turbo",
+        ".next",
+        ".vercel",
+    ];
+    let extra_source_dirs = enumerate_extra_top_level_dirs(&input.project_root, known_source_dirs);
+
+    // Preflight every source root before materialising any of them. An
+    // importer under a later root may target a JS-looking file under an
+    // earlier root, so per-root discovery would make terminal behavior depend
+    // on walk order.
+    preflight_raw_tree(&pages_dir, &shadow_pages, &mat_ctx)?;
+    if let Some(injected_root) = input.injected_pages_root.as_ref() {
+        let injected_root = resolver.resolve(injected_root);
+        preflight_raw_tree(&injected_root, &shadow_pages, &mat_ctx)?;
+    }
+    if input.content_collections.is_empty() {
+        preflight_raw_tree(&content_dir, &shadow_content, &mat_ctx)?;
+    } else {
+        for collection in &input.content_collections {
+            let root = resolver.resolve(&collection.root);
+            preflight_raw_tree(&root, &shadow_content.join(&collection.name), &mat_ctx)?;
+        }
+    }
+    preflight_raw_tree(&components_dir, &shadow_components, &mat_ctx)?;
+    preflight_raw_tree(&layouts_dir, &shadow_layouts, &mat_ctx)?;
+    for src_dir in &extra_source_dirs {
+        preflight_raw_tree(
+            src_dir,
+            &shadow.join(src_dir.file_name().unwrap_or_default()),
+            &mat_ctx,
+        )?;
+    }
+    mat_ctx.raw_preflight_complete.set(true);
 
     let mut routes: Vec<RouteEntry> = Vec::new();
     {
@@ -1949,20 +1995,7 @@ pub fn bundle_with_session(
     // to opt a sub-path back in will find the negation silently ignored at
     // this pass — `max_depth=1` means we operate whole-dir-or-nothing.
     {
-        let known: &[&str] = &[
-            "pages",
-            "content",
-            "components",
-            "layouts",
-            "node_modules",
-            "dist",
-            ".git",
-            "target",
-            ".turbo",
-            ".next",
-            ".vercel",
-        ];
-        for src_dir in enumerate_extra_top_level_dirs(&input.project_root, known) {
+        for src_dir in &extra_source_dirs {
             let name = src_dir.file_name().unwrap_or_default().to_os_string();
             let dst_dir = shadow.join(&name);
             let mut broken = Vec::new();
@@ -1970,7 +2003,7 @@ pub fn bundle_with_session(
             let mut cfl = Vec::new();
             let mut fh = Vec::new();
             materialise_shadow(
-                &src_dir,
+                src_dir,
                 &dst_dir,
                 &mut Vec::new(),
                 &mat_ctx,
@@ -2266,7 +2299,7 @@ pub fn bundle_with_session(
     //     without the convention.
     let mdx_components_import_spec: Option<String> = match input.mdx_components_file.as_ref() {
         Some(src) => Some(
-            materialise_mdx_components_file(src, shadow, &writer)
+            materialise_mdx_components_file(src, shadow, &mat_ctx)
                 .context("bundler: failed materialising mdx-components.tsx into shadow")?,
         ),
         None => None,
@@ -2508,20 +2541,19 @@ fn augment_route_deps_with_raw_targets(
     if raw_edges.is_empty() {
         return;
     }
+    let global_mdx_aliases: BTreeSet<PathBuf> =
+        path_aliases(&project_root.join(MDX_COMPONENTS_FILENAME)).collect();
     for route in route_deps {
         let route_source = project_root.join(&route.source_path);
-        let route_source = route_source.canonicalize().unwrap_or(route_source);
+        let route_aliases: BTreeSet<PathBuf> = path_aliases(&route_source).collect();
         for edge in raw_edges {
-            let importer = edge
-                .importer
-                .canonicalize()
-                .unwrap_or_else(|_| edge.importer.clone());
-            if importer == route_source || route.module_deps.contains(&importer) {
-                let target = edge
-                    .target
-                    .canonicalize()
-                    .unwrap_or_else(|_| edge.target.clone());
-                route.module_deps.insert(target);
+            let importer_aliases: BTreeSet<PathBuf> = path_aliases(&edge.importer).collect();
+            let consumes_importer = !importer_aliases.is_disjoint(&global_mdx_aliases)
+                || importer_aliases.iter().any(|importer| {
+                    route_aliases.contains(importer) || route.module_deps.contains(importer)
+                });
+            if consumes_importer {
+                route.module_deps.extend(path_aliases(&edge.target));
             }
         }
     }
@@ -2663,7 +2695,7 @@ fn enumerate_extra_top_level_dirs(project_root: &Path, known_skip_list: &[&str])
 fn materialise_mdx_components_file(
     src: &Path,
     shadow: &Path,
-    writer: &ShadowWriter<'_>,
+    ctx: &MaterialiseCtx<'_, '_>,
 ) -> Result<String> {
     let dst = shadow.join(MDX_COMPONENTS_FILENAME);
     // Routed through the #993 writer (NOT an always-write infra file):
@@ -2671,9 +2703,19 @@ fn materialise_mdx_components_file(
     // visited/prune bookkeeping — a deleted mdx-components.tsx must
     // vanish from the persistent shadow, else an explicit user import of
     // it would resolve in dev but fail in a fresh build.
-    writer.copy_if_changed(src, &dst).with_context(|| {
+    materialise_source_file(
+        src,
+        src,
+        &dst,
+        &|path| ctx.bundle_exclude.is_excluded(path, ctx.project_root),
+        true,
+        ctx.writer,
+        &ctx.raw_import_edges,
+        ctx.project_root,
+    )
+    .with_context(|| {
         format!(
-            "bundler: failed copying mdx-components file {} → {}",
+            "bundler: failed preprocessing mdx-components file {} → {}",
             src.display(),
             dst.display()
         )
@@ -2722,39 +2764,162 @@ fn symlink_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Recursively copy every regular file under `src` into `dest` as REAL
-/// files, following symlinks. Used by the `copy_mode` materialise passes
-/// to mirror a symlinked *subdir* (which `WalkDir` with
-/// `follow_links(false)` yields as a non-recursed symlink entry). A plain
-/// re-symlink would canonicalise back out under
-/// `esbuild --(no-)preserve-symlinks`, so the subtree must be copied.
-///
-/// Uses `follow_links(true)` so the subtree's own contents (including any
-/// nested symlinks) are dereferenced and written as real files. Infra dirs
-/// are pruned with the same predicate the top-level walks use. Copies
-/// route through `writer` (#993) so the persistent shadow session skips
-/// byte-identical rewrites and tracks the files for the prune pass.
-fn copy_dir_recursive(src: &Path, dest: &Path, writer: &ShadowWriter<'_>) -> std::io::Result<()> {
-    writer.ensure_dir(dest)?;
+/// Return the logical source identity for a file in a materialise walk.
+/// Most inputs already live below `project_root` and retain `from` exactly.
+/// A production package-route overlay is the exception: copied user pages
+/// physically live in a tempdir, but their relative imports still belong to
+/// `project_root/pages/<rel>`. Synthesised package routes have no matching
+/// project file and deliberately keep their physical identity.
+fn logical_importer_for_walk(src: &Path, dest: &Path, from: &Path, project_root: &Path) -> PathBuf {
+    let lexical_from = normalize_path_lexical(from);
+    let lexical_root = normalize_path_lexical(project_root);
+    if lexical_from.starts_with(&lexical_root) {
+        return from.to_path_buf();
+    }
+    if dest.file_name().is_some_and(|name| name == "pages") {
+        if let Ok(rel) = from.strip_prefix(src) {
+            let logical = project_root.join("pages").join(rel);
+            if logical.is_file() {
+                return logical;
+            }
+        }
+    }
+    from.to_path_buf()
+}
+
+fn raw_source_extension(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|s| s.to_str()),
+        Some("ts")
+            | Some("tsx")
+            | Some("js")
+            | Some("jsx")
+            | Some("mjs")
+            | Some("cjs")
+            | Some("mts")
+            | Some("cts")
+    )
+}
+
+fn path_aliases(path: &Path) -> impl Iterator<Item = PathBuf> {
+    let lexical = normalize_path_lexical(path);
+    let canonical = path.canonicalize().ok();
+    std::iter::once(lexical).chain(canonical)
+}
+
+fn raw_target_matches(edges: &BTreeSet<RawImportEdge>, physical: &Path, logical: &Path) -> bool {
+    let identities: BTreeSet<PathBuf> = path_aliases(physical)
+        .chain(path_aliases(logical))
+        .collect();
+    edges
+        .iter()
+        .any(|edge| path_aliases(&edge.target).any(|target| identities.contains(&target)))
+}
+
+/// Best-effort first pass used only to establish terminal target identity
+/// before the broad SSR mirror visits those files. Errors are intentionally
+/// deferred to the real materialise pass: an unused invalid JS file must not
+/// become a build error merely because it contains query-looking text.
+fn preflight_raw_file(physical: &Path, logical: &Path, ctx: &MaterialiseCtx<'_, '_>) {
+    if !raw_source_extension(logical) {
+        return;
+    }
+    let Ok(source) = fs::read_to_string(physical) else {
+        return;
+    };
+    if !source.contains("?raw") {
+        return;
+    }
+    if let Ok(expansion) = expand_raw_imports(&source, logical, ctx.project_root, &|_| false) {
+        ctx.raw_import_edges.borrow_mut().extend(expansion.edges);
+    }
+}
+
+fn preflight_raw_tree(src: &Path, dest: &Path, ctx: &MaterialiseCtx<'_, '_>) -> Result<()> {
+    if !src.exists() {
+        return Ok(());
+    }
     for entry in WalkDir::new(src)
+        .follow_links(ctx.copy_mode)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|entry| !is_pruned_infra_dir(entry))
+    {
+        let entry =
+            entry.with_context(|| format!("preflight raw imports under {}", src.display()))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let physical = entry.path();
+        let logical = if physical.starts_with(src) {
+            logical_importer_for_walk(src, dest, physical, ctx.project_root)
+        } else {
+            physical.to_path_buf()
+        };
+        preflight_raw_file(physical, &logical, ctx);
+    }
+    Ok(())
+}
+
+/// Materialise a symlinked source directory as real files in copy mode while
+/// still applying the JS-side glob/raw transforms to children. `physical_root`
+/// is canonical for safe traversal; `logical_root` preserves the project-local
+/// symlink spelling used by relative imports and invalidation.
+fn materialise_symlinked_dir(
+    logical_root: &Path,
+    dest: &Path,
+    ctx: &MaterialiseCtx<'_, '_>,
+    is_excluded: &dyn Fn(&Path) -> bool,
+) -> Result<()> {
+    let physical_root = logical_root.canonicalize().with_context(|| {
+        format!(
+            "canonicalize symlinked source dir {}",
+            logical_root.display()
+        )
+    })?;
+    ctx.writer.ensure_dir(dest)?;
+    for entry in WalkDir::new(&physical_root)
         .follow_links(true)
         .into_iter()
         .filter_entry(|e| !is_pruned_infra_dir(e))
     {
-        let entry = entry?;
-        let from = entry.path();
-        let rel = match from.strip_prefix(src) {
+        let entry = entry.with_context(|| {
+            format!(
+                "walking symlinked source dir {} via {}",
+                logical_root.display(),
+                physical_root.display()
+            )
+        })?;
+        let physical = entry.path();
+        let rel = match physical.strip_prefix(&physical_root) {
             Ok(r) => r,
             Err(_) => continue,
         };
         let to = dest.join(rel);
+        let logical = logical_root.join(rel);
         if entry.file_type().is_dir() {
-            writer.ensure_dir(&to)?;
+            ctx.writer.ensure_dir(&to)?;
         } else if entry.file_type().is_file() {
-            if let Some(parent) = to.parent() {
-                writer.ensure_dir(parent)?;
+            if is_excluded(&logical) {
+                continue;
             }
-            writer.copy_if_changed(from, &to)?;
+            if let Some(parent) = to.parent() {
+                ctx.writer.ensure_dir(parent)?;
+            }
+            if raw_source_extension(&logical) {
+                materialise_source_file(
+                    physical,
+                    &logical,
+                    &to,
+                    is_excluded,
+                    true,
+                    ctx.writer,
+                    &ctx.raw_import_edges,
+                    ctx.project_root,
+                )?;
+            } else {
+                ctx.writer.copy_if_changed(physical, &to)?;
+            }
         }
     }
     Ok(())
@@ -2802,6 +2967,10 @@ struct MaterialiseCtx<'a, 's> {
     /// generated `.zfb-raw-*.mjs` input back to the ORIGINAL target for dev
     /// invalidation.
     raw_import_edges: RefCell<BTreeSet<RawImportEdge>>,
+    /// True after `bundle_with_session` preflights every source root as one
+    /// graph-wide batch. Direct unit helpers leave this false, causing each
+    /// standalone materialise call to preflight its own tree.
+    raw_preflight_complete: Cell<bool>,
     /// SHA-256-accurate skip signal for collection `.mdx` (#1151). The set
     /// of every `module_specifier` in the per-tick content snapshot the
     /// bundler already receives (`BundlerInput.content_snapshot_json`) —
@@ -2891,6 +3060,14 @@ fn materialise_shadow(
     // matcher never matches, so this is always-false → skip nothing.
     let is_excluded = |abs: &Path| ctx.bundle_exclude.is_excluded(abs, ctx.project_root);
 
+    // Establish every terminal raw-target identity before the broad mirror
+    // visits individual files. This is what prevents an invalid `foo.js?raw`
+    // payload from being reparsed merely because it also lives below a source
+    // root walked by the SSR shadow.
+    if !ctx.raw_preflight_complete.get() {
+        preflight_raw_tree(src, dest, ctx)?;
+    }
+
     // Hoist a single feature-aware pipeline outside the
     // walk loop so the always-on Core plugins (CJK-friendly
     // emphasis, heading-links, code-title, syntect) plus the opt-in
@@ -2965,9 +3142,9 @@ fn materialise_shadow(
             // Explicitly copy the symlinked subtree as real files in that
             // mode. Low-frequency, but a hole otherwise.
             if ctx.copy_mode && entry.path_is_symlink() && from.is_dir() {
-                copy_dir_recursive(from, &to, ctx.writer).with_context(|| {
+                materialise_symlinked_dir(from, &to, ctx, &is_excluded).with_context(|| {
                     format!(
-                        "bundler: failed copying symlinked subdir {} -> {} under copy_mode",
+                        "bundler: failed materialising symlinked subdir {} -> {} under copy_mode",
                         from.display(),
                         to.display()
                     )
@@ -2975,6 +3152,8 @@ fn materialise_shadow(
             }
             continue;
         }
+
+        let logical_from = logical_importer_for_walk(src, dest, from, ctx.project_root);
 
         // `bundle.exclude` skip (#664 / #672). A matched file is never
         // materialised into the shadow tree — so esbuild can never resolve
@@ -2984,7 +3163,7 @@ fn materialise_shadow(
         // the file's absolute path (`from`); empty `bundle.exclude` makes it
         // always-false, so this skip never fires and behaviour is identical
         // to a build without the knob.
-        if is_excluded(from) {
+        if is_excluded(&logical_from) {
             continue;
         }
 
@@ -3003,7 +3182,7 @@ fn materialise_shadow(
         if is_html_page {
             // Record in routes for the manifest, but do not copy to shadow.
             if let Some(route) = derive_route(rel) {
-                let abs_src = from.to_path_buf();
+                let abs_src = logical_from.clone();
                 let project_rel = abs_src
                     .strip_prefix(ctx.project_root)
                     .map(|p| p.to_path_buf())
@@ -3148,18 +3327,20 @@ fn materialise_shadow(
             // would otherwise make esbuild error on the generated import.
             materialise_source_file(
                 from,
+                &logical_from,
                 &to,
                 &is_excluded,
                 ctx.copy_mode,
                 ctx.writer,
                 &ctx.raw_import_edges,
+                ctx.project_root,
             )?;
         }
 
         // Routes only collected from the pages root.
         if is_pages_dir {
             if let Some(route) = derive_route(rel) {
-                let abs_src = from.to_path_buf();
+                let abs_src = logical_from.clone();
                 let project_rel = abs_src
                     .strip_prefix(ctx.project_root)
                     .map(|p| p.to_path_buf())
@@ -3874,6 +4055,9 @@ fn materialise_collection(
     ctx.writer
         .ensure_dir(dest)
         .with_context(|| format!("create dir {}", dest.display()))?;
+    if !ctx.raw_preflight_complete.get() {
+        preflight_raw_tree(src, dest, ctx)?;
+    }
 
     // Compile the include / exclude globs once per collection. The
     // shared `CollectionFilter` MUST match `CollectionConfig::*` on the
@@ -3944,9 +4128,9 @@ fn materialise_collection(
             // stays mirrored in the shadow (see the matching block in
             // `materialise_shadow`).
             if ctx.copy_mode && entry.path_is_symlink() && from.is_dir() {
-                copy_dir_recursive(from, &to, ctx.writer).with_context(|| {
+                materialise_symlinked_dir(from, &to, ctx, &|_| false).with_context(|| {
                     format!(
-                        "bundler: failed copying symlinked subdir {} -> {} under copy_mode",
+                        "bundler: failed materialising symlinked subdir {} -> {} under copy_mode",
                         from.display(),
                         to.display()
                     )
@@ -4060,11 +4244,13 @@ fn materialise_collection(
             // `import.meta.glob(...)` expansion as the page/component pass.
             materialise_source_file(
                 from,
+                from,
                 &to,
                 &|_| false,
                 ctx.copy_mode,
                 ctx.writer,
                 &ctx.raw_import_edges,
+                ctx.project_root,
             )?;
         }
     }
@@ -4202,13 +4388,20 @@ fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
 /// real copy keeps the importer physically inside the shadow. The
 /// `import.meta.glob` real-write path below is unaffected (it already writes
 /// a real file).
+///
+/// `physical_from` supplies bytes/stat identity. `logical_from` is the
+/// project-side importer identity used for relative glob/raw resolution; the
+/// two differ for copied package-route overlays and followed symlink dirs.
+#[allow(clippy::too_many_arguments)] // Physical/logical identity must stay explicit at every write call.
 fn materialise_source_file(
-    from: &Path,
+    physical_from: &Path,
+    logical_from: &Path,
     to: &Path,
     is_excluded: &dyn Fn(&Path) -> bool,
     copy_mode: bool,
     writer: &ShadowWriter<'_>,
     raw_import_edges: &RefCell<BTreeSet<RawImportEdge>>,
+    project_root: &Path,
 ) -> Result<()> {
     // Incremental NON-MDX skip (zfb#1148). In session mode ONLY
     // (passthrough/prod never skips): a plain copy/symlink is a pure
@@ -4236,16 +4429,16 @@ fn materialise_source_file(
     let dest_rel = writer.rel_of(to).ok();
     if writer.in_session() {
         if let Some(dest_rel) = dest_rel.as_ref() {
-            if let Some((mtime, size)) = file_stat(from) {
+            if let Some((mtime, size)) = file_stat(physical_from) {
                 if let Some(entry) = writer.source_skip_get(dest_rel) {
                     // Never false-reuse: entry must describe THIS source,
                     // its `(mtime, size)` must match, it must not be a glob
                     // file, and the dest must still exist on disk (regular
                     // file OR symlink — `symlink_metadata` does not follow,
-                    // so a present link entry counts; its target is `from`,
+                    // so a present link entry counts; its target is `physical_from`,
                     // which we just confirmed exists).
                     let dest_exists = fs::symlink_metadata(to).is_ok();
-                    if entry.source == from
+                    if entry.source == physical_from
                         && entry.mtime == mtime
                         && entry.size == size
                         && !entry.has_glob
@@ -4265,17 +4458,31 @@ fn materialise_source_file(
     }
 
     // ---- Full path: the original materialise + (re)store the skip entry. ----
-    let is_js_like = matches!(
-        from.extension().and_then(|s| s.to_str()),
-        Some("ts")
-            | Some("tsx")
-            | Some("js")
-            | Some("jsx")
-            | Some("mjs")
-            | Some("cjs")
-            | Some("mts")
-            | Some("cts")
-    );
+    if raw_target_matches(&raw_import_edges.borrow(), physical_from, logical_from) {
+        if copy_mode {
+            writer.copy_if_changed(physical_from, to).with_context(|| {
+                format!(
+                    "copy terminal raw target {} -> {}",
+                    physical_from.display(),
+                    to.display()
+                )
+            })?;
+        } else {
+            writer
+                .symlink_if_absent(physical_from, to)
+                .with_context(|| {
+                    format!(
+                        "symlink terminal raw target {} -> {}",
+                        physical_from.display(),
+                        to.display()
+                    )
+                })?;
+        }
+        store_source_skip_entry(writer, dest_rel, physical_from, false, false);
+        return Ok(());
+    }
+
+    let is_js_like = raw_source_extension(logical_from);
     // `has_glob` is the skip gate: a file that uses `import.meta.glob` must
     // never be skipped (its expansion depends on other files). It is `true`
     // only when the file is JS-like, reads as UTF-8, AND contains the
@@ -4288,22 +4495,25 @@ fn materialise_source_file(
         // Cheap pre-read of the file is only worthwhile when it might contain
         // the macro. `fs::read_to_string` fails on non-UTF-8; in that case
         // (binary masquerading as .js, etc.) fall back to copy.
-        if let Ok(source) = fs::read_to_string(from) {
+        if let Ok(source) = fs::read_to_string(physical_from) {
             let has_query_syntax = source.contains('?');
             if source.contains("import.meta.glob") || has_query_syntax {
                 let mut expanded = source;
                 if expanded.contains("import.meta.glob") {
                     has_glob = true;
-                    let file_dir = from.parent().unwrap_or_else(|| Path::new("."));
+                    let file_dir = logical_from.parent().unwrap_or_else(|| Path::new("."));
                     expanded = expand_import_meta_glob(&expanded, file_dir, is_excluded)
                         .with_context(|| {
-                            format!("expand import.meta.glob in {}", from.display())
+                            format!("expand import.meta.glob in {}", logical_from.display())
                         })?;
                 }
 
                 if has_query_syntax {
-                    let raw_expansion = expand_raw_imports(&expanded, from, is_excluded)
-                        .with_context(|| format!("expand ?raw imports in {}", from.display()))?;
+                    let raw_expansion =
+                        expand_raw_imports(&expanded, logical_from, project_root, is_excluded)
+                            .with_context(|| {
+                                format!("expand ?raw imports in {}", logical_from.display())
+                            })?;
                     has_raw = !raw_expansion.generated_modules.is_empty();
                     if has_raw {
                         let generated_dir = to.parent().unwrap_or_else(|| Path::new("."));
@@ -4315,7 +4525,7 @@ fn materialise_source_file(
                                     format!(
                                         "write generated raw module {} for {}",
                                         generated_path.display(),
-                                        from.display()
+                                        logical_from.display()
                                     )
                                 })?;
                         }
@@ -4334,7 +4544,7 @@ fn materialise_source_file(
                     writer
                         .write_if_changed(to, expanded.as_bytes())
                         .with_context(|| format!("write expanded source to {}", to.display()))?;
-                    store_source_skip_entry(writer, dest_rel, from, has_glob, has_raw);
+                    store_source_skip_entry(writer, dest_rel, physical_from, has_glob, has_raw);
                     return Ok(());
                 }
             }
@@ -4344,15 +4554,25 @@ fn materialise_source_file(
         // Force a real copy so esbuild (running WITHOUT --preserve-symlinks)
         // reads this file — and any in-shadow transform it relatively imports
         // — from the shadow tree, not the canonicalised original.
-        writer
-            .copy_if_changed(from, to)
-            .with_context(|| format!("copy (copy_mode) {} -> {}", from.display(), to.display()))?;
+        writer.copy_if_changed(physical_from, to).with_context(|| {
+            format!(
+                "copy (copy_mode) {} -> {}",
+                physical_from.display(),
+                to.display()
+            )
+        })?;
     } else {
         writer
-            .symlink_if_absent(from, to)
-            .with_context(|| format!("symlink_or_copy {} -> {}", from.display(), to.display()))?;
+            .symlink_if_absent(physical_from, to)
+            .with_context(|| {
+                format!(
+                    "symlink_or_copy {} -> {}",
+                    physical_from.display(),
+                    to.display()
+                )
+            })?;
     }
-    store_source_skip_entry(writer, dest_rel, from, has_glob, has_raw);
+    store_source_skip_entry(writer, dest_rel, physical_from, has_glob, has_raw);
     Ok(())
 }
 
@@ -6519,8 +6739,9 @@ mod tests {
         let shadow = tempfile::tempdir().unwrap();
         let shadow_root = shadow.path();
 
-        let spec = materialise_mdx_components_file(&src, shadow_root, leaked_passthrough_writer())
-            .unwrap();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
+        let spec = materialise_mdx_components_file(&src, shadow_root, &ctx).unwrap();
         assert_eq!(spec, "./mdx-components.tsx");
 
         // A real copy lands in the shadow root (so esbuild resolves its
@@ -6528,6 +6749,37 @@ mod tests {
         let dst = shadow_root.join("mdx-components.tsx");
         assert!(dst.is_file(), "copied file must exist at shadow root");
         assert_eq!(fs::read_to_string(&dst).unwrap(), contents);
+    }
+
+    #[test]
+    fn materialise_mdx_components_file_expands_raw_imports() {
+        let project = tempfile::tempdir().unwrap();
+        let src = project.path().join("mdx-components.tsx");
+        fs::write(
+            &src,
+            "import theme from './theme.css?raw';\nexport default { theme };\n",
+        )
+        .unwrap();
+        fs::write(project.path().join("theme.css"), "--raw-theme-marker").unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(project.path(), &exclude);
+
+        materialise_mdx_components_file(&src, shadow.path(), &ctx).unwrap();
+        let staged = fs::read_to_string(shadow.path().join("mdx-components.tsx")).unwrap();
+        assert!(!staged.contains("?raw"), "{staged}");
+        let generated = fs::read_dir(shadow.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".zfb-raw-") && name.ends_with(".mjs"))
+            })
+            .expect("generated root raw wrapper");
+        assert!(fs::read_to_string(generated)
+            .unwrap()
+            .contains("--raw-theme-marker"));
     }
 
     #[test]
@@ -7011,6 +7263,7 @@ mod tests {
             project_root: &project_root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_preflight_complete: Cell::new(false),
             snapshot_specifiers,
         };
         let mut imports = Vec::new();
@@ -7074,6 +7327,7 @@ mod tests {
             project_root: &project_root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_preflight_complete: Cell::new(false),
             // This dual-pass helper exercises the source/`materialise_shadow`
             // path (`import: None`), which is not snapshot-gated; `None` here.
             snapshot_specifiers: None,
@@ -8092,8 +8346,17 @@ mod tests {
             if let Some(parent) = to.parent() {
                 writer.ensure_dir(parent).expect("ensure dest parent dir");
             }
-            materialise_source_file(from, &to, &|_| false, false, &writer, &raw_import_edges)
-                .expect("materialise_source_file tick");
+            materialise_source_file(
+                from,
+                from,
+                &to,
+                &|_| false,
+                false,
+                &writer,
+                &raw_import_edges,
+                from.parent().unwrap_or(from),
+            )
+            .expect("materialise_source_file tick");
         }
         writer.prune_stale().expect("prune");
         writer.mark_clean();
@@ -8265,6 +8528,203 @@ mod tests {
     }
 
     #[test]
+    fn production_pages_overlay_uses_logical_project_importer_for_raw() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("data")).unwrap();
+        let logical_page = root.join("pages/index.ts");
+        fs::write(
+            &logical_page,
+            "import text from '../data/message.txt?raw';\nexport default text;\n",
+        )
+        .unwrap();
+        fs::write(root.join("data/message.txt"), "overlay-logical-target").unwrap();
+
+        let overlay = tempfile::tempdir().unwrap();
+        let overlay_pages = overlay.path().join("pages");
+        fs::create_dir_all(&overlay_pages).unwrap();
+        fs::copy(&logical_page, overlay_pages.join("index.ts")).unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_pages = shadow.path().join("pages");
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(root, &exclude);
+        let mut routes = Vec::new();
+        materialise_shadow(
+            &overlay_pages,
+            &shadow_pages,
+            &mut routes,
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let staged = fs::read_to_string(shadow_pages.join("index.ts")).unwrap();
+        assert!(!staged.contains("?raw"), "{staged}");
+        assert_eq!(routes[0].source_path, PathBuf::from("pages/index.ts"));
+        let edges = ctx.raw_import_edges.borrow();
+        assert!(edges.iter().any(|edge| {
+            edge.importer == logical_page && edge.target == root.join("data/message.txt")
+        }));
+    }
+
+    #[test]
+    fn ssr_terminal_js_raw_target_is_never_reparsed_by_broad_mirror() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let components = root.join("components");
+        fs::create_dir_all(&components).unwrap();
+        let target = components.join("a-terminal.js");
+        let raw_bytes = b"not javascript ? {{{ import.meta.glob('./also-text')\n";
+        fs::write(&target, raw_bytes).unwrap();
+        fs::write(
+            components.join("z-importer.ts"),
+            "import text from './a-terminal.js?raw';\nexport default text;\n",
+        )
+        .unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_components = shadow.path().join("components");
+        let exclude = no_bundle_exclude();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        let ctx = MaterialiseCtx {
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            copy_mode: true,
+            bundle_exclude: &exclude,
+            project_root: root,
+            writer: &writer,
+            raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_preflight_complete: Cell::new(false),
+            snapshot_specifiers: None,
+        };
+        materialise_shadow(
+            &components,
+            &shadow_components,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(shadow_components.join("a-terminal.js")).unwrap(),
+            raw_bytes
+        );
+        let importer = fs::read_to_string(shadow_components.join("z-importer.ts")).unwrap();
+        assert!(!importer.contains("?raw"), "{importer}");
+    }
+
+    #[test]
+    fn ssr_terminal_preflight_spans_all_source_roots_before_materialising() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let pages = root.join("pages");
+        let components = root.join("components");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+        let raw_bytes = b"invalid ? {{{ import.meta.glob('./text-only')\n";
+        fs::write(pages.join("a-terminal.js"), raw_bytes).unwrap();
+        fs::write(
+            components.join("importer.ts"),
+            "import text from '../pages/a-terminal.js?raw';\nexport default text;\n",
+        )
+        .unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_pages = shadow.path().join("pages");
+        let shadow_components = shadow.path().join("components");
+        let exclude = no_bundle_exclude();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        let ctx = MaterialiseCtx {
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            copy_mode: true,
+            bundle_exclude: &exclude,
+            project_root: root,
+            writer: &writer,
+            raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_preflight_complete: Cell::new(false),
+            snapshot_specifiers: None,
+        };
+
+        preflight_raw_tree(&pages, &shadow_pages, &ctx).unwrap();
+        preflight_raw_tree(&components, &shadow_components, &ctx).unwrap();
+        ctx.raw_preflight_complete.set(true);
+        materialise_shadow(
+            &pages,
+            &shadow_pages,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(shadow_pages.join("a-terminal.js")).unwrap(),
+            raw_bytes
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ssr_copy_mode_preprocesses_raw_importer_beneath_symlinked_dir() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let components = root.join("components");
+        let real = components.join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(
+            real.join("entry.ts"),
+            "import text from './message.txt?raw';\nexport default text;\n",
+        )
+        .unwrap();
+        fs::write(real.join("message.txt"), "symlink-directory-raw").unwrap();
+        std::os::unix::fs::symlink(&real, components.join("alias")).unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_components = shadow.path().join("components");
+        let exclude = no_bundle_exclude();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        let ctx = MaterialiseCtx {
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            copy_mode: true,
+            bundle_exclude: &exclude,
+            project_root: root,
+            writer: &writer,
+            raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_preflight_complete: Cell::new(false),
+            snapshot_specifiers: None,
+        };
+        materialise_shadow(
+            &components,
+            &shadow_components,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let staged = fs::read_to_string(shadow_components.join("alias/entry.ts")).unwrap();
+        assert!(!staged.contains("?raw"), "{staged}");
+        assert!(fs::read_dir(shadow_components.join("alias"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .any(|path| path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".zfb-raw-") && name.ends_with(".mjs"))));
+    }
+
+    #[test]
     fn raw_target_excluded_by_bundle_exclude_is_a_named_error() {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir_all(tmp.path().join("components")).unwrap();
@@ -8278,11 +8738,13 @@ mod tests {
         let matcher = BundleExcludeMatcher::new(&["components/*.txt".to_string()]).unwrap();
         let error = materialise_source_file(
             &importer,
+            &importer,
             &shadow.path().join("entry.ts"),
             &|path| matcher.is_excluded(path, tmp.path()),
             false,
             &writer,
             &edges,
+            tmp.path(),
         )
         .unwrap_err();
         let error = format!("{error:#}");
@@ -8312,6 +8774,63 @@ mod tests {
         augment_route_deps_with_raw_targets(&mut deps, &edges, root);
         assert!(deps[0].module_deps.contains(&target_real));
         assert!(deps[0].module_deps.contains(&importer_real));
+    }
+
+    #[test]
+    fn mdx_components_raw_target_is_a_dependency_of_every_route() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let importer = root.join(MDX_COMPONENTS_FILENAME);
+        let target = root.join("theme.txt");
+        fs::write(&importer, "mdx components").unwrap();
+        fs::write(&target, "theme").unwrap();
+        let mut deps = vec![
+            crate::metafile_deps::RouteModuleDeps {
+                source_path: PathBuf::from("pages/a.tsx"),
+                module_deps: BTreeSet::new(),
+            },
+            crate::metafile_deps::RouteModuleDeps {
+                source_path: PathBuf::from("pages/b.tsx"),
+                module_deps: BTreeSet::new(),
+            },
+        ];
+        let edges = BTreeSet::from([RawImportEdge {
+            importer,
+            target: target.clone(),
+        }]);
+        augment_route_deps_with_raw_targets(&mut deps, &edges, root);
+        let target = target.canonicalize().unwrap();
+        assert!(deps.iter().all(|route| route.module_deps.contains(&target)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn route_raw_deps_keep_symlink_alias_and_canonical_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let page = root.join("pages/index.tsx");
+        let target = root.join("data/actual.txt");
+        let alias = root.join("data/current.txt");
+        fs::create_dir_all(page.parent().unwrap()).unwrap();
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&page, "page").unwrap();
+        fs::write(&target, "actual").unwrap();
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        let mut deps = vec![crate::metafile_deps::RouteModuleDeps {
+            source_path: PathBuf::from("pages/index.tsx"),
+            module_deps: BTreeSet::new(),
+        }];
+        let edges = BTreeSet::from([RawImportEdge {
+            importer: page,
+            target: alias.clone(),
+        }]);
+        augment_route_deps_with_raw_targets(&mut deps, &edges, root);
+        assert!(deps[0]
+            .module_deps
+            .contains(&normalize_path_lexical(&alias)));
+        assert!(deps[0]
+            .module_deps
+            .contains(&target.canonicalize().unwrap()));
     }
 
     #[test]
@@ -10317,6 +10836,7 @@ mod tests {
             project_root,
             writer: leaked_passthrough_writer(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_preflight_complete: Cell::new(false),
             // Passthrough/sessionless never skips, so the snapshot gate is
             // irrelevant here.
             snapshot_specifiers: None,

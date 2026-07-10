@@ -643,6 +643,7 @@ fn islands_shadow_raw_import_bundles_text() {
     let expansion = zfb_build::raw_import_expand::expand_raw_imports(
         &std::fs::read_to_string(&importer).unwrap(),
         &importer,
+        root,
         &|_| false,
     )
     .unwrap();
@@ -702,6 +703,7 @@ fn client_script_raw_import_bundles_text() {
     let expansion = zfb_build::raw_import_expand::expand_raw_imports(
         &std::fs::read_to_string(&importer).unwrap(),
         &importer,
+        root,
         &|_| false,
     )
     .unwrap();
