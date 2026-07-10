@@ -1,48 +1,178 @@
 ---
-title: meta export
-description: Declare per-page head metadata via a meta export.
+title: Page module exports
+description: Reference for named exports zfb reads from page modules.
 sidebar_position: 5
 ---
 
-## The pattern
+Every file under `pages/` must default-export the page component. zfb also reads a small set of named exports from page modules to decide which URLs exist, which props are passed to the component, whether a route is prerendered, and which response metadata to use.
 
-Every page module may export a `meta` constant (or an async function returning the same record) describing per-page metadata — title, description, and layout override. The build reads this export, parses it into a typed record (`crates/zfb-render/src/meta.rs`), and resolves which layout module wraps the page. The renderer itself emits no `<head>` tags; the layout component owns `<head>` and decides what to render with the values it receives.
-
-## Example
-
-```tsx
-export const meta = {
-  title: "Blog — My Site",
-  description: "Latest writing on web development.",
-};
-
-export default function BlogPage() {
-  return <article>{/* ... */}</article>;
+```ts
+export default function Page(props: Record<string, unknown>) {
+  return <main>{/* ... */}</main>;
 }
 ```
 
-If you need data from a collection or an async source to compute meta — for example, a title derived from a CMS field — export `meta` as an async function. The renderer awaits it before rendering the page shell.
+The shipped named exports are `paths()`, `getStaticProps()`, `prerender`, `contentType`, and `headings`.
+
+<Warning>
+
+`export const meta` is not a shipped page-module API. Do not rely on it for head tags, layout selection, Open Graph data, or page metadata. Put head markup in your component/layout code, or pass data through `paths()` / `getStaticProps()` props.
+
+</Warning>
+
+## `paths()`
+
+```ts
+export function paths():
+  | Array<{ params: Record<string, string | string[]>; props?: Record<string, unknown> }>
+  | Promise<Array<{ params: Record<string, string | string[]>; props?: Record<string, unknown> }>>;
+```
+
+Dynamic routes such as `pages/blog/[slug].tsx`, `pages/docs/[...slug].tsx`, and `pages/docs/[[...slug]].tsx` use `paths()` to enumerate concrete URLs. Each entry must include a `params` object with one key for every dynamic segment in the route. Optional `props` are spread into the page component's top-level props alongside `params`.
+
+For SSG routes, zfb first tries to statically extract literal `paths()` results. Non-literal functions are evaluated through the bundled runtime during the build. A dynamic route with `prerender = false` is served at request time and does not need a concrete build-time URL list.
 
 ```tsx
-export async function meta() {
-  const post = getCollection("blog")[0];
+import { getCollection } from "@takazudo/zfb/content";
+
+export async function paths() {
+  const posts = getCollection<{ title: string }>("blog");
+  return posts.map((post) => ({
+    params: { slug: post.slug },
+    props: { title: post.data.title },
+  }));
+}
+
+export default function PostPage({
+  params,
+  title,
+}: {
+  params: { slug: string };
+  title: string;
+}) {
+  return <h1>{title}</h1>;
+}
+```
+
+## `getStaticProps()`
+
+```ts
+export function getStaticProps():
+  | { props: Record<string, unknown> }
+  | Promise<{ props: Record<string, unknown> }>;
+```
+
+Static routes can export `getStaticProps()` to compute props before the page component renders. It is intended for static, non-dynamic routes. For dynamic routes, return per-entry props from `paths()` instead.
+
+```tsx
+import { getCollection } from "@takazudo/zfb/content";
+
+export function getStaticProps() {
+  const posts = getCollection<{ title: string }>("blog");
   return {
-    title: post.data.title,
-    description: post.data.description,
+    props: {
+      postCount: posts.length,
+      latestTitle: posts.at(-1)?.data.title ?? "No posts",
+    },
   };
 }
+
+export default function BlogIndex({
+  postCount,
+  latestTitle,
+}: {
+  postCount: number;
+  latestTitle: string;
+}) {
+  return (
+    <main>
+      <h1>Blog</h1>
+      <p>{postCount} posts</p>
+      <p>Latest: {latestTitle}</p>
+    </main>
+  );
+}
 ```
 
-## Supported keys
+## `prerender`
 
-`PageMeta` accepts exactly the following keys. Unknown keys are **rejected** at parse time (`deny_unknown_fields`) so that typos surface as build errors rather than being silently dropped.
+```ts
+export const prerender: boolean;
+```
 
-- `title?: string` — overrides the layout default for this page.
-- `description?: string` — made available to the layout component, which decides whether to render a `<meta name="description">` tag. The bundled default layout currently does not emit one.
-- `layout?: string` — module specifier (relative path or bare specifier) for the page layout component. When absent, the project default layout is used.
+Routes are prerendered to disk by default. Set `prerender = false` to opt a page out of SSG and serve it through the runtime SSR adapter instead. Projects without an SSR-capable adapter fail fast when they contain `prerender = false` routes.
 
-<Note>
+Only a literal boolean export is honored by the static extractor. Computed values are treated as the default (`true`).
 
-Canonical URL, Open Graph, and Twitter Card tags are not part of `PageMeta` — there is no meta→`<head>` emission pipeline to extend (the layout owns `<head>`). To add these tags, inject them directly in your layout component, or use a build-time plugin to emit `<head>` content.
+```tsx
+export const prerender = false;
 
-</Note>
+export default function PreviewPage() {
+  return <h1>This route is rendered at request time</h1>;
+}
+```
+
+## `contentType`
+
+```ts
+export const contentType: string;
+```
+
+`contentType` overrides the response `Content-Type` for a TSX page. Use it for non-HTML pages or when the filename extension is not enough. If omitted, zfb derives a type from the output extension, falling back to `text/html; charset=utf-8`.
+
+```tsx
+export const contentType = "application/xml";
+
+export default function Sitemap() {
+  return (
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url>
+        <loc>https://example.com/</loc>
+      </url>
+    </urlset>
+  );
+}
+```
+
+## `headings`
+
+```ts
+export const headings: readonly Array<{
+  depth: number;
+  slug: string;
+  text: string;
+}>;
+```
+
+MDX compilation emits a `headings` export for every compiled Markdown/MDX module. It is a document-order table of contents derived from headings in the source. Empty documents still export `[]`, so consumers can import it unconditionally.
+
+You normally do not hand-author `headings` in TSX pages; import it from an MDX module or read it from the page module namespace when building framework-level UI.
+
+```tsx
+import DocsPage, { headings } from "../content/docs/intro.mdx";
+
+export function getStaticProps() {
+  return {
+    props: {
+      tableOfContents: headings.filter((heading) => heading.depth <= 3),
+    },
+  };
+}
+
+export default function IntroPage({
+  tableOfContents,
+}: {
+  tableOfContents: typeof headings;
+}) {
+  return (
+    <main>
+      <nav>
+        {tableOfContents.map((heading) => (
+          <a href={`#${heading.slug}`}>{heading.text}</a>
+        ))}
+      </nav>
+      <DocsPage />
+    </main>
+  );
+}
+```

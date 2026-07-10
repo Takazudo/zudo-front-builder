@@ -79,6 +79,7 @@ To restore the pre-lazy behavior and re-render every affected route eagerly on e
 | `ZFB_LAZY_DEV_RENDER` | `0` or `1` | Precise override of the lazy dev-render switch. `1` forces lazy; `0` forces eager. Takes precedence over `ZFB_DEV_EAGER` when both are set. |
 | `ZFB_DEV_BOOT_LAZY` | `1` | Opt-in fast boot: when a valid prebuilt `dist/` exists, serve it immediately and defer per-route rendering to the first request instead of rendering every route at boot. Requires lazy rendering (no-op when `ZFB_DEV_EAGER` is set). Off by default. |
 | `ZFB_DEV_DEFER_BUNDLE` | `0` | Opt out of the boot-lazy bundle deferral: build the renderer before bind (no SSR-only 404 window) at the cost of a slower first-accept. On by default when boot-lazy is active. |
+| `ZFB_DEV_TIMING` | `1` or `true` | Emit per-tick timing lines for dev-mode profiling. Off by default. |
 
 ### Example
 
@@ -132,6 +133,8 @@ zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 ```
 
 When `zfb.config.json`'s `adapter` field names a supported adapter (e.g. `@takazudo/zfb-adapter-cloudflare`), `zfb preview` hands off to `wrangler dev` instead of zfb's own static server — `--outdir` then only pre-checks that the directory exists, since wrangler's own config controls what it actually serves. See [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx).
+
+Adapter preview runs a pre-flight `pnpm exec wrangler --version` check before handing off. Set `ZFB_SKIP_WRANGLER_VERSION_CHECK=1` only as a temporary escape hatch when that pin is being updated.
 
 ### Flags
 
@@ -198,7 +201,10 @@ The following environment variables affect `zfb` globally (not specific to one s
 | `ZFB_LAZY_DEV_RENDER` | unset | Set to `0` or `1` for precise control over the lazy dev-render switch. Takes precedence over `ZFB_DEV_EAGER` when both are set. |
 | `ZFB_DEV_BOOT_LAZY` | unset | Set to `1` to opt in to fast dev-server boot: serve a valid prebuilt `dist/` immediately and defer each route's rendering to its first request. Requires lazy rendering; no-op when `ZFB_DEV_EAGER` is set. |
 | `ZFB_DEV_DEFER_BUNDLE` | unset | Set to `0` to opt out of the boot-lazy bundle deferral (build the renderer before bind instead of after the first request). On by default when boot-lazy is active. |
+| `ZFB_DEV_TIMING` | unset | Set to `1` or `true` to print dev-mode phase timings for each file-change tick. |
 | `ZFB_PLUGIN_HOOK_TIMEOUT` | `120` (seconds) | Maximum time (in seconds) any single plugin hook reply is awaited before the plugin host is force-killed and the build fails. Precedence: `pluginHookTimeoutSecs` in config > this env var > 120s built-in default. |
+| `ZFB_ESBUILD_BIN` | unset | Absolute path to an esbuild binary. Used by the bundler, islands compiler, tests, and TypeScript config loading (`zfb.config.ts`) when an embedded/staged esbuild binary is unavailable or should be overridden. |
+| `ZFB_SKIP_WRANGLER_VERSION_CHECK` | unset | Set to `1`, `true`, or `yes` to bypass the `zfb preview` adapter-mode wrangler version gate. Intended for temporary release-engineering use. |
 
 <Note>
 
