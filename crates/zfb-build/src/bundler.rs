@@ -81,8 +81,10 @@
 //!
 //! ## Server-secret protection
 //!
-//! Variables in [`BundlerInput::define_vars`] that are **not** prefixed
+//! Variables in [`BundlerInput::public_env_vars`] that are **not** prefixed
 //! with `PUBLIC_` are silently dropped — they never reach the bundle.
+//! Operator-authored [`BundlerInput::define_vars`] are a separate, raw
+//! esbuild-define channel populated from validated `bundle.define` config.
 //! `import.meta.env.PROD` and `import.meta.env.DEV` are always emitted
 //! (driven by [`BundlerInput::mode`]). See [`BundleMode`] and the
 //! `server_secrets_are_not_bundled` test for the contract.
@@ -319,12 +321,17 @@ pub struct BundlerInput {
     /// Which JSX framework's hydration shim to fold into the bundle.
     /// Drives [`make_adapter`] selection.
     pub framework: Framework,
-    /// Build-time `--define` substitutions. The bundler **filters** this
-    /// map: only keys starting with `PUBLIC_` are forwarded to esbuild
-    /// (as `--define:process.env.<KEY>='<JSON-encoded value>'`). All
-    /// other keys are silently dropped — server secrets MUST NOT appear
+    /// Operator-authored raw esbuild `--define` substitutions populated from
+    /// validated `bundle.define` config. Values are forwarded verbatim; string
+    /// expressions must already be quoted JSON. This path is deliberately
+    /// separate from [`Self::public_env_vars`].
+    pub define_vars: BTreeMap<String, String>,
+    /// Environment variables considered for public exposure. Only keys
+    /// prefixed with `PUBLIC_` are emitted, and values are JSON-encoded before
+    /// being mapped to both `process.env.<KEY>` and `import.meta.env.<KEY>`.
+    /// All other entries are silently dropped so server secrets never appear
     /// in the bundle. See [`server_secrets_are_not_bundled`] in tests.
-    pub define_vars: HashMap<String, String>,
+    pub public_env_vars: HashMap<String, String>,
     /// `compilerOptions.paths`-style alias map (TS path aliases). The
     /// bundler writes a rebased copy into a synthetic `tsconfig.json`
     /// inside the shadow tree; esbuild then resolves user imports
@@ -364,6 +371,9 @@ pub struct BundlerInput {
     /// byte-identical to a build without this knob. When non-empty it applies
     /// to every framework and takes precedence over the React shim.
     pub main_fields: Vec<String>,
+    /// Additional validated esbuild `--loader:<ext>=<loader>` arguments.
+    /// Appended after [`ESBUILD_LOADER_ARGS`] in deterministic config order.
+    pub extra_loader_args: Vec<String>,
     /// Where the final `bundle.mjs` (and its `.map`) is written.
     pub outdir: PathBuf,
     /// Production / development mode (drives `import.meta.env.{PROD,DEV}`).
@@ -684,7 +694,8 @@ impl BundlerInput {
     /// Shared defaults:
     /// - Standard relative directory names (`pages`, `content`, `components`,
     ///   `layouts`).
-    /// - Empty `define_vars`, `tsconfig_paths`, `external`.
+    /// - Empty raw `define_vars`, `public_env_vars`, `tsconfig_paths`,
+    ///   `external`, and `extra_loader_args`.
     /// - `minify: false`, `esbuild_binary: None`, `mock_subprocess_output:
     ///   None`, `node_modules_dir: None`.
     ///
@@ -708,9 +719,11 @@ impl BundlerInput {
             layouts_dir: PathBuf::from("layouts"),
             framework,
             define_vars: Default::default(),
+            public_env_vars: Default::default(),
             tsconfig_paths: Default::default(),
             external: Vec::new(),
             main_fields: Vec::new(),
+            extra_loader_args: Vec::new(),
             outdir,
             mode,
             minify: false,
@@ -887,6 +900,30 @@ pub const ESBUILD_LOADER_ARGS: &[&str] = &[
     "--loader:.css=empty",
     "--loader:.module.css=js",
 ];
+
+fn esbuild_loader_args(input: &BundlerInput) -> impl Iterator<Item = &str> {
+    ESBUILD_LOADER_ARGS
+        .iter()
+        .copied()
+        .chain(input.extra_loader_args.iter().map(String::as_str))
+}
+
+fn bundle_mode_define_args(mode: BundleMode) -> [String; 3] {
+    let prod = mode.is_prod();
+    let node_env = if prod { "production" } else { "development" };
+    [
+        format!("--define:import.meta.env.PROD={prod}"),
+        format!("--define:import.meta.env.DEV={}", !prod),
+        format!("--define:process.env.NODE_ENV=\"{node_env}\""),
+    ]
+}
+
+fn operator_define_args(define_vars: &BTreeMap<String, String>) -> Vec<String> {
+    define_vars
+        .iter()
+        .map(|(key, value)| format!("--define:{key}={value}"))
+        .collect()
+}
 
 /// Default release-tarball slot for the esbuild binary. Mirrors
 /// `zfb_islands::EsbuildSubprocessConfig::default`'s default — kept in
@@ -5085,7 +5122,7 @@ fn run_esbuild(
     cmd.arg("--tree-shaking=true");
     cmd.arg("--sourcemap=linked");
     cmd.arg("--log-level=warning");
-    for arg in ESBUILD_LOADER_ARGS {
+    for arg in esbuild_loader_args(input) {
         cmd.arg(arg);
     }
 
@@ -5268,12 +5305,8 @@ fn run_esbuild(
         cmd.arg(flag);
     }
 
-    // import.meta.env.{PROD,DEV} — always emitted, driven by mode.
-    let prod = input.mode.is_prod();
-    cmd.arg(format!("--define:import.meta.env.PROD={}", prod));
-    cmd.arg(format!("--define:import.meta.env.DEV={}", !prod));
-
-    // process.env.NODE_ENV — always emitted, mode-driven, framework-agnostic.
+    // Mode defines are always emitted and deliberately independent of minify.
+    // process.env.NODE_ENV is mode-driven and framework-agnostic.
     //
     // React's CJS entry (`react`, `react-dom/server`) reads
     // `process.env.NODE_ENV` at module-init time to pick its
@@ -5286,14 +5319,21 @@ fn run_esbuild(
     // both pipelines agree. Preact does not need it but the define is
     // harmless for Preact (esbuild just folds the unused branch away), so
     // it is not framework-gated — matching the client bundle's behaviour.
-    let node_env = if prod { "production" } else { "development" };
-    cmd.arg(format!("--define:process.env.NODE_ENV=\"{}\"", node_env));
+    for arg in bundle_mode_define_args(input.mode) {
+        cmd.arg(arg);
+    }
+
+    // Operator-authored `bundle.define` expressions are already validated by
+    // the config layer (including mode-key reservations) and remain raw.
+    for arg in operator_define_args(&input.define_vars) {
+        cmd.arg(arg);
+    }
 
     // PUBLIC_-prefixed env vars only. Anything else is dropped server-
     // side and never reaches the bundle.
     // Sort by key so the emitted `--define` args are byte-stable regardless
     // of the map's iteration order (HashMap is unordered).
-    let mut define_entries: Vec<(&String, &String)> = input.define_vars.iter().collect();
+    let mut define_entries: Vec<(&String, &String)> = input.public_env_vars.iter().collect();
     define_entries.sort_by(|a, b| a.0.cmp(b.0));
     for (k, v) in define_entries {
         if !k.starts_with("PUBLIC_") {
@@ -5854,10 +5894,12 @@ mod tests {
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             framework: Framework::Preact,
-            define_vars: HashMap::new(),
+            define_vars: BTreeMap::new(),
+            public_env_vars: HashMap::new(),
             tsconfig_paths: BTreeMap::new(),
             external: vec![],
             main_fields: Vec::new(),
+            extra_loader_args: Vec::new(),
             outdir: root.join("dist"),
             mode: BundleMode::Production,
             minify: false,
@@ -8553,10 +8595,12 @@ mod tests {
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             framework: Framework::Preact,
-            define_vars: defs,
+            define_vars: BTreeMap::new(),
+            public_env_vars: defs,
             tsconfig_paths: BTreeMap::new(),
             external: vec!["preact".into()],
             main_fields: Vec::new(),
+            extra_loader_args: Vec::new(),
             outdir: root.join("dist"),
             mode: BundleMode::Production,
             minify: false,
@@ -8987,6 +9031,58 @@ mod tests {
             "Worker bundle must keep `--loader:.mdx=jsx` so MDX modules \
              continue to be parsed as JSX; got: {:?}",
             ESBUILD_LOADER_ARGS,
+        );
+    }
+
+    #[test]
+    fn configured_loader_args_append_after_reserved_loaders_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut input = make_minimal_input(&tmp);
+        input.extra_loader_args = vec![
+            "--loader:.bin=binary".to_string(),
+            "--loader:.txt=text".to_string(),
+        ];
+
+        let args: Vec<&str> = esbuild_loader_args(&input).collect();
+        assert_eq!(&args[..ESBUILD_LOADER_ARGS.len()], ESBUILD_LOADER_ARGS);
+        assert_eq!(
+            &args[ESBUILD_LOADER_ARGS.len()..],
+            ["--loader:.bin=binary", "--loader:.txt=text"]
+        );
+    }
+
+    #[test]
+    fn bundle_mode_define_args_pin_dev_and_production_values() {
+        assert_eq!(
+            bundle_mode_define_args(BundleMode::Development),
+            [
+                "--define:import.meta.env.PROD=false".to_string(),
+                "--define:import.meta.env.DEV=true".to_string(),
+                "--define:process.env.NODE_ENV=\"development\"".to_string(),
+            ]
+        );
+        assert_eq!(
+            bundle_mode_define_args(BundleMode::Production),
+            [
+                "--define:import.meta.env.PROD=true".to_string(),
+                "--define:import.meta.env.DEV=false".to_string(),
+                "--define:process.env.NODE_ENV=\"production\"".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn operator_define_args_are_sorted_raw_and_separate_from_public_env() {
+        let define_vars = BTreeMap::from([
+            ("__ZETA__".to_string(), "{ enabled: true }".to_string()),
+            ("__ALPHA__".to_string(), "\"raw string\"".to_string()),
+        ]);
+        assert_eq!(
+            operator_define_args(&define_vars),
+            vec![
+                "--define:__ALPHA__=\"raw string\"".to_string(),
+                "--define:__ZETA__={ enabled: true }".to_string(),
+            ]
         );
     }
 

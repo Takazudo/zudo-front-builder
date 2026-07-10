@@ -39,8 +39,8 @@ pub mod scanner;
 
 pub use bundler::{
     build_production_islands_asset, bundle_link_href, island_link_href, BundleChunk, BundleConfig,
-    BundleOutput, ClientBundler, FrameworkKind, Island, IslandBundle, IslandsChunk, ModuleId,
-    PerIslandBundleOutput, ProductionIslandsAsset,
+    BundleMode, BundleOutput, ClientBundler, FrameworkKind, Island, IslandBundle, IslandsChunk,
+    ModuleId, PerIslandBundleOutput, ProductionIslandsAsset,
 };
 pub use client_scripts::{
     build_production_client_scripts, client_script_entry_name, discover_client_scripts,

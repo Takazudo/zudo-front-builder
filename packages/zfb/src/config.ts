@@ -129,6 +129,24 @@ export type BundleConfig = {
    * Mirrors `BundleConfig::external` in `crates/zfb/src/config.rs`.
    */
   external?: string[];
+
+  /**
+   * Additional esbuild loaders keyed by file extension (for example
+   * `{ ".txt": "text" }`). Only inline loaders are supported: `file` and
+   * `copy` are intentionally excluded because they emit sibling assets the
+   * client bundlers do not publish. `.css`, `.module.css`, `.mdx`, and `.md`
+   * are reserved by zfb and rejected during config validation.
+   */
+  loaders?: Record<string, "text" | "json" | "base64" | "dataurl" | "binary" | "empty">;
+
+  /**
+   * Operator-authored esbuild define substitutions. Values are raw esbuild
+   * expressions; string values must be pre-quoted JSON (for example
+   * `{ __APP_NAME__: '"my-app"' }`). The mode-owned keys
+   * `import.meta.env.PROD`, `import.meta.env.DEV`, and
+   * `process.env.NODE_ENV` are reserved and rejected at config-load time.
+   */
+  define?: Record<string, string>;
 };
 
 /**

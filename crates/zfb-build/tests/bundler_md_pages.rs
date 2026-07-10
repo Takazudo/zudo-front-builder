@@ -22,6 +22,7 @@ use zfb_test_utils::locate_esbuild;
 fn make_input(root: &std::path::Path, esbuild: PathBuf) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
+        extra_loader_args: Vec::new(),
         project_root: root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
@@ -30,7 +31,8 @@ fn make_input(root: &std::path::Path, esbuild: PathBuf) -> BundlerInput {
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework: Framework::Preact,
-        define_vars: HashMap::new(),
+        define_vars: std::collections::BTreeMap::new(),
+        public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         // Mark all bare imports external so this test doesn't need a
         // full node_modules tree next to the shadow root.

@@ -124,6 +124,7 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
     // and `node_modules_dir = Some(nm_path)` pointing at the extraction.
     let input = BundlerInput {
         main_fields: Vec::new(),
+        extra_loader_args: Vec::new(),
         project_root: root.clone(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
@@ -131,7 +132,8 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework: Framework::Preact,
-        define_vars: HashMap::new(),
+        define_vars: std::collections::BTreeMap::new(),
+        public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![],
         outdir: root.join("dist"),

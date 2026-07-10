@@ -707,12 +707,14 @@ impl BuildRunner for DefaultRunner {
         let css =
             build_default_css_payload(project_root, outdir, config, package_route_entrypoints)
                 .context("CSS emitter (DefaultRunner) failed")?;
-        let (islands, registered_marker_names) = build_default_islands_payload(
+        let (islands, registered_marker_names) = build_default_islands_payload_with_bundle_options(
             project_root,
             user_pages_dir,
             package_route_entrypoints,
             outdir,
             config.framework,
+            config.bundle.as_ref(),
+            zfb_islands::BundleMode::Production,
             &self.islands_plugin_config,
             IslandsGlobPolicy::HardError,
         )
@@ -722,6 +724,7 @@ impl BuildRunner for DefaultRunner {
             outdir,
             config.framework,
             &self.registered_client_entries,
+            config.bundle.as_ref(),
         )
         .context("client-script emitters (DefaultRunner) failed")?;
         Ok((
@@ -1710,7 +1713,33 @@ fn materialise_islands_shadow(
 /// (not `None`) when no islands were found or when the scanner failed, so
 /// the marker-check pass can still warn about rendered markers with zero
 /// registered islands.
+#[cfg(test)]
 pub(crate) fn build_default_islands_payload(
+    project_root: &Path,
+    user_pages_dir: &Path,
+    package_route_entrypoints: &[PathBuf],
+    outdir: &Path,
+    framework: crate::config::Framework,
+    plugin_config: &IslandsPluginConfig,
+    islands_glob_policy: IslandsGlobPolicy,
+) -> Result<(
+    Option<AssetEmitterPayload>,
+    std::collections::BTreeSet<String>,
+)> {
+    build_default_islands_payload_with_bundle_options(
+        project_root,
+        user_pages_dir,
+        package_route_entrypoints,
+        outdir,
+        framework,
+        None,
+        zfb_islands::BundleMode::Production,
+        plugin_config,
+        islands_glob_policy,
+    )
+}
+
+pub(crate) fn build_default_islands_payload_with_bundle_options(
     // The project root — used for esbuild's working dir (tsconfig
     // discovery, entry-tempfile placement) and the node_modules walk.
     project_root: &Path,
@@ -1737,6 +1766,8 @@ pub(crate) fn build_default_islands_payload(
     package_route_entrypoints: &[PathBuf],
     outdir: &Path,
     framework: crate::config::Framework,
+    bundle_config: Option<&crate::config::BundleConfig>,
+    bundle_mode: zfb_islands::BundleMode,
     plugin_config: &IslandsPluginConfig,
     // Issue #1387 — see [`IslandsGlobPolicy`]: `zfb build` passes
     // `HardError`, `zfb dev`'s `rebundle_islands` passes `WarnAndSkip`.
@@ -2032,15 +2063,20 @@ pub(crate) fn build_default_islands_payload(
         crate::config::Framework::React => zfb_islands::FrameworkKind::React,
     }
     .jsx_import_source();
-    let bundle_cfg = BundleConfig::production()
-        .with_outdir(outdir.to_path_buf())
-        .with_jsx_import_source(islands_jsx_import_source)
-        .with_client_router(scan_meta.uses_client_router)
-        // Issue #1413: the shadow carries the exact symlink-mode decision.
-        // Most shadows need `--preserve-symlinks`; copy-mode shadows use real
-        // source copies and deliberately omit it to mirror the SSR bundler.
-        // `false` on the no-shadow fast path keeps byte-identical argv.
-        .with_preserve_symlinks(islands_preserve_symlinks);
+    let bundle_cfg = match bundle_mode {
+        zfb_islands::BundleMode::Production => BundleConfig::production(),
+        zfb_islands::BundleMode::Development => BundleConfig::dev(),
+    }
+    .with_outdir(outdir.to_path_buf())
+    .with_jsx_import_source(islands_jsx_import_source)
+    .with_client_router(scan_meta.uses_client_router)
+    .with_loaders(crate::config::resolve_bundle_loaders(bundle_config))
+    .with_define(crate::config::resolve_bundle_define(bundle_config))
+    // Issue #1413: the shadow carries the exact symlink-mode decision.
+    // Most shadows need `--preserve-symlinks`; copy-mode shadows use real
+    // source copies and deliberately omit it to mirror the SSR bundler.
+    // `false` on the no-shadow fast path keeps byte-identical argv.
+    .with_preserve_symlinks(islands_preserve_symlinks);
 
     // Issue #1404: remap island `source_path`s into the shadow ONLY for the
     // bundle input, so the synthesized esbuild entry imports the in-shadow
@@ -2123,6 +2159,7 @@ pub(crate) fn build_default_client_scripts_payloads(
     outdir: &Path,
     framework: crate::config::Framework,
     registered: &zfb_build::ClientEntryList,
+    bundle_config: Option<&crate::config::BundleConfig>,
 ) -> Result<Vec<AssetEmitterPayload>> {
     let (mut entries, collisions) =
         discover_client_scripts(project_root).context("client-script discovery failed")?;
@@ -2224,7 +2261,9 @@ pub(crate) fn build_default_client_scripts_payloads(
     .jsx_import_source();
     let bundle_cfg = BundleConfig::production()
         .with_outdir(outdir.to_path_buf())
-        .with_jsx_import_source(client_scripts_jsx_import_source);
+        .with_jsx_import_source(client_scripts_jsx_import_source)
+        .with_loaders(crate::config::resolve_bundle_loaders(bundle_config))
+        .with_define(crate::config::resolve_bundle_define(bundle_config));
 
     let assets = build_production_client_scripts(&bundler, &entries, &bundle_cfg)
         .context("client-script bundler failed")?;
@@ -2269,6 +2308,7 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     // isolated `.zfb-build/dev-assets` root, NOT the build-shared `dist/`).
     assets_root: &Path,
     framework: crate::config::Framework,
+    bundle_config: Option<&crate::config::BundleConfig>,
     prev_entry_names: &std::collections::HashSet<String>,
     registered: &zfb_build::ClientEntryList,
 ) -> Result<(bool, std::collections::HashSet<String>)> {
@@ -2385,7 +2425,9 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     .jsx_import_source();
     let bundle_cfg = BundleConfig::dev()
         .with_outdir(assets_root.to_path_buf())
-        .with_jsx_import_source(jsx_import_source);
+        .with_jsx_import_source(jsx_import_source)
+        .with_loaders(crate::config::resolve_bundle_loaders(bundle_config))
+        .with_define(crate::config::resolve_bundle_define(bundle_config));
 
     if let Some(parent) = client_dir.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
