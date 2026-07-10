@@ -107,9 +107,10 @@ pub struct DevArgs {
 /// Arguments for `zfb build`.
 #[derive(Debug, Args)]
 pub struct BuildArgs {
-    /// Output directory for the production build.
-    #[arg(long, default_value = "dist")]
-    pub outdir: PathBuf,
+    /// Output directory for the production build. Falls back to `outDir`
+    /// from `zfb.config.*`, then to `dist`.
+    #[arg(long)]
+    pub outdir: Option<PathBuf>,
 
     /// Enable production HTML minification for this build.
     #[arg(
@@ -165,11 +166,9 @@ impl BuildMinifyHtml {
 
 /// Arguments for `zfb preview`.
 ///
-/// `port` and `host` are `Option<_>` for the same reason as the `DevArgs`
-/// fields — see the doc-comment there — so the command body can layer
-/// "CLI > config > built-in default" cleanly. `outdir` keeps a clap default
-/// because the preview command does not consult config for it today (config's
-/// `outDir` is already wired through the build command).
+/// `port`, `host`, and `outdir` are `Option<_>` for the same reason as the
+/// `DevArgs` fields — see the doc-comment there — so the command body can
+/// layer "CLI > config > built-in default" cleanly.
 #[derive(Debug, Args)]
 pub struct PreviewArgs {
     /// Port to bind the preview server to. Falls back to `port` from
@@ -186,12 +185,13 @@ pub struct PreviewArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "0.0.0.0")]
     pub host: Option<String>,
 
-    /// Directory to serve the previously built artifacts from. In adapter
-    /// mode this is only an existence pre-check — `wrangler dev` serves the
-    /// directories named in the project's wrangler config, and a non-default
-    /// value here triggers a warning to that effect.
-    #[arg(long, default_value = "dist")]
-    pub outdir: PathBuf,
+    /// Directory to serve the previously built artifacts from. Falls back to
+    /// `outDir` from `zfb.config.*`, then to `dist`. In adapter mode this is
+    /// only an existence pre-check — `wrangler dev` serves the directories
+    /// named in the project's wrangler config, and a non-default selected
+    /// value triggers a warning to that effect.
+    #[arg(long)]
+    pub outdir: Option<PathBuf>,
 }
 
 /// Arguments for `zfb check`.
@@ -230,6 +230,20 @@ mod tests {
     fn preview_host(argv: &[&str]) -> Option<String> {
         match Cli::try_parse_from(argv).expect("parse").command {
             Command::Preview(args) => args.host,
+            other => panic!("expected preview subcommand, got {other:?}"),
+        }
+    }
+
+    fn build_outdir(argv: &[&str]) -> Option<PathBuf> {
+        match Cli::try_parse_from(argv).expect("parse").command {
+            Command::Build(args) => args.outdir,
+            other => panic!("expected build subcommand, got {other:?}"),
+        }
+    }
+
+    fn preview_outdir(argv: &[&str]) -> Option<PathBuf> {
+        match Cli::try_parse_from(argv).expect("parse").command {
+            Command::Preview(args) => args.outdir,
             other => panic!("expected preview subcommand, got {other:?}"),
         }
     }
@@ -280,6 +294,32 @@ mod tests {
         assert_eq!(
             preview_host(&["zfb", "preview", "--host", "10.0.0.1"]),
             Some("10.0.0.1".into())
+        );
+    }
+
+    #[test]
+    fn build_outdir_absent_is_none() {
+        assert_eq!(build_outdir(&["zfb", "build"]), None);
+    }
+
+    #[test]
+    fn build_outdir_explicit_value_is_preserved() {
+        assert_eq!(
+            build_outdir(&["zfb", "build", "--outdir", "custom"]),
+            Some(PathBuf::from("custom"))
+        );
+    }
+
+    #[test]
+    fn preview_outdir_absent_is_none() {
+        assert_eq!(preview_outdir(&["zfb", "preview"]), None);
+    }
+
+    #[test]
+    fn preview_outdir_explicit_value_is_preserved() {
+        assert_eq!(
+            preview_outdir(&["zfb", "preview", "--outdir", "custom"]),
+            Some(PathBuf::from("custom"))
         );
     }
 

@@ -143,4 +143,4 @@ export default function Raw() {
 - `crates/zfb-content/src/frontmatter.rs` — 統一エクストラクタのエントリポイント。
 - `crates/zfb-content/src/tsx_frontmatter.rs` — TSX 側の静的ウォーカー（エラーはファイル + 行:桁を指し示します）。
 - `crates/zfb-router/src/route.rs` — 出力拡張子の優先順位のうち、ファイル名規約の側。
-- `crates/zfb-render/src/meta.rs` — `derive_output_extension` / `derive_content_type` が最終的なファイル名にルールを適用します。
+- `crates/zfb-server/src/routes.rs` — `content_type_for_extension` がサーバーで使用する拡張子から `Content-Type` への対応表を定義します。

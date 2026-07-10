@@ -68,11 +68,11 @@ npx zfb build
 npx zfb preview
 ```
 
-`zfb build` は CLI の `--outdir` 値（デフォルトは `dist/`）へ書き出し、ファイルシステムルーターでルートを列挙し、静的ルートごとに 1 つの HTML ファイルを書き出します。build コマンドはサーバーを起動しないため、`--port` フラグはありません。
+`zfb build` は CLI の `--outdir` → config の `outDir` → 組み込みデフォルトの `dist/` という順で選んだディレクトリへ書き出し、ファイルシステムルーターでルートを列挙し、静的ルートごとに 1 つの HTML ファイルを書き出します。build コマンドはサーバーを起動しないため、`--port` フラグはありません。
 
-`zfb preview` は自身の CLI `--outdir` 値（こちらもデフォルトは `dist/`）を、デフォルトでポート `4321` の HTTP で配信します。preview の `--port` フラグは設定の `port` より優先されます。どちらも設定されていない場合、preview は組み込みデフォルトを使います。
+`zfb preview` も同じ出力ディレクトリの優先順位を使い、選択されたディレクトリを HTTP で配信します。preview の `--port` フラグは設定の `port` より優先されます。どちらも設定されていない場合、preview は組み込みデフォルトの `4321` を使います。
 
-現時点で `zfb.config.*` の `outDir` は `zfb dev` では尊重されますが、`zfb build` と `zfb preview` は読み取りません。デフォルト以外のディレクトリをビルドまたは配信する場合は、それらのコマンドに `--outdir` を渡してください。この分割に関する独立した判断は [issue #1473](https://github.com/Takazudo/zudo-front-builder/issues/1473) で追跡されています。
+3 つのコマンドはすべて `zfb.config.*` の `outDir` を尊重します。build と preview では、明示的な `--outdir` が常に設定値より優先されます。
 
 ## 動作するサンプル
 

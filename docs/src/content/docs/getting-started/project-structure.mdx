@@ -90,7 +90,7 @@ See [Static Assets](../concepts/static-assets.mdx) for the full reference, inclu
 
 The config file uses a camelCase schema. Common keys include `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`), `framework` (`"preact"` or `"react"`, default `"preact"`), `collections`, `tailwind`, and `plugins`. This is not an exhaustive list — see [defineConfig](../api/define-config.mdx) for the full schema reference.
 
-`outDir` is currently honored by `zfb dev` only. `zfb build` and `zfb preview` choose their output directory from the `--outdir` flag, defaulting to `dist/`.
+`outDir` is honored by `zfb dev`, `zfb build`, and `zfb preview`. For build and preview, CLI `--outdir` overrides config `outDir`; the built-in fallback is `dist/`.
 
 The template scaffolds `zfb.config.json`. If you rename it to `zfb.config.ts`, zfb loads it via the bundled esbuild binary and you get full TypeScript types and IDE completion — the schema is identical in both formats.
 

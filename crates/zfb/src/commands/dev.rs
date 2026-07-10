@@ -269,6 +269,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         .await
         .context("failed to load project configuration")?;
 
+    // Configured `outDir` is dev's read-only production seed; live dev HTML
+    // and assets use the isolated scratch roots established below.
     let dist_root = resolve_under_root(&project_root, &cfg.out_dir);
     let public_root = resolve_under_root(&project_root, &cfg.public_dir);
 
@@ -392,8 +394,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     .await?;
 
     // preBuild runs before devMiddleware registration and the bundler.
-    // Dev-mode difference: out_dir is `dist_root` (the dev scratch dir),
-    // not the final `outdir` that build.rs uses.
+    // Dev exposes the configured production root to plugin hooks for API
+    // parity, while zfb's own live render outputs use isolated scratch roots
+    // and treat `dist_root` only as a prebuilt seed.
     if let Some(h) = plugin_host.as_ref() {
         let ctx = zfb_build::BuildHookContext {
             project_root: project_root.clone(),

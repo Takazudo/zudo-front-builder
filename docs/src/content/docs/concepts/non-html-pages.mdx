@@ -83,9 +83,9 @@ pages/about.tsx + extension="json"      → .json (frontmatter override)
 
 The rule is enforced jointly by `zfb-content::tsx_frontmatter`
 (extracts the `extension` literal) and `zfb-router::route::Route`
-(parses the filename convention). A small helper —
-`zfb_render::meta::derive_output_extension(frontmatter, route)` —
-applies the precedence at the call site.
+(parses the filename convention). Callers pass the extracted override
+to `Route::output_filename`, which applies the precedence when it
+constructs the output filename.
 
 ## `Content-Type` metadata
 

@@ -67,11 +67,11 @@ npx zfb build
 npx zfb preview
 ```
 
-`zfb build` writes to its CLI `--outdir` value, defaulting to `dist/`, then enumerates routes via the file-system router and writes one HTML file per static route. The build command has no `--port` flag because it does not start a server.
+`zfb build` writes to the directory selected by CLI `--outdir` → config `outDir` → the built-in `dist/` default, then enumerates routes via the file-system router and writes one HTML file per static route. The build command has no `--port` flag because it does not start a server.
 
-`zfb preview` serves its own CLI `--outdir` value, also defaulting to `dist/`, over HTTP on port `4321` by default. Preview's `--port` flag wins over config `port`; if neither is set, preview uses the built-in default.
+`zfb preview` uses the same output-directory precedence and serves the selected directory over HTTP. Preview's `--port` flag wins over config `port`; if neither is set, preview uses the built-in `4321` default.
 
-Today `outDir` in `zfb.config.*` is honored by `zfb dev`, but `zfb build` and `zfb preview` do not read it; pass `--outdir` to those commands when you build or serve a non-default directory. The standalone decision about this split is tracked in [issue #1473](https://github.com/Takazudo/zudo-front-builder/issues/1473).
+All three commands honor `outDir` in `zfb.config.*`. For build and preview, an explicit `--outdir` always overrides the configured value.
 
 ## A working example
 

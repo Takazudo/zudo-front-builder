@@ -109,7 +109,7 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--outdir` | path | `dist` | Output directory for the production build. |
+| `--outdir` | path | config / `dist` | Output directory for the production build. Overrides config `outDir`; when both are absent, uses `dist`. |
 | `--minify-html` | boolean flag | config/default | Enable production HTML minification for this build. Overrides `minifyHtml: false` or an omitted config value. |
 | `--no-minify-html` | boolean flag | config/default | Disable production HTML minification for this build. Overrides `minifyHtml: true` from config or presets. |
 
@@ -132,7 +132,7 @@ Serve a previously built site locally. Run `zfb build` first.
 zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 ```
 
-When `zfb.config.json`'s `adapter` field names a supported adapter (e.g. `@takazudo/zfb-adapter-cloudflare`), `zfb preview` hands off to `wrangler dev` instead of zfb's own static server — `--outdir` then only pre-checks that the directory exists, since wrangler's own config controls what it actually serves. See [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx).
+When `zfb.config.json`'s `adapter` field names a supported adapter (e.g. `@takazudo/zfb-adapter-cloudflare`), `zfb preview` hands off to `wrangler dev` instead of zfb's own static server — the output directory selected from `--outdir` or config `outDir` then only pre-checks that the directory exists, since wrangler's own config controls what it actually serves. See [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx).
 
 Adapter preview runs a pre-flight `pnpm exec wrangler --version` check before handing off. Set `ZFB_SKIP_WRANGLER_VERSION_CHECK=1` only as a temporary escape hatch when that pin is being updated.
 
@@ -142,9 +142,11 @@ Adapter preview runs a pre-flight `pnpm exec wrangler --version` check before ha
 |---|---|---|---|
 | `--port` | u16 | `4321`* | Port to bind the preview server to. |
 | `--host` | string | `localhost`* | Host interface to bind to. Bare `--host` (no value) is a shortcut for `0.0.0.0`. |
-| `--outdir` | path | `dist` | Directory to serve the built artifacts from. |
+| `--outdir` | path | config / `dist` | Directory to serve the built artifacts from. Overrides config `outDir`; when both are absent, uses `dist`. |
 
 \* Falls back through: CLI flag → `port`/`host` in `zfb.config.json` → built-in default.
+
+Output-directory precedence is likewise CLI `--outdir` → config `outDir` → built-in `dist`.
 
 ### Example
 
