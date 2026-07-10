@@ -14,8 +14,10 @@ blog conventions, theming) that live outside the engine.
 </Info>
 
 zfb is a static site **engine**. It scans `pages/`, walks content
-collections, runs an MDX pipeline, evaluates TSX, threads page meta
-through layouts, and writes files to disk. That's the engine.
+collections, runs an MDX pipeline, evaluates TSX, reads page-module
+exports such as `paths()`, `getStaticProps()`, `prerender`,
+`contentType`, and `headings`, and writes files to disk. That's the
+engine.
 
 A **framework** — like a future zudo-doc-v2, or a blog kit, or
 whatever someone publishes downstream — is what turns a pile of engine
@@ -70,51 +72,44 @@ framework you depend on) wire it up.
 The principle: if the answer to *"would two frameworks built on zfb do
 this differently?"* is yes, it belongs in a framework, not in zfb.
 
-## A small example: a layout consumes the engine's `meta`
+## A small example: a page module passes head data as props
 
-The engine threads page metadata through `PageMeta`. Layouts — which
-are *your* code, not the engine's — read `meta` and project it into
-the `<head>`. Here's a tiny default layout:
+Head tags and layout composition are framework concerns. zfb does not
+ship an `export const meta` page-module contract. Instead, use the
+engine's data-loading exports to pass whatever a framework/layout needs,
+then render `<head>` in ordinary component code.
 
 ```tsx
-// layouts/default.tsx
-export default function DefaultLayout({ meta, children }) {
-  const og = meta?.openGraph ?? {};
+// pages/about.tsx
+export function getStaticProps() {
+  return {
+    props: {
+      title: "About",
+      description: "Who we are.",
+    },
+  };
+}
+
+export default function AboutPage({ title, description }) {
   return (
-    <html lang={meta?.lang ?? "en"}>
+    <html lang="en">
       <head>
-        <title>{meta?.title ?? "Untitled"}</title>
-        {meta?.description && (
-          <meta name="description" content={meta.description} />
-        )}
-        {og.image && <meta property="og:image" content={og.image} />}
+        <title>{title}</title>
+        <meta name="description" content={description} />
       </head>
-      <body>{children}</body>
+      <body>
+        <h2>{title}</h2>
+      </body>
     </html>
   );
 }
 ```
 
-The page itself just declares meta:
-
-```tsx
-// pages/about.tsx
-export const meta = {
-  title: "About",
-  description: "Who we are.",
-  openGraph: { image: "/og/about.png" },
-};
-
-export default function AboutPage() {
-  return <h2>About us</h2>;
-}
-```
-
 Notice what the engine does and doesn't do here. The engine parses
-`meta`, resolves the layout, and wraps your page output in it. Whether
-to render `og:image`, what fallback to use, how to format the title —
-all framework-level decisions. zfb stops at "give the layout the
-typed `PageMeta`."
+`getStaticProps()`, calls the page component with those props, and
+renders the result. Whether to render `og:image`, what fallback to use,
+how to format the title, and where layout components live are
+framework-level decisions.
 
 ## Opt-in Markdown extras
 
@@ -136,5 +131,5 @@ See [Markdown Features](../markdown-features/index.mdx) for the full list.
 
 - For each engine primitive, the linked concept page above.
 - For the Markdown extras catalog, [Markdown Features](../markdown-features/index.mdx).
-- For the head/meta surface specifically, [`meta` export](../api/meta-export.mdx)
-  documents which fields are first-class and how `extra` carries the rest.
+- For the page-module surface specifically, [Page module exports](../api/meta-export.mdx)
+  documents the named exports zfb reads today.

@@ -24,7 +24,7 @@ export default function Page() {
 }
 ```
 
-At SSR time the `<Island>` wrapper emits a `<div data-zfb-island="Counter" data-when="visible">` marker with the server-rendered child inside. The client runtime (`@takazudo/zfb-runtime`) queries these markers and mounts the component when the `when` condition fires.
+At SSR time the `<Island>` wrapper emits a `<div data-zfb-island="Counter" data-when="visible">` marker with the server-rendered child inside. The generated hydration bootstrap imports `mountIslands` from `"@takazudo/zfb/runtime"`, queries these markers, and mounts the component when the `when` condition fires.
 
 ## IslandProps
 
@@ -140,6 +140,9 @@ The following are exported from `"@takazudo/zfb"` alongside `Island`:
 - `HYDRATE_MARKER_ATTR` — the `data-zfb-island` attribute name.
 - `SKIP_SSR_MARKER_ATTR` — the `data-zfb-island-skip-ssr` attribute name.
 - `ANONYMOUS_COMPONENT_NAME` — fallback name used when a wrapped child's identity cannot be determined.
+- `DEFAULT_WHEN` — the default hydration strategy (`"load"`).
+- `WHEN_VALUES` — the readonly list of valid hydration strategies: `"visible"`, `"idle"`, `"load"`, and `"media"`.
+- `isWhen(value: unknown): value is When` — type guard for hydration strategy values.
 - `resolveWhen(when: unknown): When` — validates and normalises a `when` value. Unknown inputs fall back to `"load"` (with a warning in development).
 
 ## "use client" directive

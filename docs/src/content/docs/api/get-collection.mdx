@@ -10,13 +10,36 @@ sidebar_position: 2
 getCollection<T = Record<string, unknown>>(name: string): CollectionEntry<T>[]
 ```
 
-Call `getCollection` from a page module to load every entry in a named collection. The collection must be declared in your `zfb.config` under `collections`. The function is synchronous — it returns a plain array, not a Promise. The TypeScript generic `T` is a type hint only; runtime schema validation happens at build time and via `zfb check` in the Rust pipeline, not inside the `getCollection` call itself.
+Call `getCollection` from a page module to load every entry in a named collection. The collection must be declared in your `zfb.config` under `collections`. The function is synchronous — it returns a plain array, not a Promise. The TypeScript generic `T` is a type hint only; schemas are not checked inside `getCollection` or during `zfb build`.
+
+Schema validation runs in `zfb check`, not in `zfb build`. The build snapshots collection entries and preserves their parsed frontmatter, but schema violations are enforced by the check command so CI should run `zfb check` when schemas matter.
+
+## `getEntry`
+
+```ts
+getEntry<T = Record<string, unknown>>(
+  name: string,
+  slug: string,
+): CollectionEntry<T> | undefined
+```
+
+Use `getEntry(name, slug)` to load one entry from a collection. It shares the same snapshot/filesystem resolution path as `getCollection`, returning `undefined` when the collection has no matching slug.
+
+```tsx
+import { getEntry } from "@takazudo/zfb/content";
+
+export default function FeaturedPost() {
+  const post = getEntry<{ title: string }>("blog", "hello-zfb");
+  if (!post) return <p>Post not found</p>;
+  return <post.Content />;
+}
+```
 
 ## CollectionEntry shape
 
 Each entry has the following fields:
 
-- `slug: string` — the filename without its `.md` extension, normalized to forward-slash paths. Nested files produce path-based slugs (e.g. `"2024/hello"`).
+- `slug: string` — the collection-relative path with one trailing `.md`, `.mdx`, or `.tsx` extension stripped, normalized to forward-slash paths. Nested files produce path-based slugs (e.g. `"2024/hello"`).
 - `data: T` — the parsed frontmatter, typed by the generic parameter.
 - `body: string` — the raw markdown body with frontmatter stripped.
 - `module_specifier: string` — stable bridge key in the form `mdx://<collection>/<slug>`. Used internally by the renderer; pass to `Content` lookup if building a custom bridge.
@@ -43,7 +66,7 @@ import { defaultComponents } from "@takazudo/zfb";
 A typical use case is rendering a list of blog posts on an index page.
 
 ```tsx
-import { getCollection } from "zfb/content";
+import { getCollection } from "@takazudo/zfb/content";
 
 export default function BlogIndex() {
   const posts = getCollection<{ title: string; date: string }>("blog");
@@ -60,4 +83,4 @@ export default function BlogIndex() {
 }
 ```
 
-Note that `getCollection` returns synchronously — no `await` needed. For dynamic per-entry pages, combine `getCollection` with a `paths()` export — see [paginate](./paginate.mdx) for the related pattern.
+Note that `getCollection` and `getEntry` return synchronously — no `await` needed. For dynamic per-entry pages, combine `getCollection` with a `paths()` export — see [paginate](./paginate.mdx) for the related pattern.
