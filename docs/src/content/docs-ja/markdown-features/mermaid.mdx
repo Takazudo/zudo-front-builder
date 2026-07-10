@@ -4,7 +4,7 @@ description: Mermaid のフローチャートやダイアグラムを Markdown �
 tier: Opt-in
 ---
 
-`mermaid` 機能は、フェンス付きコードブロックから [Mermaid](https://mermaid.js.org/) のダイアグラムをビルド時に描画します。
+`mermaid` 機能は、[Mermaid](https://mermaid.js.org/) のフェンス付きコードブロックをビルド時にマークします。zfb はコードブロックを `<div class="mermaid">` に置き換えます。図の描画は、Mermaid runtime がその要素を処理するときにクライアントサイドで行われます。
 
 ## 有効化
 
@@ -33,13 +33,13 @@ graph TD;
 ```
 ````
 
-プラグインは `<pre><code class="language-mermaid">` ブロックを次のように置き換えます:
+ビルド時に、プラグインは `<pre><code class="language-mermaid">` ブロックを次のように置き換えます:
 
 ```html
 <div class="mermaid" data-mermaid="">graph TD; ...</div>
 ```
 
-`data-mermaid` 属性は、クライアントサイドの Mermaid レンダラーにこのブロックを処理するよう知らせます。生のダイアグラムソースはそのまま埋め込まれる（山括弧などの文字は HTML エスケープされません）ため、レンダラーは無変更の Mermaid DSL を受け取ります。
+`data-mermaid` 属性と `mermaid` クラスは、クライアントサイドの Mermaid レンダラーにこのブロックを処理するよう知らせます。生のダイアグラムソースはそのまま埋め込まれる（山括弧などの文字は HTML エスケープされません）ため、レンダラーは無変更の Mermaid DSL を受け取ります。
 
 ## ビジターの順序
 

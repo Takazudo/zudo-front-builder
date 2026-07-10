@@ -1,14 +1,15 @@
 ---
 title: Markdown 機能
-description: zfb の Markdown パイプラインが提供するすべての機能 — コア（常時有効）とオプトイン（zfb.config.ts で有効化）。
+description: zfb の Markdown パイプラインが提供するすべての機能と設定面。Core パイプラインの挙動と opt-in 機能を含みます。
 sidebar_position: 0
 ---
 
-zfb の Markdown パイプラインは階層構造になっています。**コア**機能の一群は
-すべてのコンテンツコレクションに対して無条件で動作し、見出しアンカー、
-サーバーサイドのシンタックスハイライト、CJK フレンドリーな強調などを提供します。
-その上に、**オプトイン**機能のカタログがあり、`zfb.config.ts` の
-`markdown.features.*` で一つずつ有効化できます。
+zfb の Markdown パイプラインは階層構造になっています。**Core** 機能の一群は
+エンジンのメイン Markdown パイプライン / config surface の中で動作し、見出しアンカー、
+サーバーサイドのシンタックスハイライト、CJK フレンドリーな処理などを提供します。
+Core の行には常時有効なものもあれば、トップレベルまたは `markdown.*` config knob として
+Core パイプラインに実装されているものもあります。下の表が、各行のデフォルトと設定キーに
+ついての authoritative な一覧です。
 
 このページは全体の地図です。各機能には、使用例・設定キー・順序に関する
 注意点をまとめた専用ページがあります。
@@ -27,21 +28,23 @@ zfb-content          — コア機能はここにある。常にコンパイル�
 
 ## ティアの規約
 
-- **コア** — すべてのビルドで有効。設定キーはなし。`zfb-content` に存在する。
-- **オプトイン** — デフォルトでは無効。`zfb.config.ts` の
-  `markdown.features.*` で有効化する。`zfb-md-extras` に存在する。
+- **Core** — `zfb-content` またはトップレベルの Markdown config surface に実装されています。Core は常に「設定不可」を意味するわけではありません。設定キーとデフォルトは表で確認してください。
+- **Opt-in** — config で有効化されない限り無効です。opt-in feature entry の多くは `markdown.features.*` 配下にありますが、`stripMdExt` と `markdown.hardBreaks` は opt-in のトップレベルオプションです。
 
 各機能ページでは、タイトル付近に `Core` または `Opt-in` のバッジが表示されます。
 
-## オプトイン機能を有効化する
+## 設定の形
 
 ```ts title="zfb.config.ts"
 import { defineConfig } from "zfb/config";
 
 export default defineConfig({
+  stripMdExt: true,
   markdown: {
+    hardBreaks: true,
     features: {
       mermaid: true,
+      githubAutolinks: { repo: "owner/repo" },
       directives: {
         note: "Note",
         tip: "Tip",
@@ -51,40 +54,34 @@ export default defineConfig({
 });
 ```
 
-`true`（デフォルトを使用）または設定オブジェクト（特定のオプションを上書き）を
-渡します。キーを省略するとその機能はオフになり、余分なバイトは一切出力されません。
+Boolean shorthand は**普遍ではありません**。値の形に `boolean` を含む行でだけ使えます。`githubAutolinks`、`codeEnrichment`、`tocExport`、`imageDimensions`、`linkValidation`、`transclude`、`headingIds` のような object-only の行には object が必要です。未知のキーは config load 時に拒否されます。
 
-## コア機能
+## 機能マップ
 
-これらの常時有効なプラグインは、`zfb-content` のデフォルトパイプラインの
-一部として同梱されています。
-
-- [CJK フレンドリーな強調](./cjk-friendly.mdx) — CJK の表意文字やかなに隣接する太字／斜体を再トークン化する。
-- [見出しリンク](./heading-links.mdx) — すべての見出しにスラッグ化した `id` 属性と自己参照アンカーリンクを付与する。
-- [コードブロックのタイトル](./code-title.mdx) — `title="…"` からフェンス付きコードブロックの上にファイル名ラベルを描画する。
-- [外部リンク](./external-links.mdx) — 外部リンクに `target` と `rel` 属性を付与する（設定可能）。
-- [リンク解決](./resolve-links.mdx) — コンテンツのソースマップを使って内部リンクの参照先を書き換える。
-- [.md 拡張子の除去](./strip-md-ext.mdx) — 内部リンクの href から `.md`／`.mdx` の接尾辞を取り除く。
-- [シンタックスハイライト](./syntax-highlighting.mdx) — syntect によるサーバーサイドハイライト。常時有効でテーマは設定可能。
-- [ディレクティブレジストリ](./directives-registry.mdx) — `:::name`／`::name`／`:name` のディレクティブ構文を JSX コンポーネントへマッピングする。
-
-## オプトイン機能
-
-それぞれ `markdown.features.*` で有効化します。すべて `zfb-md-extras` に存在します。
-
-- [ディレクティブ](./directives.mdx) — `:::name`／`::name`／`:name` のディレクティブ構文を独自の JSX コンポーネントにマッピングして登録する（デフォルトはゼロ。語彙はあなたが用意する）。
-- [Mermaid ダイアグラム](./mermaid.mdx) — フェンス付きコードブロックから Mermaid のフローチャートを描画する。
-- [見出しマーカー TOC](./heading-marker-toc.mdx) — 指定した見出しの後に目次を自動挿入する。
-- [GitHub アラート](./github-alerts.mdx) — `> [!NOTE]`／`> [!WARNING]` の引用ブロックをスタイル付きコンポーネントとして描画する。
-- [読了時間](./reading-time.mdx) — 推定読了時間を計算してフロントマターに注入する。
-- [GitHub オートリンク](./github-autolinks.mdx) — GitHub の issue／PR／コミット参照（`#123`、`org/repo#456`、`abc1234`）を自動的にリンクする。
-- [コードブロックのエンリッチメント](./code-enrichment.mdx) — フェンス付きコードブロックに diff マーカーと行単位のハイライトを追加する。
-- [コードタブ](./code-tabs.mdx) — 連続するフェンス付きコードブロックをタブ切り替え式にまとめる。
-- [ルビ注釈](./ruby.mdx) — `{これは}^{これ}`（キャレット、推奨）または `{漢字|かんじ}`（パイプ、レガシーエイリアス）構文を HTML の `<ruby>` 要素として描画する。
-- [TOC エクスポート](./toc-export.mdx) — 構造化された見出しツリーをコンパイル済みの JSX モジュールにエクスポートし、フレームワーク側で描画できるようにする。
-- [画像サイズ](./image-dimensions.mdx) — 実際のファイルから `<img>` 要素に `width` と `height` 属性を注入する。
-- [リンク検証](./link-validation.mdx) — デフォルトでは壊れた内部リンクを警告する。`failOnBroken: true` でビルドエラーにする。
-- [トランスクルージョン](./transclude.mdx) — `:::include` ディレクティブを使って別ファイルの内容をインライン展開する。
+| Feature | Tier | Config key | Value shape | Default / gating |
+|---|---|---|---|---|
+| [CJK フレンドリーな強調](./cjk-friendly.mdx) | Core | `markdown.cjkFriendly` | `boolean` | `true`; opt out するには `false`。 |
+| [見出しリンク](./heading-links.mdx) | Core | `markdown.features.headingIds` | `{ strategy?: "flat" \| "hierarchical" }` | Plugin は常に有効。デフォルト strategy は `"flat"`。 |
+| [コードブロックのタイトル](./code-title.mdx) | Core | none | n/a | 常に有効。 |
+| [外部リンク](./external-links.mdx) | Core | `markdown.externalLinks` | `{ target?: string; rel?: string[] }` | 指定されない限り off。 |
+| [リンク解決](./resolve-links.mdx) | Core | `resolveMarkdownLinks` | `{ enabled?: boolean; docsDir?: string; dirs?: { dir: string; routePrefix: string }[]; onBrokenLinks?: "warn" \| "error" \| "ignore" }` | `enabled: true` でない限り off。 |
+| [.md 拡張子の除去](./strip-md-ext.mdx) | Opt-in | `stripMdExt` | `boolean` | `false`; `true` のとき `.md` / `.mdx` を除去して `/` を付ける。 |
+| [ハード改行](./hard-breaks.mdx) | Opt-in | `markdown.hardBreaks` | `boolean` | `false`; `true` のとき soft line break が `<br>` になる。 |
+| [シンタックスハイライト](./syntax-highlighting.mdx) | Core | `codeHighlight` | `{ theme?: string; themesDir?: string; themeLight?: string; themeDark?: string }` | デフォルトの syntect テーマで有効。 |
+| [ディレクティブレジストリ](./directives-registry.mdx) | Core primitive | `markdown.features.directives` or Rust API | `Record<string, DirectiveSpec>` | レジストリ visitor は指定されたときだけ実行。デフォルト名はゼロ。 |
+| [ディレクティブ](./directives.mdx) | Opt-in | `markdown.features.directives` | `Record<string, string \| { component: string; kind?: "container" \| "leaf" \| "text"; titleFromLabel?: boolean }>` | 省略時は off。`{}` は空のレジストリを配線する。 |
+| [Mermaid ダイアグラム](./mermaid.mdx) | Opt-in | `markdown.features.mermaid` | `boolean \| {}` | 省略または `false` で off。ブロックを `<div class="mermaid">` としてマークする。 |
+| [見出しマーカー TOC](./heading-marker-toc.mdx) | Opt-in | `markdown.features.headingMarkerToc` | `boolean \| { heading?: string; maxDepth?: number }` | 省略または `false` で off。 |
+| [GitHub アラート](./github-alerts.mdx) | Opt-in | `markdown.features.githubAlerts` | `boolean \| {}` | 省略または `false` で off。 |
+| [読了時間](./reading-time.mdx) | Opt-in | `markdown.features.readingTime` | `boolean \| { wpm?: number }` | 省略または `false` で off。`export const readingTimeMinutes` を出力。 |
+| [GitHub オートリンク](./github-autolinks.mdx) | Opt-in | `markdown.features.githubAutolinks` | `{ repo: string }` | 省略時は off。`repo` 欠落は build-blocking config error。 |
+| [コードブロックのエンリッチメント](./code-enrichment.mdx) | Opt-in | `markdown.features.codeEnrichment` | `{ diffMarkers?: boolean; lineHighlight?: boolean }` | 省略時は off。object form で有効化され、両 subfeature はデフォルトで on。 |
+| [コードタブ](./code-tabs.mdx) | Opt-in | `markdown.features.codeTabs` | `boolean \| {}` | 省略または `false` で off。 |
+| [ルビ注釈](./ruby.mdx) | Opt-in | `markdown.features.ruby` | `boolean \| {}` | 省略または `false` で off。 |
+| [TOC エクスポート](./toc-export.mdx) | Opt-in | `markdown.features.tocExport` | `{ maxDepth?: number }` | 省略時は off。デフォルト `maxDepth` は `3`。 |
+| [画像サイズ](./image-dimensions.mdx) | Opt-in | `markdown.features.imageDimensions` | `{ skipRemote?: boolean }` | 省略時は off。`skipRemote` のデフォルトは `true`。 |
+| [リンク検証](./link-validation.mdx) | Opt-in | `markdown.features.linkValidation` | `{ failOnBroken?: boolean }` | 省略時は off。デフォルトは警告、`failOnBroken: true` でエラー。 |
+| [トランスクルージョン](./transclude.mdx) | Opt-in | `markdown.features.transclude` | `{ maxDepth?: number }` | 省略時は off。デフォルト `maxDepth` は `5`。 |
 
 ## 関連項目
 

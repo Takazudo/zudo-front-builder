@@ -107,9 +107,20 @@ export default defineConfig({
 - **リーフ** — `::name[label]{attrs}` は、子要素を持たない自己終結型のコンポーネントを生成します。埋め込み（動画、コードプレイグラウンドなど）に使われます。
 - **テキスト** — `:name[label]{attrs}` は、本文中に混在させるインラインコンポーネントです。
 
-## 空行の要件
+## フェンスの間隔
 
-各フェンス行（`:::name` と閉じる `:::`）は、Markdown パーサーがそれらを別々の段落として扱えるよう、前後のコンテンツと **必ず** 空行で区切る必要があります。空行がないと、その内容はディレクティブとして認識されず、ビルド時に警告診断が出力されます。
+コンテナフェンスの前後に空行を書けますが、必須ではありません。zfb は、opener、body、closer が 1 つの段落に入ったときに `markdown-rs` が生成する collapsed form も扱います。
+
+```md
+:::note
+Body text.
+:::
+:::tip
+Another block.
+:::
+```
+
+兄弟の collapsed directives と、ネストした collapsed directives の両方が、名前が登録されている場合に書き換えられます。未知のディレクティブ名は引き続き警告診断を出し、元のソーステキストを変更せずに残します。
 
 ## ディレクティブの登録はコンポーネントを提供しない
 
@@ -127,6 +138,6 @@ export default defineConfig({
 
 ## 関連項目
 
-- [ディレクティブレジストリ](./directives-registry.mdx) — その下層にあるコアのプリミティブ（常時有効で、パースを担当する）。
+- [ディレクティブレジストリ](./directives-registry.mdx) — `markdown.features.directives` が指定されたときに配線される、下層の Core プリミティブ。
 - [レシピ: Admonitions](/ja/docs/recipes/admonitions/) — `note`、`tip`、`info`、`warning`、`danger`、`caution`、`details` を最小限のコンポーネントスタブと CSS とともに登録する実例。
 - [カスタムディレクティブ](../concepts/custom-directives.mdx) — Rust パイプライン API 経由でディレクティブを登録する。

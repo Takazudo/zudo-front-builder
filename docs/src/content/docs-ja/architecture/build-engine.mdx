@@ -41,7 +41,7 @@ zfb はオーケストレーターです。依存グラフ、ページ単位の�
 | **esbuild** | サーバーサイドのワーカーバンドル（`zfb-build/bundler.rs`）と共有アイランドクライアントバンドル（`zfb-islands`）をバンドルします。高速で、TSX/JSX、MDX ローダー、ツリーシェイキングを扱えます。 | `ClientBundler`（`zfb-islands` 内） |
 | **deno_core (V8)** | SSG と dev プレビューサーバー向けにサーバーサイドのワーカーバンドルを実行する、組み込みの V8 アイソレートです。Tauri での配布には Node 依存のない単一バイナリが必要なため選ばれました。理由は [JS runtime](./js-runtime.mdx) を参照してください。 | `RenderHost`（`zfb-render` 内） |
 | **SWC** | TSX のソースを JavaScript にコンパイルしてから esbuild やレンダーホストに渡します。`zfb-render` の内部に存在します。 | `zfb-render` の内部。そのクレートの transform ステップを置き換えることで差し替え可能 |
-| **lol_html** | ハイドレーションのエントリポイントの `<script>` タグやアイランドのマウントマーカーを、完全なパースなしにレンダリング済みの HTML に注入するために使うストリーミング HTML リライターです。 | `zfb-build/head_inject.rs` の内部で使用。公開トレイトは不要 — 低レベルのユーティリティです |
+| **lol_html** | selector-aware な変更が必要な箇所で使うストリーミング HTML リライターです。アイランドマーカー処理、base リンクの書き換え、dev サーバーの HTML 注入で使われます。プロダクションの head アセット注入は `lol_html` パスではなく、バイトレベルの splice です。 | `zfb-islands/src/html_tree.rs`、`zfb-build/src/link_base_rewrite.rs`、`zfb-server` で使用。公開トレイトは不要 — 低レベルのユーティリティです |
 
 ### レイヤリングの仕組み
 
@@ -50,7 +50,7 @@ zfb はオーケストレーション、依存グラフ、ページ単位のコ�
 - **esbuild** は 2 か所で呼ばれます。`zfb-build`（サーバーワーカーバンドル）と `zfb-islands`（共有アイランドクライアントバンドル）です。どちらも TypeScript/JSX のソースツリーをバンドルするために使い、いずれも上位のクレートには公開しません。
 - **deno_core (V8)** は `RenderHost` の背後にある JS エンジンです。`zfb-render` のレンダラーが `RenderHost::call_default` を呼び、具体的なホスト（`EmbeddedV8RenderHost`）がインプロセスの V8 アイソレートでバンドルを実行します。`zfb-build` のオーケストレーターはエンジンの名前を一切口にせず、レンダリング済みの HTML を受け取るだけです。
 - **SWC** はモジュールがレンダーホストに到達する前に `zfb-render` の内部で、または esbuild がソースを見る前に `zfb-build/bundler.rs` の内部で実行されます。いずれにせよオーケストレーターからは見えません。
-- **lol_html** はレンダーホストが HTML を返した後に `zfb-build/head_inject.rs` の内部で実行されます。オーケストレーターから見れば、入力は素の文字列で、出力も素の文字列です。
+- **lol_html** は、本物の要素またはコメント認識が必要な HTML 変更ユーティリティで実行されます。`zfb-islands/src/html_tree.rs`、`zfb-build/src/link_base_rewrite.rs`、`zfb-server` の dev HTML 注入パスです。`zfb-build/src/head_inject.rs` は意図的に使いません。このヘルパーは `</head>` だけを探し、安定した CSS / island アセットタグを閉じタグの前に splice します。
 
 この構造により、各ツールのトレイト境界より上のクレートは、ツールが変わっても影響を受けません。`ClientBundler` のコントラクトについては [Islands](../concepts/islands.mdx) を、依存グラフがどのようにページ単位のポリシーへ供給されるかについては [Incremental rebuild](../concepts/incremental-rebuild.mdx) を参照してください。
 

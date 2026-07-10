@@ -35,9 +35,7 @@ Markdown / MDX を HTML に変換するパイプラインは
 
 1. markdown-rs と MDX を意識したオプションを使って、入力を mdast（`markdown::mdast::Node`）に**パース**します。
 2. **mdast visitor** — `MdastVisitor` 実装が markdown
-   AST をその場で書き換えます。一部の変換は HTML 構造が存在する前にしか意味をなさないため、最初に実行されます。ディレクティブレジストリは
-   mdast visitor です。`:::name` / `:::` で区切られた段落の並びを単一の
-   MDX JSX 要素に畳み込みますが、これは `<p>` タグが現れた後よりも mdast 上のほうがはるかに扱いやすいからです。
+   AST をその場で書き換えます。一部の変換は HTML 構造が存在する前にしか意味をなさないため、最初に実行されます。デフォルトの mdast visitor は、GFM autolink literal が有効なときの `CjkAutolinkBoundaryPlugin` と `CjkFriendlyPlugin` です。`TranscludePlugin`、`CodeTabsPlugin`、`GithubAlertsPlugin`、`ReadingTimePlugin`、`RubyPlugin`、`DirectiveRegistry` などの設定済み extras は、機能フラグが有効なときにこのフェーズへ挿入されます。ディレクティブレジストリは、`:::name` / `:::` で区切られた段落の並びを単一の MDX JSX 要素に畳み込みますが、これは `<p>` タグが現れた後よりも mdast 上のほうがはるかに扱いやすいからです。
 3. `mdast_to_hast` を介して mdast → hast に**変換**します。hast は zfb の最小限の
    HTML AST（`HastNode`）です。
 4. **hast visitor** — `HastVisitor` 実装が HTML AST
@@ -52,15 +50,23 @@ mdast を、HTML 要素構造（`<pre>`、見出しレベル、width 属性を�
 
 ## visitor トレイトの形
 
-両方の visitor トレイトは意図的に小さく作られており、メソッドは 1 つだけで、ノードに対して一度だけ呼ばれ、その場で変更を行います。
+visitor トレイトは `zfb-md-ast` クレートにあり、ローカル呼び出し元向けに `zfb_content::pipeline` から再エクスポートされています。どちらのトレイトも意図的に小さく作られています。context-free な変換では `visit` を実装し、プラグインが `BuildContext` からソースパス、プロジェクトルート、diagnostics、heading registry を必要とする場合だけ `visit_with_context` を override してください。
 
 ```rust
 pub trait MdastVisitor {
     fn visit(&mut self, node: &mut MdastNode);
+
+    fn visit_with_context(&mut self, node: &mut MdastNode, _ctx: &mut BuildContext<'_>) {
+        self.visit(node);
+    }
 }
 
 pub trait HastVisitor {
     fn visit(&mut self, node: &mut HastNode);
+
+    fn visit_with_context(&mut self, node: &mut HastNode, _ctx: &mut BuildContext<'_>) {
+        self.visit(node);
+    }
 }
 ```
 
@@ -69,7 +75,7 @@ pub trait HastVisitor {
 典型的な hast visitor は次のようになります。
 
 ```rust
-use crate::pipeline::{HastNode, HastVisitor};
+use zfb_md_ast::{HastNode, HastVisitor};
 
 pub struct MyPlugin;
 
@@ -98,7 +104,7 @@ github-slugger 相当の重複排除のために `HashMap<String, usize>` を保
 どちらも Rust の visitor として存在しますが、どこに組み込むかは、何人の消費者がその機能を必要とするかによって決まります。
 
 **Core（`Pipeline::with_defaults` に組み込む）** にするのは、その動作が普遍的なとき
-です。つまり、すべてのコンテンツコレクション消費者が同じ形で必要とし、オプトアウトする正当な理由がないときです。例: `HeadingLinksPlugin`、`CodeTitlePlugin`、`SyntectPlugin`。
+です。つまり、すべてのコンテンツコレクション消費者が同じ形で必要とし、オプトアウトする正当な理由がないときです。例: `CjkFriendlyPlugin`、`HeadingLinksPlugin`、`CodeTitlePlugin`、`SyntectPlugin`。
 
 **Opt-in（`Pipeline::with_defaults_and_features` に組み込む）** にするのは、その
 機能が価値はあるものの普遍的には必要とされないとき、あるいはプロジェクト固有の設定（ソースマップ、フィーチャーフラグ、独自オプション）を必要とするときです。例: `zfb-md-extras` の 12 個すべての機能。
@@ -113,6 +119,7 @@ Core プラグインは `crates/zfb-content/src/plugins/` 配下に、Opt-in
 
 ```
 crates/zfb-content/src/plugins/
+├── cjk_autolink.rs
 ├── cjk_friendly.rs
 ├── code_title.rs
 ├── directives.rs
@@ -164,18 +171,22 @@ Opt-in 機能の場合は、ファイルを追加し、対応する
 ここに visitor を追加すると、デフォルトを使うすべての呼び出し元が自動的にそれを取り込みます。正しい段階に追加してください。
 
 ```rust
-// in crates/zfb-content/src/pipeline.rs, inside Pipeline::with_defaults()
-let mut p = Self::with_mdx();
+// in crates/zfb-content/src/pipeline.rs, inside the defaults builder
+let mut p = Self::with_resolved_gfm_constructs(resolved);
 
 // mdast phase
-p.add_mdast_visitor(Box::new(AdmonitionsPlugin::new()));
+if resolved.autolink_literal {
+    p.push_config_derived_mdast_visitor(Box::new(CjkAutolinkBoundaryPlugin::new()));
+}
+p.push_config_derived_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
+p.push_config_derived_mdast_visitor(Box::new(MyMdastPlugin::new())); // <-- new, if mdast
 
 // hast phase
-p.add_hast_visitor(Box::new(HeadingLinksPlugin::new()));
-p.add_hast_visitor(Box::new(CodeTitlePlugin::new()));
-p.add_hast_visitor(Box::new(MyPlugin));     // <-- new
-p.add_hast_visitor(Box::new(MermaidPlugin::new()));
-p.add_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
+p.push_config_derived_hast_visitor(Box::new(HeadingLinksPlugin::new()));
+p.push_config_derived_hast_visitor(Box::new(CodeTitlePlugin::new()));
+p.push_config_derived_hast_visitor(Box::new(MyPlugin)); // <-- new
+p.push_config_derived_hast_visitor(Box::new(MermaidPlugin::new()));
+p.push_config_derived_hast_visitor(Box::new(SyntectPlugin::new(highlighter)));
 p
 ```
 
@@ -189,6 +200,8 @@ p
 visitor の順序は**負荷を担う（load-bearing）**ものです。デフォルトの完全な根拠は
 `Pipeline::with_defaults_and_features` のドキュメントコメントに記載されていますが、最もよく問題になるルールは次のとおりです。
 
+- **`CjkAutolinkBoundaryPlugin` は GFM autolink literal が有効なとき、`CjkFriendlyPlugin` より前に実行されます。** CJK emphasis の再トークン化が周囲の text node を変える前に、過剰に取り込まれた bare URL を分割します。
+- **`CjkFriendlyPlugin` は mdast フェーズの早い段階で実行されます。** CJK 隣接の emphasis がトークン化されていることに依存する visitor は、その後に実行してください。
 - **`HeadingLinksPlugin` は hast フェーズで最初に実行されます。** 後で見出しを変更するものはすべて、スラッグ化された `id` 属性を見ることになります。
   `TocPlugin` と `TocExportPlugin` はこれらの `id` 値に依存します。
 - **`CodeTitlePlugin` は `SyntectPlugin` より前に実行されます。** SyntectPlugin
@@ -202,9 +215,8 @@ visitor の順序は**負荷を担う（load-bearing）**ものです。デフ�
   syntect が出力する行ごとの `<span class="line">` 構造を後処理します。syntect がそれらの span を生成する前には実行できません。
 - **`ImageDimensionsPlugin`** は hast フェーズで `SyntectPlugin` より前に実行されます。
   `<img>` 要素だけを扱い、見出し / コードブロックの visitor に対しては順序非依存です。
-- **`GithubAlertsPlugin` は mdast フェーズで実行されます**。mdast
-  → hast 変換より前です。blockquote ノードを書き換え、`AdmonitionsPlugin`
-  （これも mdast フェーズで実行される）はその結果を独立して読み取ります。
+- **`GithubAlertsPlugin` は mdast フェーズで実行されます**。directive registry
+  より前、mdast → hast 変換より前です。blockquote ノードを MDX JSX 要素へ書き換えます。
 - **`TranscludePlugin` は mdast フェーズで最初に実行されます。** 取り込まれた
   コンテンツは、他のどの visitor が見るよりも前に AST にマージされなければなりません。
 
@@ -255,9 +267,10 @@ Markdown のパース＆visitor チェーンには手を出しません。その
   Opt-in 機能の完全なカタログ。機能ごとの順序に関する注記つき。
 - [Custom Directives](../concepts/custom-directives.mdx) — `:::name` / `::name` / `:name` 構文の作者向けの解説。Rust 不要。
 - [Customizing Markdown](./customizing-markdown.mdx) — コンテンツコレクション消費者の視点から見た Markdown レンダリングパイプライン。
-- `crates/zfb-content/src/pipeline.rs` — `Pipeline`、`MdastVisitor`
-  / `HastVisitor` トレイト、および `Pipeline::with_defaults()`
-  の順序の根拠（ドキュメントコメント内）。
+- `crates/zfb-md-ast/src/lib.rs` — `MdastVisitor`、`HastVisitor`、
+  `BuildContext`、`visit_with_context` のデフォルトメソッド。
+- `crates/zfb-content/src/pipeline.rs` — `Pipeline` 構築、および
+  `Pipeline::with_defaults()` の順序の根拠（ドキュメントコメント内）。
 - `crates/zfb-content/src/plugins/code_title.rs` — 小さくステートレスな
   `HastVisitor` の例。
 - `crates/zfb-content/src/plugins/heading_links.rs` — ステートフルな

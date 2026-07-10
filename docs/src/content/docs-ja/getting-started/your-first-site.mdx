@@ -46,7 +46,7 @@ pnpm zfb dev
 npx zfb dev
 ```
 
-ホストとポートを示す「ready」バナーが表示されます（デフォルトは `http://localhost:3000`）。zfb は固定された一連のプロジェクトルートを監視します。`pages/`・`content/`・`components/`・`layouts/`・`styles/`・`data/`・`public/` と、2 つの設定ファイル（`zfb.config.json`、`zfb.config.ts`）です。これに加えて、設定でコレクションの `path` 値として宣言された任意のパスも監視します。監視対象のファイルを保存すると、接続中のブラウザにライブリロードがブロードキャストされます。
+ホストとポートを示す「ready」バナーが表示されます（デフォルトは `http://localhost:3000`）。zfb は固定された一連のプロジェクトルートを監視します。`pages/`・`content/`・`components/`・`layouts/`・`styles/`・`data/`・`src/` と、2 つの設定ファイル（`zfb.config.json`、`zfb.config.ts`）です。これに加えて、設定でコレクションの `path` 値や絶対パスの `extraWatchPaths` エントリとして宣言された任意のパスも監視します。デフォルトの `public/` ディレクトリは監視されません。これらのファイルはディスクから直接配信されます。監視対象のファイルを保存すると、接続中のブラウザにライブリロードがブロードキャストされます。
 
 ホストとポートは CLI から上書きできます。これらは常に `zfb.config.ts` より優先されます。
 
@@ -68,7 +68,11 @@ npx zfb build
 npx zfb preview
 ```
 
-`zfb build` は出力ディレクトリ（デフォルトは `dist/`）を解決し、ファイルシステムルーターでルートを列挙し、静的ルートごとに 1 つの HTML ファイルを書き出します。続いて `zfb preview` がそのディレクトリをデフォルトでポート `4321` の HTTP で配信します。CLI フラグ（`--outdir`・`--port`）は両コマンドとも設定ファイルより優先されます。
+`zfb build` は CLI の `--outdir` 値（デフォルトは `dist/`）へ書き出し、ファイルシステムルーターでルートを列挙し、静的ルートごとに 1 つの HTML ファイルを書き出します。build コマンドはサーバーを起動しないため、`--port` フラグはありません。
+
+`zfb preview` は自身の CLI `--outdir` 値（こちらもデフォルトは `dist/`）を、デフォルトでポート `4321` の HTTP で配信します。preview の `--port` フラグは設定の `port` より優先されます。どちらも設定されていない場合、preview は組み込みデフォルトを使います。
+
+現時点で `zfb.config.*` の `outDir` は `zfb dev` では尊重されますが、`zfb build` と `zfb preview` は読み取りません。デフォルト以外のディレクトリをビルドまたは配信する場合は、それらのコマンドに `--outdir` を渡してください。この分割に関する独立した判断は [issue #1473](https://github.com/Takazudo/zudo-front-builder/issues/1473) で追跡されています。
 
 ## 動作するサンプル
 

@@ -1,41 +1,51 @@
 ---
 title: .md 拡張子の除去
-description: ビルド時に内部リンクの href から .md または .mdx の接尾辞を取り除く。
-tier: Core
+description: ビルド時に内部リンクの href から .md または .mdx の接尾辞を取り除く、opt-in のトップレベル設定。
+tier: Opt-in
 sidebar_position: 55
 ---
 
-`StripMdExtensionPlugin` は、内部リンクの `href` 値から `.md` または `.mdx` の
-接尾辞を取り除きます。これにより、`[page](./other.md)` のように記述したリンクは
-`/docs/other` のようなクリーンな出力 URL を生成します。
+`stripMdExt` は opt-in のトップレベル `zfb.config.ts` フィールドであり、`markdown.features` entry ではありません。デフォルトは `false` です。省略した場合、または `false` に設定した場合、著者が書いた `.md` / `.mdx` href は保持されます。
+
+有効にすると、`StripMdExtensionPlugin` は内部リンクの `href` 値から `.md` または `.mdx` の接尾辞を取り除き、末尾に `/` を付けます。これにより、`[page](./other.md)` のように記述したリンクは `./other/` のようなクリーンな出力 URL を生成します。
 
 ## 何をするか
 
-hast フェーズで、プラグインはすべての `<a>` 要素をたどります。`href` が
-`.md` または `.mdx` で終わる各リンクに対して:
+hast フェーズで、プラグインはすべての `<a>` 要素をたどります。path が `.md` または `.mdx` で終わる各内部リンクに対して:
 
 1. 拡張子を取り除く。
-2. パスの残りの部分、クエリ文字列、フラグメントはそのまま残す。
+2. 取り除いた path に末尾の `/` を付ける。
+3. クエリ文字列とフラグメントを slash の後に保持する。
 
-プラグインが手を加えるのは相対パスとルート相対パスのみです — 絶対 URL
-（`https://…`）やリンク以外の要素は変更されません。
+プラグインが手を加えるのは内部の相対パスとルート相対パスです。絶対 URL（`https://…`）、アンカーのみのリンク（`#section`）、リンク以外の要素、Markdown 以外のファイル拡張子を持つ href は変更されません。trailing-slash モードでは、`./guide` や `../guide` のような拡張子なしの相対 href も `./guide/`、`../guide/` になります。
 
 ## 設定
 
-ソースマップが利用可能なときは常に有効で、設定キーはありません。プラグインは
-`ResolveLinksPlugin` の後に実行されるため、すでに解決済みのパスを参照します。
+トップレベルで有効化します:
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  stripMdExt: true,
+});
+```
+
+両方が設定されている場合、プラグインは `ResolveLinksPlugin` の後に実行されます。そのため、残っている Markdown 拡張子を cleanup する前に、すでに解決済みのパスを参照します。
 
 ## 例
 
 ```md
-See [setup](./installation.mdx) for details.
+See [setup](./installation.mdx#requirements) for details.
 ```
 
-次を生成します:
+`stripMdExt: true` の場合、次を生成します:
 
 ```html
-<a href="./installation">See setup for details.</a>
+<p>See <a href="./installation/#requirements">setup</a> for details.</p>
 ```
+
+`stripMdExt: false` または config field 省略時は、著者が書いた `./installation.mdx#requirements` href が保持されます。
 
 ## 関連項目
 

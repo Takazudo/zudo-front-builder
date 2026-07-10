@@ -13,7 +13,7 @@ zfb は、それぞれが 1 つの役割を担う小さな Rust クレート群�
 
 1. **CLI** — `crates/zfb`。コマンドライン引数をパースし、`zfb.config.{ts,json}` をロードし、`dev`・`build`・`preview` のいずれかのコマンドにディスパッチします。
 2. **Router** — `crates/zfb-router`。`pages/` をスキャンしてルートテーブルを生成します。[Routing](./routing.mdx) を参照してください。
-3. **Watcher** — `crates/zfb-watcher`。dev モード専用。デフォルトでは `pages/`・`content/`・`components/`・`layouts/`・`styles/`・`data/`、そして `zfb.config.ts` を監視し、加えて設定された各コレクションの path がデフォルトのルートの外にある場合はそれも監視します。`public/` は意図的に監視 **しません** — 静的アセットはリクエスト時にディスクからライブで配信されるため、リビルドを必要とせず、ウォッチャーにもブートにも流れ込みません（[静的アセット](./static-assets.mdx#dev--prod-の一致) を参照）。変更イベントのストリームを発行します。
+3. **Watcher** — `crates/zfb-watcher`。dev モード専用。デフォルトでは `pages/`・`content/`・`components/`・`layouts/`・`styles/`・`data/`・`src/`、そして設定ファイルを監視し、加えて設定された各コレクションの path がデフォルトのルートの外にある場合と、絶対パスの `extraWatchPaths` がある場合はそれも監視します。`public/` は意図的に監視 **しません** — 静的アセットはリクエスト時にディスクからライブで配信されるため、リビルドを必要とせず、ウォッチャーにもブートにも流れ込みません（[静的アセット](./static-assets.mdx#dev--prod-の一致) を参照）。変更イベントのストリームを発行します。
 4. **Dependency graph** — `crates/zfb-graph`。ページとソースの依存関係を追跡します。ウォッチャーが変更を報告すると、グラフは「どのページをリビルドする必要があるか」という 1 つの問いに答えます。
 5. **Build orchestrator** — `crates/zfb-build`。ページ単位の作業を調整し、`atomic_write_string` 経由で出力をアトミックに書き込むため、書き込みの途中で `dist/` が中途半端に壊れた状態になることは決してありません。
 6. **Renderer** — `crates/zfb-render`。SWC で TSX を JS にコンパイルし、得られた ES モジュールを JS ランタイムホスト経由で評価し、ページの `default()` エクスポートを呼び出して HTML 文字列を生成します。コンテンツコレクションのエントリ（`.md` / `.mdx`）は JSX モジュールと同じパイプラインを通してコンパイルされます。レンダラは `mdx://<collection>/<slug>` の specifier を解決し、それらを `entry.Content` としてユーザーページに提供します（[MDX Components](./mdx-components.mdx) を参照）。

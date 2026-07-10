@@ -90,6 +90,8 @@ my-site/
 
 設定ファイルは camelCase スキーマを使います。主なキーには次のものがあります。`outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（デフォルト `3000`）、`framework`（`"preact"` または `"react"`、デフォルト `"preact"`）、`collections`、`tailwind`、`plugins`。これは網羅的な一覧ではありません。完全なスキーマのリファレンスは [defineConfig](../api/define-config.mdx) を参照してください。
 
+`outDir` は現時点では `zfb dev` でのみ尊重されます。`zfb build` と `zfb preview` は `--outdir` フラグから出力ディレクトリを選び、省略時は `dist/` になります。
+
 テンプレートは `zfb.config.json` をスキャフォールドします。これを `zfb.config.ts` にリネームすると、zfb は同梱の esbuild バイナリ経由でロードし、完全な TypeScript 型と IDE 補完が得られます。スキーマはどちらの形式でも同一です。
 
 ## package.json、tsconfig.json、.gitignore

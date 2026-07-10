@@ -73,12 +73,18 @@ pages/about.tsx + extension="json"      → .json (frontmatter override)
 | `xml` | `application/xml` |
 | `rss` | `application/rss+xml` |
 | `atom` | `application/atom+xml` |
-| `json` | `application/json` |
+| `json`, `map` | `application/json` |
+| `webmanifest` | `application/manifest+json` |
 | `txt` | `text/plain; charset=utf-8` |
 | `css` | `text/css; charset=utf-8` |
 | `js`, `mjs`, `cjs` | `application/javascript; charset=utf-8` |
 | `svg` | `image/svg+xml` |
-| それ以外 | `text/html; charset=utf-8`（寛容なフォールバック — `contentType` を明示的に設定してください） |
+| `wasm` | `application/wasm` |
+| `png`, `jpg`, `jpeg`, `webp`, `avif`, `gif`, `ico` | 対応する画像 media type |
+| `woff`, `woff2`, `ttf`, `otf`, `eot` | 対応するフォント media type |
+| `mp4`, `webm`, `mp3`, `ogg` | 対応する video / audio media type |
+| `pdf` | `application/pdf` |
+| 未知の拡張子 | `text/html; charset=utf-8`（寛容なフォールバック — `contentType` を明示的に設定してください） |
 
 ページごとに `export const contentType = "..."` で上書きできます。
 

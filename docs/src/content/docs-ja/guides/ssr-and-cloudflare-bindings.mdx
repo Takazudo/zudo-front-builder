@@ -288,8 +288,8 @@ package.json スクリプトと README の「ローカル開発」セクショ�
   **レンダリングコード**を埋め込みの V8 アイソレートを通して動かします（上記の
   [`prerender = false` の dev と本番の同等性](#prerender-false-の-dev-と本番の同等性)
   を参照）。ただし **Worker バインディングは一切公開しません**。`zfb dev` 下の SSR
-  ルートで `getCloudflareContext<Env>()` を呼び出しても `env` は得られないため、
-  `env.DB`（または他のバインディング）を読むルートはここでは動作しません。
+  ルートで `getCloudflareContext<Env>()` を呼び出すと、Cloudflare request scope がないため
+  例外を投げます。そのため `env.DB`（または他のバインディング）を読むルートはここでは動作しません。
   バインディングに**触れない**ルートのレイアウト、スタイリング、ルーティングの反復作業に
   使ってください。
 - **`wrangler dev`** — バインディングをリアルに再現するループ。ビルドされた
