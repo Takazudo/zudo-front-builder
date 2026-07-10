@@ -5,15 +5,15 @@ sidebar_position: 1
 ---
 
 zfb ships as a self-contained Rust binary. **Node.js is not required to
-install or run it** — esbuild and Tailwind ship as standalone native binaries
-alongside the `zfb` executable (in the release tarball's `binaries/` slot)
-and are invoked as subprocesses located relative to the `zfb` executable
-itself. You only need Node as an opt-in escape hatch for specific features
-(see [When Node is still needed](#when-node-is-still-needed) below).
+install or run it** — esbuild and Tailwind are embedded into the `zfb`
+executable's vendor snapshot and extracted at runtime before they are invoked
+as subprocesses. They are not shipped as separate release-tarball binaries
+next to `zfb`. You only need Node as an opt-in escape hatch for specific
+features (see [When Node is still needed](#when-node-is-still-needed) below).
 
 The Node-free path supports the full feature set for content sites: Markdown,
 MDX, HTML pages, **and islands** — esbuild and Tailwind run as standalone
-native binaries shipped with `zfb`, so client-side hydration and CSS processing
+native binaries extracted by `zfb`, so client-side hydration and CSS processing
 work with zero Node involvement.
 
 ## Supported platforms

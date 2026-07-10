@@ -133,7 +133,16 @@ integration — IPC, filesystem access, hot content reload — without the sidec
 lifecycle plumbing of Mode B.
 
 **What's involved.** Add `zfb-server` as a Cargo dependency and call
-`Server::builder()` inside Tauri's synchronous `setup` callback:
+`Server::builder()` inside Tauri's synchronous `setup` callback.
+
+`zfb-server` is not published to crates.io yet; that packaging work is tracked
+in [issue #1475](https://github.com/Takazudo/zudo-front-builder/issues/1475).
+Until then, depend on the workspace crate from git and pin a tag or commit:
+
+```toml
+[dependencies]
+zfb-server = { git = "https://github.com/Takazudo/zudo-front-builder", package = "zfb-server", rev = "<commit>" }
+```
 
 ```rust
 use zfb_server::{Server, ServerMode};

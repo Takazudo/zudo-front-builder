@@ -54,7 +54,8 @@ const posts = getCollection("blog");  // synchronous — no await
 ```
 
 The return shape is similar — each entry exposes `slug`, `data`
-(frontmatter), and `body`. See /api/get-collection for the full surface.
+(frontmatter), and `body`. See
+[`getCollection`](../api/get-collection.mdx) for the full surface.
 
 Schemas move from inline Zod to declarative config. Declare collections in
 `zfb.config.ts` using `defineConfig`:
@@ -76,6 +77,8 @@ Valid `type` values are `"string"`, `"number"`, `"integer"`, `"boolean"`,
 `"array"`, `"object"`, and `"null"` (no `"date"`, no trailing `?` for
 optional). The schema is validated for structure at config load time but
 frontmatter fields are not currently enforced against it at build time.
+Run `zfb check` to validate collection frontmatter against the declared
+schemas; that is the enforcement gate for CI.
 See [`defineConfig`](../api/define-config.mdx) for the full shape.
 
 ## Islands
@@ -94,7 +97,7 @@ export default function Counter() {
 ```
 
 Anything imported from a `"use client"` file becomes an island
-automatically. See /api/island.
+automatically. See [`island`](../api/island.mdx).
 
 ## Slots and layouts
 
@@ -142,7 +145,8 @@ When set, `globalThis.__zfb.site` is available at render time so layouts can
 build canonical `<link>` tags and OpenGraph meta. See
 [`defineConfig`](../api/define-config.mdx).
 
-**Plugin lifecycle: `setup`, `addAlias`, `addVirtualModule`, `injectRoute`**
+**Plugin lifecycle: `setup`, `addAlias`, `addVirtualModule`, `injectRoute`,
+`addClientEntry`**
 
 Astro integrations expose `updateConfig`, `addWatchFile`, and `injectRoute`
 during the `astro:config:setup` hook. zfb's equivalent is the `setup` hook in
@@ -153,11 +157,13 @@ import { definePlugin } from "@takazudo/zfb/plugins";
 
 export default definePlugin({
   name: "my-plugin",
-  setup({ command, addAlias, addVirtualModule, injectRoute }) {
+  setup({ command, addAlias, addVirtualModule, injectRoute, addClientEntry }) {
     addAlias("@/components/foo", "./src/components/foo.tsx");
     addVirtualModule("virtual:my-data", () =>
       `export default ${JSON.stringify({ key: "value" })}`,
     );
+    injectRoute("/preset-page", "./pages/preset-page.tsx");
+    addClientEntry("./client/analytics.client.ts");
     if (command === "dev") {
       injectRoute("/api/dev/x", "./scripts/dev-x.ts");
     }
@@ -167,7 +173,13 @@ export default definePlugin({
 
 `addAlias` performs exact-match import rewrites (prefix matching is a future
 revision). `addVirtualModule` exposes a synthetic ESM module by specifier.
-`injectRoute` is dev-only; calling it during `zfb build` is an error.
+`injectRoute` is not dev-only: during `zfb build`, package-owned routes are
+materialised into the build overlay and prerendered through the normal route
+pipeline; during `zfb dev`, they are synthetic routes served by the dev
+renderer. Gate a route on `command === "dev"` only when you intentionally want
+that route to exist in dev but not in production. `addClientEntry` registers a
+package-owned `*.client.{ts,tsx,js,jsx}` side-effect entry for the client
+bundle.
 See [Plugins](../concepts/plugins.mdx) for the full contract.
 
 **Route manifest in `postBuild` (`ctx.routes`)**
