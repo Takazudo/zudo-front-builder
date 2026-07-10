@@ -1,9 +1,9 @@
 // `zfb/config` — TypeScript helper for the `zfb.config.ts` form.
 //
 // The zfb config loader (`crates/zfb/src/config.rs`) accepts both
-// `zfb.config.ts` and `zfb.config.json`; JSON wins when both files are
-// present, which is the back-compat path for projects predating the TS
-// loader. New projects should prefer the TS form for editor types and
+// `zfb.config.ts` and `zfb.config.json`; TS wins when both files are
+// present. JSON remains accepted for projects predating the TS loader,
+// while new projects should prefer the TS form for editor types and
 // `defineConfig` autocomplete.
 //
 // At parse time, zfb bundles the user's `zfb.config.ts` with esbuild and
@@ -21,7 +21,7 @@ export type CollectionDef = {
   name: string;
   /** Directory (relative to the project root) holding the entries. */
   path: string;
-  /** Optional schema. Reserved for v1.1 — accepted but not enforced today. */
+  /** Optional schema. Enforced by `zfb check`. */
   schema?: Record<string, unknown>;
   /**
    * Optional include globs (Astro-style, evaluated relative to `path`).
@@ -799,13 +799,25 @@ export type GithubAutolinksConfig = {
 };
 
 /**
- * Options stub for the `codeEnrichment` feature.
+ * Options for the `codeEnrichment` feature.
  *
- * TODO: fill in actual fields when the codeEnrichment feature is ported.
+ * Both flags default to `true` when the feature is enabled with
+ * `codeEnrichment: {}` or when a field is absent.
  *
- * Mirrors `CodeEnrichmentConfig` in crates/zfb/src/config.rs.
+ * Mirrors `CodeEnrichmentConfig` in `crates/zfb-md-ast/src/features_config.rs`.
  */
-export type CodeEnrichmentConfig = Record<string, never>;
+export type CodeEnrichmentConfig = {
+  /**
+   * Enable diff-marker processing for markers such as `// [!code ++]`
+   * and `// [!code --]`. Default: `true`.
+   */
+  diffMarkers?: boolean;
+  /**
+   * Enable line-highlight processing for fence ranges such as `{1,3-5}`.
+   * Default: `true`.
+   */
+  lineHighlight?: boolean;
+};
 
 /**
  * Options for the `tocExport` feature.
