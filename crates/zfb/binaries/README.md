@@ -1,38 +1,47 @@
-# `crates/zfb/binaries/` — Bundled binary distribution slot
+# `crates/zfb/binaries/` — Workspace staging paths for embedded helper binaries
 
-This directory reserves placement for third-party binaries that ship inside the
-`zfb` release tarball. The binaries are invoked at runtime as subprocesses by
-the `zfb` CLI (and by sibling crates that depend on `zfb`'s runtime layout).
+This directory records the workspace staging paths for third-party helper
+binaries that `zfb` invokes as subprocesses. The binaries themselves are not
+committed. During a `zfb` crate build, `crates/zfb/build.rs` downloads and
+verifies the platform-specific files, stages them here for local reuse, then
+copies them into `$OUT_DIR/vendor/bin/` so `include_dir!` embeds them into the
+compiled `zfb` executable.
+
+An installed `zfb` binary does not rely on an executable-adjacent `binaries/`
+directory. At runtime, `zfb` extracts embedded helper binaries to a fresh
+tempdir via `crates/zfb/src/render_pipeline.rs::embedded_binary`.
 
 ## Why this lives here
 
-The `zfb` crate is the user-facing CLI binary. When we package a release
-tarball for distribution, this `binaries/` directory is included alongside the
-`zfb` executable so that, at runtime, `zfb` can locate the bundled tools using
-a path relative to its own executable. Keeping the slot inside `crates/zfb/`
-(rather than at the workspace root) keeps the release-tarball layout colocated
-with the crate that owns the runtime contract.
+The `zfb` crate owns the Cargo build script and the `include_dir!` snapshot
+that embeds helper binaries. Keeping the staging paths inside `crates/zfb/`
+keeps the download, checksum, embedding, and runtime extraction contract
+colocated with the user-facing CLI crate.
 
-## Expected slots
+Sibling crates still expose workspace-relative fallback paths for direct
+in-repo development and focused package tests. The production `zfb` command
+path wires in the embedded extraction tier before those fallbacks are needed.
 
-| Path                              | Purpose                                                       | Owner crate     |
-| --------------------------------- | ------------------------------------------------------------- | --------------- |
-| `tailwindcss-v4`                  | Tailwind CSS v4 standalone CLI binary (subprocess invocation) | `zfb-css`       |
-| `esbuild/esbuild`                 | esbuild standalone CLI binary (subprocess invocation)         | `zfb-islands`   |
+## Expected staged files
+
+| Path                              | Purpose                                                       | Owner crate   |
+| --------------------------------- | ------------------------------------------------------------- | ------------- |
+| `tailwindcss-v4`                  | Tailwind CSS v4 standalone CLI binary (subprocess invocation) | `zfb-css`     |
+| `esbuild/esbuild`                 | esbuild standalone CLI binary (subprocess invocation)         | `zfb-islands` |
 
 See `crates/zfb-css/README.md` for the pinned Tailwind version and rationale.
 See `crates/zfb-islands/README.md` for the pinned esbuild version and rationale,
-and `crates/zfb/binaries/esbuild/README.md` for the slot-shape rationale
-(the esbuild slot uses a subdirectory rather than a single file path).
+and `crates/zfb/binaries/esbuild/README.md` for the esbuild subdirectory
+rationale.
 
-## Embedded npm packages (no on-disk slot)
+## Embedded npm packages
 
 In addition to the binaries above, `crates/zfb/build.rs` snapshots three
 groups of npm packages directly **into the compiled `zfb` binary** via
-`include_dir!`. They have no `binaries/` slot — they ride inside the
-executable bytes themselves and are extracted to a tempdir at `zfb build`
-/ `zfb dev` time so esbuild can resolve framework imports without a
-consumer-side `node_modules/`.
+`include_dir!`. They are not staged under `crates/zfb/binaries/`; they ride
+inside the executable bytes themselves and are extracted to a tempdir at
+`zfb build` / `zfb dev` time so esbuild can resolve framework imports without
+a consumer-side `node_modules/`.
 
 | Embedded package(s)                      | Sub  | Source                                                                  |
 | ---------------------------------------- | ---- | ----------------------------------------------------------------------- |
@@ -54,14 +63,15 @@ committed to this repository. Instead:
 
 - `.gitignore` excludes the actual binary file paths (e.g. `tailwindcss-v4`,
   `tailwindcss-v4.exe`).
-- The slot directory is preserved in git via `.gitkeep`.
+- The staging directories are preserved in git via `.gitkeep`.
 - **The Cargo build script (`crates/zfb/build.rs`) is the authoritative
   population path.** When you run `cargo build` or `cargo install --path
   crates/zfb`, the build script detects the current platform, downloads the
-  pinned binary from the upstream release (esbuild from the npm registry,
-  tailwindcss from GitHub releases), verifies its SHA-256 against pinned
-  constants in `build.rs`, and stages the binary here atomically. Re-runs are
-  no-ops when the on-disk binary already matches the pinned checksum.
+  pinned binary (esbuild from the npm registry, tailwindcss from GitHub
+  releases), verifies its SHA-256 against pinned constants, stages the binary
+  here atomically, then copies it to `$OUT_DIR/vendor/bin/` for embedding.
+  Re-runs are no-ops when the on-disk binary already matches the pinned
+  checksum.
 - `scripts/fetch-tailwind.mjs` at the repo root is kept as a **developer
   convenience** (superseded by the build script) — it can still be run via
   `pnpm fetch:tailwind` in environments that already have Node.js available.
@@ -70,14 +80,17 @@ committed to this repository. Instead:
   binaries or have no network access. When either is set, the build script
   skips the corresponding download step entirely.
 
-## Runtime contract (sketch)
+## Runtime resolution
 
-At runtime, sibling crates (e.g. `zfb-css`) resolve the binary path roughly as:
+Production callers should use the resolver wiring in the `zfb` crate. The
+effective precedence is:
 
 ```text
-<dir-of-zfb-executable>/binaries/<binary-name>
+explicit path on the config
+-> ZFB_ESBUILD_BIN / ZFB_TAILWIND_BIN
+-> embedded binary under $OUT_DIR/vendor/bin/ extracted to a tempdir
+-> workspace staging path under crates/zfb/binaries/
 ```
 
-Resolution helpers will live in the `zfb` crate when the release-engineering
-epic lands. Until then, downstream crates should treat the path as
-implementation-defined and access it only through a `zfb`-provided API.
+The last tier exists for direct workspace development. It is not the installed
+distribution model.

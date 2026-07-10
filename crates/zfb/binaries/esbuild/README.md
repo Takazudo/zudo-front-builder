@@ -1,60 +1,59 @@
-# `crates/zfb/binaries/esbuild/` — esbuild binary slot
+# `crates/zfb/binaries/esbuild/` — esbuild workspace staging directory
 
-This directory reserves placement for the **esbuild standalone CLI binary**
-that the `zfb-islands` crate invokes as a subprocess (see
-`crates/zfb-islands/README.md` for the version pin).
+This directory is the workspace staging location for the **esbuild standalone
+CLI binary** that `zfb-islands` invokes as a subprocess (see
+`crates/zfb-islands/README.md` for the version pin). The production `zfb`
+binary embeds the staged esbuild file from `$OUT_DIR/vendor/bin/` via
+`include_dir!` and extracts it to a tempdir at runtime.
 
-## Slot layout
+## Staging layout
 
-The release-tarball layout looks like this:
+The workspace staging layout is:
 
 ```text
-zfb/                      # release tarball root
-├── zfb                   # the user-facing CLI executable
-└── binaries/
-    ├── tailwindcss-v4    # bundled Tailwind v4 CLI (zfb-css)
-    └── esbuild/          # this directory
-        └── esbuild       # bundled esbuild CLI (zfb-islands)
+crates/zfb/binaries/
+├── tailwindcss-v4        # staged Tailwind v4 CLI (zfb-css)
+└── esbuild/              # this directory
+    └── esbuild           # staged esbuild CLI (zfb-islands)
 ```
 
 The `esbuild` binary file itself is **never** committed to this repo.
 `.gitignore` excludes the actual binary path; this directory is preserved
 in git via `.gitkeep`.
 
-## Why a subdirectory rather than a single file slot
+## Why a subdirectory rather than a single file
 
-`crates/zfb/binaries/tailwindcss-v4` is a single-file slot because Tailwind
-ships exactly one CLI binary per platform. esbuild also ships a single CLI
-binary per platform — a subdirectory is used here so that platform-specific
-release tooling (a future epic) has room to drop a sidecar (e.g. a checksum
-manifest or a `LICENSE.md`) without polluting the parent `binaries/`
-namespace. The runtime path the subprocess code resolves to is
-`crates/zfb/binaries/esbuild` — that path is interpreted as the *binary
-file itself*, not as a directory; see the override env var
-`ZFB_ESBUILD_BIN`.
+`crates/zfb/binaries/tailwindcss-v4` is a single-file staging path because
+Tailwind ships exactly one CLI binary per platform. esbuild also ships a
+single CLI binary per platform, but this directory keeps the workspace path
+unambiguous: the staged executable is `crates/zfb/binaries/esbuild/esbuild`
+(or `esbuild.exe` on Windows), while `crates/zfb/binaries/esbuild/` is only
+the parent directory.
 
-> If the subdirectory shape proves to be unnecessary at release-engineering
-> time, this slot may be flattened back to a single file path. The
-> subprocess code reads the path verbatim, so the call site is unaffected.
+Set `ZFB_ESBUILD_BIN` or call `EsbuildSubprocessConfig::with_binary_path` to
+use a different executable path.
 
-## Why this slot is reserved now
+## Build and embedding flow
 
-Sub 2 of [issue #6](https://github.com/Takazudo/zudo-front-builder/issues/6)
-implements the subprocess wrapper. The wrapper needs a deterministic
-default path for the binary so that user code can construct an
-`EsbuildSubprocessConfig::default()` without environment fiddling. The
-binary itself will be downloaded and verified by a future
-release-engineering epic — this sub-task only **reserves the slot**.
+`crates/zfb/build.rs` downloads the pinned esbuild package for the current
+platform, extracts the CLI binary, verifies its SHA-256, and stages it at this
+workspace path. The same build script then copies the executable to
+`$OUT_DIR/vendor/bin/esbuild` so `include_dir!` embeds it in the compiled
+`zfb` executable. Runtime callers in the `zfb` crate prefer that embedded
+copy and keep the extraction tempdir alive while the subprocess runs.
 
 ## Runtime resolution
 
-The `EsbuildSubprocessConfig::default()` constructor resolves the binary
-path as follows:
+The `zfb` command path resolves esbuild as follows:
 
-1. If the `ZFB_ESBUILD_BIN` env var is set, use that path verbatim.
-2. Otherwise, default to `crates/zfb/binaries/esbuild/esbuild` (i.e. the
-   `esbuild` executable file inside this slot directory; relative to the
-   current working directory at engine construction time).
+1. An explicit `esbuild_binary` / `EsbuildSubprocessConfig::with_binary_path`
+   value wins.
+2. If `ZFB_ESBUILD_BIN` is set, use that path verbatim.
+3. Otherwise, extract the embedded `bin/esbuild` file to a tempdir and use
+   that path.
+4. If the embedded tier is unavailable in a direct workspace flow, fall back
+   to `crates/zfb/binaries/esbuild/esbuild` relative to the current working
+   directory at config construction time.
 
 A clear error message is returned if the binary is not present at the
 resolved path.
