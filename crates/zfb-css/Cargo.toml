@@ -29,3 +29,7 @@ hex = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Dev-only: drives the one-time zfb-hi.css color-extraction helper (an
+# `#[ignore]`d test), which resolves representative scopes through the
+# bundled base16-ocean themes. Not a runtime dependency of the crate.
+syntect = { workspace = true }

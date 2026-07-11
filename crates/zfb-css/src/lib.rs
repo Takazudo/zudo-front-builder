@@ -98,3 +98,14 @@ pub use pipeline::{link_href, CssPipeline, CssPipelineConfig, CssPipelineOutput}
 pub use scanner::{
     scan_css_module_imports, scan_css_module_imports_in_memory, ModuleImportScan, SourceModuleUsage,
 };
+
+/// The framework-shipped default `--zfb-hi-*` token stylesheet for zfb's
+/// class-mode syntax highlighting (see `assets/zfb-hi.css`).
+///
+/// This crate only owns the artifact + this accessor. Injecting the
+/// stylesheet into the combined `styles.css` (dev and prod) is a separate
+/// concern wired up by the CSS pipeline's stylesheet-injection sub (issue
+/// #1533).
+pub fn default_hi_css() -> &'static str {
+    include_str!("../assets/zfb-hi.css")
+}
