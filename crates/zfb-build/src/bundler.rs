@@ -1869,18 +1869,33 @@ pub fn bundle_with_session(
         &mut exact_target_staging_alias_dirs,
     );
 
-    // Keep exact node_modules targets outside the main shadow. If this view
-    // lived below `<shadow>`, a bare import could climb to the live
-    // `<shadow>/node_modules` symlink and resurrect an excluded dependency.
-    // The separate temp root still contains a `node_modules` path component,
-    // preserving esbuild's JS-before-TS context without a project-live
-    // ancestor fallback.
-    let needs_node_modules_isolation = exact_target_staging_files
-        .iter()
-        .chain(exact_target_staging_dirs.iter())
-        .chain(exact_target_staging_alias_dirs.keys())
-        .any(|path| project_path_is_inside_node_modules(path, &project_root));
-    let node_modules_isolation = needs_node_modules_isolation
+    // WHERE staged `node_modules` targets land depends on `bundle.exclude`:
+    //
+    // - Empty exclude → the live `<shadow>/node_modules` symlink exists (2b), so
+    //   staged node_modules targets must be kept OUT of `<shadow>/node_modules`
+    //   (else a bare import could climb the live symlink and resurrect a
+    //   dependency). They go into a separate `zfb-exact-node-modules-*` tempdir
+    //   whose own `node_modules` component preserves esbuild's JS-before-TS
+    //   context without a project-live ancestor fallback. The tempdir is written
+    //   by a dedicated sessionless copy writer.
+    //
+    // - Exclusions active → the live symlink is NOT created (2b), so there is
+    //   nothing to climb to. Staged deps are materialised as REAL copies at
+    //   their NATURAL shadow position (`<shadow>/node_modules/<dep>`,
+    //   `<shadow>/<pkg>/node_modules/<dep>`), where esbuild's ordinary walk finds
+    //   the allowed deps — top-level AND nested (a first-party importer's
+    //   vendored / non-hoisted dep). This is expressed by passing `shadow` itself
+    //   as the isolation ROOT (so `shadow_path_for_project_path` maps
+    //   node_modules paths to their in-place shadow location) with NO separate
+    //   isolation writer, so the main session-aware `ShadowWriter` materialises
+    //   them (and the prune pass keeps them correct across session ticks).
+    let needs_tempdir_isolation = bundle_exclude.is_empty()
+        && exact_target_staging_files
+            .iter()
+            .chain(exact_target_staging_dirs.iter())
+            .chain(exact_target_staging_alias_dirs.keys())
+            .any(|path| project_path_is_inside_node_modules(path, &project_root));
+    let node_modules_isolation = needs_tempdir_isolation
         .then(|| {
             tempfile::Builder::new()
                 .prefix("zfb-exact-node-modules-")
@@ -1888,10 +1903,15 @@ pub fn bundle_with_session(
                 .context("bundler: allocate exact node_modules isolation root")
         })
         .transpose()?;
-    let node_modules_isolation_root = node_modules_isolation
+    let tempdir_isolation_root = node_modules_isolation
         .as_ref()
         .map(|isolation| isolation.path());
-    let node_modules_isolation_writer = node_modules_isolation_root
+    let node_modules_isolation_root: Option<&Path> = if bundle_exclude.is_empty() {
+        tempdir_isolation_root
+    } else {
+        Some(shadow)
+    };
+    let node_modules_isolation_writer = tempdir_isolation_root
         .map(|root| ShadowWriter::new(root.to_path_buf(), None, true, None))
         .transpose()?;
 
@@ -2274,43 +2294,96 @@ pub fn bundle_with_session(
         }
     }
 
-    // 2b. Optional node_modules symlink into the shadow tree.
-    //     When `BundlerInput::node_modules_dir` is set, create a
-    //     symlink `<shadow>/node_modules → <path>` so esbuild can
-    //     resolve packages from there instead of walking up into an
-    //     empty tempdir ancestry.
+    // 2b. `<shadow>/node_modules` resolution root.
+    //     When `BundlerInput::node_modules_dir` is set, esbuild needs a
+    //     `<shadow>/node_modules` to walk into instead of an empty tempdir
+    //     ancestry. WHAT lives there depends on `bundle.exclude`:
+    //
+    //     - Empty exclude → symlink `<shadow>/node_modules → <live node_modules>`
+    //       (the historical behaviour; byte-identical to a build without the knob).
+    //     - Exclusions active → the live symlink is a fallback that could
+    //       resurrect an excluded dependency (esbuild climbing to the real tree),
+    //       so it is NEVER created. Non-excluded dependencies are supplied as REAL
+    //       staged copies materialised into the shadow at their logical paths
+    //       (`extend_node_modules_dependency_staging` + the exact-target staging
+    //       loops below, which write into `<shadow>` when no isolation root is
+    //       allocated). esbuild's ordinary node_modules walk then finds the
+    //       allowed deps and misses the excluded ones (acceptance #5 — handled
+    //       via the staged view, not plain link removal).
+    //
+    //     "Don't create the live link" is not enough for a persistent
+    //     `ShadowSession` (#993) that previously ran with an empty exclude: the
+    //     link bypasses the ShadowWriter prune bookkeeping, so a stale live link
+    //     must be actively REMOVED on the empty→non-empty transition (else a
+    //     `<shadow>/node_modules` symlink to the live tree would survive, and the
+    //     staging loops' `ensure_dir` would follow it out of the shadow). When the
+    //     session later returns to an empty exclude the branch below re-creates it.
     if let Some(ref nm_dir) = input.node_modules_dir {
         let shadow_nm = shadow.join("node_modules");
-        #[cfg(unix)]
-        {
-            // Session mode (#993) reuses the persistent shadow across
-            // calls, so the link usually already exists — re-creating it
-            // unconditionally would fail with AlreadyExists. Recreate only
-            // when missing or pointing elsewhere. (Sessionless path: the
-            // tempdir is fresh, read_link fails, behaviour is identical
-            // to the previous unconditional symlink.) The link bypasses
-            // the ShadowWriter bookkeeping entirely — the prune pass can
-            // never see it, and guards against it anyway.
-            let already_correct = fs::read_link(&shadow_nm)
-                .map(|t| &t == nm_dir)
-                .unwrap_or(false);
-            if !already_correct {
-                let _ = fs::remove_file(&shadow_nm);
-                std::os::unix::fs::symlink(nm_dir, &shadow_nm).with_context(|| {
-                    format!(
-                        "bundler: failed to symlink node_modules {} → {}",
-                        nm_dir.display(),
-                        shadow_nm.display()
-                    )
+        if bundle_exclude.is_empty() {
+            #[cfg(unix)]
+            {
+                // Session mode (#993) reuses the persistent shadow across
+                // calls, so the link usually already exists — re-creating it
+                // unconditionally would fail with AlreadyExists. Recreate only
+                // when missing or pointing elsewhere. (Sessionless path: the
+                // tempdir is fresh, read_link fails, behaviour is identical
+                // to the previous unconditional symlink.) The link bypasses
+                // the ShadowWriter bookkeeping entirely — the prune pass can
+                // never see it, and guards against it anyway.
+                let already_correct = fs::read_link(&shadow_nm)
+                    .map(|t| &t == nm_dir)
+                    .unwrap_or(false);
+                if !already_correct {
+                    // Clear whatever occupies the slot: a stale symlink, OR a
+                    // REAL staged `node_modules` dir left by a previous
+                    // exclusions tick of this persistent session (which stages
+                    // deps in place under `<shadow>/node_modules`). remove_file
+                    // clears a symlink; remove_dir_all clears a real dir; the
+                    // other no-ops.
+                    let _ = fs::remove_file(&shadow_nm);
+                    let _ = fs::remove_dir_all(&shadow_nm);
+                    std::os::unix::fs::symlink(nm_dir, &shadow_nm).with_context(|| {
+                        format!(
+                            "bundler: failed to symlink node_modules {} → {}",
+                            nm_dir.display(),
+                            shadow_nm.display()
+                        )
+                    })?;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                // On Windows, attempt a directory junction.
+                fs::create_dir_all(&shadow_nm).with_context(|| {
+                    format!("bundler: failed to create node_modules dir in shadow tree")
                 })?;
             }
-        }
-        #[cfg(not(unix))]
-        {
-            // On Windows, attempt a directory junction.
-            fs::create_dir_all(&shadow_nm).with_context(|| {
-                format!("bundler: failed to create node_modules dir in shadow tree")
-            })?;
+        } else {
+            // Exclusions active: remove any stale live symlink from a previous
+            // empty-exclude tick of a persistent session. `remove_file` deletes
+            // the symlink itself (not its target); a real staged `node_modules`
+            // dir written by the staging loops below is left untouched because it
+            // is a directory, not a symlink (so this no-ops it). Absence + real
+            // staged copies is the steady state.
+            #[cfg(unix)]
+            {
+                if fs::symlink_metadata(&shadow_nm)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+                {
+                    let _ = fs::remove_file(&shadow_nm);
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                if fs::symlink_metadata(&shadow_nm)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false)
+                {
+                    let _ = fs::remove_dir_all(&shadow_nm);
+                }
+            }
         }
     }
 
@@ -2550,10 +2623,12 @@ pub fn bundle_with_session(
     for logical_root in &exact_target_staging_dirs {
         let isolated_node_modules =
             project_path_is_inside_node_modules(logical_root, &project_root);
+        // Under exclusions there is no isolation root, so node_modules targets
+        // fall back to the main (session-aware) shadow writer + `<shadow>` root.
         let target_writer = if isolated_node_modules {
             node_modules_isolation_writer
                 .as_ref()
-                .expect("node_modules staging allocated an isolation writer")
+                .unwrap_or(mat_ctx.writer)
         } else {
             mat_ctx.writer
         };
@@ -2578,9 +2653,11 @@ pub fn bundle_with_session(
         })?;
     }
     for (logical_root, source_root) in &exact_target_staging_alias_dirs {
+        // Alias dirs are always node_modules-shaped; under exclusions they fall
+        // back to the main shadow writer (no isolation root allocated).
         let target_writer = node_modules_isolation_writer
             .as_ref()
-            .expect("dependency alias staging allocated an isolation writer");
+            .unwrap_or(mat_ctx.writer);
         let dest = shadow_path_for_project_path(
             logical_root,
             &project_root,
@@ -2607,15 +2684,17 @@ pub fn bundle_with_session(
             continue;
         }
         let isolated_node_modules = project_path_is_inside_node_modules(physical, &project_root);
+        // No isolation root under exclusions → node_modules candidates stage
+        // into `<shadow>` at their logical paths via the main shadow writer.
         let target_root = if isolated_node_modules {
-            node_modules_isolation_root.expect("node_modules candidate allocated an isolation root")
+            node_modules_isolation_root.unwrap_or(shadow)
         } else {
             shadow
         };
         let target_writer = if isolated_node_modules {
             node_modules_isolation_writer
                 .as_ref()
-                .expect("node_modules candidate allocated an isolation writer")
+                .unwrap_or(mat_ctx.writer)
         } else {
             mat_ctx.writer
         };
@@ -2665,16 +2744,17 @@ pub fn bundle_with_session(
                 )
             })?;
         let isolated_node_modules = project_path_is_inside_node_modules(physical, &project_root);
+        // No isolation root under exclusions → node_modules preprocessing files
+        // stage into `<shadow>` at their logical paths via the main shadow writer.
         let target_root = if isolated_node_modules {
-            node_modules_isolation_root
-                .expect("node_modules preprocessing allocated an isolation root")
+            node_modules_isolation_root.unwrap_or(shadow)
         } else {
             shadow
         };
         let target_writer = if isolated_node_modules {
             node_modules_isolation_writer
                 .as_ref()
-                .expect("node_modules preprocessing allocated an isolation writer")
+                .unwrap_or(mat_ctx.writer)
         } else {
             mat_ctx.writer
         };
@@ -5263,7 +5343,6 @@ fn store_source_skip_entry(
 #[derive(Debug)]
 struct BundleExcludeMatcher {
     set: globset::GlobSet,
-    pattern_prefixes: Vec<(String, bool)>,
 }
 
 impl BundleExcludeMatcher {
@@ -5272,22 +5351,17 @@ impl BundleExcludeMatcher {
     /// silent no-op).
     fn new(patterns: &[String]) -> Result<Self> {
         let mut builder = globset::GlobSetBuilder::new();
-        let mut pattern_prefixes = Vec::with_capacity(patterns.len());
         for pat in patterns {
             let glob = globset::GlobBuilder::new(pat)
                 .literal_separator(true)
                 .build()
                 .map_err(|e| anyhow!("zfb bundler: invalid bundle.exclude pattern {pat:?}: {e}"))?;
             builder.add(glob);
-            pattern_prefixes.push(bundle_exclude_pattern_prefix(pat));
         }
         let set = builder
             .build()
             .map_err(|e| anyhow!("zfb bundler: failed to compile bundle.exclude globset: {e}"))?;
-        Ok(Self {
-            set,
-            pattern_prefixes,
-        })
+        Ok(Self { set })
     }
 
     fn is_empty(&self) -> bool {
@@ -5314,84 +5388,6 @@ impl BundleExcludeMatcher {
         }
         self.set.is_match(&rel_posix)
     }
-
-    /// Whether an excluded path can overlap the concrete values produced by
-    /// an absolute tsconfig wildcard target. Real fallback is safe only when
-    /// every configured pattern is provably disjoint from this static prefix.
-    fn may_overlap_wildcard_target(&self, target: &str, project_root: &Path) -> bool {
-        let Some(star) = target.find('*') else {
-            return false;
-        };
-        let raw_prefix = &target[..star];
-        let normalized_prefix = normalize_path_lexical(Path::new(raw_prefix));
-        let Ok(relative) = normalized_prefix.strip_prefix(project_root) else {
-            return false;
-        };
-        let mut target_prefix = path_to_posix_string(relative);
-        if has_trailing_path_separator(raw_prefix)
-            && !target_prefix.is_empty()
-            && !target_prefix.ends_with('/')
-        {
-            target_prefix.push('/');
-        }
-
-        self.pattern_prefixes
-            .iter()
-            .any(|(pattern_prefix, has_glob)| {
-                if *has_glob {
-                    pattern_prefix.starts_with(&target_prefix)
-                        || target_prefix.starts_with(pattern_prefix)
-                } else {
-                    pattern_prefix.starts_with(&target_prefix)
-                }
-            })
-    }
-
-    /// Whether an excluded path may live below an exact directory target.
-    /// Directory aliases can resolve through package metadata (including
-    /// package `imports`) that Rust deliberately does not try to reproduce.
-    /// When overlap is possible, isolate the complete allowed tree in the
-    /// shadow and let esbuild perform the authoritative resolution there.
-    fn may_overlap_directory_target(&self, target: &Path, project_root: &Path) -> bool {
-        if self.is_empty() || !target.is_dir() {
-            return false;
-        }
-        let Ok(relative) = target.strip_prefix(project_root) else {
-            return false;
-        };
-        let mut target_prefix = path_to_posix_string(relative);
-        if target_prefix.is_empty() {
-            return true;
-        }
-        if !target_prefix.ends_with('/') {
-            target_prefix.push('/');
-        }
-
-        self.pattern_prefixes
-            .iter()
-            .any(|(pattern_prefix, has_glob)| {
-                pattern_prefix.starts_with(&target_prefix)
-                    || (*has_glob && target_prefix.starts_with(pattern_prefix))
-            })
-    }
-}
-
-fn bundle_exclude_pattern_prefix(pattern: &str) -> (String, bool) {
-    let mut prefix = String::new();
-    let mut chars = pattern.chars();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\\' => {
-                let Some(escaped) = chars.next() else {
-                    break;
-                };
-                prefix.push(escaped);
-            }
-            '*' | '?' | '[' | '{' => return (prefix, true),
-            _ => prefix.push(ch),
-        }
-    }
-    (prefix, false)
 }
 
 /// Derive a URL route from a path **relative to** `pages_dir`.
@@ -5432,7 +5428,10 @@ fn derive_route(rel: &Path) -> Option<String> {
 /// Rebase the user's `compilerOptions.paths` targets so an alias whose
 /// target lives under the project root resolves to the **shadow** copy
 /// first (where the in-shadow `import.meta.glob` / `.module.css`
-/// transforms live), with the original real-root target as a fallback.
+/// transforms live). With an empty `bundle.exclude` the original real-root
+/// target is kept as a fallback; with any exclusion policy active the
+/// fallback is suppressed (see the shadow-only switch in
+/// [`rebase_tsconfig_paths_to_shadow_with_exclusions`]).
 ///
 /// Input targets are ALREADY ABSOLUTE (real-root) — `read_tsconfig_paths`
 /// in `crates/zfb/src/commands/build.rs` (and the test helpers that mirror
@@ -5444,12 +5443,12 @@ fn derive_route(rel: &Path) -> Option<String> {
 /// - Split a trailing `/*` glob suffix the SAME way
 ///   [`resolve_tsconfig_path_target`] does (`rsplit_once("/*")`), so the
 ///   wildcard is preserved verbatim and only the prefix is re-rooted.
-/// - **Prefix under `project_root`** → emit a two-element array
-///   `["<shadow>/<rel>[/*]", "<original real-abs target>"]`. esbuild tries
-///   the array in order, taking the first existing file; a miss on the
-///   shadow entry (e.g. the file was gitignored out of the shadow, or the
-///   target is a top-level file the extra-dirs pass doesn't mirror) falls
-///   through to the real path — graceful degradation, never a build break.
+/// - **Prefix under `project_root`** → emit `["<shadow>/<rel>[/*]"]`. With
+///   an empty `bundle.exclude`, the original real-abs target is appended as
+///   a second array element esbuild tries next (a shadow miss — gitignored
+///   file, unmirrored top-level file — falls through to the real path). With
+///   exclusions active the shadow entry is the SOLE target: absence from the
+///   shadow is the exclusion.
 /// - **Prefix NOT under `project_root`** (plugin/virtual/external targets,
 ///   which already point at `<shadow>/.zfb-virtual-*` temp files or an
 ///   out-of-tree path) → pass through UNCHANGED so the merge step's
@@ -5466,15 +5465,7 @@ fn rebase_tsconfig_paths_to_shadow(
     project_root: &Path,
     shadow: &Path,
 ) -> BTreeMap<String, Vec<String>> {
-    rebase_tsconfig_paths_to_shadow_with_exclusions(
-        paths,
-        project_root,
-        shadow,
-        None,
-        None,
-        &[],
-        None,
-    )
+    rebase_tsconfig_paths_to_shadow_with_exclusions(paths, project_root, shadow, None, None)
 }
 
 const SSR_RESOLVE_EXTENSIONS: [&str; 6] = ["tsx", "ts", "jsx", "js", "css", "json"];
@@ -5623,38 +5614,6 @@ fn concrete_ssr_target_candidates(
     );
     collect_ssr_directory_index_candidates(&target_path, &mut candidates);
     candidates
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ConcreteTargetExclusion {
-    None,
-    Block,
-    ShadowOnly,
-}
-
-fn concrete_target_exclusion(
-    target: &str,
-    project_root: &Path,
-    bundle_exclude: &BundleExcludeMatcher,
-    effective_main_fields: &[&str],
-) -> ConcreteTargetExclusion {
-    let target_path = normalize_path_lexical(Path::new(target));
-    if bundle_exclude.is_excluded(&target_path, project_root) {
-        return ConcreteTargetExclusion::Block;
-    }
-
-    let candidates = concrete_ssr_target_candidates(target, effective_main_fields);
-    let excluded = candidates
-        .iter()
-        .filter(|candidate| bundle_exclude.is_excluded(candidate, project_root))
-        .count();
-    if !candidates.is_empty() && excluded == candidates.len() {
-        return ConcreteTargetExclusion::Block;
-    }
-    if excluded > 0 || bundle_exclude.may_overlap_directory_target(&target_path, project_root) {
-        return ConcreteTargetExclusion::ShadowOnly;
-    }
-    ConcreteTargetExclusion::None
 }
 
 fn project_path_is_inside_node_modules(path: &Path, project_root: &Path) -> bool {
@@ -6034,6 +5993,21 @@ fn collect_package_scope_staging_files(package_root: &Path, files: &mut BTreeSet
     }
 }
 
+/// Stage the complete allowed candidate set for one concrete (non-wildcard)
+/// alias target into the shadow, so esbuild can resolve inside the shadow with
+/// no live-tree fallback. Rust only ever collects the candidate SET here — it
+/// never predicts which one esbuild picks.
+///
+/// `force_stage` gates the whole pass: concrete user tsconfig mappings only
+/// need explicit staging once `bundle.exclude` makes the live-real fallback
+/// unsafe (caller passes `!bundle_exclude.is_empty()`), while plugin aliases
+/// are always staged (they may point at hidden/unwalked files). When
+/// `force_stage` is false this is a no-op, keeping the empty-`bundle.exclude`
+/// path byte-identical to a build without the knob.
+///
+/// The excluded target itself is never staged: its absence from the shadow IS
+/// the exclusion. esbuild then fails to resolve it, naming the path — the
+/// metafile audit (wired separately) is the authoritative backstop.
 fn plan_concrete_target_staging(
     target: &str,
     project_root: &Path,
@@ -6042,16 +6016,16 @@ fn plan_concrete_target_staging(
     force_stage: bool,
     staging_files: &mut BTreeSet<PathBuf>,
     staging_dirs: &mut BTreeSet<PathBuf>,
-) -> ConcreteTargetExclusion {
-    let exclusion =
-        concrete_target_exclusion(target, project_root, bundle_exclude, effective_main_fields);
-    if exclusion == ConcreteTargetExclusion::Block
-        || (!force_stage && exclusion != ConcreteTargetExclusion::ShadowOnly)
-    {
-        return exclusion;
+) {
+    if !force_stage {
+        return;
     }
 
     let target_path = normalize_path_lexical(Path::new(target));
+    if bundle_exclude.is_excluded(&target_path, project_root) {
+        return;
+    }
+
     let candidates = concrete_ssr_target_candidates(target, effective_main_fields);
     staging_files.extend(
         candidates
@@ -6064,10 +6038,7 @@ fn plan_concrete_target_staging(
     // resolution that the Rust preprocessing discovery intentionally does
     // not emulate. Stage its complete allowed tree, except for a whole-root
     // alias whose ordinary source walks already provide the bounded mirror.
-    if target_path.is_dir()
-        && target_path != project_root
-        && (force_stage || exclusion == ConcreteTargetExclusion::ShadowOnly)
-    {
+    if target_path.is_dir() && target_path != project_root {
         staging_dirs.insert(target_path.clone());
     }
 
@@ -6093,7 +6064,6 @@ fn plan_concrete_target_staging(
         collect_package_scope_staging_files(&package_root, staging_files);
     }
     staging_files.retain(|file| !bundle_exclude.is_excluded(file, project_root));
-    exclusion
 }
 
 fn rebase_tsconfig_paths_to_shadow_with_exclusions(
@@ -6101,10 +6071,17 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
     project_root: &Path,
     shadow: &Path,
     bundle_exclude: Option<&BundleExcludeMatcher>,
-    excluded_target: Option<&Path>,
-    effective_main_fields: &[&str],
     node_modules_isolation_root: Option<&Path>,
 ) -> BTreeMap<String, Vec<String>> {
+    // With any `bundle.exclude` policy active, exclusion means exactly "absence
+    // from the fully staged shadow tree": every under-root target rewrites to a
+    // SHADOW-ONLY target with no live-real fallback, so an excluded file can
+    // never be resurrected from the real tree. esbuild resolves inside the
+    // shadow; a missing target simply fails to resolve, naming the path (the
+    // metafile audit, wired separately, is the authoritative backstop). This is
+    // deliberately uniform — no per-target 3-state classification, no
+    // provably-disjoint carve-out — so the seam has a single, decidable rule.
+    let exclusions_active = bundle_exclude.is_some_and(|matcher| !matcher.is_empty());
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, targets) in paths {
         let mut new_targets: Vec<String> = Vec::with_capacity(targets.len() + 1);
@@ -6119,46 +6096,7 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
             // temp file materialised inside `shadow`) — leave untouched.
             let already_shadowed = prefix_path.starts_with(shadow);
             if !already_shadowed && prefix_path.strip_prefix(project_root).is_ok() {
-                let has_wildcard = target.contains('*');
-                let mut concrete_exclusion = if !has_wildcard {
-                    bundle_exclude.map_or(ConcreteTargetExclusion::None, |matcher| {
-                        concrete_target_exclusion(
-                            prefix,
-                            project_root,
-                            matcher,
-                            effective_main_fields,
-                        )
-                    })
-                } else {
-                    ConcreteTargetExclusion::None
-                };
-                if !has_wildcard
-                    && concrete_exclusion == ConcreteTargetExclusion::None
-                    && bundle_exclude.is_some_and(|matcher| !matcher.is_empty())
-                {
-                    // A live exact-file fallback can import an excluded
-                    // relative dependency that is not itself a resolver
-                    // candidate. With any exclusion policy active, keep
-                    // exact user mappings in their fully staged shadow
-                    // closure instead of allowing that escape hatch.
-                    concrete_exclusion = ConcreteTargetExclusion::ShadowOnly;
-                }
-                if concrete_exclusion == ConcreteTargetExclusion::Block {
-                    // A concrete user path mapping to an excluded file must
-                    // not retain either its ordinary shadow candidate or
-                    // the live-real fallback. Route it through the same
-                    // opaque absent child used for excluded plugin aliases.
-                    push_unique(
-                        &mut new_targets,
-                        excluded_target
-                            .expect("excluded concrete tsconfig target allocated a guard")
-                            .to_string_lossy()
-                            .into_owned(),
-                    );
-                    continue;
-                }
-
-                // Under project_root → dual-target, shadow-first.
+                // Under project_root → shadow-first.
                 // `rel` is empty for the whole-root `@/* -> /root/*`
                 // (baseUrl ".") case — the most common alias shape.
                 // `shadow.join("")` would yield `<shadow>/` and produce a
@@ -6177,31 +6115,15 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                 shadow_target.push_str(suffix);
                 push_unique(&mut new_targets, shadow_target);
 
-                if concrete_exclusion == ConcreteTargetExclusion::ShadowOnly {
-                    // At least one plausible candidate or package-owned
-                    // descendant is excluded. The isolated shadow contains
-                    // every allowed candidate and deliberately has no live
-                    // fallback; esbuild still chooses the winner.
-                    continue;
-                }
-
-                if has_wildcard
-                    && bundle_exclude.is_some_and(|matcher| {
-                        !matcher.is_empty()
-                            && matcher.may_overlap_wildcard_target(target, project_root)
-                    })
-                {
-                    // The shadow wildcard still resolves every allowed
-                    // mirrored file, but the live-real fallback could
-                    // resurrect a file matched by `bundle.exclude` and
-                    // skipped from the shadow. Suppress fallback whenever
-                    // the configured exclude patterns can overlap this
-                    // wildcard; provably-disjoint aliases keep it.
+                if exclusions_active {
+                    // Shadow-only: suppress the live-real fallback entirely.
                     continue;
                 }
             }
-            // Always keep the original (real-abs / plugin / shadow) target
-            // as the fallback (or the sole target when not under root).
+            // Empty `bundle.exclude` (or an out-of-root / plugin / shadow
+            // target): keep the original real-abs target as the graceful
+            // fallback (the dual-target array esbuild tries in order), or as
+            // the sole target when it is not under the project root.
             push_unique(&mut new_targets, target.clone());
         }
         out.insert(key.clone(), new_targets);
@@ -6974,52 +6896,19 @@ fn run_esbuild(
     // emitted as a plugin `--alias` (which esbuild applies BEFORE tsconfig
     // `paths`, overriding the user's mapping). User-wins, #1267.
     let project_root = normalize_path_lexical(&input.project_root);
-    let has_blocked_project_alias = !bundle_exclude.is_empty()
-        && input.plugin_alias_entries.iter().any(|(_, target)| {
-            let target_path = normalize_path_lexical(Path::new(target));
-            target_path.starts_with(&project_root)
-                && concrete_target_exclusion(
-                    target,
-                    &project_root,
-                    bundle_exclude,
-                    &effective_main_fields,
-                ) == ConcreteTargetExclusion::Block
-        });
-    let has_blocked_concrete_tsconfig_target = !bundle_exclude.is_empty()
-        && input
-            .tsconfig_paths
-            .values()
-            .flatten()
-            .filter(|target| !target.contains('*'))
-            .any(|target| {
-                let target_path = normalize_path_lexical(Path::new(target));
-                target_path.starts_with(&project_root)
-                    && concrete_target_exclusion(
-                        target,
-                        &project_root,
-                        bundle_exclude,
-                        &effective_main_fields,
-                    ) == ConcreteTargetExclusion::Block
-            });
-    // Allocate the resolution guard only after every source materialisation
-    // and stale-shadow prune has finished. Its random per-run directory cannot
-    // collide with a project-controlled shadow path; excluded aliases point at
-    // an absent child inside it. Keep the TempDir handle alive until esbuild
-    // returns so the missing target cannot be replaced during resolution.
-    let excluded_plugin_alias_guard =
-        if has_blocked_project_alias || has_blocked_concrete_tsconfig_target {
-            Some(
-                tempfile::Builder::new()
-                    .prefix(".zfb-excluded-alias-guard-")
-                    .tempdir_in(shadow)
-                    .context("bundler: failed allocating excluded plugin-alias resolution guard")?,
-            )
-        } else {
-            None
-        };
-    let excluded_plugin_alias_target = excluded_plugin_alias_guard
-        .as_ref()
-        .map(|guard| guard.path().join("unresolvable"));
+    // Remap each plugin alias whose target lives under the project root to its
+    // shadow copy.
+    //
+    // With exclusions active the shadow copy is ALWAYS the target: exclusion =
+    // absence from the shadow, so an excluded alias target is simply not staged
+    // and esbuild fails to resolve it, naming the specifier. There is no guard
+    // child and no live-real fallback.
+    //
+    // With an empty `bundle.exclude` the historical behaviour is preserved:
+    // point at the shadow copy only when a shadow candidate actually exists,
+    // else keep the real target (graceful degradation, byte-identical to a
+    // build without the knob).
+    let exclusions_active = !bundle_exclude.is_empty();
     let effective_plugin_aliases = input
         .plugin_alias_entries
         .iter()
@@ -7027,27 +6916,15 @@ fn run_esbuild(
             let target_path = normalize_path_lexical(Path::new(target));
             let remapped = match target_path.strip_prefix(&project_root) {
                 Ok(_) => {
-                    let exclusion = concrete_target_exclusion(
-                        target,
+                    let shadow_target = shadow_path_for_project_path(
+                        &target_path,
                         &project_root,
-                        bundle_exclude,
-                        &effective_main_fields,
+                        shadow,
+                        node_modules_isolation_root,
                     );
-                    if exclusion == ConcreteTargetExclusion::Block {
-                        // The guard child deliberately does not exist, so an
-                        // imported blocked alias fails while an unused
-                        // registration remains harmless.
-                        excluded_plugin_alias_target
-                            .as_ref()
-                            .expect("blocked project alias allocated a guard")
-                            .clone()
+                    if exclusions_active {
+                        shadow_target
                     } else {
-                        let shadow_target = shadow_path_for_project_path(
-                            &target_path,
-                            &project_root,
-                            shadow,
-                            node_modules_isolation_root,
-                        );
                         let has_shadow_candidate =
                             concrete_ssr_target_candidates(target, &effective_main_fields)
                                 .iter()
@@ -7060,10 +6937,7 @@ fn run_esbuild(
                                     )
                                 })
                                 .any(|candidate| candidate.is_file());
-                        if exclusion == ConcreteTargetExclusion::ShadowOnly
-                            || shadow_target.exists()
-                            || has_shadow_candidate
-                        {
+                        if shadow_target.exists() || has_shadow_candidate {
                             shadow_target
                         } else {
                             target_path
@@ -7113,8 +6987,6 @@ fn run_esbuild(
         &input.project_root,
         shadow,
         Some(bundle_exclude),
-        excluded_plugin_alias_target.as_deref(),
-        &effective_main_fields,
         node_modules_isolation_root,
     );
     zfb_plugin_resolver::merge_into_tsconfig_paths(
@@ -7258,10 +7130,6 @@ fn run_esbuild(
     // `NamedTempFile`s inside `_temp_files` delete themselves via
     // their Drop impl.
     drop(resolver_inputs);
-    // The excluded-alias guard must outlive the subprocess for its absent
-    // child to remain an authoritative unresolvable target. Removing it now
-    // also keeps persistent dev shadow sessions free of per-run directories.
-    drop(excluded_plugin_alias_guard);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -7632,398 +7500,69 @@ mod tests {
     }
 
     #[test]
-    fn exclusion_aware_tsconfig_rebase_blocks_exact_and_related_wildcard_fallbacks() {
-        let project = tempfile::tempdir().unwrap();
-        let root = project.path();
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(root.join("src/secret.ts"), "export default 'secret';\n").unwrap();
-        fs::create_dir_all(root.join("secret-dir")).unwrap();
-        fs::write(root.join("secret-dir/index.json"), r#"{"secret":true}"#).unwrap();
-        fs::create_dir_all(root.join("package-dir/dist")).unwrap();
-        fs::write(
-            root.join("package-dir/package.json"),
-            r#"{"main":"./dist/entry.js"}"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("package-dir/dist/entry.js"),
-            "export default 'package-secret';\n",
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("allowed-dir")).unwrap();
-        fs::write(root.join("allowed-dir/index.json"), r#"{"allowed":true}"#).unwrap();
-        fs::create_dir_all(root.join("allowed-package/dist")).unwrap();
-        fs::create_dir_all(root.join("allowed-package/test")).unwrap();
-        fs::write(
-            root.join("allowed-package/package.json"),
-            r#"{"exports":{".":{"node":"./test/excluded.js"}},"main":"./dist/entry.js"}"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("allowed-package/dist/entry.js"),
-            "export default 'allowed-package';\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("allowed-package/index.json"),
-            r#"{"excluded":"but not selected"}"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("allowed-package/test/excluded.js"),
-            "export default 'unrelated';\n",
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("css-first-dir")).unwrap();
-        fs::write(root.join("css-first-dir/index.css"), ".allowed {}\n").unwrap();
-        fs::write(
-            root.join("css-first-dir/index.json"),
-            r#"{"excluded":"json"}"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("css-first-dir/index.mjs"),
-            "export default 'excluded-mjs';\n",
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("json-before-mjs-dir")).unwrap();
-        fs::write(
-            root.join("json-before-mjs-dir/index.json"),
-            r#"{"allowed":"json"}"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("json-before-mjs-dir/index.mjs"),
-            "export default 'excluded-mjs';\n",
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("sibling-before-directory/dist")).unwrap();
-        fs::write(
-            root.join("sibling-before-directory/package.json"),
-            r#"{"main":"./dist/allowed.js"}"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("sibling-before-directory/dist/allowed.js"),
-            "export default 'allowed-directory-main';\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("sibling-before-directory.css"),
-            ".excluded-sibling {}\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("sibling-before-directory.mjs"),
-            "export default 'allowed-but-unsupported-mjs';\n",
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("allowed-sibling-directory/dist")).unwrap();
-        fs::write(
-            root.join("allowed-sibling-directory/package.json"),
-            r#"{"main":"./dist/excluded.js"}"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("allowed-sibling-directory/dist/excluded.js"),
-            "export default 'excluded-directory-main';\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("allowed-sibling-directory.css"),
-            ".allowed-sibling {}\n",
-        )
-        .unwrap();
-        fs::write(root.join("allowed-exact.js"), "export default 'allowed';\n").unwrap();
-        fs::write(
-            root.join("allowed-exact.ts"),
-            "export default 'excluded-rewrite';\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("missing-explicit.ts"),
-            "export default 'excluded-rewrite';\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("uppercase.ts"),
-            "export default 'excluded-uppercase-rewrite';\n",
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("parent-main-package")).unwrap();
-        fs::write(
-            root.join("parent-main-package/package.json"),
-            r#"{"main":"../parent-secret.js"}"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("parent-main-package/index.js"),
-            "export default 'allowed-index';\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("parent-secret.ts"),
-            "export default 'excluded-parent-main';\n",
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("main-slash-package/value")).unwrap();
-        fs::write(
-            root.join("main-slash-package/package.json"),
-            r#"{"main":"./value/"}"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("main-slash-package/value.css"),
-            ".excluded-main-sibling {}\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("main-slash-package/value/index.js"),
-            "export default 'allowed-nested-index';\n",
-        )
-        .unwrap();
+    fn exclusion_active_tsconfig_rebase_is_uniformly_shadow_only() {
+        // THE SWITCH (#1557): with any `bundle.exclude` active, every under-root
+        // tsconfig target rewrites to a SINGLE shadow-only target — no
+        // `[shadow, real]` dual-target array, no per-target 3-state
+        // classification, no guard-child routing, no provably-disjoint carve-out.
+        // Exclusion = absence from the shadow; esbuild resolves inside the shadow
+        // and a missing target simply fails to resolve. External targets pass
+        // through unchanged.
+        let shadow = Path::new("/tmp/shadowSwitch");
+        let root = Path::new("/proj");
+        let matcher = BundleExcludeMatcher::new(&["src/secret.ts".to_string()]).unwrap();
 
-        let shadow = tempfile::tempdir().unwrap();
-        let blocked = shadow.path().join("guard/unresolvable");
-        let matcher = BundleExcludeMatcher::new(&[
-            "src/secret.ts".to_string(),
-            "secret-dir/index.json".to_string(),
-            "package-dir/dist/entry.js".to_string(),
-            "allowed-package/test/excluded.js".to_string(),
-            "allowed-package/index.json".to_string(),
-            "css-first-dir/index.json".to_string(),
-            "css-first-dir/index.mjs".to_string(),
-            "json-before-mjs-dir/index.mjs".to_string(),
-            "sibling-before-directory.css".to_string(),
-            "allowed-sibling-directory/dist/excluded.js".to_string(),
-            "allowed-exact.ts".to_string(),
-            "missing-explicit.ts".to_string(),
-            "uppercase.ts".to_string(),
-            "parent-secret.ts".to_string(),
-            "main-slash-package/value.css".to_string(),
-        ])
-        .unwrap();
-        let root_string = root.to_string_lossy();
-        let mut paths = BTreeMap::new();
+        let mut paths: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        // whole-root wildcard (baseUrl "." — empty rel must NOT double-slash).
+        paths.insert("@/*".to_string(), vec!["/proj/*".to_string()]);
+        // the excluded exact file itself.
         paths.insert(
-            "exact".to_string(),
-            vec![root.join("src/secret.ts").to_string_lossy().into_owned()],
+            "secret".to_string(),
+            vec!["/proj/src/secret.ts".to_string()],
         );
-        paths.insert(
-            "extensionless".to_string(),
-            vec![root.join("src/secret").to_string_lossy().into_owned()],
-        );
-        paths.insert(
-            "related/*".to_string(),
-            vec![format!("{root_string}/src/*")],
-        );
+        // an UNRELATED wildcard that does not overlap the exclusion. Under the
+        // old "provably disjoint keeps its real fallback" heuristic this kept a
+        // second real-abs element; the switch drops it — this is the conscious
+        // flip.
         paths.insert(
             "unrelated/*".to_string(),
-            vec![format!("{root_string}/unmirrored/*")],
+            vec!["/proj/unmirrored/*".to_string()],
         );
-        paths.insert(
-            "json-directory".to_string(),
-            vec![root.join("secret-dir").to_string_lossy().into_owned()],
-        );
-        paths.insert(
-            "package-directory".to_string(),
-            vec![root.join("package-dir").to_string_lossy().into_owned()],
-        );
-        paths.insert(
-            "allowed-directory".to_string(),
-            vec![root.join("allowed-dir").to_string_lossy().into_owned()],
-        );
-        paths.insert(
-            "allowed-package".to_string(),
-            vec![root.join("allowed-package").to_string_lossy().into_owned()],
-        );
-        paths.insert(
-            "css-first-directory".to_string(),
-            vec![root.join("css-first-dir").to_string_lossy().into_owned()],
-        );
-        paths.insert(
-            "json-before-mjs-directory".to_string(),
-            vec![root
-                .join("json-before-mjs-dir")
-                .to_string_lossy()
-                .into_owned()],
-        );
-        paths.insert(
-            "sibling-before-directory".to_string(),
-            vec![root
-                .join("sibling-before-directory")
-                .to_string_lossy()
-                .into_owned()],
-        );
-        paths.insert(
-            "trailing-directory-only".to_string(),
-            vec![format!(
-                "{}/",
-                root.join("sibling-before-directory").display()
-            )],
-        );
-        paths.insert(
-            "allowed-sibling-before-directory".to_string(),
-            vec![root
-                .join("allowed-sibling-directory")
-                .to_string_lossy()
-                .into_owned()],
-        );
-        paths.insert(
-            "allowed-explicit-js".to_string(),
-            vec![root.join("allowed-exact.js").to_string_lossy().into_owned()],
-        );
-        paths.insert(
-            "missing-explicit-js".to_string(),
-            vec![root
-                .join("missing-explicit.js")
-                .to_string_lossy()
-                .into_owned()],
-        );
-        paths.insert(
-            "uppercase-explicit-js".to_string(),
-            vec![root.join("uppercase.JS").to_string_lossy().into_owned()],
-        );
-        paths.insert(
-            "parent-main-package".to_string(),
-            vec![root
-                .join("parent-main-package")
-                .to_string_lossy()
-                .into_owned()],
-        );
-        paths.insert(
-            "main-slash-package".to_string(),
-            vec![format!("{}/", root.join("main-slash-package").display())],
-        );
+        // a directory target with a trailing separator.
+        paths.insert("dir".to_string(), vec!["/proj/pkg/".to_string()]);
+        // an external target (not under project_root) — passes through unchanged.
+        paths.insert("@ext/*".to_string(), vec!["/other/pkg/*".to_string()]);
 
         let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
             &paths,
             root,
-            shadow.path(),
+            shadow,
             Some(&matcher),
-            Some(&blocked),
-            &["main"],
             None,
         );
 
-        let blocked_string = blocked.to_string_lossy().into_owned();
-        assert_eq!(out["exact"], vec![blocked_string.clone()]);
-        assert_eq!(out["extensionless"], vec![blocked_string.clone()]);
-        assert_eq!(out["json-directory"], vec![blocked_string.clone()]);
-        assert_eq!(out["package-directory"], vec![blocked_string.clone()]);
-        assert_eq!(
-            out["sibling-before-directory"],
-            vec![shadow
-                .path()
-                .join("sibling-before-directory")
-                .to_string_lossy()
-                .into_owned()],
-            "mixed candidates are isolated so esbuild chooses among allowed files"
+        assert_eq!(out["@/*"], vec!["/tmp/shadowSwitch/*".to_string()]);
+        assert!(
+            !out["@/*"][0].contains("//"),
+            "bare-root rebase must not double-slash: {:?}",
+            out["@/*"]
         );
         assert_eq!(
-            out["missing-explicit-js"],
-            vec![blocked_string.clone()],
-            "a missing explicit .js target rewrites to the excluded .ts source"
-        );
-        assert_eq!(
-            out["parent-main-package"],
-            vec![shadow
-                .path()
-                .join("parent-main-package")
-                .to_string_lossy()
-                .into_owned()],
-            "an excluded main rewrite and allowed index are isolated together"
-        );
-        assert_eq!(
-            out["main-slash-package"],
-            vec![format!(
-                "{}/",
-                shadow.path().join("main-slash-package").display()
-            )],
-            "a trailing package main with mixed sibling/index candidates is isolated"
-        );
-        assert_eq!(
-            out["related/*"],
-            vec![format!("{}/src/*", shadow.path().display())]
+            out["secret"],
+            vec!["/tmp/shadowSwitch/src/secret.ts".to_string()],
+            "the excluded exact target is shadow-only — no live-real fallback"
         );
         assert_eq!(
             out["unrelated/*"],
-            vec![
-                format!("{}/unmirrored/*", shadow.path().display()),
-                format!("{root_string}/unmirrored/*"),
-            ],
-            "an unrelated exclusion must preserve the historical real fallback"
+            vec!["/tmp/shadowSwitch/unmirrored/*".to_string()],
+            "an unrelated wildcard also loses its real fallback under exclusions \
+             (the provably-disjoint carve-out is deleted)"
         );
+        assert_eq!(out["dir"], vec!["/tmp/shadowSwitch/pkg/".to_string()]);
         assert_eq!(
-            out["trailing-directory-only"],
-            vec![format!(
-                "{}/",
-                shadow.path().join("sibling-before-directory").display()
-            )],
-            "an exact target is isolated whenever exclusions are active"
-        );
-        assert_eq!(
-            out["allowed-sibling-before-directory"],
-            vec![shadow
-                .path()
-                .join("allowed-sibling-directory")
-                .to_string_lossy()
-                .into_owned()],
-            "an allowed sibling and excluded directory main require isolation"
-        );
-        assert_eq!(
-            out["allowed-explicit-js"],
-            vec![shadow
-                .path()
-                .join("allowed-exact.js")
-                .to_string_lossy()
-                .into_owned()],
-            "an allowed exact file and excluded rewrite require isolation"
-        );
-        assert_eq!(
-            out["uppercase-explicit-js"],
-            vec![shadow
-                .path()
-                .join("uppercase.JS")
-                .to_string_lossy()
-                .into_owned()],
-            "an exact missing target still has no live fallback under exclusions"
-        );
-        assert_eq!(
-            out["allowed-directory"],
-            vec![shadow
-                .path()
-                .join("allowed-dir")
-                .to_string_lossy()
-                .into_owned()],
-            "all exact user targets are isolated while exclusions are active"
-        );
-        assert_eq!(
-            out["allowed-package"],
-            vec![shadow
-                .path()
-                .join("allowed-package")
-                .to_string_lossy()
-                .into_owned()],
-            "an excluded package descendant suppresses the live directory fallback"
-        );
-        assert_eq!(
-            out["css-first-directory"],
-            vec![shadow
-                .path()
-                .join("css-first-dir")
-                .to_string_lossy()
-                .into_owned()],
-            "mixed index candidates are isolated instead of preselected"
-        );
-        assert_eq!(
-            out["json-before-mjs-directory"],
-            vec![shadow
-                .path()
-                .join("json-before-mjs-dir")
-                .to_string_lossy()
-                .into_owned()],
-            "an excluded package descendant is never reachable through fallback"
+            out["@ext/*"],
+            vec!["/other/pkg/*".to_string()],
+            "external targets pass through unchanged"
         );
     }
 
@@ -13318,24 +12857,12 @@ mod tests {
         assert!(deep.is_excluded(Path::new("/proj/components/sub/Deep.stories.tsx"), root));
     }
 
-    #[test]
-    fn bundle_exclude_prefix_overlap_only_keeps_provably_disjoint_wildcards() {
-        let root = Path::new("/proj");
-        let scoped = BundleExcludeMatcher::new(&[
-            "src/**/*.secret.ts".to_string(),
-            "assets/private.json".to_string(),
-        ])
-        .unwrap();
-        assert!(scoped.may_overlap_wildcard_target("/proj/src/*", root));
-        assert!(scoped.may_overlap_wildcard_target("/proj/assets/*", root));
-        assert!(!scoped.may_overlap_wildcard_target("/proj/ignored/*", root));
-
-        let broad = BundleExcludeMatcher::new(&["**/*.secret.ts".to_string()]).unwrap();
-        assert!(
-            broad.may_overlap_wildcard_target("/proj/ignored/*", root),
-            "a pattern with no literal prefix is not provably disjoint"
-        );
-    }
+    // REMOVED (#1557): `bundle_exclude_prefix_overlap_only_keeps_provably_disjoint_wildcards`
+    // pinned the `may_overlap_wildcard_target` prefix-overlap heuristic, which
+    // THE SWITCH deletes — under exclusions every wildcard is suppressed
+    // uniformly (no provably-disjoint carve-out), so there is nothing left to
+    // test. The uniform shadow-only contract is pinned by
+    // `exclusion_active_tsconfig_rebase_is_uniformly_shadow_only` above.
 
     #[test]
     fn bundle_exclude_invalid_pattern_is_an_error() {

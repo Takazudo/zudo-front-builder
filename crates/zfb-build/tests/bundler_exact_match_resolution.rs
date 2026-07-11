@@ -24,7 +24,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 
-use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec};
+use zfb_build::{
+    bundle, bundle_with_session, BundleMode, BundlerInput, ContentCollectionSpec, ShadowSession,
+};
 use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
@@ -1508,7 +1510,16 @@ fn ordinary_wildcard_target_cannot_fallback_to_excluded_real_file() {
 }
 
 #[test]
-fn unrelated_wildcard_keeps_ignored_directory_real_fallback() {
+fn unrelated_wildcard_loses_ignored_directory_real_fallback_under_exclusions() {
+    // FLIP (#1557): the old "provably disjoint wildcard keeps its real fallback"
+    // heuristic is DELETED. THE SWITCH makes exclusion mean exactly "absence from
+    // the fully staged shadow tree", uniformly: with ANY `bundle.exclude` active,
+    // every under-root wildcard is shadow-only, with no live-real fallback — even
+    // one whose prefix is provably disjoint from the excluded pattern. Here the
+    // `ignored/` directory is gitignored, so it is never mirrored into the shadow;
+    // without the suppressed real fallback the alias target is genuinely absent
+    // and the build must FAIL, naming the unresolved import rather than
+    // resurrecting the file from the live tree.
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
         return;
@@ -1544,10 +1555,16 @@ fn unrelated_wildcard_keeps_ignored_directory_real_fallback() {
     );
     input.bundle_exclude = vec!["src/secret.ts".to_string()];
 
-    bundle(input).expect("provably-disjoint wildcard must retain its real fallback");
-    let body = fs::read_to_string(root.join("dist-unrelated-wildcard/bundle.mjs")).unwrap();
-    assert!(body.contains("UNRELATED_REAL_FALLBACK_ALLOWED"), "{body}");
-    assert!(!body.contains("UNRELATED_EXCLUDED_FILE"), "{body}");
+    let error = bundle(input)
+        .expect_err("a shadow-only wildcard has no live fallback: the gitignored target is absent");
+    let message = format!("{error:#}");
+    assert!(message.contains("ignored:allowed"), "{message}");
+    let bundle_path = root.join("dist-unrelated-wildcard/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("UNRELATED_REAL_FALLBACK_ALLOWED"), "{body}");
+        assert!(!body.contains("UNRELATED_EXCLUDED_FILE"), "{body}");
+    }
 }
 
 #[test]
@@ -2487,5 +2504,307 @@ fn user_tsconfig_paths_win_over_plugin_alias_on_collision() {
         "collision policy: plugin entry must NOT shadow the user's entry — \
          the plugin's marker symbol `PluginVersionMarker` should not reach \
          the bundle."
+    );
+}
+
+// ── THE SWITCH (#1557): F1 + F2 negative regression tests ───────────────────
+//
+// These land HERE because only THE SWITCH (shadow-only tsconfig targets + no
+// live `<shadow>/node_modules` symlink under exclusions) makes them pass. Each
+// pins a live-tree fallback that the old 3-state resolver prediction could not
+// close: an excluded alias target must be UNREACHABLE, and the build must FAIL
+// visibly, naming the unresolved import. The wave-1 allowed-closure positives
+// above prove the same switch does NOT over-suppress non-excluded dependencies.
+
+/// Lay down a bare dependency package `<root>/node_modules/<name>` whose default
+/// export is `marker`. Returns the physical package directory.
+fn write_root_bare_package(root: &std::path::Path, name: &str, marker: &str) -> PathBuf {
+    write_bare_package_in(&root.join("node_modules"), name, marker)
+}
+
+// Finding 1 — a blocked bare-shaped alias key must not fall back to a
+// same-named live bare package.
+#[test]
+fn excluded_exact_bare_alias_cannot_fall_back_to_same_named_package() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "collision-alias", "unused.tsx");
+    write_value_page(&root, "collision-alias");
+    fs::write(
+        root.join("src/excluded-collision.ts"),
+        "export default 'EXCLUDED_EXACT_ALIAS';\n",
+    )
+    .unwrap();
+    write_root_bare_package(&root, "collision-alias", "LIVE_BARE_FALLBACK");
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-exact-bare-collision",
+        BTreeMap::from([(
+            "collision-alias".to_string(),
+            vec![root
+                .join("src/excluded-collision.ts")
+                .to_string_lossy()
+                .into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec!["src/excluded-collision.ts".to_string()];
+
+    let error = bundle(input)
+        .expect_err("an excluded exact alias must not fall back to a same-named live bare package");
+    let message = format!("{error:#}");
+    assert!(message.contains("collision-alias"), "{message}");
+    let bundle_path = root.join("dist-exact-bare-collision/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("LIVE_BARE_FALLBACK"), "{body}");
+        assert!(!body.contains("EXCLUDED_EXACT_ALIAS"), "{body}");
+    }
+}
+
+// Finding 1 — an overlapping wildcard miss must not fall back to a same-named
+// live bare package subpath.
+#[test]
+fn overlapping_wildcard_cannot_fall_back_to_same_named_package_subpath() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "collision-wildcard/secret", "unused.tsx");
+    write_value_page(&root, "collision-wildcard/secret");
+    fs::create_dir_all(root.join("src/wildcard")).unwrap();
+    fs::write(
+        root.join("src/wildcard/secret.ts"),
+        "export default 'EXCLUDED_WILDCARD_ALIAS';\n",
+    )
+    .unwrap();
+    let package = write_root_bare_package(&root, "collision-wildcard", "unused-root");
+    fs::write(
+        package.join("secret.js"),
+        "export default 'LIVE_WILDCARD_BARE_FALLBACK';\n",
+    )
+    .unwrap();
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-wildcard-bare-collision",
+        BTreeMap::from([(
+            "collision-wildcard/*".to_string(),
+            vec![format!("{}/src/wildcard/*", root.display())],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec!["src/wildcard/secret.ts".to_string()];
+
+    let error = bundle(input)
+        .expect_err("an overlapping wildcard miss must resolve to absence, not a bare subpath");
+    let message = format!("{error:#}");
+    assert!(message.contains("collision-wildcard/secret"), "{message}");
+    let bundle_path = root.join("dist-wildcard-bare-collision/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("LIVE_WILDCARD_BARE_FALLBACK"), "{body}");
+        assert!(!body.contains("EXCLUDED_WILDCARD_ALIAS"), "{body}");
+    }
+}
+
+// Finding 2 — a first-party exact target must resolve inside the filtered
+// dependency view; it must not climb to an excluded live bare dependency.
+#[test]
+fn first_party_root_exact_target_cannot_climb_to_excluded_bare_dependency() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:root-bare", "unused.tsx");
+    write_value_page(&root, "plugin:root-bare");
+    fs::write(
+        root.join(".root-bare-entry.js"),
+        "import value from 'excluded-root-dependency'; export default value;\n",
+    )
+    .unwrap();
+    let dependency = write_root_bare_package(
+        &root,
+        "excluded-root-dependency",
+        "LIVE_EXCLUDED_ROOT_BARE_DEPENDENCY",
+    );
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-root-bare-excluded",
+        BTreeMap::new(),
+        vec![(
+            "plugin:root-bare".to_string(),
+            root.join(".root-bare-entry.js")
+                .to_string_lossy()
+                .into_owned(),
+        )],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec![dependency
+        .join("index.js")
+        .strip_prefix(&root)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()];
+
+    let error = bundle(input).expect_err(
+        "a first-party exact target must not climb to an excluded live bare dependency",
+    );
+    let message = format!("{error:#}");
+    assert!(message.contains("excluded-root-dependency"), "{message}");
+    let bundle_path = root.join("dist-root-bare-excluded/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(
+            !body.contains("LIVE_EXCLUDED_ROOT_BARE_DEPENDENCY"),
+            "{body}"
+        );
+    }
+}
+
+// Finding 2 — a first-party package resolving an external via package `imports`
+// must use the filtered dependency view, not climb to the excluded dependency.
+#[test]
+fn first_party_package_imports_external_cannot_climb_to_excluded_dependency() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:hidden-external-import", "unused.tsx");
+    write_value_page(&root, "plugin:hidden-external-import");
+    let package = root.join(".hidden-external-import");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(
+        package.join("package.json"),
+        r##"{"type":"module","imports":{"#dep":"excluded-imports-dependency"}}"##,
+    )
+    .unwrap();
+    fs::write(
+        package.join("entry.js"),
+        "import value from '#dep'; export default value;\n",
+    )
+    .unwrap();
+    let dependency = write_root_bare_package(
+        &root,
+        "excluded-imports-dependency",
+        "LIVE_EXCLUDED_PACKAGE_IMPORTS_DEPENDENCY",
+    );
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-hidden-external-import-excluded",
+        BTreeMap::new(),
+        vec![(
+            "plugin:hidden-external-import".to_string(),
+            package.join("entry.js").to_string_lossy().into_owned(),
+        )],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec![dependency
+        .join("index.js")
+        .strip_prefix(&root)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()];
+
+    let error = bundle(input)
+        .expect_err("package `imports` external targets must use the filtered dependency view");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("excluded-imports-dependency") || message.contains("#dep"),
+        "{message}"
+    );
+    let bundle_path = root.join("dist-hidden-external-import-excluded/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(
+            !body.contains("LIVE_EXCLUDED_PACKAGE_IMPORTS_DEPENDENCY"),
+            "{body}"
+        );
+    }
+}
+
+// Acceptance #6 — one persistent ShadowSession through empty → non-empty →
+// empty `bundle.exclude`. The live `<shadow>/node_modules` symlink must be
+// actively REMOVED on the empty→non-empty transition (so an excluded dep cannot
+// be resurrected), and re-created when the session returns to an empty exclude.
+// Behavioural proof: the same bare dependency resolves, then fails, then
+// resolves again — across one stable session identity.
+#[test]
+fn session_transition_removes_and_restores_node_modules_symlink_under_exclusions() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "session-dep", "unused.tsx");
+    write_value_page(&root, "session-dep");
+    let dependency = write_root_bare_package(&root, "session-dep", "SESSION_DEP_MARKER");
+
+    let make_tick = |exclude: Vec<String>, outdir: &str| {
+        let mut input = make_input(&root, &esbuild, outdir, BTreeMap::new(), vec![], vec![]);
+        input.mode = BundleMode::Development;
+        input.node_modules_dir = Some(root.join("node_modules"));
+        input.bundle_exclude = exclude;
+        input
+    };
+    let excluded = vec![dependency
+        .join("index.js")
+        .strip_prefix(&root)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()];
+
+    let mut session = ShadowSession::new().unwrap();
+
+    // Tick 1 (empty exclude): the live symlink resolves the bare dep.
+    let first = bundle_with_session(make_tick(Vec::new(), "dist-session-a"), Some(&mut session))
+        .expect("empty-exclude tick resolves the bare dep through the live symlink");
+    let first_body = fs::read_to_string(&first.bundle_path).unwrap();
+    assert!(
+        first_body.contains("SESSION_DEP_MARKER"),
+        "tick 1 must bundle the live bare dependency: {first_body}"
+    );
+
+    // Tick 2 (non-empty exclude): the symlink is REMOVED on the transition, so
+    // the excluded dep is unreachable and the build fails, naming the import.
+    let second = bundle_with_session(make_tick(excluded, "dist-session-b"), Some(&mut session))
+        .expect_err("non-empty-exclude tick must remove the live symlink and fail to resolve");
+    let second_msg = format!("{second:#}");
+    assert!(second_msg.contains("session-dep"), "{second_msg}");
+
+    // Tick 3 (empty exclude again): the symlink is re-created; the dep resolves.
+    let third = bundle_with_session(make_tick(Vec::new(), "dist-session-c"), Some(&mut session))
+        .expect("returning to an empty exclude must restore the live symlink");
+    let third_body = fs::read_to_string(&third.bundle_path).unwrap();
+    assert!(
+        third_body.contains("SESSION_DEP_MARKER"),
+        "tick 3 must resolve the bare dep again after symlink restoration: {third_body}"
     );
 }
