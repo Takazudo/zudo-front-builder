@@ -385,15 +385,14 @@ fn code_tabs_and_class_mode_coexist_group_bypasses_syntect() {
 
     // The group's <pre> bypasses syntect entirely — no class-mode markers,
     // no leftover inline-mode markers either (never reached SyntectPlugin
-    // at all in either mode).
+    // at all in either mode). This exact-match already fully pins the
+    // group pre's contents, so it rules out any injected token span or
+    // hi-* class inside the group without a separate brittle negative
+    // assertion on the serialized `<CodeGroup>` attribute shape.
     assert!(
         html.contains("<pre data-lang=\"js\">const x = 1;</pre>"),
         "code inside CodeGroup must stay the plain pre/data-lang shape untouched \
          by syntect (known limitation, same as inline mode): {html}"
-    );
-    assert!(
-        !html.contains("<CodeGroup tabs={[\"js\"]}><pre data-lang=\"js\"><span"),
-        "code inside CodeGroup must NOT gain a class-mode span structure: {html}"
     );
 
     // The standalone fence (outside the group) DOES get class-mode output.

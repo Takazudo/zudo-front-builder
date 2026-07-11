@@ -7934,14 +7934,15 @@ mod tests {
     /// 2. config validation list (`CODE_HIGHLIGHT_ROLES`, full names)
     /// 3. stylesheet suffixes (`zfb_css::default_hi_css()`, short names)
     ///
-    /// A locally-runnable PARTIAL of this (legs 1 and 3 only — classifier
-    /// <-> stylesheet) lives in `crates/zfb-css/tests/hi_role_parity.rs`;
-    /// that crate cannot see `CODE_HIGHLIGHT_ROLES` without depending on
-    /// `zfb`, which would be a cycle. This test is `zfb`-tier: it compiles
-    /// under the DOCS_RS V8 stub (`cargo check -p zfb --tests`) but cannot
-    /// LINK there (the `embed_v8` default feature pulls in the real V8),
-    /// so it runs in CI (`health.yml`) only — see the repo CLAUDE.md's
-    /// testing section on the DOCS_RS-stub constraint.
+    /// A PARTIAL of this (legs 1 and 3 only — classifier <-> stylesheet)
+    /// lives in `crates/zfb-css/tests/hi_role_parity.rs`; that crate
+    /// cannot see `CODE_HIGHLIGHT_ROLES` without depending on `zfb`, which
+    /// would be a cycle. This full three-way test is `zfb`-tier: the `zfb`
+    /// crate's test binaries link the embedded V8 host (the `embed_v8`
+    /// default feature), so they run in CI via `health.yml`'s
+    /// `cargo nextest run --workspace` rather than in a lightweight local
+    /// subset. The `zfb-css` partial above is V8-free and covers the
+    /// classifier<->stylesheet legs on every local `cargo test -p zfb-css`.
     #[test]
     fn hi_role_taxonomy_parity_across_classifier_config_and_stylesheet() {
         use zfb_content::hi_roles::HiRole;

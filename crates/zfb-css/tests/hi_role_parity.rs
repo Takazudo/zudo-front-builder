@@ -1,6 +1,5 @@
 //! Confirm sub (zfb#1535), check 6, part 1 of 2: classifier <-> stylesheet
-//! role-list parity, checked LOCALLY (this crate's tests run without the
-//! embedded-V8 stub — see the crate CLAUDE.md's testing section).
+//! role-list parity.
 //!
 //! The Highlight Tokens epic's role taxonomy is authored in THREE places
 //! that must never drift apart:
@@ -22,9 +21,11 @@
 //! in `crates/zfb/src/commands/build.rs` (that crate depends on both
 //! `zfb-content` and `zfb-css`) — see that file's
 //! `hi_role_taxonomy_parity_across_classifier_config_and_stylesheet` test.
-//! That test is CI-only (compile-checked locally, per the confirm sub's
-//! V8-stub constraint); this one is the locally-runnable partial the
-//! confirm sub asks for.
+//! The three-way test lives in the `zfb` crate, whose test binaries link
+//! the embedded V8 host, so it runs in CI (health.yml's `cargo nextest
+//! run --workspace`); this `zfb-css` partial is V8-free and runs in the
+//! everyday `cargo test -p zfb-css` loop, so the classifier<->stylesheet
+//! legs are guarded on every local run too.
 
 use zfb_content::hi_roles::HiRole;
 
@@ -74,22 +75,43 @@ fn stylesheet_declares_no_orphaned_role_properties() {
 
     for line in css.lines() {
         let trimmed = line.trim();
-        let Some(rest) = trimmed.strip_prefix("--zfb-hi-") else {
-            continue;
-        };
-        let Some(suffix) = rest.split(':').next() else {
-            continue;
-        };
-        // `-bg` suffixed variants (`ins-bg`, `del-bg`) are diff-background
-        // companions to a real role property, not standalone roles.
-        let base_suffix = suffix.strip_suffix("-bg").unwrap_or(suffix);
-        if base_suffix == "fg" || base_suffix == "bg" {
+
+        // (a) `--zfb-hi-<suffix>:` custom-property declarations.
+        if let Some(rest) = trimmed.strip_prefix("--zfb-hi-") {
+            if let Some(suffix) = rest.split(':').next() {
+                // `-bg` suffixed variants (`ins-bg`, `del-bg`) are
+                // diff-background companions to a real role property, not
+                // standalone roles.
+                let base_suffix = suffix.strip_suffix("-bg").unwrap_or(suffix);
+                if base_suffix != "fg" && base_suffix != "bg" {
+                    assert!(
+                        known_suffixes.contains(base_suffix),
+                        "stylesheet declares --zfb-hi-{suffix} but no HiRole short_name() \
+                         produces {base_suffix:?}; known suffixes: {known_suffixes:?}"
+                    );
+                }
+            }
             continue;
         }
-        assert!(
-            known_suffixes.contains(base_suffix),
-            "stylesheet declares --zfb-hi-{suffix} but no HiRole short_name() \
-             produces {base_suffix:?}; known suffixes: {known_suffixes:?}"
-        );
+
+        // (b) `.hi-<suffix> {` role-selector rules. A stale `.hi-orphan {`
+        // left behind after a taxonomy edit must be caught here too — the
+        // property scan in (a) alone would miss a selector with no matching
+        // custom property. The first whitespace-delimited token after the
+        // prefix is the selector name (`.hi-esc` in `.hi-esc {`); a
+        // brace-hugging form (`.hi-esc{`) has its trailing `{` trimmed.
+        if let Some(rest) = trimmed.strip_prefix(".hi-") {
+            let token = rest.split_whitespace().next().unwrap_or(rest);
+            let suffix = token.strip_suffix('{').unwrap_or(token);
+            // `.hi-root` is the container class (root fg/bg), not a role.
+            if suffix.is_empty() || suffix == "root" {
+                continue;
+            }
+            assert!(
+                known_suffixes.contains(suffix),
+                "stylesheet declares a .hi-{suffix} selector but no HiRole \
+                 short_name() produces {suffix:?}; known suffixes: {known_suffixes:?}"
+            );
+        }
     }
 }
