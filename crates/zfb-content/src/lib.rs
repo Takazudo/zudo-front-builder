@@ -6,6 +6,7 @@ pub mod dep_manifest;
 pub mod diagnostics;
 pub mod frontmatter;
 pub mod heading_registry;
+pub mod hi_roles;
 pub mod mdx_jsx_emit;
 pub(crate) mod path_norm;
 pub mod pipeline;
