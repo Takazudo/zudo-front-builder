@@ -603,10 +603,12 @@ pub(crate) fn probe_graph_candidate(candidate: &Path, exact: bool) -> Option<Pat
         })
         .or_else(|| {
             candidate.is_dir().then(|| {
-                ["tsx", "ts", "jsx", "js", "mjs", "cjs", "mts", "cts", "css"]
-                    .into_iter()
-                    .map(|extension| candidate.join(format!("index.{extension}")))
-                    .find(|path| path.is_file())
+                [
+                    "tsx", "ts", "jsx", "js", "mjs", "cjs", "mts", "cts", "json", "css",
+                ]
+                .into_iter()
+                .map(|extension| candidate.join(format!("index.{extension}")))
+                .find(|path| path.is_file())
             })?
         })
 }

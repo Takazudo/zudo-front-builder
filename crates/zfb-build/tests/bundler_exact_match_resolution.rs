@@ -531,6 +531,66 @@ fn plugin_alias_preprocessing_honours_excluded_exact_tsconfig_target() {
 }
 
 #[test]
+fn excluded_exact_tsconfig_directory_cannot_fallback_to_index_json() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:excluded-json-directory", "unused.tsx");
+    fs::create_dir_all(root.join("content/blog/secret-json-dir")).unwrap();
+    let alias = root.join("content/blog/plugin-excluded-json-directory.ts");
+    let secret_dir = root.join("content/blog/secret-json-dir");
+    fs::write(
+        &alias,
+        "import payload from 'project:secret-json-directory';\n\
+         export default function Foo() { return payload.secret; }\n",
+    )
+    .unwrap();
+    fs::write(
+        secret_dir.join("index.json"),
+        r#"{"secret":"EXCLUDED_INDEX_JSON_SECRET"}"#,
+    )
+    .unwrap();
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-excluded-index-json",
+        BTreeMap::from([(
+            "project:secret-json-directory".to_string(),
+            vec![secret_dir.to_string_lossy().into_owned()],
+        )]),
+        vec![(
+            "plugin:excluded-json-directory".to_string(),
+            alias.to_string_lossy().into_owned(),
+        )],
+        vec![],
+    );
+    input.content_collections = vec![ContentCollectionSpec::new(
+        "blog",
+        root.join("content/blog"),
+    )];
+    input.bundle_exclude = vec!["content/blog/secret-json-dir/index.json".to_string()];
+
+    let error = bundle(input)
+        .expect_err("an excluded index.json must not resolve through an exact directory fallback");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("project:secret-json-directory"),
+        "{message}"
+    );
+    let bundle_path = root.join("dist-excluded-index-json/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("EXCLUDED_INDEX_JSON_SECRET"), "{body}");
+    }
+}
+
+#[test]
 fn explicit_defines_override_public_env_per_exact_ssr_expression() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");

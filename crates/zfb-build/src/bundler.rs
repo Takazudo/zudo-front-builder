@@ -5095,17 +5095,119 @@ fn rebase_tsconfig_paths_to_shadow(
         None,
         None,
         &BTreeSet::new(),
+        &[],
     )
+}
+
+fn resolve_package_entry_candidate(package_dir: &Path, value: &str) -> Option<PathBuf> {
+    if value.contains('*') {
+        return None;
+    }
+    let relative = value.strip_prefix("./").unwrap_or(value);
+    let candidate = normalize_path_lexical(&package_dir.join(relative));
+    if !candidate.starts_with(package_dir) {
+        return None;
+    }
+    probe_graph_candidate(&candidate, false)
+}
+
+fn collect_root_export_targets<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+    match value {
+        serde_json::Value::String(target) => out.push(target),
+        serde_json::Value::Array(targets) => {
+            for target in targets {
+                collect_root_export_targets(target, out);
+            }
+        }
+        serde_json::Value::Object(conditions) => {
+            if let Some(root) = conditions.get(".") {
+                collect_root_export_targets(root, out);
+            } else if !conditions.keys().any(|key| key.starts_with('.')) {
+                // Root conditional exports. All string branches are plausible
+                // because esbuild's active condition set depends on framework
+                // and import kind; bounding to referenced strings avoids
+                // treating unrelated package descendants as entrypoints.
+                for target in conditions.values() {
+                    collect_root_export_targets(target, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Check only entrypoints an exact directory alias can plausibly resolve:
+/// directory `index.*`, root `exports`, and the effective SSR main fields.
+/// Unrelated excluded descendants do not disable the historical fallback.
+fn package_directory_entry_exclusion(
+    target: &Path,
+    project_root: &Path,
+    bundle_exclude: &BundleExcludeMatcher,
+    effective_main_fields: &[&str],
+) -> Option<bool> {
+    if !target.is_dir() {
+        return None;
+    }
+
+    let package_json = target.join("package.json");
+    let Ok(bytes) = fs::read(&package_json) else {
+        return None;
+    };
+    let Ok(package): Result<serde_json::Value, _> = serde_json::from_slice(&bytes) else {
+        return None;
+    };
+
+    if let Some(exports) = package.get("exports") {
+        let mut targets = Vec::new();
+        collect_root_export_targets(exports, &mut targets);
+        let resolved = targets
+            .into_iter()
+            .filter_map(|entry| resolve_package_entry_candidate(target, entry))
+            .collect::<Vec<_>>();
+        if !resolved.is_empty() {
+            // Conditional root exports are all plausible under esbuild's
+            // framework/import-dependent conditions. Any excluded candidate
+            // blocks conservatively, but an allowed package entry takes
+            // precedence over unrelated directory index files below.
+            return Some(
+                resolved
+                    .iter()
+                    .any(|entry| bundle_exclude.is_excluded(entry, project_root)),
+            );
+        }
+    }
+
+    for field in effective_main_fields {
+        let Some(entry) = package.get(*field).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if let Some(resolved) = resolve_package_entry_candidate(target, entry) {
+            // esbuild stops at the first effective main field that resolves.
+            return Some(bundle_exclude.is_excluded(&resolved, project_root));
+        }
+    }
+    None
 }
 
 fn concrete_tsconfig_target_is_excluded(
     target: &Path,
     project_root: &Path,
     bundle_exclude: &BundleExcludeMatcher,
+    effective_main_fields: &[&str],
 ) -> bool {
-    bundle_exclude.is_excluded(target, project_root)
-        || probe_graph_candidate(target, false)
-            .is_some_and(|resolved| bundle_exclude.is_excluded(&resolved, project_root))
+    if bundle_exclude.is_excluded(target, project_root) {
+        return true;
+    }
+    if let Some(excluded) = package_directory_entry_exclusion(
+        target,
+        project_root,
+        bundle_exclude,
+        effective_main_fields,
+    ) {
+        return excluded;
+    }
+    probe_graph_candidate(target, false)
+        .is_some_and(|resolved| bundle_exclude.is_excluded(&resolved, project_root))
 }
 
 /// Returns true when a wildcard target's static prefix can encompass one of
@@ -5138,6 +5240,7 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
     bundle_exclude: Option<&BundleExcludeMatcher>,
     excluded_target: Option<&Path>,
     excluded_plugin_preprocessing_files: &BTreeSet<PathBuf>,
+    effective_main_fields: &[&str],
 ) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, targets) in paths {
@@ -5157,7 +5260,12 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                     let has_wildcard = target.contains('*');
                     if !has_wildcard
                         && bundle_exclude.is_some_and(|matcher| {
-                            concrete_tsconfig_target_is_excluded(prefix_path, project_root, matcher)
+                            concrete_tsconfig_target_is_excluded(
+                                prefix_path,
+                                project_root,
+                                matcher,
+                                effective_main_fields,
+                            )
                         })
                     {
                         // A concrete user path mapping to an excluded file must
@@ -5917,10 +6025,15 @@ fn run_esbuild(
     // `exports` map (`exports` always takes precedence), so it can only turn a
     // currently *failing* main-only resolution into a success, never alter a
     // working one. `main,module` matches esbuild's node-platform default order.
-    if !input.main_fields.is_empty() {
-        cmd.arg(format!("--main-fields={}", input.main_fields.join(",")));
+    let effective_main_fields: Vec<&str> = if !input.main_fields.is_empty() {
+        input.main_fields.iter().map(String::as_str).collect()
     } else if matches!(input.framework, Framework::React) {
-        cmd.arg("--main-fields=main,module");
+        vec!["main", "module"]
+    } else {
+        Vec::new()
+    };
+    if !effective_main_fields.is_empty() {
+        cmd.arg(format!("--main-fields={}", effective_main_fields.join(",")));
     }
 
     // User code consults the public SDK via the bare `zfb` namespace
@@ -5974,7 +6087,12 @@ fn run_esbuild(
         && input.plugin_alias_entries.iter().any(|(_, target)| {
             let target_path = normalize_path_lexical(Path::new(target));
             target_path.starts_with(&project_root)
-                && concrete_tsconfig_target_is_excluded(&target_path, &project_root, bundle_exclude)
+                && concrete_tsconfig_target_is_excluded(
+                    &target_path,
+                    &project_root,
+                    bundle_exclude,
+                    &effective_main_fields,
+                )
         });
     let has_excluded_concrete_tsconfig_target = !bundle_exclude.is_empty()
         && input
@@ -5989,6 +6107,7 @@ fn run_esbuild(
                         &target_path,
                         &project_root,
                         bundle_exclude,
+                        &effective_main_fields,
                     )
             });
     // Allocate the resolution guard only after every source materialisation
@@ -6022,6 +6141,7 @@ fn run_esbuild(
                         &target_path,
                         &project_root,
                         bundle_exclude,
+                        &effective_main_fields,
                     ) {
                         // Do not fall back to the live project file for an
                         // excluded alias. The opaque guard was created after
@@ -6079,6 +6199,7 @@ fn run_esbuild(
         Some(bundle_exclude),
         excluded_plugin_alias_target.as_deref(),
         excluded_plugin_preprocessing_files,
+        &effective_main_fields,
     );
     zfb_plugin_resolver::merge_into_tsconfig_paths(
         &mut merged_paths,
@@ -6515,10 +6636,54 @@ mod tests {
         let root = project.path();
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/secret.ts"), "export default 'secret';\n").unwrap();
+        fs::create_dir_all(root.join("secret-dir")).unwrap();
+        fs::write(root.join("secret-dir/index.json"), r#"{"secret":true}"#).unwrap();
+        fs::create_dir_all(root.join("package-dir/dist")).unwrap();
+        fs::write(
+            root.join("package-dir/package.json"),
+            r#"{"main":"./dist/entry.js"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("package-dir/dist/entry.js"),
+            "export default 'package-secret';\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("allowed-dir")).unwrap();
+        fs::write(root.join("allowed-dir/index.json"), r#"{"allowed":true}"#).unwrap();
+        fs::create_dir_all(root.join("allowed-package/dist")).unwrap();
+        fs::create_dir_all(root.join("allowed-package/test")).unwrap();
+        fs::write(
+            root.join("allowed-package/package.json"),
+            r#"{"main":"./dist/entry.js"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("allowed-package/dist/entry.js"),
+            "export default 'allowed-package';\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("allowed-package/index.json"),
+            r#"{"excluded":"but not selected"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("allowed-package/test/excluded.js"),
+            "export default 'unrelated';\n",
+        )
+        .unwrap();
 
         let shadow = tempfile::tempdir().unwrap();
         let blocked = shadow.path().join("guard/unresolvable");
-        let matcher = BundleExcludeMatcher::new(&["src/secret.ts".to_string()]).unwrap();
+        let matcher = BundleExcludeMatcher::new(&[
+            "src/secret.ts".to_string(),
+            "secret-dir/index.json".to_string(),
+            "package-dir/dist/entry.js".to_string(),
+            "allowed-package/test/excluded.js".to_string(),
+            "allowed-package/index.json".to_string(),
+        ])
+        .unwrap();
         let excluded_files = BTreeSet::from([root.join("src/secret.ts")]);
         let root_string = root.to_string_lossy();
         let mut paths = BTreeMap::new();
@@ -6538,6 +6703,22 @@ mod tests {
             "unrelated/*".to_string(),
             vec![format!("{root_string}/unmirrored/*")],
         );
+        paths.insert(
+            "json-directory".to_string(),
+            vec![root.join("secret-dir").to_string_lossy().into_owned()],
+        );
+        paths.insert(
+            "package-directory".to_string(),
+            vec![root.join("package-dir").to_string_lossy().into_owned()],
+        );
+        paths.insert(
+            "allowed-directory".to_string(),
+            vec![root.join("allowed-dir").to_string_lossy().into_owned()],
+        );
+        paths.insert(
+            "allowed-package".to_string(),
+            vec![root.join("allowed-package").to_string_lossy().into_owned()],
+        );
 
         let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
             &paths,
@@ -6546,11 +6727,14 @@ mod tests {
             Some(&matcher),
             Some(&blocked),
             &excluded_files,
+            &["main"],
         );
 
         let blocked_string = blocked.to_string_lossy().into_owned();
         assert_eq!(out["exact"], vec![blocked_string.clone()]);
-        assert_eq!(out["extensionless"], vec![blocked_string]);
+        assert_eq!(out["extensionless"], vec![blocked_string.clone()]);
+        assert_eq!(out["json-directory"], vec![blocked_string.clone()]);
+        assert_eq!(out["package-directory"], vec![blocked_string]);
         assert_eq!(
             out["related/*"],
             vec![format!("{}/src/*", shadow.path().display())]
@@ -6562,6 +6746,30 @@ mod tests {
                 format!("{root_string}/unmirrored/*"),
             ],
             "an unrelated exclusion must preserve the historical real fallback"
+        );
+        assert_eq!(
+            out["allowed-directory"],
+            vec![
+                shadow
+                    .path()
+                    .join("allowed-dir")
+                    .to_string_lossy()
+                    .into_owned(),
+                root.join("allowed-dir").to_string_lossy().into_owned(),
+            ],
+            "an exact directory with no excluded descendants keeps its fallback"
+        );
+        assert_eq!(
+            out["allowed-package"],
+            vec![
+                shadow
+                    .path()
+                    .join("allowed-package")
+                    .to_string_lossy()
+                    .into_owned(),
+                root.join("allowed-package").to_string_lossy().into_owned(),
+            ],
+            "an allowed package entry keeps fallback despite an unrelated excluded descendant"
         );
     }
 
