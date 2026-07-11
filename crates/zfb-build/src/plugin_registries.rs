@@ -35,6 +35,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::plugin_runner::PluginHost;
+
 /// Opaque token returned by the JS-side `setup` reply when a plugin
 /// calls `addVirtualModule`. Wave 2 consumers pass this token back
 /// through [`crate::PluginHost::invoke_virtual_loader`] to fetch the
@@ -432,6 +434,11 @@ pub(crate) struct PluginSetupAccumulator<'a> {
 pub enum SetupCommand {
     Build,
     Dev,
+    /// `zfb preview` (Preview Parity epic #1541 / sub-issue #1542).
+    /// Drives the minimal non-V8 [`run_preview_setup`] path rather than
+    /// the `embed_v8`-gated `run_plugin_setup`
+    /// (`crates/zfb/src/commands/plugins.rs`) that `build`/`dev` use.
+    Preview,
 }
 
 impl SetupCommand {
@@ -439,6 +446,7 @@ impl SetupCommand {
         match self {
             SetupCommand::Build => "build",
             SetupCommand::Dev => "dev",
+            SetupCommand::Preview => "preview",
         }
     }
 }
@@ -675,6 +683,60 @@ pub struct SetupRegistries {
 impl SetupRegistries {
     pub fn empty() -> Self {
         Self::default()
+    }
+}
+
+/// Minimal preview-side plugin `setup` path (Preview Parity epic #1541 /
+/// sub-issue #1542).
+///
+/// `zfb preview` serves an ALREADY-BUILT `dist/` verbatim (or hands off
+/// entirely to `wrangler dev` in adapter mode) — it never re-enters the
+/// scan → bundle → render pipeline, so none of `run_plugin_setup`'s
+/// (`crates/zfb/src/commands/plugins.rs`, `embed_v8`-gated) V8 hook
+/// translation or virtual-module prefetch loop is meaningful here.
+/// Reusing that function would needlessly pull the embedded V8 host
+/// into `zfb preview`'s dependency surface for zero benefit — hence a
+/// distinct, deliberately thin function that lives in this crate's
+/// V8-free half (`plugin_registries.rs` / `plugin_runner.rs`, neither
+/// of which is gated on the `embed_v8` feature) and compiles/runs
+/// identically under `--no-default-features`.
+///
+/// This function fires each plugin's `setup(ctx)` with
+/// `ctx.command === "preview"` (via [`PluginHost::run_setup`], the same
+/// non-V8 JS round-trip `build`/`dev` use) so plugin-side state
+/// initialisation — closures, options capture, etc. — still runs, and
+/// returns the raw [`SetupRegistries`] for completeness. It
+/// deliberately does NOT:
+///
+/// - **prefetch virtual modules** — no loader registered via
+///   `addVirtualModule` is ever invoked, so a preview-registered
+///   virtual module is simply never read;
+/// - **touch any V8 machinery** — no `zfb_render` / embedded-V8
+///   involvement whatsoever.
+///
+/// Any `injectRoute` / `addAlias` / `addVirtualModule` / `addClientEntry`
+/// call a plugin makes under `"preview"` is therefore accepted (for
+/// shape-consistency with `"build"`/`"dev"` — the JS host doesn't special-
+/// case preview) but **inert**: the registrations are returned to the
+/// caller but nothing downstream reads them. Only `setup`'s side effects
+/// and a subsequent `previewMiddleware` registration
+/// ([`PluginHost::register_preview_middlewares`]) do anything meaningful
+/// under preview.
+///
+/// `host` is `None` for a plugin-less project — mirrors
+/// `run_plugin_setup`'s "no host, no-op" handling so callers don't have
+/// to special-case that themselves.
+pub async fn run_preview_setup(
+    host: Option<&PluginHost>,
+    project_root: &Path,
+    config: &serde_json::Value,
+) -> anyhow::Result<SetupRegistries> {
+    match host {
+        Some(host) => {
+            host.run_setup(project_root, SetupCommand::Preview, config)
+                .await
+        }
+        None => Ok(SetupRegistries::empty()),
     }
 }
 

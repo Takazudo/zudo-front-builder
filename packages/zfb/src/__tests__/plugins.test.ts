@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { definePlugin } from "../plugins.js";
-import type { ZfbPlugin } from "../plugins.js";
+import type { ZfbDevMiddlewareContext, ZfbPlugin } from "../plugins.js";
 
 describe("definePlugin", () => {
   it("returns the supplied plugin object verbatim (identity helper)", () => {
@@ -26,5 +26,37 @@ describe("definePlugin", () => {
     expect(typeof plugin.preBuild).toBe("function");
     expect(typeof plugin.postBuild).toBe("function");
     expect(typeof plugin.devMiddleware).toBe("function");
+  });
+
+  it("preserves the previewMiddleware hook field (#1542)", () => {
+    // Mirrors the devMiddleware coverage above — previewMiddleware is a
+    // distinct hook (not a devMiddleware alias), so a plugin declares it
+    // separately with the same register-context shape.
+    const plugin = definePlugin({
+      name: "preview-hook",
+      previewMiddleware: ({ register }) => {
+        register("/test", () => ({ status: 200 }));
+      },
+    });
+    expect(plugin.name).toBe("preview-hook");
+    expect(typeof plugin.previewMiddleware).toBe("function");
+  });
+
+  it("allows a plugin to register the same handler under both devMiddleware and previewMiddleware", () => {
+    // #1542 baked decision: a plugin wanting both dev AND preview
+    // coverage must register the same handler under both hooks
+    // explicitly — there is no automatic devMiddleware-reuse. The two
+    // context types are structurally identical, so one handler value
+    // satisfies both hook fields' types.
+    const handler = ({ register }: ZfbDevMiddlewareContext) => {
+      register("/shared", () => ({ status: 200 }));
+    };
+    const plugin = definePlugin({
+      name: "shared-hooks",
+      devMiddleware: handler,
+      previewMiddleware: handler,
+    });
+    expect(plugin.devMiddleware).toBe(plugin.previewMiddleware);
+    expect(typeof plugin.previewMiddleware).toBe("function");
   });
 });
