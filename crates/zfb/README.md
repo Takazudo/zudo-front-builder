@@ -144,7 +144,7 @@ TypeScript wins over JSON when both files are present.
 | `plugins` | `plugins` | `[]` | User plugin entries, with resolved module URLs on the TS path |
 | `adapter` | `adapter` | `None` | Deploy-target adapter package; `None` / `"none"` means static |
 | `strip_md_ext` | `stripMdExt` | `false` | Rewrite authored `.md` / `.mdx` links to route URLs |
-| `code_highlight` | `codeHighlight` | `None` | Syntect theme / theme directory options |
+| `code_highlight` | `codeHighlight` | `None` | Syntect theme / theme-directory options; `mode: "class"` emits re-themeable 18-role classes (`hi-*` → `--zfb-hi-*`) instead of inline colours (`classPrefix`, `roleClasses`, `defaultStylesheet`) |
 | `resolve_markdown_links` | `resolveMarkdownLinks` | `None` | Markdown link resolver and broken-link policy |
 | `base` | `base` | `None` | URL prefix for emitted asset/page URLs |
 | `trailing_slash` | `trailingSlash` | `false` | Append `/` to extensionless rewritten hrefs |

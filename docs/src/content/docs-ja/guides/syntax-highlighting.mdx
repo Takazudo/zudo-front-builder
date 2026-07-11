@@ -16,6 +16,12 @@ zfb は [syntect](https://github.com/trishume/syntect) による **サーバー�
 | 未知の言語 | テーマ適用のフォールバック: `<pre class="syntect-…">` でラップされ、コードは保持される |
 | `mermaid` ブロック | スキップ — 代わりに `MermaidPlugin` にルーティングされる |
 
+<Tip>
+
+zfb には、色を焼き込む代わりに各トークンへ再テーマ可能な CSS デザイントークンを付与する **クラスモード** もあります。テーマを切り替えられるサイトにはこちらを推奨します。詳しくは下記の「クラスモード（推奨）」の節を参照してください。
+
+</Tip>
+
 ## テーマのカスタマイズ（組み込みテーマ）
 
 配色を変更するもっとも単純な方法は、`zfb.config.ts` で syntect に同梱されたテーマのひとつを選ぶことです。
@@ -115,6 +121,171 @@ pre[class^="syntect-"] span {
 ```
 
 `light-dark()` がアクティブなモードに解決されるよう、周囲のコンテキスト（`:root` や `<pre>` など）で `color-scheme: light dark` をオプトインしておいてください。
+
+## クラスモード（推奨）
+
+ここまではすべて **インラインモード** です。zfb は各トークンの色を `style="color:#…"`（またはデュアルの `--shiki-*` カスタムプロパティ）として HTML に直接焼き込みます。一方 **クラスモード** は、各トークンに意味的な *ロールクラス*（`hi-kw`、`hi-str`、`hi-com`、…）を付与し、それらのクラスを CSS カスタムプロパティ経由で着色するスタイルシートを同梱します。色は再テーマ可能なデザイントークンとなり、再ビルドなしで自分の CSS から上書きできます。
+
+`zfb.config.ts` で有効化します。
+
+```ts
+// zfb.config.ts
+export default {
+  codeHighlight: {
+    mode: "class",
+  },
+};
+```
+
+<Note>
+
+**このリリースでは `inline` が引き続きデフォルトです。** クラスモードはオプトインで、デフォルトは切り替わっていません。`class` をデフォルトにするかどうかは将来の判断です。今すぐ使うには `mode: "class"` を明示的に設定してください。
+
+</Note>
+
+クラスモードは **すべてのテーマ関連オプション（`theme`、`themeLight`、`themeDark`、`themesDir`）と排他** です。テーマはインラインの色にしか影響しないため、`mode: "class"` と同時に指定すると、暗黙的に無視されるのではなくビルドエラーになります。クラスモードでの色の選択は、完全に CSS 側で行います。
+
+### 18 個のロールクラス
+
+ハイライトされた各トークンは、固定された 18 個の意味的ロールのちょうど 1 つに分類されます。この分類体系は凍結されており、ロールが追加・削除されることはありません。各ロールは、デフォルトのクラス `{classPrefix}{suffix}`（デフォルトの `classPrefix` は `hi-`）と、対応する CSS カスタムプロパティ `--zfb-hi-{suffix}` にマッピングされます。
+
+| ロール（設定キー） | デフォルトクラス | カスタムプロパティ |
+|---|---|---|
+| `escape` | `hi-esc` | `--zfb-hi-esc` |
+| `operator` | `hi-op` | `--zfb-hi-op` |
+| `comment` | `hi-com` | `--zfb-hi-com` |
+| `string` | `hi-str` | `--zfb-hi-str` |
+| `number` | `hi-num` | `--zfb-hi-num` |
+| `constant` | `hi-const` | `--zfb-hi-const` |
+| `keyword` | `hi-kw` | `--zfb-hi-kw` |
+| `function` | `hi-fn` | `--zfb-hi-fn` |
+| `type` | `hi-ty` | `--zfb-hi-ty` |
+| `namespace` | `hi-ns` | `--zfb-hi-ns` |
+| `property` | `hi-prop` | `--zfb-hi-prop` |
+| `variable` | `hi-var` | `--zfb-hi-var` |
+| `tag` | `hi-tag` | `--zfb-hi-tag` |
+| `attribute` | `hi-attr` | `--zfb-hi-attr` |
+| `punctuation` | `hi-punct` | `--zfb-hi-punct` |
+| `inserted` | `hi-ins` | `--zfb-hi-ins` |
+| `deleted` | `hi-del` | `--zfb-hi-del` |
+| `heading` | `hi-hd` | `--zfb-hi-hd` |
+
+設定キーは **ロールのフルネーム**（`keyword`）であるのに対し、出力されるクラスは短い **サフィックス**（`kw`）を使います。18 個のロールプロパティに加えて、スタイルシートは `--zfb-hi-fg` / `--zfb-hi-bg`（`<pre>` 要素である `.hi-root` の基本の前景色と背景色）と、`--zfb-hi-ins-bg` / `--zfb-hi-del-bg`（差分行の淡い背景色）も定義します。
+
+### 出力される markup
+
+`<pre>` 要素には `{classPrefix}root`（デフォルトは `hi-root`）が付与され、各トークンは自身のロールクラスを持つ `<span>` になります。インラインの色は付きません。
+
+```html
+<pre class="hi-root"><code><span class="line"><span class="hi-kw">fn</span> <span class="hi-fn">main</span>…</span></code></pre>
+```
+
+`<span class="line">` のラッパーはインラインモードやデュアルモードと同一で、異なるのはトークンごとの色の指定方法だけです。
+
+### デフォルトのスタイルシート
+
+`mode: "class"` を指定すると、zfb は組み込みのトークンスタイルシート（`zfb-hi.css`）を、まとめられた `styles.css` に注入します。このスタイルシートは `--zfb-hi-*` カスタムプロパティと、それらを参照する `.hi-*` ルールを定義し、`@layer zfb-hi` カスケードレイヤーで包みます。そのため、レイヤーに属さないあなた自身のルールが常に優先されます。デフォルトのパレットは syntect の `base16-ocean` のライト / ダークテーマから抽出されており、これはインラインモードやデュアルモードがデフォルトで使うペアと同じです。
+
+オプトアウトして完全に自前のスタイルシートを使うには、`defaultStylesheet: false` を設定します。
+
+```ts
+// zfb.config.ts
+export default {
+  codeHighlight: {
+    mode: "class",
+    defaultStylesheet: false,
+  },
+};
+```
+
+### 再ビルドなしの再テーマ
+
+色は CSS カスタムプロパティ経由で解決されるため、自分の CSS から `--zfb-hi-*` を上書きするだけでハイライトを再テーマできます。`zfb build` は不要です。tight-token / 3 層（three-tier）パターンに従いましょう。生のパレットトークンが意味的なロールの上書きを供給し、それを同梱の `.hi-*` ルールが参照します。
+
+```css
+/* Tier 1 — your raw palette tokens */
+:root {
+  --palette-purple: #8250df;
+  --palette-green: #1a7f37;
+  --palette-slate: #6e7781;
+}
+
+/* Tier 2 — map the palette onto the semantic --zfb-hi-* roles */
+:root {
+  --zfb-hi-kw: var(--palette-purple);
+  --zfb-hi-str: var(--palette-green);
+  --zfb-hi-com: var(--palette-slate);
+}
+
+/* Tier 3 is shipped by zfb: .hi-kw { color: var(--zfb-hi-kw) } … */
+```
+
+あなたの上書きは `@layer zfb-hi` の外側に置かれるため、`!important` なしでレイヤー内のデフォルトに勝ちます。
+
+### ダークモード
+
+同梱スタイルシートの値は `light-dark()` を使い、さらに `@media (prefers-color-scheme: dark)` フォールバックも備えています。そのため、`color-scheme` をオプトインしていないホストでも、**設定なし** でダークモードが機能します。
+
+明示的なテーマトグル（`prefers-color-scheme` ではなく、`<html>` の `class` や `data-` 属性）を持つホストは、トグルのセレクタ配下でカスタムプロパティを上書きします。
+
+```css
+:root[data-theme="dark"] {
+  --zfb-hi-fg: #c0c5ce;
+  --zfb-hi-bg: #2b303b;
+  --zfb-hi-kw: #b48ead;
+  --zfb-hi-str: #a3be8c;
+  --zfb-hi-com: #65737e;
+  /* …override the roles your theme changes… */
+}
+```
+
+<Tip>
+
+デフォルト値は `light-dark()` で書かれているため、明示的なトグルを持つホストは、トグルされたルート要素で `color-scheme` を切り替える（`:root[data-theme="dark"] { color-scheme: dark; }`）だけでも構いません。こうすると同梱の `light-dark()` の値がダーク側に解決され、デフォルトから外したいロールだけを個別に上書きできます。
+
+</Tip>
+
+### ロールを Tailwind ユーティリティにマッピングする
+
+デフォルトの `hi-*` クラスの代わりに、`roleClasses` で任意のロールを自分のユーティリティクラス（もっとも有用なのは Tailwind）にマッピングできます。
+
+```ts
+// zfb.config.ts
+export default {
+  codeHighlight: {
+    mode: "class",
+    roleClasses: {
+      keyword: "text-violet-600 dark:text-violet-400",
+      string: "text-emerald-600 dark:text-emerald-400",
+    },
+  },
+};
+```
+
+キーは上記 18 個のロール名のいずれかである必要があります。値はスペース区切りで複数のクラスを持てますが、素の `line` トークンを含めることはできません（code-enrichment の行ラッパークラスと衝突します）。マッピングしなかったロールは、デフォルトの `{classPrefix}{suffix}` クラスのままです。
+
+マッピングされたユーティリティは **自動でセーフリスト化** されます。ハイライトされた markup は Rust パイプラインが生成し、Tailwind がスキャンしないレンダリング済みの `dist/*.html` にのみ出力されます。そのため、何もしなければユーティリティは tree-shaking で除去されてしまいます（ビルドは成功するのにトークンは無スタイル）。zfb は各 `roleClasses` の値を Tailwind の `@source inline("…")` エントリとして出力するため、これらのクラスは常に生成されます。
+
+<Warning>
+
+**オーサリング CSS 経路（`tailwind: { enabled: false }`）。** Tailwind を無効にした状態で `roleClasses` を設定することは許可されますが、ビルド警告が出ます。この経路では Tailwind のセーフリストを生成できないため、マッピング先のユーティリティは、自分で手書きした CSS の中に既に存在している必要があります。
+
+</Warning>
+
+### カスタムクラスプレフィックス
+
+`classPrefix`（デフォルトは `hi-`）は、`<pre>` のルートクラスとすべてのロールクラスの両方でプレフィックスを変更します。`classPrefix: "syn-"` にすると `syn-root`、`syn-kw`、… になります。`/^[A-Za-z][A-Za-z0-9_-]*$/` に一致する必要があります。
+
+カスタムプレフィックスは **同梱スタイルシートでも尊重されます**。zfb はビルド時にデフォルトの `.hi-*` セレクタをあなたのプレフィックスへ書き換えます。`--zfb-hi-*` カスタムプロパティは独立して名前空間化されており、`classPrefix` に関わらず `--zfb-hi-*` のままです。そのため、再テーマ用の上書きは変更不要です。
+
+### インライン / デュアルモードを使うべき場合
+
+クラスモードは外部スタイルシートに依存するため、HTML が自己完結している必要がある場合は **インライン**（または **デュアル**）モードを選んでください。RSS / Atom フィードの本文、HTML メール、サイトの CSS を伴わずに配信されるあらゆる埋め込みなどです。そうした場面では、焼き込まれた `style="color:…"` はむしろ利点であり、スタイルシートがなくても色が保たれます。
+
+### スコープに関する注意
+
+- **`md` 言語フェンス内の markup ロール。** 見出しと差分の追加 / 削除行を除き、Markdown の markup 構文は設計上、控えめにしかスタイル付けされません。構文ごとにロールを作るのではなく、分類体系が意図的にそれらをまとめているためです。
+- **「フロントエンドライブラリ不要」という主張は、静的 HTML のレンダリング経路についてのものです。** クラスモードは、静的にレンダリングされた HTML に対してハイライト用の JavaScript を一切出力しません。MDX の React コンポーネントレンダリング経路は、従来どおり実行時に `pre` / `code` をあなたの `_components` に委譲します。クラスモードはこの経路を変更しません。
 
 ## 補足パターン 1 — クライアントサイドの追加ハイライト
 

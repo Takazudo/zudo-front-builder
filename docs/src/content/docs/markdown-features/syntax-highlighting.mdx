@@ -50,10 +50,28 @@ syntect theme names, not Shiki names. See the
 [dedicated guide](../guides/syntax-highlighting.mdx#dual-lightdark-themes) for
 the emitted markup and the CSS rule.
 
+## Output modes
+
+There are three ways to colour tokens, selected by `codeHighlight.mode` and the
+theme fields:
+
+- **Single-theme inline** (default) — `mode: "inline"` with one `theme`; per-token
+  colours baked into `style="color:…"`. Self-contained HTML.
+- **Dual-theme inline** — `themeLight` + `themeDark` (still `mode: "inline"`);
+  per-token `--shiki-light` / `--shiki-dark` custom properties resolved by a
+  `light-dark()` CSS rule.
+- **Class mode** (recommended) — `mode: "class"`; each token gets a semantic role
+  class (`hi-kw`, …) coloured through re-themeable `--zfb-hi-*` custom
+  properties, with no baked-in colours. See the guide's
+  [Class mode](../guides/syntax-highlighting.mdx#class-mode-recommended) section.
+
+`mode` is mutually exclusive with the theme fields: `mode: "class"` alongside any
+of `theme` / `themeLight` / `themeDark` / `themesDir` is a build error.
+
 ## Full documentation
 
-For theme names, custom `.tmTheme` loading, client-side supplementary
-highlighting, and post-build custom grammar patterns, see
+For theme names, custom `.tmTheme` loading, class-mode role tokens, client-side
+supplementary highlighting, and post-build custom grammar patterns, see
 [Syntax Highlighting](../guides/syntax-highlighting.mdx).
 
 ## Ordering note
