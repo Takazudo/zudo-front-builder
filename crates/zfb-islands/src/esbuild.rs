@@ -40,7 +40,7 @@
 //! class map is tracked by the shadow-materialisation follow-up (#1404);
 //! the docs wave (#1406) documents this limitation for users.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -54,6 +54,17 @@ use crate::bundler::{
     bundle_link_href, island_link_href, BundleChunk, BundleConfig, BundleOutput, ClientBundler,
     FrameworkKind, Island, IslandBundle, ModuleId, PerIslandBundleOutput,
 };
+use crate::client_scripts::ClientScriptWorkerEntry;
+
+/// In-memory output of one client-script bundle plus its module-worker
+/// companions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientScriptBundleOutput {
+    /// Bundled client-script entry source.
+    pub js: String,
+    /// Stable, flat worker files emitted beside the entry.
+    pub companions: Vec<BundleChunk>,
+}
 
 /// The pinned esbuild CLI version this crate runs against.
 ///
@@ -587,6 +598,137 @@ fn build_plugin_tsconfig(
     std::fs::write(tmp.path(), serde_json::to_vec_pretty(&json)?)
         .with_context(|| format!("failed to write {label} synthetic tsconfig"))?;
     Ok(Some(tmp))
+}
+
+fn validate_client_script_worker_entries(
+    entry_name: &str,
+    workers: &[ClientScriptWorkerEntry],
+) -> Result<BTreeMap<String, PathBuf>> {
+    let entry_filename = format!("{entry_name}.js");
+    let mut validated: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for worker in workers {
+        let filename = worker.filename.as_str();
+        if filename.is_empty()
+            || filename.contains('/')
+            || filename.contains('\\')
+            || filename.contains("..")
+            || !filename.starts_with(zfb_types::MODULE_WORKER_FILENAME_PREFIX)
+            || !filename.ends_with(".js")
+        {
+            return Err(anyhow!(
+                "client-script module-worker filename {filename:?} must be a flat contract name matching `{}*.js`",
+                zfb_types::MODULE_WORKER_FILENAME_PREFIX
+            ));
+        }
+        if filename == entry_filename {
+            return Err(anyhow!(
+                "client-script entry `{entry_name}` and module worker {} collide on output filename {filename:?}",
+                worker.source_path.display()
+            ));
+        }
+        if let Some(existing) = validated.get(filename) {
+            if existing != &worker.source_path {
+                return Err(anyhow!(
+                    "client-script module-worker filename collision for {filename:?}: {} vs {}",
+                    existing.display(),
+                    worker.source_path.display()
+                ));
+            }
+            continue;
+        }
+        validated.insert(filename.to_string(), worker.source_path.clone());
+    }
+    Ok(validated)
+}
+
+/// Strict client-script read-back trust boundary.
+///
+/// Exactly one `<entry>.js` and every expected contract-named worker must be
+/// present. Linked sourcemaps for those known outputs are ignored, preserving
+/// the existing in-memory JS-only behavior. Any other file or directory is a
+/// hard error.
+fn read_back_client_script_outdir(
+    out_dir: &Path,
+    entry_name: &str,
+    expected_workers: &BTreeSet<String>,
+) -> Result<ClientScriptBundleOutput> {
+    let entry_filename = format!("{entry_name}.js");
+    let mut entry_js = None;
+    let mut companions = BTreeMap::new();
+    let mut expected_js = expected_workers.clone();
+    expected_js.insert(entry_filename.clone());
+
+    for dirent in std::fs::read_dir(out_dir).with_context(|| {
+        format!(
+            "failed to read client-script esbuild outdir {}",
+            out_dir.display()
+        )
+    })? {
+        let dirent = dirent.context("failed to read client-script esbuild outdir entry")?;
+        let file_type = dirent
+            .file_type()
+            .context("failed to inspect client-script output")?;
+        let os_name = dirent.file_name();
+        let name = os_name.to_str().ok_or_else(|| {
+            anyhow!(
+                "esbuild emitted a non-UTF-8 client-script filename in {}",
+                out_dir.display()
+            )
+        })?;
+        if !file_type.is_file() {
+            return Err(anyhow!(
+                "esbuild emitted an unexpected non-file client-script output {name:?}"
+            ));
+        }
+        if let Some(js_name) = name.strip_suffix(".map") {
+            if expected_js.contains(js_name) {
+                continue;
+            }
+            return Err(anyhow!(
+                "esbuild emitted an unexpected client-script sourcemap {name:?}"
+            ));
+        }
+        if name == entry_filename {
+            entry_js = Some(
+                std::fs::read_to_string(dirent.path())
+                    .context("failed to read esbuild client-script entry output")?,
+            );
+            continue;
+        }
+        if expected_workers.contains(name) {
+            companions.insert(
+                name.to_string(),
+                std::fs::read(dirent.path())
+                    .with_context(|| format!("failed to read esbuild module worker {name}"))?,
+            );
+            continue;
+        }
+        return Err(anyhow!(
+            "esbuild emitted an unexpected client-script output file {name:?}; expected entry {entry_filename:?} or one of {expected_workers:?}"
+        ));
+    }
+
+    let js = entry_js.ok_or_else(|| {
+        anyhow!("esbuild produced no `{entry_filename}` for client-script entry `{entry_name}`")
+    })?;
+    let missing: Vec<_> = expected_workers
+        .iter()
+        .filter(|filename| !companions.contains_key(*filename))
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        return Err(anyhow!(
+            "esbuild produced no output for client-script module worker(s): {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(ClientScriptBundleOutput {
+        js,
+        companions: companions
+            .into_iter()
+            .map(|(filename, bytes)| BundleChunk { filename, bytes })
+            .collect(),
+    })
 }
 
 impl EsbuildSubprocessBundler {
@@ -1928,16 +2070,40 @@ impl EsbuildSubprocessBundler {
         entry_path: &Path,
         config: &BundleConfig,
     ) -> Result<String> {
+        self.bundle_client_script_file_with_workers(entry_name, entry_path, &[], config)
+            .map(|output| output.js)
+    }
+
+    /// Bundle one client-script entry and all of its discovered module-worker
+    /// entries into an in-memory entry plus strict contract-named companions.
+    pub fn bundle_client_script_file_with_workers(
+        &self,
+        entry_name: &str,
+        entry_path: &Path,
+        workers: &[ClientScriptWorkerEntry],
+        config: &BundleConfig,
+    ) -> Result<ClientScriptBundleOutput> {
+        let workers = validate_client_script_worker_entries(entry_name, workers)?;
         if self.config.mock_subprocess {
-            if !self.config.mock_output.is_empty() {
-                return Ok(self.config.mock_output.clone());
-            }
-            // In mock mode with no canned output, read the file off disk and
-            // return its source text (same convention as `bundle_one_entry`'s
-            // mock path: return what was given so callers can assert the shape).
-            return std::fs::read_to_string(entry_path).with_context(|| {
-                format!("mock: failed to read entry file {}", entry_path.display())
-            });
+            let js = if !self.config.mock_output.is_empty() {
+                self.config.mock_output.clone()
+            } else {
+                // In mock mode with no canned output, read the file off disk
+                // (same convention as `bundle_one_entry`'s mock path).
+                std::fs::read_to_string(entry_path).with_context(|| {
+                    format!("mock: failed to read entry file {}", entry_path.display())
+                })?
+            };
+            let companions = workers
+                .into_iter()
+                .map(|(filename, source_path)| {
+                    let bytes = std::fs::read(&source_path).with_context(|| {
+                        format!("mock: failed to read worker file {}", source_path.display())
+                    })?;
+                    Ok(BundleChunk { filename, bytes })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(ClientScriptBundleOutput { js, companions });
         }
 
         ensure_binary_verified(&self.config.binary_path, false)?;
@@ -1980,70 +2146,71 @@ impl EsbuildSubprocessBundler {
              exact-match resolution through compilerOptions.paths.",
         )?;
 
-        // Build the esbuild args reusing the shared arg-builder. Pass
-        // `splitting = false` — client-script bundles inline all dynamic
-        // imports (same rationale as per-island path; no chunk shipping in v1).
-        let args = build_esbuild_args_with_entry_name(
-            config,
-            &self.config.extra_args,
-            out_dir.path(),
-            entry_path,
-            false, // splitting = false
-            entry_name,
-        );
-
-        let mut cmd = Command::new(&self.config.binary_path);
-        cmd.current_dir(&self.config.working_dir);
-        for (key, value) in &self.config.env_vars {
-            cmd.env(key, value);
-        }
-        if let Some(ref tsconfig_tmp) = plugin_tsconfig {
-            cmd.arg(OsString::from(format!(
-                "--tsconfig={}",
-                tsconfig_tmp.path().display()
-            )));
-        }
-        // Virtual-module `--alias` flags (#1263) — same rationale as the
-        // shared/per-island path: resolve `virtual:*` imports from an
-        // entrypoint resident under `node_modules`.
-        for flag in resolver_inputs.virtual_module_alias_flags() {
-            cmd.arg(OsString::from(flag));
-        }
-        for arg in &args {
-            cmd.arg(arg);
-        }
-
-        let output = cmd
-            .output()
-            .with_context(|| format!("failed to spawn {}", self.config.binary_path.display()))?;
-
-        drop(resolver_inputs);
-        drop(plugin_tsconfig);
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let friendly = redact_temp_path(
-                &stderr,
-                out_dir.path(),
-                &self.config.working_dir,
-                "<zfb-islands internal esbuild output directory>",
-            );
-            return Err(anyhow!(
-                "esbuild exited with status {} bundling client script {:?}: {}",
-                output.status,
-                entry_path,
-                friendly.trim()
-            ));
-        }
-
-        // Read back the single output file named `<entry_name>.js`.
-        let expected_filename = format!("{entry_name}.js");
-        let expected_path = out_dir.path().join(&expected_filename);
-        std::fs::read_to_string(&expected_path).with_context(|| {
-            format!(
-                "esbuild produced no `{expected_filename}` for client-script entry `{entry_name}`"
+        let mut jobs = Vec::with_capacity(workers.len() + 1);
+        jobs.push((
+            entry_name.to_string(),
+            entry_path.to_path_buf(),
+            "client script",
+        ));
+        jobs.extend(workers.iter().map(|(filename, path)| {
+            (
+                filename.trim_end_matches(".js").to_string(),
+                path.clone(),
+                "client-script module worker",
             )
-        })
+        }));
+
+        for (output_stem, source_path, label) in jobs {
+            // Every entry is self-contained (`splitting=false`). Worker URL
+            // edges have already been rewritten to sibling contract names.
+            let args = build_esbuild_args_with_entry_name(
+                config,
+                &self.config.extra_args,
+                out_dir.path(),
+                &source_path,
+                false,
+                &output_stem,
+            );
+            let mut cmd = Command::new(&self.config.binary_path);
+            cmd.current_dir(&self.config.working_dir);
+            for (key, value) in &self.config.env_vars {
+                cmd.env(key, value);
+            }
+            if let Some(ref tsconfig_tmp) = plugin_tsconfig {
+                cmd.arg(OsString::from(format!(
+                    "--tsconfig={}",
+                    tsconfig_tmp.path().display()
+                )));
+            }
+            for flag in resolver_inputs.virtual_module_alias_flags() {
+                cmd.arg(OsString::from(flag));
+            }
+            for arg in &args {
+                cmd.arg(arg);
+            }
+            let output = cmd.output().with_context(|| {
+                format!("failed to spawn {}", self.config.binary_path.display())
+            })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let friendly = redact_temp_path(
+                    &stderr,
+                    out_dir.path(),
+                    &self.config.working_dir,
+                    "<zfb-islands internal esbuild output directory>",
+                );
+                return Err(anyhow!(
+                    "esbuild exited with status {} bundling {label} {:?}: {}",
+                    output.status,
+                    source_path,
+                    friendly.trim()
+                ));
+            }
+        }
+
+        let expected_workers = workers.into_keys().collect();
+        read_back_client_script_outdir(out_dir.path(), entry_name, &expected_workers)
     }
 }
 
@@ -2064,6 +2231,77 @@ pub fn hash_8(js: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_scripts_read_back_collects_only_contract_workers() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("widget.js"), "entry\n").unwrap();
+        std::fs::write(dir.path().join("worker-src-s-search-d-ts.js"), b"worker\n").unwrap();
+        std::fs::write(dir.path().join("widget.js.map"), b"{}").unwrap();
+        std::fs::write(dir.path().join("worker-src-s-search-d-ts.js.map"), b"{}").unwrap();
+        let expected = BTreeSet::from(["worker-src-s-search-d-ts.js".to_string()]);
+
+        let output = read_back_client_script_outdir(dir.path(), "widget", &expected).unwrap();
+        assert_eq!(output.js, "entry\n");
+        assert_eq!(output.companions.len(), 1);
+        assert_eq!(output.companions[0].filename, "worker-src-s-search-d-ts.js");
+        assert_eq!(output.companions[0].bytes, b"worker\n");
+    }
+
+    #[test]
+    fn client_scripts_read_back_rejects_unknown_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("widget.js"), "entry\n").unwrap();
+        std::fs::write(dir.path().join("surprise.js"), "unknown\n").unwrap();
+
+        let error = read_back_client_script_outdir(dir.path(), "widget", &BTreeSet::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unexpected client-script output file"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn client_scripts_read_back_requires_every_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("widget.js"), "entry\n").unwrap();
+        let expected = BTreeSet::from(["worker-src-s-search-d-ts.js".to_string()]);
+
+        let error = read_back_client_script_outdir(dir.path(), "widget", &expected)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("produced no output"), "{error}");
+        assert!(error.contains("worker-src-s-search-d-ts.js"), "{error}");
+    }
+
+    #[test]
+    fn client_scripts_worker_filename_collisions_are_hard_errors() {
+        let workers = vec![
+            ClientScriptWorkerEntry {
+                filename: "worker-same.js".into(),
+                source_path: PathBuf::from("/project/a.ts"),
+            },
+            ClientScriptWorkerEntry {
+                filename: "worker-same.js".into(),
+                source_path: PathBuf::from("/project/b.ts"),
+            },
+        ];
+        let error = validate_client_script_worker_entries("widget", &workers)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("filename collision"), "{error}");
+
+        let entry_collision = vec![ClientScriptWorkerEntry {
+            filename: "worker-same.js".into(),
+            source_path: PathBuf::from("/project/worker.ts"),
+        }];
+        let error = validate_client_script_worker_entries("worker-same", &entry_collision)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("collide on output filename"), "{error}");
+    }
 
     #[test]
     fn hash_is_stable_for_identical_inputs() {

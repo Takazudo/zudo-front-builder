@@ -43,14 +43,15 @@ pub use bundler::{
     ModuleId, PerIslandBundleOutput, ProductionIslandsAsset,
 };
 pub use client_scripts::{
-    build_production_client_scripts, client_script_entry_name, discover_client_scripts,
-    is_client_script_file, ClientScriptCollision, ClientScriptEntry, ProductionClientScriptAsset,
+    build_production_client_scripts, build_production_client_scripts_with_workers,
+    client_script_entry_name, discover_client_scripts, is_client_script_file,
+    ClientScriptCollision, ClientScriptEntry, ClientScriptWorkerEntry, ProductionClientScriptAsset,
     CLIENT_SCRIPT_DISCOVERY_ROOTS, CLIENT_SCRIPT_EXTENSIONS, CLIENT_SCRIPT_INFIX,
 };
 pub use esbuild::{
     hash_8, render_island_entry_source, render_runtime_entry_source,
-    render_shared_bundle_entry_source, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
-    EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
+    render_shared_bundle_entry_source, ClientScriptBundleOutput, EsbuildSubprocessBundler,
+    EsbuildSubprocessConfig, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
 };
 pub use future_rust_native::NativeRustBundler;
 pub use html_tree::HtmlTree;

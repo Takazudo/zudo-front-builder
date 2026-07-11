@@ -554,7 +554,11 @@ fn no_dynamic_import_yields_single_file() {
             (ZFB_ESBUILD_BIN, absolute path, or the staged \
             crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn client_script_real_esbuild_bundles_discovered_entry() {
-    use zfb_islands::{build_production_client_scripts, discover_client_scripts};
+    use std::collections::BTreeMap;
+    use zfb_islands::{
+        build_production_client_scripts_with_workers, discover_client_scripts,
+        module_worker_filename, ClientScriptWorkerEntry,
+    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
@@ -571,14 +575,38 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
     std::fs::write(
         pages.join("search-widget.client.ts"),
         "const q: string = \"zfb_client_entry_marker\";\n\
+         new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });\n\
          import(\"./lazy-part.ts\").then((m) => console.log(q, m.LAZY_MARKER));\n",
     )
     .expect("write client entry");
+    let worker_path = pages.join("search.worker.ts");
+    std::fs::write(
+        &worker_path,
+        "self.postMessage('zfb_client_worker_marker');\n",
+    )
+    .expect("write module worker");
 
     let (entries, collisions) = discover_client_scripts(root).expect("discovery");
     assert!(collisions.is_empty(), "no collisions: {collisions:?}");
     assert_eq!(entries.len(), 1, "exactly one entry: {entries:?}");
     assert_eq!(entries[0].entry_name, "search-widget");
+
+    // The command-layer preprocessing pass applies this exact locked rewrite
+    // before handing the staged sources to the islands crate.
+    let entry_source = std::fs::read_to_string(&entries[0].source_path).unwrap();
+    let rewrite =
+        zfb_build::rewrite_module_worker_urls(&entry_source, &entries[0].source_path, root)
+            .expect("rewrite worker URL");
+    assert!(rewrite.expanded_source.contains(".js?v="));
+    std::fs::write(&entries[0].source_path, rewrite.expanded_source).unwrap();
+    let worker_filename = module_worker_filename(root, &worker_path).unwrap();
+    let workers = BTreeMap::from([(
+        "search-widget".to_string(),
+        vec![ClientScriptWorkerEntry {
+            filename: worker_filename.clone(),
+            source_path: worker_path,
+        }],
+    )]);
 
     let bundler =
         EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default().with_working_dir(root));
@@ -586,8 +614,8 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
         .with_outdir(root.join("dist"))
         .with_minify(false);
 
-    let assets =
-        build_production_client_scripts(&bundler, &entries, &cfg).expect("real esbuild bundle");
+    let assets = build_production_client_scripts_with_workers(&bundler, &entries, &workers, &cfg)
+        .expect("real esbuild bundle");
     assert_eq!(assets.len(), 1);
     let asset = &assets[0];
 
@@ -611,6 +639,14 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
     assert!(
         !js.contains(": string"),
         "TS annotation survived bundling:\n{js}"
+    );
+    assert!(js.contains(&worker_filename), "worker URL missing:\n{js}");
+    assert!(js.contains("?v="), "worker cache query missing:\n{js}");
+    assert_eq!(asset.companions.len(), 1);
+    assert_eq!(asset.companions[0].filename, worker_filename);
+    assert!(
+        String::from_utf8_lossy(&asset.companions[0].bytes).contains("zfb_client_worker_marker"),
+        "worker bundle marker missing"
     );
 }
 
