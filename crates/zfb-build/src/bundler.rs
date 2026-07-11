@@ -2959,7 +2959,23 @@ pub fn bundle_with_session(
     // resulting edges key on real `project_root` paths, which persist.
     let want_metafile_deps =
         matches!(input.mode, BundleMode::Development) && input.mock_subprocess_output.is_none();
-    let metafile_path: Option<PathBuf> = if want_metafile_deps {
+    // Also request the metafile whenever `bundle.exclude` is active, in ANY
+    // mode (not just dev): `audit_metafile_exclusions_at_path` below needs
+    // esbuild's own authoritative resolution record to fail-closed against a
+    // leaked exclusion in prod builds too (#1558). Without exclusions this
+    // stays exactly the dev-only gate it always was, so a plain prod build
+    // requests no metafile — see the byte-identical guarantee on
+    // `run_esbuild`.
+    let exclusions_active = !bundle_exclude.is_empty();
+    let want_metafile = want_metafile_deps || exclusions_active;
+    // Mock-subprocess builds (tests only) never invoke real esbuild, so no
+    // metafile is ever produced for them — `mock_subprocess_output.is_some()`
+    // forces `metafile_path` back to `None` even when exclusions are active.
+    // The audit below is unreachable on that path by construction; unit-scope
+    // coverage in `metafile_deps` exercises `audit_metafile_exclusions`
+    // directly against crafted metafiles instead of relying on a mock one.
+    let metafile_path: Option<PathBuf> = if want_metafile && input.mock_subprocess_output.is_none()
+    {
         Some(shadow.join(".zfb-metafile.json"))
     } else {
         None
@@ -2983,6 +2999,30 @@ pub fn bundle_with_session(
         )?;
     }
     let esbuild_ms = esbuild_start.map(|t| t.elapsed().as_millis());
+
+    // Fail-closed `bundle.exclude` audit (#1558): whenever exclusions are
+    // active, verify esbuild's metafile — the only resolver, per this
+    // project's lessons-learned — recorded no input resolving to an excluded
+    // path under either spelling `audit_metafile_exclusions_at_path` checks.
+    // A leaked exclusion here means a live-tree escape hatch (dual-target
+    // tsconfig paths, a stray node_modules symlink, esbuild candidate
+    // substitution) let excluded content back into the bundle. Runs while
+    // the shadow tree still exists (`owned_work` is dropped further below).
+    // `metafile_path` is `None` here for the mock-subprocess path even under
+    // active exclusions (see above), so this block is a deliberate no-op for
+    // mocks, not a hole.
+    if exclusions_active {
+        if let Some(meta_path) = metafile_path.as_deref() {
+            let is_excluded = |abs: &Path| bundle_exclude.is_excluded(abs, &input.project_root);
+            crate::metafile_deps::audit_metafile_exclusions_at_path(
+                meta_path,
+                &is_excluded,
+                shadow,
+                &input.project_root,
+            )
+            .context("bundler: bundle.exclude audit failed")?;
+        }
+    }
 
     // Parse the metafile into per-route `Module` edges while the shadow tree
     // still exists. A missing / malformed metafile yields an empty set (the
