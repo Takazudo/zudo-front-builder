@@ -143,7 +143,7 @@ use crate::adapter::run_capturing;
 use crate::glob_expand::expand_import_meta_glob;
 use crate::module_worker::{
     discover_module_preprocessing_with_context,
-    discover_registered_virtual_preprocessing_with_context, probe_graph_candidate,
+    discover_registered_virtual_preprocessing_with_context,
     rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext, ModuleWorkerDependency,
 };
 use crate::raw_import_expand::{expand_raw_imports, RawImportEdge};
@@ -1816,6 +1816,7 @@ pub fn bundle_with_session(
     let mut plugin_preprocessing_files = BTreeSet::new();
     if mat_ctx.worker_build_context.has_plugin_resolver_inputs() {
         let project_root = normalize_path_lexical(&input.project_root);
+        let plugin_main_fields = effective_ssr_main_fields(&input);
         let effective_virtual_context = mat_ctx
             .worker_build_context
             .clone()
@@ -1836,14 +1837,31 @@ pub fn bundle_with_session(
                 }),
         );
 
-        let plugin_preprocessing_roots = input
+        let mut plugin_preprocessing_roots = BTreeSet::new();
+        for (_, target) in input
             .plugin_alias_entries
             .iter()
             // An exact user tsconfig key wins over the plugin registration in
             // the synthetic resolver. Do not preflight the losing target.
             .filter(|(specifier, _)| !input.tsconfig_paths.contains_key(specifier))
-            .map(|(_, target)| normalize_path_lexical(Path::new(target)))
-            .collect::<BTreeSet<_>>();
+        {
+            let target_path = normalize_path_lexical(Path::new(target));
+            if bundle_exclude.is_excluded(&target_path, &project_root) {
+                continue;
+            }
+            // An unwalked directory alias is later remapped to its shadow
+            // directory when possible. Preserve package resolution and `.js`
+            // module type there by staging its package metadata alongside the
+            // resolved entry closure.
+            let package_json = target_path.join("package.json");
+            if target_path.is_dir() && package_json.is_file() {
+                plugin_preprocessing_files.insert(package_json);
+            }
+            if let Some(entry) = resolve_concrete_ssr_target_candidate(target, &plugin_main_fields)
+            {
+                plugin_preprocessing_roots.insert(entry);
+            }
+        }
         for target in plugin_preprocessing_roots {
             let Ok(relative) = target.strip_prefix(&project_root) else {
                 continue;
@@ -1885,7 +1903,9 @@ pub fn bundle_with_session(
         }
     }
     if let Some(src) = input.mdx_components_file.as_deref() {
-        preflight_raw_file(src, src, &mat_ctx);
+        if !bundle_exclude.is_excluded(src, &input.project_root) {
+            preflight_raw_file(src, src, &mat_ctx);
+        }
     }
 
     let shadow_pages = shadow.join("pages");
@@ -2457,10 +2477,8 @@ pub fn bundle_with_session(
     //     is absent — keeps output byte-for-byte identical to a project
     //     without the convention.
     let mdx_components_import_spec: Option<String> = match input.mdx_components_file.as_ref() {
-        Some(src) => Some(
-            materialise_mdx_components_file(src, shadow, &mat_ctx)
-                .context("bundler: failed materialising mdx-components.tsx into shadow")?,
-        ),
+        Some(src) => materialise_mdx_components_file(src, shadow, &mat_ctx)
+            .context("bundler: failed materialising mdx-components.tsx into shadow")?,
         None => None,
     };
 
@@ -2667,7 +2685,6 @@ pub fn bundle_with_session(
             &bundle_path,
             metafile_path.as_deref(),
             &bundle_exclude,
-            &excluded_plugin_preprocessing_files,
         )?;
     }
     let esbuild_ms = esbuild_start.map(|t| t.elapsed().as_millis());
@@ -2958,13 +2975,16 @@ fn enumerate_extra_top_level_dirs(project_root: &Path, known_skip_list: &[&str])
 /// `tsconfig.json#paths` apply. (Mirrors the "extra dirs" pass, which
 /// materialises source; only `node_modules` is symlinked.)
 ///
-/// Returns the shadow-relative import specifier (always
-/// `./mdx-components.tsx`) that the synthetic `entry.mjs` imports.
+/// Returns the shadow-relative import specifier (`./mdx-components.tsx`) that
+/// the synthetic entry imports, or `None` when the source itself is excluded.
 fn materialise_mdx_components_file(
     src: &Path,
     shadow: &Path,
     ctx: &MaterialiseCtx<'_, '_>,
-) -> Result<String> {
+) -> Result<Option<String>> {
+    if ctx.bundle_exclude.is_excluded(src, ctx.project_root) {
+        return Ok(None);
+    }
     let dst = shadow.join(MDX_COMPONENTS_FILENAME);
     // Routed through the #993 writer (NOT an always-write infra file):
     // the override file is user-deletable, so it must take part in the
@@ -2990,7 +3010,7 @@ fn materialise_mdx_components_file(
             dst.display()
         )
     })?;
-    Ok(format!("./{MDX_COMPONENTS_FILENAME}"))
+    Ok(Some(format!("./{MDX_COMPONENTS_FILENAME}")))
 }
 
 /// Symlink `from` at `to`, falling back to `fs::copy` on platforms that
@@ -4456,12 +4476,21 @@ fn materialise_collection(
             from.extension().and_then(|s| s.to_str()),
             Some("md") | Some("mdx")
         );
-        // Preserve the collection snapshot/bridge contract for Markdown and
-        // MDX. Every other file is an SSR-resolver companion and must obey the
-        // global `bundle.exclude` policy before its own source is written;
-        // `materialise_source_file` only applies the predicate to nested
-        // glob/raw targets, not to `from` itself.
-        if !is_markdown && is_bundle_excluded(from) {
+        if is_bundle_excluded(from) {
+            if is_markdown {
+                bail!(
+                    "bundler: bundle.exclude matched collection Markdown `{}` in `{}`; \
+                     excluding collection .md/.mdx sources is unsupported because the content \
+                     snapshot and SSR bridge must stay synchronized. Use the collection's \
+                     `exclude` filter instead",
+                    from.display(),
+                    collection_name
+                );
+            }
+            // Every non-Markdown file is an SSR-resolver companion and must
+            // obey the global policy before its own source is written;
+            // `materialise_source_file` only applies the predicate to nested
+            // glob/raw targets, not to `from` itself.
             continue;
         }
         if is_markdown {
@@ -4969,6 +4998,7 @@ fn store_source_skip_entry(
 #[derive(Debug)]
 struct BundleExcludeMatcher {
     set: globset::GlobSet,
+    pattern_prefixes: Vec<(String, bool)>,
 }
 
 impl BundleExcludeMatcher {
@@ -4977,17 +5007,22 @@ impl BundleExcludeMatcher {
     /// silent no-op).
     fn new(patterns: &[String]) -> Result<Self> {
         let mut builder = globset::GlobSetBuilder::new();
+        let mut pattern_prefixes = Vec::with_capacity(patterns.len());
         for pat in patterns {
             let glob = globset::GlobBuilder::new(pat)
                 .literal_separator(true)
                 .build()
                 .map_err(|e| anyhow!("zfb bundler: invalid bundle.exclude pattern {pat:?}: {e}"))?;
             builder.add(glob);
+            pattern_prefixes.push(bundle_exclude_pattern_prefix(pat));
         }
         let set = builder
             .build()
             .map_err(|e| anyhow!("zfb bundler: failed to compile bundle.exclude globset: {e}"))?;
-        Ok(Self { set })
+        Ok(Self {
+            set,
+            pattern_prefixes,
+        })
     }
 
     fn is_empty(&self) -> bool {
@@ -5014,6 +5049,56 @@ impl BundleExcludeMatcher {
         }
         self.set.is_match(&rel_posix)
     }
+
+    /// Whether an excluded path can overlap the concrete values produced by
+    /// an absolute tsconfig wildcard target. Real fallback is safe only when
+    /// every configured pattern is provably disjoint from this static prefix.
+    fn may_overlap_wildcard_target(&self, target: &str, project_root: &Path) -> bool {
+        let Some(star) = target.find('*') else {
+            return false;
+        };
+        let raw_prefix = &target[..star];
+        let normalized_prefix = normalize_path_lexical(Path::new(raw_prefix));
+        let Ok(relative) = normalized_prefix.strip_prefix(project_root) else {
+            return false;
+        };
+        let mut target_prefix = path_to_posix_string(relative);
+        if has_trailing_path_separator(raw_prefix)
+            && !target_prefix.is_empty()
+            && !target_prefix.ends_with('/')
+        {
+            target_prefix.push('/');
+        }
+
+        self.pattern_prefixes
+            .iter()
+            .any(|(pattern_prefix, has_glob)| {
+                if *has_glob {
+                    pattern_prefix.starts_with(&target_prefix)
+                        || target_prefix.starts_with(pattern_prefix)
+                } else {
+                    pattern_prefix.starts_with(&target_prefix)
+                }
+            })
+    }
+}
+
+fn bundle_exclude_pattern_prefix(pattern: &str) -> (String, bool) {
+    let mut prefix = String::new();
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                let Some(escaped) = chars.next() else {
+                    break;
+                };
+                prefix.push(escaped);
+            }
+            '*' | '?' | '[' | '{' => return (prefix, true),
+            _ => prefix.push(ch),
+        }
+    }
+    (prefix, false)
 }
 
 /// Derive a URL route from a path **relative to** `pages_dir`.
@@ -5088,18 +5173,27 @@ fn rebase_tsconfig_paths_to_shadow(
     project_root: &Path,
     shadow: &Path,
 ) -> BTreeMap<String, Vec<String>> {
-    rebase_tsconfig_paths_to_shadow_with_exclusions(
-        paths,
-        project_root,
-        shadow,
-        None,
-        None,
-        &BTreeSet::new(),
-        &[],
-    )
+    rebase_tsconfig_paths_to_shadow_with_exclusions(paths, project_root, shadow, None, None, &[])
 }
 
 const SSR_RESOLVE_EXTENSIONS: [&str; 6] = ["tsx", "ts", "jsx", "js", "css", "json"];
+
+fn has_trailing_path_separator(value: &str) -> bool {
+    value.ends_with('/') || value.ends_with('\\')
+}
+
+fn preserve_trailing_path_separator(mut value: String, original: &str) -> String {
+    if let Some(separator) = original
+        .chars()
+        .last()
+        .filter(|ch| matches!(ch, '/' | '\\'))
+    {
+        if !has_trailing_path_separator(&value) {
+            value.push(separator);
+        }
+    }
+    value
+}
 
 fn resolve_package_entry_candidate(package_dir: &Path, value: &str) -> Option<PathBuf> {
     if value.contains('*') {
@@ -5107,17 +5201,16 @@ fn resolve_package_entry_candidate(package_dir: &Path, value: &str) -> Option<Pa
     }
     let relative = value.strip_prefix("./").unwrap_or(value);
     let candidate = normalize_path_lexical(&package_dir.join(relative));
-    if !candidate.starts_with(package_dir) {
-        return None;
-    }
-    probe_ssr_candidate(&candidate)
+    // esbuild normalizes away a trailing separator in a package main-field
+    // value before load-as-file, unlike a trailing separator on the original
+    // tsconfig target. Keep file-first semantics here for both spellings.
+    probe_ssr_file_candidate(&candidate).or_else(|| probe_ssr_directory_index(&candidate))
 }
 
 /// Probe using esbuild 0.25.12's default neutral-platform resolve order.
-/// This is intentionally narrower than the module-graph worker's resolver:
-/// exact tsconfig directory substitutions do not consider mjs/cjs/mts/cts,
-/// and CSS precedes JSON.
-fn probe_ssr_candidate(candidate: &Path) -> Option<PathBuf> {
+/// Exact files and appended extensions win before TypeScript's explicit
+/// extension rewrites. Directory package/main/index probing happens later.
+fn probe_ssr_file_candidate(candidate: &Path) -> Option<PathBuf> {
     candidate
         .is_file()
         .then(|| candidate.to_path_buf())
@@ -5139,12 +5232,19 @@ fn probe_ssr_candidate(candidate: &Path) -> Option<PathBuf> {
                 .find(|path| path.is_file())
         })
         .or_else(|| {
-            candidate.is_dir().then(|| {
-                SSR_RESOLVE_EXTENSIONS
-                    .into_iter()
-                    .map(|extension| candidate.join(format!("index.{extension}")))
-                    .find(|path| path.is_file())
-            })?
+            let rewrites: &[&str] = match candidate
+                .extension()
+                .and_then(|extension| extension.to_str())
+            {
+                Some("js") | Some("jsx") => &["ts", "tsx"],
+                Some("mjs") => &["mts"],
+                Some("cjs") => &["cts"],
+                _ => &[],
+            };
+            rewrites
+                .iter()
+                .map(|extension| candidate.with_extension(extension))
+                .find(|path| path.is_file())
         })
 }
 
@@ -5157,15 +5257,13 @@ fn probe_ssr_directory_index(candidate: &Path) -> Option<PathBuf> {
     })?
 }
 
-/// Check only package entrypoints an exact directory alias can resolve through
-/// the effective SSR main fields. esbuild 0.25.12 does not consult `exports`
-/// for an absolute directory produced by a tsconfig `paths` substitution.
-fn package_directory_entry_exclusion(
+/// Resolve package entrypoints an exact directory alias can load through the
+/// effective SSR main fields. esbuild 0.25.12 does not consult `exports` for
+/// an absolute directory produced by a tsconfig `paths` substitution.
+fn resolve_package_directory_entry(
     target: &Path,
-    project_root: &Path,
-    bundle_exclude: &BundleExcludeMatcher,
     effective_main_fields: &[&str],
-) -> Option<bool> {
+) -> Option<PathBuf> {
     if !target.is_dir() {
         return None;
     }
@@ -5184,60 +5282,37 @@ fn package_directory_entry_exclusion(
         };
         if let Some(resolved) = resolve_package_entry_candidate(target, entry) {
             // esbuild stops at the first effective main field that resolves.
-            return Some(bundle_exclude.is_excluded(&resolved, project_root));
+            return Some(resolved);
         }
     }
     None
 }
 
 fn concrete_tsconfig_target_is_excluded(
-    target: &Path,
+    target: &str,
     project_root: &Path,
     bundle_exclude: &BundleExcludeMatcher,
     effective_main_fields: &[&str],
 ) -> bool {
-    if bundle_exclude.is_excluded(target, project_root) {
+    let target_path = normalize_path_lexical(Path::new(target));
+    if bundle_exclude.is_excluded(&target_path, project_root) {
         return true;
     }
-    if let Some(excluded) = package_directory_entry_exclusion(
-        target,
-        project_root,
-        bundle_exclude,
-        effective_main_fields,
-    ) {
-        return excluded;
-    }
-    let resolved = if target.is_dir() {
-        probe_ssr_directory_index(target)
-    } else {
-        // Preserve the module graph's TypeScript source swaps and broader
-        // extension probing for direct file/extensionless path targets.
-        probe_graph_candidate(target, false)
-    };
+
+    let resolved = resolve_concrete_ssr_target_candidate(target, effective_main_fields);
     resolved.is_some_and(|path| bundle_exclude.is_excluded(&path, project_root))
 }
 
-/// Returns true when a wildcard target's static prefix can encompass one of
-/// the excluded files discovered in the plugin preprocessing closure.
-///
-/// We deliberately do NOT disable every under-root wildcard's real fallback
-/// merely because an unrelated `bundle.exclude` exists: top-level or ignored
-/// user-path targets may rely on that fallback. Restricting suppression to a
-/// wildcard whose static prefix contains an actually excluded closure file
-/// closes the known bypass without breaking unrelated aliases. Patterns more
-/// complex than the normal trailing `/*` form use their bytes before the first
-/// `*` as a conservative prefix.
-fn wildcard_tsconfig_target_covers_excluded_file(
+fn resolve_concrete_ssr_target_candidate(
     target: &str,
-    excluded_files: &BTreeSet<PathBuf>,
-) -> bool {
-    let Some(star) = target.find('*') else {
-        return false;
-    };
-    let static_prefix = target[..star].replace('\\', "/");
-    excluded_files
-        .iter()
-        .any(|path| path_to_posix_string(path).starts_with(&static_prefix))
+    effective_main_fields: &[&str],
+) -> Option<PathBuf> {
+    let target_path = normalize_path_lexical(Path::new(target));
+    (!has_trailing_path_separator(target))
+        .then(|| probe_ssr_file_candidate(&target_path))
+        .flatten()
+        .or_else(|| resolve_package_directory_entry(&target_path, effective_main_fields))
+        .or_else(|| probe_ssr_directory_index(&target_path))
 }
 
 fn rebase_tsconfig_paths_to_shadow_with_exclusions(
@@ -5246,7 +5321,6 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
     shadow: &Path,
     bundle_exclude: Option<&BundleExcludeMatcher>,
     excluded_target: Option<&Path>,
-    excluded_plugin_preprocessing_files: &BTreeSet<PathBuf>,
     effective_main_fields: &[&str],
 ) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -5268,7 +5342,7 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                     if !has_wildcard
                         && bundle_exclude.is_some_and(|matcher| {
                             concrete_tsconfig_target_is_excluded(
-                                prefix_path,
+                                prefix,
                                 project_root,
                                 matcher,
                                 effective_main_fields,
@@ -5300,22 +5374,25 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                     } else {
                         shadow.join(rel)
                     };
-                    let mut shadow_target = shadow_prefix.to_string_lossy().into_owned();
+                    let mut shadow_target = preserve_trailing_path_separator(
+                        shadow_prefix.to_string_lossy().into_owned(),
+                        prefix,
+                    );
                     shadow_target.push_str(suffix);
                     push_unique(&mut new_targets, shadow_target);
 
-                    if bundle_exclude.is_some_and(|matcher| !matcher.is_empty())
-                        && has_wildcard
-                        && wildcard_tsconfig_target_covers_excluded_file(
-                            target,
-                            excluded_plugin_preprocessing_files,
-                        )
+                    if has_wildcard
+                        && bundle_exclude.is_some_and(|matcher| {
+                            !matcher.is_empty()
+                                && matcher.may_overlap_wildcard_target(target, project_root)
+                        })
                     {
                         // The shadow wildcard still resolves every allowed
                         // mirrored file, but the live-real fallback could
-                        // resurrect a matched closure file skipped from the
-                        // shadow. Suppress only this related wildcard; an
-                        // unrelated wildcard keeps its historical fallback.
+                        // resurrect a file matched by `bundle.exclude` and
+                        // skipped from the shadow. Suppress fallback whenever
+                        // the configured exclude patterns can overlap this
+                        // wildcard; provably-disjoint aliases keep it.
                         continue;
                     }
                 }
@@ -5932,6 +6009,16 @@ fn esbuild_will_preserve_symlinks(input: &BundlerInput) -> bool {
         || input.tsconfig_paths.is_empty()
 }
 
+fn effective_ssr_main_fields(input: &BundlerInput) -> Vec<&str> {
+    if !input.main_fields.is_empty() {
+        input.main_fields.iter().map(String::as_str).collect()
+    } else if matches!(input.framework, Framework::React) {
+        vec!["main", "module"]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Resolve and run the esbuild subprocess.
 ///
 /// When `metafile_path` is `Some`, esbuild also writes its `--metafile` JSON
@@ -5945,7 +6032,6 @@ fn run_esbuild(
     bundle_path: &Path,
     metafile_path: Option<&Path>,
     bundle_exclude: &BundleExcludeMatcher,
-    excluded_plugin_preprocessing_files: &BTreeSet<PathBuf>,
 ) -> Result<()> {
     let bin = resolve_esbuild_binary(input.esbuild_binary.as_deref())?;
     let entry = shadow.join(SHADOW_ENTRY_FILENAME);
@@ -6032,13 +6118,7 @@ fn run_esbuild(
     // `exports` map (`exports` always takes precedence), so it can only turn a
     // currently *failing* main-only resolution into a success, never alter a
     // working one. `main,module` matches esbuild's node-platform default order.
-    let effective_main_fields: Vec<&str> = if !input.main_fields.is_empty() {
-        input.main_fields.iter().map(String::as_str).collect()
-    } else if matches!(input.framework, Framework::React) {
-        vec!["main", "module"]
-    } else {
-        Vec::new()
-    };
+    let effective_main_fields = effective_ssr_main_fields(input);
     if !effective_main_fields.is_empty() {
         cmd.arg(format!("--main-fields={}", effective_main_fields.join(",")));
     }
@@ -6095,7 +6175,7 @@ fn run_esbuild(
             let target_path = normalize_path_lexical(Path::new(target));
             target_path.starts_with(&project_root)
                 && concrete_tsconfig_target_is_excluded(
-                    &target_path,
+                    target,
                     &project_root,
                     bundle_exclude,
                     &effective_main_fields,
@@ -6111,7 +6191,7 @@ fn run_esbuild(
                 let target_path = normalize_path_lexical(Path::new(target));
                 target_path.starts_with(&project_root)
                     && concrete_tsconfig_target_is_excluded(
-                        &target_path,
+                        target,
                         &project_root,
                         bundle_exclude,
                         &effective_main_fields,
@@ -6141,33 +6221,70 @@ fn run_esbuild(
         .iter()
         .map(|(specifier, target)| {
             let target_path = normalize_path_lexical(Path::new(target));
-            let remapped = match target_path.strip_prefix(&project_root) {
-                Ok(relative) => {
-                    let shadow_target = shadow.join(relative);
-                    if concrete_tsconfig_target_is_excluded(
-                        &target_path,
-                        &project_root,
-                        bundle_exclude,
-                        &effective_main_fields,
-                    ) {
-                        // Do not fall back to the live project file for an
-                        // excluded alias. The opaque guard was created after
-                        // materialisation, and its child deliberately does not
-                        // exist, so an actual import fails while an unused
-                        // registration remains harmless.
-                        excluded_plugin_alias_target
+            let selected_target =
+                resolve_concrete_ssr_target_candidate(target, &effective_main_fields);
+            let (remapped, preserve_original_separator) =
+                match target_path.strip_prefix(&project_root) {
+                    Ok(relative) => {
+                        let shadow_target = shadow.join(relative);
+                        if concrete_tsconfig_target_is_excluded(
+                            target,
+                            &project_root,
+                            bundle_exclude,
+                            &effective_main_fields,
+                        ) {
+                            // Do not fall back to the live project file for an
+                            // excluded alias. The opaque guard was created after
+                            // materialisation, and its child deliberately does not
+                            // exist, so an actual import fails while an unused
+                            // registration remains harmless.
+                            (
+                                excluded_plugin_alias_target
+                                    .as_ref()
+                                    .expect("excluded project alias allocated a guard")
+                                    .clone(),
+                                true,
+                            )
+                        } else if shadow_target.is_dir()
+                            && selected_target
+                                .as_ref()
+                                .is_some_and(|entry| entry.starts_with(&target_path))
+                            && (!target_path.join("package.json").is_file()
+                                || shadow_target.join("package.json").is_file())
+                        {
+                            // Preserve package main/type semantics when the
+                            // selected entry lives inside this directory and
+                            // its package metadata was staged with the closure.
+                            (shadow_target, true)
+                        } else if let Some(shadow_entry) = selected_target
                             .as_ref()
-                            .expect("excluded project alias allocated a guard")
-                            .clone()
-                    } else if shadow_target.is_file() {
-                        shadow_target
-                    } else {
-                        target_path
+                            .and_then(|entry| entry.strip_prefix(&project_root).ok())
+                            .map(|relative| shadow.join(relative))
+                            .filter(|entry| entry.is_file())
+                        {
+                            // Directory aliases outside the ordinary mirror are
+                            // materialised as their resolved entry closure. Point
+                            // directly at that entry so a missing package.json in
+                            // the shadow cannot send resolution back to the live
+                            // directory (and nested excluded files).
+                            (shadow_entry, false)
+                        } else if shadow_target.is_file() {
+                            (shadow_target, true)
+                        } else {
+                            (target_path, true)
+                        }
                     }
-                }
-                Err(_) => target_path,
-            };
-            (specifier.clone(), remapped.to_string_lossy().into_owned())
+                    Err(_) => (target_path, true),
+                };
+            let remapped = remapped.to_string_lossy().into_owned();
+            (
+                specifier.clone(),
+                if preserve_original_separator {
+                    preserve_trailing_path_separator(remapped, target)
+                } else {
+                    remapped
+                },
+            )
         })
         .collect::<Vec<_>>();
     let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
@@ -6205,7 +6322,6 @@ fn run_esbuild(
         shadow,
         Some(bundle_exclude),
         excluded_plugin_alias_target.as_deref(),
-        excluded_plugin_preprocessing_files,
         &effective_main_fields,
     );
     zfb_plugin_resolver::merge_into_tsconfig_paths(
@@ -6703,6 +6819,91 @@ mod tests {
             "export default 'excluded-mjs';\n",
         )
         .unwrap();
+        fs::create_dir_all(root.join("sibling-before-directory/dist")).unwrap();
+        fs::write(
+            root.join("sibling-before-directory/package.json"),
+            r#"{"main":"./dist/allowed.js"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("sibling-before-directory/dist/allowed.js"),
+            "export default 'allowed-directory-main';\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("sibling-before-directory.css"),
+            ".excluded-sibling {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("sibling-before-directory.mjs"),
+            "export default 'allowed-but-unsupported-mjs';\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("allowed-sibling-directory/dist")).unwrap();
+        fs::write(
+            root.join("allowed-sibling-directory/package.json"),
+            r#"{"main":"./dist/excluded.js"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("allowed-sibling-directory/dist/excluded.js"),
+            "export default 'excluded-directory-main';\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("allowed-sibling-directory.css"),
+            ".allowed-sibling {}\n",
+        )
+        .unwrap();
+        fs::write(root.join("allowed-exact.js"), "export default 'allowed';\n").unwrap();
+        fs::write(
+            root.join("allowed-exact.ts"),
+            "export default 'excluded-rewrite';\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("missing-explicit.ts"),
+            "export default 'excluded-rewrite';\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("uppercase.ts"),
+            "export default 'excluded-uppercase-rewrite';\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("parent-main-package")).unwrap();
+        fs::write(
+            root.join("parent-main-package/package.json"),
+            r#"{"main":"../parent-secret.js"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("parent-main-package/index.js"),
+            "export default 'allowed-index';\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("parent-secret.ts"),
+            "export default 'excluded-parent-main';\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("main-slash-package/value")).unwrap();
+        fs::write(
+            root.join("main-slash-package/package.json"),
+            r#"{"main":"./value/"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("main-slash-package/value.css"),
+            ".excluded-main-sibling {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("main-slash-package/value/index.js"),
+            "export default 'allowed-nested-index';\n",
+        )
+        .unwrap();
 
         let shadow = tempfile::tempdir().unwrap();
         let blocked = shadow.path().join("guard/unresolvable");
@@ -6715,9 +6916,15 @@ mod tests {
             "css-first-dir/index.json".to_string(),
             "css-first-dir/index.mjs".to_string(),
             "json-before-mjs-dir/index.mjs".to_string(),
+            "sibling-before-directory.css".to_string(),
+            "allowed-sibling-directory/dist/excluded.js".to_string(),
+            "allowed-exact.ts".to_string(),
+            "missing-explicit.ts".to_string(),
+            "uppercase.ts".to_string(),
+            "parent-secret.ts".to_string(),
+            "main-slash-package/value.css".to_string(),
         ])
         .unwrap();
-        let excluded_files = BTreeSet::from([root.join("src/secret.ts")]);
         let root_string = root.to_string_lossy();
         let mut paths = BTreeMap::new();
         paths.insert(
@@ -6763,6 +6970,53 @@ mod tests {
                 .to_string_lossy()
                 .into_owned()],
         );
+        paths.insert(
+            "sibling-before-directory".to_string(),
+            vec![root
+                .join("sibling-before-directory")
+                .to_string_lossy()
+                .into_owned()],
+        );
+        paths.insert(
+            "trailing-directory-only".to_string(),
+            vec![format!(
+                "{}/",
+                root.join("sibling-before-directory").display()
+            )],
+        );
+        paths.insert(
+            "allowed-sibling-before-directory".to_string(),
+            vec![root
+                .join("allowed-sibling-directory")
+                .to_string_lossy()
+                .into_owned()],
+        );
+        paths.insert(
+            "allowed-explicit-js".to_string(),
+            vec![root.join("allowed-exact.js").to_string_lossy().into_owned()],
+        );
+        paths.insert(
+            "missing-explicit-js".to_string(),
+            vec![root
+                .join("missing-explicit.js")
+                .to_string_lossy()
+                .into_owned()],
+        );
+        paths.insert(
+            "uppercase-explicit-js".to_string(),
+            vec![root.join("uppercase.JS").to_string_lossy().into_owned()],
+        );
+        paths.insert(
+            "parent-main-package".to_string(),
+            vec![root
+                .join("parent-main-package")
+                .to_string_lossy()
+                .into_owned()],
+        );
+        paths.insert(
+            "main-slash-package".to_string(),
+            vec![format!("{}/", root.join("main-slash-package").display())],
+        );
 
         let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
             &paths,
@@ -6770,7 +7024,6 @@ mod tests {
             shadow.path(),
             Some(&matcher),
             Some(&blocked),
-            &excluded_files,
             &["main"],
         );
 
@@ -6778,7 +7031,27 @@ mod tests {
         assert_eq!(out["exact"], vec![blocked_string.clone()]);
         assert_eq!(out["extensionless"], vec![blocked_string.clone()]);
         assert_eq!(out["json-directory"], vec![blocked_string.clone()]);
-        assert_eq!(out["package-directory"], vec![blocked_string]);
+        assert_eq!(out["package-directory"], vec![blocked_string.clone()]);
+        assert_eq!(
+            out["sibling-before-directory"],
+            vec![blocked_string.clone()],
+            "excluded CSS wins before an allowed mjs sibling and directory main"
+        );
+        assert_eq!(
+            out["missing-explicit-js"],
+            vec![blocked_string.clone()],
+            "a missing explicit .js target rewrites to the excluded .ts source"
+        );
+        assert_eq!(
+            out["parent-main-package"],
+            vec![blocked_string.clone()],
+            "a package main may resolve through its parent and then rewrite .js to .ts"
+        );
+        assert_eq!(
+            out["main-slash-package"],
+            vec![blocked_string],
+            "a trailing separator inside package main is normalized before sibling probing"
+        );
         assert_eq!(
             out["related/*"],
             vec![format!("{}/src/*", shadow.path().display())]
@@ -6790,6 +7063,55 @@ mod tests {
                 format!("{root_string}/unmirrored/*"),
             ],
             "an unrelated exclusion must preserve the historical real fallback"
+        );
+        assert_eq!(
+            out["trailing-directory-only"],
+            vec![
+                format!(
+                    "{}/",
+                    shadow.path().join("sibling-before-directory").display()
+                ),
+                format!("{}/", root.join("sibling-before-directory").display()),
+            ],
+            "an explicit trailing separator skips the excluded sibling and is preserved in shadow"
+        );
+        assert_eq!(
+            out["allowed-sibling-before-directory"],
+            vec![
+                shadow
+                    .path()
+                    .join("allowed-sibling-directory")
+                    .to_string_lossy()
+                    .into_owned(),
+                root.join("allowed-sibling-directory")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+            "an allowed CSS sibling wins before the excluded directory main"
+        );
+        assert_eq!(
+            out["allowed-explicit-js"],
+            vec![
+                shadow
+                    .path()
+                    .join("allowed-exact.js")
+                    .to_string_lossy()
+                    .into_owned(),
+                root.join("allowed-exact.js").to_string_lossy().into_owned(),
+            ],
+            "an existing allowed .js file wins before an excluded .ts rewrite"
+        );
+        assert_eq!(
+            out["uppercase-explicit-js"],
+            vec![
+                shadow
+                    .path()
+                    .join("uppercase.JS")
+                    .to_string_lossy()
+                    .into_owned(),
+                root.join("uppercase.JS").to_string_lossy().into_owned(),
+            ],
+            "esbuild's TypeScript suffix rewrites are case-sensitive"
         );
         assert_eq!(
             out["allowed-directory"],
@@ -7591,13 +7913,35 @@ mod tests {
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
         let spec = materialise_mdx_components_file(&src, shadow_root, &ctx).unwrap();
-        assert_eq!(spec, "./mdx-components.tsx");
+        assert_eq!(spec.as_deref(), Some("./mdx-components.tsx"));
 
         // A real copy lands in the shadow root (so esbuild resolves its
         // relative imports against the shadow tree, not the project root).
         let dst = shadow_root.join("mdx-components.tsx");
         assert!(dst.is_file(), "copied file must exist at shadow root");
         assert_eq!(fs::read_to_string(&dst).unwrap(), contents);
+    }
+
+    #[test]
+    fn materialise_mdx_components_file_omits_excluded_source_and_import_spec() {
+        let project = tempfile::tempdir().unwrap();
+        let src = project.path().join("mdx-components.tsx");
+        fs::write(
+            &src,
+            "export default { h2: function ExcludedHeading() {} };\n",
+        )
+        .unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let exclude = BundleExcludeMatcher::new(&["mdx-components.tsx".to_string()]).unwrap();
+        let ctx = default_mat_ctx(project.path(), &exclude);
+
+        let spec = materialise_mdx_components_file(&src, shadow.path(), &ctx).unwrap();
+
+        assert_eq!(spec, None, "excluded override must not be imported");
+        assert!(
+            !shadow.path().join("mdx-components.tsx").exists(),
+            "excluded override must not be materialised"
+        );
     }
 
     #[test]
@@ -7614,7 +7958,9 @@ mod tests {
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(project.path(), &exclude);
 
-        materialise_mdx_components_file(&src, shadow.path(), &ctx).unwrap();
+        materialise_mdx_components_file(&src, shadow.path(), &ctx)
+            .unwrap()
+            .expect("override import spec");
         let staged = fs::read_to_string(shadow.path().join("mdx-components.tsx")).unwrap();
         assert!(!staged.contains("?raw"), "{staged}");
         let generated = fs::read_dir(shadow.path())
@@ -7910,6 +8256,45 @@ mod tests {
         // Non-MDX files copied verbatim.
         let txt = fs::read_to_string(dest.join("README.txt")).unwrap();
         assert_eq!(txt, "not mdx\n");
+    }
+
+    #[test]
+    fn materialise_collection_rejects_bundle_excluded_markdown_for_snapshot_parity() {
+        for extension in ["md", "mdx"] {
+            let project = tempfile::tempdir().unwrap();
+            let src = project.path().join("posts");
+            fs::create_dir_all(&src).unwrap();
+            let filename = format!("excluded.{extension}");
+            fs::write(src.join(&filename), "# Must not enter the SSR bridge\n").unwrap();
+            let dest = project.path().join("shadow_content/posts");
+            let mut imports = Vec::new();
+            let matcher = BundleExcludeMatcher::new(&[format!("posts/{filename}")]).unwrap();
+            let ctx = default_mat_ctx(project.path(), &matcher);
+
+            let error = materialise_collection(
+                &src,
+                &dest,
+                "posts",
+                &mut imports,
+                &ctx,
+                None,
+                None,
+                None,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .expect_err("bundle.exclude on collection Markdown must fail loudly");
+            let message = format!("{error:#}");
+            assert!(message.contains("snapshot"), "{message}");
+            assert!(message.contains(&filename), "{message}");
+            assert!(imports.is_empty(), "excluded source must not be imported");
+            assert!(
+                !dest.join(&filename).exists(),
+                "excluded source must not be materialised"
+            );
+        }
     }
 
     #[test]
@@ -12069,6 +12454,25 @@ mod tests {
         let deep = BundleExcludeMatcher::new(&["components/**/*.stories.tsx".to_string()]).unwrap();
         assert!(deep.is_excluded(Path::new("/proj/components/Button.stories.tsx"), root));
         assert!(deep.is_excluded(Path::new("/proj/components/sub/Deep.stories.tsx"), root));
+    }
+
+    #[test]
+    fn bundle_exclude_prefix_overlap_only_keeps_provably_disjoint_wildcards() {
+        let root = Path::new("/proj");
+        let scoped = BundleExcludeMatcher::new(&[
+            "src/**/*.secret.ts".to_string(),
+            "assets/private.json".to_string(),
+        ])
+        .unwrap();
+        assert!(scoped.may_overlap_wildcard_target("/proj/src/*", root));
+        assert!(scoped.may_overlap_wildcard_target("/proj/assets/*", root));
+        assert!(!scoped.may_overlap_wildcard_target("/proj/ignored/*", root));
+
+        let broad = BundleExcludeMatcher::new(&["**/*.secret.ts".to_string()]).unwrap();
+        assert!(
+            broad.may_overlap_wildcard_target("/proj/ignored/*", root),
+            "a pattern with no literal prefix is not provably disjoint"
+        );
     }
 
     #[test]
