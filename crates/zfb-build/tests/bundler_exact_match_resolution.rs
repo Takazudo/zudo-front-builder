@@ -200,6 +200,172 @@ fn plugin_alias_matches_exact_specifier() {
     );
 }
 
+#[test]
+fn project_plugin_alias_is_preprocessed_inside_the_ssr_shadow() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:preprocessed", "unused.tsx");
+    let alias = root.join("plugin-preprocessed.ts");
+    let worker = root.join("plugin-preprocessed.worker.ts");
+    fs::write(
+        &alias,
+        "import payload from './plugin-preprocessed.txt?raw';\n\
+         export default function Foo() {\n\
+           new Worker(new URL('./plugin-preprocessed.worker.ts', import.meta.url), { type: 'module' });\n\
+           return payload;\n\
+         }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("plugin-preprocessed.txt"),
+        "ZFB_SSR_PLUGIN_ALIAS_RAW",
+    )
+    .unwrap();
+    fs::write(&worker, "self.postMessage('worker');\n").unwrap();
+    let worker_filename = zfb_types::module_worker_filename(&root, &worker).unwrap();
+    let input = make_input(
+        &root,
+        &esbuild,
+        "dist-alias-preprocessed",
+        BTreeMap::new(),
+        vec![(
+            "plugin:preprocessed".to_string(),
+            alias.to_string_lossy().into_owned(),
+        )],
+        vec![],
+    );
+
+    let output = bundle(input).expect("SSR plugin alias preprocessing must bundle");
+    let body = fs::read_to_string(output.bundle_path).unwrap();
+    assert!(body.contains("ZFB_SSR_PLUGIN_ALIAS_RAW"), "{body}");
+    assert!(body.contains(&worker_filename), "{body}");
+    assert!(!body.contains("?raw"), "{body}");
+}
+
+#[test]
+fn virtual_only_ssr_entry_rejects_unshadowable_preprocessing_syntax() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "virtual:ssr-raw", "unused.tsx");
+    let input = make_input(
+        &root,
+        &esbuild,
+        "dist-virtual-preprocess-error",
+        BTreeMap::new(),
+        vec![],
+        vec![(
+            "virtual:ssr-raw".to_string(),
+            "import value from './payload.txt?raw'; export default value;".to_string(),
+        )],
+    );
+
+    let error = bundle(input).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(
+        message.contains(
+            "query-bearing import \"./payload.txt?raw\" inside plugin virtual module \"virtual:ssr-raw\" is unsupported"
+        ),
+        "{message}"
+    );
+}
+
+#[test]
+fn user_claimed_virtual_skips_losing_plugin_preprocessing_source() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "virtual:claimed", "user-virtual.tsx");
+    fs::write(
+        root.join("src/user-virtual.tsx"),
+        "export default function UserClaimedVirtualMarker() { return null; }\n",
+    )
+    .unwrap();
+    let user_paths = BTreeMap::from([(
+        "virtual:claimed".to_string(),
+        vec!["src/user-virtual.tsx".to_string()],
+    )]);
+    let input = make_input(
+        &root,
+        &esbuild,
+        "dist-user-claimed-virtual",
+        user_paths,
+        vec![],
+        vec![(
+            "virtual:claimed".to_string(),
+            "import type Broken from './payload.txt?raw'; new Worker(new URL('./bad.worker.ts', import.meta.url), { type: 'module' }); export default Broken;".to_string(),
+        )],
+    );
+
+    let output = bundle(input)
+        .expect("user tsconfig mapping must suppress the losing plugin virtual source");
+    let body = fs::read_to_string(output.bundle_path).unwrap();
+    assert!(body.contains("UserClaimedVirtualMarker"), "{body}");
+    assert!(!body.contains("bad.worker"), "{body}");
+}
+
+#[test]
+fn user_claimed_virtual_stays_suppressed_inside_plugin_alias_root() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:entry", "user-virtual.tsx");
+    fs::write(
+        root.join("src/user-virtual.tsx"),
+        "export default function NestedUserVirtualMarker() { return null; }\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("nested-alias")).unwrap();
+    fs::write(
+        root.join("nested-alias/tsconfig.json"),
+        r#"{"compilerOptions":{}}"#,
+    )
+    .unwrap();
+    let alias_target = root.join("nested-alias/entry.tsx");
+    fs::write(
+        &alias_target,
+        "import Claimed from 'virtual:claimed'; export default Claimed;\n",
+    )
+    .unwrap();
+    let user_paths = BTreeMap::from([(
+        "virtual:claimed".to_string(),
+        vec!["src/user-virtual.tsx".to_string()],
+    )]);
+    let input = make_input(
+        &root,
+        &esbuild,
+        "dist-user-claimed-virtual-alias-root",
+        user_paths,
+        vec![(
+            "plugin:entry".to_string(),
+            alias_target.to_string_lossy().into_owned(),
+        )],
+        vec![(
+            "virtual:claimed".to_string(),
+            "import type Broken from './payload.txt?raw'; export default Broken;".to_string(),
+        )],
+    );
+
+    let output = bundle(input)
+        .expect("authoritative SSR user paths must suppress a losing virtual inside an alias root");
+    let body = fs::read_to_string(output.bundle_path).unwrap();
+    assert!(body.contains("NestedUserVirtualMarker"), "{body}");
+}
+
 /// **Virtual-module exact-match regression test.**
 ///
 /// Register `virtual:foo` with a source string. The page imports
@@ -402,8 +568,9 @@ fn user_tsconfig_paths_win_over_plugin_alias_on_collision() {
     )
     .unwrap();
     fs::write(
-        root.join("src/plugin-x.tsx"),
-        "export default function PluginVersionMarker() { return null; }\n",
+        root.join("losing-plugin-x.tsx"),
+        "import type Broken from './payload.txt?raw';\n\
+         export default function PluginVersionMarker() { return null; }\n",
     )
     .unwrap();
     fs::write(
@@ -423,7 +590,9 @@ fn user_tsconfig_paths_win_over_plugin_alias_on_collision() {
     );
     let plugin_aliases = vec![(
         "@/x".to_string(),
-        root.join("src/plugin-x.tsx").to_string_lossy().into_owned(),
+        root.join("losing-plugin-x.tsx")
+            .to_string_lossy()
+            .into_owned(),
     )];
 
     let input = make_input(
@@ -434,7 +603,8 @@ fn user_tsconfig_paths_win_over_plugin_alias_on_collision() {
         plugin_aliases,
         vec![],
     );
-    let out = bundle(input).expect("bundling must succeed with collision");
+    let out = bundle(input)
+        .expect("bundling must succeed without preprocessing the losing plugin alias target");
     let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
     assert!(
         body.contains("UserVersionMarker"),

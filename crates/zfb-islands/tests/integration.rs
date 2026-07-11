@@ -1108,6 +1108,98 @@ fn module_worker_define_only_change_updates_query_and_emitted_bytes() {
 }
 
 #[test]
+#[ignore = "env-gate: pinned esbuild binary — verifies package-metadata-only worker cache invalidation"]
+fn module_worker_package_config_switch_updates_query_and_emitted_bytes() {
+    let project = tempfile::tempdir().unwrap();
+    let workspace = project.path();
+    let project_dir = workspace.join("project");
+    let root = project_dir.as_path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(workspace.join("config")).unwrap();
+    let package = workspace.join("node_modules/@scope/worker-config");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("assignment.json"),
+        r#"{"compilerOptions":{"useDefineForClassFields":false}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        package.join("define.json"),
+        r#"{"compilerOptions":{"useDefineForClassFields":true}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("config/neutral.json"),
+        r#"{"compilerOptions":{"jsx":"automatic"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("jsconfig.json"),
+        r#"{"extends":["@scope/worker-config","./config/neutral.json"]}"#,
+    )
+    .unwrap();
+    let island = root.join("src/Island.tsx");
+    let worker = root.join("src/worker.ts");
+    let island_source = "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }";
+    std::fs::write(&island, island_source).unwrap();
+    std::fs::write(
+        &worker,
+        "class WorkerMessage { value = 'ZFB_CONFIG_CHAIN_WORKER'; } self.postMessage(new WorkerMessage().value);",
+    )
+    .unwrap();
+
+    let run = |use_define_for_class_fields: bool| {
+        let selected = if use_define_for_class_fields {
+            "define.json"
+        } else {
+            "assignment.json"
+        };
+        std::fs::write(
+            package.join("package.json"),
+            format!(r#"{{"name":"@scope/worker-config","tsconfig":"{selected}"}}"#),
+        )
+        .unwrap();
+        let context =
+            zfb_build::ModuleWorkerBuildContext::default().with_output_semantics(false, false);
+        let rewrite = zfb_build::rewrite_module_worker_urls_with_context(
+            island_source,
+            &island,
+            root,
+            &context,
+        )
+        .unwrap();
+        std::fs::write(&island, &rewrite.expanded_source).unwrap();
+        let bundler = EsbuildSubprocessBundler::new(
+            EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
+        );
+        let worker_entry = ModuleWorkerBundleEntry::new(root, &worker, &worker).unwrap();
+        let config = BundleConfig::dev()
+            .with_outdir(root.join("dist"))
+            .with_sourcemap(false)
+            .with_module_workers(vec![worker_entry]);
+        let output = bundler
+            .bundle(&[Island::new("Island", &island)], &config)
+            .unwrap();
+        (rewrite.expanded_source, output.workers[0].bytes.clone())
+    };
+
+    let assignment = run(false);
+    let define = run(true);
+    assert_ne!(
+        assignment.0, define.0,
+        "package.json-only config switch must change the worker ?v= query"
+    );
+    assert_ne!(
+        assignment.1, define.1,
+        "package.json-only config switch must change emitted worker bytes"
+    );
+    assert!(String::from_utf8(define.1)
+        .unwrap()
+        .contains("ZFB_CONFIG_CHAIN_WORKER"));
+}
+
+#[test]
 #[ignore = "env-gate: pinned esbuild binary — verifies plugin resolver cache/emission parity"]
 fn module_worker_plugin_inputs_update_query_closure_and_emitted_bytes() {
     let project = tempfile::tempdir().unwrap();

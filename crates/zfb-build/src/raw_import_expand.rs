@@ -233,6 +233,21 @@ fn collect_raw_occurrences(source: &str) -> Result<Vec<RawOccurrence>> {
     Ok(out)
 }
 
+/// Inspect every static/type-only/re-export/dynamic import and CommonJS
+/// require expression for query syntax without reading or rewriting targets.
+///
+/// `Ok(Some(specifier))` means the source contains the one normally-supported
+/// static default `?raw` form and returns its exact spelling for diagnostics.
+/// Unsupported query shapes return the same named error as
+/// [`expand_raw_imports`]. Virtual-module validation uses this broader AST
+/// pass because virtual sources cannot support even the otherwise-valid form.
+pub fn supported_raw_import_specifier(source: &str) -> Result<Option<String>> {
+    Ok(collect_raw_occurrences(source)?
+        .into_iter()
+        .next()
+        .map(|occurrence| occurrence.specifier))
+}
+
 /// Resolve a raw target without routing the stripped path through the normal
 /// JavaScript module resolver.
 ///

@@ -142,6 +142,8 @@ use crate::adapter::run_capturing;
 // have no other call sites left in `bundler.rs`.
 use crate::glob_expand::expand_import_meta_glob;
 use crate::module_worker::{
+    discover_module_preprocessing_with_context,
+    discover_registered_virtual_preprocessing_with_context,
     rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext, ModuleWorkerDependency,
 };
 use crate::raw_import_expand::{expand_raw_imports, RawImportEdge};
@@ -1781,6 +1783,70 @@ pub fn bundle_with_session(
         // bundle from the snapshot JSON the bundler already received.
         snapshot_specifiers: snapshot_specifier_set(input.content_snapshot_json.as_deref()),
     };
+    let mut plugin_preprocessing_files = BTreeSet::new();
+    if mat_ctx.worker_build_context.has_plugin_resolver_inputs() {
+        let project_root = normalize_path_lexical(&input.project_root);
+        let effective_virtual_context = mat_ctx
+            .worker_build_context
+            .clone()
+            .without_user_claimed_virtual_modules(&input.tsconfig_paths);
+        let virtual_discovery = discover_registered_virtual_preprocessing_with_context(
+            &input.project_root,
+            &effective_virtual_context,
+        )
+        .context("bundler: validate registered virtual-module preprocessing syntax")?;
+        plugin_preprocessing_files.extend(virtual_discovery.files);
+        mat_ctx.raw_import_edges.borrow_mut().extend(
+            virtual_discovery
+                .raw_import_edges
+                .into_iter()
+                .map(|edge| RawImportEdge {
+                    importer: edge.importer,
+                    target: edge.target,
+                }),
+        );
+
+        let plugin_preprocessing_roots = input
+            .plugin_alias_entries
+            .iter()
+            // An exact user tsconfig key wins over the plugin registration in
+            // the synthetic resolver. Do not preflight the losing target.
+            .filter(|(specifier, _)| !input.tsconfig_paths.contains_key(specifier))
+            .map(|(_, target)| normalize_path_lexical(Path::new(target)))
+            .collect::<BTreeSet<_>>();
+        for target in plugin_preprocessing_roots {
+            let Ok(relative) = target.strip_prefix(&project_root) else {
+                continue;
+            };
+            if relative.components().next().is_some_and(|component| {
+                component.as_os_str() == std::ffi::OsStr::new("node_modules")
+            }) || !target.is_file()
+            {
+                continue;
+            }
+            let discovery = discover_module_preprocessing_with_context(
+                &target,
+                &input.project_root,
+                &effective_virtual_context,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: discover plugin-resolved preprocessing graph from {}",
+                    target.display()
+                )
+            })?;
+            plugin_preprocessing_files.extend(discovery.files);
+            mat_ctx.raw_import_edges.borrow_mut().extend(
+                discovery
+                    .raw_import_edges
+                    .into_iter()
+                    .map(|edge| RawImportEdge {
+                        importer: edge.importer,
+                        target: edge.target,
+                    }),
+            );
+        }
+    }
     if let Some(src) = input.mdx_components_file.as_deref() {
         preflight_raw_file(src, src, &mat_ctx);
     }
@@ -2360,6 +2426,42 @@ pub fn bundle_with_session(
         ),
         None => None,
     };
+
+    // Plugin aliases can point at root-level files or other paths absent from
+    // the conventional source-root walks above. Materialise the complete
+    // plugin-aware first-party closure explicitly so `?raw` wrappers and
+    // nested Worker URL rewrites are consumed from the shadow. The resolver
+    // call in `run_esbuild` remaps an alias to this copy when it exists.
+    for physical in &plugin_preprocessing_files {
+        let relative = physical
+            .strip_prefix(&input.project_root)
+            .with_context(|| {
+                format!(
+                    "bundler: plugin preprocessing file {} escaped {}",
+                    physical.display(),
+                    input.project_root.display()
+                )
+            })?;
+        let to = shadow.join(relative);
+        materialise_source_file(
+            physical,
+            physical,
+            &to,
+            &|_| false,
+            mat_ctx.copy_mode,
+            mat_ctx.writer,
+            &mat_ctx.raw_import_edges,
+            &mat_ctx.module_worker_dependencies,
+            mat_ctx.project_root,
+            &mat_ctx.worker_build_context,
+        )
+        .with_context(|| {
+            format!(
+                "bundler: materialise plugin preprocessing file {}",
+                physical.display()
+            )
+        })?;
+    }
 
     // 3. Hydration shim.
     //
@@ -4664,9 +4766,9 @@ fn materialise_source_file(
                     })?;
                     has_worker = !worker_rewrite.worker_edges.is_empty();
                     if has_worker {
-                        module_worker_dependencies
-                            .borrow_mut()
-                            .extend(worker_rewrite.dependencies.iter().cloned());
+                        let mut dependencies = module_worker_dependencies.borrow_mut();
+                        dependencies.extend(worker_rewrite.dependencies.iter().cloned());
+                        dependencies.extend(worker_rewrite.config_dependencies.iter().cloned());
                     }
                     expanded = worker_rewrite.expanded_source;
                 }
@@ -5686,8 +5788,23 @@ fn run_esbuild(
     // it so a `virtual:*` specifier the user already claims is NOT also
     // emitted as a plugin `--alias` (which esbuild applies BEFORE tsconfig
     // `paths`, overriding the user's mapping). User-wins, #1267.
+    let project_root = normalize_path_lexical(&input.project_root);
+    let effective_plugin_aliases = input
+        .plugin_alias_entries
+        .iter()
+        .map(|(specifier, target)| {
+            let target_path = normalize_path_lexical(Path::new(target));
+            let remapped = target_path
+                .strip_prefix(&project_root)
+                .ok()
+                .map(|relative| shadow.join(relative))
+                .filter(|candidate| candidate.is_file())
+                .unwrap_or(target_path);
+            (specifier.clone(), remapped.to_string_lossy().into_owned())
+        })
+        .collect::<Vec<_>>();
     let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
-        &input.plugin_alias_entries,
+        &effective_plugin_aliases,
         &input.plugin_virtual_modules,
         shadow,
         &input.tsconfig_paths,
@@ -9127,15 +9244,26 @@ mod tests {
             source_path: PathBuf::from("pages/index.tsx"),
             module_deps: BTreeSet::from([importer_real.clone()]),
         }];
-        let worker_dependencies: BTreeSet<_> =
+        let rewrite =
             crate::module_worker::rewrite_module_worker_urls(importer_source, &importer, root)
-                .unwrap()
-                .dependencies
-                .into_iter()
-                .collect();
+                .unwrap();
+        let worker_dependencies: BTreeSet<_> = rewrite
+            .dependencies
+            .into_iter()
+            .chain(rewrite.config_dependencies)
+            .collect();
         augment_route_deps_with_worker_targets(&mut deps, &worker_dependencies, root);
         assert!(deps[0].module_deps.contains(&importer_real));
-        for dependency in [&worker, &helper, &required, &css, &tokens, &icon, &payload] {
+        for dependency in [
+            &worker,
+            &helper,
+            &required,
+            &css,
+            &tokens,
+            &icon,
+            &payload,
+            &root.join("tsconfig.json"),
+        ] {
             assert!(
                 deps[0]
                     .module_deps
