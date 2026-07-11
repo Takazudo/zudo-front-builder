@@ -316,6 +316,10 @@ impl Server {
             // it is Dev-only and the hook gate in `serve_page` enforces
             // this, but `None` keeps the contract explicit.
             render_on_request_hook: None,
+            // Embed callers do not get `_redirects` dev integration
+            // (issue #1546 scopes it to `zfb dev`); `None` keeps the
+            // contract explicit, same reasoning as the hook above.
+            redirects: None,
             // Perf #1145-3: pre-canonicalize stable root paths at startup.
             canonical_html_root: std::fs::canonicalize(&self.dist_root).ok(),
             canonical_dist_root: std::fs::canonicalize(&self.dist_root).ok(),

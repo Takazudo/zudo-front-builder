@@ -311,9 +311,9 @@ matching round-trip case in `crates/zfb-content/tests/`.
 
 There is no Markdown-pipeline plugin loader. Every visitor compiles
 into the binary. The `plugins: []` field in `zfb.config` is a
-**build-orchestration** plugin system (four hooks: `setup`, `preBuild`,
-`postBuild`, `devMiddleware`) — it handles alias registration, virtual
-modules, extra file emission, and dev-server routes. It does not
+**build-orchestration** plugin system (five hooks: `setup`, `preBuild`,
+`postBuild`, `devMiddleware`, `previewMiddleware`) — it handles alias registration, virtual
+modules, extra file emission, and dev-server/preview-server routes. It does not
 reach into the Markdown parse-and-visitor chain, which runs entirely
 inside the Rust engine.
 

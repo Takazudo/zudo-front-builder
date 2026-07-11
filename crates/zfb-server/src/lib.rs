@@ -50,6 +50,7 @@ pub mod injected_routes;
 pub mod livereload;
 pub mod middleware;
 pub mod plugin_middleware;
+pub mod redirects;
 pub mod render_hook;
 pub mod routes;
 pub mod ssr;
@@ -106,10 +107,12 @@ pub use inject::{inject_livereload, inject_livereload_into_tree, LIVERELOAD_TAG}
 pub use injected_routes::{pattern_matches, InjectedRouteSet};
 pub use livereload::{outcome_to_events, IslandsBundleInfo, ReloadEvent, ReloadTx};
 pub use plugin_middleware::{
-    path_matches_prefix, DevMiddlewareDispatcher, DevMiddlewareSet, PluginDispatchError,
+    body_limit_layer, dispatch_plugin, origin_gate, path_matches_prefix, plugin_error_response,
+    DevMiddlewareDispatcher, DevMiddlewareSet, PluginDispatchAttempt, PluginDispatchError,
     PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
-    PluginResponseEncoding,
+    PluginResponseEncoding, PLUGIN_BODY_LIMIT_BYTES,
 };
+pub use redirects::{RedirectOutcome, Redirects, RedirectsHandle};
 pub use render_hook::{RenderOnRequestHandle, RenderOnRequestHook};
 pub use routes::{
     build_router, content_type_for_extension, resolve_content_type, AppState, CachedPage,
@@ -303,6 +306,24 @@ pub struct ServeOpts {
     /// See [`crate::render_hook`] for the trait contract and threading
     /// model.
     pub render_on_request_hook: Option<crate::render_hook::RenderOnRequestHandle>,
+
+    /// Shared handle to the active `_redirects` ruleset (issue #1546).
+    ///
+    /// `serve_page` evaluates it on every GET/HEAD request, right after
+    /// the plugin dev-middleware leg but ahead of embed handlers,
+    /// request-time SSR, the render-on-request hook, and the
+    /// `PageCache → html_root → public_root → dist_root` waterfall —
+    /// mirroring Cloudflare Workers Static Assets, where `_redirects`
+    /// is evaluated by the assets layer before the Worker script ever
+    /// sees the request.
+    ///
+    /// `None` = no `_redirects` support for this caller (Preview /
+    /// Embed / most tests) — the leg is skipped entirely, byte-identical
+    /// to the pre-#1546 server. `zfb dev` builds `Some(handle)` at boot
+    /// from `public/_redirects` (an empty [`Redirects`] when the file is
+    /// missing) and rewrites the handle in place whenever its targeted
+    /// watch observes a create/edit/delete of that file.
+    pub redirects: Option<crate::RedirectsHandle>,
 }
 
 impl ServeOpts {
@@ -406,6 +427,7 @@ where
         css_bundle_url: opts.css_bundle_url,
         host_validation,
         render_on_request_hook: opts.render_on_request_hook,
+        redirects: opts.redirects,
         // Perf #1145-3: pre-canonicalize stable root paths once at startup so
         // resolve_within_root skips the tokio::fs::canonicalize(root) syscall
         // on every disk-fallback hit.  std::fs is used here (blocking, startup

@@ -1,11 +1,11 @@
 ---
 title: プラグイン
-description: zfb プラグインの作成と利用 — 4 つのライフサイクルフック、仮想モジュール、インポートエイリアス、注入ルート、client entry。
+description: zfb プラグインの作成と利用 — 5 つのライフサイクルフック、仮想モジュール、インポートエイリアス、注入ルート、client entry。
 sidebar_position: 12
 category: Concepts
 ---
 
-zfb プラグインは、デフォルトエクスポートが `ZfbPlugin` オブジェクトである素の ES モジュールです。zfb の build（および dev）ホストは、各プラグインモジュールを起動時に一度だけロードし、4 つのオプションなライフサイクルフックをそこにディスパッチします。プラグインは 4 つのうち任意の部分集合だけを宣言できます。省略したものは暗黙的に何もしません。
+zfb プラグインは、デフォルトエクスポートが `ZfbPlugin` オブジェクトである素の ES モジュールです。zfb の build、dev、preview の各ホストは、各プラグインモジュールを起動時に一度だけロードし、5 つのオプションなライフサイクルフックをそこにディスパッチします。プラグインは 5 つのうち任意の部分集合だけを宣言できます。省略したものは暗黙的に何もしません。
 
 このページはプラグイン作成者向けのコントラクトを説明します。対応する API リファレンスは [`defineConfig.plugins`](../api/define-config.mdx) にあります。
 
@@ -18,27 +18,30 @@ zfb プラグインは、デフォルトエクスポートが `ZfbPlugin` オブ
 - **`pages/` の外に存在する注入ページルート。** `injectRoute` は、URL パターンの下に TSX/TS ファイルを登録します。build モードでは package-owned route が通常のページパイプラインに materialize されます。dev モードでは、dev サーバーが一致する静的 / 動的な注入ルートをレンダリングします。そのルートが本当に dev 専用のときだけ、`command === "dev"` で呼び出しをガードしてください。
 - **Package-owned client entry。** `addClientEntry` は、プロジェクトの client scripts と一緒にバンドルされる `*.client.{ts,tsx,js,jsx}` の side-effect entry を登録します。
 
-ページではないレスポンスには、別の `devMiddleware` フックを使ってください。JSON API エンドポイント、ホットリロードのブリッジ、アップロードハンドラなどです。JSX パイプラインもページレンダラもなく、ただ `{ status, headers, body }` を返す関数です。
+ページではないレスポンスには、別の `devMiddleware` フック（または preview 版の `previewMiddleware` — 後述）を使ってください。JSON API エンドポイント、ホットリロードのブリッジ、アップロードハンドラなどです。JSX パイプラインもページレンダラもなく、ただ `{ status, headers, body }` を返す関数です。
 
-## 4 つのフック
+## 5 つのフック
 
 ```ts
 import { definePlugin } from "@takazudo/zfb/plugins";
 
 export default definePlugin({
   name: "my-plugin",
-  setup?(ctx) {},        // #255 — runs once at host boot, before preBuild
-  preBuild?(ctx) {},     // file-generation work before the bundler / renderer
-  postBuild?(ctx) {},    // finalisation after dist/ has been written
-  devMiddleware?(ctx) {},// per-request HTTP handlers in `zfb dev`
+  setup?(ctx) {},            // #255 — runs once at host boot, before preBuild
+  preBuild?(ctx) {},         // file-generation work before the bundler / renderer
+  postBuild?(ctx) {},        // finalisation after dist/ has been written
+  devMiddleware?(ctx) {},    // per-request HTTP handlers in `zfb dev`
+  previewMiddleware?(ctx) {},// per-request HTTP handlers in `zfb preview`（静的モード、#1542）
 });
 ```
 
-フックは、`zfb.config.ts` の `plugins` 配列にプラグインが現れる順序で逐次実行されます。いずれかのフックで throw されるとビルド（または dev の起動）が中断し、throw したフックとプラグイン名がエラーバナーに表示されます。
+フックは、`zfb.config.ts` の `plugins` 配列にプラグインが現れる順序で逐次実行されます。いずれかのフックで throw されるとビルド（または dev / preview の起動）が中断し、throw したフックとプラグイン名がエラーバナーに表示されます。
 
 ## `setup` — 仮想モジュール、エイリアス、注入ルート、client entry の登録
 
-`zfb build` ごとに **一度**、`zfb dev` ホストの起動ごとに一度、`preBuild` の前に実行されます。このフックは、プラグインがモジュール解決パイプライン（仮想モジュール + インポートエイリアス）、合成ページルート、package-owned client entry に寄与する場所です。`setup` が完了すると、レジストリはその実行の残りの期間中、凍結されます。
+`zfb build` ホストの起動ごとに **一度**、`zfb dev` ホストの起動ごとに一度、そして `zfb preview`（静的モード）ホストの起動ごとに一度、`preBuild` の前に実行されます。このフックは、プラグインがモジュール解決パイプライン（仮想モジュール + インポートエイリアス）、合成ページルート、package-owned client entry に寄与する場所です。`setup` が完了すると、レジストリはその実行の残りの期間中、凍結されます。
+
+`zfb preview` では、`setup` は最小限の非 V8 経路で実行されます — preview は再ビルドを行わないため `preBuild` はそこでは決して実行されません。また `addAlias`/`addVirtualModule`/`injectRoute`/`addClientEntry` の呼び出しは形の一貫性のために受け付けられますが、**無効（inert）** です。preview はすでにビルド済みの `dist/` をそのまま配信するだけで、これらのレジストリが供給する scan → bundle → render パイプラインに再突入することは決してありません。`"preview"` の下で意味を持つのは、フック自身の副作用（例えば `previewMiddleware` 用の設定を計算するためにファイルを読むなど）と `previewMiddleware` の登録そのものだけです。
 
 ```ts
 setup({
@@ -52,7 +55,7 @@ setup({
   injectRoute,
   addClientEntry,
 }) {
-  // `command` is "build" or "dev". Gate dev-only registrations on it.
+  // `command` is "build", "dev", or "preview". Gate dev-only registrations on it.
   addAlias("@/components/foo", "./src/components/foo.tsx");
   addVirtualModule("virtual:my-data", () =>
     `export default ${JSON.stringify(myJson)}`,
@@ -143,6 +146,8 @@ addClientEntry("./client/analytics.client.ts");
 | `devMiddleware(ctx)` → `ctx.register(path, handler)` | リクエストごとに `{ status, headers, body }` を返す JS 関数 | HTTP ハンドラが欲しいとき — JSON API、ホットリロードブリッジ、アップロードエンドポイントなど。ページパイプラインも JSX もなし。 |
 
 応答がページでないときは `devMiddleware` が正解、ディスク上の `pages/` ツリーの外に存在する合成的な `pages/foo.tsx` が欲しいときは `injectRoute` が正解です。
+
+同じ選択は `previewMiddleware` を通じて `zfb preview` にも当てはまります — これは `devMiddleware` のリクエストごとのハンドラを寸分たがわず継承したもので、dev ではなく preview の静的モードに紐づけられているだけです（後述の [`previewMiddleware(ctx)`](#previewmiddleware-ctx) を参照）。`injectRoute` には preview 相当の仕組みはありません — preview は再レンダリングを一切行わないため、`injectRoute` で登録した合成ルートはそこでは無効です（前述の `setup` セクションを参照）。
 
 ### 閉じた面 — マークダウン拡張フックはなし
 
@@ -252,6 +257,38 @@ v1 から変更ありません。`ctx.register(path, handler)` で 1 つ以上�
 
 形については [`ZfbDevMiddlewareContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) を参照してください。
 
+## `previewMiddleware(ctx)`
+
+`devMiddleware` の `zfb preview`（静的モード）版です（#1542、epic #1541 Preview Parity）。形も、`ctx.register(path, handler)` の呼び出しも、リクエスト／レスポンスのワイヤーフォーマットも同じですが、**モードごとに個別のオプトイン** です。`devMiddleware` しか定義していないプラグインは `zfb preview` の下ではリクエスト時ハンドラを一切持たず、その逆も同様です。両方のモードで使えるようにしたいときは、同じハンドラを両方のフックに登録してください。
+
+```ts
+// plugins/api-echo.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+
+function echo({ method, url }: { method: string; url: string }) {
+  return { status: 200, body: `${method} ${url}` };
+}
+
+export default definePlugin({
+  name: "api-echo",
+  devMiddleware({ register }) {
+    register("/api/echo", echo);
+  },
+  previewMiddleware({ register }) {
+    register("/api/echo", echo);
+  },
+});
+```
+
+`devMiddleware` との違いは 2 点です。
+
+- **`preBuild` がない。** `setup` は `"preview"` の下でも実行されます（前述）が、preview は再ビルドを行わないため、それに先行すべき `preBuild`/`postBuild` のステップがありません。
+- **静的モード専用。** `previewMiddleware` は、`zfb preview` がプロジェクト自身の静的ルーター（`adapter: "none"`／省略）を配信するときに実行されます。アダプタモードでは `wrangler dev` がサイト全体を直接配信します — zfb はそこでは自身のルーターを一切起動しないため、`previewMiddleware` の登録は単に実行されません。プロジェクトにプラグインが設定されていてアダプタモードが有効な場合、`zfb preview` は起動時に一度だけ警告します。
+
+`previewMiddleware` は、`devMiddleware` が `zfb dev` で `public/_redirects` より優先されるのとまったく同じように、同じ URL に対して `public/_redirects` より優先されます — [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-redirect-rewrite-rules) を参照してください。
+
+形については [`ZfbPreviewMiddlewareContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) を参照してください。
+
 ## 実践例: `virtual:metadata-db`
 
 メタデータインデックスを構築し、それを仮想モジュールとして公開するプラグインです。ページはこれにより、インデックスのフォーマットについて zfb が何も知らないまま `import metadata from "virtual:metadata-db"` できます。
@@ -330,3 +367,5 @@ setup の登録が衝突しているか無効な場合、zfb は以下のいず�
 
 - [`defineConfig`](../api/define-config.mdx) — `plugins: [{ name: "...", options: {...} }]` の配線。
 - [ビルドパイプライン](./build-pipeline.mdx) — 各フックが全体の流れのどこに位置するか。
+- [CLI リファレンス — `zfb preview`](../api/cli.mdx#zfb-preview) — `previewMiddleware` と `_redirects` が静的 preview のリクエストパイプラインにどう組み込まれるか。
+- [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-redirect-rewrite-rules) — `previewMiddleware` が優先されるリダイレクト／リライトルール。

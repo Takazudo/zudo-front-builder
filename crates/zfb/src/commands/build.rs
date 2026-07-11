@@ -4949,6 +4949,15 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     copy_public_dir(project_root, outdir, &config.public_dir, effective_base)
         .context("public dir copy step failed")?;
 
+    // `_redirects` (issue #1543 / epic #1541 Preview Parity) is CONFIG
+    // for the Cloudflare Workers Static Assets redirect engine
+    // (`zfb_server::redirects`), not a served asset — Cloudflare
+    // requires it at the deploy root. Special-copy it there directly,
+    // ignoring `base`/`copy_public_with_base` entirely: unlike the rest
+    // of `public/`, it must never end up under a base-path segment.
+    copy_redirects_file(project_root, outdir, &config.public_dir)
+        .context("_redirects copy step failed")?;
+
     // Build the postBuild route manifest (#262). Combines:
     // - static routes from the router scan (no params),
     // - statically-expanded dynamic routes (params from `expansion`),
@@ -5555,6 +5564,14 @@ fn copy_public_dir(
             // Skip the root entry itself.
             continue;
         }
+        // `_redirects` is reserved config (Cloudflare Static Assets subset),
+        // not a servable asset. `copy_redirects_file` special-copies the
+        // top-level `public/_redirects` to the OUTPUT ROOT; skip it here so a
+        // custom `base` does not ALSO relocate it under the base segment
+        // (where it would become a served `/base/_redirects` asset). #1543.
+        if rel == std::path::Path::new("_redirects") {
+            continue;
+        }
         let dest = dest_root.join(rel);
         if entry.file_type().is_dir() {
             std::fs::create_dir_all(&dest)
@@ -5592,6 +5609,49 @@ fn copy_public_dir(
         }
     }
 
+    Ok(())
+}
+
+/// Special-copy `<project_root>/<public_dir>/_redirects` to
+/// `<outdir>/_redirects` verbatim.
+///
+/// `_redirects` is CONFIG for the Cloudflare Workers Static Assets
+/// redirect engine, not a served asset — Cloudflare requires it to
+/// live at the deploy root regardless of any base-path mount. Unlike
+/// [`copy_public_dir`], this function never relocates the file under a
+/// base segment, even when `copy_public_with_base` is on: callers pass
+/// `outdir` as-is (custom `outDir` aware, since `outdir` is already the
+/// fully-resolved output directory) and never a `base`-prefixed
+/// sub-path.
+///
+/// `public_dir` is honoured (custom `publicDir` aware) — the source is
+/// always `<public_dir>/_redirects`, matching where `copy_public_dir`
+/// looks for the rest of `public/`. A missing `_redirects` file is a
+/// no-op (not every project uses the feature).
+fn copy_redirects_file(
+    project_root: &Path,
+    outdir: &Path,
+    public_dir: &std::path::Path,
+) -> Result<()> {
+    let public_root = if public_dir.is_absolute() {
+        public_dir.to_path_buf()
+    } else {
+        project_root.join(public_dir)
+    };
+    let src = public_root.join("_redirects");
+    if !src.is_file() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(outdir)
+        .with_context(|| format!("_redirects copy: create outdir {}", outdir.display()))?;
+    let dest = outdir.join("_redirects");
+    std::fs::copy(&src, &dest).with_context(|| {
+        format!(
+            "_redirects copy: copy {} → {}",
+            src.display(),
+            dest.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -10696,6 +10756,104 @@ mod tests {
         assert!(
             outdir.join("favicon.ico").is_file(),
             "base='/' must copy under root, not under '/'"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // copy_redirects_file unit tests (issue #1543 / epic #1541 Preview Parity)
+    // -------------------------------------------------------------------------
+
+    /// Missing `public/_redirects` is silently ignored (no error, no
+    /// file created) — not every project uses the feature.
+    #[test]
+    fn copy_redirects_file_missing_source_is_noop() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(project_root.join("public")).unwrap();
+        copy_redirects_file(project_root, &outdir, std::path::Path::new("public"))
+            .expect("missing _redirects must not error");
+        assert!(!outdir.join("_redirects").exists());
+    }
+
+    /// Default project shape: `public/_redirects` lands at the output
+    /// root, `<outdir>/_redirects`.
+    #[test]
+    fn copy_redirects_file_default_lands_at_outdir_root() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(project_root.join("public")).unwrap();
+        let contents = b"/old /new 301\n";
+        std::fs::write(project_root.join("public/_redirects"), contents).unwrap();
+        copy_redirects_file(project_root, &outdir, std::path::Path::new("public"))
+            .expect("copy must succeed");
+        let dest = outdir.join("_redirects");
+        assert!(dest.is_file(), "_redirects must land at outdir root");
+        assert_eq!(std::fs::read(&dest).unwrap(), contents);
+    }
+
+    /// Custom `outDir`-aware: this function receives `outdir` as-is
+    /// (the fully-resolved output directory), so a custom outDir is
+    /// honoured automatically — `_redirects` lands at its root too.
+    #[test]
+    fn copy_redirects_file_custom_outdir_lands_at_its_root() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("build-output");
+        std::fs::create_dir_all(project_root.join("public")).unwrap();
+        std::fs::write(project_root.join("public/_redirects"), b"/a /b 301\n").unwrap();
+        copy_redirects_file(project_root, &outdir, std::path::Path::new("public"))
+            .expect("copy must succeed");
+        assert!(outdir.join("_redirects").is_file());
+    }
+
+    /// Custom `publicDir`-aware: the source is `<public_dir>/_redirects`,
+    /// matching where `copy_public_dir` looks for the rest of `public/`.
+    #[test]
+    fn copy_redirects_file_custom_public_dir_is_honoured() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(project_root.join("static-files")).unwrap();
+        std::fs::write(project_root.join("static-files/_redirects"), b"/a /b 301\n").unwrap();
+        copy_redirects_file(project_root, &outdir, std::path::Path::new("static-files"))
+            .expect("copy must succeed");
+        assert!(outdir.join("_redirects").is_file());
+    }
+
+    /// Custom `base`: unlike `copy_public_dir`, `_redirects` must land
+    /// at the bare output root, NEVER under a base-path segment — the
+    /// caller (`run_build`) intentionally never passes a base-prefixed
+    /// path to this function, and this test pins that contract at the
+    /// function-signature level (no `base` parameter exists to misuse).
+    #[test]
+    fn copy_redirects_file_ignores_base_by_construction() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        std::fs::create_dir_all(project_root.join("public")).unwrap();
+        std::fs::write(project_root.join("public/_redirects"), b"/a /b 301\n").unwrap();
+        // Simulate a project with `base: "/pj/test/"` configured: the
+        // rest of public/ would land under outdir/pj/test/ via
+        // copy_public_dir, but copy_redirects_file has no base
+        // parameter to relocate under — it always targets outdir root.
+        copy_public_dir(
+            project_root,
+            &outdir,
+            std::path::Path::new("public"),
+            Some("/pj/test/"),
+        )
+        .expect("public dir copy must succeed");
+        copy_redirects_file(project_root, &outdir, std::path::Path::new("public"))
+            .expect("redirects copy must succeed");
+        assert!(
+            outdir.join("_redirects").is_file(),
+            "_redirects must land at the bare outdir root even with base configured"
+        );
+        assert!(
+            !outdir.join("pj/test/_redirects").exists(),
+            "_redirects must NOT be relocated under the base segment"
         );
     }
 

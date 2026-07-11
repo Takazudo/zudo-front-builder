@@ -55,12 +55,16 @@ use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::{header, HeaderValue, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use zfb_build::AdapterChoice;
+use zfb_server::{
+    dispatch_plugin, origin_gate, DevMiddlewareSet, HostValidation, PluginDispatchAttempt,
+    RedirectOutcome, Redirects, ServerMode,
+};
 
 use crate::cli::PreviewArgs;
 use crate::commands::resolve::{
@@ -131,7 +135,7 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
         .context("invalid adapter in zfb.config.json")?;
 
     match adapter {
-        AdapterChoice::None => run_static(&outdir, &host, port, &cfg.allowed_hosts).await,
+        AdapterChoice::None => run_static(&project_root, &cfg, &outdir, &host, port).await,
         AdapterChoice::Package(pkg) if pkg == CLOUDFLARE_ADAPTER => {
             // `wrangler dev` serves whatever the project's wrangler config
             // names (`main` + `[assets].directory`) — unlike the old
@@ -146,6 +150,21 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
                     selected_outdir.display()
                 ));
             }
+            // Issue #1545: wrangler serves everything in adapter mode — zfb
+            // never boots its own router (or the plugin host) here, and
+            // `_redirects` is honoured natively by wrangler/Workers Static
+            // Assets. `devMiddleware`/`previewMiddleware` are zfb-server
+            // concepts with no wrangler equivalent, so a configured plugin
+            // just silently doesn't get a preview-middleware surface unless
+            // we say so. One generic notice, no host spawn — booting the
+            // plugin host just to check for a `previewMiddleware` export
+            // would cost a Node subprocess for a fact we already know from
+            // the config alone.
+            if !cfg.plugins.is_empty() {
+                output::warn(
+                    "preview: adapter mode hands off entirely to `wrangler dev` — plugin middleware (devMiddleware/previewMiddleware) does not run under wrangler-backed preview. `_redirects` is still honoured natively by wrangler.",
+                );
+            }
             run_via_wrangler(&project_root, &host, port).await
         }
         AdapterChoice::Package(pkg) => anyhow::bail!(
@@ -159,35 +178,86 @@ pub async fn run(args: &PreviewArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Bind the static preview server and run it until Ctrl+C.
+///
+/// Wires the same shared plugin-dispatch seam and `_redirects` engine
+/// `zfb dev` uses (issue #1545 / epic #1541 Preview Parity) onto the
+/// bespoke static router: plugin dev-middleware (registered via
+/// `previewMiddleware`, not `devMiddleware`) takes priority, then
+/// `_redirects`, then the pre-existing static-file waterfall. Unlike
+/// `zfb dev`, `preBuild` never fires here — preview does no rebuild, so
+/// there is nothing for a pre-build hook to run before.
 async fn run_static(
+    project_root: &Path,
+    cfg: &config::Config,
     dist_root: &Path,
     host: &str,
     port: u16,
-    allowed_hosts: &[String],
 ) -> Result<()> {
-    let app = build_static_router(dist_root.to_path_buf());
-
     let addr: SocketAddr = resolve_addr(host, port)?;
 
     // Issue #931: the preview server gets the same Host-header
     // allowlist guard as `zfb dev` — a no-op for the default loopback
     // bind, enforced (with Preview-mode generic 403 bodies) when the
-    // user exposes the built site to the LAN.
-    let host_validation = zfb_server::HostValidation::for_bind(
+    // user exposes the built site to the LAN. Built before the router so
+    // both the outer Host-header layer AND the plugin leg's inner Origin
+    // gate (issue #1545) share one instance.
+    let host_validation = HostValidation::for_bind(
         addr.ip(),
         Some(host),
-        allowed_hosts,
-        zfb_server::ServerMode::Preview,
+        &cfg.allowed_hosts,
+        ServerMode::Preview,
+    );
+
+    // Plugin lifecycle (#1542 / #1545): spawn the host only if the
+    // project has a resolved plugin module (plugin-less projects stay
+    // zero-cost — no Node subprocess), run `setup(ctx)` with
+    // `ctx.command === "preview"`, then register `previewMiddleware`
+    // handlers.
+    let plugin_host = crate::commands::plugins::maybe_spawn_host(cfg).await?;
+    let cfg_json = serde_json::to_value(cfg)
+        .context("plugin lifecycle: serialise config for preview setup ctx")?;
+    zfb_build::run_preview_setup(plugin_host.as_ref(), project_root, &cfg_json)
+        .await
+        .context("preview setup lifecycle hook")?;
+    let plugin_set = if let Some(h) = plugin_host.as_ref() {
+        crate::commands::plugins::build_dev_middleware_set(
+            h,
+            project_root,
+            cfg,
+            ServerMode::Preview,
+        )
+        .await?
+    } else {
+        None
+    };
+
+    // `_redirects` engine (#1543 engine / #1545 wiring): loaded ONCE from
+    // the output root at boot — static preview does no rebuild/watch, so
+    // there is nothing that would ever invalidate a cached parse.
+    let redirects = load_redirects(dist_root);
+
+    let app = build_static_router_full(
+        dist_root.to_path_buf(),
+        plugin_set,
+        redirects,
+        host_validation.clone(),
     );
     let app = zfb_server::apply_host_validation_layer(app, host_validation);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind preview server to {addr}"))?;
 
+    // Issue #1545: announce the ACTUAL bound port, not the requested one —
+    // with `--port 0` the OS picks an ephemeral port, and printing the
+    // literal `0` makes the banner unparseable for callers that need to
+    // discover the port (mirrors `zfb dev`'s fix, #1018). For a fixed port
+    // the two values are identical, so existing UX is unchanged.
+    let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+
     // Same Local/Network banner as `zfb dev` (#487): when bound to an
     // unspecified host (`0.0.0.0`/`::`) this enumerates LAN-reachable URLs
     // instead of printing a bare, unusable `http://0.0.0.0:PORT`.
-    output::ready_with_interfaces("http", host, port);
+    output::ready_with_interfaces("http", host, bound_port);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -199,29 +269,199 @@ async fn run_static(
         .await
         .context("preview server failed")?;
 
+    // Tear down the plugin host before exit so its Node subprocess
+    // doesn't outlive `zfb preview` (mirrors `zfb dev`'s shutdown).
+    if let Some(h) = plugin_host {
+        let _ = h.shutdown().await;
+    }
+
     Ok(())
 }
 
-/// Shared state passed to the fallback handler. Cheap to clone — only
-/// holds the dist root path.
+/// Read and parse `<dist_root>/_redirects`, if present. A missing file
+/// yields an empty rule set; [`Redirects::parse`] never fails on a
+/// malformed one either — a broken `_redirects` file must never block
+/// preview from starting (see the module docs on `zfb_server::redirects`).
+fn load_redirects(dist_root: &Path) -> Redirects {
+    match std::fs::read_to_string(dist_root.join("_redirects")) {
+        Ok(contents) => Redirects::parse(&contents),
+        Err(_) => Redirects::default(),
+    }
+}
+
+/// Shared state passed to the fallback handler. Cheap to clone — the
+/// heavier fields (`plugins`, `redirects`, `host_validation`) are
+/// themselves cheap-to-clone handles over `Arc`-backed data.
 #[derive(Clone)]
 struct StaticState {
     dist_root: PathBuf,
+    /// Plugin dev-middleware registrations + dispatcher (issue #1545).
+    /// `None` for a plugin-less project or when no plugin registered
+    /// `previewMiddleware` — matches dev's zero-cost posture.
+    plugins: Option<DevMiddlewareSet>,
+    /// Parsed `_redirects` rules, loaded once at boot. Empty
+    /// (`Redirects::default()`) when the project has no `_redirects`
+    /// file — [`Redirects::is_empty`] short-circuits the match attempt.
+    redirects: Redirects,
+    /// Host/Origin allowlist shared with the outer
+    /// `apply_host_validation_layer` — needed here too so the plugin
+    /// leg's `origin_gate` call enforces the same posture (issue #931
+    /// parity with dev).
+    host_validation: HostValidation,
 }
 
-/// Build the router used in static-only mode. Exposed (crate-private)
-/// so unit tests can drive it via `tower::ServiceExt::oneshot` without
-/// binding a port.
+/// Build the router used in static-only mode with no plugin or
+/// `_redirects` wiring. Test-only (issue #1545 folded the production path
+/// into [`build_static_router_full`], called from [`run_static`]) — kept
+/// as a convenience so the many existing plugin/redirects-agnostic tests
+/// don't need to spell out three `None`/default arguments each.
+#[cfg(test)]
 pub(crate) fn build_static_router(dist_root: PathBuf) -> Router {
+    build_static_router_full(
+        dist_root,
+        None,
+        Redirects::default(),
+        HostValidation::disabled(),
+    )
+}
+
+/// Build the full static-preview router: plugin dev-middleware +
+/// `_redirects` + the static-file waterfall, all behind the shared 2 MiB
+/// body cap (issue #1544/#1545 parity with `zfb dev`).
+fn build_static_router_full(
+    dist_root: PathBuf,
+    plugins: Option<DevMiddlewareSet>,
+    redirects: Redirects,
+    host_validation: HostValidation,
+) -> Router {
     Router::new()
         .fallback(static_fallback)
-        .with_state(StaticState { dist_root })
+        .with_state(StaticState {
+            dist_root,
+            plugins,
+            redirects,
+            host_validation,
+        })
+        .layer(zfb_server::body_limit_layer())
 }
 
 /// One handler covering every path. Easier than wiring `/`, `/*path`
-/// separately because we want identical behaviour for both.
-async fn static_fallback(State(state): State<StaticState>, uri: Uri) -> Response {
-    serve_static(&state.dist_root, uri.path(), uri.query()).await
+/// separately because we want identical behaviour for both. `body` is
+/// last per axum's extractor-ordering rule for body-consuming extractors.
+async fn static_fallback(
+    State(state): State<StaticState>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    serve_preview_request(&state, &method, &headers, &uri, body).await
+}
+
+/// Dispatch one request through the full preview pipeline (issue #1545).
+/// Ordering mirrors `zfb dev`'s `serve_page`: plugin dev-middleware
+/// (registered via `previewMiddleware`) takes priority over everything
+/// else — including `_redirects` — via the shared seam
+/// ([`dispatch_plugin`]) so Origin-gating, the 2 MiB body cap, and
+/// generic-vs-verbose error bodies are byte-identical to dev. A plugin
+/// returning passthrough (or no plugin claiming the URL) falls through
+/// to `_redirects`, then the static-file waterfall.
+async fn serve_preview_request(
+    state: &StaticState,
+    method: &Method,
+    headers: &HeaderMap,
+    uri: &Uri,
+    body: Bytes,
+) -> Response {
+    let url_path = uri.path();
+
+    if let Some(set) = state.plugins.as_ref() {
+        if let Some(reg) = set.find_match(url_path) {
+            // Issue #931: cross-origin non-GET requests must not reach
+            // plugin handlers when the server is LAN-exposed.
+            if let Some(resp) = origin_gate(&state.host_validation, method, headers) {
+                return resp;
+            }
+            match dispatch_plugin(
+                set,
+                reg,
+                url_path,
+                method,
+                headers,
+                &body,
+                ServerMode::Preview,
+            )
+            .await
+            {
+                PluginDispatchAttempt::Responded(resp) => return resp,
+                PluginDispatchAttempt::Passthrough => {}
+                PluginDispatchAttempt::Errored(resp) => return resp,
+            }
+        }
+    }
+
+    // `_redirects` and the static-file waterfall below only understand
+    // GET/HEAD (mirrors real Workers Static Assets, which only ever
+    // probes the asset layer for GET/HEAD). A non-GET request no plugin
+    // claimed 405s here rather than falling through to a 404, mirroring
+    // dev's page-cache-fallback method policy.
+    if !matches!(*method, Method::GET | Method::HEAD) {
+        return method_not_allowed_get_head();
+    }
+
+    if !state.redirects.is_empty() {
+        if let Some(outcome) = state
+            .redirects
+            .match_request(url_path, uri.query(), method.as_str())
+        {
+            return match outcome {
+                RedirectOutcome::Redirect { status, location } => {
+                    redirect_with_status(status, &location)
+                }
+                RedirectOutcome::Rewrite { target } => {
+                    // The rewrite target may carry its own literal query
+                    // string (from the `_redirects` rule text itself, not
+                    // the original request's — the engine's contract is
+                    // that a rewrite never carries the request's query
+                    // forward, see `zfb_server::redirects`' module docs).
+                    let (path, query) = match target.split_once('?') {
+                        Some((p, q)) => (p, Some(q)),
+                        None => (target.as_str(), None),
+                    };
+                    serve_static(&state.dist_root, path, query).await
+                }
+            };
+        }
+    }
+
+    serve_static(&state.dist_root, url_path, uri.query()).await
+}
+
+/// Build the `405 Method Not Allowed` served when a non-GET/HEAD request
+/// reaches the static waterfall without a plugin claiming it. Mirrors
+/// `zfb dev`'s page-cache-fallback policy (`zfb_server::routes`).
+fn method_not_allowed_get_head() -> Response {
+    Response::builder()
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .header(header::ALLOW, HeaderValue::from_static("GET, HEAD"))
+        .header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Build a redirect response for a `_redirects` engine match, using
+/// whatever status the matched rule specified (301/302/303/307/308 — a
+/// `200` rule becomes [`RedirectOutcome::Rewrite`] and never reaches
+/// here). Falls back to 302 if `status` is somehow outside that set —
+/// defensive only, [`Redirects::match_request`] never produces one.
+fn redirect_with_status(status: u16, target: &str) -> Response {
+    let code = StatusCode::from_u16(status).unwrap_or(StatusCode::FOUND);
+    let location = HeaderValue::try_from(target).unwrap_or_else(|_| HeaderValue::from_static("/"));
+    Response::builder()
+        .status(code)
+        .header(header::LOCATION, location)
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// Apply the Workers-Static-Assets-style routing rule to a request,
@@ -269,6 +509,16 @@ fn resolve_static(dist_root: &Path, url_path: &str) -> Resolution {
     }
 
     let stripped = url_path.trim_start_matches('/');
+
+    // `_redirects` is reserved preview/build config (Cloudflare Static
+    // Assets subset, issue #1543), copied verbatim to
+    // `<outdir>/_redirects` by `zfb build` — it must never be servable as
+    // a plain static file (issue #1545), regardless of who reaches this
+    // function: a direct request, or a `_redirects` rewrite whose own
+    // target happens to name it.
+    if stripped == "_redirects" {
+        return Resolution::NotFound;
+    }
     let has_trailing = url_path.is_empty() || url_path.ends_with('/');
     let clean = stripped.trim_end_matches('/');
 
@@ -1501,6 +1751,418 @@ mod tests {
         assert!(
             body.contains("real"),
             "served body must match the symlink target"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Issue #1545 — plugin dev-middleware + `_redirects` wiring in static
+    // preview, via the shared seam. Mirrors
+    // `crates/zfb-server/tests/plugin_middleware_integration.rs` but drives
+    // the PREVIEW router (`build_static_router_full`) through
+    // `tower::ServiceExt::oneshot` instead of a bound port.
+    // -------------------------------------------------------------------
+
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use zfb_server::{
+        DevMiddlewareDispatcher, PluginDispatchError, PluginDispatchOutcome, PluginRegistration,
+        PluginRequest, PluginResponse, PluginResponseEncoding,
+    };
+
+    /// Test double standing in for a spawned `PluginHost` — no Node
+    /// subprocess involved (that round-trip is covered by
+    /// `zfb-build::plugin_runner`'s own tests).
+    struct StubDispatcher {
+        passthrough_handler_id: String,
+        response_handler_id: String,
+        invocations: AtomicU32,
+    }
+
+    impl StubDispatcher {
+        fn new(pass: &str, respond: &str) -> Self {
+            Self {
+                passthrough_handler_id: pass.into(),
+                response_handler_id: respond.into(),
+                invocations: AtomicU32::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DevMiddlewareDispatcher for StubDispatcher {
+        async fn dispatch(
+            &self,
+            handler_id: &str,
+            request: PluginRequest,
+        ) -> Result<PluginDispatchOutcome, PluginDispatchError> {
+            self.invocations.fetch_add(1, Ordering::SeqCst);
+            if handler_id == self.passthrough_handler_id {
+                return Ok(PluginDispatchOutcome::Passthrough);
+            }
+            if handler_id == self.response_handler_id {
+                return Ok(PluginDispatchOutcome::Response(PluginResponse {
+                    status: 200,
+                    headers: vec![("x-zfb-plugin".into(), "ok".into())],
+                    body: format!("plugin saw {} {}", request.method, request.url),
+                    body_encoding: PluginResponseEncoding::Utf8,
+                }));
+            }
+            Err(PluginDispatchError {
+                plugin: "test".into(),
+                message: format!("unknown handler {handler_id}"),
+            })
+        }
+    }
+
+    /// Always-failing dispatcher for the error-body-gating test.
+    struct FailingDispatcher;
+
+    #[async_trait]
+    impl DevMiddlewareDispatcher for FailingDispatcher {
+        async fn dispatch(
+            &self,
+            _handler_id: &str,
+            _request: PluginRequest,
+        ) -> Result<PluginDispatchOutcome, PluginDispatchError> {
+            Err(PluginDispatchError {
+                plugin: "test-fail".into(),
+                message: "simulated plugin failure".into(),
+            })
+        }
+    }
+
+    fn plugin_set(
+        dispatcher: Arc<dyn DevMiddlewareDispatcher>,
+        registrations: Vec<PluginRegistration>,
+    ) -> DevMiddlewareSet {
+        DevMiddlewareSet {
+            registrations: Arc::new(registrations),
+            dispatcher,
+        }
+    }
+
+    #[tokio::test]
+    async fn preview_plugin_registered_path_is_served_by_plugin() {
+        let dist = fixture_dist();
+        let set = plugin_set(
+            Arc::new(StubDispatcher::new("h-pass", "h-respond")),
+            vec![PluginRegistration {
+                path: "/api/echo".into(),
+                handler_id: "h-respond".into(),
+                plugin: "echo-test".into(),
+            }],
+        );
+        let router = build_static_router_full(
+            dist.path().to_path_buf(),
+            Some(set),
+            Redirects::default(),
+            HostValidation::disabled(),
+        );
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/echo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("x-zfb-plugin")
+                .and_then(|h| h.to_str().ok()),
+            Some("ok"),
+        );
+        let body = body_string(resp).await;
+        assert!(body.contains("GET /api/echo"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn preview_plugin_passthrough_falls_back_to_static_file() {
+        let dist = fixture_dist();
+        let set = plugin_set(
+            Arc::new(StubDispatcher::new("h-pass", "h-respond")),
+            vec![PluginRegistration {
+                path: "/blog/post.html".into(),
+                handler_id: "h-pass".into(),
+                plugin: "passthrough-test".into(),
+            }],
+        );
+        let router = build_static_router_full(
+            dist.path().to_path_buf(),
+            Some(set),
+            Redirects::default(),
+            HostValidation::disabled(),
+        );
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/blog/post.html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("post"),
+            "passthrough must fall through to the static file: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_plugin_unregistered_path_skips_dispatch() {
+        let dist = fixture_dist();
+        let dispatcher = Arc::new(StubDispatcher::new("h-pass", "h-respond"));
+        let set = plugin_set(
+            dispatcher.clone(),
+            vec![PluginRegistration {
+                path: "/api".into(),
+                handler_id: "h-respond".into(),
+                plugin: "scoped".into(),
+            }],
+        );
+        let router = build_static_router_full(
+            dist.path().to_path_buf(),
+            Some(set),
+            Redirects::default(),
+            HostValidation::disabled(),
+        );
+
+        let resp = router
+            .oneshot(Request::builder().uri("/nope").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            dispatcher.invocations.load(Ordering::SeqCst),
+            0,
+            "dispatcher must not be invoked for a URL no plugin registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_post_to_unregistered_path_returns_405() {
+        // Non-GET requests that no plugin claims must 405, not fall
+        // through to the (GET/HEAD-only) static waterfall — mirrors
+        // `zfb dev`'s page-cache-fallback method policy.
+        let dist = fixture_dist();
+        let router = build_static_router_full(
+            dist.path().to_path_buf(),
+            None,
+            Redirects::default(),
+            HostValidation::disabled(),
+        );
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn preview_plugin_post_without_origin_is_blocked_when_lan_exposed() {
+        // Issue #931 parity: a LAN-exposed preview (non-loopback bind)
+        // must reject a cross-origin-shaped non-GET request BEFORE it
+        // ever reaches the plugin dispatcher.
+        let dist = fixture_dist();
+        let dispatcher = Arc::new(StubDispatcher::new("h-pass", "h-respond"));
+        let set = plugin_set(
+            dispatcher.clone(),
+            vec![PluginRegistration {
+                path: "/api/echo".into(),
+                handler_id: "h-respond".into(),
+                plugin: "echo-test".into(),
+            }],
+        );
+        let host_validation = HostValidation::for_bind(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            None,
+            &[],
+            ServerMode::Preview,
+        );
+        let router = build_static_router_full(
+            dist.path().to_path_buf(),
+            Some(set),
+            Redirects::default(),
+            host_validation,
+        );
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/echo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            dispatcher.invocations.load(Ordering::SeqCst),
+            0,
+            "the Origin gate must block before the plugin dispatcher is invoked"
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_plugin_error_body_is_generic_not_verbose() {
+        // Issue #926 parity: Preview mode must not leak the underlying
+        // plugin error text — only Dev mode does that.
+        let dist = fixture_dist();
+        let set = plugin_set(
+            Arc::new(FailingDispatcher),
+            vec![PluginRegistration {
+                path: "/api/fail".into(),
+                handler_id: "h-fail".into(),
+                plugin: "test-fail".into(),
+            }],
+        );
+        let router = build_static_router_full(
+            dist.path().to_path_buf(),
+            Some(set),
+            Redirects::default(),
+            HostValidation::disabled(),
+        );
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/fail")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = body_string(resp).await;
+        assert!(
+            !body.contains("simulated plugin failure"),
+            "preview mode must not leak the plugin error detail in the body; got: {body}"
+        );
+        assert!(
+            body.contains("Internal Server Error"),
+            "preview mode must return a generic error body; got: {body}"
+        );
+    }
+
+    // ---- `_redirects` wiring --------------------------------------------
+
+    #[tokio::test]
+    async fn preview_redirects_engine_serves_redirect_outcome() {
+        let dist = fixture_dist();
+        let redirects = Redirects::parse("/old /about 301\n");
+        let router = build_static_router_full(
+            dist.path().to_path_buf(),
+            None,
+            redirects,
+            HostValidation::disabled(),
+        );
+
+        let resp = router
+            .oneshot(Request::builder().uri("/old").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::MOVED_PERMANENTLY);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(location, "/about");
+    }
+
+    #[tokio::test]
+    async fn preview_redirects_engine_serves_rewrite_outcome() {
+        let dist = fixture_dist();
+        let redirects = Redirects::parse("/legacy /blog/post.html 200\n");
+        let router = build_static_router_full(
+            dist.path().to_path_buf(),
+            None,
+            redirects,
+            HostValidation::disabled(),
+        );
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/legacy")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // A rewrite serves the target's content at 200 — the
+        // client-visible URL/status never changes, unlike a redirect.
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("post"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn preview_redirects_no_match_falls_through_to_static_404() {
+        let dist = fixture_dist();
+        let redirects = Redirects::parse("/old /about 301\n");
+        let router = build_static_router_full(
+            dist.path().to_path_buf(),
+            None,
+            redirects,
+            HostValidation::disabled(),
+        );
+
+        let resp = router
+            .oneshot(Request::builder().uri("/nope").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("missing"),
+            "a non-matching path must fall through to the project's own 404.html: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_hides_the_raw_redirects_config_file() {
+        let dist = fixture_dist();
+        fs::write(dist.path().join("_redirects"), "/old /about 301\n").unwrap();
+        let redirects = load_redirects(dist.path());
+        assert_eq!(redirects.len(), 1, "sanity: the file must have parsed");
+
+        let router = build_static_router_full(
+            dist.path().to_path_buf(),
+            None,
+            redirects,
+            HostValidation::disabled(),
+        );
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/_redirects")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "the raw _redirects config file must never be servable"
         );
     }
 }

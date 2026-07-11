@@ -49,11 +49,12 @@ for `entry.body` instead.
 ## Extension points
 
 The `plugins: []` field in `zfb.config` is the build-orchestration plugin
-system. Each registered plugin exposes four optional hooks — `setup`,
-`preBuild`, `postBuild`, and `devMiddleware` — for tasks like registering
+system. Each registered plugin exposes five optional hooks — `setup`,
+`preBuild`, `postBuild`, `devMiddleware`, and `previewMiddleware` — for tasks like registering
 import aliases and virtual modules at boot (`setup`), emitting extra files
 alongside the build (`preBuild`), running post-build verification
-(`postBuild`), or adding routes to the dev server (`devMiddleware`). Plugins
+(`postBuild`), or adding routes to the dev server or static preview server
+(`devMiddleware` / `previewMiddleware`). Plugins
 do **not** participate in Markdown rendering: the parse and visitor chain run
 inside the Rust engine and never call back into npm-installed plugins.
 

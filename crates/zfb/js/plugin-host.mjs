@@ -1,5 +1,7 @@
 // AUTO-LOADED by zfb-build's plugin runner (Phase B Sub 3 / issue #108,
-// extended for the new `setup` hook in epic #253 / sub-issue #255).
+// extended for the new `setup` hook in epic #253 / sub-issue #255, and
+// for the `previewMiddleware` hook + `"preview"` setup command in the
+// Preview Parity epic #1541 / sub-issue #1542).
 // Do not edit unless you also update the Rust caller in
 // `crates/zfb-build/src/plugin_runner.rs`.
 //
@@ -15,15 +17,23 @@
 //      ] }
 //
 //   { "id": <number>, "kind": "setup", "ctx": { "projectRoot",
-//        "command": "build" | "dev", "config" } }
+//        "command": "build" | "dev" | "preview", "config" } }
 //        -- calls each plugin's `setup(ctx)`. ctx exposes
 //           addAlias, addVirtualModule, injectRoute, addClientEntry. The host
 //           accumulates raw registrations per plugin and replies
 //           with `{ outputs: [{ plugin, registrations: [...] }] }`
 //           so Rust can run conflict detection against canonical types.
+//           Under `"preview"` (#1542) this same handler runs so
+//           plugin-side state init happens, but the Rust caller
+//           (`run_preview_setup`) never prefetches virtual modules or
+//           translates the registries into V8 hooks — see that
+//           function's doc comment for why.
 //
 //   { "id": <number>, "kind": "preBuild", "ctx": { "projectRoot",
-//        "outDir", "config" } }   -- runs preBuild on every plugin in order
+//        "outDir", "config" } }   -- runs preBuild on every plugin in order.
+//        Never sent by the preview lifecycle (#1542 decision 3) —
+//        `zfb preview` serves an already-built `dist/` and has no
+//        `outDir` to (re)generate into.
 //
 //   { "id": <number>, "kind": "postBuild", "ctx": { ... } }
 //
@@ -36,6 +46,20 @@
 //        "request": {...} }
 //        -- dispatches one HTTP request to a previously-registered
 //           dev-middleware handler; reply contains the response.
+//
+//   { "id": <number>, "kind": "previewRegister", "ctx": {
+//        "projectRoot", "config" } }
+//        -- #1542: calls each plugin's `previewMiddleware(ctx)` and
+//           accumulates registrations; reply contains the (path,
+//           handlerId) pairs. Distinct from `devRegister` — a plugin
+//           declaring only `devMiddleware` gets NO registration here,
+//           and vice versa (explicit per-mode opt-in, by design).
+//
+//   { "id": <number>, "kind": "previewInvoke", "handlerId": "<id>",
+//        "request": {...} }
+//        -- #1542: dispatches one HTTP request to a previously-
+//           registered preview-middleware handler; reply contains the
+//           response. Same wire shape as `devInvoke`.
 //
 //   { "id": <number>, "kind": "virtualLoad", "loaderId": "<id>" }
 //        -- invokes a virtual-module loader registered via setup's
@@ -69,7 +93,14 @@ const { stdin, stdout, exit } = process;
 
 let plugins = []; // [{ module, name, options, mod }] after init.
 const devHandlers = new Map(); // handlerId -> { plugin, handler }
-let nextHandlerId = 0;
+// #1542: `previewMiddleware` gets its own handler map so its handler-id
+// namespace never collides with `devMiddleware`'s (the two hooks also
+// never run in the same process today — each `zfb` command spawns its
+// own plugin host — but keeping the namespaces distinct costs nothing).
+// The id *counter* itself is call-local (reset every register round) —
+// see `registerMiddleware`'s `nextId` — so only the map needs to live
+// at module scope.
+const previewHandlers = new Map(); // handlerId -> { plugin, handler }
 
 // `setup` hook state (#255). `virtualLoaders` is keyed by the same
 // opaque loaderId the Rust side stores on each `VirtualModuleEntry`;
@@ -179,12 +210,19 @@ async function handleSetup(id, msg) {
   virtualCache.clear();
   nextLoaderId = 0;
   const command = msg.ctx && msg.ctx.command;
-  if (command !== "build" && command !== "dev") {
+  if (command !== "build" && command !== "dev" && command !== "preview") {
+    // #1542: "preview" joins "build"/"dev" as a valid setup command —
+    // `run_preview_setup` (Rust) sends this same "setup" message kind
+    // with ctx.command === "preview" so plugin-side state init runs;
+    // it just never prefetches virtual modules or translates the
+    // registries into V8 hooks afterward.
     sendErr(
       id,
       "(host)",
       "setup",
-      new Error(`setup ctx.command must be "build" or "dev" (got ${JSON.stringify(command)})`),
+      new Error(
+        `setup ctx.command must be "build", "dev", or "preview" (got ${JSON.stringify(command)})`,
+      ),
     );
     return;
   }
@@ -378,16 +416,27 @@ async function handleVirtualLoad(id, msg) {
   sendOk(id, { source });
 }
 
-async function handleDevRegister(id, msg) {
+// Shared implementation behind `devRegister` / `previewRegister` (#1542).
+// `hookName` selects which plugin-module method to call ("devMiddleware"
+// or "previewMiddleware"); `handlers` / `idPrefix` isolate each hook's
+// registration map and handler-id namespace so the two hooks never
+// interfere with each other. A plugin declaring only `devMiddleware`
+// produces zero registrations here when `hookName` is
+// "previewMiddleware", and vice versa — the dispatch is per-hook, not a
+// devMiddleware-reuse (per #1542's baked decision 1). The id counter
+// (`nextId`) is call-local — reset every register round by construction,
+// since it's declared inside this function — so it needs no module-level
+// state of its own.
+async function registerMiddleware(id, msg, { hookName, handlers, idPrefix }) {
   // Reset previous registrations so a config reload (future feature)
-  // doesn't double-bind paths. The dev server expects exactly one
-  // handler per (plugin, path); a plugin re-registering the same path
+  // doesn't double-bind paths. The server expects exactly one handler
+  // per (plugin, path); a plugin re-registering the same path
   // overwrites itself.
-  devHandlers.clear();
-  nextHandlerId = 0;
+  handlers.clear();
+  let nextId = 0;
   const registrations = [];
   for (const p of plugins) {
-    const fn = p.mod.devMiddleware;
+    const fn = p.mod[hookName];
     if (typeof fn !== "function") continue;
     const localPaths = new Map(); // path -> handlerId for THIS plugin
     const ctx = {
@@ -398,40 +447,44 @@ async function handleDevRegister(id, msg) {
       register(path, handler) {
         if (typeof path !== "string" || !path.startsWith("/")) {
           throw new Error(
-            `devMiddleware register: path must be a string starting with "/" (got ${JSON.stringify(path)})`,
+            `${hookName} register: path must be a string starting with "/" (got ${JSON.stringify(path)})`,
           );
         }
         if (typeof handler !== "function") {
           throw new Error(
-            `devMiddleware register: handler must be a function (got ${typeof handler})`,
+            `${hookName} register: handler must be a function (got ${typeof handler})`,
           );
         }
         let handlerId = localPaths.get(path);
         if (handlerId === undefined) {
-          handlerId = `h${nextHandlerId++}`;
+          handlerId = `${idPrefix}${nextId++}`;
           localPaths.set(path, handlerId);
           registrations.push({ path, handlerId, plugin: p.name });
         }
-        devHandlers.set(handlerId, { plugin: p.name, handler });
+        handlers.set(handlerId, { plugin: p.name, handler });
       },
     };
     try {
       await fn.call(p.mod, ctx);
     } catch (err) {
-      sendErr(id, p.name, "devMiddleware", err);
+      sendErr(id, p.name, hookName, err);
       return;
     }
   }
   sendOk(id, { registrations });
 }
 
-async function handleDevInvoke(id, msg) {
-  const entry = devHandlers.get(msg.handlerId);
+// Shared implementation behind `devInvoke` / `previewInvoke` (#1542).
+// Looks the handler up in the hook-specific map so a `previewInvoke`
+// can never accidentally dispatch into a `devMiddleware` handler (or
+// vice versa) even if a handler id string were guessed.
+async function invokeMiddleware(id, msg, { hookName, handlers }) {
+  const entry = handlers.get(msg.handlerId);
   if (!entry) {
     sendErr(
       id,
       "(unknown)",
-      "devMiddleware",
+      hookName,
       new Error(`unknown handlerId ${JSON.stringify(msg.handlerId)}`),
     );
     return;
@@ -441,11 +494,11 @@ async function handleDevInvoke(id, msg) {
   try {
     resp = await handler(msg.request);
   } catch (err) {
-    sendErr(id, plugin, "devMiddleware", err);
+    sendErr(id, plugin, hookName, err);
     return;
   }
   // Returning `undefined` means "I did not handle this request" — the
-  // dev server falls through to its built-in routes. Encode as a
+  // server falls through to its built-in routes. Encode as a
   // distinguished `passthrough: true` reply so the Rust side can
   // dispatch without an extra signal channel.
   if (resp === undefined || resp === null) {
@@ -456,9 +509,9 @@ async function handleDevInvoke(id, msg) {
     sendErr(
       id,
       plugin,
-      "devMiddleware",
+      hookName,
       new Error(
-        `devMiddleware handler must return { status, ... } or undefined (got ${typeof resp})`,
+        `${hookName} handler must return { status, ... } or undefined (got ${typeof resp})`,
       ),
     );
     return;
@@ -470,6 +523,30 @@ async function handleDevInvoke(id, msg) {
     body: typeof resp.body === "string" ? resp.body : "",
     bodyEncoding: resp.bodyEncoding === "base64" ? "base64" : "utf8",
   });
+}
+
+function handleDevRegister(id, msg) {
+  return registerMiddleware(id, msg, {
+    hookName: "devMiddleware",
+    handlers: devHandlers,
+    idPrefix: "h",
+  });
+}
+
+function handleDevInvoke(id, msg) {
+  return invokeMiddleware(id, msg, { hookName: "devMiddleware", handlers: devHandlers });
+}
+
+function handlePreviewRegister(id, msg) {
+  return registerMiddleware(id, msg, {
+    hookName: "previewMiddleware",
+    handlers: previewHandlers,
+    idPrefix: "p",
+  });
+}
+
+function handlePreviewInvoke(id, msg) {
+  return invokeMiddleware(id, msg, { hookName: "previewMiddleware", handlers: previewHandlers });
 }
 
 const rl = readline.createInterface({ input: stdin });
@@ -507,6 +584,12 @@ rl.on("line", (line) => {
       break;
     case "devInvoke":
       handleDevInvoke(msg.id, msg);
+      break;
+    case "previewRegister":
+      handlePreviewRegister(msg.id, msg);
+      break;
+    case "previewInvoke":
+      handlePreviewInvoke(msg.id, msg);
       break;
     case "virtualLoad":
       handleVirtualLoad(msg.id, msg);

@@ -144,6 +144,28 @@ public/logo.svg  →  /pj/site/logo.svg   (dev and prod)
 
 Both the dev server's `serve_page` fallback and the build-time `copy_public_dir` honour the prefix. As long as you write asset URLs in HTML the same way the rest of your project does — typically by going through the link rewriter that the markdown / TSX pipeline already runs — the prefix is applied for free.
 
+## `_redirects` — redirect/rewrite rules
+
+Drop a `public/_redirects` file to declare redirect and rewrite rules, following the [Cloudflare Workers Static Assets `_redirects` format](https://developers.cloudflare.com/workers/static-assets/redirects/) (a documented subset of it — see below for exactly what's supported). One rule per line:
+
+```text
+# public/_redirects
+/old-page /new-page 301
+/blog/* /articles/:splat
+/api/* /api-handler 200
+```
+
+- `source` may contain a single splat (`*`, captured as `:splat` in the target) and any number of `:name` placeholder segments.
+- `status` is optional and defaults to **302**. `301`/`302`/`303`/`307`/`308` redirect the client; `200` **rewrites** — it serves `target`'s content without changing the browser's URL (a lightweight reverse-proxy, same-site targets only).
+- Rules are tried **in file order**; the first matching `source` wins. A `200` rewrite resolves once — its target is never re-matched against the rule set (no chaining).
+- Only `GET`/`HEAD` requests are evaluated, mirroring real Workers Static Assets (which only ever probes the asset layer — and therefore `_redirects` — for those two methods). Any other method bypasses `_redirects` entirely.
+- The request's query string is preserved (appended) on redirects; it is dropped on rewrites, since the client-visible URL never changes there.
+- A malformed line (bad status, missing token, a `200` rule targeting an external URL, …) is skipped with a warning — a broken `_redirects` file never blocks `zfb dev` or `zfb preview` from starting.
+
+**Where it runs:** `zfb dev` loads it at boot and live-reloads on every edit to `public/_redirects` (no full rebuild). `zfb preview` (static mode) loads it once at boot from the output root — static preview does no rebuild or watch, so a rule change needs a fresh `zfb build` + restart. Adapter-mode preview (`wrangler dev`) and a real deployed Worker honour `_redirects` **natively** through Workers Static Assets, not through zfb's engine — zfb never even parses the file there. In every mode, a plugin's `devMiddleware`/`previewMiddleware` registration for a URL always takes priority over a `_redirects` rule for that same URL. See [CLI Reference — `zfb preview`](../api/cli.mdx#zfb-preview) for the `base`-prefix caveat specific to static preview.
+
+**Output-root artifact:** `zfb build` copies `public/_redirects` verbatim to `<outdir>/_redirects` (the output *root*, not nested under `base` even when `copyPublicWithBase` is on — it's config Cloudflare's platform expects to find at the root, not a servable asset). It is excluded from the ordinary `copy_public_dir` pass so it never doubles as a plain static file, and `/_redirects` itself always 404s when requested directly (in both `zfb dev` and `zfb preview`).
+
 ## Configuration
 
 The directory is configurable. Add `publicDir` to `zfb.config.ts` to point somewhere other than the default:

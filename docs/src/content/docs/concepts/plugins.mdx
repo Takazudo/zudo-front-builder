@@ -1,11 +1,11 @@
 ---
 title: Plugins
-description: Author and consume zfb plugins — the four lifecycle hooks, virtual modules, import aliases, injected routes, and client entries.
+description: Author and consume zfb plugins — the five lifecycle hooks, virtual modules, import aliases, injected routes, and client entries.
 sidebar_position: 12
 category: Concepts
 ---
 
-zfb plugins are plain ES modules whose default export is a `ZfbPlugin` object. The zfb build (and dev) host loads each plugin module once at boot and dispatches four optional lifecycle hooks to it. A plugin may declare any subset of the four — anything it omits is a silent no-op.
+zfb plugins are plain ES modules whose default export is a `ZfbPlugin` object. The zfb build, dev, and preview hosts load each plugin module once at boot and dispatch five optional lifecycle hooks to it. A plugin may declare any subset of the five — anything it omits is a silent no-op.
 
 This page documents the contract for plugin authors. The companion API reference is on [`defineConfig.plugins`](../api/define-config.mdx).
 
@@ -18,27 +18,30 @@ Reach for a plugin when you need one of the four capabilities that `setup` provi
 - **Injected page route that lives outside `pages/`.** `injectRoute` registers a TSX/TS file under a URL pattern. In build mode, package-owned routes are materialised into the normal page pipeline; in dev mode, the dev server renders matching static and dynamic injected routes. Gate the call on `command === "dev"` only when the route is truly dev-only.
 - **Package-owned client entry.** `addClientEntry` registers a `*.client.{ts,tsx,js,jsx}` side-effect entry that should be bundled with the project's client scripts.
 
-For responses that are not pages, use the separate `devMiddleware` hook: a JSON API endpoint, a hot-reload bridge, an upload handler. No JSX pipeline, no page renderer — just a function returning `{ status, headers, body }`.
+For responses that are not pages, use the separate `devMiddleware` hook (or its preview counterpart, `previewMiddleware` — see below): a JSON API endpoint, a hot-reload bridge, an upload handler. No JSX pipeline, no page renderer — just a function returning `{ status, headers, body }`.
 
-## The four hooks
+## The five hooks
 
 ```ts
 import { definePlugin } from "@takazudo/zfb/plugins";
 
 export default definePlugin({
   name: "my-plugin",
-  setup?(ctx) {},        // #255 — runs once at host boot, before preBuild
-  preBuild?(ctx) {},     // file-generation work before the bundler / renderer
-  postBuild?(ctx) {},    // finalisation after dist/ has been written
-  devMiddleware?(ctx) {},// per-request HTTP handlers in `zfb dev`
+  setup?(ctx) {},            // #255 — runs once at host boot, before preBuild
+  preBuild?(ctx) {},         // file-generation work before the bundler / renderer
+  postBuild?(ctx) {},        // finalisation after dist/ has been written
+  devMiddleware?(ctx) {},    // per-request HTTP handlers in `zfb dev`
+  previewMiddleware?(ctx) {},// per-request HTTP handlers in `zfb preview` (static mode, #1542)
 });
 ```
 
-Hooks run sequentially in the order plugins appear in `zfb.config.ts`'s `plugins` array. A throw in any hook aborts the build (or the dev boot) and surfaces the plugin name + the hook that threw in the error banner.
+Hooks run sequentially in the order plugins appear in `zfb.config.ts`'s `plugins` array. A throw in any hook aborts the build (or the dev/preview boot) and surfaces the plugin name + the hook that threw in the error banner.
 
 ## `setup` — register virtual modules, aliases, injected routes, and client entries
 
-Runs **once** per `zfb build` and once per `zfb dev` host boot, before `preBuild`. The hook is where a plugin contributes to the module-resolution pipeline (virtual modules + import aliases), synthetic page routes, and package-owned client entries. After `setup` completes, the registries are frozen for the remainder of the run.
+Runs **once** per `zfb build` host boot, once per `zfb dev` host boot, and once per `zfb preview` (static mode) host boot, before `preBuild`. The hook is where a plugin contributes to the module-resolution pipeline (virtual modules + import aliases), synthetic page routes, and package-owned client entries. After `setup` completes, the registries are frozen for the remainder of the run.
+
+Under `zfb preview`, `setup` fires through a minimal, non-V8 path — `preBuild` never runs there (preview does no rebuild), and `addAlias`/`addVirtualModule`/`injectRoute`/`addClientEntry` calls are accepted for shape-consistency but are **inert**: preview serves an already-built `dist/` verbatim and never re-enters the scan → bundle → render pipeline those registries feed. Only a hook's own side effects (e.g. reading a file to compute config for `previewMiddleware`) and a `previewMiddleware` registration itself do anything meaningful under `"preview"`.
 
 ```ts
 setup({
@@ -52,7 +55,7 @@ setup({
   injectRoute,
   addClientEntry,
 }) {
-  // `command` is "build" or "dev". Gate dev-only registrations on it.
+  // `command` is "build", "dev", or "preview". Gate dev-only registrations on it.
   addAlias("@/components/foo", "./src/components/foo.tsx");
   addVirtualModule("virtual:my-data", () =>
     `export default ${JSON.stringify(myJson)}`,
@@ -143,6 +146,8 @@ Both can add URLs during `zfb dev`, but they aim at different problems:
 | `devMiddleware(ctx)` → `ctx.register(path, handler)` | a JS function that returns `{ status, headers, body }` per request | you want an HTTP handler — JSON API, a hot-reload bridge, an upload endpoint. No page pipeline, no JSX. |
 
 `devMiddleware` is the right answer when the response is not a page; `injectRoute` is the right answer when you want a synthetic `pages/foo.tsx` that lives outside the on-disk `pages/` tree.
+
+The same choice applies to `zfb preview` via `previewMiddleware` — it is `devMiddleware`'s exact per-request-handler counterpart, just gated to preview's static mode instead of dev (see [`previewMiddleware(ctx)`](#previewmiddleware-ctx) below). `injectRoute` has no preview equivalent: preview never re-renders, so a synthetic route registered via `injectRoute` is inert there (see the `setup` section above).
 
 ### Closed surface — no markdown extension hooks
 
@@ -252,6 +257,38 @@ Unchanged from v1. Register one or more HTTP handlers via `ctx.register(path, ha
 
 See [`ZfbDevMiddlewareContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the shape.
 
+## `previewMiddleware(ctx)`
+
+The `zfb preview` (static mode) counterpart of `devMiddleware` (#1542, epic #1541 Preview Parity). Same shape, same `ctx.register(path, handler)` call, same request/response wire format — but it is a **separate, per-mode opt-in**: a plugin that only defines `devMiddleware` gets no request-time handlers at all under `zfb preview`, and vice versa. Register the SAME handler under both hooks if you want it available in both modes:
+
+```ts
+// plugins/api-echo.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+
+function echo({ method, url }: { method: string; url: string }) {
+  return { status: 200, body: `${method} ${url}` };
+}
+
+export default definePlugin({
+  name: "api-echo",
+  devMiddleware({ register }) {
+    register("/api/echo", echo);
+  },
+  previewMiddleware({ register }) {
+    register("/api/echo", echo);
+  },
+});
+```
+
+Two differences from `devMiddleware` worth knowing:
+
+- **No `preBuild`.** `setup` fires under `"preview"` (see above), but preview does no rebuild, so there is no `preBuild`/`postBuild` step for it to precede.
+- **Static-mode only.** `previewMiddleware` runs when `zfb preview` serves the project's own static router (`adapter: "none"`/omitted). In adapter mode, `wrangler dev` serves the whole site directly — zfb never boots its own router there, so `previewMiddleware` registrations simply do not run. `zfb preview` warns once at startup if the project has plugins configured and adapter mode is active.
+
+`previewMiddleware` takes priority over `public/_redirects` for the same URL, exactly like `devMiddleware` takes priority over it in `zfb dev` — see [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-redirect-rewrite-rules).
+
+See [`ZfbPreviewMiddlewareContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the shape.
+
 ## Worked example: `virtual:metadata-db`
 
 A plugin that builds a metadata index and exposes it as a virtual module. Pages can then `import metadata from "virtual:metadata-db"` without zfb knowing anything about the index format.
@@ -330,3 +367,5 @@ Common candidates that do not need a plugin:
 
 - [`defineConfig`](../api/define-config.mdx) — wiring `plugins: [{ name: "...", options: {...} }]`.
 - [Build Pipeline](./build-pipeline.mdx) — where each hook lands in the overall sequence.
+- [CLI Reference — `zfb preview`](../api/cli.mdx#zfb-preview) — how `previewMiddleware` and `_redirects` fit into static preview's request pipeline.
+- [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-redirect-rewrite-rules) — the redirect/rewrite rules `previewMiddleware` takes priority over.
