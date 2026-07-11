@@ -5564,6 +5564,14 @@ fn copy_public_dir(
             // Skip the root entry itself.
             continue;
         }
+        // `_redirects` is reserved config (Cloudflare Static Assets subset),
+        // not a servable asset. `copy_redirects_file` special-copies the
+        // top-level `public/_redirects` to the OUTPUT ROOT; skip it here so a
+        // custom `base` does not ALSO relocate it under the base segment
+        // (where it would become a served `/base/_redirects` asset). #1543.
+        if rel == std::path::Path::new("_redirects") {
+            continue;
+        }
         let dest = dest_root.join(rel);
         if entry.file_type().is_dir() {
             std::fs::create_dir_all(&dest)
