@@ -1502,7 +1502,10 @@ mod tests {
             .with_inline_sources(["dark:text-violet-400", "text-violet-600"]);
         let a = build_synthesised_entry_css(&cfg, None);
         let b = build_synthesised_entry_css(&cfg, None);
-        assert_eq!(a, b, "same config must yield byte-identical synthesised entry CSS");
+        assert_eq!(
+            a, b,
+            "same config must yield byte-identical synthesised entry CSS"
+        );
     }
 
     /// A different `inline_sources` set changes the synthesised entry
@@ -1514,7 +1517,10 @@ mod tests {
     #[test]
     fn synthesised_entry_changes_when_inline_sources_change() {
         let base = TailwindSubprocessConfig::default().with_mock_output(String::new());
-        let a = build_synthesised_entry_css(&base.clone().with_inline_sources(["text-violet-600"]), None);
+        let a = build_synthesised_entry_css(
+            &base.clone().with_inline_sources(["text-violet-600"]),
+            None,
+        );
         let b = build_synthesised_entry_css(&base.with_inline_sources(["text-blue-600"]), None);
         assert_ne!(
             a, b,
