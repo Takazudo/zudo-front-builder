@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 
-use zfb_build::{bundle, BundleMode, BundlerInput};
+use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec};
 use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
@@ -245,6 +245,238 @@ fn project_plugin_alias_is_preprocessed_inside_the_ssr_shadow() {
     assert!(body.contains("ZFB_SSR_PLUGIN_ALIAS_RAW"), "{body}");
     assert!(body.contains(&worker_filename), "{body}");
     assert!(!body.contains("?raw"), "{body}");
+}
+
+#[test]
+fn imported_excluded_plugin_alias_never_falls_back_to_real_source() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:excluded-root", "unused.tsx");
+    fs::create_dir_all(root.join("content/blog")).unwrap();
+    let alias = root.join("content/blog/excluded-plugin.ts");
+    fs::write(
+        &alias,
+        "export default function ExcludedRealSourceMarker() { return null; }\n",
+    )
+    .unwrap();
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-excluded-alias-root",
+        BTreeMap::new(),
+        vec![(
+            "plugin:excluded-root".to_string(),
+            alias.to_string_lossy().into_owned(),
+        )],
+        vec![],
+    );
+    // A configured collection materialises this file at its ordinary
+    // shadow-relative path independently of the plugin closure. The excluded
+    // alias therefore needs a guaranteed-absent resolver sentinel, not merely
+    // the assumption that the ordinary shadow path was skipped.
+    input.content_collections = vec![ContentCollectionSpec::new(
+        "blog",
+        root.join("content/blog"),
+    )];
+    input.bundle_exclude = vec!["content/blog/excluded-plugin.ts".to_string()];
+
+    let error = bundle(input).expect_err(
+        "an imported plugin alias excluded from the shadow must not resolve from the real tree",
+    );
+    let message = format!("{error:#}");
+    assert!(message.contains("plugin:excluded-root"), "{message}");
+    let bundle_path = root.join("dist-excluded-alias-root/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("ExcludedRealSourceMarker"), "{body}");
+    }
+}
+
+#[test]
+fn unused_excluded_plugin_alias_registration_is_harmless() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:unused-excluded", "unused.tsx");
+    fs::write(
+        root.join("pages/index.tsx"),
+        "export default function Page() { return null; }\n",
+    )
+    .unwrap();
+    let alias = root.join("excluded-unused-plugin.ts");
+    fs::write(
+        &alias,
+        "import value from './missing.txt?raw'; export default value;\n",
+    )
+    .unwrap();
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-unused-excluded-alias",
+        BTreeMap::new(),
+        vec![(
+            "plugin:unused-excluded".to_string(),
+            alias.to_string_lossy().into_owned(),
+        )],
+        vec![],
+    );
+    input.bundle_exclude = vec!["excluded-unused-plugin.ts".to_string()];
+
+    bundle(input).expect("an unused excluded alias registration must not fail the bundle");
+}
+
+#[test]
+fn plugin_alias_preprocessing_honours_excluded_nested_raw_target() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:excluded-raw", "unused.tsx");
+    let alias = root.join("plugin-excluded-raw.ts");
+    fs::write(
+        &alias,
+        "import payload from './plugin-secret.txt?raw';\n\
+         export default function Foo() { return payload; }\n",
+    )
+    .unwrap();
+    fs::write(root.join("plugin-secret.txt"), "EXCLUDED_PLUGIN_RAW_SECRET").unwrap();
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-excluded-plugin-raw",
+        BTreeMap::new(),
+        vec![(
+            "plugin:excluded-raw".to_string(),
+            alias.to_string_lossy().into_owned(),
+        )],
+        vec![],
+    );
+    input.bundle_exclude = vec!["plugin-secret.txt".to_string()];
+
+    let error = bundle(input).expect_err("an excluded required ?raw target must fail by name");
+    let message = format!("{error:#}");
+    assert!(message.contains("bundle.exclude"), "{message}");
+    assert!(message.contains("plugin-secret.txt"), "{message}");
+    let bundle_path = root.join("dist-excluded-plugin-raw/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("EXCLUDED_PLUGIN_RAW_SECRET"), "{body}");
+    }
+}
+
+#[test]
+fn plugin_alias_preprocessing_honours_excluded_nested_module() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:excluded-module", "unused.tsx");
+    let alias = root.join("plugin-excluded-module.ts");
+    fs::write(
+        &alias,
+        "import marker from './plugin-secret.ts';\n\
+         export default function Foo() { return marker; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("plugin-secret.ts"),
+        "export default 'EXCLUDED_PLUGIN_MODULE_SECRET';\n",
+    )
+    .unwrap();
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-excluded-plugin-module",
+        BTreeMap::new(),
+        vec![(
+            "plugin:excluded-module".to_string(),
+            alias.to_string_lossy().into_owned(),
+        )],
+        vec![],
+    );
+    input.bundle_exclude = vec!["plugin-secret.ts".to_string()];
+
+    let error = bundle(input)
+        .expect_err("an excluded nested module must remain absent from the SSR shadow");
+    let message = format!("{error:#}");
+    assert!(message.contains("plugin-secret"), "{message}");
+    let bundle_path = root.join("dist-excluded-plugin-module/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("EXCLUDED_PLUGIN_MODULE_SECRET"), "{body}");
+    }
+}
+
+#[test]
+fn explicit_defines_override_public_env_per_exact_ssr_expression() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:unused", "unused.tsx");
+    fs::write(
+        root.join("pages/index.tsx"),
+        "const processValue = process.env.PUBLIC_COLLISION;\n\
+         const importMetaValue = import.meta.env.PUBLIC_COLLISION;\n\
+         export default function Page() { return processValue + importMetaValue; }\n",
+    )
+    .unwrap();
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-public-define-precedence",
+        BTreeMap::new(),
+        vec![],
+        vec![],
+    );
+    input.public_env_vars = HashMap::from([(
+        "PUBLIC_COLLISION".to_string(),
+        "PUBLIC_ENV_PAYLOAD_MUST_NOT_WIN".to_string(),
+    )]);
+    input.define_vars = BTreeMap::from([
+        (
+            "process.env.PUBLIC_COLLISION".to_string(),
+            "\"EXPLICIT_PROCESS_DEFINE\"".to_string(),
+        ),
+        (
+            "import.meta.env.PUBLIC_COLLISION".to_string(),
+            "\"EXPLICIT_IMPORT_META_DEFINE\"".to_string(),
+        ),
+    ]);
+
+    let output = bundle(input).expect("explicit defines and PUBLIC env must bundle");
+    let body = fs::read_to_string(output.bundle_path).unwrap();
+    assert!(body.contains("EXPLICIT_PROCESS_DEFINE"), "{body}");
+    assert!(body.contains("EXPLICIT_IMPORT_META_DEFINE"), "{body}");
+    assert!(!body.contains("PUBLIC_ENV_PAYLOAD_MUST_NOT_WIN"), "{body}");
 }
 
 #[test]

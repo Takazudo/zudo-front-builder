@@ -931,6 +931,36 @@ fn operator_define_args(define_vars: &BTreeMap<String, String>) -> Vec<String> {
         .collect()
 }
 
+fn public_env_define_args(
+    public_env_vars: &HashMap<String, String>,
+    operator_define_vars: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut entries: Vec<(&String, &String)> = public_env_vars.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+
+    let mut args = Vec::with_capacity(entries.len() * 2);
+    for (key, value) in entries {
+        if !key.starts_with("PUBLIC_") {
+            continue;
+        }
+
+        let json_value = json_str(value);
+        for expression in [
+            format!("process.env.{key}"),
+            format!("import.meta.env.{key}"),
+        ] {
+            // `bundle.define` is the explicit operator-authored channel. It
+            // wins over generated PUBLIC values for the exact expression so
+            // SSR agrees with the browser bundlers, which receive the
+            // operator definitions but not this generated PUBLIC map.
+            if !operator_define_vars.contains_key(&expression) {
+                args.push(format!("--define:{expression}={json_value}"));
+            }
+        }
+    }
+    args
+}
+
 /// Default release-tarball slot for the esbuild binary. Mirrors
 /// `zfb_islands::EsbuildSubprocessConfig::default`'s default — kept in
 /// sync deliberately, both crates resolve the same slot.
@@ -1824,6 +1854,13 @@ pub fn bundle_with_session(
             {
                 continue;
             }
+            // An excluded alias target must not be parsed or staged merely
+            // because a plugin registered it. If it is imported later, the
+            // resolver maps it to the deliberately-absent shadow path so the
+            // import fails instead of falling back to the real source file.
+            if bundle_exclude.is_excluded(&target, &project_root) {
+                continue;
+            }
             let discovery = discover_module_preprocessing_with_context(
                 &target,
                 &input.project_root,
@@ -2432,7 +2469,15 @@ pub fn bundle_with_session(
     // plugin-aware first-party closure explicitly so `?raw` wrappers and
     // nested Worker URL rewrites are consumed from the shadow. The resolver
     // call in `run_esbuild` remaps an alias to this copy when it exists.
+    let is_plugin_preprocessing_excluded = |path: &Path| {
+        mat_ctx
+            .bundle_exclude
+            .is_excluded(path, mat_ctx.project_root)
+    };
     for physical in &plugin_preprocessing_files {
+        if is_plugin_preprocessing_excluded(physical) {
+            continue;
+        }
         let relative = physical
             .strip_prefix(&input.project_root)
             .with_context(|| {
@@ -2447,7 +2492,7 @@ pub fn bundle_with_session(
             physical,
             physical,
             &to,
-            &|_| false,
+            &is_plugin_preprocessing_excluded,
             mat_ctx.copy_mode,
             mat_ctx.writer,
             &mat_ctx.raw_import_edges,
@@ -2594,7 +2639,13 @@ pub fn bundle_with_session(
             )
         })?;
     } else {
-        run_esbuild(&input, shadow, &bundle_path, metafile_path.as_deref())?;
+        run_esbuild(
+            &input,
+            shadow,
+            &bundle_path,
+            metafile_path.as_deref(),
+            &bundle_exclude,
+        )?;
     }
     let esbuild_ms = esbuild_start.map(|t| t.elapsed().as_millis());
 
@@ -5650,6 +5701,7 @@ fn run_esbuild(
     shadow: &Path,
     bundle_path: &Path,
     metafile_path: Option<&Path>,
+    bundle_exclude: &BundleExcludeMatcher,
 ) -> Result<()> {
     let bin = resolve_esbuild_binary(input.esbuild_binary.as_deref())?;
     let entry = shadow.join(SHADOW_ENTRY_FILENAME);
@@ -5794,12 +5846,25 @@ fn run_esbuild(
         .iter()
         .map(|(specifier, target)| {
             let target_path = normalize_path_lexical(Path::new(target));
-            let remapped = target_path
-                .strip_prefix(&project_root)
-                .ok()
-                .map(|relative| shadow.join(relative))
-                .filter(|candidate| candidate.is_file())
-                .unwrap_or(target_path);
+            let remapped = match target_path.strip_prefix(&project_root) {
+                Ok(relative) => {
+                    let shadow_target = shadow.join(relative);
+                    if bundle_exclude.is_excluded(&target_path, &project_root) {
+                        // Do not fall back to the live project file for an
+                        // excluded alias. Pointing at a dedicated hidden path
+                        // (never materialised by any source-root walk) keeps
+                        // unused registrations harmless while guaranteeing an
+                        // actual import fails resolution, even if another pass
+                        // happened to write the target's normal shadow path.
+                        shadow.join(".zfb-excluded-plugin-alias").join(relative)
+                    } else if shadow_target.is_file() {
+                        shadow_target
+                    } else {
+                        target_path
+                    }
+                }
+                Err(_) => target_path,
+            };
             (specifier.clone(), remapped.to_string_lossy().into_owned())
         })
         .collect::<Vec<_>>();
@@ -5881,27 +5946,19 @@ fn run_esbuild(
         cmd.arg(arg);
     }
 
+    // PUBLIC_-prefixed env vars only. Anything else is dropped server-
+    // side and never reaches the bundle. Both common spellings are emitted,
+    // except where an exact operator-authored `bundle.define` owns the same
+    // expression. That explicit channel has higher precedence and is shared
+    // by SSR and browser bundlers.
+    for arg in public_env_define_args(&input.public_env_vars, &input.define_vars) {
+        cmd.arg(arg);
+    }
+
     // Operator-authored `bundle.define` expressions are already validated by
     // the config layer (including mode-key reservations) and remain raw.
     for arg in operator_define_args(&input.define_vars) {
         cmd.arg(arg);
-    }
-
-    // PUBLIC_-prefixed env vars only. Anything else is dropped server-
-    // side and never reaches the bundle.
-    // Sort by key so the emitted `--define` args are byte-stable regardless
-    // of the map's iteration order (HashMap is unordered).
-    let mut define_entries: Vec<(&String, &String)> = input.public_env_vars.iter().collect();
-    define_entries.sort_by(|a, b| a.0.cmp(b.0));
-    for (k, v) in define_entries {
-        if !k.starts_with("PUBLIC_") {
-            continue;
-        }
-        // Both `process.env.PUBLIC_X` and `import.meta.env.PUBLIC_X` are
-        // common spellings; emit both so user code is not forced to pick.
-        let json_v = json_str(v);
-        cmd.arg(format!("--define:process.env.{}={}", k, json_v));
-        cmd.arg(format!("--define:import.meta.env.{}={}", k, json_v));
     }
 
     for ext in &input.external {
@@ -9734,7 +9791,9 @@ mod tests {
     #[test]
     fn server_secrets_are_not_bundled() {
         // Real esbuild test (gated). Verifies a SECRET_ env var never
-        // appears in the output, while a PUBLIC_ var does.
+        // appears in the output, while a PUBLIC_ var does. It also locks the
+        // exact-expression precedence seam: an operator `bundle.define`
+        // overrides the generated PUBLIC value for both supported spellings.
         let Some(bin) = locate_real_esbuild() else {
             eprintln!("[server_secrets_are_not_bundled] no esbuild binary on PATH; skipping");
             return;
@@ -9750,9 +9809,11 @@ mod tests {
             root.join("pages/index.tsx"),
             r#"
                 const apiUrl = process.env.PUBLIC_API_URL;
+                const processCollision = process.env.PUBLIC_COLLISION;
+                const importMetaCollision = import.meta.env.PUBLIC_COLLISION;
                 const secret = process.env.SECRET_KEY;
                 export default function Home() {
-                  return apiUrl + " " + secret;
+                  return apiUrl + " " + processCollision + " " + importMetaCollision + " " + secret;
                 }
             "#,
         )
@@ -9760,6 +9821,7 @@ mod tests {
 
         let mut defs = HashMap::new();
         defs.insert("PUBLIC_API_URL".into(), "https://example.test".into());
+        defs.insert("PUBLIC_COLLISION".into(), "public-env-must-not-win".into());
         defs.insert(
             "SECRET_KEY".into(),
             "this-must-not-appear-in-the-bundle".into(),
@@ -9804,7 +9866,16 @@ mod tests {
             components_dir: PathBuf::from("components"),
             layouts_dir: PathBuf::from("layouts"),
             framework: Framework::Preact,
-            define_vars: BTreeMap::new(),
+            define_vars: BTreeMap::from([
+                (
+                    "process.env.PUBLIC_COLLISION".to_string(),
+                    "\"operator-process-define\"".to_string(),
+                ),
+                (
+                    "import.meta.env.PUBLIC_COLLISION".to_string(),
+                    "\"operator-import-meta-define\"".to_string(),
+                ),
+            ]),
             public_env_vars: defs,
             tsconfig_paths: BTreeMap::new(),
             external: vec!["preact".into()],
@@ -9846,6 +9917,18 @@ mod tests {
         assert!(
             body.contains("https://example.test"),
             "PUBLIC_API_URL value should be inlined"
+        );
+        assert!(
+            body.contains("operator-process-define"),
+            "explicit process.env PUBLIC define should win: {body}"
+        );
+        assert!(
+            body.contains("operator-import-meta-define"),
+            "explicit import.meta.env PUBLIC define should win: {body}"
+        );
+        assert!(
+            !body.contains("public-env-must-not-win"),
+            "generated PUBLIC payload overrode an explicit define: {body}"
         );
     }
 
@@ -10291,6 +10374,28 @@ mod tests {
             vec![
                 "--define:__ALPHA__=\"raw string\"".to_string(),
                 "--define:__ZETA__={ enabled: true }".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn public_env_define_args_defer_to_exact_operator_expression() {
+        let public_env_vars = HashMap::from([
+            ("PUBLIC_ZETA".to_string(), "zeta".to_string()),
+            ("PUBLIC_COLLISION".to_string(), "generated".to_string()),
+            ("SECRET_VALUE".to_string(), "never".to_string()),
+        ]);
+        let operator_define_vars = BTreeMap::from([(
+            "process.env.PUBLIC_COLLISION".to_string(),
+            "\"explicit\"".to_string(),
+        )]);
+
+        assert_eq!(
+            public_env_define_args(&public_env_vars, &operator_define_vars),
+            vec![
+                "--define:import.meta.env.PUBLIC_COLLISION=\"generated\"".to_string(),
+                "--define:process.env.PUBLIC_ZETA=\"zeta\"".to_string(),
+                "--define:import.meta.env.PUBLIC_ZETA=\"zeta\"".to_string(),
             ]
         );
     }
