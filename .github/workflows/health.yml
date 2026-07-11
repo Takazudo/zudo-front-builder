@@ -196,7 +196,7 @@ jobs:
           "$ESBUILD_SLOT" --version
           "$TAILWIND_SLOT" --version
 
-      # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 13
+      # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 16
       # `#[ignore]`d tests (tagged `env-gate:` per CLAUDE.md's taxonomy) were
       # staged by the assert step above but never actually executed by any CI
       # step — `cargo test --workspace` below does not pass `--ignored`, so a
@@ -206,7 +206,7 @@ jobs:
       # `cargo test` runs each test binary with its CWD set to the package
       # directory (`crates/zfb-islands`), not the workspace root, so the
       # relative default never resolves.
-      # --tests scopes this to integration-test binaries only (where the 13
+      # --tests scopes this to integration-test binaries only (where the 16
       # target tests live, in tests/integration.rs) — the unscoped `-p
       # zfb-islands` form also compiles+runs the crate's doctests, and 3 of
       # those are pre-existing broken/illustrative examples never meant to
@@ -216,8 +216,18 @@ jobs:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
         run: cargo test -p zfb-islands --tests -- --ignored
 
-      # Run the tailwindcss-v4 env-gate tests (issue #1393) plus the
-      # command-layer preprocessing-shadow esbuild regression: the binaries are
+      # Wave-4 client-bundling acceptance gate (#1504): unlike the focused
+      # zfb-islands tests above, this drives the real zfb binary through both
+      # production build and dev --port 0 over one cross-pipeline fixture.
+      # Keep it in its own attributable step because it boots V8, exercises
+      # SSR, and verifies both islands and *.client.ts worker namespaces.
+      - name: Run zfb client-bundling cross-pipeline acceptance test
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored
+
+      # Run the tailwindcss-v4 env-gate tests (issue #1393) plus both
+      # command-layer preprocessing-shadow esbuild regressions: the binaries are
       # staged by the assert step above but, like the zfb-islands suite before
       # #1337 fixed it, was never actually executed by any T1 step —
       # `cargo nextest run --workspace` below does not pass `--ignored`, so a
@@ -225,8 +235,8 @@ jobs:
       # as ZFB_ESBUILD_BIN above: `cargo test` runs each test binary with its
       # CWD set to the owning package directory, not the workspace root.
       # Three crate-scoped steps keep failures attributable; the zfb step runs
-      # both command-layer env-gates with both binary paths pinned, mirroring
-      # the `#[ignore]` manifest table in CLAUDE.md.
+      # all three command-layer env-gates with both binary paths pinned,
+      # mirroring the `#[ignore]` manifest table in CLAUDE.md.
       - name: Run zfb-css tailwindcss-v4 env-gate integration test
         env:
           ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
@@ -251,9 +261,9 @@ jobs:
       # step above) then ran it under plain `cargo test`; nextest adds a CI retry
       # budget (retries = 1, pass-on-retry RECORDED not hidden — #1341 consumes
       # it), per-test timeouts, and JUnit output. The `ci` profile
-      # (.config/nextest.toml) also serializes the 7 heavy V8/esbuild e2e
-      # binaries via a `max-threads = 1` test-group (complementing #1339's
-      # cross-binary flock). Per-binary inventory was reconciled against
+      # (.config/nextest.toml) also serializes all 15 heavy V8/esbuild e2e
+      # binaries via a `max-threads = 1` test-group; 8 of those also adopt
+      # #1339's cross-binary flock. Per-binary inventory was reconciled against
       # `cargo test --workspace -- --list`: identical apart from doctests, which
       # nextest does not run — hence the separate doc-test step below.
       #
