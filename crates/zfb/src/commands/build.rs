@@ -7922,6 +7922,70 @@ mod tests {
         );
     }
 
+    /// Highlight Tokens epic confirm sub (zfb#1535), check 6, part 2 of 2:
+    /// the full three-way role-taxonomy parity assertion. `zfb` is the
+    /// only crate that depends on BOTH `zfb-content` (the classifier,
+    /// `HiRole::ALL` / zfb#1529) and `zfb-css` (the stylesheet,
+    /// `default_hi_css()` / zfb#1531), and it owns the config validation
+    /// list ([`CODE_HIGHLIGHT_ROLES`]) itself — so this is the one test
+    /// that can see all three legs in the same process:
+    ///
+    /// 1. classifier short/full names (`zfb_content::hi_roles::HiRole`)
+    /// 2. config validation list (`CODE_HIGHLIGHT_ROLES`, full names)
+    /// 3. stylesheet suffixes (`zfb_css::default_hi_css()`, short names)
+    ///
+    /// A PARTIAL of this (legs 1 and 3 only — classifier <-> stylesheet)
+    /// lives in `crates/zfb-css/tests/hi_role_parity.rs`; that crate
+    /// cannot see `CODE_HIGHLIGHT_ROLES` without depending on `zfb`, which
+    /// would be a cycle. This full three-way test is `zfb`-tier: the `zfb`
+    /// crate's test binaries link the embedded V8 host (the `embed_v8`
+    /// default feature), so they run in CI via `health.yml`'s
+    /// `cargo nextest run --workspace` rather than in a lightweight local
+    /// subset. The `zfb-css` partial above is V8-free and covers the
+    /// classifier<->stylesheet legs on every local `cargo test -p zfb-css`.
+    #[test]
+    fn hi_role_taxonomy_parity_across_classifier_config_and_stylesheet() {
+        use zfb_content::hi_roles::HiRole;
+
+        assert_eq!(
+            HiRole::ALL.len(),
+            crate::config::CODE_HIGHLIGHT_ROLES.len(),
+            "classifier role count must match the config validation list length"
+        );
+
+        let css = zfb_css::default_hi_css();
+
+        for (role, config_name) in HiRole::ALL
+            .iter()
+            .zip(crate::config::CODE_HIGHLIGHT_ROLES.iter())
+        {
+            // Leg 1 <-> Leg 2: classifier full name (Debug, lowercased)
+            // must equal the config validation list entry at the SAME
+            // taxonomy index — `CODE_HIGHLIGHT_ROLES`'s doc comment
+            // promises it "matches the #1529 table" in order, not just as
+            // an unordered set.
+            let full_name = format!("{role:?}").to_lowercase();
+            assert_eq!(
+                &full_name, config_name,
+                "classifier role {role:?} must match CODE_HIGHLIGHT_ROLES entry \
+                 {config_name:?} at the same taxonomy index",
+            );
+
+            // Leg 1 <-> Leg 3: classifier short_name() must have a
+            // declared --zfb-hi-<suffix> property AND a .hi-<suffix>
+            // selector in the shipped stylesheet.
+            let suffix = role.short_name();
+            assert!(
+                css.contains(&format!("--zfb-hi-{suffix}:")),
+                "stylesheet must declare --zfb-hi-{suffix} for role {role:?}; got:\n{css}",
+            );
+            assert!(
+                css.contains(&format!(".hi-{suffix} {{")),
+                "stylesheet must declare .hi-{suffix} selector for role {role:?}; got:\n{css}",
+            );
+        }
+    }
+
     #[test]
     fn strip_tailwind_imports_drops_only_tailwind_imports() {
         let input = concat!(
