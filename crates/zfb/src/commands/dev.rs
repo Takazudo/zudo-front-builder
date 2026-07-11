@@ -414,7 +414,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     // Dev-only: register devMiddleware hooks.
     let plugin_set = if let Some(h) = plugin_host.as_ref() {
-        crate::commands::plugins::build_dev_middleware_set(h, &project_root, &cfg).await?
+        crate::commands::plugins::build_dev_middleware_set(
+            h,
+            &project_root,
+            &cfg,
+            zfb_server::ServerMode::Dev,
+        )
+        .await?
     } else {
         None
     };
