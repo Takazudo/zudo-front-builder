@@ -47,13 +47,14 @@ declare module "zfb/config" {
 - `tailwind?: { enabled?: boolean }` — Tailwind オプション。`enabled` のデフォルトは `true` です。作成済みの CSS と CSS Modules は残したまま Tailwind を無効化するには、`tailwind: { enabled: false }` を設定します。
 - `prefetch?: { disabled?: boolean }` — プリフェッチオプション。`disabled: true` のとき、ランタイムのプリフェッチ配線はビルド時の meta タグを通じて完全にスキップされます。
 - `minifyHtml?: boolean` — プロダクション HTML ミニファイを有効にします。デフォルト: `false`（オフ）。ミニファイは Rust 側の後処理として実行され、Node.js のミニファイ subprocess は起動しません。初回バージョンは保守的で、レンダリングされた HTML ページだけを対象候補にし、ソースが `.html` の passthrough ページはそのまま残し、HTML 以外の出力はスキップします。`zfb build --minify-html` / `--no-minify-html` で 1 回のビルドだけ設定値を上書きできます。
-- `bundle?: { exclude?: string[]; mainFields?: string[]; external?: string[] }` — `--platform=neutral` のページ / SSR パスに対する esbuild のエスケープハッチ。`exclude` は esbuild のグラフから除外するソースファイルのプロジェクト相対 glob を列挙します。`mainFields` は `exports` マップを持たない依存に対する main-fields リストを上書きします。`external` はベア specifier を external としてマークし、esbuild がそれをバンドルせずに残すようにします。neutral プラットフォームで失敗する CJS 専用の依存に便利です（issue #680 / #676 を参照）。
+- `bundle?: BundleConfig` — ページ / SSR、islands、クライアントスクリプト、module worker の各パスで共有される esbuild 設定。`exclude`、`mainFields`、`external` は `--platform=neutral` のページ / SSR パス向けのエスケープハッチで、`loaders` と `define` は 4 つのパスすべてに適用されます。[bundle 設定](#bundle-設定)を参照してください。
 - `plugins?: PluginConfig[]` — ユーザー提供のプラグイン。各エントリは `name`（npm の specifier または `./` 相対パス）と任意の `options`（プラグインのフックに渡される任意の JSON オブジェクト）を持ちます。フックのコントラクト（`setup`、`preBuild`、`postBuild`、`devMiddleware`）の全体、および仮想モジュール・インポートエイリアス・開発専用の注入ルートについては [Plugins](../concepts/plugins.mdx) を参照してください。
 - `presets?: Partial<ZfbConfig>[]` — バリデーション前にマージされる設定プリセット。各プリセットは部分的な `ZfbConfig` 形状のオブジェクトで、通常はプリセットパッケージのファクトリ関数の戻り値です。配列フィールド（`plugins`、`collections`、`extraWatchPaths`、`allowedHosts`）はプリセットから先頭に付与され、メイン設定のエントリは相対的な順序を維持します。スカラーおよびオブジェクトフィールドはキーの有無に基づきます。メイン設定がキーを提供している場合は、その値が組み込みデフォルトと同じでもメイン設定が勝ち、キーを省略した場合はそれを提供する最初のプリセットから補完されます。明示的な `null` はプリセット値をブロックします。プリセット内のネストした `presets` は再帰的に展開されません。プリセット作者は相対パスプラグインが正しく解決されるよう [`definePreset`](./define-preset.mdx) を使ってください。
 - `adapter?: string` — デプロイ先アダプタのパッケージ名。純粋な静的ビルドの場合は省略します。`"@takazudo/zfb-adapter-cloudflare"` のようなパッケージは SSR バンドルをデプロイ可能なエントリ（例: Cloudflare Workers Static Assets 向け、Pages 互換の `dist/_worker.js`）にラップします。
 - `output?: "static" | "hybrid" | "auto"` — プロジェクトの出力モード。`"static"` は、いずれかのルートが `prerender = false` をエクスポートしているとビルド開始時にエラーになります。`"hybrid"` は、現在 SSR ルートが存在しなくても常に V8 / SSR を有効にします。`"auto"`（デフォルト）はルートセットから検出します。
 - `site?: string` — 正規のオリジン URL（例: `"https://example.com"`）。設定すると `globalThis.__zfb.site` が公開され、レイアウトで正規の `<link>` タグ、OpenGraph メタ、サイトマップの絶対 href、hreflang の代替言語指定を構築できます。絶対 HTTP/HTTPS URL である必要があります。サーバーサイドでの正規 URL 構築が不要なビルドでは省略してください。`base` とは別物です（後述）。
 - `base?: string` — アセット URL 向けの公開 URL プレフィックス。サイトがサブパス配下にデプロイされる場合（例: `"/pj/my-site/"`）に使います。`site` とは別物です。`base` はアセット URL の前に付与され、`site` はメタデータで使う完全な正規オリジンです。
+- `copyPublicWithBase?: boolean` — `public/` のアセットを `base` サブパス配下へコピーするか（デフォルトの `true`）、`dist/` ルートへフラットにコピーするか（`false`）。デプロイ処理が `dist/` ツリー全体を base パスへ移動する場合（例: `cp -a dist/. deploy-root/pj/site/`）は、`dist/<base>/<base>/...` の二重ネストを避けるため `false` にします。[静的アセット — デプロイ時に再配置するパイプライン向けのフラットコピー](../concepts/static-assets.mdx)を参照してください。
 - `stripMdExt?: boolean` — MDX コンパイル時に内部リンクの href から `.md` / `.mdx` 拡張子を取り除き、末尾に `/` を付与します。デフォルト: `false`。
 - `trailingSlash?: boolean` — base パスの書き換え時に、拡張子なしの絶対 href に末尾の `/` を付与します。デフォルト: `false`。
 - `markdown?: MarkdownConfig` — Markdown / MDX のパースオプション（例: GFM の切り替え）。[Markdown Features](/ja/docs/markdown-features/) のセクションを参照してください。
@@ -69,6 +70,68 @@ declare module "zfb/config" {
   - `themeLight?: string` — デュアルテーマハイライト用のライトモード syntect テーマ名。`themeDark` と**必ずセットで**指定する必要があり、片方だけの指定はビルドエラーになります。`theme` とは排他です。ペアを設定すると、各ブロックが 2 回ハイライトされ、トークンはインラインの `color:` の代わりに `--shiki-light` / `--shiki-dark` カスタムプロパティを持ち、`<pre>` には `class="syntect-dual"` と `--shiki-light-bg` / `--shiki-dark-bg` が付与され、利用側は `light-dark()` CSS ルールでアクティブな色を解決します。
   - `themeDark?: string` — デュアルテーマハイライト用のダークモード syntect テーマ名。`themeLight` と**必ずセットで**指定し、`theme` とは排他です。デュアルモードの完全な仕様は `themeLight` を参照してください。
 - `pluginHookTimeoutSecs` — プラグインフック呼び出しのタイムアウト（秒）。
+
+## `bundle` 設定
+
+ブラウザ向けの islands、クライアントスクリプト、module worker の各パスは、ページ / SSR パスと同じモード・loader・define 設定を使います。これにより、サーバーとブラウザのグラフで共有されるコードの意味が、バンドル境界をまたいでも変わりません。
+
+### バンドルモード
+
+zfb は次の 3 つのコンパイル時置換を所有します。値は minify の有無ではなく、実行するコマンドによって決まります。
+
+| コマンド | `import.meta.env.DEV` | `import.meta.env.PROD` | `process.env.NODE_ENV` |
+|---|---:|---:|---|
+| `zfb dev` | `true` | `false` | `"development"` |
+| `zfb build` | `false` | `true` | `"production"` |
+
+これらの値は islands、クライアントスクリプト、それらの module worker、ページ / SSR バンドルに適用されます。zfb はそれ以外の `import.meta.env.*` キーを合成しません。表にある 3 つのキーは予約されており、`bundle.define` から上書きできません。
+
+### `bundle.loaders`
+
+`loaders` を使うと、追加の esbuild loader をファイル拡張子へ割り当てられます。
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  bundle: {
+    loaders: {
+      ".txt": "text",
+      ".data": "binary",
+    },
+  },
+});
+```
+
+キーは `.` で始める必要があります。inline-only v1 で使える値は `text`、`json`、`base64`、`dataurl`、`binary`、`empty` です。`file` と `copy` は sibling アセットを生成しますが、これらのバンドルパイプラインはその出力を公開しないため拒否されます。`.css`、`.module.css`、`.mdx`、`.md` は zfb が予約しており、上書きできません。
+
+`?raw` インポートはこのマップを使いません。`import text from "./file.ext?raw"` は、拡張子や設定済み loader にかかわらず、常に妥当な UTF-8 テキストを読み込みます。
+
+### `bundle.define`
+
+`define` の値は自動的に引用符が付く文字列ではなく、esbuild の生の置換式です。
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  bundle: {
+    define: {
+      __APP_NAME__: '"my-app"', // 置換式自身に JSON の引用符を含める
+      __FEATURE_ENABLED__: "true",
+      __BUILD_META__: '{"channel":"preview"}',
+    },
+  },
+});
+```
+
+内側の JSON 引用符を含まない値は、文字列リテラルではなく生の式としてパースされます（その結果、拒否される場合もあります）。値はそのまま転送され、環境変数の `PUBLIC_` ポリシーではフィルタリングされません。
+
+<Warning title="bundle.define のすべての値を公開コードとして扱ってください">
+
+`bundle.define` は信頼された運用者が記述するビルド入力であり、secret store や入力サニタイズの境界ではありません。設定した各定義はブラウザバンドルから利用できます。到達可能なコードが使わない定義は esbuild が削除する場合もありますが、tree-shaking は機密性を保証しません。認証情報、非公開トークン、信頼できない式をこのマップへ入れないでください。
+
+</Warning>
 
 ## プロジェクトルート外のパスを監視する
 
@@ -148,3 +211,5 @@ export default defineConfig({
 - コレクション名は一意である必要があります。
 - `path` は絶対パスにできません。
 - `path` はプロジェクトルートから抜け出す `..` セグメントを含めることができません。
+- `bundle.loaders` のキーは `.` で始まり、inline loader を使い、zfb が予約した拡張子を上書きしない必要があります。
+- `bundle.define` は、バンドルモードが所有する `DEV`、`PROD`、`NODE_ENV` の置換を上書きできません。
