@@ -877,22 +877,12 @@ async fn serve_page(
             }
             // Path + optional query, with the dev server's mount
             // prefix stripped so the plugin handler sees the URL
-            // shape it registered.
+            // shape it registered. The seam owns the wire-shape
+            // conversion of headers/body, so we hand it the raw axum
+            // pieces (issue #1544).
             let full = strip_prefix_from_full_uri(uri, state.base_prefix.as_deref())
                 .unwrap_or_else(|| path_only.clone());
-            let plugin_headers = headermap_to_string_map(&headers);
-            let plugin_body = body_bytes_to_utf8_string(&body);
-            match dispatch_plugin(
-                set,
-                reg,
-                &full,
-                method.as_str(),
-                plugin_headers,
-                plugin_body,
-                state.mode,
-            )
-            .await
-            {
+            match dispatch_plugin(set, reg, &full, &method, &headers, &body, state.mode).await {
                 PluginDispatchAttempt::Responded(resp) => return resp,
                 PluginDispatchAttempt::Passthrough => {}
                 PluginDispatchAttempt::Errored(resp) => return resp,
@@ -1697,35 +1687,6 @@ fn method_not_allowed_get_head() -> Response {
         .header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))
         .body(axum::body::Body::empty())
         .expect("static 405 response builds")
-}
-
-/// Convert an axum [`HeaderMap`] into the flat string map shape the
-/// plugin host wire protocol expects. Header values that are not valid
-/// UTF-8 are dropped — the JS-side handler receives a string-keyed
-/// object and cannot represent arbitrary bytes. Multi-valued headers
-/// keep the last seen value (the protocol does not currently model
-/// repeated headers; see the dev-middleware contract in
-/// `crates/zfb/js/plugin-host.mjs`).
-fn headermap_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
-    let mut out = HashMap::with_capacity(headers.len());
-    for (name, value) in headers.iter() {
-        if let Ok(v) = value.to_str() {
-            out.insert(name.as_str().to_string(), v.to_string());
-        }
-    }
-    out
-}
-
-/// Convert an inbound request body (already drained into [`Bytes`]) to
-/// the `Option<String>` shape the plugin host wire protocol expects.
-/// Empty bodies become `None`; non-UTF-8 bodies are dropped (see the
-/// note in [`dispatch_plugin`] about binary uploads being a separate
-/// extension).
-fn body_bytes_to_utf8_string(body: &Bytes) -> Option<String> {
-    if body.is_empty() {
-        return None;
-    }
-    std::str::from_utf8(body).ok().map(|s| s.to_string())
 }
 
 /// Generate the lookup-key candidates for a given URL path.
@@ -3284,20 +3245,6 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_string(resp).await;
         assert!(body.contains("cached"), "body: {body}");
-    }
-
-    #[tokio::test]
-    async fn body_bytes_to_utf8_string_drops_empty_and_non_utf8() {
-        // Empty body collapses to None.
-        assert!(body_bytes_to_utf8_string(&Bytes::new()).is_none());
-        // UTF-8 round-trips.
-        assert_eq!(
-            body_bytes_to_utf8_string(&Bytes::from("hello")),
-            Some("hello".to_string())
-        );
-        // Non-UTF-8 is dropped (binary upload is a future extension).
-        let bad = Bytes::from(vec![0xff, 0xfe, 0xfd]);
-        assert!(body_bytes_to_utf8_string(&bad).is_none());
     }
 
     // ---- base prefix mounting (issue #229) -------------------------------

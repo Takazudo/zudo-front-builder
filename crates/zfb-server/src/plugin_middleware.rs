@@ -21,9 +21,10 @@
 //!
 //! [`dispatch_plugin`], [`origin_gate`], [`plugin_error_response`], and
 //! [`PLUGIN_BODY_LIMIT_BYTES`] were extracted out of `routes.rs` so the
-//! dev router and the preview server (`zfb preview`'s bespoke router,
-//! wired up via `crates/zfb/src/commands/plugins.rs`) share ONE
-//! implementation instead of a drifting reimplementation. Every piece
+//! dev router and the preview server (`zfb preview` in
+//! `crates/zfb/src/commands/preview.rs`, wired through
+//! `crates/zfb/src/commands/plugins.rs`) share ONE implementation
+//! instead of a drifting reimplementation. Every piece
 //! here is mode-aware — it takes a [`crate::ServerMode`] (or a
 //! [`crate::host_validation::HostValidation`] that already carries one)
 //! and adjusts behaviour accordingly (verbose vs. generic error bodies)
@@ -34,6 +35,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::body::Bytes;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -321,8 +323,42 @@ pub enum PluginDispatchAttempt {
     Errored(Response),
 }
 
+/// Convert an axum [`HeaderMap`] into the flat string map shape the
+/// plugin host wire protocol expects. Header values that are not valid
+/// UTF-8 are dropped — the JS-side handler receives a string-keyed
+/// object and cannot represent arbitrary bytes. Multi-valued headers
+/// keep the last seen value (the protocol does not currently model
+/// repeated headers; see the dev-middleware contract in
+/// `crates/zfb/js/plugin-host.mjs`).
+fn headermap_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
+    let mut out = HashMap::with_capacity(headers.len());
+    for (name, value) in headers.iter() {
+        if let Ok(v) = value.to_str() {
+            out.insert(name.as_str().to_string(), v.to_string());
+        }
+    }
+    out
+}
+
+/// Convert an inbound request body (already drained into [`Bytes`]) to
+/// the `Option<String>` shape the plugin host wire protocol expects.
+/// Empty bodies become `None`; non-UTF-8 bodies are dropped (see the
+/// note in [`dispatch_plugin`] about binary uploads being a separate
+/// extension).
+fn body_bytes_to_utf8_string(body: &Bytes) -> Option<String> {
+    if body.is_empty() {
+        return None;
+    }
+    std::str::from_utf8(body).ok().map(|s| s.to_string())
+}
+
 /// Build a [`PluginRequest`] for the given URL/method/headers/body and
 /// dispatch it.
+///
+/// The `HeaderMap` → string-map and `Bytes` → `Option<String>` wire-shape
+/// conversions happen internally so this seam is self-contained: both dev
+/// (`serve_page`) and preview call it with the raw axum request pieces and
+/// never touch the plugin-host wire encoding (issue #1544).
 ///
 /// Issue #230: the request method, headers, and body are forwarded
 /// verbatim so plugin handlers can implement non-GET endpoints (form
@@ -334,16 +370,16 @@ pub async fn dispatch_plugin(
     set: &DevMiddlewareSet,
     reg: &PluginRegistration,
     url_path: &str,
-    method: &str,
-    headers: HashMap<String, String>,
-    body: Option<String>,
+    method: &Method,
+    headers: &HeaderMap,
+    body: &Bytes,
     mode: crate::ServerMode,
 ) -> PluginDispatchAttempt {
     let req = PluginRequest {
-        method: method.to_string(),
+        method: method.as_str().to_string(),
         url: url_path.to_string(),
-        headers,
-        body,
+        headers: headermap_to_string_map(headers),
+        body: body_bytes_to_utf8_string(body),
     };
     match set.dispatcher.dispatch(&reg.handler_id, req).await {
         Ok(PluginDispatchOutcome::Response(resp)) => {
@@ -484,5 +520,19 @@ mod tests {
         assert!(path_matches_prefix("/", "/"));
         assert!(path_matches_prefix("/anything", "/"));
         assert!(path_matches_prefix("/anything/nested", "/"));
+    }
+
+    #[test]
+    fn body_bytes_to_utf8_string_drops_empty_and_non_utf8() {
+        // Empty body collapses to None.
+        assert!(body_bytes_to_utf8_string(&Bytes::new()).is_none());
+        // UTF-8 round-trips.
+        assert_eq!(
+            body_bytes_to_utf8_string(&Bytes::from("hello")),
+            Some("hello".to_string())
+        );
+        // Non-UTF-8 is dropped (binary upload is a future extension).
+        let bad = Bytes::from(vec![0xff, 0xfe, 0xfd]);
+        assert!(body_bytes_to_utf8_string(&bad).is_none());
     }
 }
