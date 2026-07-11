@@ -79,7 +79,7 @@ use crate::cli::{BuildArgs, BuildMinifyHtml};
 use crate::commands::resolve::{
     resolve_outdir, resolve_outdir_arg, validate_outdir_safety, wipe_outdir_contents,
 };
-use crate::config::{Config, OutputMode};
+use crate::config::{CodeHighlightMode, Config, OutputMode};
 use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, check_runtime_installed, embedded_binary,
@@ -784,7 +784,7 @@ pub(crate) fn build_default_css_payload(
     // user opted out of and incur subprocess cost.
     let tailwind_enabled = config.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
     if !tailwind_enabled {
-        return build_authored_only_css_payload(project_root, outdir);
+        return build_authored_only_css_payload(project_root, outdir, config);
     }
 
     let sources = discover_css_source_files(project_root);
@@ -870,8 +870,27 @@ pub(crate) fn build_default_css_payload(
     // Tailwind path always ships a payload — its preflight bytes are never
     // empty, so there is no whitespace-only guard here (unlike the
     // authored-only path).
-    let payload = run_css_emitter(engine, project_root, outdir, sources)?;
+    let payload = run_css_emitter(engine, project_root, outdir, sources, config)?;
     Ok(Some(payload))
+}
+
+/// Resolve the `framework_css` block ([`CssPipelineConfig::framework_css`])
+/// for the current build (Highlight Tokens epic sub #1533).
+///
+/// Ships `zfb_css::default_hi_css()` — the framework's default
+/// `--zfb-hi-*` token stylesheet for class-mode syntax highlighting — iff
+/// the resolved config has `codeHighlight.mode == "class"` AND the user
+/// has not opted out via `codeHighlight.defaultStylesheet: false`. `None`
+/// in every other case (including the default `mode: "inline"`), so
+/// inline-mode and pre-epic projects see byte-identical `combine()`/
+/// `hash_8()` output.
+fn resolve_framework_css(config: &Config) -> Option<String> {
+    let code_highlight = config.code_highlight.as_ref()?;
+    if code_highlight.mode == CodeHighlightMode::Class && code_highlight.default_stylesheet {
+        Some(zfb_css::default_hi_css().to_string())
+    } else {
+        None
+    }
 }
 
 /// Shared tail of the two CSS-emitter paths
@@ -890,6 +909,7 @@ fn run_css_emitter<E: CssEngine>(
     project_root: &Path,
     outdir: &Path,
     sources: Vec<PathBuf>,
+    config: &Config,
 ) -> Result<AssetEmitterPayload> {
     let pipe_cfg = CssPipelineConfig {
         sources,
@@ -909,6 +929,11 @@ fn run_css_emitter<E: CssEngine>(
         // Hash root shared with `compute_css_module_class_maps` via
         // `CssModulesConfig::for_project_root` (issue #825).
         modules_config: zfb_css::modules::CssModulesConfig::for_project_root(project_root),
+        // zfb-hi.css default token stylesheet, class-mode only (#1533).
+        // Shared by both `build_default_css_payload` (Tailwind path) and
+        // `build_authored_only_css_payload` (Tailwind-disabled path) since
+        // both funnel through this helper.
+        framework_css: resolve_framework_css(config),
         ..CssPipelineConfig::default()
     };
 
@@ -947,6 +972,7 @@ fn run_css_emitter<E: CssEngine>(
 fn build_authored_only_css_payload(
     project_root: &Path,
     outdir: &Path,
+    config: &Config,
 ) -> Result<Option<AssetEmitterPayload>> {
     let authored_css = match resolve_input_global_css(project_root) {
         Some(path) => {
@@ -966,7 +992,7 @@ fn build_authored_only_css_payload(
     let sources = discover_css_source_files(project_root);
     let engine = AuthoredCssEngine::new(authored_css);
 
-    let payload = run_css_emitter(engine, project_root, outdir, sources)?;
+    let payload = run_css_emitter(engine, project_root, outdir, sources, config)?;
 
     // Skip the link when there is nothing to ship. With Tailwind off and
     // no authored globals + no modules, `combine` yields only its `"\n"`
@@ -7495,6 +7521,155 @@ mod tests {
         assert!(
             css.contains(".real-rule"),
             "non-import authored rules must survive the strip; got:\n{css}",
+        );
+    }
+
+    /// Highlight Tokens epic sub #1533: builds a `codeHighlight` config for
+    /// the test matrix below without depending on `CodeHighlightConfig`
+    /// implementing `Default` (it deliberately doesn't — every field is
+    /// meaningful to the highlighting pipeline, see config.rs).
+    fn code_highlight_config(
+        mode: CodeHighlightMode,
+        default_stylesheet: bool,
+    ) -> crate::config::CodeHighlightConfig {
+        crate::config::CodeHighlightConfig {
+            theme: None,
+            themes_dir: None,
+            theme_light: None,
+            theme_dark: None,
+            mode,
+            class_prefix: "hi-".to_string(),
+            role_classes: None,
+            default_stylesheet,
+        }
+    }
+
+    /// Highlight Tokens epic sub #1533: class mode + `defaultStylesheet`
+    /// true (the default) ships `zfb_css::default_hi_css()` ahead of the
+    /// authored CSS, even on the Tailwind-disabled (`build_authored_only_
+    /// css_payload`) path — proving the wiring shared with the Tailwind
+    /// path via `run_css_emitter`. Hermetic: runs through
+    /// `AuthoredCssEngine`, no tailwind binary required.
+    #[test]
+    fn css_payload_ships_default_hi_stylesheet_in_class_mode() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            code_highlight: Some(code_highlight_config(CodeHighlightMode::Class, true)),
+            ..Config::default()
+        };
+        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            .expect("should not error")
+            .expect(
+                "expected Some payload: default_hi_css() is non-empty so class mode always ships a payload",
+            );
+
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(
+            css.contains("--zfb-hi-kw"),
+            "class-mode default stylesheet must ship the --zfb-hi-kw token; got:\n{css}",
+        );
+        assert!(
+            css.contains(".hi-kw"),
+            "class-mode default stylesheet must ship the .hi-kw role class; got:\n{css}",
+        );
+    }
+
+    /// `codeHighlight.defaultStylesheet: false` opts out — the framework
+    /// block must be absent even in class mode.
+    #[test]
+    fn css_payload_omits_default_hi_stylesheet_when_opted_out() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        // An authored global keeps the payload `Some(..)` so the negative
+        // assertion below is meaningful (an entirely empty payload would
+        // trivially "not contain" the marker for the wrong reason).
+        std::fs::create_dir_all(project_root.join("styles")).unwrap();
+        std::fs::write(
+            project_root.join("styles/global.css"),
+            ".authored-global { color: rebeccapurple; }\n",
+        )
+        .unwrap();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            code_highlight: Some(code_highlight_config(CodeHighlightMode::Class, false)),
+            ..Config::default()
+        };
+        let payload =
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+                .expect("should not error")
+                .expect("authored global CSS keeps the payload non-empty");
+
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(
+            !css.contains("--zfb-hi-kw"),
+            "defaultStylesheet:false must omit the framework block; got:\n{css}",
+        );
+    }
+
+    /// Inline mode (the default `codeHighlight.mode`) never ships the
+    /// class-mode token stylesheet, even though `defaultStylesheet`
+    /// defaults to `true` — the field is documented as "only meaningful
+    /// in class mode" (config.rs).
+    #[test]
+    fn css_payload_omits_default_hi_stylesheet_in_inline_mode() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("styles")).unwrap();
+        std::fs::write(
+            project_root.join("styles/global.css"),
+            ".authored-global { color: rebeccapurple; }\n",
+        )
+        .unwrap();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            // code_highlight: None => mode defaults to Inline.
+            ..Config::default()
+        };
+        let payload =
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+                .expect("should not error")
+                .expect("authored global CSS keeps the payload non-empty");
+
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(
+            !css.contains("--zfb-hi-kw"),
+            "inline mode (default) must never ship the class-mode token stylesheet; got:\n{css}",
+        );
+    }
+
+    /// Pure-logic coverage (Level 1) of the `resolve_framework_css` gating
+    /// predicate itself, isolated from the heavier payload-builder tests
+    /// above: the 3 meaningfully distinct `(mode, default_stylesheet)`
+    /// combinations.
+    #[test]
+    fn resolve_framework_css_gating_matrix() {
+        let class_on = Config {
+            code_highlight: Some(code_highlight_config(CodeHighlightMode::Class, true)),
+            ..Config::default()
+        };
+        assert!(
+            resolve_framework_css(&class_on).is_some(),
+            "class mode + defaultStylesheet:true must inject the framework block",
+        );
+
+        let class_off = Config {
+            code_highlight: Some(code_highlight_config(CodeHighlightMode::Class, false)),
+            ..Config::default()
+        };
+        assert!(
+            resolve_framework_css(&class_off).is_none(),
+            "class mode + defaultStylesheet:false must NOT inject the framework block",
+        );
+
+        let no_code_highlight = Config::default();
+        assert!(
+            resolve_framework_css(&no_code_highlight).is_none(),
+            "absent codeHighlight config (mode defaults to inline) must NOT inject the framework block",
         );
     }
 
