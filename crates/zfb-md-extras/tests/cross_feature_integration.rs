@@ -334,6 +334,83 @@ fn code_enrichment_and_code_tabs_coexist_documented_limitation() {
     );
 }
 
+// ── Case 5b: code_tabs + class mode (confirm sub zfb#1535, check 3) ──────────
+
+/// `code_tabs` × `codeHighlight.mode: "class"`: a document with a
+/// `:::code-group` block AND a standalone fence, run through a
+/// CLASS-MODE pipeline.
+///
+/// - The code-group output is UNCHANGED from inline mode — tabs' `<pre>`
+///   children bypass `SyntectPlugin` entirely by design (`code_tabs`
+///   converts the fence to a `<CodeGroup>` with a plain `<pre data-lang="…">`
+///   in the MDAST phase, before `SyntectPlugin` ever runs — see Case 5's
+///   doc comment above), so it carries neither `hi-root`/`hi-*` classes
+///   NOR the old inline `color:`/`syntect-*` markers regardless of the
+///   active `codeHighlight.mode`. This is the class-mode counterpart of
+///   `code_enrichment_and_code_tabs_coexist_documented_limitation` above.
+/// - The standalone fence (outside the group) DOES get class-mode output
+///   (`hi-root` root class, `hi-*` token spans).
+#[test]
+fn code_tabs_and_class_mode_coexist_group_bypasses_syntect() {
+    let features = MarkdownFeaturesConfig {
+        code_tabs: Some(FeatureToggle::Bool(true)),
+        ..Default::default()
+    };
+    let spec = zfb_content::PipelineSpec {
+        code_highlight_mode: zfb_content::CodeHighlightMode::Class,
+        features: Some(features),
+        ..Default::default()
+    };
+    let mut pipeline = spec.build_pipeline().expect("build ok");
+
+    let input = concat!(
+        ":::code-group\n\n",
+        "```js\n",
+        "const x = 1;\n",
+        "```\n\n",
+        ":::\n\n",
+        "```js\n",
+        "const z = 3;\n",
+        "```\n",
+    );
+
+    let hast = pipeline.run(input).expect("pipeline must not fail");
+    let html = serialize(&hast);
+
+    // code_tabs must still produce a CodeGroup wrapper in class mode.
+    assert!(
+        html.contains("CodeGroup"),
+        "code_tabs must produce CodeGroup in class mode: {html}"
+    );
+
+    // The group's <pre> bypasses syntect entirely — no class-mode markers,
+    // no leftover inline-mode markers either (never reached SyntectPlugin
+    // at all in either mode).
+    assert!(
+        html.contains("<pre data-lang=\"js\">const x = 1;</pre>"),
+        "code inside CodeGroup must stay the plain pre/data-lang shape untouched \
+         by syntect (known limitation, same as inline mode): {html}"
+    );
+    assert!(
+        !html.contains("<CodeGroup tabs={[\"js\"]}><pre data-lang=\"js\"><span"),
+        "code inside CodeGroup must NOT gain a class-mode span structure: {html}"
+    );
+
+    // The standalone fence (outside the group) DOES get class-mode output.
+    assert!(
+        html.contains("class=\"hi-root\""),
+        "standalone fence outside the group must get class-mode output: {html}"
+    );
+    assert!(
+        html.contains("class=\"hi-kw\""),
+        "standalone fence outside the group must carry class-mode role classes: {html}"
+    );
+    assert!(
+        !html.contains("color:#"),
+        "class mode must not leak inline color anywhere in this document: {html}"
+    );
+}
+
 // ── Case 6: transclude + link_validation (cycle) ─────────────────────────────
 
 /// A transclusion cycle (A→B→A) must produce a `Generic` diagnostic with

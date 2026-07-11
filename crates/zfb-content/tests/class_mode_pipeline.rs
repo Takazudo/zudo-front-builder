@@ -280,6 +280,69 @@ fn inline_spec_unchanged_still_emits_inline_color() {
     );
 }
 
+// ── Cross-feature: CodeTitlePlugin × class mode (confirm sub #1535, check 2) ──
+
+/// A fence carrying `title="…"` + a language, run through a class-mode
+/// pipeline: `CodeTitlePlugin` (always-on Core plugin) wraps the block in
+/// `.code-block-container`/`.code-block-title` AND the inner `<pre>` is
+/// class-mode output (`class="hi-root"`, `hi-*` token spans, no inline
+/// `color:`).
+///
+/// `CodeTitlePlugin` runs pre-syntect and reads the fence's `data-meta`
+/// before `SyntectPlugin` consumes/replaces the `<pre>` element (see the
+/// visitor-ordering contract on `Pipeline::with_defaults_and_full_config_inner`
+/// and the doc comment on `CodeTitlePlugin` itself) — that ordering is
+/// identical in inline, dual, and class mode, since the class-mode
+/// constructor (`with_defaults_and_full_config_class`) reuses the exact
+/// same `CodeTitlePlugin::new()` wiring as the inline path. The
+/// `04-code-block` snapshot (`crates/zfb-content/tests/integration_pipeline.rs`)
+/// only covers this interaction for INLINE mode; this test is the class-mode
+/// counterpart.
+#[test]
+fn code_title_wraps_class_mode_pre_with_title_container() {
+    let spec = PipelineSpec {
+        code_highlight_mode: CodeHighlightMode::Class,
+        ..Default::default()
+    };
+    let mut pipeline = spec.build_pipeline().expect("build ok");
+    let input = "```rust title=\"main.rs\"\nfn main() {}\n```\n";
+    let html = run_markdown(&mut pipeline, input);
+
+    // CodeTitlePlugin wrapper is present.
+    assert!(
+        html.contains("<div class=\"code-block-container\">"),
+        "code-title wrapper must be present in class mode: {html}"
+    );
+    assert!(
+        html.contains("<div class=\"code-block-title\">main.rs</div>"),
+        "code-title must carry the fence's title text in class mode: {html}"
+    );
+
+    // The inner <pre> is still class-mode output: hi-root root class,
+    // hi-* token spans, no inline color, no syntect-* slug, no leaked
+    // title= remnant in data-meta.
+    assert!(
+        html.contains("class=\"hi-root\""),
+        "inner pre must carry class=\"hi-root\" even when titled: {html}"
+    );
+    assert!(
+        html.contains("class=\"hi-kw\""),
+        "inner pre token spans must carry role classes even when titled: {html}"
+    );
+    assert!(
+        !html.contains("color:#"),
+        "titled class-mode block must NOT emit inline color: {html}"
+    );
+    assert!(
+        !html.contains("class=\"syntect-"),
+        "titled class-mode block must NOT carry a syntect-* class: {html}"
+    );
+    assert!(
+        !html.contains("title=\\\"main.rs\\\""),
+        "title=… must be stripped from data-meta, not leaked into the class-mode pre: {html}"
+    );
+}
+
 /// The dual mode must still emit `--shiki-light` / `--shiki-dark` custom
 /// properties, the `syntect-dual` class, NO inline `color:`, and NEVER a
 /// class-mode root. Regression guard for the dual path.
