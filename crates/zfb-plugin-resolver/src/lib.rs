@@ -51,6 +51,26 @@ use anyhow::{Context, Result};
 use tempfile::NamedTempFile;
 use zfb_types::path_to_posix_string;
 
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            std::path::Component::RootDir => out.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if out.file_name().is_some() {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push("..");
+                }
+            }
+            std::path::Component::Normal(segment) => out.push(segment),
+        }
+    }
+    out
+}
+
 /// Output of [`build_resolver_inputs`].
 ///
 /// `paths_entries` is the list of `(specifier, absolute-target-path)`
@@ -354,12 +374,10 @@ pub fn merge_into_tsconfig_paths(
 #[derive(Debug, Clone)]
 pub struct TsConfigPaths {
     /// Absolute directory used as the anchor for relative
-    /// `compilerOptions.paths` targets.  This is the resolved
-    /// `compilerOptions.baseUrl` from the config that declared `paths` (or a
-    /// leafier one); a `baseUrl` that appears only in a *parent* of the
-    /// `paths`-declaring config does NOT anchor those `paths` (matching
-    /// TypeScript). When no anchoring `baseUrl` applies, it defaults to the
-    /// directory of the `tsconfig.json` that declared `paths`.
+    /// `compilerOptions.paths` targets. This is the effective resolved
+    /// `compilerOptions.baseUrl` after the extends merge. When the effective
+    /// config has no `baseUrl`, it defaults to the directory of the config
+    /// that declared the winning `paths` table.
     pub base_dir: PathBuf,
     /// Explicit (or inherited through `extends`) `compilerOptions.baseUrl`.
     ///
@@ -405,23 +423,18 @@ pub struct TsPathAlias {
 ///
 /// ## extends chain
 ///
-/// Chains are followed up to depth 8 to guard against cycles.  Only
-/// relative paths (`./`, `../`, or `/`) are resolved; bare npm-package
-/// extends specifiers (e.g. `"@tsconfig/node18"`) are silently skipped.
-/// Any tsconfig filename is supported (e.g. `tsconfig.base.json`) —
-/// unlike the old scanner helper which only accepted files named
-/// `tsconfig.json`.
+/// Chains are followed up to depth 8 to guard against cycles. Path and bare
+/// npm-package extends specifiers are resolved, including extends arrays.
+/// Any tsconfig filename is supported (e.g. `tsconfig.base.json`) — unlike
+/// the old scanner helper which only accepted files named `tsconfig.json`.
 ///
-/// ## Leaf-wins semantics
+/// ## Merge semantics
 ///
-/// The **first** `compilerOptions.paths` table encountered walking from
-/// the leaf toward the root is used.  The **first** `compilerOptions.baseUrl`
-/// encountered similarly wins — but it only anchors the `paths` when it was
-/// declared at, or leafier than, the `paths`-declaring config. A `baseUrl`
-/// found only in a *parent* of the `paths` config does NOT apply to those
-/// leaf `paths` (TypeScript semantics); the `paths`-declaring config's own
-/// directory anchors them instead.  When no anchoring `baseUrl` applies, the
-/// anchor defaults to the directory of the config that declared `paths`.
+/// Extends-array parents merge left-to-right and the leaf merges last. The
+/// winning effective `baseUrl` anchors the winning `paths` table even when
+/// those fields came from different configs; this matches pinned esbuild.
+/// Without an effective `baseUrl`, paths anchor at the config that declared
+/// the winning table.
 pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
     read_tsconfig_paths_file(&tsconfig_dir.join("tsconfig.json"))
 }
@@ -431,28 +444,25 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
 ///
 /// This is the file-oriented sibling of [`read_tsconfig_paths`]. It accepts
 /// either `tsconfig.json`, `jsconfig.json`, or another config filename used as
-/// a leaf, and follows the same relative `extends` chain with the same
-/// leaf-wins semantics. Callers that already selected the closest config for
-/// a source file use this entry point so a nested `jsconfig.json` is not
-/// accidentally replaced by a more distant `tsconfig.json`.
+/// a leaf. It follows path/package `extends` values (including arrays) with
+/// TypeScript's later-parent-then-leaf precedence. Callers that already
+/// selected the closest config for a source file use this entry point so a
+/// nested `jsconfig.json` is not accidentally replaced by a more distant
+/// `tsconfig.json`.
 pub fn read_tsconfig_paths_file(config_file: &Path) -> Option<TsConfigPaths> {
-    struct WalkState {
-        base_dir: Option<PathBuf>,
-        aliases: Option<Vec<TsPathAlias>>,
-        paths_anchor: Option<PathBuf>,
-        /// True once a `baseUrl` has been captured at, or leafier than, the
-        /// config that declared `paths`. TypeScript anchors a config's
-        /// `paths` on its own (or a closer) `baseUrl`; a `baseUrl` that only
-        /// appears in a *parent* of the `paths`-declaring config does NOT
-        /// apply to those leaf `paths` — `paths_anchor` wins instead.
-        base_dir_anchors_aliases: bool,
+    #[derive(Clone)]
+    struct EffectivePaths {
+        declaration_dir: PathBuf,
+        aliases: Vec<TsPathAlias>,
     }
 
-    fn walk(
-        file: &Path,
-        depth: usize,
-        mut state: WalkState,
-    ) -> Option<(PathBuf, Vec<TsPathAlias>, Option<PathBuf>)> {
+    #[derive(Clone, Default)]
+    struct EffectiveConfig {
+        base_url: Option<PathBuf>,
+        paths: Option<EffectivePaths>,
+    }
+
+    fn walk(file: &Path, depth: usize) -> Option<EffectiveConfig> {
         if depth > 8 {
             return None;
         }
@@ -461,9 +471,32 @@ pub fn read_tsconfig_paths_file(config_file: &Path) -> Option<TsConfigPaths> {
         let cleaned = strip_tsconfig_jsonc(&raw);
         let value: serde_json::Value = serde_json::from_str(&cleaned).ok()?;
 
-        let compiler_options = value.get("compilerOptions");
+        let extends_values: Vec<&str> = match value.get("extends") {
+            Some(serde_json::Value::String(extends)) => vec![extends],
+            Some(serde_json::Value::Array(extends)) => extends
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect(),
+            _ => Vec::new(),
+        };
+        let mut effective = EffectiveConfig::default();
+        for extends in extends_values {
+            let Some(parent_file) = resolve_tsconfig_extends_file(dir, extends) else {
+                continue;
+            };
+            let Some(parent) = walk(&parent_file, depth + 1) else {
+                continue;
+            };
+            if let Some(paths) = parent.paths {
+                effective.paths = Some(paths);
+            }
+            if let Some(base_url) = parent.base_url {
+                effective.base_url = Some(base_url);
+            }
+        }
 
-        let local_base_dir = compiler_options
+        let compiler_options = value.get("compilerOptions");
+        let local_base_url = compiler_options
             .and_then(|c| c.get("baseUrl"))
             .and_then(|b| b.as_str())
             .map(|raw_url| {
@@ -471,12 +504,11 @@ pub fn read_tsconfig_paths_file(config_file: &Path) -> Option<TsConfigPaths> {
                 // a `.` component in the resulting path string.
                 let clean = raw_url.strip_prefix("./").unwrap_or(raw_url);
                 if clean.is_empty() || clean == "." {
-                    dir.to_path_buf()
+                    normalize_lexical_path(dir)
                 } else {
-                    dir.join(clean)
+                    normalize_lexical_path(&dir.join(clean))
                 }
             });
-
         let local_aliases = compiler_options
             .and_then(|c| c.get("paths"))
             .and_then(|p| p.as_object())
@@ -499,93 +531,29 @@ pub fn read_tsconfig_paths_file(config_file: &Path) -> Option<TsConfigPaths> {
                     })
                     .collect::<Vec<_>>()
             });
-
-        // Leaf-wins merge: only adopt local fields when the caller hasn't
-        // already supplied a closer (leafier) override.
-        if state.base_dir.is_none() {
-            state.base_dir = local_base_dir;
+        if let Some(base_url) = local_base_url.as_ref() {
+            effective.base_url = Some(base_url.clone());
         }
-        if state.aliases.is_none() {
-            if let Some(local) = local_aliases {
-                state.paths_anchor = Some(dir.to_path_buf());
-                state.aliases = Some(local);
-                // A `baseUrl` already in scope here was declared at or
-                // leafier than this `paths` config, so it legitimately
-                // anchors them. A `baseUrl` captured only in a later (parent)
-                // recursion must NOT — `paths_anchor` wins in that case.
-                state.base_dir_anchors_aliases = state.base_dir.is_some();
-            }
+        if let Some(aliases) = local_aliases {
+            effective.paths = Some(EffectivePaths {
+                declaration_dir: normalize_lexical_path(dir),
+                aliases,
+            });
         }
-
-        // If we have aliases and a `baseUrl` that legitimately anchors them
-        // (declared at or leafier than the `paths` config), we have both
-        // pieces and need not walk further. When the only `baseUrl` so far
-        // came from a parent of the `paths` config, keep walking is moot —
-        // the parent `baseUrl` does not apply, so we fall through to the
-        // `paths_anchor`-preferring return below.
-        if let (Some(b), Some(a)) = (&state.base_dir, &state.aliases) {
-            if state.base_dir_anchors_aliases {
-                return Some((b.clone(), a.clone(), Some(b.clone())));
-            }
-            // `base_dir` came from a parent of the `paths` config; the leaf's
-            // own dir (`paths_anchor`) is the correct anchor for its `paths`.
-            let anchor = state
-                .paths_anchor
-                .clone()
-                .unwrap_or_else(|| dir.to_path_buf());
-            return Some((anchor, a.clone(), state.base_dir.clone()));
-        }
-
-        // Follow `extends` if present.
-        if let Some(extends) = value.get("extends").and_then(|e| e.as_str()) {
-            if let Some(parent_file) = resolve_tsconfig_extends_file(dir, extends) {
-                let recurse_state = WalkState {
-                    base_dir: state.base_dir.clone(),
-                    aliases: state.aliases.clone(),
-                    paths_anchor: state.paths_anchor.clone(),
-                    base_dir_anchors_aliases: state.base_dir_anchors_aliases,
-                };
-                if let Some(found) = walk(&parent_file, depth + 1, recurse_state) {
-                    return Some(found);
-                }
-            }
-        }
-
-        // No extends (or extends couldn't resolve): return path aliases when
-        // present, or a standalone baseUrl when the config declares only
-        // that resolver input.
-        //
-        // Anchor precedence: a `baseUrl` only anchors the `paths` when it was
-        // declared at or leafier than the `paths` config
-        // (`base_dir_anchors_aliases`). Otherwise the `paths`-declaring
-        // config's own dir (`paths_anchor`) wins, falling back to this dir.
-        let aliases = state.aliases.unwrap_or_default();
-        let base_url = state.base_dir.clone();
-        if aliases.is_empty() {
-            let base_dir = base_url.clone()?;
-            return Some((base_dir, aliases, base_url));
-        }
-        let base_dir = if state.base_dir_anchors_aliases {
-            state.base_dir.unwrap_or_else(|| dir.to_path_buf())
-        } else {
-            state
-                .paths_anchor
-                .or(state.base_dir)
-                .unwrap_or_else(|| dir.to_path_buf())
-        };
-        Some((base_dir, aliases, base_url))
+        Some(effective)
     }
 
-    let (base_dir, aliases, base_url) = walk(
-        config_file,
-        0,
-        WalkState {
-            base_dir: None,
-            aliases: None,
-            paths_anchor: None,
-            base_dir_anchors_aliases: false,
-        },
-    )?;
+    let effective = walk(config_file, 0)?;
+    let base_url = effective.base_url;
+    let (base_dir, aliases) = match effective.paths {
+        Some(paths) => (
+            base_url
+                .clone()
+                .unwrap_or_else(|| paths.declaration_dir.clone()),
+            paths.aliases,
+        ),
+        None => (base_url.clone()?, Vec::new()),
+    };
 
     Some(TsConfigPaths {
         base_dir,
@@ -648,36 +616,75 @@ fn tsconfig_paths_into_map(parsed: &TsConfigPaths) -> BTreeMap<String, Vec<Strin
 ///   `extending_dir`. If the target is a directory, `tsconfig.json` is
 ///   appended. If the target is a file with any name, it is used directly.
 ///   The extends value may omit the `.json` extension.
-/// - Bare npm-package specifier (no leading `./`, `../`, `/`): returns `None`
-///   (out of scope; node_modules resolution is not implemented).
+/// - Bare npm-package specifier: resolved through the closest ancestor
+///   `node_modules`. Scoped packages and package subpaths are supported; a
+///   bare package root uses its `package.json#tsconfig` field when present,
+///   then falls back to `tsconfig.json`.
 ///
 /// Unlike the old `resolve_extends_target` in `scanner.rs`, this function
 /// supports any tsconfig filename (e.g. `tsconfig.base.json`), not just
 /// files named `tsconfig.json`.
 pub fn resolve_tsconfig_extends_file(extending_dir: &Path, extends: &str) -> Option<PathBuf> {
-    let is_relative =
-        extends.starts_with("./") || extends.starts_with("../") || extends.starts_with('/');
-    if !is_relative {
+    fn existing_config(raw: PathBuf) -> Option<PathBuf> {
+        if raw.is_dir() {
+            let candidate = raw.join("tsconfig.json");
+            return candidate.is_file().then_some(candidate);
+        }
+        if raw.is_file() {
+            return Some(raw);
+        }
+        // The extends value may omit the `.json` extension — TypeScript
+        // accepts `"./tsconfig.base"` to mean `"./tsconfig.base.json"`.
+        let mut appended = raw.into_os_string();
+        appended.push(".json");
+        let with_ext = PathBuf::from(appended);
+        with_ext.is_file().then_some(with_ext)
+    }
+
+    let is_path =
+        Path::new(extends).is_absolute() || extends.starts_with("./") || extends.starts_with("../");
+    if is_path {
+        return existing_config(extending_dir.join(extends));
+    }
+
+    let parts: Vec<&str> = extends.split('/').collect();
+    if parts.is_empty()
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
         return None;
     }
-    let raw = extending_dir.join(extends);
-    if raw.is_dir() {
-        let candidate = raw.join("tsconfig.json");
-        return candidate.is_file().then_some(candidate);
+    let package_parts = if parts[0].starts_with('@') { 2 } else { 1 };
+    if parts.len() < package_parts {
+        return None;
     }
-    if raw.is_file() {
-        return Some(raw);
-    }
-    // The extends value may omit the `.json` extension — TypeScript accepts
-    // `"./tsconfig.base"` to mean `"./tsconfig.base.json"`. We must APPEND
-    // `.json` to the path string, not use `Path::with_extension("json")`:
-    // the latter *replaces* the existing extension, so `tsconfig.base` →
-    // `tsconfig.json` instead of `tsconfig.base.json`.
-    let mut appended = raw.into_os_string();
-    appended.push(".json");
-    let with_ext = PathBuf::from(appended);
-    if with_ext.is_file() {
-        return Some(with_ext);
+    let package_name = parts[..package_parts].join("/");
+    let subpath = &parts[package_parts..];
+    let mut search_dir = Some(extending_dir);
+    while let Some(dir) = search_dir {
+        let package_root = dir.join("node_modules").join(&package_name);
+        if package_root.is_dir() {
+            if !subpath.is_empty() {
+                return existing_config(
+                    subpath
+                        .iter()
+                        .fold(package_root, |path, part| path.join(part)),
+                );
+            }
+            let package_json = package_root.join("package.json");
+            if let Ok(raw) = std::fs::read_to_string(&package_json) {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    if let Some(target) = value.get("tsconfig").and_then(|value| value.as_str()) {
+                        if let Some(config) = existing_config(package_root.join(target)) {
+                            return Some(config);
+                        }
+                    }
+                }
+            }
+            return existing_config(package_root.join("tsconfig.json"));
+        }
+        search_dir = dir.parent();
     }
     None
 }
@@ -709,6 +716,7 @@ pub fn resolve_tsconfig_path_target(base_dir: &Path, target: &str) -> String {
     } else {
         base_dir.join(clean_prefix)
     };
+    let abs = normalize_lexical_path(&abs);
     let mut out = abs.to_string_lossy().into_owned();
     out.push_str(suffix);
     out
@@ -1280,6 +1288,138 @@ mod tests {
         assert_eq!(at_star, &vec![expected], "@/* target must be absolute");
     }
 
+    #[test]
+    fn read_tsconfig_paths_extends_array_prefers_later_parent_paths() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("first.json"),
+            r#"{"compilerOptions":{"paths":{"@pick/*":["first/*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("second.json"),
+            r#"{"compilerOptions":{"paths":{"@pick/*":["second/*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"extends":["./first.json","./second.json"]}"#,
+        )
+        .unwrap();
+
+        let result = read_tsconfig_paths_into_map(root);
+        assert_eq!(
+            result["@pick/*"],
+            vec![root.join("second/*").to_string_lossy().into_owned()]
+        );
+    }
+
+    #[test]
+    fn read_tsconfig_paths_extends_array_merges_later_base_url_with_earlier_paths() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("later-base")).unwrap();
+        std::fs::write(
+            root.join("paths.json"),
+            r#"{"compilerOptions":{"paths":{"@merged/*":["feature/*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("base-url.json"),
+            r#"{"compilerOptions":{"baseUrl":"./later-base"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"extends":["./paths.json","./base-url.json"]}"#,
+        )
+        .unwrap();
+
+        let result = read_tsconfig_paths_into_map(root);
+        assert_eq!(
+            result["@merged/*"],
+            vec![root
+                .join("later-base/feature/*")
+                .to_string_lossy()
+                .into_owned()]
+        );
+    }
+
+    #[test]
+    fn read_tsconfig_paths_extends_array_merges_earlier_base_url_with_later_paths() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("early-base")).unwrap();
+        std::fs::write(
+            root.join("base-url.json"),
+            r#"{"compilerOptions":{"baseUrl":"./early-base"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("paths.json"),
+            r#"{"compilerOptions":{"paths":{"@merged/*":["feature/*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"extends":["./base-url.json","./paths.json"]}"#,
+        )
+        .unwrap();
+
+        let result = read_tsconfig_paths_into_map(root);
+        assert_eq!(
+            result["@merged/*"],
+            vec![root
+                .join("early-base/feature/*")
+                .to_string_lossy()
+                .into_owned()],
+            "pinned esbuild retains an earlier parent's baseUrl for a later parent's paths"
+        );
+    }
+
+    #[test]
+    fn read_tsconfig_paths_resolves_bare_package_extends_for_user_wins() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let package = root.join("node_modules/@scope/tsconfig-web");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"@scope/tsconfig-web","tsconfig":"web.json"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("web.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"virtual:owned":["owned.ts"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(package.join("owned.ts"), "export default 'user';\n").unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"extends":"@scope/tsconfig-web"}"#,
+        )
+        .unwrap();
+
+        let user = read_tsconfig_paths_into_map(root);
+        assert_eq!(
+            user["virtual:owned"],
+            vec![package.join("owned.ts").to_string_lossy().into_owned()]
+        );
+        let resolver = build_resolver_inputs(
+            &[],
+            &[(
+                "virtual:owned".to_string(),
+                "export default 'plugin';".to_string(),
+            )],
+            root,
+            &user,
+        )
+        .unwrap();
+        assert!(resolver.paths_entries.is_empty());
+        assert!(resolver.virtual_module_alias_flags().is_empty());
+    }
+
     /// `compilerOptions.baseUrl` shifts the substitution anchor.
     /// `"baseUrl": "./src", "paths": { "@/*": ["./*"] }` must produce
     /// `<root>/src/*`, NOT `<root>/*`.
@@ -1333,14 +1473,12 @@ mod tests {
         assert!(read_tsconfig_paths_into_map(root).is_empty());
     }
 
-    /// Regression (#1135): a leaf tsconfig declares `paths` but NO `baseUrl`,
-    /// and the parent it extends declares `baseUrl`. The parent's `baseUrl`
-    /// must NOT anchor the leaf's `paths` — TypeScript anchors a config's
-    /// `paths` on its own (or a closer) `baseUrl`, never an inherited parent
-    /// `baseUrl` that is leafier-than nothing. The leaf's relative targets
-    /// must resolve under the LEAF dir, not the parent's `baseUrl` dir.
+    /// A leaf paths table and an inherited baseUrl are fields of the same
+    /// effective config. Pinned esbuild anchors those paths at the inherited
+    /// baseUrl, just like it does when the two fields come from different
+    /// parents in an extends array.
     #[test]
-    fn read_tsconfig_paths_leaf_paths_ignore_parent_base_url() {
+    fn read_tsconfig_paths_leaf_paths_use_inherited_parent_base_url() {
         use std::fs;
         let dir = TempDir::new().unwrap();
         let root = dir.path();
@@ -1377,15 +1515,12 @@ mod tests {
         assert!(result.contains_key("@/*"), "missing @/*; got {result:?}");
 
         let targets = &result["@/*"];
-        // Correct: anchored at the LEAF dir (where `paths` was declared).
-        let expected = format!("{}/src/*", root.display());
-        // Wrong (the bug): anchored at the parent's `baseUrl` dir.
-        let wrong = format!("{}/config/lib/src/*", root.display());
+        let expected = format!("{}/config/lib/src/*", root.display());
         assert_eq!(
             targets,
             &vec![expected.clone()],
-            "leaf `paths` must anchor on the leaf dir, not the parent's \
-             baseUrl; expected {expected:?}, must NOT be {wrong:?}, got {targets:?}"
+            "leaf `paths` must use the inherited effective baseUrl; \
+             expected {expected:?}, got {targets:?}"
         );
     }
 
