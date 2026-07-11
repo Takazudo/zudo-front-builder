@@ -48,6 +48,7 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
   - `include?: string[]` — glob patterns (globset dialect, relative to `path`); when set, only matching entries are kept.
   - `exclude?: string[]` — glob patterns; matching entries are dropped (evaluated after `include`).
   - `idStripSuffix?: string` — suffix stripped from each entry's slug and module specifier (e.g. `".en"` for multi-locale layouts).
+  - `allowOutsideRoot?: boolean` — opt in to a `path` that escapes the project root via `..` (e.g. a monorepo-shared content directory living outside this package). Default `false` keeps `path` confined to the project root. Absolute paths are rejected regardless of this flag — only `..`-relative escapes are relaxed. See [Collections outside the project root](../concepts/content-collections.mdx#collections-outside-the-project-root) for the monorepo use case and the preset-trust and dev-watching caveats.
 - `tailwind?: { enabled?: boolean }` — Tailwind options. `enabled` defaults to `true`; set `tailwind: { enabled: false }` to disable Tailwind while keeping authored CSS and CSS Modules.
 - `prefetch?: { disabled?: boolean }` — prefetch options. When `disabled: true`, the runtime's prefetch wiring is skipped entirely via a build-time meta tag.
 - `minifyHtml?: boolean` — opt in to production HTML minification. Default: `false` (off). The minifier runs as Rust-side post-processing and does not spawn a Node.js minifier subprocess. The first version is conservative: rendered HTML pages are candidates, source `.html` passthrough pages remain verbatim, and non-HTML outputs are skipped. `zfb build --minify-html` / `--no-minify-html` can override the config value for one build.
@@ -283,7 +284,7 @@ The loader enforces the following rules and reports errors with the file path pl
 
 - Collection names must be unique.
 - `path` cannot be an absolute path.
-- `path` cannot contain `..` segments that escape the project root.
+- `path` cannot contain `..` segments that escape the project root — unless that collection sets `allowOutsideRoot: true`, which relaxes this one check (absolute paths are still rejected).
 - `bundle.loaders` keys must start with `.`, use an inline loader, and not
   override an extension reserved by zfb.
 - `bundle.define` cannot override the mode-owned `DEV`, `PROD`, or `NODE_ENV`

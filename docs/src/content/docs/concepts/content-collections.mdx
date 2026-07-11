@@ -75,6 +75,31 @@ Each entry has three things you can rely on:
 
 The function signature is documented at [`getCollection`](../api/get-collection.mdx).
 
+## Collections outside the project root
+
+By default, a collection's `path` must resolve inside the project root — a `..` segment that would escape it is rejected at config-load time. Set `allowOutsideRoot: true` on a collection to opt into a `path` that walks outside the root, which is useful in a monorepo where content is co-located with a sibling package rather than duplicated into the docs project:
+
+```ts
+export default {
+  collections: [
+    {
+      name: "componentDocs",
+      path: "../packages/ui/src",
+      include: ["**/*.mdx"],
+      allowOutsideRoot: true,
+    },
+  ],
+};
+```
+
+This walks up from the project root into a sibling `packages/ui/src` directory and collects every `.mdx` file under it, letting component documentation live next to the component source it describes instead of being copied into the docs project.
+
+Keep these in mind before enabling the flag:
+
+- **Only `..`-relative escapes are relaxed.** `allowOutsideRoot` widens the `..`-escape check alone. An absolute `path` (e.g. `/etc/passwd` or a Windows drive-relative form like `C:temp`) is still rejected even with the flag set — there is no way to opt into an absolute collection path.
+- **A preset that sets this flag widens your read surface.** Presets are merged into your config before validation, so a `collections` entry contributed by a preset runs through the same `validate` step as one you write yourself. If a preset you install declares a collection with `allowOutsideRoot: true`, you are trusting that preset to read anywhere on the filesystem its `..`-relative path can reach — review any preset-contributed collection the same way you'd review a preset-contributed plugin.
+- **Out-of-root directories are watched too.** `zfb dev` resolves an out-of-root collection's root to a canonical absolute path and watches it through the same absolute watch channel used for `extraWatchPaths` (see [Watching paths outside the project root](../api/define-config.mdx#watching-paths-outside-the-project-root)). Edits under the out-of-root directory trigger live reload exactly like edits to an in-root collection.
+
 ## How parsing works
 
 Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's frontmatter, and compiles the entry to JSX source that is then handed to the existing SWC TSX -> JS pipeline. Markdown/MDX entries use the MDX emitter and get an `mdx://<collection>/<slug>` specifier; TSX entries use their source module directly and get a `tsx://<collection>/<slug>` specifier. The page renderer evaluates that module on demand and surfaces it to your page as `entry.Content`.
