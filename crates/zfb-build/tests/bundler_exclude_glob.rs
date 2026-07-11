@@ -42,7 +42,7 @@
 
 use std::fs;
 
-use zfb_build::{bundle, BundleMode, BundlerInput};
+use zfb_build::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
 use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
@@ -272,5 +272,97 @@ fn bundle_exclude_glob_composition_fails_without_exclude_passes_with() {
     assert!(
         !body.contains("Bad.stories.tsx"),
         "the excluded Bad story must not appear as an expanded glob import"
+    );
+}
+
+/// #1558 wiring: the fail-closed `audit_metafile_exclusions_at_path` call now
+/// wired into `bundle()` must actually fire when esbuild's real `--metafile`
+/// records an excluded-matching input, and a plain prod build with an EMPTY
+/// `bundle.exclude` must request no `--metafile` at all (the byte-identical
+/// guarantee documented on `run_esbuild`).
+///
+/// Every other test in this file only ever lets `bundle.exclude` correctly
+/// keep a file OUT of the shadow, so none of them can exercise the audit
+/// itself — the materialise-time skip never gives esbuild anything to leak.
+/// This test manufactures the leak directly: a persistent [`ShadowSession`]'s
+/// shadow tree is a plain directory on disk, so a file written straight into
+/// it (bypassing `ShadowWriter`) is invisible to both the exclude-skip walk
+/// (which only ever visits real project-tree sources) and to `prune_stale`
+/// (which only prunes shadow-relative paths it previously tracked) — the
+/// same "something got into the shadow the writer doesn't know about" shape
+/// the audit exists to catch as a last line of defense, regardless of cause.
+#[test]
+fn bundle_exclude_audit_fails_build_on_leaked_metafile_input() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exclude_glob] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    scaffold_project(root);
+    fs::create_dir_all(root.join("node_modules")).unwrap();
+
+    let mut session = ShadowSession::new().expect("shadow session");
+
+    // Call 1: an ordinary PRODUCTION build, no `bundle.exclude`. This both
+    // primes the session's `copy_mode`/dirty bookkeeping (so call 2 below
+    // does not wipe the whole shadow tree per `ShadowWriter::new`'s
+    // wipe-on-mode-flip rule, which would erase the leaked file staged
+    // between the two calls) and doubles as the "no exclusions -> no
+    // `--metafile` flag" assertion: esbuild only ever writes
+    // `.zfb-metafile.json` into its shadow cwd when the flag is passed.
+    let priming_input = make_input(root, esbuild.clone(), Vec::new());
+    bundle_with_session(priming_input, Some(&mut session)).expect("priming build must succeed");
+    assert!(
+        !session.shadow_root().join(".zfb-metafile.json").exists(),
+        "a prod build with an empty bundle.exclude must request no --metafile \
+         at all — this is the byte-identical guarantee for non-exclude users"
+    );
+
+    // Manufacture the leak: write a file DIRECTLY into the persistent shadow
+    // tree at the exact shadow-relative path a normal materialise pass would
+    // use for a project source named `components/Bad.stories.tsx` — but
+    // never through `ShadowWriter`, so the session's tracking never learns
+    // about it.
+    let shadow_root = session.shadow_root().to_path_buf();
+    fs::create_dir_all(shadow_root.join("components")).unwrap();
+    fs::write(
+        shadow_root.join("components/Bad.stories.tsx"),
+        "export const Bad = () => \"leaked\";\n",
+    )
+    .unwrap();
+
+    // The page now reaches the leaked file via a plain relative import (with
+    // an explicit extension, so no resolver-probing ambiguity), so esbuild's
+    // own resolution genuinely bundles it and records it in the metafile
+    // under the exact excluded specifier.
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"
+            import { Bad } from "../components/Bad.stories.tsx";
+            export default function Home() {
+              return Bad();
+            }
+        "#,
+    )
+    .unwrap();
+
+    let audited_input = make_input(
+        root,
+        esbuild,
+        vec!["components/Bad.stories.tsx".to_string()],
+    );
+    let err = bundle_with_session(audited_input, Some(&mut session)).expect_err(
+        "esbuild's metafile records the leaked, excluded-matching input; the \
+         fail-closed audit wired into bundle() must reject the build",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("bundle.exclude"),
+        "audit failure must name bundle.exclude; got: {msg}"
+    );
+    assert!(
+        msg.contains("components/Bad.stories.tsx"),
+        "audit failure must name the offending leaked path; got: {msg}"
     );
 }
