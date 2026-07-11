@@ -96,4 +96,4 @@ my-site/
 
 ## package.json、tsconfig.json、.gitignore
 
-標準的なプロジェクトの配管です。`package.json` はフレームワークのランタイム依存（デフォルトでは `preact`）と、島が import する任意のライブラリを宣言します。`tsconfig.json` は `pages/`・`layouts/`・`components/` 内の TSX がクリーンに型チェックされるよう構成されています。同梱の `.gitignore` は `dist/` と `node_modules/` を除外し、ビルド出力と依存関係をバージョン管理の外に保ちます。
+標準的なプロジェクトの配管です。`package.json` はフレームワークのランタイム依存（デフォルトでは `preact`）と、島が import する任意のライブラリを宣言します。`tsconfig.json` は `pages/`・`layouts/`・`components/` 内の TSX がクリーンに型チェックされるよう構成されています。同梱の `.gitignore` は `dist/` と `node_modules/` を除外し、ビルド出力と依存関係をバージョン管理の外に保ちます。加えて `**/zfb-tailwind-entry-*.css` も除外します。これは Tailwind パイプラインが CSS エントリの隣に生成する一時エントリファイルです（[スタイリング](../concepts/styling.mdx)を参照）。

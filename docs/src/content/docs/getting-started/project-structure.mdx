@@ -96,4 +96,4 @@ The template scaffolds `zfb.config.json`. If you rename it to `zfb.config.ts`, z
 
 ## package.json, tsconfig.json, .gitignore
 
-Standard project plumbing. `package.json` declares the framework runtime dependency (`preact` by default) and any libraries your islands import. `tsconfig.json` is configured so TSX in `pages/`, `layouts/`, and `components/` type-checks cleanly. The shipped `.gitignore` excludes `dist/` and `node_modules/` so build output and dependencies stay out of version control.
+Standard project plumbing. `package.json` declares the framework runtime dependency (`preact` by default) and any libraries your islands import. `tsconfig.json` is configured so TSX in `pages/`, `layouts/`, and `components/` type-checks cleanly. The shipped `.gitignore` excludes `dist/` and `node_modules/` so build output and dependencies stay out of version control, plus `**/zfb-tailwind-entry-*.css` — the temp entry file the Tailwind pipeline synthesises next to your CSS entry (see [Styling](../concepts/styling.mdx)).
