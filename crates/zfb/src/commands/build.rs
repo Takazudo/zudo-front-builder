@@ -765,6 +765,40 @@ impl BuildRunner for DefaultRunner {
 /// (`zfb_css::css_relative_path` and `zfb_types::STABLE_CSS_URL`) so
 /// the renderer's head injector and the prod pipeline's URL rewriter
 /// agree on the same key without a separate string channel.
+/// zfb#1534: compute the Tailwind `@source inline("...")` safelist for
+/// `codeHighlight.roleClasses`.
+///
+/// `roleClasses` values live in `zfb.config.ts` (not a Tailwind-scanned
+/// content root) and are emitted only into rendered `dist/*.html`
+/// (never scanned, and itself an output of this same build) — without
+/// safelisting, the mapped utilities are silently never generated
+/// (green build, unstyled tokens). Every value is split on whitespace
+/// (a mapping may hold multiple space-separated classes, e.g.
+/// `"text-violet-600 dark:text-violet-400"`), deduped, and sorted: the
+/// result feeds the synthesised entry CSS, which feeds the CSS
+/// `hash_8` input, so unstable ordering would churn the asset hash for
+/// an unchanged config.
+///
+/// Returns empty when `codeHighlight.roleClasses` is absent — the
+/// common case. Callers only reach this on the `tailwind.enabled`
+/// path; the authored-CSS path (`tailwind.enabled = false`) returns
+/// early in [`build_default_css_payload`] before ever calling this, and
+/// instead relies on the build warning emitted at config-load time
+/// (`crates/zfb/src/config.rs`, issue #1530).
+fn role_classes_inline_sources(config: &Config) -> Vec<String> {
+    let mut classes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Some(role_classes) = config
+        .code_highlight
+        .as_ref()
+        .and_then(|ch| ch.role_classes.as_ref())
+    {
+        for value in role_classes.values() {
+            classes.extend(value.split_whitespace().map(str::to_string));
+        }
+    }
+    classes.into_iter().collect()
+}
+
 pub(crate) fn build_default_css_payload(
     project_root: &Path,
     outdir: &Path,
@@ -829,7 +863,8 @@ pub(crate) fn build_default_css_payload(
 
     let mut tw_cfg = TailwindSubprocessConfig::default()
         .with_working_dir(project_root.to_path_buf())
-        .with_content_globs(content_globs);
+        .with_content_globs(content_globs)
+        .with_inline_sources(role_classes_inline_sources(config));
 
     // Sub #212 — wire in the embedded-binary extraction tier so consumers
     // running `zfb build` from a project that doesn't ship the
@@ -7355,6 +7390,147 @@ mod tests {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         assert_eq!(resolve_input_global_css(project_root), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // zfb#1534 — `role_classes_inline_sources` (the `@source inline(...)`
+    // safelist feeding `build_default_css_payload`'s `tw_cfg`)
+    // -----------------------------------------------------------------------
+
+    /// Build a `CodeHighlightConfig` in class mode with the given
+    /// `roleClasses` map — the only shape `role_classes_inline_sources`
+    /// reads from.
+    fn code_highlight_with_role_classes(
+        role_classes: std::collections::BTreeMap<String, String>,
+    ) -> crate::config::CodeHighlightConfig {
+        crate::config::CodeHighlightConfig {
+            theme: None,
+            themes_dir: None,
+            theme_light: None,
+            theme_dark: None,
+            mode: crate::config::CodeHighlightMode::Class,
+            class_prefix: crate::config::default_class_prefix(),
+            role_classes: Some(role_classes),
+            default_stylesheet: true,
+        }
+    }
+
+    /// No `codeHighlight` configured at all => empty safelist (the
+    /// common case — must not error, must not fabricate entries).
+    #[test]
+    fn role_classes_inline_sources_empty_when_no_code_highlight() {
+        let cfg = Config::default();
+        assert_eq!(role_classes_inline_sources(&cfg), Vec::<String>::new());
+    }
+
+    /// `codeHighlight` set but `roleClasses` absent => empty safelist.
+    #[test]
+    fn role_classes_inline_sources_empty_when_role_classes_absent() {
+        let cfg = Config {
+            code_highlight: Some(crate::config::CodeHighlightConfig {
+                theme: None,
+                themes_dir: None,
+                theme_light: None,
+                theme_dark: None,
+                mode: crate::config::CodeHighlightMode::Class,
+                class_prefix: crate::config::default_class_prefix(),
+                role_classes: None,
+                default_stylesheet: true,
+            }),
+            ..Config::default()
+        };
+        assert_eq!(role_classes_inline_sources(&cfg), Vec::<String>::new());
+    }
+
+    /// A multi-class value (`"text-violet-600 dark:text-violet-400"`) is
+    /// split on whitespace into two independent inline sources — each
+    /// token becomes its own `@source inline(...)` directive.
+    #[test]
+    fn role_classes_inline_sources_splits_multi_class_values() {
+        let mut role_classes = std::collections::BTreeMap::new();
+        role_classes.insert(
+            "keyword".to_string(),
+            "text-violet-600 dark:text-violet-400".to_string(),
+        );
+        let cfg = Config {
+            code_highlight: Some(code_highlight_with_role_classes(role_classes)),
+            ..Config::default()
+        };
+        assert_eq!(
+            role_classes_inline_sources(&cfg),
+            vec![
+                "dark:text-violet-400".to_string(),
+                "text-violet-600".to_string(),
+            ]
+        );
+    }
+
+    /// A class shared by two roles (e.g. `keyword` and `operator` both
+    /// mapped to the same utility) is de-duplicated to a single
+    /// `@source inline(...)` directive.
+    #[test]
+    fn role_classes_inline_sources_dedupes_shared_classes() {
+        let mut role_classes = std::collections::BTreeMap::new();
+        role_classes.insert("keyword".to_string(), "text-violet-600".to_string());
+        role_classes.insert("operator".to_string(), "text-violet-600".to_string());
+        let cfg = Config {
+            code_highlight: Some(code_highlight_with_role_classes(role_classes)),
+            ..Config::default()
+        };
+        assert_eq!(
+            role_classes_inline_sources(&cfg),
+            vec!["text-violet-600".to_string()]
+        );
+    }
+
+    /// Output is always sorted regardless of the `BTreeMap` role-key
+    /// insertion order or the class token order within a value —
+    /// determinism, since this feeds the synthesised entry CSS and
+    /// hence the CSS asset hash (a config that hasn't changed must not
+    /// churn the hash across builds).
+    #[test]
+    fn role_classes_inline_sources_is_sorted_and_deterministic() {
+        let mut role_classes = std::collections::BTreeMap::new();
+        role_classes.insert("keyword".to_string(), "text-violet-600".to_string());
+        role_classes.insert("comment".to_string(), "text-zinc-500".to_string());
+        role_classes.insert("string".to_string(), "text-green-600".to_string());
+        let cfg = Config {
+            code_highlight: Some(code_highlight_with_role_classes(role_classes)),
+            ..Config::default()
+        };
+        let result = role_classes_inline_sources(&cfg);
+        let mut sorted = result.clone();
+        sorted.sort();
+        assert_eq!(result, sorted, "output must already be sorted");
+        assert_eq!(
+            result,
+            vec![
+                "text-green-600".to_string(),
+                "text-violet-600".to_string(),
+                "text-zinc-500".to_string(),
+            ]
+        );
+    }
+
+    /// Same `Config` => byte-identical (`Vec`-identical) output across
+    /// repeated calls — the determinism guarantee `role_classes_inline_sources`
+    /// exists to provide.
+    #[test]
+    fn role_classes_inline_sources_is_stable_across_calls() {
+        let mut role_classes = std::collections::BTreeMap::new();
+        role_classes.insert(
+            "keyword".to_string(),
+            "text-violet-600 dark:text-violet-400".to_string(),
+        );
+        role_classes.insert("string".to_string(), "text-green-600".to_string());
+        let cfg = Config {
+            code_highlight: Some(code_highlight_with_role_classes(role_classes)),
+            ..Config::default()
+        };
+        assert_eq!(
+            role_classes_inline_sources(&cfg),
+            role_classes_inline_sources(&cfg)
+        );
     }
 
     /// Regression (issue #824): `tailwind.enabled = false` disables only
