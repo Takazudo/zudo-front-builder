@@ -199,10 +199,15 @@ and re-export forms, other queries, extra parameters, non-literal paths, and
 targets outside the project root fail with a message that names the supported
 form.
 
-During `zfb dev`, raw targets are watched independently of their importers.
-Editing, deleting, or recreating the text file invalidates the browser bundle;
-the same transform and dependency tracking also apply to client scripts and
-the page/SSR pass.
+During `zfb dev`, raw targets in island and client-script graphs are added to
+their live watch sets. Editing, deleting, or recreating the text file therefore
+invalidates the browser bundle even when its importer is unchanged. The same
+text transform works in the page/SSR pass, where raw edges also participate in
+route dependency tracking, but that does not add new filesystem watch roots.
+An SSR-only raw target outside the default watched roots (for example, under
+`lib/`) must be covered by an absolute
+[`extraWatchPaths`](../api/define-config.mdx#watching-paths-outside-the-project-root),
+or its edits will not produce a dev filesystem event.
 
 ## Module workers
 
@@ -247,10 +252,15 @@ a Cloudflare-style `public/_headers` file can start with:
   Content-Security-Policy: default-src 'none'; script-src 'self'; connect-src 'self'
 ```
 
-Tailor the directives to what your worker actually accesses. If `base` is set,
-include that prefix in the `_headers` path. Workers owned by
+Tailor the directives to what your worker actually accesses. A path-style
+`base` prefixes the `_headers` route: for example, `base: "/docs/"` needs
+`/docs/assets/worker-*.js`. An absolute-URL base such as
+`https://cdn.example.com/static/` instead needs the equivalent
+`/static/assets/worker-*.js` header rule on that asset origin; the site's
+`_headers` file cannot configure another origin. Workers owned by
 [client scripts](../guides/client-scripts.mdx#module-workers) live in the
-separate `/assets/client/worker-*.js` directory and need a corresponding rule.
+separate `/assets/client/worker-*.js` directory and need a corresponding rule
+under the same base/origin policy.
 
 The pre-pass does not traverse installed `node_modules`; third-party
 transitive worker constructors are left to their package tooling. A

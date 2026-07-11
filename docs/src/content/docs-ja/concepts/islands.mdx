@@ -187,7 +187,7 @@ import shaderSource from "./shaders/noise.frag?raw";
 
 ターゲットの拡張子は問いません。`bundle.loaders` が結果を変えることもありません。ターゲットは妥当な UTF-8 として読み込まれ、文字列として default export され、終端の依存として扱われます。つまり `.js?raw` ファイルはコードではなくテキストです。サポートされるのは、リテラルの相対 specifier と厳密な `?raw` サフィックスを持つ静的な default import だけです。named import、namespace import、side-effect import、type-only import、dynamic import、re-export、その他のクエリ、追加パラメータ、リテラルでないパス、プロジェクトルート外のターゲットは、サポートされる形式を示すメッセージとともに失敗します。
 
-`zfb dev` 中、raw ターゲットは import 元とは独立して監視されます。テキストファイルを編集・削除・再作成するとブラウザバンドルが invalidation されます。同じ変換と依存追跡はクライアントスクリプトとページ / SSR パスにも適用されます。
+`zfb dev` 中、island とクライアントスクリプトのグラフにある raw ターゲットは、それぞれのライブ監視セットへ追加されます。そのため import 元が変わっていなくても、テキストファイルの編集・削除・再作成によってブラウザバンドルが invalidation されます。同じテキスト変換はページ / SSR パスでも動作し、raw edge はルートの依存追跡にも加わりますが、それによって新しいファイルシステム監視ルートが追加されるわけではありません。デフォルトの監視ルート外（たとえば `lib/` 配下）にある SSR 専用の raw ターゲットは、絶対パスの [`extraWatchPaths`](../api/define-config.mdx#プロジェクトルート外のパスを監視する)でカバーする必要があります。そうしなければ、編集しても dev のファイルシステムイベントは発生しません。
 
 ## Module worker
 
@@ -217,7 +217,7 @@ island が所有する worker は `/assets/worker-*.js` 配下へフラットに
   Content-Security-Policy: default-src 'none'; script-src 'self'; connect-src 'self'
 ```
 
-ディレクティブは worker が実際にアクセスする対象に合わせて調整してください。`base` を設定している場合は `_headers` のパスにもそのプレフィックスを含めます。[クライアントスクリプト](../guides/client-scripts.mdx#module-worker)が所有する worker は、別の `/assets/client/worker-*.js` ディレクトリに置かれるため、それに対応するルールが必要です。
+ディレクティブは worker が実際にアクセスする対象に合わせて調整してください。パス形式の `base` は `_headers` のルートにも付けます。たとえば `base: "/docs/"` なら `/docs/assets/worker-*.js` が必要です。一方、`https://cdn.example.com/static/` のような絶対 URL の base では、そのアセットオリジン側に同等の `/static/assets/worker-*.js` ヘッダールールが必要です。サイト側の `_headers` ファイルから別オリジンを設定することはできません。[クライアントスクリプト](../guides/client-scripts.mdx#module-worker)が所有する worker は、別の `/assets/client/worker-*.js` ディレクトリに置かれるため、同じ base / オリジンの方針に従った対応ルールが必要です。
 
 前処理パスはインストール済みの `node_modules` をたどりません。third-party の推移的な worker constructor はパッケージ側のツールに委ねられます。同じリテラルな `new URL(..., import.meta.url)` 形式を使う `SharedWorker` は、名前付きのハードエラーになります。それ以外のリテラルでない、または module でない constructor 形式はこのコントラクトの対象外で、書き換えられることを期待すべきではありません。
 
