@@ -96,6 +96,11 @@ also apply to client scripts and their workers. Define values are raw esbuild
 expressions and become browser-visible when referenced; do not use them for
 secrets.
 
+TypeScript does not infer these bundler contracts. Add the
+[matching ambient declarations](../api/define-config.mdx#typescript-ambient-declarations)
+so mode values, custom-loader imports, raw imports, and define names in client
+scripts pass `zfb check` and `tsc`.
+
 ## Importing text with `?raw`
 
 Use a static default import with the exact `?raw` suffix to load a file's

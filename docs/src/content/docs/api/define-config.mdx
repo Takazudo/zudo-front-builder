@@ -16,10 +16,14 @@ defineConfig(config: ZfbConfig): ZfbConfig
 
 `zfb.config.ts` imports `defineConfig` from the **bare** specifier `zfb/config`. At config-load time zfb aliases that import to a runtime-only stub (so your config parses without the `@takazudo/zfb` package installed), and no real `zfb/config` module exists in `node_modules` — the published types live under the **scoped** subpath `@takazudo/zfb/config`. So a plain `tsc --noEmit` (what `zfb check` runs) has nothing to type the bare import against and reports `Cannot find module 'zfb/config'`.
 
-Bridge the two with a one-line ambient declaration that **re-exports** the scoped package's types. Add a `zfb-shim.d.ts` at your project root (any `.d.ts` your `tsconfig` includes works):
+Bridge the two with a one-line ambient declaration that **re-exports** the
+scoped package's types. Put `zfb-shim.d.ts` in a directory your `tsconfig`
+includes; `components/zfb-shim.d.ts` works with the stock template. If you put
+the file at the project root instead, add `"zfb-shim.d.ts"` to `include`
+explicitly.
 
 ```ts
-// zfb-shim.d.ts — types the bare `zfb/config` specifier.
+// components/zfb-shim.d.ts — types the bare `zfb/config` specifier.
 declare module "zfb/config" {
   export * from "@takazudo/zfb/config";
 }
@@ -103,7 +107,7 @@ import { defineConfig } from "zfb/config";
 export default defineConfig({
   bundle: {
     loaders: {
-      ".txt": "text",
+      ".fixture": "text",
       ".data": "binary",
     },
   },
@@ -151,6 +155,56 @@ but tree-shaking is not a secrecy guarantee. Never put credentials, private
 tokens, or untrusted expressions in this map.
 
 </Warning>
+
+### TypeScript ambient declarations
+
+zfb supplies the mode values, loader results, raw modules, and define
+replacements while bundling, but it does not generate TypeScript declarations
+for them. `zfb check` runs `tsc --noEmit`, so TypeScript source that uses these
+features needs matching ambient declarations in a `.d.ts` file included by
+your `tsconfig`. For example, the `.fixture` text loader and the three
+`bundle.define` entries above can be typed with
+`components/zfb-env.d.ts`, which the stock template's `tsconfig` already
+includes:
+
+```ts
+// components/zfb-env.d.ts
+interface ImportMetaEnv {
+  readonly DEV: boolean;
+  readonly PROD: boolean;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+
+declare module "*?raw" {
+  const source: string;
+  export default source;
+}
+
+declare module "*.fixture" {
+  const contents: string;
+  export default contents;
+}
+
+declare const __APP_NAME__: string;
+declare const __FEATURE_ENABLED__: boolean;
+declare const __BUILD_META__: { channel: string };
+```
+
+The filename and directory are not special; the file only has to be covered by
+`tsconfig.json`'s `include`. If you prefer a project-root `zfb-env.d.ts`, add
+that path to `include` explicitly. A declaration file outside `include` is
+invisible to `tsc`.
+
+These declarations are type-only. They do not configure esbuild, inject
+runtime values, or enable an import that zfb does not support. Keep custom
+module patterns and global types aligned with `bundle.loaders` and
+`bundle.define`; otherwise `zfb check` or `tsc` can accept the wrong runtime
+assumption or reject code that zfb can bundle. The `*?raw` declaration can
+always return `string` because that result is part of zfb's fixed raw-import
+contract.
 
 ## Watching paths outside the project root
 

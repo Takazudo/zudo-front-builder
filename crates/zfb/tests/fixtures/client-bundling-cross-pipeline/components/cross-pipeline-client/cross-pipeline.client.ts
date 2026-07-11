@@ -6,6 +6,12 @@ declare const __CROSS_PIPELINE_DEFINE__: string;
 const metaMode = import.meta.env.PROD ? "ZFB_CLIENT_META_PROD" : "ZFB_CLIENT_META_DEV";
 const nodeMode =
   process.env.NODE_ENV === "production" ? "ZFB_CLIENT_NODE_PROD" : "ZFB_CLIENT_NODE_DEV";
+const modeTuple = [
+  "ZFB_CLIENT_ENTRY_MODE_TUPLE",
+  import.meta.env.DEV,
+  import.meta.env.PROD,
+  process.env.NODE_ENV,
+] as const;
 
 if (import.meta.env.DEV) {
   console.info("ZFB_CLIENT_DEV_BRANCH");
@@ -18,6 +24,7 @@ console.info(
   __CROSS_PIPELINE_DEFINE__,
   metaMode,
   nodeMode,
+  modeTuple,
 );
 
 // Client entries also pass through the SSR bundle loader. Keep browser-only
