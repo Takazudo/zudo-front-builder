@@ -2519,6 +2519,11 @@ fn stage_client_script_preprocessing(
                 importer.display()
             )
         })?;
+        // The constructor-bearing importer is itself part of the invalidation
+        // closure. If a transitive module removes its Worker edge, it must
+        // still trigger one final client-script rebuild so the stable
+        // companion is pruned and the live registry can be replaced.
+        worker_targets.insert(logical_importer.clone());
         let rewrite =
             zfb_build::rewrite_module_worker_urls(&source, &logical_importer, project_root)
                 .with_context(|| {
@@ -6920,6 +6925,7 @@ mod tests {
             worker.filename == "worker-src-s-nested-d-worker-d-ts.js"
                 && worker.source_path == stage.root.join("src/nested.worker.ts")
         }));
+        assert!(stage.worker_targets.contains(&helper));
         assert!(stage.worker_targets.contains(&worker));
         assert!(stage.worker_targets.contains(&nested_worker));
         assert!(stage.worker_targets.contains(&worker_helper));
@@ -6927,43 +6933,111 @@ mod tests {
     }
 
     #[test]
-    fn client_script_worker_dev_outputs_change_on_second_tick_and_prune_on_third() {
+    fn client_script_worker_importer_removal_plans_rebuild_and_prunes_on_second_tick() {
+        struct PlanOnlyPipeline;
+
+        impl zfb_build::AssetPipeline for PlanOnlyPipeline {
+            fn apply(
+                &self,
+                _plan: &zfb_build::RebuildPlan,
+                _ctx: &zfb_build::BuildContext,
+            ) -> anyhow::Result<zfb_build::BuildOutcome> {
+                unreachable!("the regression exercises planning only")
+            }
+        }
+
         let tmp = tempdir().unwrap();
-        let client_dir = tmp.path().join("assets/client");
-        std::fs::create_dir_all(&client_dir).unwrap();
-        let entry = client_dir.join("widget.js");
-        let worker_name = "worker-src-s-search-d-worker-d-ts.js";
-        let worker = client_dir.join(worker_name);
-
-        assert!(write_dev_client_script_output_if_changed(
-            &entry,
-            b"new URL('./worker-src-s-search-d-worker-d-ts.js?v=11111111')"
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let entry_source = root.join("pages/widget.client.ts");
+        let importer = root.join("src/start.ts");
+        let worker_source = root.join("src/search.worker.ts");
+        std::fs::write(
+            &entry_source,
+            "import { start } from '../src/start'; start();\n",
         )
-        .unwrap());
-        assert!(write_dev_client_script_output_if_changed(&worker, b"worker-v1").unwrap());
-
-        // Second watcher tick: a worker-source edit changes both its bundle
-        // and the parent's rewritten cache query, so both files re-emit.
-        assert!(write_dev_client_script_output_if_changed(
-            &entry,
-            b"new URL('./worker-src-s-search-d-worker-d-ts.js?v=22222222')"
+        .unwrap();
+        std::fs::write(
+            &importer,
+            "export const start = () => new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });\n",
         )
-        .unwrap());
-        assert!(write_dev_client_script_output_if_changed(&worker, b"worker-v2").unwrap());
-        assert!(!write_dev_client_script_output_if_changed(&worker, b"worker-v2").unwrap());
+        .unwrap();
+        std::fs::write(&worker_source, "self.postMessage('ready');\n").unwrap();
 
-        // Third tick removes the Worker constructor while retaining the
-        // client entry; the stale stable companion is pruned.
-        let previous =
-            std::collections::HashSet::from(["widget.js".to_string(), worker_name.to_string()]);
-        let current = std::collections::HashSet::from(["widget.js".to_string()]);
-        assert!(prune_dev_client_script_outputs(
-            &client_dir,
-            &previous,
-            &current
-        ));
-        assert!(!worker.exists());
-        assert!(entry.exists());
+        let assets_root = root.join("dev-assets");
+        let registered = zfb_build::ClientEntryList::new();
+        let (first_changed, first_outputs, first_raw, first_worker_targets) =
+            build_dev_client_scripts_to_disk(
+                root,
+                &assets_root,
+                crate::config::Framework::Preact,
+                None,
+                &std::collections::HashSet::new(),
+                &registered,
+            )
+            .unwrap();
+        assert!(first_changed);
+        assert!(first_raw.is_empty());
+        assert!(first_worker_targets.contains(&importer));
+        assert!(first_worker_targets.contains(&worker_source));
+
+        let worker_filename = zfb_types::module_worker_filename(root, &worker_source).unwrap();
+        let client_dir = assets_root
+            .join(zfb_types::DIST_ASSETS_DIR)
+            .join(zfb_types::DIST_CLIENT_SCRIPTS_DIR);
+        let worker_output = client_dir.join(&worker_filename);
+        assert!(first_outputs.contains(&worker_filename));
+        assert!(worker_output.exists());
+
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        invalidation.replace_client_script_workers(first_worker_targets);
+        let policy = zfb_build::GranularityPolicy::default()
+            .with_raw_import_invalidation(invalidation.clone());
+        let orchestrator = zfb_build::BuildOrchestrator::new(
+            zfb_build::OrchestratorConfig::new(
+                root,
+                vec![PathBuf::from("pages"), PathBuf::from("src")],
+            )
+            .with_policy(policy),
+            std::sync::Arc::new(std::sync::Mutex::new(zfb_graph::DependencyGraph::new())),
+            PlanOnlyPipeline,
+        );
+
+        // The second watcher tick edits the transitive importer itself and
+        // removes the constructor. Planning must still schedule one final
+        // client-script run based on the previous successful graph.
+        std::fs::write(&importer, "export const start = () => undefined;\n").unwrap();
+        let plan = orchestrator.plan_for_changes([importer.clone()]);
+        assert!(
+            plan.rerun_client_scripts,
+            "constructor importer must remain an invalidation target until the next build"
+        );
+
+        let (second_changed, second_outputs, second_raw, second_worker_targets) =
+            build_dev_client_scripts_to_disk(
+                root,
+                &assets_root,
+                crate::config::Framework::Preact,
+                None,
+                &first_outputs,
+                &registered,
+            )
+            .unwrap();
+        assert!(second_changed, "stale worker pruning is an asset change");
+        assert!(second_raw.is_empty());
+        assert!(second_worker_targets.is_empty());
+        assert!(!second_outputs.contains(&worker_filename));
+        assert!(
+            !worker_output.exists(),
+            "stale worker companion must be pruned"
+        );
+
+        // Replacing the registry after the successful second tick prevents
+        // the removed edge from triggering client work forever.
+        invalidation.replace_client_script_workers(second_worker_targets);
+        let settled = orchestrator.plan_for_changes([importer]);
+        assert!(!settled.rerun_client_scripts);
     }
 
     #[cfg(unix)]

@@ -93,8 +93,8 @@ impl RawImportInvalidation {
         Self::replace(&self.client_scripts, paths);
     }
 
-    /// Atomically replace the complete first-party dependency closure for
-    /// client-script-owned module workers.
+    /// Atomically replace the complete first-party invalidation closure for
+    /// client-script-owned module workers, including constructor importers.
     pub fn replace_client_script_workers(&self, paths: impl IntoIterator<Item = PathBuf>) {
         Self::replace(&self.client_script_workers, paths);
     }
@@ -512,16 +512,16 @@ mod tests {
     fn client_script_worker_invalidation_replaces_stale_graph_between_ticks() {
         let invalidation = RawImportInvalidation::default();
         let worker = PathBuf::from("/proj/src/search.worker.ts");
-        let helper = PathBuf::from("/proj/src/search-helper.ts");
-        invalidation.replace_client_script_workers([worker.clone(), helper.clone()]);
+        let importer = PathBuf::from("/proj/src/start.ts");
+        invalidation.replace_client_script_workers([worker.clone(), importer.clone()]);
         assert!(invalidation.is_client_script_worker_target(&worker));
-        assert!(invalidation.is_client_script_worker_target(&helper));
+        assert!(invalidation.is_client_script_worker_target(&importer));
 
         // A successful second scan replaces (rather than appends to) the
         // graph, so removing the Worker constructor drops stale triggers.
         invalidation.replace_client_script_workers(Vec::new());
         assert!(!invalidation.is_client_script_worker_target(&worker));
-        assert!(!invalidation.is_client_script_worker_target(&helper));
+        assert!(!invalidation.is_client_script_worker_target(&importer));
     }
 
     fn never_global(_: &Path) -> bool {
