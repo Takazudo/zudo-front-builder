@@ -879,7 +879,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         Arc::new(Mutex::new(std::collections::HashSet::new()));
 
     // Eager boot bundle — non-fatal, mirrors islands / CSS.
-    match crate::commands::build::build_dev_client_scripts_to_disk(
+    match crate::commands::build::build_dev_client_scripts_to_disk_with_plugin_config(
         &project_root,
         // Issue #1189: client scripts go to the isolated dev-assets root.
         &dev_assets_root,
@@ -887,6 +887,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         cfg.bundle.as_ref(),
         &std::collections::HashSet::new(),
         &registered_client_entries,
+        &islands_plugin_config,
     ) {
         Ok((_, outputs, raw_targets, worker_targets)) => {
             if let Ok(mut guard) = live_client_script_outputs.lock() {
@@ -913,6 +914,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let output_filenames = Arc::clone(&live_client_script_outputs);
         // #1196 — capture registered entries for the watcher closure.
         let registered_for_cs = registered_client_entries.clone();
+        let plugin_config_for_cs = islands_plugin_config.clone();
         let raw_invalidation = raw_import_invalidation.clone();
         Some(Arc::new(move || -> Result<bool> {
             let prev = output_filenames
@@ -926,13 +928,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 })
                 .clone();
             let (changed, new_outputs, raw_targets, worker_targets) =
-                crate::commands::build::build_dev_client_scripts_to_disk(
+                crate::commands::build::build_dev_client_scripts_to_disk_with_plugin_config(
                     &project_root_for_cs,
                     &dev_assets_root_for_cs,
                     framework,
                     bundle_config.as_ref(),
                     &prev,
                     &registered_for_cs,
+                    &plugin_config_for_cs,
                 )?;
             let mut guard = output_filenames.lock().unwrap_or_else(|p| {
                 tracing::warn!(

@@ -1019,6 +1019,156 @@ fn island_module_worker_emits_contract_companion_and_dev_layout() {
     );
 }
 
+#[test]
+#[ignore = "env-gate: pinned esbuild binary — verifies define-only worker cache invalidation"]
+fn module_worker_define_only_change_updates_query_and_emitted_bytes() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let island = root.join("src/Island.tsx");
+    let worker = root.join("src/worker.ts");
+    let island_source = "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }";
+    std::fs::write(&island, island_source).unwrap();
+    std::fs::write(&worker, "self.postMessage(__WORKER_DEFINE__);").unwrap();
+
+    let run = |define_value: &str| {
+        let define = std::collections::BTreeMap::from([(
+            "__WORKER_DEFINE__".to_string(),
+            define_value.to_string(),
+        )]);
+        let context = zfb_build::ModuleWorkerBuildContext::new(
+            false,
+            &std::collections::BTreeMap::new(),
+            &define,
+            "preact",
+        )
+        .with_output_semantics(false, false);
+        let rewrite = zfb_build::rewrite_module_worker_urls_with_context(
+            island_source,
+            &island,
+            root,
+            &context,
+        )
+        .unwrap();
+        std::fs::write(&island, &rewrite.expanded_source).unwrap();
+        let bundler = EsbuildSubprocessBundler::new(
+            EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
+        );
+        let worker_entry = ModuleWorkerBundleEntry::new(root, &worker, &worker).unwrap();
+        let config = BundleConfig::dev()
+            .with_outdir(root.join("dist"))
+            .with_sourcemap(false)
+            .with_define(define)
+            .with_module_workers(vec![worker_entry]);
+        let output = bundler
+            .bundle(&[Island::new("Island", &island)], &config)
+            .unwrap();
+        (rewrite.expanded_source, output.workers[0].bytes.clone())
+    };
+
+    let first = run("1");
+    let second = run("2");
+    assert_ne!(first.0, second.0, "define-only edit must change ?v=");
+    assert_ne!(
+        first.1, second.1,
+        "define-only edit must change emitted worker bytes"
+    );
+    assert!(String::from_utf8(second.1)
+        .unwrap()
+        .contains("postMessage(2)"));
+}
+
+#[test]
+#[ignore = "env-gate: pinned esbuild binary — verifies plugin resolver cache/emission parity"]
+fn module_worker_plugin_inputs_update_query_closure_and_emitted_bytes() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("lib")).unwrap();
+    let island = root.join("src/Island.tsx");
+    let worker = root.join("src/worker.ts");
+    let alias_target = root.join("lib/alias.ts");
+    let virtual_helper = root.join("virtual-helper.ts");
+    let island_source = "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }";
+    std::fs::write(&island, island_source).unwrap();
+    std::fs::write(
+        &worker,
+        "import { aliasValue } from 'worker:alias'; import { virtualValue } from 'virtual:worker'; self.postMessage(aliasValue + virtualValue);",
+    )
+    .unwrap();
+    std::fs::write(&virtual_helper, "export const helper = 'H1';").unwrap();
+
+    let run = |alias_value: &str, virtual_suffix: &str| {
+        std::fs::write(
+            &alias_target,
+            format!("export const aliasValue = {alias_value:?};"),
+        )
+        .unwrap();
+        let aliases = vec![(
+            "worker:alias".to_string(),
+            alias_target.to_string_lossy().into_owned(),
+        )];
+        let virtuals = vec![(
+            "virtual:worker".to_string(),
+            format!(
+                "import {{ helper }} from './virtual-helper.ts'; export const virtualValue = helper + {virtual_suffix:?};"
+            ),
+        )];
+        let context = zfb_build::ModuleWorkerBuildContext::default()
+            .with_plugins(aliases.clone(), virtuals.clone())
+            .with_output_semantics(false, false);
+        let rewrite = zfb_build::rewrite_module_worker_urls_with_context(
+            island_source,
+            &island,
+            root,
+            &context,
+        )
+        .unwrap();
+        std::fs::write(&island, &rewrite.expanded_source).unwrap();
+        let bundler = EsbuildSubprocessBundler::new(
+            EsbuildSubprocessConfig::default()
+                .with_working_dir(root.to_path_buf())
+                .with_alias_entries(aliases)
+                .with_virtual_modules(virtuals),
+        );
+        let config = BundleConfig::dev()
+            .with_outdir(root.join("dist"))
+            .with_sourcemap(false)
+            .with_module_workers(vec![
+                ModuleWorkerBundleEntry::new(root, &worker, &worker).unwrap()
+            ]);
+        let output = bundler
+            .bundle(&[Island::new("Island", &island)], &config)
+            .unwrap();
+        (
+            rewrite.expanded_source,
+            rewrite.dependencies,
+            output.workers[0].bytes.clone(),
+        )
+    };
+
+    let first = run("A1", "V1");
+    assert!(first
+        .1
+        .iter()
+        .any(|dependency| dependency.dependency == alias_target));
+    assert!(first
+        .1
+        .iter()
+        .any(|dependency| dependency.dependency == virtual_helper));
+    let alias_changed = run("A2", "V1");
+    assert_ne!(first.0, alias_changed.0);
+    assert_ne!(first.2, alias_changed.2);
+    let virtual_changed = run("A2", "V2");
+    assert_ne!(alias_changed.0, virtual_changed.0);
+    assert_ne!(alias_changed.2, virtual_changed.2);
+    let emitted = String::from_utf8(virtual_changed.2).unwrap();
+    assert!(emitted.contains("A2"), "{emitted}");
+    assert!(emitted.contains("V2"), "{emitted}");
+}
+
 // -----------------------------------------------------------------------------
 // CSS-import policy (#1395) — real-esbuild integration
 //

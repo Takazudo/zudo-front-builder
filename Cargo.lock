@@ -6015,6 +6015,7 @@ dependencies = [
  "zfb-render",
  "zfb-router",
  "zfb-test-utils",
+ "zfb-toolchain-pins",
  "zfb-types",
  "zfb-watcher",
 ]

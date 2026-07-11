@@ -141,7 +141,9 @@ use crate::adapter::run_capturing;
 // `materialise_source_file`); `glob_match_relative` and `GlobCallCollector`
 // have no other call sites left in `bundler.rs`.
 use crate::glob_expand::expand_import_meta_glob;
-use crate::module_worker::{rewrite_module_worker_urls, ModuleWorkerDependency};
+use crate::module_worker::{
+    rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext, ModuleWorkerDependency,
+};
 use crate::raw_import_expand::{expand_raw_imports, RawImportEdge};
 
 /// `import.meta.env.{PROD,DEV}` substitution mode.
@@ -1751,6 +1753,20 @@ pub fn bundle_with_session(
     // Build the shared materialisation context from the fields of `input`
     // that are invariant across every materialise_shadow / materialise_collection
     // call in this bundle invocation.
+    let worker_build_context = ModuleWorkerBuildContext::from_esbuild_loader_args(
+        input.mode.is_prod(),
+        &input.extra_loader_args,
+        &input.define_vars,
+        make_adapter(input.framework).jsx_import_source(),
+    )
+    .with_plugins(
+        input.plugin_alias_entries.clone(),
+        input.plugin_virtual_modules.clone(),
+    )
+    // This context describes the later browser-worker pass, not this SSR
+    // bundle's own minify flag. Browser worker presets derive minify and
+    // sourcemaps directly from mode in both islands/client emitters.
+    .with_output_semantics(input.mode.is_prod(), !input.mode.is_prod());
     let mat_ctx = MaterialiseCtx {
         pipeline_spec: effective_spec,
         copy_mode,
@@ -1759,6 +1775,7 @@ pub fn bundle_with_session(
         writer: &writer,
         raw_import_edges: RefCell::new(BTreeSet::new()),
         module_worker_dependencies: RefCell::new(BTreeSet::new()),
+        worker_build_context,
         raw_preflight_complete: Cell::new(false),
         // #1151: the SHA-accurate collection-skip signal, parsed once per
         // bundle from the snapshot JSON the bundler already received.
@@ -2788,6 +2805,7 @@ fn materialise_mdx_components_file(
         &ctx.raw_import_edges,
         &ctx.module_worker_dependencies,
         ctx.project_root,
+        &ctx.worker_build_context,
     )
     .with_context(|| {
         format!(
@@ -2993,6 +3011,7 @@ fn materialise_symlinked_dir(
                     &ctx.raw_import_edges,
                     &ctx.module_worker_dependencies,
                     ctx.project_root,
+                    &ctx.worker_build_context,
                 )?;
             } else {
                 ctx.writer.copy_if_changed(physical, &to)?;
@@ -3047,6 +3066,9 @@ struct MaterialiseCtx<'a, 's> {
     /// Browser-only worker closure paths found while rewriting source URLs.
     /// They feed invalidation bookkeeping but never become SSR imports.
     module_worker_dependencies: RefCell<BTreeSet<ModuleWorkerDependency>>,
+    /// Browser worker transform/resolver semantics shared by every source
+    /// rewrite in this SSR shadow.
+    worker_build_context: ModuleWorkerBuildContext,
     /// True after `bundle_with_session` preflights every source root as one
     /// graph-wide batch. Direct unit helpers leave this false, causing each
     /// standalone materialise call to preflight its own tree.
@@ -3415,6 +3437,7 @@ fn materialise_shadow(
                 &ctx.raw_import_edges,
                 &ctx.module_worker_dependencies,
                 ctx.project_root,
+                &ctx.worker_build_context,
             )?;
         }
 
@@ -4337,6 +4360,7 @@ fn materialise_collection(
                 &ctx.raw_import_edges,
                 &ctx.module_worker_dependencies,
                 ctx.project_root,
+                &ctx.worker_build_context,
             )?;
         }
     }
@@ -4490,6 +4514,7 @@ fn materialise_source_file(
     raw_import_edges: &RefCell<BTreeSet<RawImportEdge>>,
     module_worker_dependencies: &RefCell<BTreeSet<ModuleWorkerDependency>>,
     project_root: &Path,
+    worker_build_context: &ModuleWorkerBuildContext,
 ) -> Result<()> {
     // Incremental NON-MDX skip (zfb#1148). In session mode ONLY
     // (passthrough/prod never skips): a plain copy/symlink is a pure
@@ -4628,11 +4653,15 @@ fn materialise_source_file(
                 }
 
                 if has_worker_syntax {
-                    let worker_rewrite =
-                        rewrite_module_worker_urls(&expanded, logical_from, project_root)
-                            .with_context(|| {
-                                format!("rewrite module-worker URLs in {}", logical_from.display())
-                            })?;
+                    let worker_rewrite = rewrite_module_worker_urls_with_context(
+                        &expanded,
+                        logical_from,
+                        project_root,
+                        worker_build_context,
+                    )
+                    .with_context(|| {
+                        format!("rewrite module-worker URLs in {}", logical_from.display())
+                    })?;
                     has_worker = !worker_rewrite.worker_edges.is_empty();
                     if has_worker {
                         module_worker_dependencies
@@ -7391,6 +7420,7 @@ mod tests {
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers,
         };
@@ -7456,6 +7486,7 @@ mod tests {
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             // This dual-pass helper exercises the source/`materialise_shadow`
             // path (`import: None`), which is not snapshot-gated; `None` here.
@@ -8486,6 +8517,7 @@ mod tests {
                 &raw_import_edges,
                 &module_worker_dependencies,
                 from.parent().unwrap_or(from),
+                &ModuleWorkerBuildContext::default(),
             )
             .expect("materialise_source_file tick");
         }
@@ -8570,6 +8602,7 @@ mod tests {
                 &raw_edges,
                 &worker_dependencies,
                 root,
+                &ModuleWorkerBuildContext::default(),
             )
             .unwrap();
             let body = fs::read_to_string(&staged).unwrap();
@@ -8860,6 +8893,7 @@ mod tests {
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
         };
@@ -8911,6 +8945,7 @@ mod tests {
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
         };
@@ -8963,6 +8998,7 @@ mod tests {
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
         };
@@ -9012,6 +9048,7 @@ mod tests {
             &edges,
             &worker_dependencies,
             tmp.path(),
+            &ModuleWorkerBuildContext::default(),
         )
         .unwrap_err();
         let error = format!("{error:#}");
@@ -9091,7 +9128,7 @@ mod tests {
             module_deps: BTreeSet::from([importer_real.clone()]),
         }];
         let worker_dependencies: BTreeSet<_> =
-            rewrite_module_worker_urls(importer_source, &importer, root)
+            crate::module_worker::rewrite_module_worker_urls(importer_source, &importer, root)
                 .unwrap()
                 .dependencies
                 .into_iter()
@@ -11225,6 +11262,7 @@ mod tests {
             writer: leaked_passthrough_writer(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             // Passthrough/sessionless never skips, so the snapshot gate is
             // irrelevant here.
