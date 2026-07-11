@@ -55,12 +55,14 @@ pub mod glob_expand;
 pub mod head_inject;
 pub mod link_base_rewrite;
 pub mod metafile_deps;
+pub mod module_worker;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod plan;
 pub mod plugin_registries;
 pub mod plugin_runner;
 pub mod policy;
+pub mod raw_import_expand;
 pub mod renderer;
 
 pub use adapter::{
@@ -78,6 +80,13 @@ pub use head_inject::{
     ProdHeadAssets, HTML5_DOCTYPE_PREFIX,
 };
 pub use metafile_deps::{route_module_deps, RouteEntryRef, RouteModuleDeps};
+pub use module_worker::{
+    discover_module_preprocessing_with_context,
+    discover_registered_virtual_preprocessing_with_context, rewrite_module_worker_urls,
+    rewrite_module_worker_urls_with_context, ModulePreprocessingDiscovery,
+    ModuleWorkerBuildContext, ModuleWorkerDependency, ModuleWorkerEdge, ModuleWorkerRawImportEdge,
+    ModuleWorkerRewrite,
+};
 pub use orchestrator::{
     BuildOrchestrator, DiscoveryHook, DiscoveryOutcome, ExternalInvalidationHook,
     OrchestratorConfig,
@@ -103,6 +112,7 @@ pub use plugin_runner::{
 };
 pub use policy::{
     classify_change, classify_change_with_content_roots, GranularityPolicy, PathClass,
+    RawImportInvalidation,
 };
 pub use renderer::{
     reload, render_all, render_one, shutdown, start, Backend, EmbeddedV8Host,

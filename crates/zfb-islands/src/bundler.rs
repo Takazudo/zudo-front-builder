@@ -32,6 +32,7 @@
 //!   `component_name` of each entry; bundlers MAY widen the list to also
 //!   include shared chunks). Order MUST be stable across runs.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -151,9 +152,35 @@ impl std::hash::Hash for Island {
     }
 }
 
+/// `import.meta.env.{PROD,DEV}` / `process.env.NODE_ENV` substitution mode.
+///
+/// This is deliberately independent of [`BundleConfig::minify`]: development
+/// builds may opt into minification without becoming production builds, and
+/// production builds may disable minification for diagnostics without seeing
+/// development globals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BundleMode {
+    /// Production build: `PROD=true`, `DEV=false`, `NODE_ENV="production"`.
+    Production,
+    /// Development build: `PROD=false`, `DEV=true`, `NODE_ENV="development"`.
+    #[default]
+    Development,
+}
+
+impl BundleMode {
+    /// Whether this mode represents a production build.
+    #[must_use]
+    pub const fn is_prod(self) -> bool {
+        matches!(self, Self::Production)
+    }
+}
+
 /// Bundle configuration handed to [`ClientBundler::bundle`].
 #[derive(Debug, Clone)]
 pub struct BundleConfig {
+    /// Production / development mode for compile-time environment defines.
+    pub mode: BundleMode,
+
     /// Minify the output. Production: `true`. Dev: `false`.
     pub minify: bool,
 
@@ -232,11 +259,37 @@ pub struct BundleConfig {
     /// into it, and only when that shadow used symlink mode rather than
     /// copy-mode.
     pub preserve_symlinks: bool,
+
+    /// Additional inline esbuild loaders keyed by extension.
+    ///
+    /// The command-layer config validator restricts values to loaders that do
+    /// not emit sibling assets. A [`BTreeMap`] keeps the argv deterministic.
+    pub loaders: BTreeMap<String, String>,
+
+    /// Operator-authored esbuild `--define` expressions.
+    ///
+    /// Values are forwarded verbatim (string values therefore need to be
+    /// pre-quoted JSON). Reserved mode keys are rejected by the command-layer
+    /// config validator. A [`BTreeMap`] keeps the argv deterministic.
+    pub define: BTreeMap<String, String>,
+
+    /// Project-local module-worker entries to bundle beside the shared
+    /// islands entry.
+    ///
+    /// The command layer discovers these entries from the islands graph and
+    /// constructs each value through [`ModuleWorkerBundleEntry::new`], which
+    /// derives the stable flat filename from the locked `zfb-types` naming
+    /// contract. The esbuild implementation runs one non-splitting browser
+    /// bundle pass per entry and returns the results through
+    /// [`BundleOutput::workers`]. Empty by default, preserving the historical
+    /// no-worker bundle path byte-for-byte.
+    pub module_workers: Vec<ModuleWorkerBundleEntry>,
 }
 
 impl Default for BundleConfig {
     fn default() -> Self {
         Self {
+            mode: BundleMode::Development,
             minify: false,
             sourcemap: true,
             outdir: PathBuf::from("dist"),
@@ -244,6 +297,9 @@ impl Default for BundleConfig {
             jsx_import_source: FrameworkKind::default().jsx_import_source().to_string(),
             client_router: false,
             preserve_symlinks: false,
+            loaders: BTreeMap::new(),
+            define: BTreeMap::new(),
+            module_workers: Vec::new(),
         }
     }
 }
@@ -252,6 +308,7 @@ impl BundleConfig {
     /// Production preset: minify on, sourcemap off.
     pub fn production() -> Self {
         Self {
+            mode: BundleMode::Production,
             minify: true,
             sourcemap: false,
             ..Self::default()
@@ -314,6 +371,74 @@ impl BundleConfig {
         self.preserve_symlinks = preserve_symlinks;
         self
     }
+
+    /// Set additional inline esbuild loaders (chainable).
+    pub fn with_loaders(mut self, loaders: BTreeMap<String, String>) -> Self {
+        self.loaders = loaders;
+        self
+    }
+
+    /// Set operator-authored raw esbuild define expressions (chainable).
+    pub fn with_define(mut self, define: BTreeMap<String, String>) -> Self {
+        self.define = define;
+        self
+    }
+
+    /// Set the discovered module-worker bundle entries (chainable).
+    pub fn with_module_workers(mut self, module_workers: Vec<ModuleWorkerBundleEntry>) -> Self {
+        self.module_workers = module_workers;
+        self
+    }
+}
+
+/// One project-local module-worker entry to bundle as an islands companion.
+///
+/// `source_path` is the physical file esbuild reads. It may point into the
+/// command layer's preprocessing shadow, while `filename` is always derived
+/// from the corresponding logical project path. Keeping those identities
+/// separate lets rewritten/raw-expanded worker sources bundle from the
+/// shadow without changing the stable URL contract seen by browser code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleWorkerBundleEntry {
+    source_path: PathBuf,
+    filename: String,
+}
+
+impl ModuleWorkerBundleEntry {
+    /// Construct an entry using the shared path-derived filename contract.
+    ///
+    /// `logical_source_path` must be beneath `project_root`; `source_path`
+    /// is the physical path handed to esbuild (normally the same path, or its
+    /// materialised islands-shadow counterpart).
+    pub fn new(
+        project_root: &Path,
+        logical_source_path: &Path,
+        source_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let filename = zfb_types::module_worker_filename(project_root, logical_source_path)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        Ok(Self {
+            source_path: source_path.into(),
+            filename,
+        })
+    }
+
+    /// Physical source path esbuild should bundle.
+    pub fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+
+    /// Stable flat companion filename, including the `.js` extension.
+    pub fn filename(&self) -> &str {
+        &self.filename
+    }
+
+    /// esbuild entry-name template (the stable filename without `.js`).
+    pub(crate) fn entry_name_template(&self) -> &str {
+        self.filename
+            .strip_suffix(".js")
+            .expect("module-worker filename contract always ends in .js")
+    }
 }
 
 /// One code-split chunk emitted alongside the entry by the bundler.
@@ -328,7 +453,7 @@ impl BundleConfig {
 /// verbatim and MUST NOT rename it: the entry's `import("./<filename>")`
 /// references are relative and resolve only when entry and chunk share
 /// a directory under the un-renamed chunk name.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleChunk {
     /// Flat, self-hashed chunk basename (e.g. `islands-chunk-WOEGGERP.js`).
     /// Never contains a path separator. Never to be renamed downstream.
@@ -398,6 +523,17 @@ pub struct BundleOutput {
     ///   `islands-chunk-*`-shaped before they reach this field; consumers
     ///   may write them under the entry's directory verbatim.
     pub chunks: Vec<BundleChunk>,
+
+    /// Stable module-worker companions emitted by one non-splitting browser
+    /// bundle pass per discovered worker entry.
+    ///
+    /// The [`BundleChunk`] byte/filename shape is reused, but workers live in
+    /// a dedicated field so downstream code cannot confuse the stable
+    /// `worker-*.js` URL contract with esbuild's self-hashed
+    /// `islands-chunk-*` class. Worker filenames are written verbatim beside
+    /// the islands entry in production and development; only their `?v=` URL
+    /// query changes when the first-party worker graph changes.
+    pub workers: Vec<BundleChunk>,
 }
 
 /// Abstraction over "bundle this islands set into a single browser-ready
@@ -564,8 +700,9 @@ pub fn bundle_link_href(base_url: &str, asset_path: &Path) -> String {
     format!("{trimmed}/assets/{filename}")
 }
 
-/// One code-split chunk to ship verbatim alongside the islands entry.
+/// One islands companion to ship verbatim alongside the entry.
 ///
+/// Used for both self-hashed code-split chunks and stable module workers.
 /// Mirrors [`BundleChunk`] but lives here as a separate type so the
 /// `ProductionIslandsAsset` adapter stays self-contained without a
 /// `zfb-build` dependency cycle. Callers (the bin crate) map each
@@ -573,7 +710,8 @@ pub fn bundle_link_href(base_url: &str, asset_path: &Path) -> String {
 /// the payload to `AssetEmitterPayload`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IslandsChunk {
-    /// Flat basename of the chunk (e.g. `islands-chunk-WOEGGERP.js`).
+    /// Flat basename (e.g. `islands-chunk-WOEGGERP.js` or
+    /// `worker-src-s-search-d-ts.js`).
     pub filename: String,
     /// Raw JS bytes — verbatim, never rewritten or hashed.
     pub bytes: Vec<u8>,
@@ -597,8 +735,7 @@ pub struct IslandsChunk {
 /// - `stable_url` is the unhashed public URL the renderer embeds
 ///   (`/assets/islands.js`); the pipeline rewrites every match in the
 ///   rendered HTML to the hashed form.
-/// - `chunks` carries verbatim code-split companions (empty for
-///   zero-dynamic-import projects).
+/// - `chunks` and `workers` carry their two verbatim companion classes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionIslandsAsset {
     /// Bundled JS bytes — already minified per `BundleConfig::production`
@@ -623,6 +760,10 @@ pub struct ProductionIslandsAsset {
     /// `import("./islands-chunk-<hash>.js")` references resolve.
     /// Empty for projects with no dynamic `import()`.
     pub chunks: Vec<IslandsChunk>,
+
+    /// Stable module-worker companions emitted alongside the islands entry.
+    /// These are shipped verbatim, never renamed or content-hashed.
+    pub workers: Vec<IslandsChunk>,
 }
 
 /// Run `bundler` over `islands` and return a bytes-only adapter payload
@@ -679,11 +820,21 @@ pub fn build_production_islands_asset(
         })
         .collect();
 
+    let workers = output
+        .workers
+        .into_iter()
+        .map(|worker| IslandsChunk {
+            filename: worker.filename,
+            bytes: worker.bytes,
+        })
+        .collect();
+
     Ok(Some(ProductionIslandsAsset {
         bytes,
         relative_path,
         stable_url: STABLE_ISLANDS_URL.to_string(),
         chunks,
+        workers,
     }))
 }
 
@@ -705,25 +856,55 @@ mod tests {
     #[test]
     fn bundle_config_presets() {
         let prod = BundleConfig::production();
+        assert_eq!(prod.mode, BundleMode::Production);
         assert!(prod.minify);
         assert!(!prod.sourcemap);
 
         let dev = BundleConfig::dev();
+        assert_eq!(dev.mode, BundleMode::Development);
         assert!(!dev.minify);
         assert!(dev.sourcemap);
     }
 
     #[test]
     fn bundle_config_chainable() {
+        let root = Path::new("/app");
+        let worker = ModuleWorkerBundleEntry::new(
+            root,
+            &root.join("src/search.worker.ts"),
+            "/shadow/src/search.worker.ts",
+        )
+        .unwrap();
         let cfg = BundleConfig::production()
             .with_outdir("build")
             .with_base_url("https://cdn.example.com/")
             .with_minify(false)
-            .with_sourcemap(true);
+            .with_sourcemap(true)
+            .with_loaders(BTreeMap::from([(".txt".to_string(), "text".to_string())]))
+            .with_define(BTreeMap::from([(
+                "__APP_NAME__".to_string(),
+                "\"zfb\"".to_string(),
+            )]))
+            .with_module_workers(vec![worker]);
         assert_eq!(cfg.outdir, PathBuf::from("build"));
         assert_eq!(cfg.base_url, "https://cdn.example.com/");
         assert!(!cfg.minify);
         assert!(cfg.sourcemap);
+        assert_eq!(cfg.mode, BundleMode::Production);
+        assert_eq!(cfg.loaders.get(".txt").map(String::as_str), Some("text"));
+        assert_eq!(
+            cfg.define.get("__APP_NAME__").map(String::as_str),
+            Some("\"zfb\"")
+        );
+        assert_eq!(cfg.module_workers.len(), 1);
+        assert_eq!(
+            cfg.module_workers[0].filename(),
+            "worker-src-s-search-d-worker-d-ts.js"
+        );
+        assert_eq!(
+            cfg.module_workers[0].source_path(),
+            Path::new("/shadow/src/search.worker.ts")
+        );
     }
 
     #[test]
@@ -812,6 +993,8 @@ mod tests {
     /// (the caller owns disk writes per the new contract).
     struct RecordingBundler {
         payload: Vec<u8>,
+        chunks: Vec<BundleChunk>,
+        workers: Vec<BundleChunk>,
         calls: std::cell::Cell<usize>,
     }
 
@@ -819,8 +1002,16 @@ mod tests {
         fn new(payload: impl Into<Vec<u8>>) -> Self {
             Self {
                 payload: payload.into(),
+                chunks: Vec::new(),
+                workers: Vec::new(),
                 calls: std::cell::Cell::new(0),
             }
+        }
+
+        fn with_companions(mut self, chunks: Vec<BundleChunk>, workers: Vec<BundleChunk>) -> Self {
+            self.chunks = chunks;
+            self.workers = workers;
+            self
         }
 
         fn call_count(&self) -> usize {
@@ -843,7 +1034,8 @@ mod tests {
                 asset_path,
                 asset_url,
                 module_ids,
-                chunks: Vec::new(),
+                chunks: self.chunks.clone(),
+                workers: self.workers.clone(),
             })
         }
     }
@@ -928,6 +1120,35 @@ mod tests {
             "adapter must emit the unhashed stable URL: got {}",
             asset.stable_url
         );
+    }
+
+    #[test]
+    fn build_production_islands_asset_keeps_workers_separate_from_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundler = RecordingBundler::new(b"entry".to_vec()).with_companions(
+            vec![BundleChunk {
+                filename: "islands-chunk-AAAA.js".into(),
+                bytes: b"chunk".to_vec(),
+            }],
+            vec![BundleChunk {
+                filename: "worker-src-s-search-d-ts.js".into(),
+                bytes: b"worker".to_vec(),
+            }],
+        );
+        let cfg = BundleConfig::production().with_outdir(dir.path());
+        let asset = build_production_islands_asset(
+            &bundler,
+            &[Island::new("Search", dir.path().join("Search.tsx"))],
+            &cfg,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(asset.chunks.len(), 1);
+        assert_eq!(asset.chunks[0].filename, "islands-chunk-AAAA.js");
+        assert_eq!(asset.workers.len(), 1);
+        assert_eq!(asset.workers[0].filename, "worker-src-s-search-d-ts.js");
+        assert_eq!(asset.workers[0].bytes, b"worker");
     }
 
     #[test]

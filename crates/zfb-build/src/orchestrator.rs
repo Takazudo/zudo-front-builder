@@ -52,6 +52,12 @@ use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
 use crate::policy::{classify_change_with_content_roots, GranularityPolicy, PathClass};
 
+/// Register non-recursive parent watches for browser dependency closures
+/// discovered outside the configured recursive source roots.
+fn register_dynamic_dependency_watches(watcher: &mut Watcher, policy: &GranularityPolicy) {
+    watcher.watch_additional_files(policy.dynamic_dependency_paths());
+}
+
 /// `ZFB_DEV_TIMING` gate for the per-tick kind/narrowing trace (issue #1058).
 /// Same env var and truthy parser as `bundler_timing_enabled` and
 /// `crates/zfb/src/commands/dev.rs::dev_timing_enabled`, so one flag turns on
@@ -416,7 +422,13 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 {
                     plan.mark_islands();
                 }
-                if self.config.policy.is_client_script_candidate(&path) {
+                if self.config.policy.is_islands_dependency(&path) {
+                    plan.mark_islands();
+                }
+                if self.config.policy.is_client_script_candidate(&path)
+                    || self.config.policy.is_client_script_raw_target(&path)
+                    || self.config.policy.is_client_script_worker_target(&path)
+                {
                     plan.mark_client_scripts();
                 }
                 continue;
@@ -548,7 +560,13 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // `rerun_client_scripts = true`, so we never reach this point on a
             // Global change — the `is_client_script_candidate` guard here is
             // therefore only ever evaluated for non-Global changes.
-            if self.config.policy.is_client_script_candidate(&path) {
+            if self.config.policy.is_islands_dependency(&path) {
+                plan.mark_islands();
+            }
+            if self.config.policy.is_client_script_candidate(&path)
+                || self.config.policy.is_client_script_raw_target(&path)
+                || self.config.policy.is_client_script_worker_target(&path)
+            {
                 plan.mark_client_scripts();
             }
         }
@@ -806,6 +824,14 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 }
                 PathClass::Asset | PathClass::Unclassified => {}
             }
+            if self.config.policy.is_islands_dependency(path) {
+                plan.mark_islands();
+            }
+            if self.config.policy.is_client_script_raw_target(path)
+                || self.config.policy.is_client_script_worker_target(path)
+            {
+                plan.mark_client_scripts();
+            }
         }
 
         if discovered.renderer_reloaded {
@@ -1052,7 +1078,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             .config
             .debounce
             .unwrap_or(zfb_watcher::DEFAULT_DEBOUNCE);
-        let (watcher, mut rx) = Watcher::start_with_extras(
+        let (mut watcher, mut rx) = Watcher::start_with_extras(
             &self.config.project_root,
             self.config.watch_roots.iter().map(|p| p.as_path()),
             self.config.extra_watch_paths.iter().map(|p| p.as_path()),
@@ -1074,6 +1100,13 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 on_outcome(&outcome);
             }
         }
+        // The eager boot browser passes may discover islands, client raw
+        // targets, or client-script worker dependencies outside the configured
+        // source roots. Register each dependency's parent now so edits,
+        // deletes, and recreations enter the same watcher channel. The
+        // registry exposes the last successful closures, so a transient failed
+        // rebuild never drops recovery watches.
+        register_dynamic_dependency_watches(&mut watcher, &self.config.policy);
 
         // Drain loop: wait for the first event, then drain everything
         // currently in the channel so we coalesce concurrent bursts
@@ -1134,6 +1167,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     }
                 },
             };
+            // Successful browser-pipeline ticks atomically replace their
+            // dependency closures. Add newly-discovered parents before
+            // waiting for the next event; the watcher deduplicates
+            // existing/covered paths.
+            register_dynamic_dependency_watches(&mut watcher, &this.config.policy);
             match result {
                 Ok(Some(outcome)) => on_outcome(&outcome),
                 Ok(None) => {
@@ -1887,6 +1925,317 @@ mod tests {
         assert!(
             !plan.rerun_client_scripts,
             "regular .tsx under pages/ must NOT set rerun_client_scripts"
+        );
+    }
+
+    #[test]
+    fn original_raw_target_edit_reruns_islands_and_client_scripts() {
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        let target = PathBuf::from("/proj/data/noise.frag");
+        invalidation.replace_islands([target.clone()]);
+        invalidation.replace_client_scripts([target.clone()]);
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("data")]).with_policy(
+            crate::policy::GranularityPolicy::default()
+                .with_raw_import_invalidation(invalidation.clone()),
+        );
+        let orch = BuildOrchestrator::new(config, make_graph(), CountingPipeline::default());
+
+        // The importer is unchanged; only the terminal target is the watcher
+        // event. Both consumer pipelines must rerun.
+        let plan = orch.plan_for_changes([target.clone()]);
+        assert!(plan.rerun_islands, "raw target must rerun islands");
+        assert!(
+            plan.rerun_client_scripts,
+            "raw target must rerun client scripts"
+        );
+
+        // Successful graph replacement is also the stale-dependency hygiene
+        // contract: an import removal must stop old targets triggering work.
+        invalidation.replace_islands(Vec::new());
+        invalidation.replace_client_scripts(Vec::new());
+        let plan = orch.plan_for_changes([target]);
+        assert!(!plan.rerun_islands);
+        assert!(!plan.rerun_client_scripts);
+    }
+
+    #[test]
+    fn client_raw_dependency_planning_survives_delete_recreate_and_replaces_stale_targets() {
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        let payload = root.join("lib/client-payload.txt");
+        let next_payload = root.join("lib/next-client-payload.txt");
+        std::fs::write(&payload, "generation one\n").unwrap();
+        invalidation.replace_client_scripts([payload.clone()]);
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let config = OrchestratorConfig::new(&root, vec![PathBuf::from("pages")]).with_policy(
+            crate::policy::GranularityPolicy::default()
+                .with_raw_import_invalidation(invalidation.clone()),
+        );
+        let orch = BuildOrchestrator::new(config, make_graph(), pipeline);
+        let dist = tempfile::tempdir().unwrap();
+
+        orch.tick_with_kinds(
+            vec![(payload.clone(), ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let edited = applies.lock().unwrap().last().unwrap().clone();
+        assert!(edited.rerun_client_scripts);
+        assert!(
+            !edited.rerun_islands,
+            "client-owned raw targets must not cross-classify as islands dependencies"
+        );
+
+        std::fs::remove_file(&payload).unwrap();
+        orch.tick_with_kinds(
+            vec![(payload.clone(), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let deleted = applies.lock().unwrap().last().unwrap().clone();
+        assert!(deleted.rerun_client_scripts);
+        assert!(!deleted.rerun_islands);
+
+        // The lexical alias remains live while the target is absent, so a
+        // recreate can recover. The next successful bundle then atomically
+        // replaces it with the newly-discovered target.
+        std::fs::write(&payload, "generation two\n").unwrap();
+        let recreated = orch.plan_for_changes([payload.clone()]);
+        assert!(recreated.rerun_client_scripts);
+        assert!(!recreated.rerun_islands);
+        std::fs::write(&next_payload, "next generation\n").unwrap();
+        invalidation.replace_client_scripts([next_payload.clone()]);
+        let stale_tick = orch.plan_for_changes([payload]);
+        assert!(
+            !stale_tick.rerun_client_scripts,
+            "successful client raw graph replacement must clear stale ownership"
+        );
+        let next_tick = orch.plan_for_changes([next_payload]);
+        assert!(next_tick.rerun_client_scripts);
+        assert!(!next_tick.rerun_islands);
+    }
+
+    #[test]
+    fn client_script_worker_dependency_replacement_stops_stale_pipeline_planning() {
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        let old_helper = PathBuf::from("/proj/lib/old-worker-helper.ts");
+        let next_helper = PathBuf::from("/proj/lib/next-worker-helper.ts");
+        invalidation.replace_client_script_workers([old_helper.clone()]);
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")]).with_policy(
+            crate::policy::GranularityPolicy::default()
+                .with_raw_import_invalidation(invalidation.clone()),
+        );
+        let orch = BuildOrchestrator::new(config, make_graph(), CountingPipeline::default());
+
+        let first_tick = orch.plan_for_changes([old_helper.clone()]);
+        assert!(
+            first_tick.rerun_client_scripts,
+            "worker dependency edits must re-emit the owning client script"
+        );
+        assert!(!first_tick.rerun_islands);
+
+        invalidation.replace_client_script_workers([next_helper.clone()]);
+        let stale_tick = orch.plan_for_changes([old_helper]);
+        assert!(
+            !stale_tick.rerun_client_scripts,
+            "a removed worker edge must clear stale invalidation ownership"
+        );
+        assert!(orch.plan_for_changes([next_helper]).rerun_client_scripts);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_worker_dependency_outside_boot_roots_is_watched() {
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        let helper = root.join("lib/client-worker-helper.ts");
+        std::fs::write(&helper, "export const marker = 'one';\n").unwrap();
+
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_client_script_workers([helper.clone()]);
+        let policy =
+            crate::policy::GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        assert!(policy.dynamic_dependency_paths().contains(&helper));
+        assert!(policy.is_client_script_worker_target(&helper));
+        assert!(!policy.is_islands_dependency(&helper));
+
+        let (mut watcher, mut rx) = Watcher::start_with_debounce(
+            &root,
+            std::iter::once("pages"),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        register_dynamic_dependency_watches(&mut watcher, &policy);
+
+        // `lib/` is deliberately absent from the recursive boot roots. The
+        // client worker registry must add its parent as a dynamic watch.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        while rx.try_recv().is_ok() {}
+        std::fs::write(&helper, "export const marker = 'two';\n").unwrap();
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            while let Some(change) = rx.recv().await {
+                if change.path == helper {
+                    return Some(change.kind);
+                }
+            }
+            None
+        })
+        .await
+        .expect("outside-root client worker edit must reach the watcher");
+        watcher.shutdown().await;
+        assert!(
+            matches!(observed, Some(ChangeKind::Created | ChangeKind::Modified)),
+            "outside-root client worker edit must produce a write event, got {observed:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_raw_dependency_outside_boot_roots_survives_edit_delete_and_recreate() {
+        use std::time::Duration;
+
+        async fn next_kind_for(
+            rx: &mut tokio::sync::mpsc::Receiver<zfb_watcher::Change>,
+            target: &Path,
+        ) -> Option<ChangeKind> {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while let Some(change) = rx.recv().await {
+                    if change.path == target {
+                        return Some(change.kind);
+                    }
+                }
+                None
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        let payload = root.join("lib/client-payload.txt");
+        std::fs::write(&payload, "generation one\n").unwrap();
+
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_client_scripts([payload.clone()]);
+        let policy =
+            crate::policy::GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        assert!(policy.dynamic_dependency_paths().contains(&payload));
+        assert!(policy.is_client_script_raw_target(&payload));
+        assert!(!policy.is_client_script_worker_target(&payload));
+        assert!(!policy.is_islands_dependency(&payload));
+
+        let (mut watcher, mut rx) = Watcher::start_with_debounce(
+            &root,
+            std::iter::once("pages"),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        register_dynamic_dependency_watches(&mut watcher, &policy);
+
+        // `lib/` is deliberately absent from the recursive boot roots. The
+        // client raw snapshot must register its parent dynamically and keep
+        // that parent alive while the terminal file is missing.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        while rx.try_recv().is_ok() {}
+
+        std::fs::write(&payload, "generation two\n").unwrap();
+        assert!(
+            matches!(
+                next_kind_for(&mut rx, &payload).await,
+                Some(ChangeKind::Created | ChangeKind::Modified)
+            ),
+            "outside-root client raw edit must reach the watcher"
+        );
+
+        std::fs::remove_file(&payload).unwrap();
+        assert_eq!(
+            next_kind_for(&mut rx, &payload).await,
+            Some(ChangeKind::Removed),
+            "watching the raw target parent must preserve delete visibility"
+        );
+
+        std::fs::write(&payload, "generation three\n").unwrap();
+        assert!(
+            matches!(
+                next_kind_for(&mut rx, &payload).await,
+                Some(ChangeKind::Created | ChangeKind::Modified)
+            ),
+            "watching the raw target parent must preserve recreate recovery"
+        );
+        watcher.shutdown().await;
+    }
+
+    #[test]
+    fn live_worker_closure_outside_islands_roots_survives_edit_delete_and_next_generation() {
+        use zfb_watcher::ChangeKind;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("pages/workers")).unwrap();
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        let worker = root.join("pages/workers/search.worker.ts");
+        let helper = root.join("lib/tokenize.ts");
+        let raw = root.join("lib/dictionary.txt");
+        let css = root.join("lib/worker.css");
+        for path in [&worker, &helper, &raw, &css] {
+            std::fs::write(path, "generation one\n").unwrap();
+        }
+
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_islands([worker.clone(), helper.clone(), raw.clone(), css.clone()]);
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let config = OrchestratorConfig::new(&root, vec![PathBuf::from("pages")]).with_policy(
+            crate::policy::GranularityPolicy::default()
+                .with_raw_import_invalidation(invalidation.clone()),
+        );
+        let orch = BuildOrchestrator::new(config, make_graph(), pipeline);
+        let dist = tempfile::tempdir().unwrap();
+
+        // Tick 1: a helper under lib/ is neither a default islands candidate
+        // nor a watcher boot root, but the live worker closure marks it.
+        orch.tick_with_kinds(
+            vec![(helper.clone(), ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        assert!(applies.lock().unwrap().last().unwrap().rerun_islands);
+
+        // Tick 2: deletion takes the removed-path planning branch. The
+        // lexical dependency alias remains registered even though
+        // canonicalisation now fails, so islands still reruns.
+        std::fs::remove_file(&helper).unwrap();
+        orch.tick_with_kinds(
+            vec![(helper.clone(), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        assert!(applies.lock().unwrap().last().unwrap().rerun_islands);
+
+        // The next successful preprocessing generation atomically replaces
+        // the graph: recreated/new dependencies trigger, stale ones stop.
+        std::fs::write(&helper, "generation two\n").unwrap();
+        let next = root.join("lib/stemmer.ts");
+        std::fs::write(&next, "generation two\n").unwrap();
+        invalidation.replace_islands([worker, helper.clone(), css, next.clone()]);
+        assert!(orch.plan_for_changes([helper]).rerun_islands);
+        assert!(orch.plan_for_changes([next]).rerun_islands);
+        assert!(
+            !orch.plan_for_changes([raw]).rerun_islands,
+            "paths absent from the replacement graph must not stay stale"
         );
     }
 

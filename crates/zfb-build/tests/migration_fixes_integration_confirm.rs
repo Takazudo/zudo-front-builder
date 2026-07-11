@@ -419,6 +419,7 @@ fn write_full_fixture(root: &std::path::Path) {
 fn make_full_fixture_input(root: &std::path::Path, esbuild: &std::path::Path) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
+        extra_loader_args: Vec::new(),
         project_root: root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
@@ -426,7 +427,8 @@ fn make_full_fixture_input(root: &std::path::Path, esbuild: &std::path::Path) ->
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework: Framework::Preact,
-        define_vars: HashMap::new(),
+        define_vars: std::collections::BTreeMap::new(),
+        public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![
             "preact".into(),

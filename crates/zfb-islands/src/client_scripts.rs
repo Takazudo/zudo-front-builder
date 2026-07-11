@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::bundler::BundleConfig;
+use crate::bundler::{BundleChunk, BundleConfig};
 use crate::esbuild::EsbuildSubprocessBundler;
 use zfb_types::{stable_client_script_relative_path, stable_client_script_url};
 
@@ -65,6 +65,22 @@ pub struct ClientScriptEntry {
     /// (e.g. `"search-widget"` for `search-widget.client.ts`).
     pub entry_name: String,
     /// Absolute path to the source file.
+    pub source_path: PathBuf,
+}
+
+/// One browser-only module-worker entry emitted beside its owning client
+/// script.
+///
+/// `filename` is the locked, path-derived contract name from
+/// [`zfb_types::module_worker_filename`]. `source_path` may point into a
+/// preprocessing mirror; keeping the two values separate lets the caller
+/// preserve the original project-relative filename while esbuild reads the
+/// rewritten/mirrored source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientScriptWorkerEntry {
+    /// Stable flat output filename, e.g. `worker-src-s-search-d-ts.js`.
+    pub filename: String,
+    /// JS/TS worker entry handed to esbuild.
     pub source_path: PathBuf,
 }
 
@@ -103,6 +119,10 @@ pub struct ProductionClientScriptAsset {
     /// `/assets/client/search-widget.js`. The pipeline rewrites every
     /// boundary-anchored match in HTML to the hashed equivalent.
     pub stable_url: String,
+    /// Stable, verbatim module-worker files shipped flat beside the hashed
+    /// client-script entry. These filenames are never renamed or hashed;
+    /// cache busting lives in the rewritten `?v=` URL query.
+    pub companions: Vec<BundleChunk>,
 }
 
 /// Walk `project_root` for `*.client.{ts,tsx,js,jsx}` files under the
@@ -196,14 +216,39 @@ pub fn build_production_client_scripts(
     entries: &[ClientScriptEntry],
     config: &BundleConfig,
 ) -> Result<Vec<ProductionClientScriptAsset>> {
+    build_production_client_scripts_with_workers(bundler, entries, &BTreeMap::new(), config)
+}
+
+/// Bundle production client scripts together with their discovered module
+/// workers.
+///
+/// The map is keyed by [`ClientScriptEntry::entry_name`]. Every worker is
+/// bundled as an independent, self-contained ESM entry and returned under its
+/// contract filename. Unknown or missing subprocess outputs are rejected by
+/// the esbuild read-back boundary.
+pub fn build_production_client_scripts_with_workers(
+    bundler: &EsbuildSubprocessBundler,
+    entries: &[ClientScriptEntry],
+    workers_by_entry: &BTreeMap<String, Vec<ClientScriptWorkerEntry>>,
+    config: &BundleConfig,
+) -> Result<Vec<ProductionClientScriptAsset>> {
     if entries.is_empty() {
         return Ok(Vec::new());
     }
 
     let mut assets: Vec<ProductionClientScriptAsset> = Vec::with_capacity(entries.len());
     for entry in entries {
-        let js = bundler
-            .bundle_client_script_file(&entry.entry_name, &entry.source_path, config)
+        let workers = workers_by_entry
+            .get(&entry.entry_name)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let output = bundler
+            .bundle_client_script_file_with_workers(
+                &entry.entry_name,
+                &entry.source_path,
+                workers,
+                config,
+            )
             .with_context(|| {
                 format!(
                     "client-script bundler failed for entry `{}` ({})",
@@ -217,9 +262,10 @@ pub fn build_production_client_scripts(
 
         assets.push(ProductionClientScriptAsset {
             entry_name: entry.entry_name.clone(),
-            bytes: js.into_bytes(),
+            bytes: output.js.into_bytes(),
             relative_path,
             stable_url,
+            companions: output.companions,
         });
     }
 
@@ -389,6 +435,43 @@ mod tests {
 
         let an = assets.iter().find(|a| a.entry_name == "analytics").unwrap();
         assert_eq!(an.stable_url, "/assets/client/analytics.js");
+    }
+
+    #[test]
+    fn build_production_client_scripts_carries_worker_companions() {
+        use crate::esbuild::{EsbuildSubprocessBundler, EsbuildSubprocessConfig};
+
+        let dir = tempfile::tempdir().unwrap();
+        let entry = dir.path().join("widget.client.ts");
+        let worker = dir.path().join("worker.ts");
+        std::fs::write(&entry, "console.log('entry');\n").unwrap();
+        std::fs::write(&worker, "self.postMessage('worker');\n").unwrap();
+        let bundler = EsbuildSubprocessBundler::new(
+            EsbuildSubprocessConfig::default().with_mock_output("// bundled"),
+        );
+        let entries = vec![ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+        let workers = BTreeMap::from([(
+            "widget".into(),
+            vec![ClientScriptWorkerEntry {
+                filename: "worker-worker-d-ts.js".into(),
+                source_path: worker,
+            }],
+        )]);
+
+        let assets = build_production_client_scripts_with_workers(
+            &bundler,
+            &entries,
+            &workers,
+            &BundleConfig::production(),
+        )
+        .unwrap();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].companions.len(), 1);
+        assert_eq!(assets[0].companions[0].filename, "worker-worker-d-ts.js");
+        assert!(String::from_utf8_lossy(&assets[0].companions[0].bytes).contains("postMessage"));
     }
 
     #[test]

@@ -6015,6 +6015,7 @@ dependencies = [
  "zfb-render",
  "zfb-router",
  "zfb-test-utils",
+ "zfb-toolchain-pins",
  "zfb-types",
  "zfb-watcher",
 ]
@@ -6109,6 +6110,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "walkdir",
+ "zfb-build",
  "zfb-plugin-resolver",
  "zfb-test-utils",
  "zfb-toolchain-pins",
@@ -6239,7 +6241,9 @@ version = "0.0.0"
 name = "zfb-types"
 version = "0.0.0"
 dependencies = [
+ "hex",
  "serde",
+ "sha2",
 ]
 
 [[package]]

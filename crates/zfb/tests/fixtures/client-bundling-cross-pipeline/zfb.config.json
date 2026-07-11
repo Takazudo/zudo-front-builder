@@ -1,0 +1,14 @@
+{
+  "framework": "preact",
+  "tailwind": {
+    "enabled": false
+  },
+  "bundle": {
+    "loaders": {
+      ".fixture": "text"
+    },
+    "define": {
+      "__CROSS_PIPELINE_DEFINE__": "\"ZFB_CONFIGURED_DEFINE_VALUE\""
+    }
+  }
+}

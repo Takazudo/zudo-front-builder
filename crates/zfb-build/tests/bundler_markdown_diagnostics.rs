@@ -61,6 +61,7 @@ fn make_base_input(
 ) -> BundlerInput {
     BundlerInput {
         main_fields: Vec::new(),
+        extra_loader_args: Vec::new(),
         project_root: root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
@@ -68,7 +69,8 @@ fn make_base_input(
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework: Framework::Preact,
-        define_vars: HashMap::new(),
+        define_vars: std::collections::BTreeMap::new(),
+        public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![
             "preact".into(),

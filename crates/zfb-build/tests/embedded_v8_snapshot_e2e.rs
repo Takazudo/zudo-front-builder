@@ -76,6 +76,7 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
     .unwrap();
     BundlerInput {
         main_fields: Vec::new(),
+        extra_loader_args: Vec::new(),
         project_root: root.clone(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
@@ -84,7 +85,8 @@ fn make_mock_input(tmp: &tempfile::TempDir, snapshot_json: Option<String>) -> Bu
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework: Framework::Preact,
-        define_vars: HashMap::new(),
+        define_vars: std::collections::BTreeMap::new(),
+        public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![],
         outdir: root.join("dist"),
@@ -621,6 +623,7 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
 
     let input = BundlerInput {
         main_fields: Vec::new(),
+        extra_loader_args: Vec::new(),
         project_root: project_root.clone(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
@@ -632,7 +635,8 @@ async fn embedded_v8_renders_page_with_snapshot_data() {
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework: Framework::Preact,
-        define_vars: HashMap::new(),
+        define_vars: std::collections::BTreeMap::new(),
+        public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![],
         outdir: dist_tmp.path().to_path_buf(),
@@ -804,6 +808,7 @@ async fn embedded_v8_md_page_renders_to_html() {
 
     let input = BundlerInput {
         main_fields: Vec::new(),
+        extra_loader_args: Vec::new(),
         project_root: project_root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
@@ -812,7 +817,8 @@ async fn embedded_v8_md_page_renders_to_html() {
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework: Framework::Preact,
-        define_vars: HashMap::new(),
+        define_vars: std::collections::BTreeMap::new(),
+        public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![],
         outdir: dist_tmp.path().to_path_buf(),
@@ -1257,6 +1263,7 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
 
     let input = BundlerInput {
         main_fields: Vec::new(),
+        extra_loader_args: Vec::new(),
         project_root: project_root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
@@ -1268,7 +1275,8 @@ async fn paths_worker_resolves_collection_across_dual_zfb_instances() {
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework: Framework::Preact,
-        define_vars: HashMap::new(),
+        define_vars: std::collections::BTreeMap::new(),
+        public_env_vars: HashMap::new(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![],
         outdir: dist_tmp.path().to_path_buf(),

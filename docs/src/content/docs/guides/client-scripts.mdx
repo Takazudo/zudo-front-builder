@@ -81,6 +81,85 @@ During `zfb dev`, client scripts are bundled but **not** hashed. The stable
 URL is served directly. This means the URL returned by `clientScript()` is
 live-reloadable in dev without a full page cycle.
 
+## Bundle mode and configuration
+
+Client scripts receive the same compile-time mode values as islands, module
+workers, and the page/SSR bundle:
+
+| Command | `import.meta.env.DEV` | `import.meta.env.PROD` | `process.env.NODE_ENV` |
+|---|---:|---:|---|
+| `zfb dev` | `true` | `false` | `"development"` |
+| `zfb build` | `false` | `true` | `"production"` |
+
+The [`bundle.loaders` and `bundle.define` settings](../api/define-config.mdx#bundle-settings)
+also apply to client scripts and their workers. Define values are raw esbuild
+expressions and become browser-visible when referenced; do not use them for
+secrets.
+
+TypeScript does not infer these bundler contracts. Add the
+[matching ambient declarations](../api/define-config.mdx#typescript-ambient-declarations)
+so mode values, custom-loader imports, raw imports, and define names in client
+scripts pass `zfb check` and `tsc`.
+
+## Importing text with `?raw`
+
+Use a static default import with the exact `?raw` suffix to load a file's
+contents as a string:
+
+```ts
+import shaderSource from "./shaders/noise.frag?raw";
+
+console.log(shaderSource);
+```
+
+The target may have any extension, including a JavaScript-looking extension:
+it is a terminal text dependency and is never executed or parsed as a module.
+The file must contain valid UTF-8 text and resolve through a literal `./` or
+`../` project-local path. Named, namespace, side-effect, type-only, dynamic,
+and re-export forms are not supported. Neither are `?url`, extra query
+parameters, or a non-literal specifier; these forms fail with an error that
+shows the supported import.
+
+`?raw` is independent of `bundle.loaders`. It works in the entry and in
+first-party modules imported by it. During `zfb dev`, the original text file
+is tracked as a dependency, so editing, deleting, or recreating it schedules
+the client script for rebundling.
+
+## Module workers
+
+zfb bundles a first-party module worker when it sees this literal constructor
+shape in a client-script graph:
+
+```ts
+const searchWorker = new Worker(
+  new URL("./workers/search.worker.ts", import.meta.url),
+  { type: "module" },
+);
+```
+
+The URL must name an exact project-local relative JS/TS file, with no query or
+fragment. zfb keeps worker code out of the server graph, bundles each worker
+as a self-contained browser entry, and rewrites the URL to a flat companion:
+
+```text
+./worker-<encoded-project-relative-path>.js?v=<graph-hash>
+```
+
+For a client script, that companion is served under
+`/assets/client/worker-*.js` (with the configured `base` prefix, if any). The
+filename is stable and reversible: path separators use `-s-`, dots use `-d-`,
+literal hyphens use `-h-`, and other bytes use `-xHH-`. The `?v=` value is
+exactly eight lowercase hexadecimal characters and changes when the
+first-party worker graph or its output-affecting bundle/resolver inputs
+change, including transitive imports, nested workers, and terminal raw files.
+
+Worker-graph files are watched during `zfb dev`; edits rebuild the owning
+client script, and removing a worker edge prunes its old companion. Discovery
+does not traverse installed `node_modules`, so third-party transitive workers
+are left to their package tooling. A `SharedWorker` written with the same
+literal `new URL(..., import.meta.url)` form is a named build error rather
+than an unrewritten URL that would 404.
+
 ## Sub-path deploy (`base`)
 
 If your site mounts under a sub-path (e.g. `base: "/pj/mysite/"` in
@@ -111,12 +190,13 @@ the URL is correct.
 
 Client scripts do not support Vite's `import.meta.glob(...)` macro — not even
 the eager, string-literal form that [islands support](../concepts/islands.mdx#import-meta-glob-support).
-Client scripts bundle directly against the real project tree with no
-shadow-copy step, so a `import.meta.glob(...)` call (in the `.client.*` file
-itself, or in any module it imports) ships to the browser unexpanded. This is
-**not caught at build time** — `zfb build` succeeds, and the browser throws
-when the script runs, because `import.meta.glob` is `undefined` outside of
-Vite.
+Client-script graphs that use `?raw`, module workers, or plugin preprocessing
+may be bundled from a temporary mirror, but that stage expands only those
+features — it does not expand `import.meta.glob`. A glob call (in the
+`.client.*` file itself or any module it imports) therefore ships to the
+browser unexpanded. This is **not caught at build time** — `zfb build`
+succeeds, and the browser throws when the script runs, because
+`import.meta.glob` is `undefined` outside of Vite.
 
 If you need a glob-like file list inside a client script, compute it
 yourself (a plugin virtual module, or a small pre-build script that writes a

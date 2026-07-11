@@ -1,6 +1,6 @@
 ---
 title: トラブルシューティング
-description: 具体的な修正方法つきの既知の失敗モード — インストールスクリプトのエラー、musl/Alpine、サポートされない import.meta.glob 形式、プロジェクトルート外のインポート、esbuild バイナリの不足。
+description: 具体的な修正方法つきの既知の失敗モード — インストール、bundle 設定、import query、module worker、プロジェクトルート外の import、esbuild バイナリのエラー。
 sidebar_position: 9
 ---
 
@@ -70,6 +70,52 @@ and https://github.com/Takazudo/zudo-front-builder/issues/1412.
 **原因:** `import.meta.glob` は Vite 専用のビルド時マクロです。島をバンドルする esbuild はこれをネイティブには理解しないため、zfb は esbuild がファイルを目にする前に、サポートされる唯一の形式を自分で展開します。サポートされるのは、glob 呼び出しが島から到達可能なモジュール内にあり、そのモジュールが展開済みの実体あるシャドウコピーファイルとして書き出される場合の `import.meta.glob("<string-literal>", { eager: true })` だけです。パターンはインポート元ファイル自身のディレクトリ配下に解決される必要があります。それ以外のすべて — デフォルトの lazy 形式、`{ eager: false }`、リテラルでないパターン、`import`/`query`/`as` オプション、`../` でディレクトリを抜け出すパターン — は拒否されます。JS 風のファイルが raw-mirrored な glob ターゲット、またはサブツリー内の companion ファイルとしてだけ到達していて、その中に glob がある場合も拒否されます。そうしなければ、そのファイルは未展開のままブラウザへ配信され、hydration 中に例外を投げるためです。
 
 **対処:** 完全なサポートマトリクスと代替手段は [Islands: `import.meta.glob` のサポート](../concepts/islands.mdx#import-meta-glob-のサポート) を参照してください。使える場所では eager + 文字列リテラル形式に直し、ネストした glob は島から到達可能なモジュールへ hoist するか、raw-mirrored な glob ターゲット／サブツリー内ファイルを glob されたサブツリーの外へ移動するか、明示的な静的インポートへ置き換えてください。なお **クライアントスクリプト**（`*.client.ts`）は `import.meta.glob` を一切サポートせず、しかも島とは異なり、その失敗はビルド時には検出され *ません*。[クライアントスクリプト: `import.meta.glob` はサポートされていません](./client-scripts.mdx#import-meta-glob-はサポートされていません) を参照してください。
+
+## `bundle.loaders` または `bundle.define` が拒否される
+
+**症状:** 設定のロードが次のようなメッセージで失敗する。
+
+```text
+bundle.loaders key ".asset" uses unsupported loader "file"; inline-only v1 accepts: ...
+bundle.define key "import.meta.env.DEV" is reserved by zfb's bundle mode ...
+```
+
+生の define 式が不正な場合は、最初に影響を受けるバンドルの実行時に esbuild のパースエラーとして現れることもあります。
+
+**原因:** loader のキーは `.` で始まり、`text`、`json`、`base64`、`dataurl`、`binary`、`empty` のいずれかを使い、`.css`、`.module.css`、`.mdx`、`.md` を上書きしない必要があります。アセットを生成する `file` と `copy` loader はサポートされません。また zfb は `import.meta.env.DEV`、`import.meta.env.PROD`、`process.env.NODE_ENV` を所有するため、ユーザーの define から置き換えることはできません。define の値は、自動的に引用符が付く文字列ではなく esbuild の生の式です。
+
+**対処:** inline loader と予約されていない拡張子 / キーを選んでください。文字列の define では、置換式に JSON の引用符を含めます（例: `__APP_NAME__: '"my-app"'`）。完全なコントラクトとブラウザへの公開に関する警告は [`defineConfig`: `bundle` 設定](../api/define-config.mdx#bundle-設定)を参照してください。
+
+## `?raw` インポートが失敗する
+
+**症状:** build、または dev 中のブラウザバンドルの更新が、`unsupported import query form`、`does not resolve to an existing file`、`is not valid UTF-8 text` のいずれかを報告する。
+
+**原因:** zfb がサポートするのは、リテラルのプロジェクトローカル相対ターゲットと厳密な `?raw` サフィックスを持つ静的な default import だけです。ターゲットは終端の UTF-8 テキストファイルです。dynamic import、named import、namespace import、side-effect import、type-only import、re-export、`?url`、追加のクエリパラメータ、リテラルでないパス、ルート外 / symlink 経由の escape、UTF-8 ではないターゲットは拒否されます。
+
+**対処:** import を次の形にし、厳密なファイルがプロジェクトルート内に存在することを確認してください。
+
+```ts
+import text from "./file.ext?raw";
+```
+
+拡張子は何でもよく、`bundle.loaders` のエントリも不要です。[Islands: `?raw` でテキストをインポートする](../concepts/islands.mdx#raw-でテキストをインポートする)、または[クライアントスクリプト](./client-scripts.mdx#raw-でテキストをインポートする)を参照してください。
+
+## Module worker が出力されない、または `SharedWorker` が失敗する
+
+**症状:** worker constructor が書き換えられず `worker-*.js` companion も現れない、または build が `unsupported SharedWorker` を報告する。
+
+**原因:** zfb は shadow されていないグローバルの `Worker` を、下記のリテラルな module 形式でだけ探索します。URL はクエリや fragment のない、厳密なプロジェクトローカル相対パスの JS / TS ファイルを指す必要があります。リテラルでない形式や classic worker はコントラクトの対象外です。探索は意図的にインストール済みの `node_modules` をたどりません。同じリテラル URL 形式を使う `SharedWorker` は、一見サポートされるように見える URL が書き換えられず実行時に 404 する状態を避けるため、明示的に拒否されます。
+
+**対処:** first-party の dedicated worker には次の形式を使います。
+
+```ts
+const worker = new Worker(
+  new URL("./worker.ts", import.meta.url),
+  { type: "module" },
+);
+```
+
+island の worker は `/assets/worker-*.js`、クライアントスクリプトの worker は `/assets/client/worker-*.js` に置かれます。書き換え後の URL はその安定名を維持し、厳密に 8 文字の小文字 16 進数である `?v=` グラフハッシュを追加します。サポートされない形式や third-party の推移的 worker は、パッケージ固有のツールでバンドルしてください。[Islands: Module worker](../concepts/islands.mdx#module-worker)を参照してください。
 
 ## プロジェクトルート外への相対インポートが "Could not resolve" になる
 

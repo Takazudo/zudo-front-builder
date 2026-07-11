@@ -15,9 +15,9 @@
 use std::path::{Path, PathBuf};
 
 use zfb_islands::{
-    bundle_link_href, manifest_json, scan_islands, BundleConfig, BundleOutput, ClientBundler,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, Island, Manifest,
-    NativeRustBundler,
+    bundle_link_href, manifest_json, module_worker_filename, scan_islands, BundleConfig,
+    BundleOutput, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver,
+    Island, Manifest, ModuleWorkerBundleEntry, NativeRustBundler,
 };
 
 fn island(name: &str, path: &str) -> Island {
@@ -554,7 +554,11 @@ fn no_dynamic_import_yields_single_file() {
             (ZFB_ESBUILD_BIN, absolute path, or the staged \
             crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
 fn client_script_real_esbuild_bundles_discovered_entry() {
-    use zfb_islands::{build_production_client_scripts, discover_client_scripts};
+    use std::collections::BTreeMap;
+    use zfb_islands::{
+        build_production_client_scripts_with_workers, discover_client_scripts,
+        module_worker_filename, ClientScriptWorkerEntry,
+    };
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
@@ -571,14 +575,38 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
     std::fs::write(
         pages.join("search-widget.client.ts"),
         "const q: string = \"zfb_client_entry_marker\";\n\
+         new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });\n\
          import(\"./lazy-part.ts\").then((m) => console.log(q, m.LAZY_MARKER));\n",
     )
     .expect("write client entry");
+    let worker_path = pages.join("search.worker.ts");
+    std::fs::write(
+        &worker_path,
+        "self.postMessage('zfb_client_worker_marker');\n",
+    )
+    .expect("write module worker");
 
     let (entries, collisions) = discover_client_scripts(root).expect("discovery");
     assert!(collisions.is_empty(), "no collisions: {collisions:?}");
     assert_eq!(entries.len(), 1, "exactly one entry: {entries:?}");
     assert_eq!(entries[0].entry_name, "search-widget");
+
+    // The command-layer preprocessing pass applies this exact locked rewrite
+    // before handing the staged sources to the islands crate.
+    let entry_source = std::fs::read_to_string(&entries[0].source_path).unwrap();
+    let rewrite =
+        zfb_build::rewrite_module_worker_urls(&entry_source, &entries[0].source_path, root)
+            .expect("rewrite worker URL");
+    assert!(rewrite.expanded_source.contains(".js?v="));
+    std::fs::write(&entries[0].source_path, rewrite.expanded_source).unwrap();
+    let worker_filename = module_worker_filename(root, &worker_path).unwrap();
+    let workers = BTreeMap::from([(
+        "search-widget".to_string(),
+        vec![ClientScriptWorkerEntry {
+            filename: worker_filename.clone(),
+            source_path: worker_path,
+        }],
+    )]);
 
     let bundler =
         EsbuildSubprocessBundler::new(EsbuildSubprocessConfig::default().with_working_dir(root));
@@ -586,8 +614,8 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
         .with_outdir(root.join("dist"))
         .with_minify(false);
 
-    let assets =
-        build_production_client_scripts(&bundler, &entries, &cfg).expect("real esbuild bundle");
+    let assets = build_production_client_scripts_with_workers(&bundler, &entries, &workers, &cfg)
+        .expect("real esbuild bundle");
     assert_eq!(assets.len(), 1);
     let asset = &assets[0];
 
@@ -612,6 +640,653 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
         !js.contains(": string"),
         "TS annotation survived bundling:\n{js}"
     );
+    assert!(js.contains(&worker_filename), "worker URL missing:\n{js}");
+    assert!(js.contains("?v="), "worker cache query missing:\n{js}");
+    assert_eq!(asset.companions.len(), 1);
+    assert_eq!(asset.companions[0].filename, worker_filename);
+    assert!(
+        String::from_utf8_lossy(&asset.companions[0].bytes).contains("zfb_client_worker_marker"),
+        "worker bundle marker missing"
+    );
+}
+
+/// Model the command-layer preprocessing stage: config files and rewritten
+/// sources/helpers all live under the same shadow root. Both the client entry
+/// and worker must discover that physical config and resolve aliases to the
+/// shadow copies, never to untouched real-project files.
+#[test]
+#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb-islands --test integration \
+            client_script_shadow_jobs_resolve_project_tsconfig_aliases -- --ignored"]
+fn client_script_shadow_jobs_resolve_project_tsconfig_aliases() {
+    use zfb_islands::{module_worker_filename, ClientScriptWorkerEntry};
+
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    std::fs::create_dir_all(root.join("pages")).unwrap();
+    std::fs::create_dir_all(root.join("lib")).unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{
+          "compilerOptions": {
+            "baseUrl": ".",
+            "paths": { "@client/*": ["lib/*"] }
+          }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("lib/entry-helper.ts"),
+        "export const entryMarker = 'ZFB_REAL_ENTRY_MUST_NOT_BUNDLE';\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("lib/worker-helper.ts"),
+        "export const workerMarker = 'ZFB_REAL_WORKER_MUST_NOT_BUNDLE';\n",
+    )
+    .unwrap();
+
+    let logical_worker = root.join("pages/shadow.worker.ts");
+    let worker_filename = module_worker_filename(root, &logical_worker).unwrap();
+    let shadow = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(shadow.path().join("pages")).unwrap();
+    std::fs::create_dir_all(shadow.path().join("lib")).unwrap();
+    std::fs::copy(
+        root.join("tsconfig.json"),
+        shadow.path().join("tsconfig.json"),
+    )
+    .unwrap();
+    std::fs::write(
+        shadow.path().join("lib/entry-helper.ts"),
+        "export const entryMarker = 'ZFB_SHADOW_CLIENT_ENTRY_ALIAS';\n",
+    )
+    .unwrap();
+    std::fs::write(
+        shadow.path().join("lib/worker-helper.ts"),
+        "export const workerMarker = 'ZFB_SHADOW_CLIENT_WORKER_ALIAS';\n",
+    )
+    .unwrap();
+    let staged_entry = shadow.path().join("pages/shadow.client.ts");
+    let staged_worker = shadow.path().join("pages/shadow.worker.ts");
+    std::fs::write(
+        &staged_entry,
+        format!(
+            "import {{ entryMarker }} from '@client/entry-helper';\n\
+             console.log(entryMarker);\n\
+             new Worker(new URL('./{worker_filename}?v=fixture', import.meta.url), \
+             {{ type: 'module' }});\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &staged_worker,
+        "import { workerMarker } from '@client/worker-helper';\n\
+         self.postMessage(workerMarker);\n",
+    )
+    .unwrap();
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(shadow.path().to_path_buf()),
+    );
+    let config = BundleConfig::production()
+        .with_outdir(root.join("dist"))
+        .with_minify(false)
+        .with_sourcemap(false);
+    let output = bundler
+        .bundle_client_script_file_with_workers(
+            "shadow",
+            &staged_entry,
+            &[ClientScriptWorkerEntry {
+                filename: worker_filename.clone(),
+                source_path: staged_worker,
+            }],
+            &config,
+        )
+        .expect("shadow client entry + worker bundle with project tsconfig aliases");
+
+    assert!(
+        output.js.contains("ZFB_SHADOW_CLIENT_ENTRY_ALIAS"),
+        "staged client entry did not resolve the project alias: {}",
+        output.js
+    );
+    assert!(!output.js.contains("ZFB_REAL_ENTRY_MUST_NOT_BUNDLE"));
+    assert!(output.js.contains(&worker_filename), "{}", output.js);
+    assert_eq!(output.companions.len(), 1);
+    assert_eq!(output.companions[0].filename, worker_filename);
+    let worker_js = String::from_utf8_lossy(&output.companions[0].bytes);
+    assert!(
+        worker_js.contains("ZFB_SHADOW_CLIENT_WORKER_ALIAS"),
+        "staged client worker did not resolve the project alias: {worker_js}"
+    );
+    assert!(!worker_js.contains("ZFB_REAL_WORKER_MUST_NOT_BUNDLE"));
+}
+
+// -----------------------------------------------------------------------------
+// Terminal `?raw` preprocessing (#1499) — real-esbuild integration
+// -----------------------------------------------------------------------------
+
+#[test]
+#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb-islands --test integration \
+            islands_shadow_raw_import_bundles_text -- --ignored"]
+fn islands_shadow_raw_import_bundles_text() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("components")).unwrap();
+    let importer = root.join("components/shader.tsx");
+    std::fs::write(
+        &importer,
+        "\"use client\";\nimport shader from './demo.frag?raw';\n\
+         export function Shader() { return shader; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("components/demo.frag"),
+        "ZFB_RAW_ISLAND_MARKER\nline-two\n",
+    )
+    .unwrap();
+
+    let expansion = zfb_build::raw_import_expand::expand_raw_imports(
+        &std::fs::read_to_string(&importer).unwrap(),
+        &importer,
+        root,
+        &|_| false,
+    )
+    .unwrap();
+    let shadow = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(shadow.path().join("components")).unwrap();
+    shadow_link(
+        &root.join("node_modules"),
+        &shadow.path().join("node_modules"),
+    );
+    let shadow_importer = shadow.path().join("components/shader.tsx");
+    std::fs::write(&shadow_importer, expansion.expanded_source).unwrap();
+    for module in expansion.generated_modules {
+        std::fs::write(
+            shadow.path().join("components").join(module.filename),
+            module.source,
+        )
+        .unwrap();
+    }
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
+    );
+    let config = BundleConfig::production()
+        .with_outdir(root.join("dist"))
+        .with_minify(false)
+        .with_preserve_symlinks(true);
+    let output = bundler
+        .bundle(&[Island::new("Shader", shadow_importer)], &config)
+        .expect("raw island bundle");
+    let js = String::from_utf8(output.bytes).unwrap();
+    assert!(!js.contains("?raw"), "{js}");
+    assert!(js.contains("ZFB_RAW_ISLAND_MARKER"), "{js}");
+    assert!(js.contains("line-two"), "{js}");
+}
+
+#[test]
+#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb-islands --test integration \
+            client_script_raw_import_bundles_text -- --ignored"]
+fn client_script_raw_import_bundles_text() {
+    use zfb_islands::{build_production_client_scripts, ClientScriptEntry};
+
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    std::fs::create_dir_all(root.join("pages")).unwrap();
+    let importer = root.join("pages/raw.client.ts");
+    std::fs::write(
+        &importer,
+        "import text from './message.txt?raw';\nconsole.log(text);\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("pages/message.txt"),
+        "ZFB_RAW_CLIENT_MARKER\nsecond-line\n",
+    )
+    .unwrap();
+    let expansion = zfb_build::raw_import_expand::expand_raw_imports(
+        &std::fs::read_to_string(&importer).unwrap(),
+        &importer,
+        root,
+        &|_| false,
+    )
+    .unwrap();
+    let stage = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(stage.path().join("pages")).unwrap();
+    let staged_entry = stage.path().join("pages/raw.client.ts");
+    std::fs::write(&staged_entry, expansion.expanded_source).unwrap();
+    for module in expansion.generated_modules {
+        std::fs::write(
+            stage.path().join("pages").join(module.filename),
+            module.source,
+        )
+        .unwrap();
+    }
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(stage.path().to_path_buf()),
+    );
+    let config = BundleConfig::production()
+        .with_outdir(stage.path().join("dist"))
+        .with_minify(false);
+    let assets = build_production_client_scripts(
+        &bundler,
+        &[ClientScriptEntry {
+            entry_name: "raw".into(),
+            source_path: staged_entry,
+        }],
+        &config,
+    )
+    .expect("raw client script bundle");
+    let js = String::from_utf8(assets[0].bytes.clone()).unwrap();
+    assert!(!js.contains("?raw"), "{js}");
+    assert!(js.contains("ZFB_RAW_CLIENT_MARKER"), "{js}");
+    assert!(js.contains("second-line"), "{js}");
+}
+
+// -----------------------------------------------------------------------------
+// Module-worker emission (#1501) — real-esbuild integration
+// -----------------------------------------------------------------------------
+
+#[test]
+#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb-islands --test integration \
+            island_module_worker_emits_contract_companion_and_dev_layout -- --ignored"]
+fn island_module_worker_emits_contract_companion_and_dev_layout() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("components")).unwrap();
+    std::fs::create_dir_all(root.join("pages")).unwrap();
+    std::fs::create_dir_all(root.join("lib")).unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{
+          "compilerOptions": {
+            "baseUrl": ".",
+            "paths": { "@worker/*": ["lib/*"] }
+          }
+        }"#,
+    )
+    .unwrap();
+
+    let island_path = root.join("components/Search.tsx");
+    let worker_path = root.join("pages/search.worker.ts");
+    let helper_path = root.join("lib/tokenize.ts");
+    let island_source = "'use client';\n\
+         export function Search() {\n\
+           new Worker(new URL('../pages/search.worker.ts', import.meta.url), { type: 'module' });\n\
+           return null;\n\
+         }\n";
+    std::fs::write(&island_path, island_source).unwrap();
+    std::fs::write(
+        &worker_path,
+        "import { tokenize } from '@worker/tokenize';\n\
+         self.postMessage('ZFB_MODULE_WORKER_ENTRY:' + tokenize('ready'));\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &helper_path,
+        "export const tokenize = (value: string) => 'ZFB_MODULE_WORKER_HELPER_ONE:' + value;\n",
+    )
+    .unwrap();
+
+    // Mirror the command layer's preprocessing shadow, including the config,
+    // alias target, and dependency tree that real staging places beside the
+    // rewritten sources. This keeps config discovery and `paths` resolution
+    // anchored in the shadow instead of falling back to untouched real files.
+    let shadow = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(shadow.path().join("components")).unwrap();
+    std::fs::create_dir_all(shadow.path().join("pages")).unwrap();
+    std::fs::create_dir_all(shadow.path().join("lib")).unwrap();
+    stage_minimal_node_modules(shadow.path());
+    std::fs::copy(
+        root.join("tsconfig.json"),
+        shadow.path().join("tsconfig.json"),
+    )
+    .unwrap();
+    let shadow_island = shadow.path().join("components/Search.tsx");
+    let shadow_worker = shadow.path().join("pages/search.worker.ts");
+    let shadow_helper = shadow.path().join("lib/tokenize.ts");
+    std::fs::copy(&worker_path, &shadow_worker).unwrap();
+    std::fs::copy(&helper_path, &shadow_helper).unwrap();
+
+    let worker_filename = module_worker_filename(root, &worker_path).unwrap();
+    let rewritten_specifier_prefix = format!("./{worker_filename}?v=");
+    let first_rewrite =
+        zfb_build::rewrite_module_worker_urls(island_source, &island_path, root).unwrap();
+    assert_eq!(first_rewrite.worker_edges.len(), 1);
+    assert!(
+        first_rewrite
+            .expanded_source
+            .contains(&rewritten_specifier_prefix),
+        "rewritten island source must use the stable worker URL plus graph hash: {}",
+        first_rewrite.expanded_source
+    );
+    std::fs::write(&shadow_island, &first_rewrite.expanded_source).unwrap();
+
+    let dev_assets_root = root.join(".zfb-build/dev-assets");
+    let worker_entry = ModuleWorkerBundleEntry::new(root, &worker_path, &shadow_worker).unwrap();
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(shadow.path().to_path_buf()),
+    );
+    let config = BundleConfig::dev()
+        .with_outdir(&dev_assets_root)
+        .with_sourcemap(false)
+        .with_module_workers(vec![worker_entry]);
+    let first_output = bundler
+        .bundle(&[Island::new("Search", &shadow_island)], &config)
+        .expect("first island + shadow module-worker bundle with project tsconfig alias");
+
+    // Tick two: editing an alias-resolved helper outside components/src must
+    // change both the worker bytes and the parent island's #1500 graph query.
+    std::fs::write(
+        &helper_path,
+        "export const tokenize = (value: string) => 'ZFB_MODULE_WORKER_HELPER_TWO:' + value;\n",
+    )
+    .unwrap();
+    std::fs::copy(&helper_path, &shadow_helper).unwrap();
+    let second_rewrite =
+        zfb_build::rewrite_module_worker_urls(island_source, &island_path, root).unwrap();
+    assert_ne!(
+        first_rewrite.expanded_source, second_rewrite.expanded_source,
+        "worker dependency edit must update the parent URL ?v= graph query"
+    );
+    std::fs::write(&shadow_island, &second_rewrite.expanded_source).unwrap();
+    let output = bundler
+        .bundle(&[Island::new("Search", &shadow_island)], &config)
+        .expect("second island + shadow module-worker bundle with project tsconfig alias");
+
+    assert_eq!(
+        output.asset_path,
+        dev_assets_root.join("assets/islands.js"),
+        "dev entry must target the isolated dev-assets root"
+    );
+    let entry_js = String::from_utf8(output.bytes.clone()).unwrap();
+    assert!(
+        entry_js.contains(&worker_filename) && entry_js.contains("?v="),
+        "bundled islands entry lost the rewritten worker URL: {entry_js}"
+    );
+    assert!(output.chunks.is_empty(), "fixture has no dynamic import");
+    assert_eq!(output.workers.len(), 1);
+    assert_eq!(output.workers[0].filename, worker_filename);
+    assert!(
+        !output.workers[0].filename.contains('/') && !output.workers[0].filename.contains('\\'),
+        "worker companion must stay flat"
+    );
+    let worker_js = String::from_utf8(output.workers[0].bytes.clone()).unwrap();
+    assert!(worker_js.contains("ZFB_MODULE_WORKER_ENTRY"), "{worker_js}");
+    assert!(
+        worker_js.contains("ZFB_MODULE_WORKER_HELPER_TWO"),
+        "splitting=false must resolve and inline the project tsconfig alias: {worker_js}"
+    );
+    assert_ne!(
+        first_output.workers[0].bytes, output.workers[0].bytes,
+        "worker dependency edit must update emitted companion bytes"
+    );
+
+    // Exercise the exact disk layout the dev refresh lifecycle consumes:
+    // stable entry and stable worker companion flat beside one another under
+    // `.zfb-build/dev-assets/assets/`.
+    let assets_dir = output.asset_path.parent().unwrap();
+    std::fs::create_dir_all(assets_dir).unwrap();
+    std::fs::write(&output.asset_path, &output.bytes).unwrap();
+    for worker in &output.workers {
+        std::fs::write(assets_dir.join(&worker.filename), &worker.bytes).unwrap();
+    }
+    assert!(dev_assets_root.join("assets/islands.js").is_file());
+    assert!(
+        dev_assets_root
+            .join("assets")
+            .join(&output.workers[0].filename)
+            .is_file(),
+        "worker must be flat beside islands.js in dev-assets"
+    );
+}
+
+#[test]
+#[ignore = "env-gate: pinned esbuild binary — verifies define-only worker cache invalidation"]
+fn module_worker_define_only_change_updates_query_and_emitted_bytes() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let island = root.join("src/Island.tsx");
+    let worker = root.join("src/worker.ts");
+    let island_source = "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }";
+    std::fs::write(&island, island_source).unwrap();
+    std::fs::write(&worker, "self.postMessage(__WORKER_DEFINE__);").unwrap();
+
+    let run = |define_value: &str| {
+        let define = std::collections::BTreeMap::from([(
+            "__WORKER_DEFINE__".to_string(),
+            define_value.to_string(),
+        )]);
+        let context = zfb_build::ModuleWorkerBuildContext::new(
+            false,
+            &std::collections::BTreeMap::new(),
+            &define,
+            "preact",
+        )
+        .with_output_semantics(false, false);
+        let rewrite = zfb_build::rewrite_module_worker_urls_with_context(
+            island_source,
+            &island,
+            root,
+            &context,
+        )
+        .unwrap();
+        std::fs::write(&island, &rewrite.expanded_source).unwrap();
+        let bundler = EsbuildSubprocessBundler::new(
+            EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
+        );
+        let worker_entry = ModuleWorkerBundleEntry::new(root, &worker, &worker).unwrap();
+        let config = BundleConfig::dev()
+            .with_outdir(root.join("dist"))
+            .with_sourcemap(false)
+            .with_define(define)
+            .with_module_workers(vec![worker_entry]);
+        let output = bundler
+            .bundle(&[Island::new("Island", &island)], &config)
+            .unwrap();
+        (rewrite.expanded_source, output.workers[0].bytes.clone())
+    };
+
+    let first = run("1");
+    let second = run("2");
+    assert_ne!(first.0, second.0, "define-only edit must change ?v=");
+    assert_ne!(
+        first.1, second.1,
+        "define-only edit must change emitted worker bytes"
+    );
+    assert!(String::from_utf8(second.1)
+        .unwrap()
+        .contains("postMessage(2)"));
+}
+
+#[test]
+#[ignore = "env-gate: pinned esbuild binary — verifies package-metadata-only worker cache invalidation"]
+fn module_worker_package_config_switch_updates_query_and_emitted_bytes() {
+    let project = tempfile::tempdir().unwrap();
+    let workspace = project.path();
+    let project_dir = workspace.join("project");
+    let root = project_dir.as_path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(workspace.join("config")).unwrap();
+    let package = workspace.join("node_modules/@scope/worker-config");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("assignment.json"),
+        r#"{"compilerOptions":{"useDefineForClassFields":false}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        package.join("define.json"),
+        r#"{"compilerOptions":{"useDefineForClassFields":true}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("config/neutral.json"),
+        r#"{"compilerOptions":{"jsx":"automatic"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("jsconfig.json"),
+        r#"{"extends":["@scope/worker-config","./config/neutral.json"]}"#,
+    )
+    .unwrap();
+    let island = root.join("src/Island.tsx");
+    let worker = root.join("src/worker.ts");
+    let island_source = "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }";
+    std::fs::write(&island, island_source).unwrap();
+    std::fs::write(
+        &worker,
+        "class WorkerMessage { value = 'ZFB_CONFIG_CHAIN_WORKER'; } self.postMessage(new WorkerMessage().value);",
+    )
+    .unwrap();
+
+    let run = |use_define_for_class_fields: bool| {
+        let selected = if use_define_for_class_fields {
+            "define.json"
+        } else {
+            "assignment.json"
+        };
+        std::fs::write(
+            package.join("package.json"),
+            format!(r#"{{"name":"@scope/worker-config","tsconfig":"{selected}"}}"#),
+        )
+        .unwrap();
+        let context =
+            zfb_build::ModuleWorkerBuildContext::default().with_output_semantics(false, false);
+        let rewrite = zfb_build::rewrite_module_worker_urls_with_context(
+            island_source,
+            &island,
+            root,
+            &context,
+        )
+        .unwrap();
+        std::fs::write(&island, &rewrite.expanded_source).unwrap();
+        let bundler = EsbuildSubprocessBundler::new(
+            EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
+        );
+        let worker_entry = ModuleWorkerBundleEntry::new(root, &worker, &worker).unwrap();
+        let config = BundleConfig::dev()
+            .with_outdir(root.join("dist"))
+            .with_sourcemap(false)
+            .with_module_workers(vec![worker_entry]);
+        let output = bundler
+            .bundle(&[Island::new("Island", &island)], &config)
+            .unwrap();
+        (rewrite.expanded_source, output.workers[0].bytes.clone())
+    };
+
+    let assignment = run(false);
+    let define = run(true);
+    assert_ne!(
+        assignment.0, define.0,
+        "package.json-only config switch must change the worker ?v= query"
+    );
+    assert_ne!(
+        assignment.1, define.1,
+        "package.json-only config switch must change emitted worker bytes"
+    );
+    assert!(String::from_utf8(define.1)
+        .unwrap()
+        .contains("ZFB_CONFIG_CHAIN_WORKER"));
+}
+
+#[test]
+#[ignore = "env-gate: pinned esbuild binary — verifies plugin resolver cache/emission parity"]
+fn module_worker_plugin_inputs_update_query_closure_and_emitted_bytes() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("lib")).unwrap();
+    let island = root.join("src/Island.tsx");
+    let worker = root.join("src/worker.ts");
+    let alias_target = root.join("lib/alias.ts");
+    let virtual_helper = root.join("virtual-helper.ts");
+    let island_source = "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }";
+    std::fs::write(&island, island_source).unwrap();
+    std::fs::write(
+        &worker,
+        "import { aliasValue } from 'worker:alias'; import { virtualValue } from 'virtual:worker'; self.postMessage(aliasValue + virtualValue);",
+    )
+    .unwrap();
+    std::fs::write(&virtual_helper, "export const helper = 'H1';").unwrap();
+
+    let run = |alias_value: &str, virtual_suffix: &str| {
+        std::fs::write(
+            &alias_target,
+            format!("export const aliasValue = {alias_value:?};"),
+        )
+        .unwrap();
+        let aliases = vec![(
+            "worker:alias".to_string(),
+            alias_target.to_string_lossy().into_owned(),
+        )];
+        let virtuals = vec![(
+            "virtual:worker".to_string(),
+            format!(
+                "import {{ helper }} from './virtual-helper.ts'; export const virtualValue = helper + {virtual_suffix:?};"
+            ),
+        )];
+        let context = zfb_build::ModuleWorkerBuildContext::default()
+            .with_plugins(aliases.clone(), virtuals.clone())
+            .with_output_semantics(false, false);
+        let rewrite = zfb_build::rewrite_module_worker_urls_with_context(
+            island_source,
+            &island,
+            root,
+            &context,
+        )
+        .unwrap();
+        std::fs::write(&island, &rewrite.expanded_source).unwrap();
+        let bundler = EsbuildSubprocessBundler::new(
+            EsbuildSubprocessConfig::default()
+                .with_working_dir(root.to_path_buf())
+                .with_alias_entries(aliases)
+                .with_virtual_modules(virtuals),
+        );
+        let config = BundleConfig::dev()
+            .with_outdir(root.join("dist"))
+            .with_sourcemap(false)
+            .with_module_workers(vec![
+                ModuleWorkerBundleEntry::new(root, &worker, &worker).unwrap()
+            ]);
+        let output = bundler
+            .bundle(&[Island::new("Island", &island)], &config)
+            .unwrap();
+        (
+            rewrite.expanded_source,
+            rewrite.dependencies,
+            output.workers[0].bytes.clone(),
+        )
+    };
+
+    let first = run("A1", "V1");
+    assert!(first
+        .1
+        .iter()
+        .any(|dependency| dependency.dependency == alias_target));
+    assert!(first
+        .1
+        .iter()
+        .any(|dependency| dependency.dependency == virtual_helper));
+    let alias_changed = run("A2", "V1");
+    assert_ne!(first.0, alias_changed.0);
+    assert_ne!(first.2, alias_changed.2);
+    let virtual_changed = run("A2", "V2");
+    assert_ne!(alias_changed.0, virtual_changed.0);
+    assert_ne!(alias_changed.2, virtual_changed.2);
+    let emitted = String::from_utf8(virtual_changed.2).unwrap();
+    assert!(emitted.contains("A2"), "{emitted}");
+    assert!(emitted.contains("V2"), "{emitted}");
 }
 
 // -----------------------------------------------------------------------------

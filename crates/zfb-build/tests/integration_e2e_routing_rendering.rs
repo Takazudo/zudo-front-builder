@@ -332,6 +332,7 @@ fn build_bundle(
 ) -> BundlerOutput {
     let input = BundlerInput {
         main_fields: Vec::new(),
+        extra_loader_args: Vec::new(),
         project_root: fixture_root.to_path_buf(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
@@ -339,7 +340,8 @@ fn build_bundle(
         components_dir: PathBuf::from("components"),
         layouts_dir: PathBuf::from("layouts"),
         framework,
-        define_vars: Default::default(),
+        define_vars: std::collections::BTreeMap::new(),
+        public_env_vars: Default::default(),
         tsconfig_paths: BTreeMap::new(),
         external: vec![],
         outdir: dist.to_path_buf(),

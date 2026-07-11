@@ -50,7 +50,130 @@
 //! - We do **not** decide here whether a `.tsx` is a page; we let the
 //!   graph answer that via `dirty_pages`.
 
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, RwLock};
+
+/// Live dependency sets consumed by the islands and client-script dev
+/// sub-pipelines.
+///
+/// Generated `.zfb-raw-*.mjs` files are ephemeral shadow artifacts and never
+/// watcher inputs. For islands the set includes ORIGINAL raw targets plus the
+/// complete first-party module-worker graph; client scripts register raw
+/// targets plus their module-worker dependencies in separate sets. A
+/// successful scanner/preprocess pass replaces each set with both logical and
+/// canonical real-path aliases. The granularity policy consults them on every
+/// event, and exposes all three sets to the dynamic watcher, so raw edits,
+/// worker-graph edits, and symlink retarget/deletes still rerun the owning
+/// consumer pipeline.
+#[derive(Debug, Clone, Default)]
+pub struct RawImportInvalidation {
+    islands: Arc<RwLock<BTreeSet<PathBuf>>>,
+    client_scripts: Arc<RwLock<BTreeSet<PathBuf>>>,
+    client_script_workers: Arc<RwLock<BTreeSet<PathBuf>>>,
+}
+
+impl RawImportInvalidation {
+    fn resolved_alias(path: &Path) -> Option<PathBuf> {
+        let mut cursor = path;
+        let mut missing_suffix = Vec::new();
+        loop {
+            if let Ok(mut canonical) = cursor.canonicalize() {
+                for component in missing_suffix.iter().rev() {
+                    canonical.push(component);
+                }
+                return Some(zfb_types::normalize_path_lexical(&canonical));
+            }
+            missing_suffix.push(cursor.file_name()?.to_os_string());
+            cursor = cursor.parent()?;
+        }
+    }
+
+    fn aliases(path: PathBuf) -> impl Iterator<Item = PathBuf> {
+        let lexical = zfb_types::normalize_path_lexical(&path);
+        let resolved = Self::resolved_alias(&path);
+        std::iter::once(lexical).chain(resolved)
+    }
+
+    fn replace(set: &RwLock<BTreeSet<PathBuf>>, paths: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut set) = set.write() {
+            *set = paths.into_iter().flat_map(Self::aliases).collect();
+        }
+    }
+
+    /// Atomically replace the islands dependency set after a successful scan.
+    pub fn replace_islands(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        Self::replace(&self.islands, paths);
+    }
+
+    /// Snapshot the current islands dependency aliases for dynamic watcher
+    /// registration. A clone keeps the registry lock out of notify calls.
+    pub fn islands_paths(&self) -> BTreeSet<PathBuf> {
+        self.islands
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
+    }
+
+    /// Atomically replace the client-script raw-target set after a successful
+    /// staging/bundle pass.
+    pub fn replace_client_scripts(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        Self::replace(&self.client_scripts, paths);
+    }
+
+    /// Snapshot the current client-script raw-target aliases for dynamic
+    /// watcher registration. Logical aliases remain present across deletion,
+    /// so watching their parents preserves recreate recovery.
+    pub fn client_script_paths(&self) -> BTreeSet<PathBuf> {
+        self.client_scripts
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
+    }
+
+    /// Atomically replace the complete first-party invalidation closure for
+    /// client-script-owned module workers, including constructor importers.
+    pub fn replace_client_script_workers(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        Self::replace(&self.client_script_workers, paths);
+    }
+
+    /// Snapshot the current client-script worker dependency aliases for
+    /// dynamic watcher registration. Constructor importers are included in
+    /// the closure supplied by the successful client-script bundle pass.
+    pub fn client_script_worker_paths(&self) -> BTreeSet<PathBuf> {
+        self.client_script_workers
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
+    }
+
+    fn contains(set: &RwLock<BTreeSet<PathBuf>>, path: &Path) -> bool {
+        let lexical = zfb_types::normalize_path_lexical(path);
+        let resolved = Self::resolved_alias(path);
+        set.read()
+            .map(|paths| {
+                paths.contains(path)
+                    || paths.contains(&lexical)
+                    || resolved.as_ref().is_some_and(|path| paths.contains(path))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Whether `path` participates in the current islands raw/worker graph.
+    pub fn is_islands_target(&self, path: &Path) -> bool {
+        Self::contains(&self.islands, path)
+    }
+
+    /// Whether `path` is a terminal target in the current client-script graph.
+    pub fn is_client_script_target(&self, path: &Path) -> bool {
+        Self::contains(&self.client_scripts, path)
+    }
+
+    /// Whether `path` is part of the current client-script worker graph.
+    pub fn is_client_script_worker_target(&self, path: &Path) -> bool {
+        Self::contains(&self.client_script_workers, path)
+    }
+}
 
 /// Coarse-grained classification of a changed file. Drives which
 /// sub-pipelines the orchestrator considers running.
@@ -305,6 +428,10 @@ pub struct GranularityPolicy {
     /// hardcoded `content/` root in the walk keeps covering the
     /// conventional layout).
     pub content_roots: Vec<PathBuf>,
+
+    /// Session-live raw-target and module-worker dependency sets. Empty by
+    /// default.
+    pub raw_import_invalidation: RawImportInvalidation,
 }
 
 impl Default for GranularityPolicy {
@@ -312,6 +439,7 @@ impl Default for GranularityPolicy {
         Self {
             islands_roots: vec![PathBuf::from("components"), PathBuf::from("src")],
             content_roots: Vec::new(),
+            raw_import_invalidation: RawImportInvalidation::default(),
         }
     }
 }
@@ -337,6 +465,52 @@ impl GranularityPolicy {
     {
         self.content_roots = roots.into_iter().map(Into::into).collect();
         self
+    }
+
+    /// Attach the live dependency registry shared with the dev bundlers.
+    pub fn with_raw_import_invalidation(mut self, invalidation: RawImportInvalidation) -> Self {
+        self.raw_import_invalidation = invalidation;
+        self
+    }
+
+    /// Whether this exact changed path is in the live islands raw/worker
+    /// dependency closure.
+    pub fn is_islands_dependency(&self, path: &Path) -> bool {
+        self.raw_import_invalidation.is_islands_target(path)
+    }
+
+    /// Backward-compatible name for callers that only register islands raw
+    /// targets. The live set may now also contain module-worker dependencies;
+    /// new code should use [`Self::is_islands_dependency`].
+    pub fn is_islands_raw_target(&self, path: &Path) -> bool {
+        self.is_islands_dependency(path)
+    }
+
+    /// Snapshot live islands dependency aliases for dynamic watch roots.
+    pub fn islands_dependency_paths(&self) -> BTreeSet<PathBuf> {
+        self.raw_import_invalidation.islands_paths()
+    }
+
+    /// Snapshot the browser dependency aliases that need dynamic parent
+    /// watches. Invalidation predicates remain pipeline-specific; this union
+    /// only controls which filesystem events can reach the orchestrator.
+    pub fn dynamic_dependency_paths(&self) -> BTreeSet<PathBuf> {
+        let mut paths = self.raw_import_invalidation.islands_paths();
+        paths.extend(self.raw_import_invalidation.client_script_paths());
+        paths.extend(self.raw_import_invalidation.client_script_worker_paths());
+        paths
+    }
+
+    /// Whether this exact changed path is a client-script terminal raw target.
+    pub fn is_client_script_raw_target(&self, path: &Path) -> bool {
+        self.raw_import_invalidation.is_client_script_target(path)
+    }
+
+    /// Whether this exact changed path belongs to a client-script module
+    /// worker graph captured by the latest successful bundle.
+    pub fn is_client_script_worker_target(&self, path: &Path) -> bool {
+        self.raw_import_invalidation
+            .is_client_script_worker_target(path)
     }
 
     /// Decide whether a `Module` change is inside an islands root.
@@ -405,6 +579,64 @@ fn path_starts_with_segment(path: &Path, segment: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_script_worker_invalidation_replaces_stale_graph_between_ticks() {
+        let invalidation = RawImportInvalidation::default();
+        let worker = PathBuf::from("/proj/src/search.worker.ts");
+        let importer = PathBuf::from("/proj/src/start.ts");
+        invalidation.replace_client_script_workers([worker.clone(), importer.clone()]);
+        assert!(invalidation.is_client_script_worker_target(&worker));
+        assert!(invalidation.is_client_script_worker_target(&importer));
+
+        // A successful second scan replaces (rather than appends to) the
+        // graph, so removing the Worker constructor drops stale triggers.
+        invalidation.replace_client_script_workers(Vec::new());
+        assert!(!invalidation.is_client_script_worker_target(&worker));
+        assert!(!invalidation.is_client_script_worker_target(&importer));
+    }
+
+    #[test]
+    fn dynamic_dependency_paths_union_browser_closures_without_cross_classifying() {
+        let invalidation = RawImportInvalidation::default();
+        let island_helper = PathBuf::from("/proj/lib/island-helper.ts");
+        let client_raw = PathBuf::from("/proj/lib/client-payload.txt");
+        let client_helper = PathBuf::from("/proj/lib/client-helper.ts");
+        let next_client_raw = PathBuf::from("/proj/lib/next-client-payload.txt");
+        let next_client_helper = PathBuf::from("/proj/lib/next-client-helper.ts");
+        invalidation.replace_islands([island_helper.clone()]);
+        invalidation.replace_client_scripts([client_raw.clone()]);
+        invalidation.replace_client_script_workers([client_helper.clone()]);
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+
+        let first = policy.dynamic_dependency_paths();
+        assert!(first.contains(&island_helper));
+        assert!(first.contains(&client_raw));
+        assert!(first.contains(&client_helper));
+        assert!(policy.is_islands_dependency(&island_helper));
+        assert!(!policy.is_islands_dependency(&client_raw));
+        assert!(!policy.is_islands_dependency(&client_helper));
+        assert!(policy.is_client_script_raw_target(&client_raw));
+        assert!(!policy.is_client_script_raw_target(&island_helper));
+        assert!(policy.is_client_script_worker_target(&client_helper));
+        assert!(!policy.is_client_script_worker_target(&island_helper));
+
+        invalidation.replace_client_scripts([next_client_raw.clone()]);
+        invalidation.replace_client_script_workers([next_client_helper.clone()]);
+        let second = policy.dynamic_dependency_paths();
+        assert!(second.contains(&island_helper));
+        assert!(second.contains(&next_client_raw));
+        assert!(second.contains(&next_client_helper));
+        assert!(
+            !second.contains(&client_raw),
+            "a replaced client raw graph must not retain stale watch aliases"
+        );
+        assert!(
+            !second.contains(&client_helper),
+            "a replaced client worker graph must not retain stale watch aliases"
+        );
+    }
 
     fn never_global(_: &Path) -> bool {
         false
@@ -895,5 +1127,61 @@ mod tests {
             !policy.is_client_script_candidate(Path::new("/proj/lib/util.client.ts")),
             "lib/ must NOT be a client-script candidate (not a discovery root)"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_invalidation_keeps_lexical_and_canonical_symlink_aliases() {
+        let project = tempfile::tempdir().unwrap();
+        let first = project.path().join("first.txt");
+        let second = project.path().join("second.txt");
+        let alias = project.path().join("current.txt");
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+        std::os::unix::fs::symlink(&first, &alias).unwrap();
+
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_islands([alias.clone()]);
+        assert!(invalidation.is_islands_target(&alias));
+        assert!(invalidation.is_islands_target(&first));
+
+        // Deleting/retargeting the symlink makes canonicalize(alias) fail or
+        // point somewhere new. The retained lexical alias must still trigger
+        // the rebuild that refreshes the canonical side of the registry.
+        std::fs::remove_file(&alias).unwrap();
+        assert!(invalidation.is_islands_target(&alias));
+        std::os::unix::fs::symlink(&second, &alias).unwrap();
+        assert!(invalidation.is_islands_target(&alias));
+        invalidation.replace_islands([alias.clone()]);
+        assert!(invalidation.is_islands_target(&second));
+        assert!(!invalidation.is_islands_target(&first));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_invalidation_aliases_missing_candidates_through_canonical_parent() {
+        let project = tempfile::tempdir().unwrap();
+        let physical = project.path().join("physical");
+        let linked = project.path().join("linked");
+        std::fs::create_dir_all(physical.join("src")).unwrap();
+        std::os::unix::fs::symlink(&physical, &linked).unwrap();
+        let logical_candidate = linked.join("src/tsconfig.json");
+        let physical_candidate = physical.join("src/tsconfig.json");
+
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_client_script_workers([logical_candidate.clone()]);
+        assert!(invalidation
+            .client_script_worker_paths()
+            .contains(&zfb_types::normalize_path_lexical(&logical_candidate)));
+        let resolved_candidate =
+            RawImportInvalidation::resolved_alias(&physical_candidate).unwrap();
+        assert!(invalidation
+            .client_script_worker_paths()
+            .contains(&resolved_candidate));
+        assert!(invalidation.is_client_script_worker_target(&physical_candidate));
+
+        std::fs::write(&physical_candidate, r#"{"compilerOptions":{}}"#).unwrap();
+        assert!(invalidation.is_client_script_worker_target(&physical_candidate));
+        assert!(invalidation.is_client_script_worker_target(&logical_candidate));
     }
 }

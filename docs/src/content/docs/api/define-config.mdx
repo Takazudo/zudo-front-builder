@@ -16,10 +16,14 @@ defineConfig(config: ZfbConfig): ZfbConfig
 
 `zfb.config.ts` imports `defineConfig` from the **bare** specifier `zfb/config`. At config-load time zfb aliases that import to a runtime-only stub (so your config parses without the `@takazudo/zfb` package installed), and no real `zfb/config` module exists in `node_modules` — the published types live under the **scoped** subpath `@takazudo/zfb/config`. So a plain `tsc --noEmit` (what `zfb check` runs) has nothing to type the bare import against and reports `Cannot find module 'zfb/config'`.
 
-Bridge the two with a one-line ambient declaration that **re-exports** the scoped package's types. Add a `zfb-shim.d.ts` at your project root (any `.d.ts` your `tsconfig` includes works):
+Bridge the two with a one-line ambient declaration that **re-exports** the
+scoped package's types. Put `zfb-shim.d.ts` in a directory your `tsconfig`
+includes; `components/zfb-shim.d.ts` works with the stock template. If you put
+the file at the project root instead, add `"zfb-shim.d.ts"` to `include`
+explicitly.
 
 ```ts
-// zfb-shim.d.ts — types the bare `zfb/config` specifier.
+// components/zfb-shim.d.ts — types the bare `zfb/config` specifier.
 declare module "zfb/config" {
   export * from "@takazudo/zfb/config";
 }
@@ -47,7 +51,7 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
 - `tailwind?: { enabled?: boolean }` — Tailwind options. `enabled` defaults to `true`; set `tailwind: { enabled: false }` to disable Tailwind while keeping authored CSS and CSS Modules.
 - `prefetch?: { disabled?: boolean }` — prefetch options. When `disabled: true`, the runtime's prefetch wiring is skipped entirely via a build-time meta tag.
 - `minifyHtml?: boolean` — opt in to production HTML minification. Default: `false` (off). The minifier runs as Rust-side post-processing and does not spawn a Node.js minifier subprocess. The first version is conservative: rendered HTML pages are candidates, source `.html` passthrough pages remain verbatim, and non-HTML outputs are skipped. `zfb build --minify-html` / `--no-minify-html` can override the config value for one build.
-- `bundle?: { exclude?: string[]; mainFields?: string[]; external?: string[] }` — esbuild escape hatches for the `--platform=neutral` page/SSR pass. `exclude` lists project-relative globs of source files to keep out of the esbuild graph; `mainFields` overrides the main-fields list for deps without an `exports` map; `external` marks bare specifiers as external so esbuild leaves them unbundled. Useful for CJS-only deps that fail under the neutral platform (see issues #680/#676).
+- `bundle?: BundleConfig` — esbuild settings shared by the page/SSR, islands, client-script, and module-worker passes. `exclude`, `mainFields`, and `external` are escape hatches for the `--platform=neutral` page/SSR pass; `loaders` and `define` apply across all four passes. See [Bundle settings](#bundle-settings).
 - `plugins?: PluginConfig[]` — user-supplied plugins. Each entry has `name` (npm specifier or `./`-relative path) and optional `options` (an arbitrary JSON object passed to the plugin's hooks). See [Plugins](../concepts/plugins.mdx) for the full hook contract — `setup`, `preBuild`, `postBuild`, `devMiddleware` — including virtual modules, import aliases, and dev-only injected routes.
 - `presets?: Partial<ZfbConfig>[]` — config presets to merge before validation. Each preset is a partial `ZfbConfig`-shaped object, typically the return value of a preset package's factory function. Array fields (`plugins`, `collections`, `extraWatchPaths`, `allowedHosts`) are prepended from presets so the main config's entries retain their position. Scalar and object fields are key-presence-based: a key the main config provides wins even when its value equals the built-in default, while an omitted key is filled from the first preset that supplies it. Explicit `null` blocks the preset value. Nested `presets` inside a preset are not recursively expanded. Preset authors should use [`definePreset`](./define-preset.mdx) so that relative-path plugins resolve correctly.
 - `adapter?: string` — deploy-target adapter package name. Omit for a pure static build. A package like `"@takazudo/zfb-adapter-cloudflare"` wraps the SSR bundle into a deploy-ready entry (e.g. `dist/_worker.js` for Cloudflare Workers Static Assets, Pages-compatible).
@@ -70,6 +74,137 @@ The following keys are part of the same `ZfbConfig` type — `defineConfig` and 
   - `themeLight?: string` — light-mode syntect theme name for dual-theme highlighting. Must be set **together with** `themeDark` — setting only one is a build error. Mutually exclusive with `theme`. When the pair is set, each block is highlighted twice and tokens carry `--shiki-light` / `--shiki-dark` custom properties instead of an inline `color:`, the `<pre>` gets `class="syntect-dual"` plus `--shiki-light-bg` / `--shiki-dark-bg`, and the consumer resolves the active colour with a `light-dark()` CSS rule.
   - `themeDark?: string` — dark-mode syntect theme name for dual-theme highlighting. Must be set **together with** `themeLight`; mutually exclusive with `theme`. See `themeLight` for the full dual-mode contract.
 - `pluginHookTimeoutSecs` — timeout (seconds) for plugin hook invocations.
+
+## Bundle settings
+
+The browser-facing islands, client-script, and module-worker passes use the
+same mode, loader, and define settings as the page/SSR pass. This keeps code
+that is shared between server and browser graphs from changing meaning as it
+crosses a bundle boundary.
+
+### Bundle mode
+
+zfb owns three compile-time substitutions. They are selected by the command,
+not by minification:
+
+| Command | `import.meta.env.DEV` | `import.meta.env.PROD` | `process.env.NODE_ENV` |
+|---|---:|---:|---|
+| `zfb dev` | `true` | `false` | `"development"` |
+| `zfb build` | `false` | `true` | `"production"` |
+
+These values apply to islands, client scripts, their module workers, and the
+page/SSR bundle. zfb does not synthesize other `import.meta.env.*` keys. The
+three keys in the table are reserved and cannot be overridden through
+`bundle.define`.
+
+### `bundle.loaders`
+
+Use `loaders` to assign an additional esbuild loader to a file extension:
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  bundle: {
+    loaders: {
+      ".fixture": "text",
+      ".data": "binary",
+    },
+  },
+});
+```
+
+Keys must start with `.`. The inline-only v1 values are `text`, `json`,
+`base64`, `dataurl`, `binary`, and `empty`. The `file` and `copy` loaders are
+rejected because they emit sibling assets that these bundle pipelines do not
+publish. `.css`, `.module.css`, `.mdx`, and `.md` are reserved by zfb and
+cannot be overridden.
+
+`?raw` imports do not use this map. `import text from "./file.ext?raw"` always
+loads valid UTF-8 text, regardless of the extension or its configured loader.
+
+### `bundle.define`
+
+`define` values are raw esbuild replacement expressions, not automatically
+quoted strings:
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  bundle: {
+    define: {
+      __APP_NAME__: '"my-app"', // the replacement includes JSON quotes
+      __FEATURE_ENABLED__: "true",
+      __BUILD_META__: '{"channel":"preview"}',
+    },
+  },
+});
+```
+
+Without the inner JSON quotes, a value is parsed as a raw expression (and may
+be rejected) rather than as a string literal. Values are forwarded verbatim
+and are not filtered by the `PUBLIC_` environment-variable policy.
+
+<Warning title="Treat every bundle.define value as public code">
+
+`bundle.define` is trusted operator-authored build input, not a secret store or
+an input-sanitization boundary. Every configured definition is available to
+browser bundles. esbuild may remove a definition that no reachable code uses,
+but tree-shaking is not a secrecy guarantee. Never put credentials, private
+tokens, or untrusted expressions in this map.
+
+</Warning>
+
+### TypeScript ambient declarations
+
+zfb supplies the mode values, loader results, raw modules, and define
+replacements while bundling, but it does not generate TypeScript declarations
+for them. `zfb check` runs `tsc --noEmit`, so TypeScript source that uses these
+features needs matching ambient declarations in a `.d.ts` file included by
+your `tsconfig`. For example, the `.fixture` text loader and the three
+`bundle.define` entries above can be typed with
+`components/zfb-env.d.ts`, which the stock template's `tsconfig` already
+includes:
+
+```ts
+// components/zfb-env.d.ts
+interface ImportMetaEnv {
+  readonly DEV: boolean;
+  readonly PROD: boolean;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+
+declare module "*?raw" {
+  const source: string;
+  export default source;
+}
+
+declare module "*.fixture" {
+  const contents: string;
+  export default contents;
+}
+
+declare const __APP_NAME__: string;
+declare const __FEATURE_ENABLED__: boolean;
+declare const __BUILD_META__: { channel: string };
+```
+
+The filename and directory are not special; the file only has to be covered by
+`tsconfig.json`'s `include`. If you prefer a project-root `zfb-env.d.ts`, add
+that path to `include` explicitly. A declaration file outside `include` is
+invisible to `tsc`.
+
+These declarations are type-only. They do not configure esbuild, inject
+runtime values, or enable an import that zfb does not support. Keep custom
+module patterns and global types aligned with `bundle.loaders` and
+`bundle.define`; otherwise `zfb check` or `tsc` can accept the wrong runtime
+assumption or reject code that zfb can bundle. The `*?raw` declaration can
+always return `string` because that result is part of zfb's fixed raw-import
+contract.
 
 ## Watching paths outside the project root
 
@@ -149,3 +284,7 @@ The loader enforces the following rules and reports errors with the file path pl
 - Collection names must be unique.
 - `path` cannot be an absolute path.
 - `path` cannot contain `..` segments that escape the project root.
+- `bundle.loaders` keys must start with `.`, use an inline loader, and not
+  override an extension reserved by zfb.
+- `bundle.define` cannot override the mode-owned `DEV`, `PROD`, or `NODE_ENV`
+  substitutions.

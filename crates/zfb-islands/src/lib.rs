@@ -39,18 +39,19 @@ pub mod scanner;
 
 pub use bundler::{
     build_production_islands_asset, bundle_link_href, island_link_href, BundleChunk, BundleConfig,
-    BundleOutput, ClientBundler, FrameworkKind, Island, IslandBundle, IslandsChunk, ModuleId,
-    PerIslandBundleOutput, ProductionIslandsAsset,
+    BundleMode, BundleOutput, ClientBundler, FrameworkKind, Island, IslandBundle, IslandsChunk,
+    ModuleId, ModuleWorkerBundleEntry, PerIslandBundleOutput, ProductionIslandsAsset,
 };
 pub use client_scripts::{
-    build_production_client_scripts, client_script_entry_name, discover_client_scripts,
-    is_client_script_file, ClientScriptCollision, ClientScriptEntry, ProductionClientScriptAsset,
+    build_production_client_scripts, build_production_client_scripts_with_workers,
+    client_script_entry_name, discover_client_scripts, is_client_script_file,
+    ClientScriptCollision, ClientScriptEntry, ClientScriptWorkerEntry, ProductionClientScriptAsset,
     CLIENT_SCRIPT_DISCOVERY_ROOTS, CLIENT_SCRIPT_EXTENSIONS, CLIENT_SCRIPT_INFIX,
 };
 pub use esbuild::{
     hash_8, render_island_entry_source, render_runtime_entry_source,
-    render_shared_bundle_entry_source, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
-    EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
+    render_shared_bundle_entry_source, ClientScriptBundleOutput, EsbuildSubprocessBundler,
+    EsbuildSubprocessConfig, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
 };
 pub use future_rust_native::NativeRustBundler;
 pub use html_tree::HtmlTree;
@@ -61,8 +62,13 @@ pub use hydration::{
 };
 pub use manifest::{manifest_json, write_manifest, Collision, Manifest};
 pub use scanner::{
-    is_bare_specifier, scan_islands, scan_islands_with_meta, scan_reachable_modules, FsResolver,
-    InMemoryResolver, IslandsSet, Resolver, ScanError, ScanMeta, ScanResult,
+    is_bare_specifier, scan_islands, scan_islands_with_meta, scan_reachable_modules,
+    scan_reachable_modules_with_meta, FsResolver, InMemoryResolver, IslandsSet, ModuleWorkerEdge,
+    RawImportEdge, ReachableModulesMeta, Resolver, ScanError, ScanMeta, ScanResult,
+};
+pub use zfb_types::{
+    module_worker_content_hash, module_worker_filename, module_worker_url_specifier,
+    ModuleWorkerPathError, MODULE_WORKER_CSP_GLOB, MODULE_WORKER_FILENAME_PREFIX,
 };
 // Re-export from zfb-types so downstream crates get a stable path.
 pub use zfb_types::normalize_path_lexical;

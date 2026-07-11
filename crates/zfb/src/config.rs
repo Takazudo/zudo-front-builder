@@ -45,7 +45,7 @@
 //! All produced configs pass [`validate`] before they are returned so
 //! callers don't have to think about it.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _, Result};
@@ -794,6 +794,21 @@ pub struct BundleConfig {
     /// Mirrors `BundleConfig.external` in `packages/zfb/src/config.ts`.
     #[serde(default)]
     pub external: Option<Vec<String>>,
+
+    /// Additional esbuild loaders keyed by file extension (for example
+    /// `".txt" -> "text"`). Only inline loaders are accepted; loaders that
+    /// emit sibling assets (`file` / `copy`) are rejected during config
+    /// validation because the client pipelines do not publish those outputs.
+    #[serde(default)]
+    pub loaders: Option<BTreeMap<String, String>>,
+
+    /// Operator-authored esbuild `--define` substitutions.
+    ///
+    /// Values are raw JavaScript expressions. A string value therefore needs
+    /// to be pre-quoted JSON (for example `"\"production\""`). Reserved
+    /// mode keys are rejected during config validation.
+    #[serde(default)]
+    pub define: Option<BTreeMap<String, String>>,
 }
 
 /// Syntect-based code-highlight options.
@@ -1331,6 +1346,26 @@ pub fn resolve_bundle_external(bundle: Option<&BundleConfig>) -> Vec<String> {
     match bundle {
         Some(b) => b.external.clone().unwrap_or_default(),
         None => Vec::new(),
+    }
+}
+
+/// Resolve `bundle.loaders` into a deterministic extension-to-loader map.
+/// Empty when `bundle` or `bundle.loaders` is absent.
+#[must_use]
+pub fn resolve_bundle_loaders(bundle: Option<&BundleConfig>) -> BTreeMap<String, String> {
+    match bundle {
+        Some(b) => b.loaders.clone().unwrap_or_default(),
+        None => BTreeMap::new(),
+    }
+}
+
+/// Resolve `bundle.define` into a deterministic key-to-expression map.
+/// Values remain raw esbuild expressions and are not JSON-encoded here.
+#[must_use]
+pub fn resolve_bundle_define(bundle: Option<&BundleConfig>) -> BTreeMap<String, String> {
+    match bundle {
+        Some(b) => b.define.clone().unwrap_or_default(),
+        None => BTreeMap::new(),
     }
 }
 
@@ -2087,6 +2122,52 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
                 "base {:?} must start with `/` (e.g. \"/pj/zudo-doc/\") or be an absolute URL",
                 b
             );
+        }
+    }
+    if let Some(bundle) = &cfg.bundle {
+        if let Some(loaders) = &bundle.loaders {
+            const RESERVED_EXTENSIONS: &[&str] = &[".css", ".module.css", ".mdx", ".md"];
+            const INLINE_LOADERS: &[&str] =
+                &["text", "json", "base64", "dataurl", "binary", "empty"];
+
+            for (extension, loader) in loaders {
+                if !extension.starts_with('.') {
+                    bail!(
+                        "bundle.loaders key {:?} must be a file extension starting with `.`",
+                        extension
+                    );
+                }
+                if RESERVED_EXTENSIONS.contains(&extension.as_str()) {
+                    bail!(
+                        "bundle.loaders key {:?} is reserved by zfb and cannot be overridden",
+                        extension
+                    );
+                }
+                if !INLINE_LOADERS.contains(&loader.as_str()) {
+                    bail!(
+                        "bundle.loaders key {:?} uses unsupported loader {:?}; inline-only v1 accepts: {}",
+                        extension,
+                        loader,
+                        INLINE_LOADERS.join(", ")
+                    );
+                }
+            }
+        }
+
+        if let Some(define) = &bundle.define {
+            const RESERVED_DEFINE_KEYS: &[&str] = &[
+                "import.meta.env.PROD",
+                "import.meta.env.DEV",
+                "process.env.NODE_ENV",
+            ];
+            for key in define.keys() {
+                if RESERVED_DEFINE_KEYS.contains(&key.as_str()) {
+                    bail!(
+                        "bundle.define key {:?} is reserved by zfb's bundle mode and cannot be overridden",
+                        key
+                    );
+                }
+            }
         }
     }
     for (i, h) in cfg.allowed_hosts.iter().enumerate() {
@@ -3990,6 +4071,135 @@ mod tests {
             .expect("bundle:{} deserialises");
         assert!(resolve_bundle_main_fields(cfg.bundle.as_ref()).is_empty());
         assert!(resolve_bundle_external(cfg.bundle.as_ref()).is_empty());
+    }
+
+    // --- bundle.loaders / bundle.define tests (#1498) ---------------------
+
+    #[test]
+    fn bundle_loaders_and_define_deserialise_and_resolve_verbatim() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "bundle": {
+                "loaders": {
+                    ".txt": "text",
+                    ".bin": "binary"
+                },
+                "define": {
+                    "__APP_NAME__": "\"zfb\"",
+                    "__FEATURE_ENABLED__": "true"
+                }
+            }
+        }))
+        .expect("bundle.loaders / bundle.define deserialise");
+
+        assert_eq!(
+            resolve_bundle_loaders(cfg.bundle.as_ref()),
+            BTreeMap::from([
+                (".bin".to_string(), "binary".to_string()),
+                (".txt".to_string(), "text".to_string()),
+            ])
+        );
+        assert_eq!(
+            resolve_bundle_define(cfg.bundle.as_ref()),
+            BTreeMap::from([
+                ("__APP_NAME__".to_string(), "\"zfb\"".to_string()),
+                ("__FEATURE_ENABLED__".to_string(), "true".to_string()),
+            ])
+        );
+        validate(&cfg, Path::new(".")).expect("valid bundle knobs pass validation");
+    }
+
+    #[test]
+    fn bundle_absent_resolves_to_empty_loaders_and_define() {
+        let cfg: Config =
+            serde_json::from_value(serde_json::json!({})).expect("empty config deserialises");
+        assert!(resolve_bundle_loaders(cfg.bundle.as_ref()).is_empty());
+        assert!(resolve_bundle_define(cfg.bundle.as_ref()).is_empty());
+
+        let cfg: Config = serde_json::from_value(serde_json::json!({ "bundle": {} }))
+            .expect("bundle:{} deserialises");
+        assert!(resolve_bundle_loaders(cfg.bundle.as_ref()).is_empty());
+        assert!(resolve_bundle_define(cfg.bundle.as_ref()).is_empty());
+    }
+
+    #[test]
+    fn bundle_loaders_reject_reserved_extensions_and_name_the_key() {
+        for extension in [".css", ".module.css", ".mdx", ".md"] {
+            let cfg: Config = serde_json::from_value(serde_json::json!({
+                "bundle": { "loaders": { (extension): "text" } }
+            }))
+            .expect("config shape deserialises before semantic validation");
+            let err = validate(&cfg, Path::new("."))
+                .expect_err("reserved loader extension must fail validation");
+            let message = format!("{err:#}");
+            assert!(
+                message.contains(extension),
+                "error must name key: {message}"
+            );
+            assert!(
+                message.contains("reserved"),
+                "error must explain: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn bundle_loaders_reject_asset_emitting_or_unknown_loaders() {
+        for loader in ["file", "copy", "css"] {
+            let cfg: Config = serde_json::from_value(serde_json::json!({
+                "bundle": { "loaders": { ".asset": loader } }
+            }))
+            .expect("config shape deserialises before semantic validation");
+            let err =
+                validate(&cfg, Path::new(".")).expect_err("non-inline loader must fail validation");
+            let message = format!("{err:#}");
+            assert!(message.contains(".asset"), "error must name key: {message}");
+            assert!(
+                message.contains(loader),
+                "error must name loader: {message}"
+            );
+            assert!(
+                message.contains("inline-only"),
+                "error must explain: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn bundle_loaders_reject_keys_without_a_leading_dot() {
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "bundle": { "loaders": { "txt": "text" } }
+        }))
+        .expect("config shape deserialises before semantic validation");
+        let err = validate(&cfg, Path::new("."))
+            .expect_err("loader extension without dot must fail validation");
+        let message = format!("{err:#}");
+        assert!(message.contains("txt"), "error must name key: {message}");
+        assert!(
+            message.contains("starting with `.`"),
+            "error must explain: {message}"
+        );
+    }
+
+    #[test]
+    fn bundle_define_rejects_reserved_mode_keys_and_names_them() {
+        for key in [
+            "import.meta.env.PROD",
+            "import.meta.env.DEV",
+            "process.env.NODE_ENV",
+        ] {
+            let cfg: Config = serde_json::from_value(serde_json::json!({
+                "bundle": { "define": { (key): "false" } }
+            }))
+            .expect("config shape deserialises before semantic validation");
+            let err = validate(&cfg, Path::new("."))
+                .expect_err("reserved define key must fail validation");
+            let message = format!("{err:#}");
+            assert!(message.contains(key), "error must name key: {message}");
+            assert!(
+                message.contains("reserved"),
+                "error must explain: {message}"
+            );
+        }
     }
 
     // --- OutputMode tests (sub-task 4.1b / issue #373) ---------------------
