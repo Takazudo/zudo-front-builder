@@ -63,7 +63,7 @@ use std::sync::{Arc, RwLock};
 /// targets plus their module-worker dependencies in separate sets. A
 /// successful scanner/preprocess pass replaces each set with both logical and
 /// canonical real-path aliases. The granularity policy consults them on every
-/// event, and exposes both worker closures to the dynamic watcher, so edits,
+/// event, and exposes all three sets to the dynamic watcher, so raw edits,
 /// worker-graph edits, and symlink retarget/deletes still rerun the owning
 /// consumer pipeline.
 #[derive(Debug, Clone, Default)]
@@ -104,6 +104,16 @@ impl RawImportInvalidation {
     /// staging/bundle pass.
     pub fn replace_client_scripts(&self, paths: impl IntoIterator<Item = PathBuf>) {
         Self::replace(&self.client_scripts, paths);
+    }
+
+    /// Snapshot the current client-script raw-target aliases for dynamic
+    /// watcher registration. Logical aliases remain present across deletion,
+    /// so watching their parents preserves recreate recovery.
+    pub fn client_script_paths(&self) -> BTreeSet<PathBuf> {
+        self.client_scripts
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
     }
 
     /// Atomically replace the complete first-party invalidation closure for
@@ -471,6 +481,7 @@ impl GranularityPolicy {
     /// only controls which filesystem events can reach the orchestrator.
     pub fn dynamic_dependency_paths(&self) -> BTreeSet<PathBuf> {
         let mut paths = self.raw_import_invalidation.islands_paths();
+        paths.extend(self.raw_import_invalidation.client_script_paths());
         paths.extend(self.raw_import_invalidation.client_script_worker_paths());
         paths
     }
@@ -571,28 +582,41 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_dependency_paths_union_worker_closures_without_cross_classifying() {
+    fn dynamic_dependency_paths_union_browser_closures_without_cross_classifying() {
         let invalidation = RawImportInvalidation::default();
         let island_helper = PathBuf::from("/proj/lib/island-helper.ts");
+        let client_raw = PathBuf::from("/proj/lib/client-payload.txt");
         let client_helper = PathBuf::from("/proj/lib/client-helper.ts");
+        let next_client_raw = PathBuf::from("/proj/lib/next-client-payload.txt");
         let next_client_helper = PathBuf::from("/proj/lib/next-client-helper.ts");
         invalidation.replace_islands([island_helper.clone()]);
+        invalidation.replace_client_scripts([client_raw.clone()]);
         invalidation.replace_client_script_workers([client_helper.clone()]);
         let policy =
             GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
 
         let first = policy.dynamic_dependency_paths();
         assert!(first.contains(&island_helper));
+        assert!(first.contains(&client_raw));
         assert!(first.contains(&client_helper));
         assert!(policy.is_islands_dependency(&island_helper));
+        assert!(!policy.is_islands_dependency(&client_raw));
         assert!(!policy.is_islands_dependency(&client_helper));
+        assert!(policy.is_client_script_raw_target(&client_raw));
+        assert!(!policy.is_client_script_raw_target(&island_helper));
         assert!(policy.is_client_script_worker_target(&client_helper));
         assert!(!policy.is_client_script_worker_target(&island_helper));
 
+        invalidation.replace_client_scripts([next_client_raw.clone()]);
         invalidation.replace_client_script_workers([next_client_helper.clone()]);
         let second = policy.dynamic_dependency_paths();
         assert!(second.contains(&island_helper));
+        assert!(second.contains(&next_client_raw));
         assert!(second.contains(&next_client_helper));
+        assert!(
+            !second.contains(&client_raw),
+            "a replaced client raw graph must not retain stale watch aliases"
+        );
         assert!(
             !second.contains(&client_helper),
             "a replaced client worker graph must not retain stale watch aliases"
