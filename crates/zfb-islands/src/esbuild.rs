@@ -315,6 +315,13 @@ pub struct EsbuildSubprocessConfig {
     /// Default: the current working directory at engine construction time.
     pub working_dir: PathBuf,
 
+    /// Optional closest-parent config discovery boundary for entries inside a
+    /// preprocessing shadow. Physical/no-shadow entries leave this `None` and
+    /// retain normal monorepo ancestor discovery. Shadow callers set it to the
+    /// staged root, which contains an explicit real-ancestor or empty boundary
+    /// config and must never inherit an unrelated config above the tempdir.
+    pub tsconfig_search_boundary: Option<PathBuf>,
+
     /// Extra CLI args appended to the subprocess invocation, for escape
     /// hatches like `--define:process.env.NODE_ENV='production'`. Passed
     /// verbatim — each element becomes a separate `argv` entry, so shell
@@ -430,6 +437,7 @@ impl EsbuildSubprocessConfig {
         Self {
             binary_path,
             working_dir,
+            tsconfig_search_boundary: None,
             extra_args: Vec::new(),
             mock_subprocess: false,
             mock_output: String::new(),
@@ -450,6 +458,13 @@ impl EsbuildSubprocessConfig {
     /// Override the working directory (chainable).
     pub fn with_working_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.working_dir = dir.into();
+        self
+    }
+
+    /// Bound closest-parent tsconfig/jsconfig discovery for physical entries
+    /// staged inside `root` (chainable).
+    pub fn with_tsconfig_search_boundary(mut self, root: impl Into<PathBuf>) -> Self {
+        self.tsconfig_search_boundary = Some(root.into());
         self
     }
 
@@ -741,35 +756,72 @@ fn read_back_client_script_outdir(
     })
 }
 
-/// Explicit tsconfig handed to every module-worker subprocess.
+/// Resolver inputs scoped to one physical esbuild entry.
 ///
-/// Worker entries often live in the islands preprocessing shadow, outside the
-/// project tree, so esbuild's closest-parent lookup cannot discover the real
-/// project config. A direct project config is sufficient when no plugin paths
-/// need merging; otherwise a temporary config extends the project config and
-/// overlays the already-rebased user + plugin path map.
-enum WorkerTsconfig {
-    Project(PathBuf),
-    Synthetic(tempfile::NamedTempFile),
+/// Preprocessing shadows mirror the user's config hierarchy, so the closest
+/// `tsconfig.json` / `jsconfig.json` must be selected from the physical entry
+/// rather than assuming `<working_dir>/tsconfig.json`. When plugin paths are
+/// present, `tsconfig` extends that closest config and overlays its
+/// shadow-resolved user paths with plugin entries. With no plugin paths the
+/// field stays `None` and esbuild retains its native closest-parent discovery.
+struct JobResolverInputs {
+    resolver_inputs: zfb_plugin_resolver::ResolverInputs,
+    tsconfig: Option<tempfile::NamedTempFile>,
 }
 
-impl WorkerTsconfig {
-    fn path(&self) -> &Path {
-        match self {
-            Self::Project(path) => path,
-            Self::Synthetic(file) => file.path(),
+fn nearest_typescript_config(source_path: &Path, boundary: Option<&Path>) -> Option<PathBuf> {
+    let mut dir = source_path.parent()?;
+    let boundary = boundary.filter(|boundary| source_path.starts_with(boundary));
+    loop {
+        let tsconfig = dir.join("tsconfig.json");
+        if tsconfig.is_file() {
+            return Some(tsconfig);
         }
+        let jsconfig = dir.join("jsconfig.json");
+        if jsconfig.is_file() {
+            return Some(jsconfig);
+        }
+        if boundary.is_some_and(|boundary| dir == boundary) {
+            return None;
+        }
+        let parent = dir.parent()?;
+        if parent == dir {
+            return None;
+        }
+        dir = parent;
     }
 }
 
-fn build_worker_tsconfig(
+fn build_job_resolver_inputs(
     working_dir: &Path,
-    resolver_inputs: &zfb_plugin_resolver::ResolverInputs,
-    user_tsconfig_paths: &BTreeMap<String, Vec<String>>,
-) -> Result<WorkerTsconfig> {
-    let project_tsconfig = working_dir.join("tsconfig.json");
-    if resolver_inputs.paths_entries.is_empty() && project_tsconfig.is_file() {
-        return Ok(WorkerTsconfig::Project(project_tsconfig));
+    source_path: &Path,
+    tsconfig_search_boundary: Option<&Path>,
+    alias_entries: &[(String, String)],
+    virtual_modules: &[(String, String)],
+) -> Result<JobResolverInputs> {
+    let nearest_config = nearest_typescript_config(source_path, tsconfig_search_boundary);
+    let has_plugin_entries = !alias_entries.is_empty() || !virtual_modules.is_empty();
+    let user_tsconfig_paths = if has_plugin_entries {
+        nearest_config
+            .as_deref()
+            .map(zfb_plugin_resolver::read_tsconfig_paths_file_into_map)
+            .unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
+    let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
+        alias_entries,
+        virtual_modules,
+        working_dir,
+        &user_tsconfig_paths,
+    )
+    .context("zfb-islands: failed materializing per-entry plugin resolver inputs")?;
+
+    if resolver_inputs.paths_entries.is_empty() {
+        return Ok(JobResolverInputs {
+            resolver_inputs,
+            tsconfig: None,
+        });
     }
 
     let mut paths_map = user_tsconfig_paths.clone();
@@ -779,24 +831,25 @@ fn build_worker_tsconfig(
     root.insert(
         "//".to_string(),
         serde_json::Value::String(
-            "Synthetic tsconfig generated by zfb-islands for module-worker entries.".to_string(),
+            "Synthetic tsconfig generated by zfb-islands for one physical esbuild entry."
+                .to_string(),
         ),
     );
-    if project_tsconfig.is_file() {
+    if let Some(config_path) = nearest_config {
         root.insert(
             "extends".to_string(),
-            serde_json::Value::String(project_tsconfig.to_string_lossy().into_owned()),
+            serde_json::Value::String(config_path.to_string_lossy().into_owned()),
         );
     }
     let mut compiler_options = serde_json::Map::new();
     if !paths_map.is_empty() {
-        // Every target is absolute (rebased by read_tsconfig_paths_into_map
-        // or materialised by the plugin resolver), so this override remains
-        // correct even though the worker source itself is outside the project.
+        // Every user target is absolute relative to the selected physical
+        // config (therefore inside the preprocessing shadow when applicable),
+        // and plugin resolver targets are absolute too.
         compiler_options.insert("paths".to_string(), serde_json::to_value(paths_map)?);
-        if !project_tsconfig.is_file() {
+        if !root.contains_key("extends") {
             // With no project config to extend, anchor plugin-only path
-            // entries at the real working directory rather than the shadow.
+            // entries at the configured working directory.
             compiler_options.insert(
                 "baseUrl".to_string(),
                 serde_json::Value::String(working_dir.to_string_lossy().into_owned()),
@@ -822,34 +875,11 @@ fn build_worker_tsconfig(
             .context("failed to allocate module-worker tsconfig")?
     };
     std::fs::write(tmp.path(), serde_json::to_vec_pretty(&root)?)
-        .context("failed to write module-worker synthetic tsconfig")?;
-    Ok(WorkerTsconfig::Synthetic(tmp))
-}
-
-/// Whether a client-script subprocess cannot safely rely on esbuild's
-/// closest-parent tsconfig discovery.
-///
-/// A normal client entry inside `working_dir` keeps the longstanding implicit
-/// discovery behavior so a nearer nested tsconfig still wins. Preprocessed
-/// entries live in an external shadow, however, and module-worker entries are
-/// routinely remapped there too; both need the explicit effective project +
-/// plugin config built by [`build_worker_tsconfig`].
-fn client_job_requires_effective_tsconfig(
-    working_dir: &Path,
-    source_path: &Path,
-    is_module_worker: bool,
-) -> bool {
-    if is_module_worker {
-        return true;
-    }
-
-    match (
-        std::fs::canonicalize(working_dir),
-        std::fs::canonicalize(source_path),
-    ) {
-        (Ok(working_dir), Ok(source_path)) => !source_path.starts_with(working_dir),
-        _ => !source_path.starts_with(working_dir),
-    }
+        .context("failed to write per-entry synthetic tsconfig")?;
+    Ok(JobResolverInputs {
+        resolver_inputs,
+        tsconfig: Some(tmp),
+    })
 }
 
 impl EsbuildSubprocessBundler {
@@ -1218,16 +1248,6 @@ impl EsbuildSubprocessBundler {
              Drives plugin-registered alias / virtual-module \
             exact-match resolution through compilerOptions.paths.",
         )?;
-        let worker_tsconfig = if splitting && !config.module_workers.is_empty() {
-            Some(build_worker_tsconfig(
-                &self.config.working_dir,
-                &resolver_inputs,
-                &user_tsconfig_paths,
-            )?)
-        } else {
-            None
-        };
-
         let args = build_esbuild_args(
             config,
             &self.config.extra_args,
@@ -1300,6 +1320,13 @@ impl EsbuildSubprocessBundler {
         // builder and resolver inputs as the islands entry.
         if splitting && !config.module_workers.is_empty() {
             for worker in &config.module_workers {
+                let worker_resolver = build_job_resolver_inputs(
+                    &self.config.working_dir,
+                    worker.source_path(),
+                    self.config.tsconfig_search_boundary.as_deref(),
+                    &self.config.alias_entries,
+                    &self.config.virtual_modules,
+                )?;
                 let worker_args = build_esbuild_args_with_entry_name(
                     config,
                     &self.config.extra_args,
@@ -1313,14 +1340,13 @@ impl EsbuildSubprocessBundler {
                 for (key, value) in &self.config.env_vars {
                     worker_cmd.env(key, value);
                 }
-                let worker_tsconfig = worker_tsconfig
-                    .as_ref()
-                    .expect("worker entries always construct an explicit tsconfig");
-                worker_cmd.arg(OsString::from(format!(
-                    "--tsconfig={}",
-                    worker_tsconfig.path().display()
-                )));
-                for flag in resolver_inputs.virtual_module_alias_flags() {
+                if let Some(ref tsconfig) = worker_resolver.tsconfig {
+                    worker_cmd.arg(OsString::from(format!(
+                        "--tsconfig={}",
+                        tsconfig.path().display()
+                    )));
+                }
+                for flag in worker_resolver.resolver_inputs.virtual_module_alias_flags() {
                     worker_cmd.arg(OsString::from(flag));
                 }
                 for arg in &worker_args {
@@ -1357,7 +1383,6 @@ impl EsbuildSubprocessBundler {
         // had a chance to resolve through them.
         drop(resolver_inputs);
         drop(plugin_tsconfig);
-        drop(worker_tsconfig);
 
         read_back_outdir(out_dir.path())
     }
@@ -2426,63 +2451,28 @@ impl EsbuildSubprocessBundler {
             .tempdir()
             .context("failed to allocate out temp dir for client script bundling")?;
 
-        // User's `compilerOptions.paths`, read once and shared between the
-        // alias filter (user-wins, #1267) and the synthetic tsconfig seed
-        // (#1238). Guarded so the no-plugin path reads nothing.
-        let user_tsconfig_paths =
-            if self.config.alias_entries.is_empty() && self.config.virtual_modules.is_empty() {
-                BTreeMap::new()
-            } else {
-                zfb_plugin_resolver::read_tsconfig_paths_into_map(&self.config.working_dir)
-            };
-
-        let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
-            &self.config.alias_entries,
-            &self.config.virtual_modules,
-            &self.config.working_dir,
-            &user_tsconfig_paths,
-        )
-        .context("zfb-islands: failed materializing plugin resolver inputs for client script")?;
-
-        let plugin_tsconfig = build_plugin_tsconfig(
-            &self.config.working_dir,
-            &resolver_inputs,
-            &user_tsconfig_paths,
-            "client-script",
-            "Synthetic tsconfig generated by zfb-islands::esbuild (client-script path). \
-             Drives plugin-registered alias / virtual-module \
-             exact-match resolution through compilerOptions.paths.",
-        )?;
-
-        let entry_requires_effective_tsconfig =
-            client_job_requires_effective_tsconfig(&self.config.working_dir, entry_path, false);
-        let effective_tsconfig = if entry_requires_effective_tsconfig || !workers.is_empty() {
-            Some(build_worker_tsconfig(
-                &self.config.working_dir,
-                &resolver_inputs,
-                &user_tsconfig_paths,
-            )?)
-        } else {
-            None
-        };
-
         let mut jobs = Vec::with_capacity(workers.len() + 1);
         jobs.push((
             entry_name.to_string(),
             entry_path.to_path_buf(),
             "client script",
-            entry_requires_effective_tsconfig,
         ));
         jobs.extend(workers.iter().map(|(filename, path)| {
             (
                 filename.trim_end_matches(".js").to_string(),
                 path.clone(),
                 "client-script module worker",
-                true,
             )
         }));
 
-        for (output_stem, source_path, label, requires_effective_tsconfig) in jobs {
+        for (output_stem, source_path, label) in jobs {
+            let job_resolver = build_job_resolver_inputs(
+                &self.config.working_dir,
+                &source_path,
+                self.config.tsconfig_search_boundary.as_deref(),
+                &self.config.alias_entries,
+                &self.config.virtual_modules,
+            )?;
             // Every entry is self-contained (`splitting=false`). Worker URL
             // edges have already been rewritten to sibling contract names.
             let args = build_esbuild_args_with_entry_name(
@@ -2498,21 +2488,13 @@ impl EsbuildSubprocessBundler {
             for (key, value) in &self.config.env_vars {
                 cmd.env(key, value);
             }
-            if requires_effective_tsconfig {
-                let tsconfig = effective_tsconfig
-                    .as_ref()
-                    .expect("external/client-worker jobs always construct an effective tsconfig");
+            if let Some(ref tsconfig) = job_resolver.tsconfig {
                 cmd.arg(OsString::from(format!(
                     "--tsconfig={}",
                     tsconfig.path().display()
                 )));
-            } else if let Some(ref tsconfig_tmp) = plugin_tsconfig {
-                cmd.arg(OsString::from(format!(
-                    "--tsconfig={}",
-                    tsconfig_tmp.path().display()
-                )));
             }
-            for flag in resolver_inputs.virtual_module_alias_flags() {
+            for flag in job_resolver.resolver_inputs.virtual_module_alias_flags() {
                 cmd.arg(OsString::from(flag));
             }
             for arg in &args {
@@ -2649,7 +2631,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_tsconfig_uses_project_config_directly_without_plugin_paths() {
+    fn job_resolver_leaves_native_nearest_config_discovery_without_plugins() {
         let project = tempfile::tempdir().unwrap();
         let project_tsconfig = project.path().join("tsconfig.json");
         std::fs::write(
@@ -2657,47 +2639,44 @@ mod tests {
             r#"{"compilerOptions":{"baseUrl":".","paths":{"@worker/*":["lib/*"]}}}"#,
         )
         .unwrap();
-        let resolver_inputs =
-            zfb_plugin_resolver::build_resolver_inputs(&[], &[], project.path(), &BTreeMap::new())
-                .unwrap();
-
-        let effective =
-            build_worker_tsconfig(project.path(), &resolver_inputs, &BTreeMap::new()).unwrap();
+        let source = project.path().join("src/worker.ts");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "export {};\n").unwrap();
+        let effective = build_job_resolver_inputs(project.path(), &source, None, &[], &[]).unwrap();
         assert!(
-            matches!(effective, WorkerTsconfig::Project(ref path) if path == &project_tsconfig),
-            "a shadow worker must receive the real project config when no plugin merge is needed"
+            effective.tsconfig.is_none(),
+            "no-plugin jobs must retain esbuild's native closest-parent discovery"
+        );
+        assert_eq!(
+            nearest_typescript_config(&source, None),
+            Some(project_tsconfig)
         );
     }
 
     #[test]
-    fn worker_tsconfig_extends_project_and_overlays_rebased_user_and_plugin_paths() {
+    fn job_resolver_extends_nearest_config_and_merges_shadow_user_and_plugin_paths() {
         let project = tempfile::tempdir().unwrap();
-        let project_tsconfig = project.path().join("tsconfig.json");
+        let nested = project.path().join("packages/widget");
+        std::fs::create_dir_all(nested.join("src")).unwrap();
+        let project_tsconfig = nested.join("jsconfig.json");
         std::fs::write(
             &project_tsconfig,
             r#"{"compilerOptions":{"baseUrl":".","paths":{"@user/*":["src/*"]}}}"#,
         )
         .unwrap();
+        let source = nested.join("src/worker.ts");
+        std::fs::write(&source, "export {};\n").unwrap();
         let plugin_target = project.path().join("plugin-entry.ts");
         std::fs::write(&plugin_target, "export const plugin = true;\n").unwrap();
         let aliases = vec![(
             "@plugin/entry".to_string(),
             plugin_target.to_string_lossy().into_owned(),
         )];
-        let mut user_paths = BTreeMap::new();
-        user_paths.insert(
-            "@user/*".to_string(),
-            vec![project.path().join("src/*").to_string_lossy().into_owned()],
-        );
-        let resolver_inputs =
-            zfb_plugin_resolver::build_resolver_inputs(&aliases, &[], project.path(), &user_paths)
-                .unwrap();
-
         let effective =
-            build_worker_tsconfig(project.path(), &resolver_inputs, &user_paths).unwrap();
-        let WorkerTsconfig::Synthetic(file) = effective else {
-            panic!("plugin paths require a merged synthetic worker config")
-        };
+            build_job_resolver_inputs(project.path(), &source, None, &aliases, &[]).unwrap();
+        let file = effective
+            .tsconfig
+            .expect("plugin paths require a merged synthetic worker config");
         let json: serde_json::Value =
             serde_json::from_slice(&std::fs::read(file.path()).unwrap()).unwrap();
         assert_eq!(
@@ -2706,7 +2685,7 @@ mod tests {
         );
         assert_eq!(
             json["compilerOptions"]["paths"]["@user/*"][0].as_str(),
-            Some(project.path().join("src/*").to_string_lossy().as_ref())
+            Some(nested.join("src/*").to_string_lossy().as_ref())
         );
         assert_eq!(
             json["compilerOptions"]["paths"]["@plugin/entry"][0].as_str(),
@@ -2715,30 +2694,56 @@ mod tests {
     }
 
     #[test]
-    fn client_job_tsconfig_scope_preserves_physical_entry_discovery() {
+    fn nearest_config_prefers_nested_tsconfig_then_jsconfig() {
         let project = tempfile::tempdir().unwrap();
         let nested = project.path().join("pages");
         std::fs::create_dir_all(&nested).unwrap();
-        let physical_entry = nested.join("widget.client.ts");
-        let physical_worker = nested.join("widget.worker.ts");
-        std::fs::write(&physical_entry, "export {};\n").unwrap();
-        std::fs::write(&physical_worker, "export {};\n").unwrap();
+        let source = nested.join("widget.worker.ts");
+        std::fs::write(&source, "export {};\n").unwrap();
+        let root_config = project.path().join("tsconfig.json");
+        let nested_jsconfig = nested.join("jsconfig.json");
+        std::fs::write(&root_config, "{}").unwrap();
+        std::fs::write(&nested_jsconfig, "{}").unwrap();
 
-        let shadow = tempfile::tempdir().unwrap();
-        let staged_entry = shadow.path().join("widget.client.ts");
-        std::fs::write(&staged_entry, "export {};\n").unwrap();
+        assert_eq!(
+            nearest_typescript_config(&source, None),
+            Some(nested_jsconfig)
+        );
+        let nested_tsconfig = nested.join("tsconfig.json");
+        std::fs::write(&nested_tsconfig, "{}").unwrap();
+        assert_eq!(
+            nearest_typescript_config(&source, None),
+            Some(nested_tsconfig)
+        );
+    }
 
-        assert!(
-            !client_job_requires_effective_tsconfig(project.path(), &physical_entry, false),
-            "an in-project client entry must retain closest-parent tsconfig discovery"
+    #[test]
+    fn nearest_config_honors_shadow_boundary_without_changing_physical_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let ambient_config = temp.path().join("tsconfig.json");
+        let shadow = temp.path().join("preprocess-shadow");
+        let source = shadow.join("src/worker.ts");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&ambient_config, "{}").unwrap();
+        std::fs::write(&source, "export {};\n").unwrap();
+
+        assert_eq!(
+            nearest_typescript_config(&source, None),
+            Some(ambient_config),
+            "physical/no-shadow jobs retain native ancestor discovery"
         );
-        assert!(
-            client_job_requires_effective_tsconfig(project.path(), &staged_entry, false),
-            "an external preprocessing shadow cannot discover the project tsconfig"
+        assert_eq!(
+            nearest_typescript_config(&source, Some(&shadow)),
+            None,
+            "shadow jobs must not leak into unrelated tempdir ancestor configs"
         );
-        assert!(
-            client_job_requires_effective_tsconfig(project.path(), &physical_worker, true),
-            "module-worker jobs always receive the merged effective config"
+
+        let boundary_config = shadow.join("tsconfig.json");
+        std::fs::write(&boundary_config, "{}").unwrap();
+        assert_eq!(
+            nearest_typescript_config(&source, Some(&shadow)),
+            Some(boundary_config),
+            "a synthetic boundary config remains discoverable at the boundary itself"
         );
     }
 

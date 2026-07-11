@@ -1421,6 +1421,478 @@ fn shadow_copy_file(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::copy(from, to).map(|_| ())
 }
 
+fn is_typescript_project_config(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    (lower.starts_with("tsconfig") || lower.starts_with("jsconfig")) && lower.ends_with(".json")
+}
+
+fn normalize_shadow_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            std::path::Component::RootDir => out.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if out.file_name().is_some() {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push("..");
+                }
+            }
+            std::path::Component::Normal(segment) => out.push(segment),
+        }
+    }
+    out
+}
+
+fn config_extends_values(value: &serde_json::Value) -> Vec<String> {
+    match value.get("extends") {
+        Some(serde_json::Value::String(extends)) => vec![extends.clone()],
+        Some(serde_json::Value::Array(extends)) => extends
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn nearest_typescript_project_config(project_root: &Path, source: &Path) -> Option<PathBuf> {
+    let mut dir = source.parent()?;
+    loop {
+        let tsconfig = dir.join("tsconfig.json");
+        if tsconfig.is_file() {
+            return Some(tsconfig);
+        }
+        let jsconfig = dir.join("jsconfig.json");
+        if jsconfig.is_file() {
+            return Some(jsconfig);
+        }
+        if dir == project_root {
+            return None;
+        }
+        let parent = dir.parent()?;
+        if !parent.starts_with(project_root) {
+            return None;
+        }
+        dir = parent;
+    }
+}
+
+fn nearest_ancestor_typescript_config(project_root: &Path) -> Option<PathBuf> {
+    let mut dir = project_root.parent()?;
+    loop {
+        let tsconfig = dir.join("tsconfig.json");
+        if tsconfig.is_file() {
+            return Some(tsconfig);
+        }
+        let jsconfig = dir.join("jsconfig.json");
+        if jsconfig.is_file() {
+            return Some(jsconfig);
+        }
+        let parent = dir.parent()?;
+        if parent == dir {
+            return None;
+        }
+        dir = parent;
+    }
+}
+
+fn internal_shadow_config_path(project_root: &Path, config: &Path) -> Result<Option<PathBuf>> {
+    let normalized_root = normalize_shadow_path(project_root);
+    let normalized_config = normalize_shadow_path(config);
+    let Ok(relative) = normalized_config.strip_prefix(&normalized_root) else {
+        return Ok(None);
+    };
+    if relative
+        .components()
+        .next()
+        .is_some_and(|component| component.as_os_str() == "node_modules")
+    {
+        return Ok(None);
+    }
+    let canonical_root = project_root.canonicalize().with_context(|| {
+        format!(
+            "canonicalize islands shadow project root {}",
+            project_root.display()
+        )
+    })?;
+    let canonical_config = normalized_config.canonicalize().with_context(|| {
+        format!(
+            "canonicalize shadow TypeScript config {}",
+            normalized_config.display()
+        )
+    })?;
+    if !canonical_config.starts_with(canonical_root) {
+        return Ok(None);
+    }
+    // Keep the lexical destination (including an in-project symlink name)
+    // after canonical containment succeeds. Relative extends spellings then
+    // resolve to the same path inside the shadow.
+    Ok(Some(project_root.join(relative)))
+}
+
+fn collect_shadow_config_chain(
+    project_root: &Path,
+    config: &Path,
+    configs: &mut std::collections::BTreeSet<PathBuf>,
+    depth: usize,
+) -> Result<()> {
+    if depth > 8 {
+        return Ok(());
+    }
+    let Some(logical_config) = internal_shadow_config_path(project_root, config)? else {
+        return Ok(());
+    };
+    if !configs.insert(logical_config.clone()) {
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(&logical_config)
+        .with_context(|| format!("read shadow TypeScript config {}", logical_config.display()))?;
+    let cleaned = zfb_plugin_resolver::strip_tsconfig_jsonc(&raw);
+    let value: serde_json::Value = serde_json::from_str(&cleaned).with_context(|| {
+        format!(
+            "parse shadow TypeScript config {}",
+            logical_config.display()
+        )
+    })?;
+    for extends in config_extends_values(&value) {
+        let Some(parent) = zfb_plugin_resolver::resolve_tsconfig_extends_file(
+            logical_config.parent().unwrap_or(project_root),
+            &extends,
+        ) else {
+            continue;
+        };
+        collect_shadow_config_chain(project_root, &parent, configs, depth + 1)?;
+    }
+    Ok(())
+}
+
+fn islands_shadow_config_bytes(
+    project_root: &Path,
+    shadow_root: &Path,
+    config: &Path,
+) -> Result<Vec<u8>> {
+    let raw = std::fs::read_to_string(config)
+        .with_context(|| format!("read shadow TypeScript config {}", config.display()))?;
+    let cleaned = zfb_plugin_resolver::strip_tsconfig_jsonc(&raw);
+    let mut value: serde_json::Value = serde_json::from_str(&cleaned)
+        .with_context(|| format!("parse shadow TypeScript config {}", config.display()))?;
+    let extends_values = config_extends_values(&value);
+    if extends_values.is_empty() {
+        return Ok(raw.into_bytes());
+    }
+    let canonical_root = project_root.canonicalize().with_context(|| {
+        format!(
+            "canonicalize islands shadow project root {}",
+            project_root.display()
+        )
+    })?;
+    let mut changed = false;
+    let mut has_external_path_extends = false;
+    let mut rewritten = Vec::with_capacity(extends_values.len());
+    for extends in extends_values {
+        let is_path_extends = Path::new(&extends).is_absolute()
+            || extends.starts_with("./")
+            || extends.starts_with("../")
+            || extends.starts_with('/');
+        if !is_path_extends {
+            // A hoisted monorepo package may be visible above project_root in
+            // the real tree but not above an unrelated temp shadow. Resolve
+            // it while the original ancestry is available and pin the config
+            // file absolutely. Effective paths/baseUrl that point back into
+            // the project are overlaid and rebased below.
+            if let Some(parent) = zfb_plugin_resolver::resolve_tsconfig_extends_file(
+                config.parent().unwrap_or(project_root),
+                &extends,
+            ) {
+                let canonical_parent = parent.canonicalize().with_context(|| {
+                    format!("canonicalize package extended config {}", parent.display())
+                })?;
+                rewritten.push(canonical_parent.to_string_lossy().into_owned());
+                changed = true;
+                has_external_path_extends = true;
+            } else {
+                rewritten.push(extends);
+            }
+            continue;
+        }
+        let Some(parent) = zfb_plugin_resolver::resolve_tsconfig_extends_file(
+            config.parent().unwrap_or(project_root),
+            &extends,
+        ) else {
+            rewritten.push(extends);
+            continue;
+        };
+        let canonical_parent = parent
+            .canonicalize()
+            .with_context(|| format!("canonicalize extended config {}", parent.display()))?;
+        if let Ok(canonical_relative) = canonical_parent.strip_prefix(&canonical_root) {
+            if Path::new(&extends).is_absolute() {
+                let logical_parent = internal_shadow_config_path(project_root, &parent)?
+                    .unwrap_or_else(|| project_root.join(canonical_relative));
+                let relative_parent =
+                    logical_parent.strip_prefix(project_root).with_context(|| {
+                        format!(
+                            "internal extended config {} escaped {}",
+                            logical_parent.display(),
+                            project_root.display()
+                        )
+                    })?;
+                rewritten.push(
+                    shadow_root
+                        .join(relative_parent)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+                changed = true;
+            } else {
+                // Relative internal edges retain their spelling; collection
+                // mirrors the target at that exact lexical path, including an
+                // in-project symlink name.
+                rewritten.push(extends);
+            }
+        } else {
+            // A path edge that leaves the project cannot keep the same
+            // spelling after its leaf moves under a tempdir. Its effective
+            // baseUrl/paths may still point back into this project, so those
+            // resolver fields are rebased below as a local shadow override.
+            rewritten.push(canonical_parent.to_string_lossy().into_owned());
+            changed = true;
+            has_external_path_extends = true;
+        }
+    }
+    if !changed {
+        return Ok(raw.into_bytes());
+    }
+    value["extends"] = if matches!(value.get("extends"), Some(serde_json::Value::Array(_))) {
+        serde_json::Value::Array(
+            rewritten
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        )
+    } else {
+        serde_json::Value::String(
+            rewritten
+                .into_iter()
+                .next()
+                .expect("non-empty extends values"),
+        )
+    };
+
+    if has_external_path_extends {
+        let parsed = zfb_plugin_resolver::read_tsconfig_paths_file(config);
+        let mut paths = zfb_plugin_resolver::read_tsconfig_paths_file_into_map(config);
+        let paths_rebased = rebase_config_paths_to_shadow(project_root, shadow_root, &mut paths);
+        let rebased_base_url = parsed
+            .as_ref()
+            .and_then(|parsed| parsed.base_url.as_deref())
+            .and_then(|base_url| rebase_config_path_to_shadow(project_root, shadow_root, base_url));
+        if paths_rebased || rebased_base_url.is_some() {
+            let compiler_options = value
+                .as_object_mut()
+                .expect("parsed tsconfig root is an object")
+                .entry("compilerOptions")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if !compiler_options.is_object() {
+                *compiler_options = serde_json::Value::Object(serde_json::Map::new());
+            }
+            let compiler_options = compiler_options
+                .as_object_mut()
+                .expect("compilerOptions was normalized to an object");
+            if !paths.is_empty() {
+                compiler_options.insert("paths".to_string(), serde_json::to_value(paths)?);
+            }
+            if let Some(base_url) = rebased_base_url {
+                compiler_options.insert(
+                    "baseUrl".to_string(),
+                    serde_json::Value::String(base_url.to_string_lossy().into_owned()),
+                );
+            }
+        }
+    }
+    serde_json::to_vec_pretty(&value).context("serialize rewritten shadow config")
+}
+
+fn collect_islands_shadow_configs<'a>(
+    project_root: &Path,
+    sources: impl IntoIterator<Item = &'a PathBuf>,
+) -> Result<std::collections::BTreeSet<PathBuf>> {
+    let mut configs = std::collections::BTreeSet::new();
+    for source in sources {
+        if let Some(config) = nearest_typescript_project_config(project_root, source) {
+            collect_shadow_config_chain(project_root, &config, &mut configs, 0)?;
+        }
+    }
+    Ok(configs)
+}
+
+fn rebase_config_path_to_shadow(
+    project_root: &Path,
+    shadow_root: &Path,
+    path: &Path,
+) -> Option<PathBuf> {
+    let lexical_root = normalize_shadow_path(project_root);
+    let canonical_root = project_root
+        .canonicalize()
+        .map(|path| normalize_shadow_path(&path))
+        .unwrap_or_else(|_| lexical_root.clone());
+    let normalized = normalize_shadow_path(path);
+    let relative = normalized
+        .strip_prefix(&lexical_root)
+        .or_else(|_| normalized.strip_prefix(&canonical_root))
+        .ok()?;
+    if relative.as_os_str().is_empty() {
+        Some(shadow_root.to_path_buf())
+    } else {
+        Some(shadow_root.join(relative))
+    }
+}
+
+fn rebase_config_paths_to_shadow(
+    project_root: &Path,
+    shadow_root: &Path,
+    paths: &mut std::collections::BTreeMap<String, Vec<String>>,
+) -> bool {
+    let mut changed = false;
+    for targets in paths.values_mut() {
+        for target in targets {
+            let (path_part, wildcard) = target
+                .strip_suffix("/*")
+                .map(|path| (path, "/*"))
+                .unwrap_or((target.as_str(), ""));
+            let Some(rebased_path) =
+                rebase_config_path_to_shadow(project_root, shadow_root, Path::new(path_part))
+            else {
+                continue;
+            };
+            let mut rebased = rebased_path.to_string_lossy().into_owned();
+            rebased.push_str(wildcard);
+            *target = rebased;
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn shadow_boundary_config_bytes(project_root: &Path, shadow_root: &Path) -> Result<Vec<u8>> {
+    let mut root = serde_json::Map::new();
+    root.insert(
+        "//".to_string(),
+        serde_json::Value::String(
+            "Synthetic zfb preprocessing-shadow boundary config.".to_string(),
+        ),
+    );
+    if let Some(ancestor) = nearest_ancestor_typescript_config(project_root) {
+        let canonical_ancestor = ancestor.canonicalize().with_context(|| {
+            format!(
+                "canonicalize ancestor TypeScript config {}",
+                ancestor.display()
+            )
+        })?;
+        root.insert(
+            "extends".to_string(),
+            serde_json::Value::String(canonical_ancestor.to_string_lossy().into_owned()),
+        );
+        let parsed = zfb_plugin_resolver::read_tsconfig_paths_file(&canonical_ancestor);
+        let mut paths = zfb_plugin_resolver::read_tsconfig_paths_file_into_map(&canonical_ancestor);
+        let paths_rebased = rebase_config_paths_to_shadow(project_root, shadow_root, &mut paths);
+        let rebased_base_url = parsed
+            .as_ref()
+            .and_then(|parsed| parsed.base_url.as_deref())
+            .and_then(|base_url| rebase_config_path_to_shadow(project_root, shadow_root, base_url));
+        if paths_rebased || rebased_base_url.is_some() {
+            let mut compiler_options = serde_json::Map::new();
+            if !paths.is_empty() {
+                compiler_options.insert("paths".to_string(), serde_json::to_value(paths)?);
+            }
+            if let Some(base_url) = rebased_base_url {
+                compiler_options.insert(
+                    "baseUrl".to_string(),
+                    serde_json::Value::String(base_url.to_string_lossy().into_owned()),
+                );
+            }
+            root.insert(
+                "compilerOptions".to_string(),
+                serde_json::Value::Object(compiler_options),
+            );
+        }
+    }
+    serde_json::to_vec_pretty(&serde_json::Value::Object(root))
+        .context("serialize preprocessing-shadow boundary config")
+}
+
+fn materialise_shadow_typescript_configs(
+    project_root: &Path,
+    shadow_root: &Path,
+    configs: &std::collections::BTreeSet<PathBuf>,
+) -> Result<()> {
+    for config in configs {
+        let rel = config.strip_prefix(project_root).with_context(|| {
+            format!(
+                "shadow TypeScript config {} is outside {}",
+                config.display(),
+                project_root.display()
+            )
+        })?;
+        if rel.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::Prefix(_)
+            )
+        }) {
+            return Err(anyhow!(
+                "shadow TypeScript config destination escaped project root: {}",
+                config.display()
+            ));
+        }
+        let to = shadow_root.join(rel);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create shadow config dir {}", parent.display()))?;
+        }
+        let bytes = islands_shadow_config_bytes(project_root, shadow_root, config)?;
+        std::fs::write(&to, bytes).with_context(|| {
+            format!(
+                "write shadow TypeScript config {} -> {}",
+                config.display(),
+                to.display()
+            )
+        })?;
+    }
+
+    // Stop esbuild at the shadow boundary. If the project has no root config,
+    // native discovery must not continue into the tempdir's unrelated
+    // ancestors. Preserve a real monorepo ancestor explicitly when one exists;
+    // otherwise an empty config is the intentional boundary.
+    if !shadow_root.join("tsconfig.json").is_file() && !shadow_root.join("jsconfig.json").is_file()
+    {
+        std::fs::write(
+            shadow_root.join("tsconfig.json"),
+            shadow_boundary_config_bytes(project_root, shadow_root)?,
+        )
+        .context("write preprocessing-shadow boundary tsconfig")?;
+    }
+    Ok(())
+}
+
+fn shadow_config_scope_uses_paths(
+    project_root: &Path,
+    configs: &std::collections::BTreeSet<PathBuf>,
+) -> bool {
+    configs
+        .iter()
+        .any(|config| !zfb_plugin_resolver::read_tsconfig_paths_file_into_map(config).is_empty())
+        || nearest_ancestor_typescript_config(project_root).is_some_and(|config| {
+            !zfb_plugin_resolver::read_tsconfig_paths_file_into_map(&config).is_empty()
+        })
+}
+
 /// Materialise the islands preprocessing shadow tree for a project whose scan
 /// reported `import.meta.glob`, `?raw`, or a module worker reachable from a
 /// `"use client"` island (issues #1404, #1499, and #1500).
@@ -1750,6 +2222,23 @@ fn materialise_islands_shadow(
         return Ok(IslandsShadowOutcome::KeepStopgap(offenders));
     }
 
+    // Mirror the closest config for every executable source plus its relative
+    // extends chain. Configs are real copies, not symlinks: their `baseUrl`
+    // and `paths` substitutions must be anchored in the rewritten shadow so
+    // aliases reach expanded `?raw` / module-worker importers instead of
+    // escaping back to untouched project files. Keeping every source's
+    // closest leaf preserves nested tsconfig/jsconfig scope.
+    let mut config_sources: BTreeSet<PathBuf> = to_mirror
+        .iter()
+        .filter_map(|source| paths.logical_project_path(source))
+        .collect();
+    config_sources.extend(
+        islands
+            .iter()
+            .filter_map(|island| paths.logical_project_path(&island.source_path)),
+    );
+    let shadow_configs = collect_islands_shadow_configs(project_root, &config_sources)?;
+
     // --- Materialise. ----------------------------------------------------
     let tempdir = tempfile::Builder::new()
         .prefix("zfb-islands-shadow-")
@@ -1757,7 +2246,8 @@ fn materialise_islands_shadow(
         .context("failed to allocate islands shadow tempdir")?;
     let shadow_root = tempdir.path();
     let project_node_modules = detect_project_node_modules(root);
-    let source_copy_mode = project_node_modules.is_some() && !read_tsconfig_paths(root).is_empty();
+    let source_copy_mode =
+        project_node_modules.is_some() && shadow_config_scope_uses_paths(root, &shadow_configs);
     let preserve_symlinks = !source_copy_mode;
 
     for from in &to_mirror {
@@ -1797,6 +2287,8 @@ fn materialise_islands_shadow(
         }
     }
 
+    materialise_shadow_typescript_configs(project_root, shadow_root, &shadow_configs)?;
+
     // Symlink node_modules as a whole so shadow files' bare imports
     // (`preact`, `@takazudo/zfb/runtime`, …) resolve — esbuild walks up from
     // each shadow file to `<shadow>/node_modules`.
@@ -1810,12 +2302,9 @@ fn materialise_islands_shadow(
             )
         })?;
     }
-    // Note: the user's `tsconfig.json` / `jsconfig.json` are not source files
-    // in this mirror set. Islands esbuild still runs with `project_root` as its
-    // working dir, and its synthetic-tsconfig path (when plugin aliases or
-    // virtual modules require one) is seeded from that project config. The
-    // shadow only controls whether project source files are symlinked or real
-    // copies before esbuild follows their relative imports.
+    // The user's selected tsconfig/jsconfig hierarchy is now present in the
+    // shadow. The caller also uses this root as esbuild's cwd, so implicit
+    // config lookup and plugin-merged per-entry configs agree on shadow paths.
 
     // --- Remap island source_paths into the shadow. ----------------------
     let mut remap: HashMap<PathBuf, PathBuf> = HashMap::new();
@@ -2211,8 +2700,17 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     //    `zfb-islands/src/esbuild.rs::bundle_one_entry` still hold).
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
+    let islands_tsconfig_boundary = _islands_shadow
+        .as_ref()
+        .map(|shadow| shadow._tempdir.path().to_path_buf());
+    let islands_bundler_working_dir = islands_tsconfig_boundary
+        .clone()
+        .unwrap_or_else(|| project_root.to_path_buf());
     let mut esbuild_cfg =
-        EsbuildSubprocessConfig::default().with_working_dir(project_root.to_path_buf());
+        EsbuildSubprocessConfig::default().with_working_dir(islands_bundler_working_dir);
+    if let Some(boundary) = islands_tsconfig_boundary {
+        esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
+    }
     if detect_project_node_modules(project_root).is_some() {
         _embedded_nm_handle = None;
     } else {
@@ -2626,13 +3124,57 @@ fn stage_client_script_preprocessing(
         );
     }
 
+    // Config discovery is per imported module in esbuild, not just per entry.
+    // Seed every ordinary client module plus each first-party worker closure;
+    // otherwise a nested config is merely copied verbatim by the broad stage
+    // walk and an external relative extends edge breaks after relocation.
+    let mut config_source_candidates: std::collections::BTreeSet<PathBuf> = entries
+        .iter()
+        .map(|entry| entry.source_path.clone())
+        .chain(graph.modules.iter().cloned())
+        .chain(
+            graph
+                .module_worker_edges
+                .iter()
+                .flat_map(|edge| [edge.importer.clone(), edge.source_path.clone()]),
+        )
+        .collect();
+    let worker_config_roots: std::collections::BTreeSet<PathBuf> = graph
+        .module_worker_edges
+        .iter()
+        .map(|edge| edge.source_path.clone())
+        .collect();
+    for worker_root in worker_config_roots {
+        let worker_graph =
+            scan_reachable_modules_with_meta(std::slice::from_ref(&worker_root), &resolver)
+                .with_context(|| {
+                    format!(
+                        "scan client-script worker graph {} for staged config scopes",
+                        worker_root.display()
+                    )
+                })?;
+        config_source_candidates.extend(worker_graph.modules);
+        config_source_candidates.extend(
+            worker_graph
+                .module_worker_edges
+                .into_iter()
+                .flat_map(|edge| [edge.importer, edge.source_path]),
+        );
+    }
+    let client_config_sources: std::collections::BTreeSet<PathBuf> = config_source_candidates
+        .iter()
+        .filter_map(|source| paths.logical_project_path(source))
+        .collect();
+    let client_configs = collect_islands_shadow_configs(project_root, &client_config_sources)?;
+
     let tempdir = tempfile::Builder::new()
         .prefix("zfb-client-preprocess-")
         .tempdir()
         .context("allocate client-script preprocessing directory")?;
     let root = tempdir.path().to_path_buf();
     let project_node_modules = detect_project_node_modules(project_root);
-    let copy_mode = project_node_modules.is_some() && !read_tsconfig_paths(project_root).is_empty();
+    let copy_mode = project_node_modules.is_some()
+        && shadow_config_scope_uses_paths(project_root, &client_configs);
 
     for entry in walkdir::WalkDir::new(project_root)
         .follow_links(false)
@@ -2753,9 +3295,11 @@ fn stage_client_script_preprocessing(
             &expanded_by_key,
             &worker_expanded_by_key,
             copy_mode,
-            is_symlinked_file,
+            is_symlinked_file || is_typescript_project_config(from),
         )?;
     }
+
+    materialise_shadow_typescript_configs(project_root, &root, &client_configs)?;
 
     if let Some(node_modules) = project_node_modules {
         shadow_symlink(&node_modules, &root.join("node_modules")).with_context(|| {
@@ -2932,6 +3476,7 @@ pub(crate) fn build_default_client_scripts_payloads(
     }
 
     let preprocess_stage = stage_client_script_preprocessing(project_root, &entries)?;
+    let client_tsconfig_boundary = preprocess_stage.as_ref().map(|stage| stage.root.clone());
     let (bundle_entries, bundler_working_dir, preserve_symlinks) = match preprocess_stage.as_ref() {
         Some(stage) => (
             stage.entries.as_slice(),
@@ -2947,6 +3492,9 @@ pub(crate) fn build_default_client_scripts_payloads(
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    if let Some(boundary) = client_tsconfig_boundary {
+        esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
+    }
     if detect_project_node_modules(project_root).is_some() {
         _embedded_nm_handle = None;
     } else {
@@ -3196,12 +3744,16 @@ pub(crate) fn build_dev_client_scripts_to_disk(
                 std::collections::BTreeSet::new(),
             ),
         };
+    let client_tsconfig_boundary = preprocess_stage.as_ref().map(|stage| stage.root.clone());
 
     // Set up the esbuild subprocess — same wiring as `build_default_client_scripts_payloads`
     // but using `BundleConfig::dev()` (no minification, sourcemaps on).
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    if let Some(boundary) = client_tsconfig_boundary {
+        esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
+    }
     if detect_project_node_modules(project_root).is_some() {
         _embedded_nm_handle = None;
     } else {
@@ -6731,6 +7283,631 @@ mod tests {
     }
 
     #[test]
+    fn materialise_islands_shadow_copies_nearest_config_and_relative_extends_chain() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("components/feature")).unwrap();
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::write(
+            root.join("config/tsconfig.base.json"),
+            r#"{"compilerOptions":{"baseUrl":"..","paths":{"@feature/*":["components/feature/*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components/feature/tsconfig.json"),
+            r#"{"extends":"../../config/tsconfig.base.json"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components/feature/jsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"@wrong/*":["missing/*"]}}}"#,
+        )
+        .unwrap();
+        let island = root.join("components/feature/Island.tsx");
+        let worker = root.join("components/feature/worker.ts");
+        std::fs::write(
+            &island,
+            "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(&worker, "self.postMessage('ready');\n").unwrap();
+
+        let (islands, scan_meta) =
+            scan_islands_with_meta(std::slice::from_ref(&island), &FsResolver::new()).unwrap();
+        let shadow = match materialise_islands_shadow(root, &islands, &scan_meta).unwrap() {
+            IslandsShadowOutcome::Ready(shadow) => shadow,
+            IslandsShadowOutcome::KeepStopgap(offenders) => {
+                panic!("supported worker must materialise: {offenders:?}")
+            }
+        };
+        let shadow_root = shadow._tempdir.path();
+        let nested = shadow_root.join("components/feature/tsconfig.json");
+        assert_eq!(
+            std::fs::read_to_string(&nested).unwrap(),
+            r#"{"extends":"../../config/tsconfig.base.json"}"#,
+            "an internal relative extends edge keeps its layout and spelling"
+        );
+        assert!(
+            shadow_root.join("config/tsconfig.base.json").is_file(),
+            "the selected leaf's relative extends chain must be copied"
+        );
+        assert!(
+            !shadow_root
+                .join("components/feature/jsconfig.json")
+                .exists(),
+            "tsconfig.json wins over a same-directory jsconfig.json, matching esbuild"
+        );
+        let paths = zfb_plugin_resolver::read_tsconfig_paths_file_into_map(&nested);
+        assert_eq!(
+            paths["@feature/*"][0],
+            shadow_root.join("components/feature/*").to_string_lossy(),
+            "the copied chain must resolve aliases into the shadow"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_rewrites_external_relative_extends_absolute() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let shared_name = format!(
+            "{}-external-config",
+            tmp.path().file_name().unwrap().to_string_lossy()
+        );
+        let shared = tmp.path().join(&shared_name);
+        let escaped_shadow_target = tmp
+            .path()
+            .parent()
+            .unwrap()
+            .join(&shared_name)
+            .join("tsconfig.base.json");
+        assert!(!escaped_shadow_target.exists());
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        let external_config = shared.join("tsconfig.base.json");
+        std::fs::write(
+            &external_config,
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@shared/*":["src/*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            format!(r#"{{"extends":"../{shared_name}/tsconfig.base.json"}}"#),
+        )
+        .unwrap();
+        let island = root.join("components/Island.tsx");
+        let worker = root.join("components/worker.ts");
+        std::fs::write(
+            &island,
+            "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(&worker, "self.postMessage('ready');\n").unwrap();
+
+        let (islands, scan_meta) =
+            scan_islands_with_meta(std::slice::from_ref(&island), &FsResolver::new()).unwrap();
+        let shadow = match materialise_islands_shadow(&root, &islands, &scan_meta).unwrap() {
+            IslandsShadowOutcome::Ready(shadow) => shadow,
+            IslandsShadowOutcome::KeepStopgap(offenders) => {
+                panic!("supported worker must materialise: {offenders:?}")
+            }
+        };
+        let copied = shadow._tempdir.path().join("tsconfig.json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&copied).unwrap()).unwrap();
+        let canonical_external_config = external_config.canonicalize().unwrap();
+        assert_eq!(
+            json["extends"].as_str(),
+            Some(canonical_external_config.to_string_lossy().as_ref()),
+            "an external relative edge must remain valid after the leaf moves into a tempdir"
+        );
+        let paths = zfb_plugin_resolver::read_tsconfig_paths_file_into_map(&copied);
+        assert_eq!(
+            paths["@shared/*"][0],
+            shared
+                .canonicalize()
+                .unwrap()
+                .join("src/*")
+                .to_string_lossy(),
+            "the rewritten absolute extends path must remain readable"
+        );
+        assert!(
+            !escaped_shadow_target.exists(),
+            "config mirroring must never write through a lexical `..` outside the shadow"
+        );
+    }
+
+    #[test]
+    fn materialise_shadow_typescript_configs_preserves_extends_array_semantics() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let shadow = tmp.path().join("shadow");
+        let shared = tmp.path().join("shared");
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        std::fs::create_dir_all(&shadow).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(
+            root.join("config/paths.json"),
+            r#"{"compilerOptions":{"paths":{"@merged/*":["feature/*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("config/base-url.json"),
+            r#"{"compilerOptions":{"baseUrl":"../later-base"}}"#,
+        )
+        .unwrap();
+        let external = shared.join("external.json");
+        std::fs::write(&external, "{}").unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"extends":["./config/paths.json","./config/base-url.json","../shared/external.json"]}"#,
+        )
+        .unwrap();
+        let source = root.join("components/Island.tsx");
+        std::fs::write(&source, "export {};").unwrap();
+
+        let configs = collect_islands_shadow_configs(&root, [&source]).unwrap();
+        materialise_shadow_typescript_configs(&root, &shadow, &configs).unwrap();
+
+        assert!(shadow.join("config/paths.json").is_file());
+        assert!(shadow.join("config/base-url.json").is_file());
+        let leaf = shadow.join("tsconfig.json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&leaf).unwrap()).unwrap();
+        let extends = json["extends"].as_array().unwrap();
+        assert_eq!(extends[0].as_str(), Some("./config/paths.json"));
+        assert_eq!(extends[1].as_str(), Some("./config/base-url.json"));
+        assert_eq!(
+            extends[2].as_str(),
+            Some(external.canonicalize().unwrap().to_string_lossy().as_ref()),
+            "only the external member of an extends array is rewritten"
+        );
+        let paths = zfb_plugin_resolver::read_tsconfig_paths_file_into_map(&leaf);
+        assert_eq!(
+            paths["@merged/*"][0],
+            shadow.join("later-base/feature/*").to_string_lossy(),
+            "later-parent baseUrl must re-anchor an earlier-parent paths table, matching esbuild"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialise_shadow_typescript_configs_preserves_internal_symlink_extends_spelling() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let shadow = tmp.path().join("shadow");
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(&shadow).unwrap();
+        std::fs::write(
+            root.join("config/base.json"),
+            r#"{"compilerOptions":{"paths":{"@linked/*":["src/*"]}}}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("config/base.json", root.join("config-link.json")).unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"extends":"./config-link.json"}"#,
+        )
+        .unwrap();
+        let source = root.join("src/entry.ts");
+        std::fs::write(&source, "export {};").unwrap();
+
+        let configs = collect_islands_shadow_configs(&root, [&source]).unwrap();
+        materialise_shadow_typescript_configs(&root, &shadow, &configs).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(shadow.join("tsconfig.json")).unwrap(),
+            r#"{"extends":"./config-link.json"}"#
+        );
+        let mirrored_link = shadow.join("config-link.json");
+        assert!(mirrored_link.is_file());
+        assert!(
+            !std::fs::symlink_metadata(&mirrored_link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the authored symlink name must be materialized as a safe shadow-local file"
+        );
+        let paths =
+            zfb_plugin_resolver::read_tsconfig_paths_file_into_map(&shadow.join("tsconfig.json"));
+        assert_eq!(
+            paths["@linked/*"][0],
+            shadow.join("src/*").to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn materialise_shadow_typescript_configs_rebases_project_ancestor_and_blocks_ambient_config() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let project = workspace.join("apps/site");
+        let ambient = tmp.path().join("ambient");
+        let shadow = ambient.join("stage");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::create_dir_all(&shadow).unwrap();
+        std::fs::write(
+            workspace.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":"./apps/site/src","paths":{"@ancestor/*":["*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            ambient.join("tsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"@ambient/*":["wrong/*"]}}}"#,
+        )
+        .unwrap();
+
+        materialise_shadow_typescript_configs(
+            &project,
+            &shadow,
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap();
+
+        let boundary = shadow.join("tsconfig.json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&boundary).unwrap()).unwrap();
+        assert_eq!(
+            json["extends"].as_str(),
+            Some(
+                workspace
+                    .join("tsconfig.json")
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            json["compilerOptions"]["baseUrl"].as_str(),
+            Some(shadow.join("src").to_string_lossy().as_ref()),
+            "an ancestor baseUrl pointing into the project must be rebased into the shadow"
+        );
+        assert_eq!(
+            json["compilerOptions"]["paths"]["@ancestor/*"][0].as_str(),
+            Some(shadow.join("src/*").to_string_lossy().as_ref())
+        );
+        let paths = zfb_plugin_resolver::read_tsconfig_paths_file_into_map(&boundary);
+        assert!(paths.contains_key("@ancestor/*"), "{paths:?}");
+        assert!(
+            !paths.contains_key("@ambient/*"),
+            "the explicit shadow-root boundary must hide unrelated tempdir ancestor configs"
+        );
+    }
+
+    #[test]
+    fn materialise_shadow_typescript_configs_resolves_hoisted_package_extends() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let project = workspace.join("apps/site");
+        let package = workspace.join("node_modules/@scope/tsconfig-web");
+        let shadow = tmp.path().join("shadow");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(&shadow).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"@scope/tsconfig-web","tsconfig":"base.json"}"#,
+        )
+        .unwrap();
+        let package_config = package.join("base.json");
+        std::fs::write(
+            &package_config,
+            r#"{"compilerOptions":{"baseUrl":"../../../apps/site","paths":{"@hoisted/*":["src/*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("tsconfig.json"),
+            r#"{"extends":"@scope/tsconfig-web"}"#,
+        )
+        .unwrap();
+        let source = project.join("src/entry.ts");
+        std::fs::write(&source, "export {};").unwrap();
+
+        let configs = collect_islands_shadow_configs(&project, [&source]).unwrap();
+        materialise_shadow_typescript_configs(&project, &shadow, &configs).unwrap();
+
+        let leaf = shadow.join("tsconfig.json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&leaf).unwrap()).unwrap();
+        assert_eq!(
+            json["extends"].as_str(),
+            Some(
+                package_config
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            ),
+            "a hoisted package config must not depend on tempdir ancestor node_modules"
+        );
+        assert_eq!(
+            json["compilerOptions"]["baseUrl"].as_str(),
+            Some(shadow.to_string_lossy().as_ref())
+        );
+        let paths = zfb_plugin_resolver::read_tsconfig_paths_file_into_map(&leaf);
+        assert_eq!(
+            paths["@hoisted/*"][0],
+            shadow.join("src/*").to_string_lossy()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialise_islands_shadow_mirrors_config_through_symlinked_project_root() {
+        let tmp = tempdir().unwrap();
+        let physical_root = tmp.path().join("physical-project");
+        let linked_root = tmp.path().join("linked-project");
+        std::fs::create_dir_all(physical_root.join("components")).unwrap();
+        std::os::unix::fs::symlink(&physical_root, &linked_root).unwrap();
+        std::fs::write(
+            linked_root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["components/*"]}}}"#,
+        )
+        .unwrap();
+        let island = linked_root.join("components/Island.tsx");
+        let worker = linked_root.join("components/worker.ts");
+        std::fs::write(
+            &island,
+            "'use client'; export function Island() { new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(&worker, "self.postMessage('ready');\n").unwrap();
+
+        let (islands, scan_meta) =
+            scan_islands_with_meta(std::slice::from_ref(&island), &FsResolver::new()).unwrap();
+        let shadow = match materialise_islands_shadow(&linked_root, &islands, &scan_meta).unwrap() {
+            IslandsShadowOutcome::Ready(shadow) => shadow,
+            IslandsShadowOutcome::KeepStopgap(offenders) => {
+                panic!("symlink-root worker must materialise: {offenders:?}")
+            }
+        };
+        assert!(shadow._tempdir.path().join("tsconfig.json").is_file());
+        let paths = zfb_plugin_resolver::read_tsconfig_paths_file_into_map(
+            &shadow._tempdir.path().join("tsconfig.json"),
+        );
+        assert!(
+            paths["@/*"][0].starts_with(shadow._tempdir.path().to_string_lossy().as_ref()),
+            "canonical scanner paths must still select the linked root's shadow config: {paths:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "env-gate: esbuild binary — cargo test -p zfb --lib \
+                commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild \
+                -- --ignored (ZFB_ESBUILD_BIN or staged workspace slot)"]
+    fn preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild() {
+        let Some(_esbuild) = zfb_test_utils::locate_esbuild() else {
+            panic!(
+                "preprocessing shadow regression requires a pinned real esbuild binary; set \
+                 ZFB_ESBUILD_BIN or stage crates/zfb/binaries/esbuild/esbuild"
+            );
+        };
+
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        for dir in [
+            "pages/client",
+            "components/feature",
+            "config",
+            "src/wrong",
+            "src/workers",
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(
+            root.join("config/tsconfig.base.json"),
+            r#"{
+              "compilerOptions": {
+                "baseUrl": "..",
+                "paths": {
+                  "@feature/*": ["src/*"],
+                  "@worker/*": ["src/workers/*"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"extends":"./config/tsconfig.base.json"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components/feature/tsconfig.json"),
+            r#"{"extends":"../../tsconfig.json"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components/feature/jsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "baseUrl": "../..",
+                "paths": { "@feature/*": ["src/wrong/*"] }
+              }
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("pages/client/jsconfig.json"),
+            r#"{"extends":"../../tsconfig.json"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "baseUrl": ".",
+                "paths": { "@worker/*": ["workers/*"] }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            root.join("pages/index.tsx"),
+            "import { ShadowIsland } from '../components/feature/ShadowIsland';\n\
+             export default ShadowIsland;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components/feature/ShadowIsland.tsx"),
+            "'use client';\n\
+             import { makeMarker } from '@feature/island-helper';\n\
+             import { pluginMarker } from 'plugin:shadow-marker';\n\
+             import { virtualMarker } from 'virtual:shadow-marker';\n\
+             export function ShadowIsland() {\n\
+               return makeMarker() + pluginMarker + virtualMarker;\n\
+             }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/island-helper.ts"),
+            "import payload from './island-payload.txt?raw';\n\
+             export function makeMarker() {\n\
+               new Worker(new URL('./primary.worker.ts', import.meta.url), { type: 'module' });\n\
+               return payload;\n\
+             }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/wrong/island-helper.ts"),
+            "export function makeMarker() { return 'ZFB_JSCONFIG_WRONG_PRECEDENCE'; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/island-payload.txt"),
+            "ZFB_SHADOW_ALIAS_RAW_MARKER",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/primary.worker.ts"),
+            "import { nestedMarker } from '@worker/nested-helper';\n\
+             self.postMessage('ZFB_PRIMARY_WORKER:' + nestedMarker);\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/workers/nested-helper.ts"),
+            "import nestedPayload from './nested-payload.txt?raw';\n\
+             new Worker(new URL('./nested.worker.ts', import.meta.url), { type: 'module' });\n\
+             export const nestedMarker = 'ZFB_NESTED_HELPER:' + nestedPayload;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/workers/nested-payload.txt"),
+            "ZFB_NESTED_RAW_MARKER",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/workers/nested.worker.ts"),
+            "self.postMessage('ZFB_NESTED_WORKER');\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("pages/client/widget.client.ts"),
+            "import { makeMarker } from '@feature/island-helper';\n\
+             console.log('ZFB_CLIENT_ENTRY:' + makeMarker());\n",
+        )
+        .unwrap();
+        let plugin_target = root.join("plugin-shadow-marker.ts");
+        std::fs::write(
+            &plugin_target,
+            "export const pluginMarker = 'ZFB_PLUGIN_ALIAS_MARKER';\n",
+        )
+        .unwrap();
+
+        let primary_worker = root.join("src/primary.worker.ts");
+        let nested_worker = root.join("src/workers/nested.worker.ts");
+        let primary_filename = zfb_types::module_worker_filename(root, &primary_worker).unwrap();
+        let nested_filename = zfb_types::module_worker_filename(root, &nested_worker).unwrap();
+        let plugin_config = IslandsPluginConfig {
+            alias_entries: vec![(
+                "plugin:shadow-marker".to_string(),
+                plugin_target.to_string_lossy().into_owned(),
+            )],
+            virtual_modules: vec![(
+                "virtual:shadow-marker".to_string(),
+                "export const virtualMarker = 'ZFB_PLUGIN_VIRTUAL_MARKER';\n".to_string(),
+            )],
+        };
+        let outdir = root.join("dist");
+        let (islands_payload, names) = build_default_islands_payload_with_bundle_options(
+            root,
+            &root.join("pages"),
+            &[],
+            &outdir,
+            crate::config::Framework::Preact,
+            None,
+            zfb_islands::BundleMode::Development,
+            &plugin_config,
+            IslandsGlobPolicy::HardError,
+            None,
+        )
+        .expect("command-layer islands preprocessing shadow must bundle");
+        assert_eq!(
+            names,
+            std::collections::BTreeSet::from(["ShadowIsland".to_string()])
+        );
+        let islands_payload = islands_payload.expect("islands payload");
+        let islands_js = String::from_utf8(islands_payload.bytes).unwrap();
+        for marker in [
+            "ZFB_SHADOW_ALIAS_RAW_MARKER",
+            "ZFB_PLUGIN_ALIAS_MARKER",
+            "ZFB_PLUGIN_VIRTUAL_MARKER",
+        ] {
+            assert!(
+                islands_js.contains(marker),
+                "main islands entry/plugin/NODE_PATH path lost {marker}: {islands_js}"
+            );
+        }
+        assert!(!islands_js.contains("ZFB_JSCONFIG_WRONG_PRECEDENCE"));
+        assert!(islands_js.contains(&primary_filename), "{islands_js}");
+        let island_companions = islands_payload
+            .companions
+            .into_iter()
+            .map(|companion| (companion.filename, companion.bytes))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let primary_js = String::from_utf8(island_companions[&primary_filename].clone()).unwrap();
+        assert!(primary_js.contains("ZFB_NESTED_RAW_MARKER"), "{primary_js}");
+        assert!(primary_js.contains(&nested_filename), "{primary_js}");
+        assert!(
+            String::from_utf8(island_companions[&nested_filename].clone())
+                .unwrap()
+                .contains("ZFB_NESTED_WORKER")
+        );
+
+        let client_payloads = build_default_client_scripts_payloads(
+            root,
+            &outdir,
+            crate::config::Framework::Preact,
+            &zfb_build::ClientEntryList::new(),
+            None,
+        )
+        .expect("command-layer client preprocessing shadow must bundle");
+        let widget = client_payloads
+            .into_iter()
+            .find(|payload| payload.relative_path.ends_with("widget.js"))
+            .expect("widget client payload");
+        let widget_js = String::from_utf8(widget.bytes).unwrap();
+        assert!(
+            widget_js.contains("ZFB_SHADOW_ALIAS_RAW_MARKER"),
+            "{widget_js}"
+        );
+        assert!(widget_js.contains(&primary_filename), "{widget_js}");
+        let client_companions = widget
+            .companions
+            .into_iter()
+            .map(|companion| (companion.filename, companion.bytes))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert!(
+            String::from_utf8(client_companions[&primary_filename].clone())
+                .unwrap()
+                .contains("ZFB_NESTED_RAW_MARKER")
+        );
+        assert!(client_companions.contains_key(&nested_filename));
+    }
+
+    #[test]
     fn materialise_islands_shadow_expands_raw_import_and_keeps_js_target_terminal() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
@@ -6939,6 +8116,161 @@ mod tests {
         assert_eq!(
             stage.raw_targets,
             std::collections::BTreeSet::from([target.clone()])
+        );
+    }
+
+    #[test]
+    fn client_script_stage_uses_copy_mode_with_nested_jsconfig_paths() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("pages/jsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":"..","paths":{"@/*":["src/*"]}}}"#,
+        )
+        .unwrap();
+        let entry = root.join("pages/widget.client.ts");
+        std::fs::write(
+            &entry,
+            "import text from '../src/message.txt?raw'; console.log(text);\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/message.txt"), "copy mode").unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        let stage = stage_client_script_preprocessing(root, &entries)
+            .unwrap()
+            .expect("raw graph needs a stage");
+        assert!(
+            !stage.preserve_symlinks,
+            "nested jsconfig paths plus project node_modules must select copy mode"
+        );
+        let metadata = std::fs::symlink_metadata(&stage.entries[0].source_path).unwrap();
+        assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+    }
+
+    #[test]
+    fn client_script_stage_rewrites_external_relative_config_extends() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let shared_name = format!(
+            "{}-client-external-config",
+            tmp.path().file_name().unwrap().to_string_lossy()
+        );
+        let shared = tmp.path().join(&shared_name);
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(shared.join("src")).unwrap();
+        let external = shared.join("tsconfig.base.json");
+        std::fs::write(
+            &external,
+            r#"{"compilerOptions":{"baseUrl":"../project","paths":{"@project/*":["src/*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            format!(r#"{{"extends":"../{shared_name}/tsconfig.base.json"}}"#),
+        )
+        .unwrap();
+        let entry = root.join("pages/widget.client.ts");
+        std::fs::write(
+            &entry,
+            "import text from '../src/message.txt?raw'; console.log(text);\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/message.txt"), "external config stage").unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        let stage = stage_client_script_preprocessing(&root, &entries)
+            .unwrap()
+            .expect("raw client graph needs a stage");
+        let staged_config = stage.root.join("tsconfig.json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&staged_config).unwrap()).unwrap();
+        assert_eq!(
+            json["extends"].as_str(),
+            Some(external.canonicalize().unwrap().to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            json["compilerOptions"]["baseUrl"].as_str(),
+            Some(stage.root.to_string_lossy().as_ref()),
+            "an external parent baseUrl that points into the project must be rebased"
+        );
+        let paths = zfb_plugin_resolver::read_tsconfig_paths_file_into_map(&staged_config);
+        assert_eq!(
+            paths["@project/*"][0],
+            stage.root.join("src/*").to_string_lossy(),
+            "external-parent aliases back into the project must stay inside the stage"
+        );
+        assert!(
+            !stage.root.parent().unwrap().join(&shared_name).exists(),
+            "client staging must not write through the authored `..` outside its temp root"
+        );
+    }
+
+    #[test]
+    fn client_script_stage_rewrites_transitive_module_config_extends() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let shared = tmp.path().join("shared");
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("src/feature")).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        let external = shared.join("tsconfig.base.json");
+        std::fs::write(
+            &external,
+            r#"{"compilerOptions":{"baseUrl":"../project/src/feature","paths":{"@feature/*":["*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/feature/tsconfig.json"),
+            r#"{"extends":"../../../shared/tsconfig.base.json"}"#,
+        )
+        .unwrap();
+        let entry = root.join("pages/widget.client.ts");
+        std::fs::write(
+            &entry,
+            "import { message } from '../src/feature/helper'; console.log(message);\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/feature/helper.ts"),
+            "import text from './message.txt?raw'; export const message = text;\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/feature/message.txt"), "transitive config").unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        let stage = stage_client_script_preprocessing(&root, &entries)
+            .unwrap()
+            .expect("transitive raw client graph needs a stage");
+        let nested = stage.root.join("src/feature/tsconfig.json");
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&nested).unwrap()).unwrap();
+        assert_eq!(
+            json["extends"].as_str(),
+            Some(external.canonicalize().unwrap().to_string_lossy().as_ref()),
+            "every transitive module config must be rewritten, not only entry/worker configs"
+        );
+        assert_eq!(
+            json["compilerOptions"]["baseUrl"].as_str(),
+            Some(stage.root.join("src/feature").to_string_lossy().as_ref())
+        );
+        let paths = zfb_plugin_resolver::read_tsconfig_paths_file_into_map(&nested);
+        assert_eq!(
+            paths["@feature/*"][0],
+            stage.root.join("src/feature/*").to_string_lossy()
         );
     }
 
@@ -7558,13 +8890,14 @@ mod tests {
     }
 
     #[test]
-    fn materialise_islands_shadow_uses_copy_mode_with_project_node_modules_and_paths() {
+    fn materialise_islands_shadow_uses_copy_mode_with_nested_tsconfig_paths() {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         std::fs::create_dir_all(project_root.join("node_modules")).unwrap();
+        std::fs::create_dir_all(project_root.join("components")).unwrap();
         std::fs::write(
-            project_root.join("tsconfig.json"),
-            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+            project_root.join("components/tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":"..","paths":{"@/*":["src/*"]}}}"#,
         )
         .unwrap();
         let (island_src, glob_src, _target) = write_basic_glob_shadow_project(project_root);
@@ -7587,7 +8920,7 @@ mod tests {
         let meta = std::fs::symlink_metadata(shadow_island).unwrap();
         assert!(
             !shadow.preserve_symlinks,
-            "project node_modules plus tsconfig paths uses copy-mode and omits --preserve-symlinks"
+            "project node_modules plus nested tsconfig paths uses copy-mode and omits --preserve-symlinks"
         );
         assert!(
             meta.file_type().is_file() && !meta.file_type().is_symlink(),

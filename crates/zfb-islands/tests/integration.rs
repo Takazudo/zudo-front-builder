@@ -650,10 +650,10 @@ fn client_script_real_esbuild_bundles_discovered_entry() {
     );
 }
 
-/// A command-layer preprocessing stage moves both the client entry and its
-/// workers outside the project tree. Neither subprocess can then discover the
-/// project's tsconfig by walking parent directories, so both must receive the
-/// explicit effective config and resolve project aliases through it.
+/// Model the command-layer preprocessing stage: config files and rewritten
+/// sources/helpers all live under the same shadow root. Both the client entry
+/// and worker must discover that physical config and resolve aliases to the
+/// shadow copies, never to untouched real-project files.
 #[test]
 #[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
             cargo test -p zfb-islands --test integration \
@@ -677,12 +677,12 @@ fn client_script_shadow_jobs_resolve_project_tsconfig_aliases() {
     .unwrap();
     std::fs::write(
         root.join("lib/entry-helper.ts"),
-        "export const entryMarker = 'ZFB_SHADOW_CLIENT_ENTRY_ALIAS';\n",
+        "export const entryMarker = 'ZFB_REAL_ENTRY_MUST_NOT_BUNDLE';\n",
     )
     .unwrap();
     std::fs::write(
         root.join("lib/worker-helper.ts"),
-        "export const workerMarker = 'ZFB_SHADOW_CLIENT_WORKER_ALIAS';\n",
+        "export const workerMarker = 'ZFB_REAL_WORKER_MUST_NOT_BUNDLE';\n",
     )
     .unwrap();
 
@@ -690,6 +690,22 @@ fn client_script_shadow_jobs_resolve_project_tsconfig_aliases() {
     let worker_filename = module_worker_filename(root, &logical_worker).unwrap();
     let shadow = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(shadow.path().join("pages")).unwrap();
+    std::fs::create_dir_all(shadow.path().join("lib")).unwrap();
+    std::fs::copy(
+        root.join("tsconfig.json"),
+        shadow.path().join("tsconfig.json"),
+    )
+    .unwrap();
+    std::fs::write(
+        shadow.path().join("lib/entry-helper.ts"),
+        "export const entryMarker = 'ZFB_SHADOW_CLIENT_ENTRY_ALIAS';\n",
+    )
+    .unwrap();
+    std::fs::write(
+        shadow.path().join("lib/worker-helper.ts"),
+        "export const workerMarker = 'ZFB_SHADOW_CLIENT_WORKER_ALIAS';\n",
+    )
+    .unwrap();
     let staged_entry = shadow.path().join("pages/shadow.client.ts");
     let staged_worker = shadow.path().join("pages/shadow.worker.ts");
     std::fs::write(
@@ -710,7 +726,7 @@ fn client_script_shadow_jobs_resolve_project_tsconfig_aliases() {
     .unwrap();
 
     let bundler = EsbuildSubprocessBundler::new(
-        EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
+        EsbuildSubprocessConfig::default().with_working_dir(shadow.path().to_path_buf()),
     );
     let config = BundleConfig::production()
         .with_outdir(root.join("dist"))
@@ -733,6 +749,7 @@ fn client_script_shadow_jobs_resolve_project_tsconfig_aliases() {
         "staged client entry did not resolve the project alias: {}",
         output.js
     );
+    assert!(!output.js.contains("ZFB_REAL_ENTRY_MUST_NOT_BUNDLE"));
     assert!(output.js.contains(&worker_filename), "{}", output.js);
     assert_eq!(output.companions.len(), 1);
     assert_eq!(output.companions[0].filename, worker_filename);
@@ -741,6 +758,7 @@ fn client_script_shadow_jobs_resolve_project_tsconfig_aliases() {
         worker_js.contains("ZFB_SHADOW_CLIENT_WORKER_ALIAS"),
         "staged client worker did not resolve the project alias: {worker_js}"
     );
+    assert!(!worker_js.contains("ZFB_REAL_WORKER_MUST_NOT_BUNDLE"));
 }
 
 // -----------------------------------------------------------------------------
@@ -916,16 +934,25 @@ fn island_module_worker_emits_contract_companion_and_dev_layout() {
     )
     .unwrap();
 
-    // Mirror the command layer's preprocessing shadow. The worker physical
-    // entry deliberately lives outside the project tree, so closest-parent
-    // tsconfig discovery cannot resolve `@worker/tokenize`; every worker
-    // esbuild pass must receive the explicit effective project config.
+    // Mirror the command layer's preprocessing shadow, including the config,
+    // alias target, and dependency tree that real staging places beside the
+    // rewritten sources. This keeps config discovery and `paths` resolution
+    // anchored in the shadow instead of falling back to untouched real files.
     let shadow = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(shadow.path().join("components")).unwrap();
     std::fs::create_dir_all(shadow.path().join("pages")).unwrap();
+    std::fs::create_dir_all(shadow.path().join("lib")).unwrap();
+    stage_minimal_node_modules(shadow.path());
+    std::fs::copy(
+        root.join("tsconfig.json"),
+        shadow.path().join("tsconfig.json"),
+    )
+    .unwrap();
     let shadow_island = shadow.path().join("components/Search.tsx");
     let shadow_worker = shadow.path().join("pages/search.worker.ts");
+    let shadow_helper = shadow.path().join("lib/tokenize.ts");
     std::fs::copy(&worker_path, &shadow_worker).unwrap();
+    std::fs::copy(&helper_path, &shadow_helper).unwrap();
 
     let worker_filename = module_worker_filename(root, &worker_path).unwrap();
     let rewritten_specifier_prefix = format!("./{worker_filename}?v=");
@@ -944,7 +971,7 @@ fn island_module_worker_emits_contract_companion_and_dev_layout() {
     let dev_assets_root = root.join(".zfb-build/dev-assets");
     let worker_entry = ModuleWorkerBundleEntry::new(root, &worker_path, &shadow_worker).unwrap();
     let bundler = EsbuildSubprocessBundler::new(
-        EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
+        EsbuildSubprocessConfig::default().with_working_dir(shadow.path().to_path_buf()),
     );
     let config = BundleConfig::dev()
         .with_outdir(&dev_assets_root)
@@ -961,6 +988,7 @@ fn island_module_worker_emits_contract_companion_and_dev_layout() {
         "export const tokenize = (value: string) => 'ZFB_MODULE_WORKER_HELPER_TWO:' + value;\n",
     )
     .unwrap();
+    std::fs::copy(&helper_path, &shadow_helper).unwrap();
     let second_rewrite =
         zfb_build::rewrite_module_worker_urls(island_source, &island_path, root).unwrap();
     assert_ne!(
