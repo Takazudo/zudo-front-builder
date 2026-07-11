@@ -18,6 +18,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
 
 /// Minimal view of esbuild's metafile — only the `inputs` graph is needed.
@@ -188,6 +189,97 @@ fn map_to_real(key: &str, shadow_root: &Path, project_root: &Path) -> Option<Pat
 /// real path is still a usable graph key.
 fn canonical_or_self(p: &Path) -> Option<PathBuf> {
     Some(std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+}
+
+/// Fail-closed audit: prove that no `bundle.exclude`-matched source leaked
+/// into the bundle by cross-checking esbuild's `--metafile` `inputs` record
+/// (its authoritative resolution log) against the exclude predicate.
+///
+/// This deliberately diverges from [`route_module_deps`]'s posture above: that
+/// parser is best-effort (a malformed metafile there just degrades dev-loop
+/// invalidation precision), but this audit is the last line of defense
+/// against a shadow-staging escape hatch — see
+/// `.claude/skills/l-lessons-client-bundling/SKILL.md`'s "not-yet-adopted
+/// fixed point" note. When `bundle.exclude` is active, esbuild's own
+/// resolution record is the only oracle trusted for "did anything excluded
+/// get bundled anyway"; failing to read that oracle must not silently pass,
+/// it must hard-fail the build. Callers are expected to only invoke this when
+/// `bundle.exclude` is non-empty — gating that call is wave-3 wiring, not
+/// this primitive.
+///
+/// Every `inputs` key is checked under BOTH spellings:
+/// 1. the logical key as esbuild wrote it, joined onto `project_root` (the
+///    pre-canonicalisation spelling); and
+/// 2. `map_to_real`'s canonicalised real path.
+///
+/// A project-relative symlink can make these two spellings disagree about
+/// whether a path falls under an excluded prefix, in either direction —
+/// checking only one risks a false negative, so both are audited.
+///
+/// `is_excluded` is expected to be the build's live `bundle.exclude`
+/// predicate (e.g. a closure over the compiled glob matcher), taking an
+/// absolute path and answering whether it matches an exclude pattern
+/// relative to `project_root`.
+pub fn audit_metafile_exclusions(
+    metafile_bytes: &[u8],
+    is_excluded: &dyn Fn(&Path) -> bool,
+    shadow_root: &Path,
+    project_root: &Path,
+) -> Result<()> {
+    let meta: Metafile = serde_json::from_slice(metafile_bytes)
+        .map_err(|e| anyhow!("zfb bundler: bundle.exclude audit failed to parse metafile: {e}"))?;
+
+    let mut offenders: BTreeSet<String> = BTreeSet::new();
+    for key in meta.inputs.keys() {
+        if is_synthetic_input(key) {
+            continue;
+        }
+
+        // Spelling 1: the logical key, as esbuild recorded it, resolved
+        // against the project root — no canonicalisation, no disk lookup.
+        let logical = project_root.join(Path::new(key));
+        if is_excluded(&logical) {
+            offenders.insert(key.clone());
+            continue;
+        }
+
+        // Spelling 2: the same key, mapped to its real on-disk path (may
+        // resolve through a symlink, landing somewhere the logical spelling
+        // above does not point at).
+        if let Some(real) = map_to_real(key, shadow_root, project_root) {
+            if is_excluded(&real) {
+                offenders.insert(key.clone());
+            }
+        }
+    }
+
+    if offenders.is_empty() {
+        return Ok(());
+    }
+
+    bail!(
+        "zfb bundler: bundle.exclude leak — the following metafile input(s) matched an exclude pattern but were still present in the bundle: {}",
+        offenders.into_iter().collect::<Vec<_>>().join(", ")
+    );
+}
+
+/// Convenience wrapper over [`audit_metafile_exclusions`]: read the metafile
+/// from `metafile_path` first. Fail-closed extends to the read itself — a
+/// missing or unreadable metafile is a build error, exactly like malformed
+/// JSON, whenever the caller is auditing active exclusions.
+pub fn audit_metafile_exclusions_at_path(
+    metafile_path: &Path,
+    is_excluded: &dyn Fn(&Path) -> bool,
+    shadow_root: &Path,
+    project_root: &Path,
+) -> Result<()> {
+    let bytes = std::fs::read(metafile_path).map_err(|e| {
+        anyhow!(
+            "zfb bundler: bundle.exclude audit failed to read metafile {}: {e}",
+            metafile_path.display()
+        )
+    })?;
+    audit_metafile_exclusions(&bytes, is_excluded, shadow_root, project_root)
 }
 
 #[cfg(test)]
@@ -363,5 +455,157 @@ mod tests {
                 deps[0].module_deps
             );
         }
+    }
+
+    // --- audit_metafile_exclusions ------------------------------------
+
+    /// A crude stand-in for `BundleExcludeMatcher::is_excluded` (private to
+    /// `bundler.rs`): true when `abs`'s path relative to `project_root`
+    /// starts with `prefix`. Good enough to exercise the audit's dual-spelling
+    /// logic without pulling in real glob matching.
+    fn make_is_excluded(project_root: PathBuf, prefix: &'static str) -> impl Fn(&Path) -> bool {
+        move |abs: &Path| {
+            abs.strip_prefix(&project_root)
+                .map(|rel| rel.to_string_lossy().replace('\\', "/").starts_with(prefix))
+                .unwrap_or(false)
+        }
+    }
+
+    #[test]
+    fn audit_passes_when_no_input_is_excluded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        let metafile = br#"{
+            "inputs": {
+                "pages/index.tsx": { "imports": [ { "path": "components/Header.tsx" } ] },
+                "components/Header.tsx": { "imports": [] }
+            }
+        }"#;
+        let is_excluded = make_is_excluded(root.clone(), "vendor/legacy/");
+
+        let result = audit_metafile_exclusions(metafile, &is_excluded, &root, &root);
+        assert!(
+            result.is_ok(),
+            "no input matches the exclude pattern, audit must pass; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn audit_fails_when_logical_spelling_is_excluded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // The excluded file need not exist on disk — the audit checks the
+        // metafile's recorded string key, not the filesystem.
+        let metafile = br#"{
+            "inputs": {
+                "pages/index.tsx": { "imports": [ { "path": "vendor/legacy/Old.tsx" } ] },
+                "vendor/legacy/Old.tsx": { "imports": [] }
+            }
+        }"#;
+        let is_excluded = make_is_excluded(root.clone(), "vendor/legacy/");
+
+        let err = audit_metafile_exclusions(metafile, &is_excluded, &root, &root)
+            .expect_err("an excluded logical key present in inputs must fail the audit");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bundle.exclude"),
+            "error must name bundle.exclude; got {msg:?}"
+        );
+        assert!(
+            msg.contains("vendor/legacy/Old.tsx"),
+            "error must name the offending path; got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn audit_fails_when_only_the_real_mapped_spelling_is_excluded() {
+        // The metafile's logical key (a shadow-relative node_modules alias)
+        // does not itself look excluded, but `map_to_real` resolves it
+        // through a symlink to a real file that lives under an excluded
+        // project directory. Checking only the logical spelling would miss
+        // this leak — exactly the dual-spelling rationale this audit exists
+        // for (see the fn doc comment and l-lessons-client-bundling).
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonicalise the tempdir base up front (macOS maps `/var` ->
+        // `/private/var`): `map_to_real` canonicalises the resolved real
+        // path, so `is_excluded`'s `strip_prefix(project_root)` must compare
+        // against an equally-canonical `project_root` or it spuriously fails
+        // to match on platforms where the two spellings differ.
+        let base = tmp.path().canonicalize().unwrap();
+        let project = base.join("project");
+        let shadow = base.join("shadow");
+        let real_excluded = project.join("vendor/legacy/Button.tsx");
+        std::fs::create_dir_all(real_excluded.parent().unwrap()).unwrap();
+        std::fs::write(&real_excluded, "btn").unwrap();
+        std::fs::create_dir_all(shadow.join("node_modules/@ds")).unwrap();
+
+        let link = shadow.join("node_modules/@ds/Button.tsx");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_excluded, &link).unwrap();
+        #[cfg(not(unix))]
+        std::fs::write(&link, "btn").unwrap();
+
+        let metafile = br#"{
+            "inputs": {
+                "pages/index.tsx": { "imports": [ { "path": "node_modules/@ds/Button.tsx" } ] },
+                "node_modules/@ds/Button.tsx": { "imports": [] }
+            }
+        }"#;
+        let is_excluded = make_is_excluded(project.clone(), "vendor/legacy/");
+
+        let result = audit_metafile_exclusions(metafile, &is_excluded, &shadow, &project);
+
+        #[cfg(unix)]
+        {
+            let err = result.expect_err(
+                "the real-mapped spelling resolves into an excluded directory, audit must fail",
+            );
+            let msg = err.to_string();
+            assert!(
+                msg.contains("bundle.exclude"),
+                "error must name bundle.exclude; got {msg:?}"
+            );
+            assert!(
+                msg.contains("node_modules/@ds/Button.tsx"),
+                "error must name the offending metafile key; got {msg:?}"
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            // No symlink semantics off unix in this test harness — the write()
+            // fallback above makes the alias its own file, not a leak.
+            let _ = result;
+        }
+    }
+
+    #[test]
+    fn audit_fails_closed_on_malformed_metafile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let is_excluded = make_is_excluded(root.clone(), "vendor/legacy/");
+
+        let err = audit_metafile_exclusions(b"not json", &is_excluded, &root, &root)
+            .expect_err("a malformed metafile must be a build error, not an empty pass");
+        assert!(
+            err.to_string().contains("bundle.exclude"),
+            "fail-closed error must name bundle.exclude; got {err}"
+        );
+    }
+
+    #[test]
+    fn audit_fails_closed_on_missing_metafile_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let missing = root.join("does-not-exist/metafile.json");
+        let is_excluded = make_is_excluded(root.clone(), "vendor/legacy/");
+
+        let err = audit_metafile_exclusions_at_path(&missing, &is_excluded, &root, &root)
+            .expect_err("an unreadable metafile path must be a build error, not an empty pass");
+        assert!(
+            err.to_string().contains("bundle.exclude"),
+            "fail-closed error must name bundle.exclude; got {err}"
+        );
     }
 }
