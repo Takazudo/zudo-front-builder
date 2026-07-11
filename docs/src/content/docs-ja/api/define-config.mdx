@@ -44,6 +44,7 @@ declare module "zfb/config" {
   - `include?: string[]` — glob パターン（globset 方言、`path` からの相対）。設定すると、マッチするエントリのみが保持されます。
   - `exclude?: string[]` — glob パターン。マッチするエントリは除外されます（`include` の後に評価されます）。
   - `idStripSuffix?: string` — 各エントリの slug とモジュール specifier から取り除かれるサフィックス（例: 多言語レイアウトでの `".en"`）。
+  - `allowOutsideRoot?: boolean` — `..` によってプロジェクトルートを抜け出す `path` をオプトインします（例: このパッケージの外にあるモノレポ共有のコンテンツディレクトリ）。デフォルトの `false` は `path` をプロジェクトルート内に制限します。絶対パスはこのフラグにかかわらず拒否されます — 緩和されるのは `..` 相対の脱出だけです。モノレポでの使用例や、プリセットの信頼・dev 監視に関する注意点については[プロジェクトルート外のコレクション](../concepts/content-collections.mdx#プロジェクトルート外のコレクション)を参照してください。
 - `tailwind?: { enabled?: boolean }` — Tailwind オプション。`enabled` のデフォルトは `true` です。作成済みの CSS と CSS Modules は残したまま Tailwind を無効化するには、`tailwind: { enabled: false }` を設定します。
 - `prefetch?: { disabled?: boolean }` — プリフェッチオプション。`disabled: true` のとき、ランタイムのプリフェッチ配線はビルド時の meta タグを通じて完全にスキップされます。
 - `minifyHtml?: boolean` — プロダクション HTML ミニファイを有効にします。デフォルト: `false`（オフ）。ミニファイは Rust 側の後処理として実行され、Node.js のミニファイ subprocess は起動しません。初回バージョンは保守的で、レンダリングされた HTML ページだけを対象候補にし、ソースが `.html` の passthrough ページはそのまま残し、HTML 以外の出力はスキップします。`zfb build --minify-html` / `--no-minify-html` で 1 回のビルドだけ設定値を上書きできます。
@@ -244,6 +245,6 @@ export default defineConfig({
 
 - コレクション名は一意である必要があります。
 - `path` は絶対パスにできません。
-- `path` はプロジェクトルートから抜け出す `..` セグメントを含めることができません。
+- `path` はプロジェクトルートから抜け出す `..` セグメントを含めることができません — ただし、そのコレクションが `allowOutsideRoot: true` を設定している場合はこのチェックだけが緩和されます（絶対パスは引き続き拒否されます）。
 - `bundle.loaders` のキーは `.` で始まり、inline loader を使い、zfb が予約した拡張子を上書きしない必要があります。
 - `bundle.define` は、バンドルモードが所有する `DEV`、`PROD`、`NODE_ENV` の置換を上書きできません。
