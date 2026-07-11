@@ -6062,88 +6062,86 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
             // Already under the shadow tree (re-entrant call, or a plugin
             // temp file materialised inside `shadow`) — leave untouched.
             let already_shadowed = prefix_path.starts_with(shadow);
-            if !already_shadowed {
-                if prefix_path.strip_prefix(project_root).is_ok() {
-                    let has_wildcard = target.contains('*');
-                    let mut concrete_exclusion = (!has_wildcard)
-                        .then(|| {
-                            bundle_exclude.map_or(ConcreteTargetExclusion::None, |matcher| {
-                                concrete_target_exclusion(
-                                    prefix,
-                                    project_root,
-                                    matcher,
-                                    effective_main_fields,
-                                )
-                            })
-                        })
-                        .unwrap_or(ConcreteTargetExclusion::None);
-                    if !has_wildcard
-                        && concrete_exclusion == ConcreteTargetExclusion::None
-                        && bundle_exclude.is_some_and(|matcher| !matcher.is_empty())
-                    {
-                        // A live exact-file fallback can import an excluded
-                        // relative dependency that is not itself a resolver
-                        // candidate. With any exclusion policy active, keep
-                        // exact user mappings in their fully staged shadow
-                        // closure instead of allowing that escape hatch.
-                        concrete_exclusion = ConcreteTargetExclusion::ShadowOnly;
-                    }
-                    if concrete_exclusion == ConcreteTargetExclusion::Block {
-                        // A concrete user path mapping to an excluded file must
-                        // not retain either its ordinary shadow candidate or
-                        // the live-real fallback. Route it through the same
-                        // opaque absent child used for excluded plugin aliases.
-                        push_unique(
-                            &mut new_targets,
-                            excluded_target
-                                .expect("excluded concrete tsconfig target allocated a guard")
-                                .to_string_lossy()
-                                .into_owned(),
-                        );
-                        continue;
-                    }
-
-                    // Under project_root → dual-target, shadow-first.
-                    // `rel` is empty for the whole-root `@/* -> /root/*`
-                    // (baseUrl ".") case — the most common alias shape.
-                    // `shadow.join("")` would yield `<shadow>/` and produce a
-                    // malformed `<shadow>//*` target; use `shadow` directly so
-                    // the shadow-first entry is a clean `<shadow>/*`.
-                    let shadow_prefix = shadow_path_for_project_path(
-                        prefix_path,
-                        project_root,
-                        shadow,
-                        node_modules_isolation_root,
+            if !already_shadowed && prefix_path.strip_prefix(project_root).is_ok() {
+                let has_wildcard = target.contains('*');
+                let mut concrete_exclusion = if !has_wildcard {
+                    bundle_exclude.map_or(ConcreteTargetExclusion::None, |matcher| {
+                        concrete_target_exclusion(
+                            prefix,
+                            project_root,
+                            matcher,
+                            effective_main_fields,
+                        )
+                    })
+                } else {
+                    ConcreteTargetExclusion::None
+                };
+                if !has_wildcard
+                    && concrete_exclusion == ConcreteTargetExclusion::None
+                    && bundle_exclude.is_some_and(|matcher| !matcher.is_empty())
+                {
+                    // A live exact-file fallback can import an excluded
+                    // relative dependency that is not itself a resolver
+                    // candidate. With any exclusion policy active, keep
+                    // exact user mappings in their fully staged shadow
+                    // closure instead of allowing that escape hatch.
+                    concrete_exclusion = ConcreteTargetExclusion::ShadowOnly;
+                }
+                if concrete_exclusion == ConcreteTargetExclusion::Block {
+                    // A concrete user path mapping to an excluded file must
+                    // not retain either its ordinary shadow candidate or
+                    // the live-real fallback. Route it through the same
+                    // opaque absent child used for excluded plugin aliases.
+                    push_unique(
+                        &mut new_targets,
+                        excluded_target
+                            .expect("excluded concrete tsconfig target allocated a guard")
+                            .to_string_lossy()
+                            .into_owned(),
                     );
-                    let mut shadow_target = preserve_trailing_path_separator(
-                        shadow_prefix.to_string_lossy().into_owned(),
-                        prefix,
-                    );
-                    shadow_target.push_str(suffix);
-                    push_unique(&mut new_targets, shadow_target);
+                    continue;
+                }
 
-                    if concrete_exclusion == ConcreteTargetExclusion::ShadowOnly {
-                        // At least one plausible candidate or package-owned
-                        // descendant is excluded. The isolated shadow contains
-                        // every allowed candidate and deliberately has no live
-                        // fallback; esbuild still chooses the winner.
-                        continue;
-                    }
+                // Under project_root → dual-target, shadow-first.
+                // `rel` is empty for the whole-root `@/* -> /root/*`
+                // (baseUrl ".") case — the most common alias shape.
+                // `shadow.join("")` would yield `<shadow>/` and produce a
+                // malformed `<shadow>//*` target; use `shadow` directly so
+                // the shadow-first entry is a clean `<shadow>/*`.
+                let shadow_prefix = shadow_path_for_project_path(
+                    prefix_path,
+                    project_root,
+                    shadow,
+                    node_modules_isolation_root,
+                );
+                let mut shadow_target = preserve_trailing_path_separator(
+                    shadow_prefix.to_string_lossy().into_owned(),
+                    prefix,
+                );
+                shadow_target.push_str(suffix);
+                push_unique(&mut new_targets, shadow_target);
 
-                    if has_wildcard
-                        && bundle_exclude.is_some_and(|matcher| {
-                            !matcher.is_empty()
-                                && matcher.may_overlap_wildcard_target(target, project_root)
-                        })
-                    {
-                        // The shadow wildcard still resolves every allowed
-                        // mirrored file, but the live-real fallback could
-                        // resurrect a file matched by `bundle.exclude` and
-                        // skipped from the shadow. Suppress fallback whenever
-                        // the configured exclude patterns can overlap this
-                        // wildcard; provably-disjoint aliases keep it.
-                        continue;
-                    }
+                if concrete_exclusion == ConcreteTargetExclusion::ShadowOnly {
+                    // At least one plausible candidate or package-owned
+                    // descendant is excluded. The isolated shadow contains
+                    // every allowed candidate and deliberately has no live
+                    // fallback; esbuild still chooses the winner.
+                    continue;
+                }
+
+                if has_wildcard
+                    && bundle_exclude.is_some_and(|matcher| {
+                        !matcher.is_empty()
+                            && matcher.may_overlap_wildcard_target(target, project_root)
+                    })
+                {
+                    // The shadow wildcard still resolves every allowed
+                    // mirrored file, but the live-real fallback could
+                    // resurrect a file matched by `bundle.exclude` and
+                    // skipped from the shadow. Suppress fallback whenever
+                    // the configured exclude patterns can overlap this
+                    // wildcard; provably-disjoint aliases keep it.
+                    continue;
                 }
             }
             // Always keep the original (real-abs / plugin / shadow) target
