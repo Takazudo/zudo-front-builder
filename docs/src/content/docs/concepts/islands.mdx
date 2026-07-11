@@ -164,6 +164,100 @@ zfb does not support Vue, Svelte, or Solid. The `FrameworkKind` enum is intentio
 
 For a deeper look at how the two adapters work, see [Framework adapters](../architecture/framework-adapters.mdx).
 
+## Browser bundle mode and configuration
+
+Island code uses the same compile-time mode values as client scripts, module
+workers, and the page/SSR bundle:
+
+| Command | `import.meta.env.DEV` | `import.meta.env.PROD` | `process.env.NODE_ENV` |
+|---|---:|---:|---|
+| `zfb dev` | `true` | `false` | `"development"` |
+| `zfb build` | `false` | `true` | `"production"` |
+
+The mode is independent of minification. Additional
+[`bundle.loaders` and `bundle.define` settings](../api/define-config.mdx#bundle-settings)
+are also shared by islands and the workers they start. Define values are raw,
+public code substitutions, so they must never contain secrets.
+
+## Importing text with `?raw`
+
+An island or a first-party module in its import graph can load any
+project-local file as text with one exact form:
+
+```tsx
+"use client";
+
+import shaderSource from "./shaders/noise.frag?raw";
+```
+
+The target's extension does not matter and `bundle.loaders` does not change
+the result. The target is read as valid UTF-8, default-exported as a string,
+and treated as a terminal dependency — a `.js?raw` file is text, not code.
+Only a static default import with a literal relative specifier and the exact
+`?raw` suffix is supported. Named, namespace, side-effect, type-only, dynamic,
+and re-export forms, other queries, extra parameters, non-literal paths, and
+targets outside the project root fail with a message that names the supported
+form.
+
+During `zfb dev`, raw targets are watched independently of their importers.
+Editing, deleting, or recreating the text file invalidates the browser bundle;
+the same transform and dependency tracking also apply to client scripts and
+the page/SSR pass.
+
+## Module workers
+
+Use the literal module-worker constructor that zfb can discover before
+esbuild runs:
+
+```tsx
+"use client";
+
+const searchWorker = new Worker(
+  new URL("./workers/search.worker.ts", import.meta.url),
+  { type: "module" },
+);
+```
+
+The first `URL` argument must be a string literal naming an exact,
+project-local relative JS/TS file with no query or fragment, and the worker
+options must select `type: "module"`. zfb leaves worker sources out of the
+server graph, bundles each worker as a self-contained browser entry, and
+rewrites the URL to:
+
+```text
+./worker-<encoded-project-relative-path>.js?v=<graph-hash>
+```
+
+Island-owned workers are emitted flat under `/assets/worker-*.js` (with the
+configured `base` prefix, if any). The stable filename is a reversible
+encoding of the complete project-relative source path: separators become
+`-s-`, dots `-d-`, literal hyphens `-h-`, and other bytes `-xHH-`. For example,
+`src/search/index.worker.ts` becomes
+`worker-src-s-search-s-index-d-worker-d-ts.js`. The `?v=` query is exactly
+eight lowercase hexadecimal characters and changes when the first-party graph
+or output-affecting bundle/resolver inputs change, including transitive
+imports, nested workers, raw files, and relevant TypeScript configuration. Dev
+watches that closure and removes stale companions after worker edges disappear.
+
+The predictable prefix can anchor a per-worker response policy. For example,
+a Cloudflare-style `public/_headers` file can start with:
+
+```text
+/assets/worker-*.js
+  Content-Security-Policy: default-src 'none'; script-src 'self'; connect-src 'self'
+```
+
+Tailor the directives to what your worker actually accesses. If `base` is set,
+include that prefix in the `_headers` path. Workers owned by
+[client scripts](../guides/client-scripts.mdx#module-workers) live in the
+separate `/assets/client/worker-*.js` directory and need a corresponding rule.
+
+The pre-pass does not traverse installed `node_modules`; third-party
+transitive worker constructors are left to their package tooling. A
+`SharedWorker` using the same literal `new URL(..., import.meta.url)` shape is
+a named hard error. Other non-literal or non-module constructor shapes are not
+part of this contract and should not be expected to be rewritten.
+
 ## `import.meta.glob` support
 
 zfb supports Vite's `import.meta.glob(...)` macro — importing every file matching a pattern in one call, handy for auto-registering a directory of sub-components or data files. Support is intentionally narrow: esbuild (which bundles islands) has no native knowledge of this Vite-only macro, so zfb expands it Rust-side, at build time, before esbuild ever sees the file. Only the one shape that expansion understands is accepted; anything else is a build error rather than a silent miscompile.
@@ -223,7 +317,7 @@ The raw-mirrored check is intentionally conservative. An unused JS-like sibling 
 
 ### Client scripts: not supported, and not caught at build time
 
-`import.meta.glob` is **not supported** in [client scripts](../guides/client-scripts.mdx) (`*.client.{ts,tsx,js,jsx}`, or any module they import). Client scripts bundle directly against the real project tree — no shadow copy runs on this path — so the call ships to the browser byte-for-byte, unexpanded. Unlike the island case above, **this is not caught at build time**: `zfb build` succeeds, and the browser throws when the script actually runs, because `import.meta.glob` is `undefined` outside of Vite. If you need a glob-like file list inside a client script, use one of the alternatives below.
+`import.meta.glob` is **not supported** in [client scripts](../guides/client-scripts.mdx) (`*.client.{ts,tsx,js,jsx}`, or any module they import). A graph that needs `?raw`, module-worker, or plugin preprocessing may use a temporary mirror, but that stage deliberately does not expand globs. The call therefore reaches the browser semantically unexpanded. Unlike the island case above, **this is not caught at build time**: `zfb build` succeeds, and the browser throws when the script actually runs, because `import.meta.glob` is `undefined` outside of Vite. If you need a glob-like file list inside a client script, use one of the alternatives below.
 
 ### Alternatives
 
@@ -262,7 +356,7 @@ This is the right tool for synchronous pre-hydration work that must run before t
 <script src="https://cdn.example.com/lib.js" defer />
 ```
 
-**Custom build steps** — if you need to bundle additional TypeScript modules, add a separate esbuild or Rollup step to your build pipeline and reference the output from a `<script src>`. zfb does not auto-bundle arbitrary non-`"use client"` modules — only the islands pipeline runs automatically.
+**Client scripts or custom build steps** — zfb automatically bundles [`*.client.*` entries](../guides/client-scripts.mdx) as a second browser-entry pipeline. For any other TypeScript module, add a separate esbuild or Rollup step and reference its output from a `<script src>`. Modules that are not reachable from a `"use client"` graph or a `.client.*` entry remain server-only.
 
 What you **cannot** do: import a regular (non-`"use client"`) `.ts` or `.tsx` module from a page and expect its browser-side code to reach the client. Modules without the directive are server-only — SWC compiles and evaluates them at build time, and none of their bytes are included in the output.
 

@@ -62,6 +62,52 @@ export default function SearchPage() {
 
 `zfb dev` ではクライアントスクリプトはバンドルされますが、**ハッシュは付きません**。安定 URL がそのまま配信されます。そのため `clientScript()` が返す URL は、フルページサイクルなしで開発中にライブリロードできます。
 
+## バンドルモードと設定
+
+クライアントスクリプトには、islands、module worker、ページ / SSR バンドルと同じコンパイル時モード値が渡されます。
+
+| コマンド | `import.meta.env.DEV` | `import.meta.env.PROD` | `process.env.NODE_ENV` |
+|---|---:|---:|---|
+| `zfb dev` | `true` | `false` | `"development"` |
+| `zfb build` | `false` | `true` | `"production"` |
+
+[`bundle.loaders` と `bundle.define` の設定](../api/define-config.mdx#bundle-設定)も、クライアントスクリプトとその worker に適用されます。define の値は esbuild の生の式で、参照されるとブラウザから見えるようになります。secret には使わないでください。
+
+## `?raw` でテキストをインポートする
+
+ファイルの内容を文字列として読み込むには、厳密な `?raw` サフィックスを持つ静的な default import を使います。
+
+```ts
+import shaderSource from "./shaders/noise.frag?raw";
+
+console.log(shaderSource);
+```
+
+ターゲットの拡張子は問いません。JavaScript 風の拡張子でも構いません。これは終端のテキスト依存であり、モジュールとして実行もパースもされません。ファイルは妥当な UTF-8 テキストを含み、リテラルの `./` または `../` から始まるプロジェクトローカルなパスに解決される必要があります。named import、namespace import、side-effect import、type-only import、dynamic import、re-export はサポートされません。`?url`、追加のクエリパラメータ、リテラルでない specifier も同様で、サポートされる import 形式を示すエラーになります。
+
+`?raw` は `bundle.loaders` から独立しています。エントリ自身でも、そこからインポートされる first-party モジュールでも使えます。`zfb dev` 中は元のテキストファイルが依存として追跡されるため、編集・削除・再作成するとクライアントスクリプトの再バンドルがスケジュールされます。
+
+## Module worker
+
+クライアントスクリプトのグラフ内に次のリテラルな constructor 形式があると、zfb は first-party の module worker をバンドルします。
+
+```ts
+const searchWorker = new Worker(
+  new URL("./workers/search.worker.ts", import.meta.url),
+  { type: "module" },
+);
+```
+
+URL は、クエリや fragment のない、厳密なプロジェクトローカル相対パスの JS / TS ファイルを指す必要があります。zfb は worker コードをサーバーグラフへ入れず、各 worker を自己完結したブラウザエントリとしてバンドルし、URL をフラットな companion へ書き換えます。
+
+```text
+./worker-<encoded-project-relative-path>.js?v=<graph-hash>
+```
+
+クライアントスクリプトでは、この companion は `/assets/client/worker-*.js` 配下（`base` を設定していればそのプレフィックス付き）で配信されます。ファイル名は安定していて可逆です。パス区切りは `-s-`、ドットは `-d-`、リテラルのハイフンは `-h-`、その他のバイトは `-xHH-` で表します。`?v=` の値は厳密に 8 文字の小文字 16 進数で、first-party の worker グラフ、または出力に影響するバンドル / resolver 入力が変わると更新されます。推移的な import、ネストした worker、終端の raw ファイルも対象です。
+
+`zfb dev` 中は worker グラフのファイルが監視されます。編集すると所有元のクライアントスクリプトが再ビルドされ、worker edge を削除すると古い companion が prune されます。探索はインストール済みの `node_modules` をたどらないため、third-party の推移的 worker はパッケージ側のツールに委ねられます。同じリテラルな `new URL(..., import.meta.url)` 形式で書かれた `SharedWorker` は、書き換えられない URL が実行時に 404 する状態を避けるため、名前付きのビルドエラーになります。
+
 ## サブパスデプロイ（`base`）
 
 サイトをサブパス配下でホストする場合（例：`zfb.config.json` に `base: "/pj/mysite/"` を設定）、`clientScript()` は自動的にプレフィックスを付加します。
@@ -82,7 +128,7 @@ SSR レンダリング時に `<script src="…">` タグを生成するという
 
 ## `import.meta.glob` はサポートされていません
 
-クライアントスクリプトは Vite の `import.meta.glob(...)` マクロをサポートしていません。[islands がサポートする](../concepts/islands.mdx#import-meta-glob-のサポート) eager な文字列リテラル形式ですらサポートされません。クライアントスクリプトはシャドウコピーのステップなしに実際のプロジェクトツリーに対して直接バンドルされるため、`import.meta.glob(...)` 呼び出しは（`.client.*` ファイル自身の中にあっても、それがインポートする任意のモジュールの中にあっても）展開されないままブラウザへ配信されます。これは **ビルド時には検出されません**。`zfb build` は成功し、スクリプトが実行されるときにブラウザが例外を投げます。`import.meta.glob` は Vite の外では `undefined` だからです。
+クライアントスクリプトは Vite の `import.meta.glob(...)` マクロをサポートしていません。[islands がサポートする](../concepts/islands.mdx#import-meta-glob-のサポート) eager な文字列リテラル形式ですらサポートされません。`?raw`、module worker、プラグインの前処理を使うクライアントスクリプトのグラフは一時的なミラーからバンドルされる場合がありますが、その段階が展開するのはそれらの機能だけで、`import.meta.glob` は展開しません。そのため `import.meta.glob(...)` 呼び出しは（`.client.*` ファイル自身の中にあっても、それがインポートする任意のモジュールの中にあっても）展開されないままブラウザへ配信されます。これは **ビルド時には検出されません**。`zfb build` は成功し、スクリプトが実行されるときにブラウザが例外を投げます。`import.meta.glob` は Vite の外では `undefined` だからです。
 
 クライアントスクリプト内で glob のようなファイル一覧が必要な場合は、`import.meta.glob` に手を伸ばすのではなく、自分で計算してください（プラグインの仮想モジュール、あるいは実際の `.ts` ファイルを書き出す小さなプリビルドスクリプト）。完全なサポートマトリクスと代替手段については [Islands: `import.meta.glob` のサポート](../concepts/islands.mdx#import-meta-glob-のサポート) を参照してください。
 

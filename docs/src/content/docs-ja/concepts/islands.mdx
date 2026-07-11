@@ -164,6 +164,63 @@ zfb は Vue・Svelte・Solid をサポートしていません。`FrameworkKind`
 
 2 つのアダプタがどう動作するかの詳細は [Framework adapters](../architecture/framework-adapters.mdx) を参照してください。
 
+## ブラウザバンドルのモードと設定
+
+island のコードは、クライアントスクリプト、module worker、ページ / SSR バンドルと同じコンパイル時モード値を使います。
+
+| コマンド | `import.meta.env.DEV` | `import.meta.env.PROD` | `process.env.NODE_ENV` |
+|---|---:|---:|---|
+| `zfb dev` | `true` | `false` | `"development"` |
+| `zfb build` | `false` | `true` | `"production"` |
+
+モードは minify の有無から独立しています。追加の [`bundle.loaders` と `bundle.define` の設定](../api/define-config.mdx#bundle-設定)も、islands とそこから起動する worker で共有されます。define の値は公開コードの生の置換式なので、secret を含めてはいけません。
+
+## `?raw` でテキストをインポートする
+
+island、またはその import グラフにある first-party モジュールは、厳密に 1 つの形式で任意のプロジェクトローカルファイルをテキストとして読み込めます。
+
+```tsx
+"use client";
+
+import shaderSource from "./shaders/noise.frag?raw";
+```
+
+ターゲットの拡張子は問いません。`bundle.loaders` が結果を変えることもありません。ターゲットは妥当な UTF-8 として読み込まれ、文字列として default export され、終端の依存として扱われます。つまり `.js?raw` ファイルはコードではなくテキストです。サポートされるのは、リテラルの相対 specifier と厳密な `?raw` サフィックスを持つ静的な default import だけです。named import、namespace import、side-effect import、type-only import、dynamic import、re-export、その他のクエリ、追加パラメータ、リテラルでないパス、プロジェクトルート外のターゲットは、サポートされる形式を示すメッセージとともに失敗します。
+
+`zfb dev` 中、raw ターゲットは import 元とは独立して監視されます。テキストファイルを編集・削除・再作成するとブラウザバンドルが invalidation されます。同じ変換と依存追跡はクライアントスクリプトとページ / SSR パスにも適用されます。
+
+## Module worker
+
+esbuild を実行する前に zfb が探索できる、リテラルな module-worker constructor を使います。
+
+```tsx
+"use client";
+
+const searchWorker = new Worker(
+  new URL("./workers/search.worker.ts", import.meta.url),
+  { type: "module" },
+);
+```
+
+最初の `URL` 引数は、クエリや fragment のない、厳密なプロジェクトローカル相対パスの JS / TS ファイルを指す文字列リテラルでなければならず、worker options は `type: "module"` を選ぶ必要があります。zfb は worker ソースをサーバーグラフへ入れず、各 worker を自己完結したブラウザエントリとしてバンドルし、URL を次の形へ書き換えます。
+
+```text
+./worker-<encoded-project-relative-path>.js?v=<graph-hash>
+```
+
+island が所有する worker は `/assets/worker-*.js` 配下へフラットに出力されます（`base` を設定していればそのプレフィックス付き）。安定ファイル名は、完全なプロジェクト相対ソースパスを可逆にエンコードしたものです。区切りは `-s-`、ドットは `-d-`、リテラルのハイフンは `-h-`、その他のバイトは `-xHH-` になります。たとえば `src/search/index.worker.ts` は `worker-src-s-search-s-index-d-worker-d-ts.js` になります。`?v=` クエリは厳密に 8 文字の小文字 16 進数で、推移的な import、ネストした worker、raw ファイル、関連する TypeScript 設定を含む first-party グラフ、または出力に影響するバンドル / resolver 入力が変わると更新されます。dev はその closure を監視し、worker edge がなくなると古い companion を削除します。
+
+予測可能なプレフィックスは、worker ごとの response policy のアンカーにできます。たとえば Cloudflare 形式の `public/_headers` ファイルは次の設定から始められます。
+
+```text
+/assets/worker-*.js
+  Content-Security-Policy: default-src 'none'; script-src 'self'; connect-src 'self'
+```
+
+ディレクティブは worker が実際にアクセスする対象に合わせて調整してください。`base` を設定している場合は `_headers` のパスにもそのプレフィックスを含めます。[クライアントスクリプト](../guides/client-scripts.mdx#module-worker)が所有する worker は、別の `/assets/client/worker-*.js` ディレクトリに置かれるため、それに対応するルールが必要です。
+
+前処理パスはインストール済みの `node_modules` をたどりません。third-party の推移的な worker constructor はパッケージ側のツールに委ねられます。同じリテラルな `new URL(..., import.meta.url)` 形式を使う `SharedWorker` は、名前付きのハードエラーになります。それ以外のリテラルでない、または module でない constructor 形式はこのコントラクトの対象外で、書き換えられることを期待すべきではありません。
+
 ## `import.meta.glob` のサポート
 
 zfb は Vite の `import.meta.glob(...)` マクロをサポートしています。パターンにマッチするすべてのファイルを 1 回の呼び出しでインポートするもので、サブコンポーネントやデータファイルのディレクトリを自動登録するのに便利です。サポート範囲は意図的に狭く保たれています。島をバンドルする esbuild はこの Vite 専用マクロをネイティブには理解しないため、zfb はビルド時に、esbuild がファイルを目にする前に Rust 側で展開します。展開が理解できる唯一の形式だけが受け付けられ、それ以外はサイレントなミスコンパイルではなくビルドエラーになります。
@@ -223,7 +280,7 @@ raw-mirrored ファイルのチェックは意図的に保守的です。glob �
 
 ### クライアントスクリプト: サポートされず、ビルド時にも検出されない
 
-`import.meta.glob` は [クライアントスクリプト](../guides/client-scripts.mdx)（`*.client.{ts,tsx,js,jsx}`、およびそれらがインポートする任意のモジュール）では **サポートされません**。クライアントスクリプトは実際のプロジェクトツリーに対して直接バンドルされ、この経路ではシャドウコピーが走らないため、呼び出しは展開されないままバイト単位でそのままブラウザへ配信されます。上記の島のケースとは異なり、**これはビルド時には検出されません**。`zfb build` は成功し、スクリプトが実際に実行されるときにブラウザが例外を投げます。`import.meta.glob` は Vite の外では `undefined` だからです。クライアントスクリプト内で glob のようなファイル一覧が必要な場合は、以下の代替手段のいずれかを使ってください。
+`import.meta.glob` は [クライアントスクリプト](../guides/client-scripts.mdx)（`*.client.{ts,tsx,js,jsx}`、およびそれらがインポートする任意のモジュール）では **サポートされません**。`?raw`、module worker、プラグインの前処理が必要なグラフは一時的なミラーを使う場合がありますが、その段階は意図的に glob を展開しません。そのため呼び出しは意味上未展開のままブラウザへ配信されます。上記の島のケースとは異なり、**これはビルド時には検出されません**。`zfb build` は成功し、スクリプトが実際に実行されるときにブラウザが例外を投げます。`import.meta.glob` は Vite の外では `undefined` だからです。クライアントスクリプト内で glob のようなファイル一覧が必要な場合は、以下の代替手段のいずれかを使ってください。
 
 ### 代替手段
 
@@ -262,7 +319,7 @@ export default function Layout({ children }) {
 <script src="https://cdn.example.com/lib.js" defer />
 ```
 
-**カスタムビルドステップ** — 追加の TypeScript モジュールをバンドルする必要がある場合は、ビルドパイプラインに別の esbuild または Rollup のステップを追加し、その出力を `<script src>` から参照します。zfb は `"use client"` でない任意のモジュールを自動バンドルしません。自動で実行されるのは islands パイプラインだけです。
+**クライアントスクリプトまたはカスタムビルドステップ** — zfb は 2 つ目のブラウザエントリパイプラインとして [`*.client.*` エントリ](../guides/client-scripts.mdx)を自動的にバンドルします。それ以外の TypeScript モジュールには、別の esbuild または Rollup ステップを追加し、その出力を `<script src>` から参照してください。`"use client"` グラフまたは `.client.*` エントリから到達できないモジュールは、サーバー専用のままです。
 
 **できないこと**: 通常の（`"use client"` でない）`.ts` や `.tsx` モジュールをページからインポートして、そのブラウザ側のコードがクライアントに届くことを期待すること。ディレクティブを持たないモジュールはサーバー専用です。SWC がビルド時にコンパイルして評価し、そのバイトは出力に一切含まれません。
 

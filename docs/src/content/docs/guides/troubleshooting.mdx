@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Known failure modes with concrete fixes — install script errors, musl/Alpine, unsupported import.meta.glob forms, out-of-root imports, and missing esbuild binaries.
+description: Known failure modes with concrete fixes — install errors, bundle config, import queries, module workers, out-of-root imports, and missing esbuild binaries.
 sidebar_position: 9
 ---
 
@@ -73,6 +73,83 @@ and https://github.com/Takazudo/zudo-front-builder/issues/1412.
 **Cause:** `import.meta.glob` is a Vite-only build-time macro; esbuild (which bundles islands) has no native understanding of it, so zfb expands the one supported shape itself before esbuild ever sees the file. Only `import.meta.glob("<string-literal>", { eager: true })`, with the pattern resolving under the importing file's own directory, is supported when the glob call is in an island-reachable module that zfb writes as a real expanded shadow-copy file. Everything else — the default lazy form, `{ eager: false }`, a non-literal pattern, the `import`/`query`/`as` options, or a `../`-escaping pattern — is rejected. zfb also rejects a glob inside a JS-like file that is reachable only as a raw-mirrored glob target or subtree companion, because that file would otherwise ship to the browser unexpanded and throw during hydration.
 
 **Fix:** see [Islands: `import.meta.glob` support](../concepts/islands.mdx#import-meta-glob-support) for the full support matrix and alternatives. Use the eager string-literal form where applicable, hoist nested globs into island-reachable modules, move raw-mirrored glob target/subtree files out of the globbed subtree, or replace the glob with explicit static imports. Note that **client scripts** (`*.client.ts`) don't support `import.meta.glob` at all, and — unlike islands — that failure is *not* caught at build time; see [Client Scripts: `import.meta.glob` is not supported](./client-scripts.mdx#import-meta-glob-is-not-supported).
+
+## `bundle.loaders` or `bundle.define` is rejected
+
+**Symptom:** config loading fails with a message such as:
+
+```text
+bundle.loaders key ".asset" uses unsupported loader "file"; inline-only v1 accepts: ...
+bundle.define key "import.meta.env.DEV" is reserved by zfb's bundle mode ...
+```
+
+An invalid raw define expression can instead surface as an esbuild parse error
+when the first affected bundle runs.
+
+**Cause:** loader keys must start with `.`, use one of `text`, `json`,
+`base64`, `dataurl`, `binary`, or `empty`, and cannot override `.css`,
+`.module.css`, `.mdx`, or `.md`. The asset-emitting `file` and `copy` loaders
+are not supported. zfb also owns `import.meta.env.DEV`,
+`import.meta.env.PROD`, and `process.env.NODE_ENV`, so user defines cannot
+replace them. Define values are raw esbuild expressions, not automatically
+quoted strings.
+
+**Fix:** choose an inline loader and an unreserved extension/key. For a string
+define, include JSON quotes in the replacement (for example,
+`__APP_NAME__: '"my-app"'`). See [`defineConfig`: Bundle settings](../api/define-config.mdx#bundle-settings)
+for the full contract and the browser-exposure warning.
+
+## A `?raw` import fails
+
+**Symptom:** the build, or a browser rebundle during dev, reports
+`unsupported import query form`, `does not resolve to an existing file`, or
+`is not valid UTF-8 text`.
+
+**Cause:** zfb supports exactly a static default import with a literal,
+project-local relative target and the exact `?raw` suffix. The target is a
+terminal UTF-8 text file. Dynamic, named, namespace, side-effect, type-only,
+or re-export forms; `?url`; extra query parameters; non-literal paths;
+out-of-root/symlink escapes; and non-UTF-8 targets are rejected.
+
+**Fix:** reduce the import to this shape and make sure the exact file exists
+inside the project root:
+
+```ts
+import text from "./file.ext?raw";
+```
+
+The extension can be anything and does not need a `bundle.loaders` entry. See
+[Islands: Importing text with `?raw`](../concepts/islands.mdx#importing-text-with-raw)
+or [Client Scripts](./client-scripts.mdx#importing-text-with-raw).
+
+## A module worker is not emitted, or `SharedWorker` fails
+
+**Symptom:** a worker constructor remains unchanged and no `worker-*.js`
+companion appears, or the build reports `unsupported SharedWorker`.
+
+**Cause:** zfb discovers the unshadowed global `Worker` only in the literal
+module form below. The URL must point to an exact project-local relative JS/TS
+file without a query or fragment. Non-literal and classic-worker shapes are
+outside the contract. Discovery deliberately does not traverse installed
+`node_modules`. A `SharedWorker` using the same literal URL shape is rejected
+loudly because leaving that apparently supported URL unrewritten would make
+it 404 at runtime.
+
+**Fix:** for a first-party dedicated worker, use:
+
+```ts
+const worker = new Worker(
+  new URL("./worker.ts", import.meta.url),
+  { type: "module" },
+);
+```
+
+Island workers appear under `/assets/worker-*.js`; client-script workers use
+`/assets/client/worker-*.js`. The rewritten URL keeps that stable name and
+adds an exactly eight-character lowercase hexadecimal `?v=` graph hash. For
+unsupported shapes or third-party transitive workers, bundle them with
+package-specific tooling. See
+[Islands: Module workers](../concepts/islands.mdx#module-workers).
 
 ## A relative import "Could not resolve" outside the project root
 
