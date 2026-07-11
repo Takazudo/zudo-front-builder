@@ -1643,6 +1643,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 /// writer panic must not strand the watcher loop). Disk / companion-write
 /// failures are returned as `Err`: the watcher path propagates it (a tick
 /// failure is loud), the boot path warns-and-continues (issue #1170).
+#[allow(clippy::too_many_arguments)] // 9 params: #1497 added bundle_config + raw_invalidation; mirrors build_default_islands_payload_with_bundle_options' threaded inputs, a struct would just shuffle the same fields
 fn rebundle_islands(
     project_root: &Path,
     // Where dev assets are written + served from (issue #1189: the isolated

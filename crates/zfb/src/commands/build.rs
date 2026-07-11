@@ -2676,6 +2676,7 @@ fn materialise_islands_shadow_with_worker_context(
 /// the marker-check pass can still warn about rendered markers with zero
 /// registered islands.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)] // 8 params: #1497 added raw_invalidation; thin test-only shim over the _with_bundle_options variant below
 pub(crate) fn build_default_islands_payload(
     project_root: &Path,
     user_pages_dir: &Path,
@@ -2703,6 +2704,7 @@ pub(crate) fn build_default_islands_payload(
     )
 }
 
+#[allow(clippy::too_many_arguments)] // 10 params: #1497 added bundle mode/config + raw_invalidation; each param carries its own routing contract (see per-param comments), a struct would just shuffle the same fields
 pub(crate) fn build_default_islands_payload_with_bundle_options(
     // The project root — used for esbuild's working dir (tsconfig
     // discovery, entry-tempfile placement) and the node_modules walk.
@@ -3242,6 +3244,7 @@ struct ClientScriptsPreprocessStage {
     workers_by_entry: std::collections::BTreeMap<String, Vec<ClientScriptWorkerEntry>>,
 }
 
+#[allow(clippy::too_many_arguments)] // 9 params: #1497 threaded the raw/worker expansion maps through staging; physical/logical identity and the copy-mode switches must stay explicit per call
 fn materialise_client_preprocess_stage_file(
     physical: &Path,
     logical: &Path,
@@ -4131,6 +4134,16 @@ fn prune_dev_client_script_outputs(
     changed
 }
 
+/// Outcome of a dev client-scripts bundle pass: (any output changed, live
+/// output basenames for next-pass pruning, `?raw` targets, module-worker
+/// targets — the last two feed raw/worker watch invalidation).
+type DevClientScriptsOutcome = (
+    bool,
+    std::collections::HashSet<String>,
+    std::collections::BTreeSet<PathBuf>,
+    std::collections::BTreeSet<PathBuf>,
+);
+
 #[cfg(test)]
 pub(crate) fn build_dev_client_scripts_to_disk(
     project_root: &Path,
@@ -4141,12 +4154,7 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     bundle_config: Option<&crate::config::BundleConfig>,
     prev_output_filenames: &std::collections::HashSet<String>,
     registered: &zfb_build::ClientEntryList,
-) -> Result<(
-    bool,
-    std::collections::HashSet<String>,
-    std::collections::BTreeSet<PathBuf>,
-    std::collections::BTreeSet<PathBuf>,
-)> {
+) -> Result<DevClientScriptsOutcome> {
     build_dev_client_scripts_to_disk_with_plugin_config(
         project_root,
         assets_root,
@@ -4166,12 +4174,7 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     prev_output_filenames: &std::collections::HashSet<String>,
     registered: &zfb_build::ClientEntryList,
     plugin_config: &IslandsPluginConfig,
-) -> Result<(
-    bool,
-    std::collections::HashSet<String>,
-    std::collections::BTreeSet<PathBuf>,
-    std::collections::BTreeSet<PathBuf>,
-)> {
+) -> Result<DevClientScriptsOutcome> {
     let (mut entries, collisions) =
         discover_client_scripts(project_root).context("client-script discovery failed")?;
 
