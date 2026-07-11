@@ -1,0 +1,138 @@
+/*
+ * zfb-hi.css — default `--zfb-hi-*` token stylesheet for zfb's class-mode
+ * syntax highlighting (Highlight Tokens epic, issue #1528).
+ *
+ * Every color below is EXTRACTED (not invented) from syntect's bundled
+ * `base16-ocean.light` / `base16-ocean.dark` themes — the same pair zfb's
+ * existing dual-mode (`--shiki-light`/`--shiki-dark`) highlighting already
+ * defaults to. Regenerate with:
+ *
+ *   cargo test -p zfb-css --test hi_color_extraction -- --ignored --nocapture
+ *
+ * (see crates/zfb-css/tests/hi_color_extraction.rs for the representative
+ * syntect scope path resolved per role). The `hi-ins`/`hi-del` background
+ * tints are NOT theme-extracted — base16-ocean defines no diff background —
+ * they are a low-alpha wash derived from each role's own extracted
+ * foreground color, for diff readability only.
+ *
+ * `op`/`ns`/`punct` have no accent rule in base16-ocean (operators,
+ * namespaces, and punctuation render in plain text color), so their tokens
+ * resolve to the same color as `fg` in both themes. Rather than hand-copy
+ * fg's hex pair into three more properties, they alias `var(--zfb-hi-fg)` —
+ * this keeps all 18 role properties present (re-themeable individually) while
+ * removing the drift risk of duplicated values, and they need no dark-media
+ * override because var() re-resolves through fg's own override.
+ */
+@layer zfb-hi {
+  :root {
+    --zfb-hi-fg: light-dark(#4f5b66, #c0c5ce);
+    --zfb-hi-bg: light-dark(#eff1f5, #2b303b);
+    --zfb-hi-op: var(--zfb-hi-fg);
+    --zfb-hi-ns: var(--zfb-hi-fg);
+    --zfb-hi-punct: var(--zfb-hi-fg);
+    --zfb-hi-esc: light-dark(#96b5b4, #96b5b4);
+    --zfb-hi-com: light-dark(#a7adba, #65737e);
+    --zfb-hi-str: light-dark(#a3be8c, #a3be8c);
+    --zfb-hi-num: light-dark(#d08770, #d08770);
+    --zfb-hi-const: light-dark(#d08770, #d08770);
+    --zfb-hi-kw: light-dark(#b48ead, #b48ead);
+    --zfb-hi-fn: light-dark(#8fa1b3, #8fa1b3);
+    --zfb-hi-ty: light-dark(#d08770, #ebcb8b);
+    --zfb-hi-prop: light-dark(#bf616a, #bf616a);
+    --zfb-hi-var: light-dark(#bf616a, #bf616a);
+    --zfb-hi-tag: light-dark(#bf616a, #bf616a);
+    --zfb-hi-attr: light-dark(#d08770, #d08770);
+    --zfb-hi-ins: light-dark(#a3be8c, #a3be8c);
+    --zfb-hi-ins-bg: light-dark(rgb(163 190 140 / 15%), rgb(163 190 140 / 15%));
+    --zfb-hi-del: light-dark(#bf616a, #bf616a);
+    --zfb-hi-del-bg: light-dark(rgb(191 97 106 / 15%), rgb(191 97 106 / 15%));
+    --zfb-hi-hd: light-dark(#8fa1b3, #8fa1b3);
+  }
+
+  /* light-dark() resolves LIGHT unless the host declares color-scheme —
+     ship a media fallback so dark works with zero host configuration. */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --zfb-hi-fg: #c0c5ce;
+      --zfb-hi-bg: #2b303b;
+      --zfb-hi-esc: #96b5b4;
+      --zfb-hi-com: #65737e;
+      --zfb-hi-str: #a3be8c;
+      --zfb-hi-num: #d08770;
+      --zfb-hi-const: #d08770;
+      --zfb-hi-kw: #b48ead;
+      --zfb-hi-fn: #8fa1b3;
+      --zfb-hi-ty: #ebcb8b;
+      --zfb-hi-prop: #bf616a;
+      --zfb-hi-var: #bf616a;
+      --zfb-hi-tag: #bf616a;
+      --zfb-hi-attr: #d08770;
+      --zfb-hi-ins: #a3be8c;
+      --zfb-hi-ins-bg: rgb(163 190 140 / 15%);
+      --zfb-hi-del: #bf616a;
+      --zfb-hi-del-bg: rgb(191 97 106 / 15%);
+      --zfb-hi-hd: #8fa1b3;
+    }
+  }
+
+  .hi-root {
+    color: var(--zfb-hi-fg);
+    background: var(--zfb-hi-bg);
+  }
+  .hi-esc {
+    color: var(--zfb-hi-esc);
+  }
+  .hi-op {
+    color: var(--zfb-hi-op);
+  }
+  .hi-com {
+    color: var(--zfb-hi-com);
+  }
+  .hi-str {
+    color: var(--zfb-hi-str);
+  }
+  .hi-num {
+    color: var(--zfb-hi-num);
+  }
+  .hi-const {
+    color: var(--zfb-hi-const);
+  }
+  .hi-kw {
+    color: var(--zfb-hi-kw);
+  }
+  .hi-fn {
+    color: var(--zfb-hi-fn);
+  }
+  .hi-ty {
+    color: var(--zfb-hi-ty);
+  }
+  .hi-ns {
+    color: var(--zfb-hi-ns);
+  }
+  .hi-prop {
+    color: var(--zfb-hi-prop);
+  }
+  .hi-var {
+    color: var(--zfb-hi-var);
+  }
+  .hi-tag {
+    color: var(--zfb-hi-tag);
+  }
+  .hi-attr {
+    color: var(--zfb-hi-attr);
+  }
+  .hi-punct {
+    color: var(--zfb-hi-punct);
+  }
+  .hi-ins {
+    color: var(--zfb-hi-ins);
+    background: var(--zfb-hi-ins-bg);
+  }
+  .hi-del {
+    color: var(--zfb-hi-del);
+    background: var(--zfb-hi-del-bg);
+  }
+  .hi-hd {
+    color: var(--zfb-hi-hd);
+  }
+}
