@@ -76,6 +76,28 @@ fn write_value_page(root: &std::path::Path, import_specifier: &str) {
     .unwrap();
 }
 
+fn write_hidden_imports_package(root: &std::path::Path, directory: &str, marker: &str) -> PathBuf {
+    let package = root.join(directory);
+    fs::create_dir_all(package.join("dist")).unwrap();
+    fs::create_dir_all(package.join(".internal")).unwrap();
+    fs::write(
+        package.join("package.json"),
+        r##"{"type":"module","main":"./dist/entry.js","imports":{"#internal":"./.internal/value.js"}}"##,
+    )
+    .unwrap();
+    fs::write(
+        package.join("dist/entry.js"),
+        "import value from '#internal'; export default value;\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join(".internal/value.js"),
+        format!("export default {marker:?};\n"),
+    )
+    .unwrap();
+    package
+}
+
 fn make_input(
     root: &std::path::Path,
     esbuild: &std::path::Path,
@@ -603,7 +625,7 @@ fn excluded_exact_tsconfig_directory_cannot_fallback_to_index_json() {
 }
 
 #[test]
-fn excluded_nontrailing_css_sibling_beats_mjs_and_directory_main() {
+fn excluded_nontrailing_css_sibling_is_removed_before_esbuild_selects_directory_main() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
         return;
@@ -647,10 +669,10 @@ fn excluded_nontrailing_css_sibling_beats_mjs_and_directory_main() {
     input.main_fields = vec!["main".to_string()];
     input.bundle_exclude = vec!["src/choice.css".to_string()];
 
-    let error =
-        bundle(input).expect_err("excluded CSS must win before an mjs sibling and directory main");
-    let message = format!("{error:#}");
-    assert!(message.contains("project:choice"), "{message}");
+    bundle(input).expect("the isolated view must remove CSS and retain the allowed directory main");
+    let body = fs::read_to_string(root.join("dist-excluded-css-sibling/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_DIRECTORY_MAIN"), "{body}");
+    assert!(!body.contains("EXCLUDED_CSS_SIBLING"), "{body}");
 }
 
 #[test]
@@ -702,6 +724,485 @@ fn trailing_tsconfig_target_preserves_directory_only_resolution() {
     let body = fs::read_to_string(root.join("dist-trailing-directory/bundle.mjs")).unwrap();
     assert!(body.contains("TRAILING_DIRECTORY_MAIN"), "{body}");
     assert!(!body.contains("WRONG_NONTRAILING_SIBLING"), "{body}");
+}
+
+#[test]
+fn trailing_tsconfig_target_removes_excluded_basename_child_before_main_fallback() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:trailing-child", "unused.tsx");
+    write_value_page(&root, "project:trailing-child");
+    let target = root.join("src/trailing-child");
+    fs::create_dir_all(target.join("dist")).unwrap();
+    fs::write(target.join("package.json"), r#"{"main":"./dist/entry.js"}"#).unwrap();
+    fs::write(
+        target.join("dist/entry.js"),
+        "export default 'ALLOWED_TRAILING_MAIN';\n",
+    )
+    .unwrap();
+    fs::write(
+        target.join("trailing-child.js"),
+        "export default 'EXCLUDED_TRAILING_CHILD';\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/trailing-child.js"),
+        "export default 'OUTSIDE_TRAILING_DECOY';\n",
+    )
+    .unwrap();
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-trailing-child-excluded",
+        BTreeMap::from([(
+            "project:trailing-child".to_string(),
+            vec![format!("{}/", target.display())],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.main_fields = vec!["main".to_string()];
+    input.bundle_exclude = vec!["src/trailing-child/trailing-child.js".to_string()];
+
+    bundle(input).expect("excluded trailing basename child must not leak");
+    let body = fs::read_to_string(root.join("dist-trailing-child-excluded/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_TRAILING_MAIN"), "{body}");
+    assert!(!body.contains("EXCLUDED_TRAILING_CHILD"), "{body}");
+    assert!(!body.contains("OUTSIDE_TRAILING_DECOY"), "{body}");
+}
+
+#[test]
+fn trailing_tsconfig_target_keeps_allowed_basename_child_when_main_is_excluded() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:trailing-child", "unused.tsx");
+    write_value_page(&root, "project:trailing-child");
+    let target = root.join("src/trailing-child");
+    fs::create_dir_all(target.join("dist")).unwrap();
+    fs::write(target.join("package.json"), r#"{"main":"./dist/entry.js"}"#).unwrap();
+    fs::write(
+        target.join("dist/entry.js"),
+        "export default 'EXCLUDED_TRAILING_MAIN';\n",
+    )
+    .unwrap();
+    fs::write(
+        target.join("trailing-child.js"),
+        "export default 'ALLOWED_TRAILING_CHILD';\n",
+    )
+    .unwrap();
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-trailing-child-allowed",
+        BTreeMap::from([(
+            "project:trailing-child".to_string(),
+            vec![format!("{}/", target.display())],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.main_fields = vec!["main".to_string()];
+    input.bundle_exclude = vec!["src/trailing-child/dist/entry.js".to_string()];
+
+    bundle(input).expect("allowed trailing basename child must remain resolvable");
+    let body = fs::read_to_string(root.join("dist-trailing-child-allowed/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_TRAILING_CHILD"), "{body}");
+    assert!(!body.contains("EXCLUDED_TRAILING_MAIN"), "{body}");
+}
+
+#[test]
+fn node_modules_exact_target_removes_preferred_excluded_js_and_uses_ts() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:node-choice", "unused.tsx");
+    write_value_page(&root, "project:node-choice");
+    let package = root.join("node_modules/context-order-probe");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(package.join("package.json"), r#"{"type":"module"}"#).unwrap();
+    fs::write(
+        package.join("value.js"),
+        "export default 'EXCLUDED_NODE_JS';\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("value.ts"),
+        "export default 'ALLOWED_NODE_TS';\n",
+    )
+    .unwrap();
+    let target = package.join("value");
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-node-js-excluded",
+        BTreeMap::from([(
+            "project:node-choice".to_string(),
+            vec![target.to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.bundle_exclude = vec!["node_modules/context-order-probe/value.js".to_string()];
+
+    bundle(input).expect("isolated node_modules target must retain allowed TS fallback");
+    let body = fs::read_to_string(root.join("dist-node-js-excluded/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_NODE_TS"), "{body}");
+    assert!(!body.contains("EXCLUDED_NODE_JS"), "{body}");
+}
+
+#[test]
+fn node_modules_exact_target_prefers_allowed_js_over_excluded_invalid_ts() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:node-choice", "unused.tsx");
+    write_value_page(&root, "project:node-choice");
+    let package = root.join("node_modules/context-order-probe");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(package.join("package.json"), r#"{"type":"module"}"#).unwrap();
+    fs::write(
+        package.join("value.js"),
+        "export default 'ALLOWED_NODE_JS';\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join("value.ts"),
+        "export default <; // invalid alternate\n",
+    )
+    .unwrap();
+    let target = package.join("value");
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-node-ts-excluded",
+        BTreeMap::from([(
+            "project:node-choice".to_string(),
+            vec![target.to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.bundle_exclude = vec!["node_modules/context-order-probe/value.ts".to_string()];
+
+    bundle(input).expect("node_modules JS order must ignore the excluded invalid TS alternate");
+    let body = fs::read_to_string(root.join("dist-node-ts-excluded/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_NODE_JS"), "{body}");
+}
+
+#[test]
+fn node_modules_exact_target_cannot_climb_to_live_excluded_bare_dependency() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:node-bare", "unused.tsx");
+    write_value_page(&root, "project:node-bare");
+    let package = root.join("node_modules/context-order-probe");
+    let dependency = root.join("node_modules/excluded-dependency");
+    fs::create_dir_all(&package).unwrap();
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(package.join("package.json"), r#"{"type":"module"}"#).unwrap();
+    fs::write(
+        package.join("value.js"),
+        "import value from 'excluded-dependency'; export default value;\n",
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("package.json"),
+        r#"{"type":"module","exports":"./index.js"}"#,
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("index.js"),
+        "export default 'LIVE_EXCLUDED_BARE_DEPENDENCY';\n",
+    )
+    .unwrap();
+    let target = package.join("value");
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-node-bare-excluded",
+        BTreeMap::from([(
+            "project:node-bare".to_string(),
+            vec![target.to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec!["node_modules/excluded-dependency/index.js".to_string()];
+
+    let error = bundle(input)
+        .expect_err("isolated package must not climb to the live node_modules symlink");
+    let message = format!("{error:#}");
+    assert!(message.contains("excluded-dependency"), "{message}");
+    let bundle_path = root.join("dist-node-bare-excluded/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("LIVE_EXCLUDED_BARE_DEPENDENCY"), "{body}");
+    }
+}
+
+#[test]
+fn node_modules_exact_target_stages_allowed_bare_dependency_closure() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:node-bare", "unused.tsx");
+    write_value_page(&root, "project:node-bare");
+    let package = root.join("node_modules/context-order-probe");
+    let dependency = root.join("node_modules/allowed-dependency");
+    fs::create_dir_all(&package).unwrap();
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(
+        package.join("package.json"),
+        r##"{"type":"module","imports":{"#dep":"allowed-dependency"}}"##,
+    )
+    .unwrap();
+    fs::write(
+        package.join("value.js"),
+        "import value from '#dep'; export default value;\n",
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("package.json"),
+        r#"{"type":"module","exports":"./index.js"}"#,
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("index.js"),
+        "export default 'ALLOWED_ISOLATED_BARE_DEPENDENCY';\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/unrelated-secret.ts"),
+        "export default 'secret';\n",
+    )
+    .unwrap();
+    let target = package.join("value");
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-node-bare-allowed",
+        BTreeMap::from([(
+            "project:node-bare".to_string(),
+            vec![target.to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec!["src/unrelated-secret.ts".to_string()];
+
+    bundle(input).expect("allowed bare dependency closure must be staged in isolation");
+    let body = fs::read_to_string(root.join("dist-node-bare-allowed/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_ISOLATED_BARE_DEPENDENCY"), "{body}");
+}
+
+#[cfg(unix)]
+#[test]
+fn node_modules_symlinked_package_stages_non_hoisted_canonical_dependency_only_without_preserve() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:pnpm-package", "unused.tsx");
+    write_value_page(&root, "project:pnpm-package");
+    let virtual_store = root.join("node_modules/.pnpm/context@1/node_modules");
+    let physical_package = virtual_store.join("context-order-probe");
+    let dependency = virtual_store.join("non-hoisted-dependency");
+    fs::create_dir_all(&physical_package).unwrap();
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(
+        physical_package.join("package.json"),
+        r#"{"type":"module"}"#,
+    )
+    .unwrap();
+    fs::write(
+        physical_package.join("value.js"),
+        "import value from 'non-hoisted-dependency'; export default value;\n",
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("package.json"),
+        r#"{"type":"module","exports":"./index.js"}"#,
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("index.js"),
+        "export default 'ALLOWED_PNPM_CANONICAL_DEPENDENCY';\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        &physical_package,
+        root.join("node_modules/context-order-probe"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/unrelated-secret.ts"),
+        "export default 'secret';\n",
+    )
+    .unwrap();
+    let target = root.join("node_modules/context-order-probe/value");
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-pnpm-canonical",
+        BTreeMap::from([(
+            "project:pnpm-package".to_string(),
+            vec![target.to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec!["src/unrelated-secret.ts".to_string()];
+    bundle(input).expect("non-preserving resolution must stage the canonical pnpm dependency");
+    let body = fs::read_to_string(root.join("dist-pnpm-canonical/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_PNPM_CANONICAL_DEPENDENCY"), "{body}");
+
+    let mut preserve_input = make_input(
+        &root,
+        &esbuild,
+        "dist-pnpm-preserve",
+        BTreeMap::from([(
+            "project:pnpm-package".to_string(),
+            vec![target.to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    preserve_input.node_modules_dir = Some(root.join("node_modules"));
+    preserve_input.node_modules_preserve_symlinks = true;
+    preserve_input.bundle_exclude = vec!["src/unrelated-secret.ts".to_string()];
+    let error = bundle(preserve_input)
+        .expect_err("preserve-symlinks must retain lexical non-hoisted resolution failure");
+    assert!(
+        format!("{error:#}").contains("non-hoisted-dependency"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn css_import_context_does_not_use_allowed_invalid_ts_when_css_is_excluded() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:unused", "unused.tsx");
+    fs::write(
+        root.join("pages/index.tsx"),
+        "import './styles.css'; export default function Page() { return null; }\n",
+    )
+    .unwrap();
+    fs::write(root.join("pages/styles.css"), "@import 'project:theme';\n").unwrap();
+    fs::write(
+        root.join("src/theme.css"),
+        ".EXCLUDED_CONTEXT_CSS { color: red; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/theme.ts"),
+        "export default <; // invalid unused alternate\n",
+    )
+    .unwrap();
+    let target = root.join("src/theme");
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-css-context-excluded",
+        BTreeMap::from([(
+            "project:theme".to_string(),
+            vec![target.to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.extra_loader_args = vec!["--loader:.css=css".to_string()];
+    input.bundle_exclude = vec!["src/theme.css".to_string()];
+
+    let error = bundle(input).expect_err("CSS context must not fall through to live excluded CSS");
+    let message = format!("{error:#}");
+    assert!(message.contains("project:theme"), "{message}");
+    assert!(!message.contains("failed to parse"), "{message}");
+}
+
+#[test]
+fn css_import_context_keeps_css_when_invalid_ts_alternate_is_excluded() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:unused", "unused.tsx");
+    fs::write(
+        root.join("pages/index.tsx"),
+        "import './styles.css'; export default function Page() { return null; }\n",
+    )
+    .unwrap();
+    fs::write(root.join("pages/styles.css"), "@import 'project:theme';\n").unwrap();
+    fs::write(
+        root.join("src/theme.css"),
+        ".ALLOWED_CONTEXT_CSS { color: green; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/theme.ts"),
+        "export default <; // excluded invalid alternate\n",
+    )
+    .unwrap();
+    let target = root.join("src/theme");
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-css-context-allowed",
+        BTreeMap::from([(
+            "project:theme".to_string(),
+            vec![target.to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.extra_loader_args = vec!["--loader:.css=css".to_string()];
+    input.bundle_exclude = vec!["src/theme.ts".to_string()];
+
+    bundle(input).expect("CSS context must resolve the allowed CSS candidate");
+    let css = fs::read_to_string(root.join("dist-css-context-allowed/bundle.css")).unwrap();
+    assert!(css.contains("ALLOWED_CONTEXT_CSS"), "{css}");
 }
 
 #[test]
@@ -783,7 +1284,7 @@ fn unrelated_wildcard_keeps_ignored_directory_real_fallback() {
 }
 
 #[test]
-fn package_parent_main_ts_rewrite_cannot_fallback_to_live_secret() {
+fn package_parent_main_ts_rewrite_is_removed_before_allowed_index_fallback() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
         return;
@@ -825,10 +1326,54 @@ fn package_parent_main_ts_rewrite_cannot_fallback_to_live_secret() {
     input.main_fields = vec!["main".to_string()];
     input.bundle_exclude = vec!["src/parent-secret.ts".to_string()];
 
-    let error =
-        bundle(input).expect_err("parent main + .js-to-.ts rewrite must be classified as excluded");
-    let message = format!("{error:#}");
-    assert!(message.contains("project:parent-main"), "{message}");
+    bundle(input).expect("excluded parent-main rewrite must be absent from the isolated view");
+    let body = fs::read_to_string(root.join("dist-parent-main/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_PACKAGE_INDEX"), "{body}");
+    assert!(!body.contains("EXCLUDED_PARENT_MAIN_SECRET"), "{body}");
+}
+
+#[test]
+fn rooted_package_main_remains_package_local_in_isolated_shadow() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:rooted-main", "unused.tsx");
+    write_value_page(&root, "project:rooted-main");
+    let package = root.join("src/rooted-main");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(package.join("package.json"), r#"{"main":"/secret.js"}"#).unwrap();
+    fs::write(
+        package.join("secret.js"),
+        "export default 'ALLOWED_PACKAGE_LOCAL_ROOTED_MAIN';\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("secret.js"),
+        "export default 'EXCLUDED_PROJECT_ROOT_DECOY';\n",
+    )
+    .unwrap();
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-rooted-main",
+        BTreeMap::from([(
+            "project:rooted-main".to_string(),
+            vec![package.to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.main_fields = vec!["main".to_string()];
+    input.bundle_exclude = vec!["secret.js".to_string()];
+
+    bundle(input).expect("rooted main field must stay inside its package");
+    let body = fs::read_to_string(root.join("dist-rooted-main/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_PACKAGE_LOCAL_ROOTED_MAIN"), "{body}");
+    assert!(!body.contains("EXCLUDED_PROJECT_ROOT_DECOY"), "{body}");
 }
 
 #[test]
@@ -917,6 +1462,266 @@ fn hidden_plugin_directory_uses_shadow_entry_and_blocks_excluded_nested_import()
         let body = fs::read_to_string(bundle_path).unwrap();
         assert!(!body.contains("EXCLUDED_HIDDEN_PLUGIN_SECRET"), "{body}");
     }
+}
+
+#[test]
+fn hidden_plugin_directory_preserves_package_imports_into_dotdir() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:hidden-imports", "unused.tsx");
+    write_value_page(&root, "plugin:hidden-imports");
+    let package = write_hidden_imports_package(
+        &root,
+        ".plugin-hidden-imports",
+        "ALLOWED_HIDDEN_PACKAGE_IMPORT",
+    );
+    fs::write(
+        package.join(".internal/value.js"),
+        "import payload from './payload.txt?raw'; export default payload;\n",
+    )
+    .unwrap();
+    fs::write(
+        package.join(".internal/payload.txt"),
+        "ALLOWED_HIDDEN_PACKAGE_IMPORT_RAW",
+    )
+    .unwrap();
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-hidden-imports-directory",
+        BTreeMap::new(),
+        vec![(
+            "plugin:hidden-imports".to_string(),
+            format!("{}/", package.display()),
+        )],
+        vec![],
+    );
+    input.main_fields = vec!["main".to_string()];
+
+    bundle(input).expect("hidden package imports target in a dotdir must be staged");
+    let body = fs::read_to_string(root.join("dist-hidden-imports-directory/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_HIDDEN_PACKAGE_IMPORT_RAW"), "{body}");
+    assert!(!body.contains("?raw"), "{body}");
+}
+
+#[test]
+fn hidden_plugin_directory_omits_excluded_package_import_target() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:hidden-imports", "unused.tsx");
+    write_value_page(&root, "plugin:hidden-imports");
+    let package = write_hidden_imports_package(
+        &root,
+        ".plugin-hidden-imports",
+        "EXCLUDED_HIDDEN_PACKAGE_IMPORT",
+    );
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-hidden-imports-excluded",
+        BTreeMap::new(),
+        vec![(
+            "plugin:hidden-imports".to_string(),
+            format!("{}/", package.display()),
+        )],
+        vec![],
+    );
+    input.main_fields = vec!["main".to_string()];
+    input.bundle_exclude = vec![".plugin-hidden-imports/.internal/value.js".to_string()];
+
+    let error = bundle(input).expect_err("excluded package import target must remain absent");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("#internal") || message.contains("value.js"),
+        "{message}"
+    );
+    let bundle_path = root.join("dist-hidden-imports-excluded/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("EXCLUDED_HIDDEN_PACKAGE_IMPORT"), "{body}");
+    }
+}
+
+#[test]
+fn hidden_plugin_file_alias_stages_containing_package_for_imports() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:hidden-file-imports", "unused.tsx");
+    write_value_page(&root, "plugin:hidden-file-imports");
+    let package = write_hidden_imports_package(
+        &root,
+        ".plugin-hidden-file-imports",
+        "ALLOWED_HIDDEN_FILE_PACKAGE_IMPORT",
+    );
+    let input = make_input(
+        &root,
+        &esbuild,
+        "dist-hidden-imports-file",
+        BTreeMap::new(),
+        vec![(
+            "plugin:hidden-file-imports".to_string(),
+            package.join("dist/entry.js").to_string_lossy().into_owned(),
+        )],
+        vec![],
+    );
+
+    bundle(input).expect("direct hidden package file must retain its package imports scope");
+    let body = fs::read_to_string(root.join("dist-hidden-imports-file/bundle.mjs")).unwrap();
+    assert!(
+        body.contains("ALLOWED_HIDDEN_FILE_PACKAGE_IMPORT"),
+        "{body}"
+    );
+}
+
+#[test]
+fn project_root_file_alias_stages_nested_root_package_imports_scope() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:root-package", "unused.tsx");
+    write_value_page(&root, "plugin:root-package");
+    fs::create_dir_all(root.join(".root-internal/nested")).unwrap();
+    fs::write(
+        root.join("package.json"),
+        r##"{"type":"module","imports":{"#root-internal/*":"./.root-internal/*.js"}}"##,
+    )
+    .unwrap();
+    fs::write(
+        root.join(".root-entry.js"),
+        "import value from '#root-internal/nested/value'; export default value;\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".root-internal/nested/value.js"),
+        "export default 'ALLOWED_ROOT_PACKAGE_IMPORT';\n",
+    )
+    .unwrap();
+    let input = make_input(
+        &root,
+        &esbuild,
+        "dist-root-package-imports",
+        BTreeMap::new(),
+        vec![(
+            "plugin:root-package".to_string(),
+            root.join(".root-entry.js").to_string_lossy().into_owned(),
+        )],
+        vec![],
+    );
+
+    bundle(input).expect("root package metadata/import target must share the shadow scope");
+    let body = fs::read_to_string(root.join("dist-root-package-imports/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_ROOT_PACKAGE_IMPORT"), "{body}");
+}
+
+#[test]
+fn hidden_user_exact_file_cannot_import_excluded_relative_dependency() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:hidden-exact", "unused.tsx");
+    write_value_page(&root, "project:hidden-exact");
+    let hidden = root.join(".hidden-user-exact");
+    fs::create_dir_all(&hidden).unwrap();
+    fs::write(
+        hidden.join("entry.js"),
+        "import value from './secret.js'; export default value;\n",
+    )
+    .unwrap();
+    fs::write(
+        hidden.join("secret.js"),
+        "export default 'EXCLUDED_HIDDEN_USER_SECRET';\n",
+    )
+    .unwrap();
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-hidden-user-excluded",
+        BTreeMap::from([(
+            "project:hidden-exact".to_string(),
+            vec![hidden.join("entry.js").to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.bundle_exclude = vec![".hidden-user-exact/secret.js".to_string()];
+
+    let error = bundle(input).expect_err("exact user target must not use a live relative fallback");
+    let message = format!("{error:#}");
+    assert!(message.contains("secret.js"), "{message}");
+    let bundle_path = root.join("dist-hidden-user-excluded/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("EXCLUDED_HIDDEN_USER_SECRET"), "{body}");
+    }
+}
+
+#[test]
+fn hidden_user_exact_file_stages_allowed_relative_closure_under_unrelated_exclusion() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:hidden-exact", "unused.tsx");
+    write_value_page(&root, "project:hidden-exact");
+    let hidden = root.join(".hidden-user-exact");
+    fs::create_dir_all(&hidden).unwrap();
+    fs::write(
+        hidden.join("entry.js"),
+        "import value from './allowed.js'; export default value;\n",
+    )
+    .unwrap();
+    fs::write(
+        hidden.join("allowed.js"),
+        "export default 'ALLOWED_HIDDEN_USER_CLOSURE';\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/unrelated-secret.ts"),
+        "export default 'secret';\n",
+    )
+    .unwrap();
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-hidden-user-allowed",
+        BTreeMap::from([(
+            "project:hidden-exact".to_string(),
+            vec![hidden.join("entry.js").to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.bundle_exclude = vec!["src/unrelated-secret.ts".to_string()];
+
+    bundle(input).expect("isolated user exact target must retain its allowed closure");
+    let body = fs::read_to_string(root.join("dist-hidden-user-allowed/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_HIDDEN_USER_CLOSURE"), "{body}");
 }
 
 #[test]

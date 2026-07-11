@@ -1325,6 +1325,25 @@ fn collect_import_specifiers(module: &Module, unresolved_ctxt: SyntaxContext) ->
     specifiers
 }
 
+/// Collect statically analyzable runtime import/require specifiers from one
+/// JS/TS module without applying first-party path policy. The bundler uses
+/// this for a bounded dependency-package closure when an exact target under
+/// node_modules must be copied into an isolated resolver root.
+pub(crate) fn collect_runtime_import_specifiers_from_file(path: &Path) -> Result<Vec<String>> {
+    let source = std::fs::read_to_string(path)
+        .with_context(|| format!("read runtime import source {}", path.display()))?;
+    if is_css_like(path) {
+        let references = collect_css_references(&source, path)?;
+        return Ok(references
+            .imports
+            .into_iter()
+            .chain(references.urls)
+            .collect());
+    }
+    let (module, _, unresolved_ctxt) = parse_module(path, &source)?;
+    Ok(collect_import_specifiers(&module, unresolved_ctxt))
+}
+
 fn validated_virtual_import_specifiers(
     context: &ModuleWorkerBuildContext,
     specifier: &str,
