@@ -87,8 +87,9 @@ use zfb_build::{
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
 use zfb_server::{
-    outcome_to_events, serve_with_listener, InjectedRouteSet, PageCache, ReloadEvent, ServeOpts,
-    SsrDispatcher, SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
+    outcome_to_events, serve_with_listener, InjectedRouteSet, PageCache, Redirects,
+    RedirectsHandle, ReloadEvent, ServeOpts, SsrDispatcher, SsrRouteRecord, SsrRouteSet,
+    SsrRoutesHandle,
 };
 
 use crate::cli::DevArgs;
@@ -252,6 +253,142 @@ fn missing_watch_targets(
         }
     }
     missing
+}
+
+/// Load `public/_redirects` for the initial dev-server boot (issue
+/// #1546). A missing file is the common case — `_redirects` support is
+/// opt-in — so it stays silent and produces an empty [`Redirects`]; any
+/// other read failure (permissions, a directory named `_redirects`,
+/// etc.) is warned once so it is not silently swallowed. Malformed
+/// lines within a readable file are handled by [`Redirects::parse`]
+/// itself (warn-and-skip per line).
+fn load_redirects_at_boot(path: &Path) -> Redirects {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Redirects::parse(&contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Redirects::default(),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "_redirects: failed to read file at boot; starting with an empty ruleset"
+            );
+            Redirects::default()
+        }
+    }
+}
+
+/// Re-parse `public/_redirects` after the targeted watcher (see
+/// [`spawn_redirects_watch`]) observes a create/edit/delete of the file.
+///
+/// Unlike [`load_redirects_at_boot`], every read failure here —
+/// including "file no longer exists" (the delete case) — warns exactly
+/// once per reload attempt: a watch event firing at all means the
+/// file's state just changed, so silently reverting to an empty
+/// ruleset would hide a real (if expected) event from the developer.
+fn reload_redirects(path: &Path) -> Redirects {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Redirects::parse(&contents),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "_redirects: failed to read file on reload; using an empty ruleset"
+            );
+            Redirects::default()
+        }
+    }
+}
+
+/// Start a targeted, dedicated watch for `public/_redirects` (issue
+/// #1546) and return the live [`RedirectsHandle`] the dev router reads
+/// from.
+///
+/// `public/` is deliberately excluded from [`DEFAULT_WATCH_ROOTS`] (the
+/// per-request on-disk fallback already serves it live, and a recursive
+/// watch of the whole directory would trigger the `BuildOrchestrator`'s
+/// rebuild pipeline for every static-asset edit — see the `public_root`
+/// leg in `zfb-server`'s `serve_page`). `_redirects` still needs a
+/// watch of its own so rule edits take effect without a dev-server
+/// restart, but it must NOT ride on the orchestrator's watcher (that
+/// would mean a rule change either does nothing or wastefully triggers
+/// a full rebuild, depending on how the orchestrator classifies an
+/// unrecognised `public/` path). So this spins up a wholly separate
+/// [`zfb_watcher::Watcher`] instance — decoupled from the orchestrator
+/// and its `on_outcome` reload-broadcast plumbing — dedicated to this
+/// one file.
+///
+/// Implementation mirrors the orchestrator's own
+/// [`zfb_watcher::Watcher::watch_additional_files`] pattern used for
+/// dynamic dependency files: watch the PARENT directory (`public/`)
+/// non-recursively rather than the file itself, so a delete-then-
+/// recreate (the shape most editors' "save" produces) stays visible —
+/// watching the file's own inode directly can silently stop firing
+/// once that inode is unlinked. Because a non-recursive directory watch
+/// reports every entry in that directory, not just `_redirects`, the
+/// consumer loop below filters events down to the exact filename
+/// before reloading (the "event filtering" the extras-channel doc talks
+/// about — see the `zfb_watcher` module docs for the channel mechanics,
+/// issue #368).
+///
+/// The returned `Watcher` is moved into the spawned task so it — and
+/// therefore the OS-level watch — stays alive for the lifetime of that
+/// task (i.e. the dev server process); dropping it would stop the
+/// watch immediately.
+fn spawn_redirects_watch(project_root: &Path, public_root: &Path) -> RedirectsHandle {
+    let redirects_path = public_root.join("_redirects");
+    let handle: RedirectsHandle = Arc::new(std::sync::RwLock::new(load_redirects_at_boot(
+        &redirects_path,
+    )));
+
+    let (mut watcher, mut rx) = match zfb_watcher::Watcher::start_with_debounce(
+        project_root,
+        std::iter::empty::<&Path>(),
+        zfb_watcher::DEFAULT_DEBOUNCE,
+    ) {
+        Ok(pair) => pair,
+        Err(e) => {
+            // Non-fatal: the dev server still boots and serves whatever
+            // ruleset was parsed at boot — it just won't pick up later
+            // edits without a restart. Mirrors `missing_watch_targets`'s
+            // "degrade, don't fail the boot" posture for watch setup.
+            tracing::warn!(
+                error = %e,
+                "_redirects: failed to start targeted watcher; edits to public/_redirects \
+                 will require a dev-server restart to take effect"
+            );
+            return handle;
+        }
+    };
+    // `public/` does not exist at all on a fresh project with no static
+    // assets — `watch_additional_files` already warns-and-skips a
+    // missing parent, matching `load_redirects_at_boot`'s silence on a
+    // missing file.
+    watcher.watch_additional_files([redirects_path.clone()]);
+
+    let handle_for_task = Arc::clone(&handle);
+    tokio::spawn(async move {
+        // Keep the watcher (and therefore the OS-level watch) alive for
+        // as long as this task runs.
+        let _watcher = watcher;
+        while let Some(change) = rx.recv().await {
+            let is_redirects_file = change
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n == "_redirects")
+                .unwrap_or(false);
+            if !is_redirects_file {
+                continue;
+            }
+            let updated = reload_redirects(&redirects_path);
+            match handle_for_task.write() {
+                Ok(mut guard) => *guard = updated,
+                Err(poisoned) => *poisoned.into_inner() = updated,
+            }
+        }
+    });
+
+    handle
 }
 
 /// Entry point for `zfb dev`.
@@ -1149,6 +1286,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             )
         });
 
+    // Issue #1546 — `_redirects` dev integration. Loads `public/_redirects`
+    // (an empty ruleset when absent) and starts the targeted watch that
+    // keeps it live for the rest of this session. Must run before
+    // `project_root` / `public_root` are moved into `ServeOpts` below.
+    let redirects_handle = spawn_redirects_watch(&project_root, &public_root);
+
     let opts = ServeOpts {
         project_root,
         dist_root,
@@ -1197,6 +1340,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // `ZFB_DEV_EAGER=1` hatch) — which keeps serve_page's hook leg
         // entirely inert.
         render_on_request_hook,
+        // Issue #1546 — see `spawn_redirects_watch` above.
+        redirects: Some(redirects_handle),
     };
 
     // 7. Bind the TCP listener FIRST — before the manifest-digest walk,

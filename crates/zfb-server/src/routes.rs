@@ -105,6 +105,7 @@ use crate::livereload::{sse_response, ReloadTx};
 use crate::plugin_middleware::{
     dispatch_plugin, origin_gate, DevMiddlewareSet, PluginDispatchAttempt,
 };
+use crate::redirects::{RedirectOutcome, Redirects};
 use crate::ssr::{SsrRequest, SsrRouteSet};
 
 /// HTML body returned when a page is not in the cache.
@@ -508,6 +509,12 @@ pub struct AppState {
     /// `ssr_routes`.
     pub render_on_request_hook: Option<crate::render_hook::RenderOnRequestHandle>,
 
+    /// Shared handle to the active `_redirects` ruleset (issue #1546).
+    /// `None` = no `_redirects` support for this caller (Preview / Embed /
+    /// most tests) — [`serve_page`] skips the leg entirely. See
+    /// [`crate::ServeOpts::redirects`] for the full precedence contract.
+    pub redirects: Option<crate::RedirectsHandle>,
+
     /// Pre-canonicalized forms of the three root paths, computed once at
     /// server startup (perf item #1145-3).  `resolve_within_root` re-
     /// canonicalizes `root` on every disk fallback hit; storing the result
@@ -890,6 +897,61 @@ async fn serve_page(
         }
     }
 
+    // Issue #1546 — `_redirects` (issue #1543 / epic #1541 Preview
+    // Parity). Evaluated right after the dev-only plugin override
+    // (which always wins locally) but ahead of every other dispatch
+    // leg — embed handlers, request-time SSR, the render-on-request
+    // hook, and the disk/cache waterfall — mirroring Cloudflare
+    // Workers Static Assets, where `_redirects` is evaluated by the
+    // assets layer before the Worker script ever sees the request.
+    // GET/HEAD only: `Redirects::match_request` already no-ops for
+    // other methods, gate on `is_get_like` here to skip the lock and
+    // path-format work for POST/PUT/etc.
+    if is_get_like {
+        let path_only = format!("/{trimmed}");
+        // `/_redirects` itself must never be servable — Cloudflare
+        // never exposes the control file at its own URL, and it would
+        // otherwise leak through the `public_root` disk leg further
+        // down (the raw source file, not a servable asset).
+        if path_only == "/_redirects" {
+            return page_response_bytes(
+                StatusCode::NOT_FOUND,
+                DEV_404_BODY.as_bytes().to_vec(),
+                "text/html; charset=utf-8",
+                true,
+                lr_prefix,
+                state.trailing_slash,
+                state.mode,
+                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                current_css_bundle_url(&state.css_bundle_url).as_deref(),
+            );
+        }
+        if let Some(handle) = state.redirects.as_ref() {
+            // Snapshot under a short read lock, same discipline as
+            // `ssr_routes` / `render_on_request_hook` — released before
+            // any I/O so the watcher's reload is never blocked by an
+            // in-flight request.
+            let snapshot: Redirects = handle.read().unwrap_or_else(|p| p.into_inner()).clone();
+            if let Some(outcome) = snapshot.match_request(&path_only, uri.query(), method.as_str())
+            {
+                match outcome {
+                    RedirectOutcome::Redirect { status, location } => {
+                        return redirect_response(status, &location);
+                    }
+                    RedirectOutcome::Rewrite { target } => {
+                        // No-chaining contract (see the `redirects` module
+                        // docs): resolve the target through the exact same
+                        // waterfall a normal request would eventually
+                        // reach, never re-consulting plugins, embed
+                        // handlers, SSR, the hook, or the rule set again.
+                        let target_trimmed = target.trim_start_matches('/');
+                        return serve_from_waterfall(state, target_trimmed, lr_prefix).await;
+                    }
+                }
+            }
+        }
+    }
+
     // Issue #372 — Rust-side handlers registered through the embed API
     // (`ServerBuilder::with_ssr_handler`). Dispatched after plugin
     // dev-middleware (plugins always win) but before request-time SSR,
@@ -1033,6 +1095,25 @@ async fn serve_page(
         }
     }
 
+    serve_from_waterfall(state, trimmed, lr_prefix).await
+}
+
+/// Page-cache / on-disk waterfall: `PageCache` → `html_root` →
+/// `public_root` → `dist_root` (Dev boot-lazy seed) → dev 404.
+///
+/// Split out of `serve_page` (issue #1546) so a `_redirects` `200`
+/// rewrite can resolve its target through the exact same waterfall a
+/// normal request for that path would eventually reach — without
+/// re-running plugin dev-middleware, embed handlers, SSR dispatch, or
+/// the render-on-request hook. This mirrors both the `_redirects`
+/// "resolve once, no chaining" contract (see the `redirects` module
+/// docs) and Cloudflare's real Workers Static Assets layer, which
+/// never hands a rewritten request back to the Worker either.
+///
+/// `trimmed` is the lookup path WITHOUT a leading slash — either the
+/// original request's `trimmed` (the common case) or a `_redirects`
+/// rewrite target's trimmed form.
+async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) -> Response {
     let candidates = lookup_keys(trimmed);
     for key in &candidates {
         if let Some(entry) = state.pages.get(key).await {
@@ -1243,6 +1324,18 @@ async fn serve_page(
         current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
         current_css_bundle_url(&state.css_bundle_url).as_deref(),
     )
+}
+
+/// Build a redirect response for a matched `_redirects` rule
+/// (issue #1546). `status` is always one of 301/302/303/307/308 —
+/// [`Redirects::parse`] rejects any other value at parse time — so
+/// `StatusCode::from_u16` cannot fail in practice; the fallback exists
+/// purely to keep this function total.
+fn redirect_response(status: u16, location: &str) -> Response {
+    let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::FOUND);
+    let location_value =
+        HeaderValue::from_str(location).unwrap_or_else(|_| HeaderValue::from_static("/"));
+    (status_code, [(header::LOCATION, location_value)]).into_response()
 }
 
 /// Strip the dev server's mount prefix from `uri`'s path-and-query
@@ -1910,6 +2003,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             // Tests use bogus/temp paths — canonical roots are not precomputed.
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -1938,6 +2032,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2021,6 +2116,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2097,6 +2193,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2163,6 +2260,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2229,6 +2327,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2296,6 +2395,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: Some(dev_assets_dir.path().to_path_buf()),
@@ -2794,6 +2894,7 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2862,6 +2963,7 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2911,6 +3013,7 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -3010,6 +3113,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -3836,6 +3940,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -3897,6 +4002,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -3960,6 +4066,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -4017,6 +4124,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -4069,6 +4177,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -4125,6 +4234,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -4188,6 +4298,7 @@ mod tests {
                 crate::ServerMode::Dev,
             ),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
