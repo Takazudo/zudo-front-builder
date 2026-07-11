@@ -62,8 +62,12 @@ pub use hydration::{
 pub use manifest::{manifest_json, write_manifest, Collision, Manifest};
 pub use scanner::{
     is_bare_specifier, scan_islands, scan_islands_with_meta, scan_reachable_modules,
-    scan_reachable_modules_with_meta, FsResolver, InMemoryResolver, IslandsSet, RawImportEdge,
-    ReachableModulesMeta, Resolver, ScanError, ScanMeta, ScanResult,
+    scan_reachable_modules_with_meta, FsResolver, InMemoryResolver, IslandsSet, ModuleWorkerEdge,
+    RawImportEdge, ReachableModulesMeta, Resolver, ScanError, ScanMeta, ScanResult,
+};
+pub use zfb_types::{
+    module_worker_content_hash, module_worker_filename, module_worker_url_specifier,
+    ModuleWorkerPathError, MODULE_WORKER_CSP_GLOB, MODULE_WORKER_FILENAME_PREFIX,
 };
 // Re-export from zfb-types so downstream crates get a stable path.
 pub use zfb_types::normalize_path_lexical;

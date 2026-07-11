@@ -339,7 +339,7 @@ pub fn merge_into_tsconfig_paths(
 // the scanner's old directory-only resolver that required the target to
 // be named `tsconfig.json`.
 
-/// Parsed `compilerOptions.paths` + resolved `baseUrl` from a
+/// Parsed `compilerOptions.paths` and/or resolved `baseUrl` from a
 /// `tsconfig.json` file, walked through any `extends` chain.
 ///
 /// `targets` inside each [`TsPathAlias`] are the **raw** strings from
@@ -361,6 +361,14 @@ pub struct TsConfigPaths {
     /// TypeScript). When no anchoring `baseUrl` applies, it defaults to the
     /// directory of the `tsconfig.json` that declared `paths`.
     pub base_dir: PathBuf,
+    /// Explicit (or inherited through `extends`) `compilerOptions.baseUrl`.
+    ///
+    /// This remains `None` when `base_dir` is only the implicit directory
+    /// anchor for a `paths` table. Keeping the distinction lets module-graph
+    /// consumers apply TypeScript's bare-specifier baseUrl fallback without
+    /// accidentally treating every unmatched `paths` specifier as a local
+    /// project file.
+    pub base_url: Option<PathBuf>,
     /// Parsed alias entries, in `compilerOptions.paths` source order.
     pub aliases: Vec<TsPathAlias>,
 }
@@ -384,7 +392,7 @@ pub struct TsPathAlias {
 /// Returns `None` when:
 /// - the file cannot be read,
 /// - the content cannot be parsed (even after JSONC stripping),
-/// - no usable `paths` table exists anywhere in the extends chain.
+/// - neither a usable `paths` table nor `baseUrl` exists in the chain.
 ///
 /// ## JSONC support
 ///
@@ -433,7 +441,7 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
         file: &Path,
         depth: usize,
         mut state: WalkState,
-    ) -> Option<(PathBuf, Vec<TsPathAlias>)> {
+    ) -> Option<(PathBuf, Vec<TsPathAlias>, Option<PathBuf>)> {
         if depth > 8 {
             return None;
         }
@@ -502,7 +510,7 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
         // `paths_anchor`-preferring return below.
         if let (Some(b), Some(a)) = (&state.base_dir, &state.aliases) {
             if state.base_dir_anchors_aliases {
-                return Some((b.clone(), a.clone()));
+                return Some((b.clone(), a.clone(), Some(b.clone())));
             }
             // `base_dir` came from a parent of the `paths` config; the leaf's
             // own dir (`paths_anchor`) is the correct anchor for its `paths`.
@@ -510,7 +518,7 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
                 .paths_anchor
                 .clone()
                 .unwrap_or_else(|| dir.to_path_buf());
-            return Some((anchor, a.clone()));
+            return Some((anchor, a.clone(), state.base_dir.clone()));
         }
 
         // Follow `extends` if present.
@@ -528,14 +536,20 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
             }
         }
 
-        // No extends (or extends couldn't resolve): return paths if we have
-        // them, anchored at the declaring config's directory.
+        // No extends (or extends couldn't resolve): return path aliases when
+        // present, or a standalone baseUrl when the config declares only
+        // that resolver input.
         //
         // Anchor precedence: a `baseUrl` only anchors the `paths` when it was
         // declared at or leafier than the `paths` config
         // (`base_dir_anchors_aliases`). Otherwise the `paths`-declaring
         // config's own dir (`paths_anchor`) wins, falling back to this dir.
-        let aliases = state.aliases?;
+        let aliases = state.aliases.unwrap_or_default();
+        let base_url = state.base_dir.clone();
+        if aliases.is_empty() {
+            let base_dir = base_url.clone()?;
+            return Some((base_dir, aliases, base_url));
+        }
         let base_dir = if state.base_dir_anchors_aliases {
             state.base_dir.unwrap_or_else(|| dir.to_path_buf())
         } else {
@@ -544,10 +558,10 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
                 .or(state.base_dir)
                 .unwrap_or_else(|| dir.to_path_buf())
         };
-        Some((base_dir, aliases))
+        Some((base_dir, aliases, base_url))
     }
 
-    let (base_dir, aliases) = walk(
+    let (base_dir, aliases, base_url) = walk(
         &tsconfig_file,
         0,
         WalkState {
@@ -558,10 +572,11 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
         },
     )?;
 
-    if aliases.is_empty() {
-        return None;
-    }
-    Some(TsConfigPaths { base_dir, aliases })
+    Some(TsConfigPaths {
+        base_dir,
+        base_url,
+        aliases,
+    })
 }
 
 /// Read `<project_root>/tsconfig.json` and return its
@@ -1265,6 +1280,24 @@ mod tests {
             "target must be anchored at baseUrl (./src), not project root; \
              expected {expected:?}, got {targets:?}"
         );
+    }
+
+    #[test]
+    fn read_tsconfig_paths_preserves_base_url_without_paths_table() {
+        use std::fs;
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":"./src"}}"#,
+        )
+        .unwrap();
+
+        let parsed = read_tsconfig_paths(root).expect("baseUrl-only config is resolver input");
+        assert!(parsed.aliases.is_empty());
+        assert_eq!(parsed.base_dir, root.join("src"));
+        assert_eq!(parsed.base_url, Some(root.join("src")));
+        assert!(read_tsconfig_paths_into_map(root).is_empty());
     }
 
     /// Regression (#1135): a leaf tsconfig declares `paths` but NO `baseUrl`,

@@ -7,6 +7,7 @@ pub mod asset_urls;
 pub mod base_prefix;
 pub mod client_scripts;
 pub mod helpers;
+pub mod module_workers;
 pub mod segment;
 
 pub use asset_urls::{
@@ -20,4 +21,8 @@ pub use client_scripts::{
     client_script_entry_name, is_client_script_file, CLIENT_SCRIPT_EXTENSIONS, CLIENT_SCRIPT_INFIX,
 };
 pub use helpers::{escape_html, json_string, normalize_path_lexical, path_to_posix_string};
+pub use module_workers::{
+    module_worker_content_hash, module_worker_filename, module_worker_url_specifier,
+    ModuleWorkerPathError, MODULE_WORKER_CSP_GLOB, MODULE_WORKER_FILENAME_PREFIX,
+};
 pub use segment::Segment;

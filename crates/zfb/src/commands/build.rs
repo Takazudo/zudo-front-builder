@@ -1180,9 +1180,10 @@ pub(crate) enum IslandsGlobPolicy {
 /// A materialised islands shadow tree (issue #1404 — the full #1385 pt.1
 /// fix).
 ///
-/// Built by [`materialise_islands_shadow`] when `import.meta.glob` or a
-/// terminal `?raw` edge is reachable from a `"use client"` island. It mirrors the project's source
-/// tree under a throwaway `TempDir` keyed by project-root-relative path:
+/// Built by [`materialise_islands_shadow`] when `import.meta.glob`, a terminal
+/// `?raw` edge, or a module-worker edge is reachable from a `"use client"`
+/// island. It mirrors the project's source tree under a throwaway `TempDir`
+/// keyed by project-root-relative path:
 /// files that call `import.meta.glob` are written as REAL, expanded copies
 /// (the Vite macro expanded Rust-side via `zfb_build::glob_expand`, the same
 /// trick the SSR bundler's `materialise_source_file` uses), and `node_modules`
@@ -1414,11 +1415,11 @@ fn shadow_copy_file(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// Materialise the islands preprocessing shadow tree for a project whose scan
-/// reported `import.meta.glob` or `?raw` reachable from a `"use client"`
-/// island (issues #1404 and #1499).
+/// reported `import.meta.glob`, `?raw`, or a module worker reachable from a
+/// `"use client"` island (issues #1404, #1499, and #1500).
 ///
-/// Precondition: at least one glob module or terminal raw edge is present (the
-/// caller takes the no-shadow fast path otherwise).
+/// Precondition: at least one glob module, terminal raw edge, or module-worker
+/// edge is present (the caller takes the no-shadow fast path otherwise).
 ///
 /// The set of files mirrored is the union of (a) the island-reachable
 /// closure `scan_meta.island_reachable_modules` — the shadow's completeness
@@ -1632,6 +1633,58 @@ fn materialise_islands_shadow(
                 edge.target.display(),
                 edge.importer.display()
             )),
+        }
+    }
+
+    // --- Pre-flight + expansion: module-worker URL edges. ---------------
+    // Rewrite every first-party importer, including nested worker sources,
+    // using the same zfb-build span pass as SSR. The returned dependency
+    // closure is mirrored for the later worker-emission sibling, but no import
+    // is injected into the islands entry: worker sources remain browser-only.
+    let worker_importers: BTreeSet<PathBuf> = scan_meta
+        .module_worker_edges_from_islands
+        .iter()
+        .map(|edge| edge.importer.clone())
+        .collect();
+    for importer in worker_importers {
+        if paths.project_local_rel(&importer).is_none() {
+            offenders.push(format!(
+                "{} — contains a module worker reachable from a \"use client\" island but is outside the mirrorable first-party project tree",
+                importer.display()
+            ));
+            continue;
+        }
+        let key = paths.path_key(&importer);
+        let logical_importer = paths.logical_project_path(&importer).ok_or_else(|| {
+            anyhow!(
+                "module-worker importer {} has no logical path under {}",
+                importer.display(),
+                project_root.display()
+            )
+        })?;
+        let source = match expanded_by_key.get(&key) {
+            Some(expanded) => expanded.clone(),
+            None => std::fs::read_to_string(&importer)
+                .with_context(|| format!("read module-worker importer {}", importer.display()))?,
+        };
+        match zfb_build::rewrite_module_worker_urls(&source, &logical_importer, project_root) {
+            Ok(rewrite) => {
+                expanded_by_key.insert(key, rewrite.expanded_source);
+                to_mirror.insert(importer.clone());
+                for dependency in rewrite.dependencies {
+                    match paths.project_local_rel(&dependency.dependency) {
+                        Some(_) => {
+                            to_mirror.insert(dependency.dependency);
+                        }
+                        None => offenders.push(format!(
+                            "{} — module-worker dependency of {} is outside the mirrorable first-party project tree",
+                            dependency.dependency.display(),
+                            importer.display()
+                        )),
+                    }
+                }
+            }
+            Err(error) => offenders.push(format!("{}: {error:#}", importer.display())),
         }
     }
 
@@ -1923,7 +1976,9 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         Ok(result) => result,
         Err(
             error @ (zfb_islands::ScanError::ImportQuery { .. }
-            | zfb_islands::ScanError::RawImport { .. }),
+            | zfb_islands::ScanError::RawImport { .. }
+            | zfb_islands::ScanError::ModuleWorker { .. }
+            | zfb_islands::ScanError::SharedWorker { .. }),
         ) => {
             let message = format!("zfb islands: {error}");
             match islands_glob_policy {
@@ -1964,9 +2019,9 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // + string-literal)
     // now WORK; unsupported forms (lazy/default, non-literal, `import()`
     // mode) and glob modules outside the mirrorable tree keep the #1387
-    // stopgap below. The no-glob common case takes the fast path (this whole
-    // block is skipped), so its bundle is byte-identical to a pre-#1404
-    // build: no shadow, `source_path`s untouched, no `--preserve-symlinks`.
+    // stopgap below. A graph with no glob/raw/worker preprocessing need takes
+    // the fast path (this whole block is skipped): no shadow, `source_path`s
+    // untouched, no `--preserve-symlinks`.
     //
     // `_islands_shadow` holds the shadow TempDir alive until AFTER
     // `build_production_islands_asset` runs esbuild below — dropping it early
@@ -1978,6 +2033,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     let mut islands_preserve_symlinks = false;
     if !scan_meta.glob_reachable_from_islands.is_empty()
         || !scan_meta.raw_import_edges_from_islands.is_empty()
+        || !scan_meta.module_worker_edges_from_islands.is_empty()
     {
         match materialise_islands_shadow(project_root, &islands_set, &scan_meta)? {
             IslandsShadowOutcome::Ready(shadow) => {
@@ -2252,13 +2308,13 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     }
 }
 
-/// Temporary project mirror used only when a client-script graph contains a
-/// terminal `?raw` edge. Executable importers are rewritten as real files,
-/// generated `.zfb-raw-*.mjs` wrappers sit beside them, and the rest of the
-/// project is copied/symlinked so ordinary relative imports and tsconfig paths
-/// continue to resolve from the mirrored entry.
+/// Temporary project mirror used when a client-script graph needs a Rust-side
+/// pre-pass (`?raw` or a module-worker URL). Executable importers are rewritten
+/// as real files, generated `.zfb-raw-*.mjs` wrappers sit beside them, and the
+/// rest of the project is copied/symlinked so ordinary relative imports and
+/// tsconfig paths continue to resolve from the mirrored entry.
 #[derive(Debug)]
-struct ClientScriptsRawStage {
+struct ClientScriptsPreprocessStage {
     _tempdir: tempfile::TempDir,
     root: PathBuf,
     entries: Vec<zfb_islands::client_scripts::ClientScriptEntry>,
@@ -2266,7 +2322,7 @@ struct ClientScriptsRawStage {
     raw_targets: std::collections::BTreeSet<PathBuf>,
 }
 
-fn materialise_client_raw_stage_file(
+fn materialise_client_preprocess_stage_file(
     physical: &Path,
     logical: &Path,
     to: &Path,
@@ -2276,37 +2332,48 @@ fn materialise_client_raw_stage_file(
         PathBuf,
         zfb_build::raw_import_expand::RawImportExpansion,
     >,
+    worker_expanded_by_key: &std::collections::HashMap<PathBuf, String>,
     copy_mode: bool,
     force_copy: bool,
 ) -> Result<()> {
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("create client raw stage dir {}", parent.display()))?;
+            .with_context(|| format!("create client preprocess stage dir {}", parent.display()))?;
     }
     let key = paths.path_key(logical);
     let canonical_key = physical
         .canonicalize()
         .ok()
         .map(|path| paths.path_key(&path));
-    let expansion = expanded_by_key.get(&key).or_else(|| {
+    let raw_expansion = expanded_by_key.get(&key).or_else(|| {
         canonical_key
             .as_ref()
             .and_then(|key| expanded_by_key.get(key))
     });
-    if let Some(expansion) = expansion {
-        std::fs::write(to, expansion.expanded_source.as_bytes())
-            .with_context(|| format!("write client raw importer {}", to.display()))?;
+    let worker_expansion = worker_expanded_by_key.get(&key).or_else(|| {
+        canonical_key
+            .as_ref()
+            .and_then(|key| worker_expanded_by_key.get(key))
+    });
+    let expanded_source = worker_expansion
+        .map(String::as_str)
+        .or_else(|| raw_expansion.map(|expansion| expansion.expanded_source.as_str()));
+    if let Some(expanded_source) = expanded_source {
+        std::fs::write(to, expanded_source.as_bytes())
+            .with_context(|| format!("write client preprocessed importer {}", to.display()))?;
         let parent = to.parent().unwrap_or(stage_root);
-        for module in &expansion.generated_modules {
-            let generated = parent.join(&module.filename);
-            std::fs::write(&generated, module.source.as_bytes()).with_context(|| {
-                format!("write client generated raw module {}", generated.display())
-            })?;
+        if let Some(raw_expansion) = raw_expansion {
+            for module in &raw_expansion.generated_modules {
+                let generated = parent.join(&module.filename);
+                std::fs::write(&generated, module.source.as_bytes()).with_context(|| {
+                    format!("write client generated raw module {}", generated.display())
+                })?;
+            }
         }
     } else if copy_mode || force_copy {
         shadow_copy_file(physical, to).with_context(|| {
             format!(
-                "copy client raw stage {} -> {}",
+                "copy client preprocess stage {} -> {}",
                 physical.display(),
                 to.display()
             )
@@ -2314,7 +2381,7 @@ fn materialise_client_raw_stage_file(
     } else {
         shadow_symlink(physical, to).with_context(|| {
             format!(
-                "symlink client raw stage {} -> {}",
+                "symlink client preprocess stage {} -> {}",
                 physical.display(),
                 to.display()
             )
@@ -2323,10 +2390,10 @@ fn materialise_client_raw_stage_file(
     Ok(())
 }
 
-fn stage_client_script_raw_imports(
+fn stage_client_script_preprocessing(
     project_root: &Path,
     entries: &[zfb_islands::client_scripts::ClientScriptEntry],
-) -> Result<Option<ClientScriptsRawStage>> {
+) -> Result<Option<ClientScriptsPreprocessStage>> {
     if entries.is_empty() {
         return Ok(None);
     }
@@ -2336,13 +2403,13 @@ fn stage_client_script_raw_imports(
         .collect();
     let resolver = FsResolver::new();
     let graph = scan_reachable_modules_with_meta(&roots, &resolver)
-        .context("scan client-script graph for terminal ?raw imports")?;
-    if graph.raw_import_edges.is_empty() {
+        .context("scan client-script graph for ?raw and module-worker preprocessing")?;
+    if graph.raw_import_edges.is_empty() && graph.module_worker_edges.is_empty() {
         return Ok(None);
     }
 
     let paths = IslandsShadowPaths::new(project_root);
-    let mut external_entries_without_raw = std::collections::BTreeSet::new();
+    let mut external_entries_without_preprocessing = std::collections::BTreeSet::new();
     for entry in entries {
         if paths.project_local_rel(&entry.source_path).is_some() {
             continue;
@@ -2355,14 +2422,14 @@ fn stage_client_script_raw_imports(
                     entry.source_path.display()
                 )
             })?;
-        if !entry_graph.raw_import_edges.is_empty() {
+        if !entry_graph.raw_import_edges.is_empty() || !entry_graph.module_worker_edges.is_empty() {
             return Err(anyhow!(
-                "external client-script entry {} has a graph containing `?raw`; raw staging is \
-                 limited to project-local graphs",
+                "external client-script entry {} has a graph requiring `?raw`/module-worker \
+                 preprocessing; staging is limited to project-local graphs",
                 entry.source_path.display()
             ));
         }
-        external_entries_without_raw.insert(entry.source_path.clone());
+        external_entries_without_preprocessing.insert(entry.source_path.clone());
     }
     let mut expanded_by_key: std::collections::HashMap<
         PathBuf,
@@ -2404,6 +2471,48 @@ fn stage_client_script_raw_imports(
         expanded_by_key.insert(paths.path_key(&importer), expansion);
     }
 
+    let mut worker_expanded_by_key: std::collections::HashMap<PathBuf, String> =
+        std::collections::HashMap::new();
+    let worker_importers: std::collections::BTreeSet<PathBuf> = graph
+        .module_worker_edges
+        .iter()
+        .map(|edge| edge.importer.clone())
+        .collect();
+    for importer in worker_importers {
+        if paths.project_local_rel(&importer).is_none() {
+            return Err(anyhow!(
+                "client-script module-worker importer {} is outside the mirrorable project \
+                 tree; move it under the project root",
+                importer.display()
+            ));
+        }
+        let key = paths.path_key(&importer);
+        let source = match expanded_by_key.get(&key) {
+            Some(expansion) => expansion.expanded_source.clone(),
+            None => std::fs::read_to_string(&importer).with_context(|| {
+                format!(
+                    "read client-script module-worker importer {}",
+                    importer.display()
+                )
+            })?,
+        };
+        let logical_importer = paths.logical_project_path(&importer).ok_or_else(|| {
+            anyhow!(
+                "client-script module-worker importer {} has no logical project path",
+                importer.display()
+            )
+        })?;
+        let rewrite =
+            zfb_build::rewrite_module_worker_urls(&source, &logical_importer, project_root)
+                .with_context(|| {
+                    format!(
+                        "preprocess client-script module-worker importer {}",
+                        importer.display()
+                    )
+                })?;
+        worker_expanded_by_key.insert(key, rewrite.expanded_source);
+    }
+
     let mut raw_targets = std::collections::BTreeSet::new();
     for edge in &graph.raw_import_edges {
         if paths.project_local_rel(&edge.target).is_none() {
@@ -2422,9 +2531,9 @@ fn stage_client_script_raw_imports(
     }
 
     let tempdir = tempfile::Builder::new()
-        .prefix("zfb-client-raw-")
+        .prefix("zfb-client-preprocess-")
         .tempdir()
-        .context("allocate client-script raw staging directory")?;
+        .context("allocate client-script preprocessing directory")?;
     let root = tempdir.path().to_path_buf();
     let project_node_modules = detect_project_node_modules(project_root);
     let copy_mode = project_node_modules.is_some() && !read_tsconfig_paths(project_root).is_empty();
@@ -2446,11 +2555,11 @@ fn stage_client_script_raw_imports(
             true
         })
     {
-        let entry = entry.context("walk project for client-script raw staging")?;
+        let entry = entry.context("walk project for client-script preprocessing")?;
         let from = entry.path();
         let rel = from.strip_prefix(project_root).map_err(|_| {
             anyhow!(
-                "client-script raw staging walked {} outside {}",
+                "client-script preprocessing walked {} outside {}",
                 from.display(),
                 project_root.display()
             )
@@ -2461,19 +2570,19 @@ fn stage_client_script_raw_imports(
         let to = root.join(rel);
         if entry.file_type().is_dir() {
             std::fs::create_dir_all(&to)
-                .with_context(|| format!("create client raw stage dir {}", to.display()))?;
+                .with_context(|| format!("create client preprocess stage dir {}", to.display()))?;
             continue;
         }
         if entry.path_is_symlink() && from.is_dir() {
             let physical_root = from.canonicalize().with_context(|| {
                 format!(
-                    "canonicalize client raw-stage symlink dir {}",
+                    "canonicalize client preprocess-stage symlink dir {}",
                     from.display()
                 )
             })?;
             let canonical_project = project_root.canonicalize().with_context(|| {
                 format!(
-                    "canonicalize client raw-stage root {}",
+                    "canonicalize client preprocess-stage root {}",
                     project_root.display()
                 )
             })?;
@@ -2481,7 +2590,7 @@ fn stage_client_script_raw_imports(
                 continue;
             }
             std::fs::create_dir_all(&to)
-                .with_context(|| format!("create client raw stage dir {}", to.display()))?;
+                .with_context(|| format!("create client preprocess stage dir {}", to.display()))?;
             for nested in walkdir::WalkDir::new(&physical_root)
                 .follow_links(true)
                 .sort_by_file_name()
@@ -2489,12 +2598,15 @@ fn stage_client_script_raw_imports(
                 .filter_entry(|nested| !is_islands_shadow_pruned_dir(nested))
             {
                 let nested = nested.with_context(|| {
-                    format!("walk client raw-stage symlink dir {}", from.display())
+                    format!(
+                        "walk client preprocess-stage symlink dir {}",
+                        from.display()
+                    )
                 })?;
                 let physical = nested.path();
                 let nested_rel = physical.strip_prefix(&physical_root).map_err(|_| {
                     anyhow!(
-                        "client raw-stage symlink walk escaped {} via {}",
+                        "client preprocess-stage symlink walk escaped {} via {}",
                         physical_root.display(),
                         physical.display()
                     )
@@ -2503,7 +2615,7 @@ fn stage_client_script_raw_imports(
                 let logical = from.join(nested_rel);
                 if nested.file_type().is_dir() {
                     std::fs::create_dir_all(&nested_to).with_context(|| {
-                        format!("create client raw stage dir {}", nested_to.display())
+                        format!("create client preprocess stage dir {}", nested_to.display())
                     })?;
                     continue;
                 }
@@ -2514,13 +2626,14 @@ fn stage_client_script_raw_imports(
                 if !canonical_file.starts_with(&canonical_project) {
                     continue;
                 }
-                materialise_client_raw_stage_file(
+                materialise_client_preprocess_stage_file(
                     physical,
                     &logical,
                     &nested_to,
                     &root,
                     &paths,
                     &expanded_by_key,
+                    &worker_expanded_by_key,
                     copy_mode,
                     true,
                 )?;
@@ -2535,13 +2648,14 @@ fn stage_client_script_raw_imports(
         if !entry.file_type().is_file() && !is_symlinked_file {
             continue;
         }
-        materialise_client_raw_stage_file(
+        materialise_client_preprocess_stage_file(
             from,
             from,
             &to,
             &root,
             &paths,
             &expanded_by_key,
+            &worker_expanded_by_key,
             copy_mode,
             is_symlinked_file,
         )?;
@@ -2550,7 +2664,7 @@ fn stage_client_script_raw_imports(
     if let Some(node_modules) = project_node_modules {
         shadow_symlink(&node_modules, &root.join("node_modules")).with_context(|| {
             format!(
-                "symlink client raw stage node_modules {} -> {}",
+                "symlink client preprocess stage node_modules {} -> {}",
                 root.join("node_modules").display(),
                 node_modules.display()
             )
@@ -2561,11 +2675,11 @@ fn stage_client_script_raw_imports(
         .iter()
         .map(|entry| {
             let Some(rel) = paths.project_local_rel(&entry.source_path) else {
-                if external_entries_without_raw.contains(&entry.source_path) {
+                if external_entries_without_preprocessing.contains(&entry.source_path) {
                     return Ok(entry.clone());
                 }
                 return Err(anyhow!(
-                    "client-script entry {} using ?raw is outside the project root",
+                    "client-script entry {} requiring preprocessing is outside the project root",
                     entry.source_path.display()
                 ));
             };
@@ -2576,7 +2690,7 @@ fn stage_client_script_raw_imports(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    Ok(Some(ClientScriptsRawStage {
+    Ok(Some(ClientScriptsPreprocessStage {
         _tempdir: tempdir,
         root,
         entries: staged_entries,
@@ -2605,13 +2719,12 @@ fn stage_client_script_raw_imports(
 /// ## `import.meta.glob` is NOT supported in client scripts (issue #1404)
 ///
 /// The islands `import.meta.glob` expansion remains deliberately unsupported
-/// for client scripts. A graph containing `?raw` now gets a conditional
-/// preprocessing mirror, but that mirror rewrites only typed raw importers;
-/// it does not expand a glob call. Thus a client script (or transitive module)
-/// containing `import.meta.glob(...)` still ships that macro unexpanded and
-/// throws at runtime. Do not over-claim glob support in the docs (#1406).
-/// Graphs without `?raw` keep the direct real-project-tree fast path and are
-/// byte-identical to the previous behaviour.
+/// for client scripts. A graph containing `?raw` or a supported module worker
+/// gets a conditional preprocessing mirror, but that mirror does not expand a
+/// glob call. Thus a client script (or transitive module) containing
+/// `import.meta.glob(...)` still ships that macro unexpanded and throws at
+/// runtime. Do not over-claim glob support in the docs (#1406). Graphs without
+/// either preprocessing feature keep the direct real-project-tree fast path.
 pub(crate) fn build_default_client_scripts_payloads(
     project_root: &Path,
     outdir: &Path,
@@ -2666,8 +2779,8 @@ pub(crate) fn build_default_client_scripts_payloads(
         return Ok(Vec::new());
     }
 
-    let raw_stage = stage_client_script_raw_imports(project_root, &entries)?;
-    let (bundle_entries, bundler_working_dir, preserve_symlinks) = match raw_stage.as_ref() {
+    let preprocess_stage = stage_client_script_preprocessing(project_root, &entries)?;
+    let (bundle_entries, bundler_working_dir, preserve_symlinks) = match preprocess_stage.as_ref() {
         Some(stage) => (
             stage.entries.as_slice(),
             stage.root.clone(),
@@ -2854,9 +2967,9 @@ pub(crate) fn build_dev_client_scripts_to_disk(
         ));
     }
 
-    let raw_stage = stage_client_script_raw_imports(project_root, &entries)?;
+    let preprocess_stage = stage_client_script_preprocessing(project_root, &entries)?;
     let (bundle_entries, bundler_working_dir, preserve_symlinks, raw_targets) =
-        match raw_stage.as_ref() {
+        match preprocess_stage.as_ref() {
             Some(stage) => (
                 stage.entries.as_slice(),
                 stage.root.clone(),
@@ -6235,6 +6348,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_default_islands_payload_hard_errors_on_shared_worker() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        std::fs::write(
+            root.join("pages/index.tsx"),
+            "import { Island } from '../components/Island'; export default Island;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components/Island.tsx"),
+            "'use client'; export function Island() { new SharedWorker(new URL('./shared.ts', import.meta.url)); return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components/shared.ts"),
+            "self.onconnect = () => {};\n",
+        )
+        .unwrap();
+
+        let error = build_default_islands_payload(
+            root,
+            &root.join("pages"),
+            &[],
+            &root.join("dist"),
+            crate::config::Framework::Preact,
+            &IslandsPluginConfig::default(),
+            IslandsGlobPolicy::HardError,
+            None,
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("unsupported SharedWorker"), "{message}");
+        assert!(message.contains("shared.ts"), "{message}");
+    }
+
     /// Issue #1404: the shadow materialiser expands a SUPPORTED eager
     /// string-literal glob reachable from an island — it remaps the island's
     /// `source_path` into a shadow copy and never returns `KeepStopgap`, so
@@ -6280,6 +6431,7 @@ mod tests {
                 project_root.join("components/gallery-data.tsx"),
             ],
             raw_import_edges_from_islands: Vec::new(),
+            module_worker_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
@@ -6393,6 +6545,91 @@ mod tests {
     }
 
     #[test]
+    fn materialise_islands_shadow_rewrites_nested_worker_urls_without_importing_entries() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("components/workers")).unwrap();
+        let page = root.join("pages/index.tsx");
+        let island = root.join("components/Island.tsx");
+        let helper = root.join("components/start-worker.ts");
+        let worker = root.join("components/workers/search.ts");
+        let nested = root.join("components/workers/tokenize.ts");
+        let worker_payload = root.join("components/workers/search.txt");
+        let nested_payload = root.join("components/workers/tokenize.txt");
+        std::fs::write(
+            &page,
+            "import { Island } from '../components/Island'; export default Island;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &island,
+            "'use client'; import { start } from './start-worker'; export function Island() { start(); return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &helper,
+            "export const start = () => new Worker(new URL('./workers/search.ts', import.meta.url), { type: 'module' });\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &worker,
+            "import text from './search.txt?raw'; new Worker(new URL('./tokenize.ts', import.meta.url), { type: 'module' }); self.postMessage(text);\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &nested,
+            "import text from './tokenize.txt?raw'; self.postMessage(text);\n",
+        )
+        .unwrap();
+        std::fs::write(&worker_payload, "search payload").unwrap();
+        std::fs::write(&nested_payload, "tokenize payload").unwrap();
+
+        let (islands, scan_meta) = scan_islands_with_meta(&[page], &FsResolver::new()).unwrap();
+        assert_eq!(scan_meta.module_worker_edges_from_islands.len(), 2);
+        assert_eq!(scan_meta.raw_import_edges_from_islands.len(), 2);
+        let shadow = match materialise_islands_shadow(root, &islands, &scan_meta).unwrap() {
+            IslandsShadowOutcome::Ready(shadow) => shadow,
+            IslandsShadowOutcome::KeepStopgap(offenders) => {
+                panic!("supported module workers must materialise: {offenders:?}")
+            }
+        };
+        let shadow_island = shadow.remap.get(&island.canonicalize().unwrap()).unwrap();
+        let shadow_root = shadow_island.parent().unwrap().parent().unwrap();
+        let rewritten_helper =
+            std::fs::read_to_string(shadow_root.join("components/start-worker.ts")).unwrap();
+        assert!(
+            rewritten_helper
+                .contains("new URL(\"./worker-components-s-workers-s-search-d-ts.js?v="),
+            "{rewritten_helper}"
+        );
+        assert!(rewritten_helper.contains(".js?v="), "{rewritten_helper}");
+        assert!(
+            !rewritten_helper.contains("import './workers/search.ts'"),
+            "worker entry must not become an SSR/islands import: {rewritten_helper}"
+        );
+        let rewritten_worker =
+            std::fs::read_to_string(shadow_root.join("components/workers/search.ts")).unwrap();
+        assert!(
+            rewritten_worker
+                .contains("new URL(\"./worker-components-s-workers-s-tokenize-d-ts.js?v="),
+            "{rewritten_worker}"
+        );
+        assert!(!rewritten_worker.contains("?raw"), "{rewritten_worker}");
+        let rewritten_nested =
+            std::fs::read_to_string(shadow_root.join("components/workers/tokenize.ts")).unwrap();
+        assert!(!rewritten_nested.contains("?raw"), "{rewritten_nested}");
+        assert!(
+            shadow_root.join("components/workers/tokenize.ts").exists(),
+            "nested worker entry is mirrored for the later emission pass"
+        );
+        assert_eq!(
+            shadow.raw_targets,
+            std::collections::BTreeSet::from([worker_payload, nested_payload])
+        );
+    }
+
+    #[test]
     fn client_script_raw_stage_rewrites_transitive_importer_and_tracks_target() {
         let tmp = tempdir().unwrap();
         let root = tmp.path();
@@ -6417,7 +6654,7 @@ mod tests {
             source_path: entry,
         }];
 
-        let stage = stage_client_script_raw_imports(root, &entries)
+        let stage = stage_client_script_preprocessing(root, &entries)
             .unwrap()
             .expect("raw graph needs a stage");
         assert!(stage.entries[0].source_path.exists());
@@ -6440,6 +6677,52 @@ mod tests {
             stage.raw_targets,
             std::collections::BTreeSet::from([target.clone()])
         );
+    }
+
+    #[test]
+    fn client_script_worker_only_graph_gets_preprocessed_stage() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let entry = root.join("pages/widget.client.ts");
+        let helper = root.join("src/start.ts");
+        let worker = root.join("src/search.worker.ts");
+        let payload = root.join("src/search.txt");
+        std::fs::write(&entry, "import { start } from '../src/start'; start();\n").unwrap();
+        std::fs::write(
+            &helper,
+            "export const start = () => new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &worker,
+            "import text from './search.txt?raw'; self.postMessage(text);\n",
+        )
+        .unwrap();
+        std::fs::write(&payload, "ready payload").unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        let stage = stage_client_script_preprocessing(root, &entries)
+            .unwrap()
+            .expect("worker-only graph needs the shared preprocessing stage");
+        assert_eq!(
+            stage.raw_targets,
+            std::collections::BTreeSet::from([payload])
+        );
+        let rewritten = std::fs::read_to_string(stage.root.join("src/start.ts")).unwrap();
+        assert!(
+            rewritten.contains("new URL(\"./worker-src-s-search-d-worker-d-ts.js?v="),
+            "{rewritten}"
+        );
+        assert!(rewritten.contains(".js?v="), "{rewritten}");
+        let rewritten_worker =
+            std::fs::read_to_string(stage.root.join("src/search.worker.ts")).unwrap();
+        assert!(!rewritten_worker.contains("?raw"), "{rewritten_worker}");
+        assert!(stage.entries[0].source_path.starts_with(&stage.root));
     }
 
     #[cfg(unix)]
@@ -6465,7 +6748,7 @@ mod tests {
             source_path: linked_entry,
         }];
 
-        let stage = stage_client_script_raw_imports(root, &entries)
+        let stage = stage_client_script_preprocessing(root, &entries)
             .unwrap()
             .expect("raw graph needs a stage");
         let staged_entry = &stage.entries[0].source_path;
@@ -6509,7 +6792,7 @@ mod tests {
             },
         ];
 
-        let stage = stage_client_script_raw_imports(root, &entries)
+        let stage = stage_client_script_preprocessing(root, &entries)
             .unwrap()
             .expect("local raw graph needs a stage");
         let staged_external = stage
@@ -6551,7 +6834,7 @@ mod tests {
             source_path: root.join("pages/widget.client.ts"),
         }];
 
-        let stage = stage_client_script_raw_imports(root, &entries)
+        let stage = stage_client_script_preprocessing(root, &entries)
             .unwrap()
             .expect("raw graph needs a stage");
         let alias_helper = stage.root.join("src-alias/helper.ts");
@@ -6575,7 +6858,7 @@ mod tests {
             entry_name: "plain".into(),
             source_path: entry,
         }];
-        assert!(stage_client_script_raw_imports(tmp.path(), &entries)
+        assert!(stage_client_script_preprocessing(tmp.path(), &entries)
             .unwrap()
             .is_none());
     }
@@ -6590,7 +6873,7 @@ mod tests {
             entry_name: "bad".into(),
             source_path: entry,
         }];
-        let error = stage_client_script_raw_imports(tmp.path(), &entries).unwrap_err();
+        let error = stage_client_script_preprocessing(tmp.path(), &entries).unwrap_err();
         let error = format!("{error:#}");
         assert!(error.contains("scan client-script graph"), "{error}");
         assert!(error.contains("unsupported import query"), "{error}");
@@ -6679,6 +6962,7 @@ mod tests {
                 project_root.join("components/gallery-data.tsx"),
             ],
             raw_import_edges_from_islands: Vec::new(),
+            module_worker_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
@@ -6939,6 +7223,7 @@ mod tests {
             glob_reachable_from_islands: glob_reachable,
             island_reachable_modules: island_reachable,
             raw_import_edges_from_islands: Vec::new(),
+            module_worker_edges_from_islands: Vec::new(),
         };
         (islands, scan_meta)
     }
@@ -7022,6 +7307,7 @@ mod tests {
             glob_reachable_from_islands: vec![glob_src.clone()],
             island_reachable_modules: vec![island_src, glob_src],
             raw_import_edges_from_islands: Vec::new(),
+            module_worker_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(&project_root, &islands, &scan_meta)

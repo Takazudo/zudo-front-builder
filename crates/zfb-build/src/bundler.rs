@@ -141,6 +141,7 @@ use crate::adapter::run_capturing;
 // `materialise_source_file`); `glob_match_relative` and `GlobCallCollector`
 // have no other call sites left in `bundler.rs`.
 use crate::glob_expand::expand_import_meta_glob;
+use crate::module_worker::{rewrite_module_worker_urls, ModuleWorkerDependency};
 use crate::raw_import_expand::{expand_raw_imports, RawImportEdge};
 
 /// `import.meta.env.{PROD,DEV}` substitution mode.
@@ -1757,6 +1758,7 @@ pub fn bundle_with_session(
         project_root: &input.project_root,
         writer: &writer,
         raw_import_edges: RefCell::new(BTreeSet::new()),
+        module_worker_dependencies: RefCell::new(BTreeSet::new()),
         raw_preflight_complete: Cell::new(false),
         // #1151: the SHA-accurate collection-skip signal, parsed once per
         // bundle from the snapshot JSON the bundler already received.
@@ -2511,6 +2513,11 @@ pub fn bundle_with_session(
         &mat_ctx.raw_import_edges.borrow(),
         &input.project_root,
     );
+    augment_route_deps_with_worker_targets(
+        &mut route_module_deps,
+        &mat_ctx.module_worker_dependencies.borrow(),
+        &input.project_root,
+    );
 
     let post_start = if timing_enabled {
         Some(std::time::Instant::now())
@@ -2591,6 +2598,37 @@ fn augment_route_deps_with_raw_targets(
                 });
             if consumes_importer {
                 route.module_deps.extend(path_aliases(&edge.target));
+            }
+        }
+    }
+}
+
+/// Add browser-only worker closure paths to the consuming route's invalidation
+/// set without adding them to the SSR module graph. Each dependency is
+/// projected through the parent importer that owned the rewritten URL; nested
+/// worker sources and their first-party imports are already flattened onto
+/// that importer by [`rewrite_module_worker_urls`].
+fn augment_route_deps_with_worker_targets(
+    route_deps: &mut [crate::metafile_deps::RouteModuleDeps],
+    worker_dependencies: &BTreeSet<ModuleWorkerDependency>,
+    project_root: &Path,
+) {
+    if worker_dependencies.is_empty() {
+        return;
+    }
+    let global_mdx_aliases: BTreeSet<PathBuf> =
+        path_aliases(&project_root.join(MDX_COMPONENTS_FILENAME)).collect();
+    for route in route_deps {
+        let route_source = project_root.join(&route.source_path);
+        let route_aliases: BTreeSet<PathBuf> = path_aliases(&route_source).collect();
+        for edge in worker_dependencies {
+            let importer_aliases: BTreeSet<PathBuf> = path_aliases(&edge.importer).collect();
+            let consumes_importer = !importer_aliases.is_disjoint(&global_mdx_aliases)
+                || importer_aliases.iter().any(|importer| {
+                    route_aliases.contains(importer) || route.module_deps.contains(importer)
+                });
+            if consumes_importer {
+                route.module_deps.extend(path_aliases(&edge.dependency));
             }
         }
     }
@@ -2748,6 +2786,7 @@ fn materialise_mdx_components_file(
         true,
         ctx.writer,
         &ctx.raw_import_edges,
+        &ctx.module_worker_dependencies,
         ctx.project_root,
     )
     .with_context(|| {
@@ -2952,6 +2991,7 @@ fn materialise_symlinked_dir(
                     true,
                     ctx.writer,
                     &ctx.raw_import_edges,
+                    &ctx.module_worker_dependencies,
                     ctx.project_root,
                 )?;
             } else {
@@ -3004,6 +3044,9 @@ struct MaterialiseCtx<'a, 's> {
     /// generated `.zfb-raw-*.mjs` input back to the ORIGINAL target for dev
     /// invalidation.
     raw_import_edges: RefCell<BTreeSet<RawImportEdge>>,
+    /// Browser-only worker closure paths found while rewriting source URLs.
+    /// They feed invalidation bookkeeping but never become SSR imports.
+    module_worker_dependencies: RefCell<BTreeSet<ModuleWorkerDependency>>,
     /// True after `bundle_with_session` preflights every source root as one
     /// graph-wide batch. Direct unit helpers leave this false, causing each
     /// standalone materialise call to preflight its own tree.
@@ -3370,6 +3413,7 @@ fn materialise_shadow(
                 ctx.copy_mode,
                 ctx.writer,
                 &ctx.raw_import_edges,
+                &ctx.module_worker_dependencies,
                 ctx.project_root,
             )?;
         }
@@ -3762,11 +3806,11 @@ struct ContentSkipEntry {
 /// (zfb#1148). Lets a later tick skip the plain copy/symlink of a file
 /// whose own `(mtime, size)` is unchanged.
 ///
-/// `materialise_source_file` does exactly two things: expand
-/// `import.meta.glob` (cross-file — must re-run every tick) then write, OR
-/// a plain copy/symlink (a pure function of the file's own bytes). So a
-/// file is skippable iff its `(mtime, size)` is unchanged AND it does NOT
-/// use a glob (`has_glob == false`). The persistent shadow already holds
+/// `materialise_source_file` either applies a cross-file transform
+/// (`import.meta.glob`, `?raw`, or a module-worker URL), then writes, OR makes
+/// a plain copy/symlink (a pure function of the file's own bytes). So a file
+/// is skippable iff its `(mtime, size)` is unchanged AND it does not depend on
+/// one of those external inputs. The persistent shadow already holds
 /// the correct copy/symlink from the last full pass; a skip only
 /// re-marks the dest visited (so the prune keeps it) — no read, no copy,
 /// no expand.
@@ -3793,6 +3837,10 @@ struct SourceSkipEntry {
     /// reprocessed every persistent-shadow tick even when its own stat is
     /// unchanged.
     has_raw: bool,
+    /// Whether this source owns a module-worker URL rewrite. Its emitted query
+    /// hashes a separate browser-only graph, so the importer must be
+    /// reprocessed even when its own stat is unchanged.
+    has_worker: bool,
 }
 
 /// What to do with the bridge import after a full MDX compile inside
@@ -4287,6 +4335,7 @@ fn materialise_collection(
                 ctx.copy_mode,
                 ctx.writer,
                 &ctx.raw_import_edges,
+                &ctx.module_worker_dependencies,
                 ctx.project_root,
             )?;
         }
@@ -4400,17 +4449,17 @@ fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
     false
 }
 
-/// Materialise a non-MDX source file into the shadow tree, expanding any
-/// eager `import.meta.glob(...)` macro in `.ts/.tsx/.js/.jsx` files first.
+/// Materialise a non-MDX source file into the shadow tree, applying the eager
+/// `import.meta.glob(...)`, terminal `?raw`, and module-worker URL pre-passes
+/// to JS/TS sources first.
 ///
-/// Zero-regression contract: a file that does NOT contain the literal
-/// `import.meta.glob` substring (the overwhelming common case) takes the
-/// exact `symlink_or_copy` path as before — no parse, byte-identical output.
-/// Only when the substring is present do we read the source, run the
-/// statement-level transform, and write a REAL file (not a symlink) so its
-/// rewritten body lands in the shadow tree. `file_dir` for the glob anchor is
-/// the source file's own directory (`from.parent()`), so matched relative
-/// paths line up with what esbuild later resolves through the shadow.
+/// Zero-regression contract: a file that contains none of the three cheap
+/// syntax signals (`import.meta.glob`, `?`, or `Worker`) takes the exact
+/// copy/symlink path as before — no parse, byte-identical output. A transform
+/// hit writes a REAL file so its rewritten body lands in the shadow tree.
+/// `file_dir` for a glob anchor is the source file's own directory
+/// (`from.parent()`), so matched relative paths line up with what esbuild later
+/// resolves through the shadow.
 ///
 /// `is_excluded` is threaded straight through to [`expand_import_meta_glob`]
 /// (Wave 1 passes a no-op `&|_| false`; Wave 2 / #672 supplies the real
@@ -4427,8 +4476,9 @@ fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
 /// a real file).
 ///
 /// `physical_from` supplies bytes/stat identity. `logical_from` is the
-/// project-side importer identity used for relative glob/raw resolution; the
-/// two differ for copied package-route overlays and followed symlink dirs.
+/// project-side importer identity used for relative glob/raw/worker
+/// resolution; the two differ for copied package-route overlays and followed
+/// symlink dirs.
 #[allow(clippy::too_many_arguments)] // Physical/logical identity must stay explicit at every write call.
 fn materialise_source_file(
     physical_from: &Path,
@@ -4438,16 +4488,17 @@ fn materialise_source_file(
     copy_mode: bool,
     writer: &ShadowWriter<'_>,
     raw_import_edges: &RefCell<BTreeSet<RawImportEdge>>,
+    module_worker_dependencies: &RefCell<BTreeSet<ModuleWorkerDependency>>,
     project_root: &Path,
 ) -> Result<()> {
     // Incremental NON-MDX skip (zfb#1148). In session mode ONLY
     // (passthrough/prod never skips): a plain copy/symlink is a pure
     // function of the file's own bytes, so an unchanged `(mtime, size)`
     // reuses the dest already in the persistent shadow — no read, no copy,
-    // no glob expand. Skippable iff a dest-keyed entry matches the source
-    // `(mtime, size)`, the dest still exists, AND the file does NOT use a
-    // glob (`!has_glob` — glob files re-expand every tick because their
-    // output depends on the live project tree). The `(mtime, size)` stat
+    // no cross-file transform. Skippable iff a dest-keyed entry matches the
+    // source `(mtime, size)`, the dest still exists, AND the file does not use
+    // a glob/raw/worker transform (their output depends on the live project
+    // tree). The `(mtime, size)` stat
     // is the only I/O on the skip path — the win on large ancillary trees
     // (`doc/`, `sub-packages/`, `static/`, …) that this otherwise
     // re-copies/re-symlinks every tick.
@@ -4480,6 +4531,7 @@ fn materialise_source_file(
                         && entry.size == size
                         && !entry.has_glob
                         && !entry.has_raw
+                        && !entry.has_worker
                         && dest_exists
                     {
                         // Mark the un-touched dest visited so the prune pass
@@ -4515,7 +4567,7 @@ fn materialise_source_file(
                     )
                 })?;
         }
-        store_source_skip_entry(writer, dest_rel, physical_from, false, false);
+        store_source_skip_entry(writer, dest_rel, physical_from, false, false, false);
         return Ok(());
     }
 
@@ -4528,13 +4580,15 @@ fn materialise_source_file(
     // `false`.
     let mut has_glob = false;
     let mut has_raw = false;
+    let mut has_worker = false;
     if is_js_like {
         // Cheap pre-read of the file is only worthwhile when it might contain
         // the macro. `fs::read_to_string` fails on non-UTF-8; in that case
         // (binary masquerading as .js, etc.) fall back to copy.
         if let Ok(source) = fs::read_to_string(physical_from) {
             let has_query_syntax = source.contains('?');
-            if source.contains("import.meta.glob") || has_query_syntax {
+            let has_worker_syntax = source.contains("Worker");
+            if source.contains("import.meta.glob") || has_query_syntax || has_worker_syntax {
                 let mut expanded = source;
                 if expanded.contains("import.meta.glob") {
                     has_glob = true;
@@ -4573,15 +4627,37 @@ fn materialise_source_file(
                     expanded = raw_expansion.expanded_source;
                 }
 
-                if has_glob || has_raw {
-                    // Both transforms are recomputed from the LIVE project
+                if has_worker_syntax {
+                    let worker_rewrite =
+                        rewrite_module_worker_urls(&expanded, logical_from, project_root)
+                            .with_context(|| {
+                                format!("rewrite module-worker URLs in {}", logical_from.display())
+                            })?;
+                    has_worker = !worker_rewrite.worker_edges.is_empty();
+                    if has_worker {
+                        module_worker_dependencies
+                            .borrow_mut()
+                            .extend(worker_rewrite.dependencies.iter().cloned());
+                    }
+                    expanded = worker_rewrite.expanded_source;
+                }
+
+                if has_glob || has_raw || has_worker {
+                    // Cross-file transforms are recomputed from the LIVE project
                     // tree every call. `write_if_changed` still suppresses
                     // byte-identical writes while generated-module paths are
                     // marked visited for persistent-shadow pruning.
                     writer
                         .write_if_changed(to, expanded.as_bytes())
                         .with_context(|| format!("write expanded source to {}", to.display()))?;
-                    store_source_skip_entry(writer, dest_rel, physical_from, has_glob, has_raw);
+                    store_source_skip_entry(
+                        writer,
+                        dest_rel,
+                        physical_from,
+                        has_glob,
+                        has_raw,
+                        has_worker,
+                    );
                     return Ok(());
                 }
             }
@@ -4609,7 +4685,14 @@ fn materialise_source_file(
                 )
             })?;
     }
-    store_source_skip_entry(writer, dest_rel, physical_from, has_glob, has_raw);
+    store_source_skip_entry(
+        writer,
+        dest_rel,
+        physical_from,
+        has_glob,
+        has_raw,
+        has_worker,
+    );
     Ok(())
 }
 
@@ -4624,6 +4707,7 @@ fn store_source_skip_entry(
     from: &Path,
     has_glob: bool,
     has_raw: bool,
+    has_worker: bool,
 ) {
     if !writer.in_session() {
         return;
@@ -4638,6 +4722,7 @@ fn store_source_skip_entry(
                 size,
                 has_glob,
                 has_raw,
+                has_worker,
             },
         ),
         // Could not stat the source — cannot build a sound skip key.
@@ -7305,6 +7390,7 @@ mod tests {
             project_root: &project_root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers,
         };
@@ -7369,6 +7455,7 @@ mod tests {
             project_root: &project_root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
             raw_preflight_complete: Cell::new(false),
             // This dual-pass helper exercises the source/`materialise_shadow`
             // path (`import: None`), which is not snapshot-gated; `None` here.
@@ -8383,6 +8470,7 @@ mod tests {
         let writer = ShadowWriter::new(shadow_root.clone(), Some(session), false, fingerprint)
             .expect("session writer construction");
         let raw_import_edges = RefCell::new(BTreeSet::new());
+        let module_worker_dependencies = RefCell::new(BTreeSet::new());
         for (from, dest_rel) in files {
             let to = shadow_root.join(dest_rel);
             if let Some(parent) = to.parent() {
@@ -8396,6 +8484,7 @@ mod tests {
                 false,
                 &writer,
                 &raw_import_edges,
+                &module_worker_dependencies,
                 from.parent().unwrap_or(from),
             )
             .expect("materialise_source_file tick");
@@ -8444,6 +8533,137 @@ mod tests {
             b"__CORRUPT_NOT_THE_SOURCE__",
             "an unchanged plain file must be SKIPPED — dest not re-materialised"
         );
+    }
+
+    #[test]
+    fn module_worker_importer_rehashes_when_worker_only_bytes_change() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let importer = root.join("src/Island.tsx");
+        let worker = root.join("src/search.worker.ts");
+        fs::create_dir_all(importer.parent().unwrap()).unwrap();
+        fs::write(
+            &importer,
+            "'use client'; export function Island() { new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
+        )
+        .unwrap();
+        fs::write(&worker, "self.postMessage('a');\n").unwrap();
+
+        let mut session = ShadowSession::new().unwrap();
+        let staged_rel = Path::new("src/Island.tsx");
+        let run_tick = |session: &mut ShadowSession| {
+            let shadow_root = session.shadow_root().to_path_buf();
+            let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
+            let writer =
+                ShadowWriter::new(shadow_root.clone(), Some(session), false, fingerprint).unwrap();
+            let raw_edges = RefCell::new(BTreeSet::new());
+            let worker_dependencies = RefCell::new(BTreeSet::new());
+            let staged = shadow_root.join(staged_rel);
+            writer.ensure_dir(staged.parent().unwrap()).unwrap();
+            materialise_source_file(
+                &importer,
+                &importer,
+                &staged,
+                &|_| false,
+                false,
+                &writer,
+                &raw_edges,
+                &worker_dependencies,
+                root,
+            )
+            .unwrap();
+            let body = fs::read_to_string(&staged).unwrap();
+            let deps = worker_dependencies.into_inner();
+            writer.prune_stale().unwrap();
+            writer.mark_clean();
+            (body, deps)
+        };
+
+        let (first, first_deps) = run_tick(&mut session);
+        assert!(first.contains(".js?v="), "{first}");
+        assert!(first_deps.iter().any(|edge| edge.dependency == worker));
+        assert!(
+            session
+                .source_skip
+                .get(staged_rel)
+                .is_some_and(|entry| entry.has_worker),
+            "worker-bearing source must refuse the stat-only importer skip"
+        );
+
+        // Same byte length and untouched importer: only the browser worker
+        // changes. `has_worker` must force the importer rewrite anyway.
+        fs::write(&worker, "self.postMessage('b');\n").unwrap();
+        let (second, _) = run_tick(&mut session);
+        assert_ne!(first, second, "worker-only edit must change the v= query");
+    }
+
+    #[test]
+    fn ssr_worker_island_bundles_without_browser_entry_in_server_graph() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let components = root.join("components");
+        fs::create_dir_all(&components).unwrap();
+        fs::write(
+            components.join("Island.tsx"),
+            "'use client'; export function Island() { new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
+        )
+        .unwrap();
+        fs::write(
+            components.join("search.worker.ts"),
+            "const BROWSER_ONLY_SENTINEL = 'worker-must-not-enter-ssr'; self.postMessage(BROWSER_ONLY_SENTINEL);\n",
+        )
+        .unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_components = shadow.path().join("components");
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(root, &exclude);
+        materialise_shadow(
+            &components,
+            &shadow_components,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let staged_island = shadow_components.join("Island.tsx");
+        let staged = fs::read_to_string(&staged_island).unwrap();
+        assert!(staged
+            .contains("new Worker(new URL(\"./worker-components-s-search-d-worker-d-ts.js?v="));
+        assert!(staged.contains(".js?v="), "{staged}");
+        assert!(!staged.contains("new URL('./search.worker.ts'"), "{staged}");
+
+        // Level 1 + real compiler seam when the pinned binary is staged: the
+        // rewritten island itself bundles, but the browser-only worker entry
+        // cannot appear because the transform injected no import edge.
+        let Some(esbuild) = locate_real_esbuild() else {
+            eprintln!(
+                "[ssr_worker_island_bundles_without_browser_entry_in_server_graph] no esbuild binary; structural assertions completed"
+            );
+            return;
+        };
+        let output = shadow.path().join("ssr-island.mjs");
+        let result = std::process::Command::new(esbuild)
+            .arg(&staged_island)
+            .arg("--bundle")
+            .arg("--platform=neutral")
+            .arg("--format=esm")
+            .arg(format!("--outfile={}", output.display()))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "SSR-like esbuild pass failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let bundled = fs::read_to_string(output).unwrap();
+        assert!(bundled.contains("worker-components-s-search-d-worker-d-ts.js?v="));
+        assert!(!bundled.contains("BROWSER_ONLY_SENTINEL"), "{bundled}");
+        assert!(!bundled.contains("worker-must-not-enter-ssr"), "{bundled}");
     }
 
     #[test]
@@ -8639,6 +8859,7 @@ mod tests {
             project_root: root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
         };
@@ -8689,6 +8910,7 @@ mod tests {
             project_root: root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
         };
@@ -8740,6 +8962,7 @@ mod tests {
             project_root: root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
         };
@@ -8777,6 +9000,7 @@ mod tests {
         let shadow = tempfile::tempdir().unwrap();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, false, None).unwrap();
         let edges = RefCell::new(BTreeSet::new());
+        let worker_dependencies = RefCell::new(BTreeSet::new());
         let matcher = BundleExcludeMatcher::new(&["components/*.txt".to_string()]).unwrap();
         let error = materialise_source_file(
             &importer,
@@ -8786,6 +9010,7 @@ mod tests {
             false,
             &writer,
             &edges,
+            &worker_dependencies,
             tmp.path(),
         )
         .unwrap_err();
@@ -8816,6 +9041,73 @@ mod tests {
         augment_route_deps_with_raw_targets(&mut deps, &edges, root);
         assert!(deps[0].module_deps.contains(&target_real));
         assert!(deps[0].module_deps.contains(&importer_real));
+    }
+
+    #[test]
+    fn route_module_deps_include_full_browser_only_worker_closure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let page = root.join("pages/index.tsx");
+        let importer = root.join("components/Island.tsx");
+        let worker = root.join("components/search.worker.ts");
+        let helper = root.join("components/search-helper.ts");
+        let required = root.join("components/required.ts");
+        let css = root.join("components/search.css");
+        let tokens = root.join("components/tokens.css");
+        let icon = root.join("components/icon.bin");
+        let payload = root.join("components/payload.txt");
+        for path in [
+            &page, &importer, &worker, &helper, &required, &css, &tokens, &icon, &payload,
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        fs::write(&page, "page").unwrap();
+        let importer_source =
+            "new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });";
+        fs::write(&importer, importer_source).unwrap();
+        fs::write(
+            &root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["components/*"]}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            &worker,
+            "import { helper } from '@/search-helper'; import required = require('./required'); import './search.css'; import payload from './payload.txt?raw'; self.postMessage([helper, required, payload]);",
+        )
+        .unwrap();
+        fs::write(&helper, "export const helper = 1;").unwrap();
+        fs::write(&required, "module.exports = 2;").unwrap();
+        fs::write(
+            &css,
+            "@import './tokens.css'; .worker { background: url('./icon.bin?v=1#icon'); }",
+        )
+        .unwrap();
+        fs::write(&tokens, ":root { --worker: red; }").unwrap();
+        fs::write(&icon, [1_u8, 2, 3]).unwrap();
+        fs::write(&payload, "worker payload").unwrap();
+        let importer_real = importer.canonicalize().unwrap();
+        let mut deps = vec![crate::metafile_deps::RouteModuleDeps {
+            source_path: PathBuf::from("pages/index.tsx"),
+            module_deps: BTreeSet::from([importer_real.clone()]),
+        }];
+        let worker_dependencies: BTreeSet<_> =
+            rewrite_module_worker_urls(importer_source, &importer, root)
+                .unwrap()
+                .dependencies
+                .into_iter()
+                .collect();
+        augment_route_deps_with_worker_targets(&mut deps, &worker_dependencies, root);
+        assert!(deps[0].module_deps.contains(&importer_real));
+        for dependency in [&worker, &helper, &required, &css, &tokens, &icon, &payload] {
+            assert!(
+                deps[0]
+                    .module_deps
+                    .contains(&dependency.canonicalize().unwrap()),
+                "route closure omitted {}: {:?}",
+                dependency.display(),
+                deps[0].module_deps
+            );
+        }
     }
 
     #[test]
@@ -10932,6 +11224,7 @@ mod tests {
             project_root,
             writer: leaked_passthrough_writer(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
             raw_preflight_complete: Cell::new(false),
             // Passthrough/sessionless never skips, so the snapshot gate is
             // irrelevant here.
