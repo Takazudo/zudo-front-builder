@@ -17,15 +17,18 @@
 //! only the theme map when user-supplied `.tmTheme` files must be layered on
 //! top of the defaults.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
-use syntect::easy::HighlightLines;
+use syntect::easy::{HighlightLines, ScopeRegionIterator};
 use syntect::highlighting::{Color, Theme, ThemeSet};
 use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 use syntect::util::LinesWithEndings;
 use zfb_types::escape_html;
+
+use crate::hi_roles::classify;
 
 /// Bundled `SyntaxSet` loaded once per process.
 ///
@@ -389,6 +392,126 @@ impl Highlighter {
             fallback: false,
         })
     }
+
+    /// Highlight a code block in **class-emission mode** — every token is
+    /// wrapped in a `<span class="…">` carrying a semantic *role* class (from
+    /// the #1529 [`classify`] taxonomy) instead of an inline `color:` or a
+    /// `--shiki-*` custom property. This is the engine primitive for
+    /// `codeHighlight.mode: "class"` (Highlight Tokens epic, zfb#1528).
+    ///
+    /// Unlike [`Self::highlight_lines`] / [`Self::highlight_lines_dual`], this
+    /// path does NOT go through syntect's `HighlightLines` (which applies a
+    /// theme and discards the scope stack). Class mode needs the raw scopes,
+    /// so it drives a `ParseState::parse_line` + `ScopeStack::apply` loop
+    /// directly and classifies each token's scope stack.
+    ///
+    /// * `code` - raw source code (no surrounding HTML).
+    /// * `lang` - language identifier from the markdown fence.
+    /// * `prefix` - class-name prefix (e.g. `"hi-"`); the default class for a
+    ///   role is `{prefix}{short_name}` (e.g. `hi-kw`).
+    /// * `role_classes` - per-role class overrides keyed by role short name
+    ///   (e.g. `"kw"` → `"text-violet-600 dark:text-violet-400"`); when a role
+    ///   has an override its value is emitted verbatim (attribute-escaped)
+    ///   instead of `{prefix}{short_name}`.
+    ///
+    /// ## Cross-line scope state
+    ///
+    /// ONE `ParseState` and ONE `ScopeStack` are persisted across ALL lines of
+    /// the block. A scope pushed on one line (an open block comment, a
+    /// multi-line string, a template literal) is popped on a later line;
+    /// resetting either per line would silently misclassify line 2+.
+    ///
+    /// ## Token emission
+    ///
+    /// Per token: [`classify`] the scope stack → resolved class is
+    /// `role_classes[short_name]` if configured, else `{prefix}{short_name}`;
+    /// emit `<span class="{escaped-class}">{escaped-text}</span>`. Adjacent
+    /// tokens that resolve to the same class are MERGED into one span.
+    /// Unclassified tokens (classifier returns `None`) are emitted as bare
+    /// escaped text with NO wrapper span (they inherit the base foreground).
+    ///
+    /// ## Fallback
+    ///
+    /// Unknown lang or a parse/apply error mirrors [`fallback_lines`]:
+    /// HTML-escaped source lines with no token spans (`fallback = true`).
+    pub fn highlight_lines_classes(
+        &self,
+        code: &str,
+        lang: Option<&str>,
+        prefix: &str,
+        role_classes: &BTreeMap<String, String>,
+    ) -> Result<ClassHighlightedLines, HighlightError> {
+        let syntax = lang.filter(|s| !s.is_empty()).and_then(|l| {
+            self.syntax_set.find_syntax_by_token(l).or_else(|| {
+                resolve_alias(l)
+                    .iter()
+                    .find_map(|name| self.syntax_set.find_syntax_by_name(name))
+            })
+        });
+
+        let Some(syntax) = syntax else {
+            return Ok(class_fallback_lines(code));
+        };
+
+        // ONE ParseState + ONE ScopeStack across ALL lines — cross-line
+        // constructs (block comments, multi-line strings, template literals)
+        // depend on the scope state surviving line boundaries.
+        let mut state = ParseState::new(syntax);
+        let mut stack = ScopeStack::new();
+        let mut lines: Vec<String> = Vec::new();
+        for line in LinesWithEndings::from(code) {
+            let ops = match state.parse_line(line, &self.syntax_set) {
+                Ok(ops) => ops,
+                // Degrade to escaped fallback instead of bubbling Err so
+                // callers never see a bare unclassified block.
+                Err(_) => return Ok(class_fallback_lines(code)),
+            };
+            // Per-line run buffer: consecutive tokens with the same resolved
+            // class are merged into a single span. A run's class is
+            // `Some(class)` for a classified token, `None` for an
+            // unclassified (bare-text) run.
+            let mut runs: Vec<(Option<String>, String)> = Vec::new();
+            for (tok, op) in ScopeRegionIterator::new(&ops, line) {
+                if stack.apply(op).is_err() {
+                    return Ok(class_fallback_lines(code));
+                }
+                if tok.is_empty() {
+                    continue;
+                }
+                let resolved = classify(stack.as_slice()).map(|role| {
+                    let key = role.short_name();
+                    role_classes
+                        .get(key)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{prefix}{key}"))
+                });
+                let escaped = escape_html(tok);
+                match runs.last_mut() {
+                    Some((cls, text)) if *cls == resolved => text.push_str(&escaped),
+                    _ => runs.push((resolved, escaped)),
+                }
+            }
+            let mut line_html = String::new();
+            for (cls, text) in runs {
+                match cls {
+                    Some(class) => {
+                        line_html.push_str("<span class=\"");
+                        line_html.push_str(&escape_html(&class));
+                        line_html.push_str("\">");
+                        line_html.push_str(&text);
+                        line_html.push_str("</span>");
+                    }
+                    None => line_html.push_str(&text),
+                }
+            }
+            lines.push(line_html);
+        }
+
+        Ok(ClassHighlightedLines {
+            lines,
+            fallback: false,
+        })
+    }
 }
 
 /// Per-line highlighting result returned by [`Highlighter::highlight_lines`].
@@ -426,6 +549,26 @@ pub struct DualHighlightedLines {
     /// `true` when the output used the themed-fallback path (unknown lang,
     /// tokenization error, or a per-line region-alignment mismatch) rather than
     /// per-token dual highlighting.
+    pub fallback: bool,
+}
+
+/// Per-line class-mode highlighting result returned by
+/// [`Highlighter::highlight_lines_classes`].
+///
+/// Each token is `<span class="…">{escaped}</span>` carrying a semantic role
+/// class (or bare escaped text for unclassified tokens). Unlike
+/// [`HighlightedLines`] there is no `theme_slug`: class mode is theme-agnostic
+/// (colours come from the consumer's CSS keyed on the role classes), and the
+/// `<pre>` wrapper is classed `{prefix}root` by the plugin, not `syntect-{slug}`.
+#[derive(Debug, Clone)]
+pub struct ClassHighlightedLines {
+    /// One HTML fragment per source line. On the highlighted path each token is
+    /// a role-classed `<span>` (adjacent same-class tokens merged) or bare
+    /// escaped text; on the fallback path each entry is the HTML-escaped source
+    /// line with no spans.
+    pub lines: Vec<String>,
+    /// `true` when the output used the escaped-fallback path (unknown lang or a
+    /// parse/apply error) rather than per-token class highlighting.
     pub fallback: bool,
 }
 
@@ -524,6 +667,18 @@ fn dual_fallback_lines(
         lines,
         light_bg,
         dark_bg,
+        fallback: true,
+    }
+}
+
+/// Build a [`ClassHighlightedLines`] for the class-mode fallback path (unknown
+/// lang or a parse/apply error). Splits `code` on `LinesWithEndings` so the
+/// per-line vector matches the normal path's granularity; each line is
+/// HTML-escaped with no token spans.
+fn class_fallback_lines(code: &str) -> ClassHighlightedLines {
+    let lines: Vec<String> = LinesWithEndings::from(code).map(escape_html).collect();
+    ClassHighlightedLines {
+        lines,
         fallback: true,
     }
 }
@@ -1221,5 +1376,213 @@ mod tests {
             a: 0x80,
         };
         assert_eq!(color_to_hex(c2), "#010203");
+    }
+
+    // ── Class-emission highlighting (highlight_lines_classes) ──────────────
+
+    /// A rust snippet in class mode carries role classes (`hi-kw` / `hi-str`)
+    /// and NEVER any inline colour form (`style=` / `color:#` / `--shiki-`).
+    #[test]
+    fn class_mode_rust_emits_role_classes_no_inline_style() {
+        let h = Highlighter::new();
+        let result = h
+            .highlight_lines_classes(
+                "fn main() {\n    let s = \"hi\";\n}\n",
+                Some("rust"),
+                "hi-",
+                &BTreeMap::new(),
+            )
+            .expect("class highlight ok");
+        assert!(!result.fallback, "known lang must not fall back");
+        let html = result.lines.concat();
+        assert!(html.contains("class=\"hi-kw\""), "missing hi-kw: {html}");
+        assert!(html.contains("class=\"hi-str\""), "missing hi-str: {html}");
+        assert!(
+            !html.contains("style="),
+            "must not emit inline style: {html}"
+        );
+        assert!(
+            !html.contains("color:#"),
+            "must not emit inline color: {html}"
+        );
+        assert!(
+            !html.contains("--shiki-"),
+            "must not emit shiki vars: {html}"
+        );
+    }
+
+    /// The cross-line coverage check: a block comment and a string literal
+    /// each spanning two source lines must classify line-2 content correctly.
+    /// This only holds because ONE `ParseState` and ONE `ScopeStack` persist
+    /// across the newline — resetting either would misclassify line 2+.
+    #[test]
+    fn class_mode_multiline_block_comment_and_string_classify_line2() {
+        let h = Highlighter::new();
+        let block = h
+            .highlight_lines_classes("/* c1\n c2 */\n", Some("rust"), "hi-", &BTreeMap::new())
+            .expect("ok");
+        assert_eq!(block.lines.len(), 2, "two source lines");
+        assert!(
+            block.lines[1].contains("class=\"hi-com\""),
+            "line 2 of block comment must be hi-com: {:?}",
+            block.lines[1]
+        );
+
+        let string = h
+            .highlight_lines_classes(
+                "let y = \"m1\nm2\";\n",
+                Some("rust"),
+                "hi-",
+                &BTreeMap::new(),
+            )
+            .expect("ok");
+        assert_eq!(string.lines.len(), 2, "two source lines");
+        assert!(
+            string.lines[1].contains("class=\"hi-str\""),
+            "line 2 of multi-line string must be hi-str: {:?}",
+            string.lines[1]
+        );
+    }
+
+    /// Escaping corpus (mirrors `dual_escaping_matches_single_path`): the same
+    /// tricky characters (`& < > " '`) must appear escaped in class output and
+    /// never leak raw.
+    #[test]
+    fn class_mode_escapes_special_chars_like_single_path() {
+        let h = Highlighter::new();
+        let code = "let s = \"a & b < c > d ' e\";\n";
+        let html = h
+            .highlight_lines_classes(code, Some("rust"), "hi-", &BTreeMap::new())
+            .expect("ok")
+            .lines
+            .concat();
+        for needle in ["&amp;", "&lt;", "&gt;", "&quot;", "&#39;"] {
+            assert!(
+                html.contains(needle),
+                "class output missing escaped {needle}: {html}"
+            );
+        }
+        assert!(!html.contains(" & "), "raw ampersand leaked: {html}");
+    }
+
+    /// Adjacent same-class tokens merge into ONE span. A pure line comment
+    /// tokenizes into several `com` regions (`//`, the words); after merging,
+    /// the whole line is exactly one `<span>`.
+    #[test]
+    fn class_mode_merges_adjacent_same_class_tokens() {
+        let h = Highlighter::new();
+        let result = h
+            .highlight_lines_classes("// two words here\n", Some("rust"), "hi-", &BTreeMap::new())
+            .expect("ok");
+        let line = &result.lines[0];
+        assert_eq!(
+            line.matches("<span").count(),
+            1,
+            "adjacent comment tokens must merge into one span: {line}"
+        );
+        assert!(
+            line.contains("class=\"hi-com\""),
+            "comment span must be hi-com: {line}"
+        );
+        assert!(
+            line.contains("two words here"),
+            "comment text preserved: {line}"
+        );
+    }
+
+    /// A configured `roleClasses` override is emitted VERBATIM for its role,
+    /// replacing the `{prefix}{short_name}` default; other roles keep the
+    /// prefix default.
+    #[test]
+    fn class_mode_role_classes_override_emitted_verbatim() {
+        let h = Highlighter::new();
+        let mut roles = BTreeMap::new();
+        roles.insert(
+            "kw".to_string(),
+            "text-violet-600 dark:text-violet-400".to_string(),
+        );
+        let html = h
+            .highlight_lines_classes("let x = 1;\n", Some("rust"), "hi-", &roles)
+            .expect("ok")
+            .lines
+            .concat();
+        assert!(
+            html.contains("class=\"text-violet-600 dark:text-violet-400\""),
+            "override class must be emitted verbatim: {html}"
+        );
+        assert!(
+            !html.contains("class=\"hi-kw\""),
+            "overridden role must not use the default class: {html}"
+        );
+        assert!(
+            html.contains("class=\"hi-num\""),
+            "non-overridden role still uses the prefix default: {html}"
+        );
+    }
+
+    /// A `roleClasses` override value is attribute-escaped when emitted (the
+    /// value is user-supplied, so specials like `"` / `&` must be escaped).
+    #[test]
+    fn class_mode_role_class_override_is_attribute_escaped() {
+        let h = Highlighter::new();
+        let mut roles = BTreeMap::new();
+        roles.insert("kw".to_string(), "a\"b&c".to_string());
+        let html = h
+            .highlight_lines_classes("let x = 1;\n", Some("rust"), "hi-", &roles)
+            .expect("ok")
+            .lines
+            .concat();
+        assert!(
+            html.contains("class=\"a&quot;b&amp;c\""),
+            "override must be attribute-escaped: {html}"
+        );
+    }
+
+    /// An unclassified token (classifier returns `None`) is emitted as bare
+    /// escaped text with NO wrapper span. Inter-token whitespace carries only
+    /// the grammar-root scope, which `classify` maps to `None`, so a literal
+    /// space sits unwrapped between two spans.
+    #[test]
+    fn class_mode_unclassified_token_has_no_span() {
+        let h = Highlighter::new();
+        let html = h
+            .highlight_lines_classes("let x = 1;\n", Some("rust"), "hi-", &BTreeMap::new())
+            .expect("ok")
+            .lines
+            .concat();
+        assert!(
+            html.contains("</span> <span"),
+            "inter-token whitespace must be bare (no wrapper span): {html}"
+        );
+    }
+
+    /// Unknown lang mirrors the escaped fallback: no spans, escaped source,
+    /// `fallback = true`.
+    #[test]
+    fn class_mode_unknown_lang_falls_back_escaped_no_spans() {
+        let h = Highlighter::new();
+        let result = h
+            .highlight_lines_classes(
+                "<hello> & 'world'\n",
+                Some("klingon"),
+                "hi-",
+                &BTreeMap::new(),
+            )
+            .expect("fallback ok");
+        assert!(result.fallback, "unknown lang must set fallback = true");
+        let html = result.lines.concat();
+        assert!(
+            !html.contains("<span"),
+            "fallback must be plain text: {html}"
+        );
+        assert!(
+            html.contains("&lt;hello&gt;"),
+            "fallback not escaped: {html}"
+        );
+        assert!(html.contains("&amp;"), "fallback amp not escaped: {html}");
+        assert!(
+            html.contains("&#39;world&#39;"),
+            "fallback quote not escaped: {html}"
+        );
     }
 }

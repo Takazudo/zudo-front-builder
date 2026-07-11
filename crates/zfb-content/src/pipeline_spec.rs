@@ -49,12 +49,13 @@ pub enum CodeHighlightMode {
     /// `--shiki-*` custom properties). Pre-epic behaviour.
     #[default]
     Inline,
-    /// Per-token semantic role classes. **Wave-1 stub (zfb#1530):** the
-    /// pipeline construction below still falls back to single-theme
-    /// rendering — [`crate::pipeline::Pipeline::with_defaults_and_full_config_class`]
-    /// only wires the fingerprint segment so far. The class-emission sub
-    /// (zfb#1532) replaces the selector arm with real
-    /// `SyntectMode::Classes` emission.
+    /// Per-token semantic role classes (zfb#1532): every token becomes a
+    /// `<span class="…">` carrying a role class from the #1529 taxonomy
+    /// (default `{classPrefix}{short_name}`, or the `roleClasses` override),
+    /// with NO inline colour; the `<pre>` is classed `{classPrefix}root`.
+    /// Routed via [`crate::pipeline::Pipeline::with_defaults_and_full_config_class`],
+    /// which also encodes `classPrefix`/`roleClasses` into the compile-cache
+    /// fingerprint so class-mode configs never alias an inline/dual entry.
     Class,
 }
 

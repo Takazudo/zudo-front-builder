@@ -266,12 +266,15 @@ mod tests {
 
         for s in &suffixes {
             assert!(!s.is_empty(), "short name must be non-empty");
-            assert_ne!(*s, "line", "short name must not collide with `line` wrapper class");
+            assert_ne!(
+                *s, "line",
+                "short name must not collide with `line` wrapper class"
+            );
         }
 
         let expected: HashSet<&str> = [
-            "esc", "op", "com", "str", "num", "const", "kw", "fn", "ty", "ns", "prop", "var", "tag",
-            "attr", "punct", "ins", "del", "hd",
+            "esc", "op", "com", "str", "num", "const", "kw", "fn", "ty", "ns", "prop", "var",
+            "tag", "attr", "punct", "ins", "del", "hd",
         ]
         .into_iter()
         .collect();
@@ -318,7 +321,10 @@ mod tests {
     fn javascript_operator_beats_keyword_and_interpolation_var_beats_string() {
         // `js` and `ts` share the JavaScript grammar in the bundled set.
         for lang in ["js", "ts"] {
-            let toks = tokenize(lang, "const g = `hi ${name}`;\nlet z = 1 + 2;\nclass Bar {}\n");
+            let toks = tokenize(
+                lang,
+                "const g = `hi ${name}`;\nlet z = 1 + 2;\nclass Bar {}\n",
+            );
             assert_eq!(role_of(&toks, "const"), Some(HiRole::Keyword));
             // `+` is scoped keyword.operator.arithmetic → op wins over keyword.
             assert_eq!(role_of(&toks, "+"), Some(HiRole::Operator));
