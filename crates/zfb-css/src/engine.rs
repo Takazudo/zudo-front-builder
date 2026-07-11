@@ -98,6 +98,19 @@ pub struct TailwindSubprocessConfig {
     /// order.
     pub framework_package_globs: Vec<String>,
 
+    /// Class-name literals safelisted via `@source inline("<value>");`
+    /// (Tailwind v4's "inline source" form — carries a class name, not a
+    /// path/glob). zfb#1534: `codeHighlight.roleClasses` values live in
+    /// `zfb.config.ts` (not a scanned content root) and are emitted only
+    /// into rendered `dist/*.html` (never scanned), so without this the
+    /// mapped utilities are silently never generated. Populated by
+    /// `build_default_css_payload` from every `roleClasses` value, split
+    /// on whitespace, deduped, and sorted (determinism — this feeds the
+    /// synthesised entry CSS, which in turn feeds the CSS `hash_8`
+    /// input). Listed after the content/framework globs so it reads as
+    /// an explicit safelist appendix.
+    pub inline_sources: Vec<String>,
+
     /// Optional inline `@theme { ... }` block to append to the
     /// synthesised entry CSS. Used by callers that ship a
     /// programmatically-built design-token block (e.g. derived from
@@ -158,6 +171,7 @@ impl Default for TailwindSubprocessConfig {
             extra_args: Vec::new(),
             content_globs: Vec::new(),
             framework_package_globs: Vec::new(),
+            inline_sources: Vec::new(),
             theme_block: None,
             mock_subprocess: false,
             mock_output: String::new(),
@@ -213,6 +227,17 @@ impl TailwindSubprocessConfig {
         self
     }
 
+    /// Replace the `@source inline("...")` class-name safelist
+    /// (chainable). See [`Self::inline_sources`].
+    pub fn with_inline_sources<I, S>(mut self, sources: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.inline_sources = sources.into_iter().map(Into::into).collect();
+        self
+    }
+
     /// Set an inline `@theme { ... }` block (chainable).
     pub fn with_theme_block(mut self, block: impl Into<String>) -> Self {
         self.theme_block = Some(block.into());
@@ -262,6 +287,17 @@ fn push_escaped_source(out: &mut String, value: &str) {
     out.push_str("@source \"");
     push_escaped_css_string_value(out, value);
     out.push_str("\";\n");
+}
+
+/// Append a single `@source inline("<escaped_value>");\n` directive to
+/// `out`. Unlike [`push_escaped_source`], this form carries a literal
+/// class name (not a path/glob) — see [`rebase_relative_source_globs`]'s
+/// doc comment, which is why the rebase pass leaves `inline(...)`
+/// untouched. Only `"` and `\` need escaping, same as the path form.
+fn push_escaped_inline_source(out: &mut String, value: &str) {
+    out.push_str("@source inline(\"");
+    push_escaped_css_string_value(out, value);
+    out.push_str("\");\n");
 }
 
 /// Append `value` to `out` escaped for use inside a double-quoted CSS
@@ -484,7 +520,11 @@ pub fn is_tailwind_import_line(line: &str) -> bool {
 ///    framework globs so user-project overrides win in cascade order.
 /// 3. `@source "<glob>";` directives for every entry in
 ///    `framework_package_globs` (e.g. `packages/zudo-doc-v2/**`).
-/// 4. The contents of `input_css` if provided (the user's
+/// 4. `@source inline("<value>");` directives for every entry in
+///    `inline_sources` — the `codeHighlight.roleClasses` safelist
+///    (zfb#1534). Emitted after the path-based `@source` directives so
+///    it reads as an explicit appendix to the scanned-content list.
+/// 5. The contents of `input_css` if provided (the user's
 ///    `styles/global.css`, typically including their own `@theme {…}`
 ///    and authored CSS rules). When the file already starts with
 ///    `@import "tailwindcss";`, the synthesiser drops the duplicate
@@ -493,7 +533,7 @@ pub fn is_tailwind_import_line(line: &str) -> bool {
 ///    absolute paths anchored at `working_dir` so the entry temp file's
 ///    location cannot change what they match (zfb#1327) — see
 ///    [`rebase_relative_source_globs`].
-/// 5. The inline `theme_block`, if any.
+/// 6. The inline `theme_block`, if any.
 ///
 /// The returned `String` is what the engine writes to a temp file and
 /// passes to `tailwindcss -i <tmp>`. It is also stashed on
@@ -531,8 +571,16 @@ pub fn build_synthesised_entry_css(
     for g in &cfg.framework_package_globs {
         push_escaped_source(&mut out, g);
     }
+    // Then the `codeHighlight.roleClasses` inline safelist (zfb#1534).
+    for s in &cfg.inline_sources {
+        push_escaped_inline_source(&mut out, s);
+    }
 
-    if emitted_import || !cfg.content_globs.is_empty() || !cfg.framework_package_globs.is_empty() {
+    if emitted_import
+        || !cfg.content_globs.is_empty()
+        || !cfg.framework_package_globs.is_empty()
+        || !cfg.inline_sources.is_empty()
+    {
         out.push('\n');
     }
 
@@ -1398,6 +1446,118 @@ mod tests {
         assert!(
             css.contains(r#"@source "packages/\"fw\"/**";"#),
             "framework_package_globs quote not escaped; got:\n{css}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // zfb#1534 — `codeHighlight.roleClasses` `@source inline(...)` safelist
+    // -----------------------------------------------------------------------
+
+    /// The synthesised entry CSS carries one `@source inline("...")`
+    /// directive per configured `inline_sources` entry — this is the
+    /// mechanism that safelists `codeHighlight.roleClasses` values
+    /// (e.g. `text-violet-600`) that live in `zfb.config.ts` and are
+    /// emitted only into rendered `dist/*.html`, neither of which
+    /// Tailwind's `@source` glob scan ever sees.
+    #[test]
+    fn synthesised_entry_contains_inline_source_per_role_class() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_mock_output(String::new())
+            .with_inline_sources(["text-violet-600", "dark:text-violet-400"]);
+        let css = build_synthesised_entry_css(&cfg, None);
+        assert!(
+            css.contains("@source inline(\"text-violet-600\");"),
+            "expected an inline source directive for text-violet-600; got:\n{css}"
+        );
+        assert!(
+            css.contains("@source inline(\"dark:text-violet-400\");"),
+            "expected an inline source directive for dark:text-violet-400; got:\n{css}"
+        );
+    }
+
+    /// `inline_sources` values are escaped the same way path-based
+    /// `@source` values are (only `"` and `\` — glob/selector
+    /// metacharacters like `:` pass through untouched).
+    #[test]
+    fn synthesised_css_escapes_quotes_in_inline_sources() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_mock_output(String::new())
+            .with_inline_sources([r#"text-"weird"-class"#]);
+        let css = build_synthesised_entry_css(&cfg, None);
+        assert!(
+            css.contains(r#"@source inline("text-\"weird\"-class");"#),
+            "inline_sources quote not escaped; got:\n{css}"
+        );
+    }
+
+    /// Determinism: the same config produces byte-identical synthesised
+    /// entry CSS across calls — the entry text feeds the CSS `hash_8`
+    /// input (via the real Tailwind subprocess output), so unstable
+    /// output here would produce a non-reproducible asset hash for an
+    /// unchanged config.
+    #[test]
+    fn synthesised_entry_is_byte_identical_for_same_inline_sources() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_mock_output(String::new())
+            .with_inline_sources(["dark:text-violet-400", "text-violet-600"]);
+        let a = build_synthesised_entry_css(&cfg, None);
+        let b = build_synthesised_entry_css(&cfg, None);
+        assert_eq!(a, b, "same config must yield byte-identical synthesised entry CSS");
+    }
+
+    /// A different `inline_sources` set changes the synthesised entry
+    /// CSS. Real Tailwind is deterministic in its own scan (same input
+    /// -> same output), so a changed entry is what drives a changed
+    /// `hash_8` once the real subprocess runs (env-gated locally — see
+    /// the tailwindcss-v4 env-gate tests in this crate's
+    /// `tests/integration.rs`).
+    #[test]
+    fn synthesised_entry_changes_when_inline_sources_change() {
+        let base = TailwindSubprocessConfig::default().with_mock_output(String::new());
+        let a = build_synthesised_entry_css(&base.clone().with_inline_sources(["text-violet-600"]), None);
+        let b = build_synthesised_entry_css(&base.with_inline_sources(["text-blue-600"]), None);
+        assert_ne!(
+            a, b,
+            "a different roleClasses-derived inline source set must change the synthesised entry"
+        );
+    }
+
+    /// No `inline_sources` configured (the common case: no
+    /// `codeHighlight.roleClasses`) must not emit a stray `@source
+    /// inline(` directive or otherwise perturb the entry.
+    #[test]
+    fn synthesised_entry_omits_inline_directives_when_empty() {
+        let cfg = TailwindSubprocessConfig::default().with_mock_output(String::new());
+        let css = build_synthesised_entry_css(&cfg, None);
+        assert!(
+            !css.contains("@source inline("),
+            "no inline source directive expected when inline_sources is empty; got:\n{css}"
+        );
+    }
+
+    /// `inline_sources` directives coexist with `content_globs` and
+    /// `framework_package_globs` directives — configuring a
+    /// `codeHighlight.roleClasses` safelist must not crowd out or
+    /// mangle the pre-existing path-based `@source` directives.
+    #[test]
+    fn synthesised_entry_inline_sources_coexist_with_content_globs() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_mock_output(String::new())
+            .with_content_globs(["pages/**/*.tsx"])
+            .with_framework_package_globs(["packages/zudo-doc-v2/**"])
+            .with_inline_sources(["text-violet-600"]);
+        let css = build_synthesised_entry_css(&cfg, None);
+        assert!(
+            css.contains("@source \"pages/**/*.tsx\";"),
+            "content glob must still be emitted; got:\n{css}"
+        );
+        assert!(
+            css.contains("@source \"packages/zudo-doc-v2/**\";"),
+            "framework glob must still be emitted; got:\n{css}"
+        );
+        assert!(
+            css.contains("@source inline(\"text-violet-600\");"),
+            "inline source must be present verbatim; got:\n{css}"
         );
     }
 
