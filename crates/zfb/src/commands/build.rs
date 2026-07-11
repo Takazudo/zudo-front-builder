@@ -765,40 +765,6 @@ impl BuildRunner for DefaultRunner {
 /// (`zfb_css::css_relative_path` and `zfb_types::STABLE_CSS_URL`) so
 /// the renderer's head injector and the prod pipeline's URL rewriter
 /// agree on the same key without a separate string channel.
-/// zfb#1534: compute the Tailwind `@source inline("...")` safelist for
-/// `codeHighlight.roleClasses`.
-///
-/// `roleClasses` values live in `zfb.config.ts` (not a Tailwind-scanned
-/// content root) and are emitted only into rendered `dist/*.html`
-/// (never scanned, and itself an output of this same build) — without
-/// safelisting, the mapped utilities are silently never generated
-/// (green build, unstyled tokens). Every value is split on whitespace
-/// (a mapping may hold multiple space-separated classes, e.g.
-/// `"text-violet-600 dark:text-violet-400"`), deduped, and sorted: the
-/// result feeds the synthesised entry CSS, which feeds the CSS
-/// `hash_8` input, so unstable ordering would churn the asset hash for
-/// an unchanged config.
-///
-/// Returns empty when `codeHighlight.roleClasses` is absent — the
-/// common case. Callers only reach this on the `tailwind.enabled`
-/// path; the authored-CSS path (`tailwind.enabled = false`) returns
-/// early in [`build_default_css_payload`] before ever calling this, and
-/// instead relies on the build warning emitted at config-load time
-/// (`crates/zfb/src/config.rs`, issue #1530).
-fn role_classes_inline_sources(config: &Config) -> Vec<String> {
-    let mut classes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    if let Some(role_classes) = config
-        .code_highlight
-        .as_ref()
-        .and_then(|ch| ch.role_classes.as_ref())
-    {
-        for value in role_classes.values() {
-            classes.extend(value.split_whitespace().map(str::to_string));
-        }
-    }
-    classes.into_iter().collect()
-}
-
 pub(crate) fn build_default_css_payload(
     project_root: &Path,
     outdir: &Path,
@@ -907,6 +873,40 @@ pub(crate) fn build_default_css_payload(
     // authored-only path).
     let payload = run_css_emitter(engine, project_root, outdir, sources)?;
     Ok(Some(payload))
+}
+
+/// zfb#1534: compute the Tailwind `@source inline("...")` safelist for
+/// `codeHighlight.roleClasses`.
+///
+/// `roleClasses` values live in `zfb.config.ts` (not a Tailwind-scanned
+/// content root) and are emitted only into rendered `dist/*.html`
+/// (never scanned, and itself an output of this same build) — without
+/// safelisting, the mapped utilities are silently never generated
+/// (green build, unstyled tokens). Every value is split on whitespace
+/// (a mapping may hold multiple space-separated classes, e.g.
+/// `"text-violet-600 dark:text-violet-400"`), deduped, and sorted: the
+/// result feeds the synthesised entry CSS, which feeds the CSS
+/// `hash_8` input, so unstable ordering would churn the asset hash for
+/// an unchanged config.
+///
+/// Returns empty when `codeHighlight.roleClasses` is absent — the
+/// common case. Callers only reach this on the `tailwind.enabled`
+/// path; the authored-CSS path (`tailwind.enabled = false`) returns
+/// early in [`build_default_css_payload`] before ever calling this, and
+/// instead relies on the build warning emitted at config-load time
+/// (`crates/zfb/src/config.rs`, issue #1530).
+fn role_classes_inline_sources(config: &Config) -> Vec<String> {
+    let mut classes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Some(role_classes) = config
+        .code_highlight
+        .as_ref()
+        .and_then(|ch| ch.role_classes.as_ref())
+    {
+        for value in role_classes.values() {
+            classes.extend(value.split_whitespace().map(str::to_string));
+        }
+    }
+    classes.into_iter().collect()
 }
 
 /// Shared tail of the two CSS-emitter paths
