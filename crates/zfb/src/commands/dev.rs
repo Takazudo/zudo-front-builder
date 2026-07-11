@@ -6185,6 +6185,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 id_strip_suffix: None,
+                allow_outside_root: false,
             }],
             ..Default::default()
         };
@@ -6281,6 +6282,7 @@ mod tests {
                     include: None,
                     exclude: None,
                     id_strip_suffix: None,
+                    allow_outside_root: false,
                 })
                 .collect(),
             ..config::Config::default()
@@ -6704,6 +6706,7 @@ mod tests {
                     include: None,
                     exclude: None,
                     id_strip_suffix: None,
+                    allow_outside_root: false,
                 }],
                 ..config::Config::default()
             };
