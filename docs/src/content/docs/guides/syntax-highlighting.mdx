@@ -22,6 +22,14 @@ output. No JavaScript is shipped to the browser for highlighting.
 | Unknown languages | Themed fallback: wrapped in `<pre class="syntect-…">`, code preserved |
 | `mermaid` blocks | Skipped — routed to `MermaidPlugin` instead |
 
+<Tip>
+
+zfb also offers a **class mode** that gives each token a re-themeable CSS design
+token instead of a baked-in colour — the recommended choice for a themeable
+site. See [Class mode (recommended)](#class-mode-recommended) below.
+
+</Tip>
+
 ## Customising the theme (built-in themes)
 
 The simplest way to change the colour scheme is to pick one of syntect's
@@ -153,6 +161,233 @@ pre[class^="syntect-"] span {
 
 Make sure the surrounding context opts in to `color-scheme: light dark` (e.g.
 on `:root` or the `<pre>`) so `light-dark()` resolves to the active mode.
+
+## Class mode (recommended)
+
+Everything above is **inline mode**: zfb bakes each token's colour straight into
+the HTML as `style="color:#…"` (or the dual `--shiki-*` custom properties).
+**Class mode** instead gives every token a semantic *role class* — `hi-kw`,
+`hi-str`, `hi-com`, … — and ships a stylesheet that colours those classes
+through CSS custom properties. Colours become re-themeable design tokens you can
+override from your own CSS, with no rebuild.
+
+Enable it in `zfb.config.ts`:
+
+```ts
+// zfb.config.ts
+export default {
+  codeHighlight: {
+    mode: "class",
+  },
+};
+```
+
+<Note>
+
+**`inline` is still the default in this release.** Class mode is opt-in — the
+default has not flipped. Whether `class` becomes the default is a future
+decision; set `mode: "class"` explicitly to use it today.
+
+</Note>
+
+Class mode is **mutually exclusive with every theme knob** (`theme`,
+`themeLight`, `themeDark`, `themesDir`): themes only affect inline colours, so
+setting one alongside `mode: "class"` is a build error rather than a silent
+no-op. Colour selection in class mode lives entirely in CSS.
+
+### The 18 role classes
+
+Every highlighted token is classified into exactly one of 18 fixed semantic
+roles. The taxonomy is frozen — roles are never added or removed. Each role maps
+to a default class `{classPrefix}{suffix}` (the default `classPrefix` is `hi-`)
+and a matching CSS custom property `--zfb-hi-{suffix}`:
+
+| Role (config key) | Default class | Custom property |
+|---|---|---|
+| `escape` | `hi-esc` | `--zfb-hi-esc` |
+| `operator` | `hi-op` | `--zfb-hi-op` |
+| `comment` | `hi-com` | `--zfb-hi-com` |
+| `string` | `hi-str` | `--zfb-hi-str` |
+| `number` | `hi-num` | `--zfb-hi-num` |
+| `constant` | `hi-const` | `--zfb-hi-const` |
+| `keyword` | `hi-kw` | `--zfb-hi-kw` |
+| `function` | `hi-fn` | `--zfb-hi-fn` |
+| `type` | `hi-ty` | `--zfb-hi-ty` |
+| `namespace` | `hi-ns` | `--zfb-hi-ns` |
+| `property` | `hi-prop` | `--zfb-hi-prop` |
+| `variable` | `hi-var` | `--zfb-hi-var` |
+| `tag` | `hi-tag` | `--zfb-hi-tag` |
+| `attribute` | `hi-attr` | `--zfb-hi-attr` |
+| `punctuation` | `hi-punct` | `--zfb-hi-punct` |
+| `inserted` | `hi-ins` | `--zfb-hi-ins` |
+| `deleted` | `hi-del` | `--zfb-hi-del` |
+| `heading` | `hi-hd` | `--zfb-hi-hd` |
+
+The config key is the **full role name** (`keyword`), while the emitted class
+uses a short **suffix** (`kw`). Beyond the 18 role properties, the stylesheet
+also defines `--zfb-hi-fg` / `--zfb-hi-bg` (the base foreground and background on
+`.hi-root`, the `<pre>` element) and `--zfb-hi-ins-bg` / `--zfb-hi-del-bg` (the
+diff line-tint backgrounds).
+
+### Emitted markup
+
+The `<pre>` element is classed `{classPrefix}root` (default `hi-root`) and each
+token is a `<span>` carrying its role class — with no inline colour:
+
+```html
+<pre class="hi-root"><code><span class="line"><span class="hi-kw">fn</span> <span class="hi-fn">main</span>…</span></code></pre>
+```
+
+The `<span class="line">` wrapper is identical to inline and dual mode; only the
+per-token colour mechanism differs.
+
+### The default stylesheet
+
+With `mode: "class"`, zfb injects a built-in token stylesheet (`zfb-hi.css`)
+into your combined `styles.css`. It defines the `--zfb-hi-*` custom properties
+and the `.hi-*` rules that consume them, wrapped in an `@layer zfb-hi` cascade
+layer so your own un-layered rules always win. The default palette is extracted
+from syntect's `base16-ocean.light` / `base16-ocean.dark` themes — the same
+family inline mode's default theme, `base16-ocean.dark`, belongs to.
+
+To opt out and supply your own stylesheet entirely, set `defaultStylesheet:
+false`:
+
+```ts
+// zfb.config.ts
+export default {
+  codeHighlight: {
+    mode: "class",
+    defaultStylesheet: false,
+  },
+};
+```
+
+### Re-theming without a rebuild
+
+Because colours resolve through CSS custom properties, you re-theme highlighting
+by overriding `--zfb-hi-*` from your own CSS — no `zfb build` required. Follow
+the tight-token / three-tier pattern: raw palette tokens feed semantic role
+overrides, which the shipped `.hi-*` rules consume.
+
+```css
+/* Tier 1 — your raw palette tokens */
+:root {
+  --palette-purple: #8250df;
+  --palette-green: #1a7f37;
+  --palette-slate: #6e7781;
+}
+
+/* Tier 2 — map the palette onto the semantic --zfb-hi-* roles */
+:root {
+  --zfb-hi-kw: var(--palette-purple);
+  --zfb-hi-str: var(--palette-green);
+  --zfb-hi-com: var(--palette-slate);
+}
+
+/* Tier 3 is shipped by zfb: .hi-kw { color: var(--zfb-hi-kw) } … */
+```
+
+Your override sits outside `@layer zfb-hi`, so it beats the layered default with
+no `!important`.
+
+### Dark mode
+
+The shipped stylesheet's values use `light-dark()`, and it also carries a
+`@media (prefers-color-scheme: dark)` fallback — so on a host that has not opted
+into `color-scheme`, dark mode still works with **zero configuration**.
+
+Hosts with an explicit theme toggle (a `class` or `data-` attribute on `<html>`,
+not `prefers-color-scheme`) override the custom properties under the toggle
+selector:
+
+```css
+:root[data-theme="dark"] {
+  --zfb-hi-fg: #c0c5ce;
+  --zfb-hi-bg: #2b303b;
+  --zfb-hi-kw: #b48ead;
+  --zfb-hi-str: #a3be8c;
+  --zfb-hi-com: #65737e;
+  /* …override the roles your theme changes… */
+}
+```
+
+<Tip>
+
+Because the defaults are written with `light-dark()`, an explicit-toggle host
+can instead just flip `color-scheme` on the toggled root —
+`:root[data-theme="dark"] { color-scheme: dark; }` — and let the shipped
+`light-dark()` values resolve to their dark side, overriding individual
+properties only where you want to diverge from the defaults.
+
+</Tip>
+
+### Mapping roles onto Tailwind utilities
+
+Instead of the default `hi-*` classes you can map any role onto your own utility
+classes with `roleClasses` — most usefully Tailwind:
+
+```ts
+// zfb.config.ts
+export default {
+  codeHighlight: {
+    mode: "class",
+    roleClasses: {
+      keyword: "text-violet-600 dark:text-violet-400",
+      string: "text-emerald-600 dark:text-emerald-400",
+    },
+  },
+};
+```
+
+Keys must be one of the 18 role names above; a value may hold several
+space-separated classes, and must not contain the bare token `line` (it collides
+with the code-enrichment line-wrapper class). Roles you do not map keep their
+default `{classPrefix}{suffix}` class.
+
+The mapped utilities are **auto-safelisted**. Highlighted markup is produced by
+the Rust pipeline and only lands in rendered `dist/*.html`, which Tailwind never
+scans — so without help the utilities would be tree-shaken away (green build,
+unstyled tokens). zfb emits each `roleClasses` value as a Tailwind
+`@source inline("…")` entry, so the classes are always generated.
+
+<Warning>
+
+**Authored-CSS path (`tailwind: { enabled: false }`).** Setting `roleClasses`
+with Tailwind disabled is allowed but emits a build warning: no Tailwind safelist
+can be generated on that path, so the utilities you map to must already exist in
+your own hand-authored CSS.
+
+</Warning>
+
+### Custom class prefix
+
+`classPrefix` (default `hi-`) changes the prefix on both the `<pre>` root class
+and every role class — `classPrefix: "syn-"` yields `syn-root`, `syn-kw`, …. It
+must match `/^[A-Za-z][A-Za-z0-9_-]*$/`.
+
+A custom prefix is **honoured by the shipped stylesheet**: zfb rewrites the
+default `.hi-*` selectors to your prefix at build time. The `--zfb-hi-*` custom
+properties are namespaced independently and stay `--zfb-hi-*` regardless of
+`classPrefix`, so your re-theming overrides do not change.
+
+### When to still use inline or dual mode
+
+Class mode depends on an external stylesheet, so prefer **inline** (or **dual**)
+mode when the HTML must be self-contained: RSS/Atom feed content, HTML email, or
+any embed that travels without your site's CSS. There the baked-in
+`style="color:…"` is a feature — the colours survive with no stylesheet.
+
+### Scope notes
+
+- **Markup roles inside `md`-language fences.** Beyond headings and diff
+  inserted/deleted lines, Markdown markup constructs are only lightly styled by
+  design — the taxonomy intentionally collapses them rather than minting a role
+  per construct.
+- **The "no frontend library" claim is about the static-HTML render path.**
+  Class mode ships zero highlighting JavaScript for statically rendered HTML. The
+  MDX React-component render path still delegates `pre`/`code` to your
+  `_components` at runtime as before — class mode does not change that path.
 
 ## Supplementary pattern 1 — additional client-side highlighting
 
