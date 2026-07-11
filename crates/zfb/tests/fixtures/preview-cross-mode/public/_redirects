@@ -1,0 +1,16 @@
+# Cross-mode acceptance fixture (issue #1547 / epic #1541 Preview Parity).
+# One rule of each kind `preview_cross_mode_e2e.rs` exercises against BOTH
+# `zfb dev` and `zfb preview` (static).
+
+# Plain redirect.
+/old-page /new-page 301
+
+# 200 rewrite — target is a real rendered page, resolved through the same
+# waterfall a direct request for it would hit (dev: disk/render waterfall;
+# preview: the built dist/ tree).
+/rewrite-me /rewritten/ 200
+
+# Splat rule: multi-segment source capture, `:splat` substitution in the
+# target, first-match-wins ordering (this is NOT the first rule to mention
+# /new-page, proving the engine doesn't get confused by a repeated target).
+/blog/* /new-page?src=:splat 301

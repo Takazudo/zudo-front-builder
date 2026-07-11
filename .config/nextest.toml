@@ -10,22 +10,26 @@
 # doctests. Do not assume a green nextest run covers doctest examples.
 
 # ── Cross-binary serialization of the heavy V8/esbuild e2e binaries ──────────
-# These 16 integration-test binaries (all in package `zfb`) each spawn a real
-# `zfb dev` / `zfb build` process that embeds a V8 host and shells out to
-# esbuild. Booting two at once starves CPU/memory and turns their generous
-# boot-deadline watchdogs flaky. `cargo test` serialized these implicitly by
-# running one binary at a time, but nextest schedules test binaries concurrently
-# by default — so without this group these heavy processes race each other for
-# CPU/memory. The group makes the serialization explicit at the runner level:
-# at most ONE test from this group runs at a time across all 16 binaries.
+# These 17 integration-test binaries (all in package `zfb`) each spawn a real
+# `zfb dev` / `zfb build` / `zfb preview` process that embeds a V8 host and/or
+# shells out to esbuild. Booting two at once starves CPU/memory and turns
+# their generous boot-deadline watchdogs flaky. `cargo test` serialized these
+# implicitly by running one binary at a time, but nextest schedules test
+# binaries concurrently by default — so without this group these heavy
+# processes race each other for CPU/memory. The group makes the serialization
+# explicit at the runner level: at most ONE test from this group runs at a
+# time across all 17 binaries.
 #
 # The set is two sub-groups sharing one test-group:
-#   • 8 flock-adopting binaries (client_bundling_cross_pipeline,
-#     build_terminates, and the dev_*_e2e set) — spawn `zfb dev` and/or
-#     `zfb build`. These ALSO hold #1339's OS advisory flock
-#     (crates/zfb-test-utils/src/cross_binary_lock.rs), so for them the
-#     test-group is defense in depth (runner-level) on top of the flock's
-#     OS-level guarantee.
+#   • 9 flock-adopting binaries (client_bundling_cross_pipeline,
+#     build_terminates, preview_cross_mode_e2e, and the dev_*_e2e set) — spawn
+#     `zfb dev` and/or `zfb build` and/or `zfb preview`. These ALSO hold
+#     #1339's OS advisory flock (crates/zfb-test-utils/src/cross_binary_lock.rs),
+#     so for them the test-group is defense in depth (runner-level) on top of
+#     the flock's OS-level guarantee. `preview_cross_mode_e2e` (issue #1547)
+#     is the newest member: it runs a real `zfb build` THEN spawns both a real
+#     `zfb dev` and a real `zfb preview` (static) against the same build
+#     output, so it needs the same serialization as its dev/build siblings.
 #   • 8 build-command binaries (build_cleans_outdir, build_package_routes,
 #     build_package_routes_consumer, client_router_autoinclude_build,
 #     content_snapshot_no_deferred, css_modules_components_build,
@@ -39,22 +43,23 @@
 #     prevent.
 #
 # Completeness was re-verified by grepping crates/zfb/tests/*.rs for the real
-# `zfb` binary spawn + a `build`/`dev` subcommand (zfb_binary! + .arg("build")/
-# .arg("dev")) plus esbuild/embed_v8 usage. Two binaries that match a pattern
-# but do NOT spawn a heavy `zfb build`/`zfb dev` are deliberately excluded:
-# `check_command` (runs only `zfb check --skip-tsc`; no V8, no esbuild) and
-# `framework_packages_no_pnpm` (calls `zfb_build::bundle` in-process — shells to
-# esbuild but never spawns the `zfb` binary and never boots V8).
+# `zfb` binary spawn + a `build`/`dev`/`preview` subcommand (zfb_binary! +
+# .arg("build")/.arg("dev")/.arg("preview")) plus esbuild/embed_v8 usage. Two
+# binaries that match a pattern but do NOT spawn a heavy `zfb build`/`zfb dev`
+# are deliberately excluded: `check_command` (runs only `zfb check
+# --skip-tsc`; no V8, no esbuild) and `framework_packages_no_pnpm` (calls
+# `zfb_build::bundle` in-process — shells to esbuild but never spawns the
+# `zfb` binary and never boots V8).
 [test-groups.e2e-heavy]
 max-threads = 1
 
-# The override that assigns the 16 heavy binaries to the e2e-heavy group AND
+# The override that assigns the 17 heavy binaries to the e2e-heavy group AND
 # grants them a long per-test timeout lives in the `default` profile so BOTH
 # local (default profile) and CI (`ci` profile, which inherits default's
 # overrides) get identical serialization + timeout treatment. Exact binary
-# matches (`=name`) keep the set explicit; it is a SUPERSET of #1339's 8-binary
-# flock adoption set — the 8 build-command binaries have no flock and rely on
-# this group alone.
+# matches (`=name`) keep the set explicit; it is a SUPERSET of #1339's 9-binary
+# flock adoption set (8 original + `preview_cross_mode_e2e`, issue #1547) — the
+# 8 build-command binaries have no flock and rely on this group alone.
 #
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the same OR:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
@@ -80,14 +85,15 @@ max-threads = 1
 # for consistency with the render_pipeline entry and to stay exact-name-scoped
 # if the file ever grows a second test.
 [[profile.default.overrides]]
-filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=end_to_end_basic_blog_build) | binary(=html_minify_build) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env))'
+filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=end_to_end_basic_blog_build) | binary(=html_minify_build) | binary(=preview_cross_mode_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env))'
 test-group = 'e2e-heavy'
 # The longest LEGITIMATE e2e watchdog is 280s (dev_serve_e2e's lazy scenario
 # and dev_serve_injected_routes_e2e), 300s for the #[ignore]d heavy
-# dev_dep_invalidation_1284_e2e tests. Warn at 120s but do NOT kill until
-# 600s (5 × 120s) so a healthy-but-slow e2e is never reaped — comfortably
-# above the ≥400s headroom the issue asks for, and above the flock's own 360s
-# acquire deadline.
+# dev_dep_invalidation_1284_e2e tests (preview_cross_mode_e2e's own watchdog
+# is 240s — see that file's OVERALL_DEADLINE). Warn at 120s but do NOT kill
+# until 600s (5 × 120s) so a healthy-but-slow e2e is never reaped —
+# comfortably above the ≥400s headroom the issue asks for, and above the
+# flock's own 360s acquire deadline.
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 # ── CI profile: the authoritative T1 gate (health.yml) ───────────────────────

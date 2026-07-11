@@ -136,6 +136,28 @@ public/logo.svg  →  /pj/site/logo.svg   （dev と prod）
 
 dev サーバーの `serve_page` フォールバックも、ビルド時の `copy_public_dir` も、このプレフィックスを尊重します。プロジェクトの他の部分と同じやり方で HTML 内のアセット URL を書いている限り（通常は markdown / TSX パイプラインがすでに実行しているリンクリライターを経由して）、プレフィックスは自動的に適用されます。
 
+## `_redirects` — リダイレクト／リライトルール
+
+`public/_redirects` ファイルを置くと、[Cloudflare Workers Static Assets の `_redirects` フォーマット](https://developers.cloudflare.com/workers/static-assets/redirects/)（文書化されたサブセット — サポート範囲は以下を参照）に従ってリダイレクト／リライトルールを宣言できます。1 行に 1 ルールです。
+
+```text
+# public/_redirects
+/old-page /new-page 301
+/blog/* /articles/:splat
+/api/* /api-handler 200
+```
+
+- `source` には単一の splat（`*`、ターゲット側では `:splat` としてキャプチャされます）と、任意個の `:name` プレースホルダーセグメントを含められます。
+- `status` は省略可能で、デフォルトは **302** です。`301`/`302`/`303`/`307`/`308` はクライアントをリダイレクトし、`200` は **リライト** します — ブラウザの URL を変えずに `target` のコンテンツを配信します（同一サイト向けターゲットのみの軽量なリバースプロキシ）。
+- ルールは **ファイルに書かれた順に** 試され、最初に一致した `source` が勝ちます。`200` のリライトは一度だけ解決されます — そのターゲットがルールセットに対して再度マッチングされることはありません（チェーンなし）。
+- 評価されるのは `GET`/`HEAD` リクエストだけです。これは実際の Workers Static Assets がアセット層（したがって `_redirects`）をこの2つのメソッドに対してしかプローブしない挙動を反映しています。それ以外のメソッドは `_redirects` を完全にバイパスします。
+- リクエストのクエリ文字列はリダイレクトでは保持（付加）されますが、リライトでは破棄されます。リライトではクライアントに見える URL が変わらないためです。
+- 不正な行（不正なステータス、トークンの欠落、外部 URL をターゲットにした `200` ルールなど）は警告付きでスキップされます — 壊れた `_redirects` ファイルが `zfb dev` や `zfb preview` の起動をブロックすることは決してありません。
+
+**どこで動くか:** `zfb dev` は起動時にこれをロードし、`public/_redirects` への編集のたびにライブリロードします（フルリビルドなし）。`zfb preview`（静的モード）は出力ルートから起動時に一度だけロードします — 静的 preview は再ビルドも監視も行わないため、ルールを変更したら新しく `zfb build` してから再起動する必要があります。アダプタモードの preview（`wrangler dev`）と実際にデプロイされた Worker は、zfb のエンジンを経由せず Workers Static Assets を通じて **ネイティブに** `_redirects` を尊重します — そこでは zfb はファイルを一切パースしません。どのモードでも、あるURL に対するプラグインの `devMiddleware`/`previewMiddleware` の登録は、その同じ URL に対する `_redirects` ルールより常に優先されます。静的 preview 固有の `base` プレフィックスに関する注意点は [CLI リファレンス — `zfb preview`](../api/cli.mdx#zfb-preview) を参照してください。
+
+**出力ルートでの成果物:** `zfb build` は `public/_redirects` をそのまま `<outdir>/_redirects` （出力の**ルート** — `copyPublicWithBase` が有効なときでも `base` の下にネストされません。これは Cloudflare のプラットフォームがルートに見つけることを期待する config であり、配信対象のアセットではないためです）へコピーします。通常の `copy_public_dir` パスからは除外されるため、これが素の静的ファイルとして二重に扱われることはなく、`/_redirects` を直接リクエストすると（`zfb dev` でも `zfb preview` でも）常に 404 になります。
+
 ## 設定
 
 このディレクトリは設定可能です。デフォルト以外を指すには `zfb.config.ts` に `publicDir` を追加します。

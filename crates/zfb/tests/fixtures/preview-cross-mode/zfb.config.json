@@ -1,0 +1,4 @@
+{
+  "framework": "preact",
+  "plugins": [{ "name": "./preset.mjs" }]
+}

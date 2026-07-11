@@ -253,8 +253,8 @@ _ => HastNode::Raw(String::new()),
 ## ランタイム / ユーザーランドプラグインについては?
 
 Markdown パイプラインのプラグインローダーは存在しません。すべての visitor はバイナリにコンパイルされます。`zfb.config` の `plugins: []` フィールドは
-**ビルドオーケストレーション**用のプラグインシステム（`setup`、`preBuild`、`postBuild`、`devMiddleware`
-の 4 つのフック）であり、エイリアス登録、仮想モジュール、追加ファイルの出力、開発サーバーのルートを扱います。これは
+**ビルドオーケストレーション**用のプラグインシステム（`setup`、`preBuild`、`postBuild`、`devMiddleware`、`previewMiddleware`
+の 5 つのフック）であり、エイリアス登録、仮想モジュール、追加ファイルの出力、開発サーバー／preview サーバーのルートを扱います。これは
 Markdown のパース＆visitor チェーンには手を出しません。そのチェーンは Rust エンジンの内部で完結して実行されます。
 
 実用的な Markdown パイプライン拡張モデルは、visitor を in-tree

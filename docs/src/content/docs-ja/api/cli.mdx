@@ -132,9 +132,27 @@ zfb build --no-minify-html
 zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 ```
 
+静的モード（アダプタなし、または `adapter: "none"`）では、`zfb preview` は `zfb dev` と同じ2つのリクエスト時レイヤーを、通常の静的ファイル配信より前段で実行します: プラグインの `previewMiddleware` 登録、続いて `public/_redirects`（[Static Assets — `_redirects`](../concepts/static-assets.mdx#_redirects-—-redirect-rewrite-rules) を参照）。同じ URL に対してプラグインが `_redirects` のルールより常に優先されます。
+
+`_redirects` のマッチャーに到達するのは `GET`/`HEAD` リクエストのみです — これは実際の Workers Static Assets がアセット層（したがって `_redirects`）をこの2つのメソッドに対してしかプローブしない挙動を反映しています。それ以外のメソッドはプラグインハンドラ（すべてのメソッドを受け付けます）に到達するか、405 になります。`GET /old-page` に対して発火するはずのルールが `POST /old-page` では決して発火しません。
+
+<Note title="_redirects とカスタム `base`">
+
+静的 preview は選択された出力ディレクトリの下に `zfb build` が出力したものをそのまま配信し、プロジェクトの `base` プレフィックスについては関知しません — preview 自身にはプレフィックスを取り除くレイヤーがありません。そのため `_redirects` のルールの *source* は、ファイルに書かれたとおり **リクエストパス全体** に対してマッチングされます — `base` プレフィックスを付加したり取り除いたりする書き換えは一切行われません。`zfb.config.ts` で `base: "/pj/site/"` を設定している場合、`/pj/site/old-page` をリダイレクトしたいルールはプレフィックスを含めて書く必要があります（`/pj/site/old-page /pj/site/new-page 301`）。`/old-page /new-page 301` のようには書けません。
+
+これは静的 preview に固有の話です。`zfb dev` のルーターは `base` の **下に** マウントされる（issue #229）ため、プレフィックスを **取り除いた** パスに対して `_redirects` の source をマッチングします — 同じルールを dev で発火させるにはプレフィックスなしで書く必要があります（`/old-page /new-page 301`）。今日の時点で `base` と `_redirects` を組み合わせるプロジェクトはモードごとに異なるルール source を用意する必要があります。これは意図的な設計ではなく、既知のギャップです。
+
+</Note>
+
 `zfb.config.json` の `adapter` フィールドがサポート対象のアダプタ（例: `@takazudo/zfb-adapter-cloudflare`）を指定している場合、`zfb preview` は zfb 自身の静的サーバーではなく `wrangler dev` に処理を引き渡します。この場合、`--outdir` または config の `outDir` から選ばれた出力ディレクトリは、存在するかを事前確認するだけになります。実際に何を配信するかは wrangler 自身の設定が制御するためです。[SSR と Cloudflare バインディング](../guides/ssr-and-cloudflare-bindings.mdx) を参照してください。
 
 アダプタの preview は、処理を引き渡す前に `pnpm exec wrangler --version` の事前チェックを実行します。その pin を更新している間の一時的な escape hatch としてのみ、`ZFB_SKIP_WRANGLER_VERSION_CHECK=1` を設定してください。
+
+<Caution title="アダプタモード: zfb は何も配信しない">
+
+アダプタモードでは `wrangler dev` がサイト全体を配信します — zfb は自身のルーターを一切起動せず、`previewMiddleware` の有無を確認するためのプラグインホストも起動しません。`_redirects` はそこでも機能しますが、それは zfb の `_redirects` エンジンではなく `wrangler`/Workers Static Assets がネイティブにファイルを尊重しているだけです。`previewMiddleware` の登録には wrangler 側に対応する仕組みがなく、アダプタモードの preview では単に実行されません — プロジェクトにプラグインが設定されている場合、`zfb preview` は処理を引き渡す前にその旨を一度だけ警告として出力します。
+
+</Caution>
 
 ### フラグ
 
