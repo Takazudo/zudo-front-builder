@@ -24,7 +24,7 @@
 #     tagged tests from #1337's manifest table under
 #     `cargo nextest run --run-ignored ignored-only`, scoped via an exact-name
 #     filterset (`-E`) so any pending-feature-tagged #[ignore]d tests would be
-#     excluded. As of #1363's reconciliation, none remain: the former #1354
+#     excluded. As of #1504's reconciliation, none remain: the former #1354
 #     pending-feature tests were either activated (un-ignored) or, for the
 #     render_pipeline case, retagged `heavy` and folded into this filterset —
 #     see CLAUDE.md's manifest table. Every test name below was verified
@@ -33,10 +33,10 @@
 #     exact-match filterset alone is sufficient scoping — no `-p`/package
 #     qualifier is needed for correctness. `test(=NAME)` matches nextest's
 #     FULL qualified test name (module path included), not just the bare fn
-#     name — the 15 top-level integration-test functions need no prefix, but
-#     `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project`
-#     lives inside `#[cfg(test)] mod tests` in crates/zfb/src/commands/build.rs
-#     (filtered as `commands::build::tests::<name>`) and
+#     name — the 23 top-level integration-test functions need no prefix, but
+#     three command-layer functions live inside `#[cfg(test)] mod tests` in
+#     crates/zfb/src/commands/build.rs (filtered as
+#     `commands::build::tests::<name>`) and
 #     `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` likewise
 #     lives inside `#[cfg(test)] mod tests` in crates/zfb/src/render_pipeline.rs
 #     (filtered as `render_pipeline::tests::<name>`); verify with
@@ -182,9 +182,9 @@ jobs:
           "$ESBUILD_SLOT" --version
           "$TAILWIND_SLOT" --version
 
-      # The #1337 manifest, env-gate + heavy tags only (17 tests — see
+      # The reconciled manifest, env-gate + heavy tags only (27 tests — see
       # CLAUDE.md's "`#[ignore]` manifest (Rust)" table for the authoritative
-      # list). No pending-feature-tagged tests exist as of #1363's
+      # list). No pending-feature-tagged tests exist as of #1504's
       # reconciliation, so there is nothing left to deliberately exclude here
       # — a future pending-feature #[ignore] would still be left out of this
       # filterset (it would just fail every run with no new information)
@@ -216,12 +216,22 @@ jobs:
               | test(=splitting_emits_chunk_for_dynamic_import)
               | test(=no_dynamic_import_yields_single_file)
               | test(=client_script_real_esbuild_bundles_discovered_entry)
+              | test(=client_script_shadow_jobs_resolve_project_tsconfig_aliases)
+              | test(=islands_shadow_raw_import_bundles_text)
+              | test(=client_script_raw_import_bundles_text)
+              | test(=island_module_worker_emits_contract_companion_and_dev_layout)
+              | test(=module_worker_define_only_change_updates_query_and_emitted_bytes)
+              | test(=module_worker_package_config_switch_updates_query_and_emitted_bytes)
+              | test(=module_worker_plugin_inputs_update_query_closure_and_emitted_bytes)
               | test(=island_css_import_bundles_without_error)
               | test(=island_module_css_import_bundles_without_error)
               | test(=islands_shadow_expands_glob_and_executes)
               | test(=islands_shadow_preserve_symlinks_is_load_bearing)
+              | test(=real_binary_build_and_dev_cover_client_bundling_contract)
               | test(=subprocess_engine_against_real_binary)
               | test(=prod_asset_graph_with_real_tailwind_binary_against_fixture)
+              | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild)
+              | test(=commands::build::tests::plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild)
               | test(=commands::build::tests::default_runner_emit_prod_assets_returns_non_empty_css_for_real_project)
               | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths)
               | test(=version_stamp_from_env)

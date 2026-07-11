@@ -3,18 +3,21 @@
 //!
 //! ## Why this exists
 //!
-//! `cargo test --workspace` runs each integration-test *binary* to
-//! completion before starting the next one. That default sequential
-//! binary scheduling is the ONLY thing today that keeps the 5+
-//! V8+esbuild-booting e2e binaries (`dev_serve_e2e`,
+//! Plain `cargo test --workspace` normally runs each integration-test
+//! *binary* to completion before starting the next one. Before issue #1339,
+//! that incidental sequential scheduling was the only thing keeping the 8
+//! V8+esbuild-booting flock adopters (`dev_serve_e2e`,
 //! `dev_bind_before_walk_e2e`, `dev_build_static_parity`,
 //! `dev_serve_injected_routes_e2e`, `dev_public_large_tree_smoke_e2e`,
-//! `dev_dep_invalidation_1284_e2e`, `build_terminates`) from booting
-//! concurrently. A parallel test runner (`cargo nextest`, planned in a
-//! future sub-task) schedules test *binaries* concurrently by default —
-//! several real `zfb dev`/`zfb build` processes (each embedding a V8 host
-//! and shelling out to esbuild) booting at once would starve each other's
-//! CPU/memory and turn generous boot-deadline watchdogs flaky.
+//! `dev_dep_invalidation_1284_e2e`, `build_terminates`,
+//! `client_bundling_cross_pipeline`) from booting
+//! concurrently. CI now uses `cargo nextest`, which schedules test *binaries*
+//! concurrently by default. Several real `zfb dev`/`zfb build` processes
+//! (each embedding a V8 host and shelling out to esbuild) booting at once would
+//! starve each other's CPU/memory and turn generous boot-deadline watchdogs
+//! flaky. The nextest
+//! `e2e-heavy` group is runner-level defense in depth; this advisory lock is
+//! the process-level guarantee that remains effective under any test runner.
 //!
 //! This module makes that serialization an explicit, real mechanism
 //! instead of an implicit side effect of `cargo test`'s binary
@@ -159,7 +162,8 @@ impl CrossBinaryE2eLock {
                              acquire {} — another heavy e2e test binary (dev_serve_e2e, \
                              dev_bind_before_walk_e2e, dev_build_static_parity, \
                              dev_serve_injected_routes_e2e, dev_public_large_tree_smoke_e2e, \
-                             dev_dep_invalidation_1284_e2e, or build_terminates) is very likely \
+                             dev_dep_invalidation_1284_e2e, build_terminates, or \
+                             client_bundling_cross_pipeline) is very likely \
                              still holding it. Check for a wedged `zfb dev` / `zfb build` \
                              process (or a hung/killed prior test run that left a V8 host or \
                              esbuild child alive) with `ps aux | grep zfb` and kill it, or — if \
