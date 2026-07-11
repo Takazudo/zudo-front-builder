@@ -5099,6 +5099,8 @@ fn rebase_tsconfig_paths_to_shadow(
     )
 }
 
+const SSR_RESOLVE_EXTENSIONS: [&str; 6] = ["tsx", "ts", "jsx", "js", "css", "json"];
+
 fn resolve_package_entry_candidate(package_dir: &Path, value: &str) -> Option<PathBuf> {
     if value.contains('*') {
         return None;
@@ -5108,37 +5110,56 @@ fn resolve_package_entry_candidate(package_dir: &Path, value: &str) -> Option<Pa
     if !candidate.starts_with(package_dir) {
         return None;
     }
-    probe_graph_candidate(&candidate, false)
+    probe_ssr_candidate(&candidate)
 }
 
-fn collect_root_export_targets<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
-    match value {
-        serde_json::Value::String(target) => out.push(target),
-        serde_json::Value::Array(targets) => {
-            for target in targets {
-                collect_root_export_targets(target, out);
-            }
-        }
-        serde_json::Value::Object(conditions) => {
-            if let Some(root) = conditions.get(".") {
-                collect_root_export_targets(root, out);
-            } else if !conditions.keys().any(|key| key.starts_with('.')) {
-                // Root conditional exports. All string branches are plausible
-                // because esbuild's active condition set depends on framework
-                // and import kind; bounding to referenced strings avoids
-                // treating unrelated package descendants as entrypoints.
-                for target in conditions.values() {
-                    collect_root_export_targets(target, out);
-                }
-            }
-        }
-        _ => {}
-    }
+/// Probe using esbuild 0.25.12's default neutral-platform resolve order.
+/// This is intentionally narrower than the module-graph worker's resolver:
+/// exact tsconfig directory substitutions do not consider mjs/cjs/mts/cts,
+/// and CSS precedes JSON.
+fn probe_ssr_candidate(candidate: &Path) -> Option<PathBuf> {
+    candidate
+        .is_file()
+        .then(|| candidate.to_path_buf())
+        .or_else(|| {
+            SSR_RESOLVE_EXTENSIONS
+                .into_iter()
+                .map(|extension| {
+                    let mut path = candidate.to_path_buf();
+                    let name = format!(
+                        "{}.{}",
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or(""),
+                        extension
+                    );
+                    path.set_file_name(name);
+                    path
+                })
+                .find(|path| path.is_file())
+        })
+        .or_else(|| {
+            candidate.is_dir().then(|| {
+                SSR_RESOLVE_EXTENSIONS
+                    .into_iter()
+                    .map(|extension| candidate.join(format!("index.{extension}")))
+                    .find(|path| path.is_file())
+            })?
+        })
 }
 
-/// Check only entrypoints an exact directory alias can plausibly resolve:
-/// directory `index.*`, root `exports`, and the effective SSR main fields.
-/// Unrelated excluded descendants do not disable the historical fallback.
+fn probe_ssr_directory_index(candidate: &Path) -> Option<PathBuf> {
+    candidate.is_dir().then(|| {
+        SSR_RESOLVE_EXTENSIONS
+            .into_iter()
+            .map(|extension| candidate.join(format!("index.{extension}")))
+            .find(|path| path.is_file())
+    })?
+}
+
+/// Check only package entrypoints an exact directory alias can resolve through
+/// the effective SSR main fields. esbuild 0.25.12 does not consult `exports`
+/// for an absolute directory produced by a tsconfig `paths` substitution.
 fn package_directory_entry_exclusion(
     target: &Path,
     project_root: &Path,
@@ -5156,26 +5177,6 @@ fn package_directory_entry_exclusion(
     let Ok(package): Result<serde_json::Value, _> = serde_json::from_slice(&bytes) else {
         return None;
     };
-
-    if let Some(exports) = package.get("exports") {
-        let mut targets = Vec::new();
-        collect_root_export_targets(exports, &mut targets);
-        let resolved = targets
-            .into_iter()
-            .filter_map(|entry| resolve_package_entry_candidate(target, entry))
-            .collect::<Vec<_>>();
-        if !resolved.is_empty() {
-            // Conditional root exports are all plausible under esbuild's
-            // framework/import-dependent conditions. Any excluded candidate
-            // blocks conservatively, but an allowed package entry takes
-            // precedence over unrelated directory index files below.
-            return Some(
-                resolved
-                    .iter()
-                    .any(|entry| bundle_exclude.is_excluded(entry, project_root)),
-            );
-        }
-    }
 
     for field in effective_main_fields {
         let Some(entry) = package.get(*field).and_then(serde_json::Value::as_str) else {
@@ -5206,8 +5207,14 @@ fn concrete_tsconfig_target_is_excluded(
     ) {
         return excluded;
     }
-    probe_graph_candidate(target, false)
-        .is_some_and(|resolved| bundle_exclude.is_excluded(&resolved, project_root))
+    let resolved = if target.is_dir() {
+        probe_ssr_directory_index(target)
+    } else {
+        // Preserve the module graph's TypeScript source swaps and broader
+        // extension probing for direct file/extensionless path targets.
+        probe_graph_candidate(target, false)
+    };
+    resolved.is_some_and(|path| bundle_exclude.is_excluded(&path, project_root))
 }
 
 /// Returns true when a wildcard target's static prefix can encompass one of
@@ -6655,7 +6662,7 @@ mod tests {
         fs::create_dir_all(root.join("allowed-package/test")).unwrap();
         fs::write(
             root.join("allowed-package/package.json"),
-            r#"{"main":"./dist/entry.js"}"#,
+            r#"{"exports":{".":{"node":"./test/excluded.js"}},"main":"./dist/entry.js"}"#,
         )
         .unwrap();
         fs::write(
@@ -6673,6 +6680,29 @@ mod tests {
             "export default 'unrelated';\n",
         )
         .unwrap();
+        fs::create_dir_all(root.join("css-first-dir")).unwrap();
+        fs::write(root.join("css-first-dir/index.css"), ".allowed {}\n").unwrap();
+        fs::write(
+            root.join("css-first-dir/index.json"),
+            r#"{"excluded":"json"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("css-first-dir/index.mjs"),
+            "export default 'excluded-mjs';\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("json-before-mjs-dir")).unwrap();
+        fs::write(
+            root.join("json-before-mjs-dir/index.json"),
+            r#"{"allowed":"json"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("json-before-mjs-dir/index.mjs"),
+            "export default 'excluded-mjs';\n",
+        )
+        .unwrap();
 
         let shadow = tempfile::tempdir().unwrap();
         let blocked = shadow.path().join("guard/unresolvable");
@@ -6682,6 +6712,9 @@ mod tests {
             "package-dir/dist/entry.js".to_string(),
             "allowed-package/test/excluded.js".to_string(),
             "allowed-package/index.json".to_string(),
+            "css-first-dir/index.json".to_string(),
+            "css-first-dir/index.mjs".to_string(),
+            "json-before-mjs-dir/index.mjs".to_string(),
         ])
         .unwrap();
         let excluded_files = BTreeSet::from([root.join("src/secret.ts")]);
@@ -6718,6 +6751,17 @@ mod tests {
         paths.insert(
             "allowed-package".to_string(),
             vec![root.join("allowed-package").to_string_lossy().into_owned()],
+        );
+        paths.insert(
+            "css-first-directory".to_string(),
+            vec![root.join("css-first-dir").to_string_lossy().into_owned()],
+        );
+        paths.insert(
+            "json-before-mjs-directory".to_string(),
+            vec![root
+                .join("json-before-mjs-dir")
+                .to_string_lossy()
+                .into_owned()],
         );
 
         let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
@@ -6769,7 +6813,33 @@ mod tests {
                     .into_owned(),
                 root.join("allowed-package").to_string_lossy().into_owned(),
             ],
-            "an allowed package entry keeps fallback despite an unrelated excluded descendant"
+            "an allowed main entry keeps fallback despite an excluded inactive export and index"
+        );
+        assert_eq!(
+            out["css-first-directory"],
+            vec![
+                shadow
+                    .path()
+                    .join("css-first-dir")
+                    .to_string_lossy()
+                    .into_owned(),
+                root.join("css-first-dir").to_string_lossy().into_owned(),
+            ],
+            "esbuild selects allowed index.css before excluded JSON and ignores index.mjs"
+        );
+        assert_eq!(
+            out["json-before-mjs-directory"],
+            vec![
+                shadow
+                    .path()
+                    .join("json-before-mjs-dir")
+                    .to_string_lossy()
+                    .into_owned(),
+                root.join("json-before-mjs-dir")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+            "esbuild selects allowed index.json instead of the unsupported index.mjs"
         );
     }
 
