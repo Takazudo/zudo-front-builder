@@ -450,6 +450,11 @@ fn resolve_tsconfig_graph_alias(
     Ok(Some(None))
 }
 
+fn resolve_tsconfig_base_url(paths: Option<&TsConfigPaths>, specifier: &str) -> Option<PathBuf> {
+    let base_url = paths?.base_url.as_ref()?;
+    probe_graph_candidate(&normalize_path_lexical(&base_url.join(specifier)), false)
+}
+
 fn bare_package_name(specifier: &str) -> Option<PathBuf> {
     let mut parts = specifier.split('/');
     let first = parts.next()?;
@@ -483,6 +488,22 @@ struct ProjectGraphResolver {
     tsconfig_paths: Option<TsConfigPaths>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GraphSpecifierKind {
+    JavaScript,
+    CssImport,
+    CssUrl,
+}
+
+fn has_css_url_scheme(specifier: &str) -> bool {
+    let Some((scheme, _)) = specifier.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|ch| ch.is_ascii_alphabetic())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+}
+
 impl ProjectGraphResolver {
     fn new(project_root: &Path) -> Self {
         Self {
@@ -495,7 +516,7 @@ impl ProjectGraphResolver {
         &self,
         importer: &Path,
         specifier: &str,
-        css_import: bool,
+        kind: GraphSpecifierKind,
     ) -> Result<Option<PathBuf>> {
         if specifier.starts_with("http://")
             || specifier.starts_with("https://")
@@ -504,7 +525,17 @@ impl ProjectGraphResolver {
         {
             return Ok(None);
         }
-        if specifier.find('#').is_some_and(|fragment| fragment != 0) {
+        if kind != GraphSpecifierKind::JavaScript && has_css_url_scheme(specifier) {
+            return Ok(None);
+        }
+        if kind != GraphSpecifierKind::JavaScript
+            && (specifier.starts_with('/') || specifier.starts_with('#'))
+        {
+            return Ok(None);
+        }
+        if kind == GraphSpecifierKind::JavaScript
+            && specifier.find('#').is_some_and(|fragment| fragment != 0)
+        {
             bail!(
                 "zfb bundler: unsupported fragment-bearing import {specifier:?} in module-worker graph at {}",
                 importer.display()
@@ -512,26 +543,42 @@ impl ProjectGraphResolver {
         }
         let importer_dir = importer.parent().unwrap_or_else(|| Path::new("."));
         let mut raw = false;
-        let path_specifier = match specifier.split_once('?') {
-            None => specifier,
-            Some((path, "raw")) if !path.contains('?') => {
-                raw = true;
-                path
+        let path_specifier = if kind == GraphSpecifierKind::JavaScript {
+            match specifier.split_once('?') {
+                None => specifier,
+                Some((path, "raw")) if !path.contains('?') => {
+                    raw = true;
+                    path
+                }
+                Some(_) => {
+                    bail!(
+                        "zfb bundler: unsupported query-bearing import {specifier:?} in module-worker graph at {}",
+                        importer.display()
+                    )
+                }
             }
-            Some(_) => {
+        } else {
+            let suffix = specifier
+                .char_indices()
+                .find_map(|(index, ch)| matches!(ch, '?' | '#').then_some(index))
+                .unwrap_or(specifier.len());
+            let path = &specifier[..suffix];
+            if path.is_empty() {
                 bail!(
-                "zfb bundler: unsupported query-bearing import {specifier:?} in module-worker graph at {}",
-                importer.display()
-            )
+                    "zfb bundler: CSS reference {specifier:?} in module-worker graph at {} has no local file path",
+                    importer.display()
+                )
             }
+            path
         };
-        let css_plain_relative = css_import
+        let css_plain_relative = kind == GraphSpecifierKind::CssImport
             && !path_specifier.starts_with('@')
             && !path_specifier.contains('/')
             && Path::new(path_specifier).extension().is_some();
         let is_relative = path_specifier.starts_with("./")
             || path_specifier.starts_with("../")
-            || css_plain_relative;
+            || css_plain_relative
+            || kind == GraphSpecifierKind::CssUrl;
         let found = if is_relative {
             let candidate = normalize_path_lexical(&importer_dir.join(path_specifier));
             probe_graph_candidate(&candidate, raw).ok_or_else(|| {
@@ -548,29 +595,28 @@ impl ProjectGraphResolver {
                     importer.display()
                 );
             }
-            match resolve_tsconfig_graph_alias(self.tsconfig_paths.as_ref(), path_specifier)? {
-                Some(Some(found)) => found,
-                Some(None) => {
-                    bail!(
-                        "zfb bundler: tsconfig path alias {specifier:?} imported by {} matched a first-party mapping but no target resolved; refusing to produce a stale worker cache key",
-                        importer.display()
-                    )
-                }
-                None if path_specifier.starts_with("node:")
-                    || installed_package_exists(
-                        importer_dir,
-                        &self.project_root,
-                        path_specifier,
-                    ) =>
-                {
-                    return Ok(None);
-                }
-                None => {
-                    bail!(
-                        "zfb bundler: non-relative dependency {specifier:?} imported by {} is neither a resolvable project tsconfig alias nor an installed package; refusing to omit it from the worker cache key",
-                        importer.display()
-                    )
-                }
+            let alias_resolution =
+                resolve_tsconfig_graph_alias(self.tsconfig_paths.as_ref(), path_specifier)?;
+            if let Some(Some(found)) = alias_resolution.as_ref() {
+                found.clone()
+            } else if alias_resolution.is_some() {
+                bail!(
+                    "zfb bundler: tsconfig path alias {specifier:?} imported by {} matched a first-party mapping but no target resolved; refusing to produce a stale worker cache key",
+                    importer.display()
+                )
+            } else if let Some(found) =
+                resolve_tsconfig_base_url(self.tsconfig_paths.as_ref(), path_specifier)
+            {
+                found
+            } else if path_specifier.starts_with("node:")
+                || installed_package_exists(importer_dir, &self.project_root, path_specifier)
+            {
+                return Ok(None);
+            } else {
+                bail!(
+                    "zfb bundler: non-relative dependency {specifier:?} imported by {} is neither a resolvable project tsconfig alias/baseUrl file nor an installed package; refusing to omit it from the worker cache key",
+                    importer.display()
+                )
             }
         };
         let resolves_under_node_modules = is_inside_node_modules(&found)
@@ -588,77 +634,152 @@ impl ProjectGraphResolver {
     }
 }
 
-fn collect_css_import_specifiers(css: &str, path: &Path) -> Result<Vec<String>> {
-    let without_comments = strip_css_block_comments(css);
-    let bytes = without_comments.as_bytes();
-    let mut specifiers = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] != b'@' || !ascii_ci_starts_with(bytes, index, b"@import") {
-            index += 1;
-            continue;
-        }
-        let mut cursor = index + "@import".len();
-        let keyword_boundary = bytes.get(cursor).is_none_or(|byte| {
-            byte.is_ascii_whitespace() || matches!(*byte, b'\'' | b'"' | b'u' | b'U')
-        });
-        if !keyword_boundary {
-            index += 1;
-            continue;
-        }
-        while bytes
-            .get(cursor)
-            .is_some_and(|byte| byte.is_ascii_whitespace())
-        {
-            cursor += 1;
-        }
-        if ascii_ci_starts_with(bytes, cursor, b"url(") {
-            cursor += "url(".len();
-            while bytes
-                .get(cursor)
-                .is_some_and(|byte| byte.is_ascii_whitespace())
-            {
-                cursor += 1;
-            }
-        }
-        let Some((specifier, next)) = read_css_import_target(&without_comments, cursor) else {
-            bail!(
-                "zfb bundler: unsupported CSS @import syntax in module-worker dependency {}; refusing to omit a possibly bundled edge from the cache key",
-                path.display()
-            );
-        };
-        if specifier.is_empty() {
-            bail!(
-                "zfb bundler: empty CSS @import in module-worker dependency {}",
-                path.display()
-            );
-        }
-        specifiers.push(specifier);
-        index = next;
-    }
-    Ok(specifiers)
+#[derive(Default)]
+struct CssReferences {
+    imports: Vec<String>,
+    urls: Vec<String>,
 }
 
-fn read_css_import_target(css: &str, start: usize) -> Option<(String, usize)> {
+fn collect_css_references(css: &str, path: &Path) -> Result<CssReferences> {
+    let without_comments = strip_css_block_comments(css);
+    let bytes = without_comments.as_bytes();
+    let mut references = CssReferences::default();
+    let mut index = 0;
+    while index < bytes.len() {
+        if matches!(bytes[index], b'\'' | b'"') {
+            index = skip_css_string(&without_comments, index).ok_or_else(|| {
+                anyhow!(
+                    "zfb bundler: unterminated CSS string in module-worker dependency {}",
+                    path.display()
+                )
+            })?;
+            continue;
+        }
+        if bytes[index] == b'@' && ascii_ci_starts_with(bytes, index, b"@import") {
+            let mut cursor = index + "@import".len();
+            let keyword_boundary = bytes.get(cursor).is_none_or(|byte| {
+                byte.is_ascii_whitespace() || matches!(*byte, b'\'' | b'"' | b'u' | b'U')
+            });
+            if !keyword_boundary {
+                index += 1;
+                continue;
+            }
+            skip_css_whitespace(bytes, &mut cursor);
+            let (specifier, next) = if let Some(target_start) = css_url_target_start(bytes, cursor)
+            {
+                read_css_url_target(&without_comments, target_start).ok_or_else(|| {
+                    anyhow!(
+                        "zfb bundler: unsupported CSS @import url(...) syntax in module-worker dependency {}; refusing to omit a possibly bundled edge from the cache key",
+                        path.display()
+                    )
+                })?
+            } else {
+                read_css_target(&without_comments, cursor, true).ok_or_else(|| {
+                    anyhow!(
+                        "zfb bundler: unsupported CSS @import syntax in module-worker dependency {}; refusing to omit a possibly bundled edge from the cache key",
+                        path.display()
+                    )
+                })?
+            };
+            if specifier.is_empty() {
+                bail!(
+                    "zfb bundler: empty CSS @import in module-worker dependency {}",
+                    path.display()
+                );
+            }
+            references.imports.push(specifier);
+            index = next;
+            continue;
+        }
+
+        let url_boundary = index == 0
+            || !matches!(bytes[index - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-');
+        if url_boundary {
+            if let Some(target_start) = css_url_target_start(bytes, index) {
+                let (specifier, next) =
+                    read_css_url_target(&without_comments, target_start).ok_or_else(|| {
+                        anyhow!(
+                            "zfb bundler: unsupported CSS url(...) syntax in module-worker dependency {}; unresolved local loader inputs cannot be omitted from the cache key",
+                            path.display()
+                        )
+                    })?;
+                if specifier.is_empty() {
+                    bail!(
+                        "zfb bundler: empty CSS url(...) in module-worker dependency {}",
+                        path.display()
+                    );
+                }
+                references.urls.push(specifier);
+                index = next;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    Ok(references)
+}
+
+fn skip_css_whitespace(bytes: &[u8], cursor: &mut usize) {
+    while bytes
+        .get(*cursor)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        *cursor += 1;
+    }
+}
+
+fn css_url_target_start(bytes: &[u8], start: usize) -> Option<usize> {
+    if !ascii_ci_starts_with(bytes, start, b"url") {
+        return None;
+    }
+    let mut cursor = start + 3;
+    skip_css_whitespace(bytes, &mut cursor);
+    if bytes.get(cursor) != Some(&b'(') {
+        return None;
+    }
+    cursor += 1;
+    skip_css_whitespace(bytes, &mut cursor);
+    Some(cursor)
+}
+
+fn read_css_url_target(css: &str, start: usize) -> Option<(String, usize)> {
+    let (specifier, mut next) = read_css_target(css, start, false)?;
+    let bytes = css.as_bytes();
+    skip_css_whitespace(bytes, &mut next);
+    if bytes.get(next) != Some(&b')') {
+        return None;
+    }
+    Some((specifier, next + 1))
+}
+
+fn skip_css_string(css: &str, start: usize) -> Option<usize> {
+    let bytes = css.as_bytes();
+    let quote = *bytes.get(start)?;
+    let mut end = start + 1;
+    while end < bytes.len() {
+        if bytes[end] == b'\\' {
+            end = end.saturating_add(2);
+            continue;
+        }
+        if bytes[end] == quote {
+            return Some(end + 1);
+        }
+        end += 1;
+    }
+    None
+}
+
+fn read_css_target(css: &str, start: usize, stop_at_semicolon: bool) -> Option<(String, usize)> {
     let bytes = css.as_bytes();
     let quote = *bytes.get(start)?;
     if matches!(quote, b'\'' | b'"') {
-        let mut end = start + 1;
-        while end < bytes.len() && bytes[end] != quote {
-            if bytes[end] == b'\\' {
-                end = end.saturating_add(1);
-            }
-            end += 1;
-        }
-        if end >= bytes.len() {
-            return None;
-        }
+        let end = skip_css_string(css, start)? - 1;
         return Some((css[start + 1..end].to_string(), end + 1));
     }
     let mut end = start;
     while end < bytes.len()
         && bytes[end] != b')'
-        && bytes[end] != b';'
+        && (!stop_at_semicolon || bytes[end] != b';')
         && !bytes[end].is_ascii_whitespace()
     {
         end += 1;
@@ -715,6 +836,13 @@ fn collect_import_specifiers(module: &Module, unresolved_ctxt: SyntaxContext) ->
             }
             ModuleDecl::ExportAll(export) if !export.type_only => {
                 specifiers.push(atom_to_string(&export.src.value));
+            }
+            ModuleDecl::TsImportEquals(import_equals) if !import_equals.is_type_only => {
+                if let swc_core::ecma::ast::TsModuleRef::TsExternalModuleRef(module_ref) =
+                    &import_equals.module_ref
+                {
+                    specifiers.push(atom_to_string(&module_ref.expr.value));
+                }
             }
             _ => {}
         }
@@ -784,8 +912,20 @@ fn inspect_worker_graph(entry: &Path, project_root: &Path) -> Result<WorkerGraph
             )
         })?;
         if is_css_like(&current) {
-            for specifier in collect_css_import_specifiers(&source, &current)? {
-                if let Some(dependency) = resolver.resolve(&current, &specifier, true)? {
+            let references = collect_css_references(&source, &current)?;
+            for specifier in references.imports {
+                if let Some(dependency) =
+                    resolver.resolve(&current, &specifier, GraphSpecifierKind::CssImport)?
+                {
+                    if !visited.contains(&dependency) {
+                        stack.push(dependency);
+                    }
+                }
+            }
+            for specifier in references.urls {
+                if let Some(dependency) =
+                    resolver.resolve(&current, &specifier, GraphSpecifierKind::CssUrl)?
+                {
                     if !visited.contains(&dependency) {
                         stack.push(dependency);
                     }
@@ -812,7 +952,9 @@ fn inspect_worker_graph(entry: &Path, project_root: &Path) -> Result<WorkerGraph
             }
         }
         for specifier in collect_import_specifiers(&module, unresolved_ctxt) {
-            if let Some(dependency) = resolver.resolve(&current, &specifier, false)? {
+            if let Some(dependency) =
+                resolver.resolve(&current, &specifier, GraphSpecifierKind::JavaScript)?
+            {
                 if !visited.contains(&dependency) {
                     stack.push(dependency);
                 }
@@ -1022,6 +1164,7 @@ mod tests {
         let required = project.path().join("src/required.ts");
         let css = project.path().join("src/styles.css");
         let tokens = project.path().join("src/tokens.css");
+        let icon = project.path().join("src/assets/icon.bin");
         let raw = project.path().join("src/payload.txt");
         write(&importer, "placeholder");
         write(
@@ -1034,13 +1177,18 @@ mod tests {
         );
         write(&alias, "export const value = 'alias-a';");
         write(&required, "module.exports = 'required-a';");
-        write(&css, "@import './tokens.css';\n.worker { color: red; }");
+        write(
+            &css,
+            "@import './tokens.css';\n.worker { background: url(  \"./assets/icon.bin?theme=dark#mask\"  ); mask: url(data:image/png;base64,AAAA); cursor: url(https://example.com/cursor.png); filter: url(blob:https://example.com/filter); }",
+        );
         write(&tokens, ":root { --worker: a; }");
+        std::fs::create_dir_all(icon.parent().unwrap()).unwrap();
+        std::fs::write(&icon, [0_u8, 1, 2, 255]).unwrap();
         write(&raw, "raw-a");
         let source = "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });";
 
         let first = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
-        for expected in [&alias, &required, &css, &tokens, &raw] {
+        for expected in [&alias, &required, &css, &tokens, &icon, &raw] {
             assert!(
                 first
                     .dependencies
@@ -1065,9 +1213,52 @@ mod tests {
         write(&tokens, ":root { --worker: b; }");
         let css_changed = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
         assert_ne!(require_changed.expanded_source, css_changed.expanded_source);
+        std::fs::write(&icon, [0_u8, 1, 3, 255]).unwrap();
+        let url_asset_changed =
+            rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        assert_ne!(
+            css_changed.expanded_source,
+            url_asset_changed.expanded_source
+        );
         write(&raw, "raw-b");
         let raw_changed = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
-        assert_ne!(css_changed.expanded_source, raw_changed.expanded_source);
+        assert_ne!(
+            url_asset_changed.expanded_source,
+            raw_changed.expanded_source
+        );
+    }
+
+    #[test]
+    fn base_url_import_equals_precedes_same_named_installed_package() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.ts");
+        let worker = project.path().join("src/worker.ts");
+        let local = project.path().join("src/shared.ts");
+        let installed = project.path().join("node_modules/shared/index.js");
+        write(&importer, "placeholder");
+        write(
+            &project.path().join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":"./src"}}"#,
+        );
+        write(
+            &worker,
+            "import shared = require('shared'); self.postMessage(shared);",
+        );
+        write(&local, "export = 'local-a';");
+        write(&installed, "module.exports = 'installed';");
+        let source = "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });";
+
+        let first = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        assert!(first
+            .dependencies
+            .iter()
+            .any(|edge| edge.dependency == local));
+        assert!(!first.dependencies.iter().any(|edge| edge
+            .dependency
+            .starts_with(project.path().join("node_modules"))));
+        write(&local, "export = 'local-b';");
+        let changed = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        assert_ne!(first.expanded_source, changed.expanded_source);
     }
 
     #[test]
@@ -1086,6 +1277,29 @@ mod tests {
         .to_string();
         assert!(error.contains("cannot be resolved"), "{error}");
         assert!(error.contains("missing"), "{error}");
+    }
+
+    #[test]
+    fn unresolved_local_css_url_fails_instead_of_hashing_partial_graph() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.ts");
+        let worker = project.path().join("src/worker.ts");
+        let css = project.path().join("src/worker.css");
+        write(&importer, "placeholder");
+        write(&worker, "import './worker.css';");
+        write(
+            &css,
+            ".worker { background: url( './missing.bin?v=1#asset' ); }",
+        );
+        let error = rewrite_module_worker_urls(
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            &importer,
+            project.path(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("missing.bin"), "{error}");
+        assert!(error.contains("cannot be resolved"), "{error}");
     }
 
     #[test]

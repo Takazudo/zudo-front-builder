@@ -950,6 +950,21 @@ impl FsResolver {
         None
     }
 
+    /// Resolve an unmatched bare specifier against an explicit/inherited
+    /// `compilerOptions.baseUrl`. This runs before `node_modules` lookup, as
+    /// TypeScript and esbuild both prefer a project file at the baseUrl over a
+    /// same-named installed package.
+    fn try_resolve_tsconfig_base_url(
+        &self,
+        importer_dir: &Path,
+        specifier: &str,
+    ) -> Option<PathBuf> {
+        let tsconfig_dir = Self::locate_tsconfig_dir(importer_dir)?;
+        let entry = self.load_tsconfig_paths(&tsconfig_dir)?;
+        let base_url = entry.base_url?;
+        self.probe_path_with_index(&base_url.join(specifier))
+    }
+
     /// Look up — and lazily populate — the parsed `paths` table for the
     /// `tsconfig.json` at `tsconfig_dir`. Cached on the resolver so a
     /// project's tsconfig is read at most once per resolver instance,
@@ -1252,6 +1267,9 @@ impl Resolver for FsResolver {
             //    if the specifier matches an alias, probe the
             //    substitution targets like a relative path.
             if let Some(found) = self.try_resolve_tsconfig_alias(importer_dir, specifier) {
+                return Some(canonicalize(found));
+            }
+            if let Some(found) = self.try_resolve_tsconfig_base_url(importer_dir, specifier) {
                 return Some(canonicalize(found));
             }
 
@@ -2726,6 +2744,28 @@ fn collect_import_edges(module: &Module) -> std::result::Result<Vec<CollectedImp
                         )));
                     }
                 }
+            }
+            ModuleDecl::TsImportEquals(import_equals) => {
+                let swc_core::ecma::ast::TsModuleRef::TsExternalModuleRef(module_ref) =
+                    &import_equals.module_ref
+                else {
+                    continue;
+                };
+                let specifier = atom_to_string(&module_ref.expr.value);
+                if import_equals.is_type_only {
+                    if query_suffix(&specifier).is_some() {
+                        return Err(supported_raw_form(format!(
+                            "type-only import-equals from {specifier:?} is not a runtime module edge"
+                        )));
+                    }
+                    continue;
+                }
+                if query_suffix(&specifier).is_some() {
+                    return Err(supported_raw_form(format!(
+                        "TypeScript import-equals from {specifier:?} is not a supported raw default import"
+                    )));
+                }
+                out.push(CollectedImportEdge::Module(specifier));
             }
             ModuleDecl::ExportNamed(named) => {
                 let query_source = named.src.as_ref().map(|src| atom_to_string(&src.value));
@@ -8246,6 +8286,7 @@ mod tests {
             r#"const x = import(`./x.txt?raw`);"#,
             r#"const x = import("./x.txt?raw" + suffix);"#,
             r#"const x = require("./x.txt?raw");"#,
+            r#"import x = require("./x.txt?raw");"#,
             r#"const x = require(prefix + "?url");"#,
             r#"import type x from "./x.txt?raw";"#,
             r#"import x from "./x.txt?raw" with { type: "text" };"#,
@@ -8421,6 +8462,59 @@ mod tests {
         assert!(meta.module_worker_edges.contains(&ModuleWorkerEdge {
             importer: helper,
             source_path: nested,
+        }));
+    }
+
+    #[test]
+    fn import_equals_uses_base_url_before_same_named_package_in_worker_graph() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let entry = root.join("src/app.client.ts");
+        let worker = root.join("src/worker.ts");
+        let helper = root.join("src/shared.ts");
+        let nested = root.join("src/nested.ts");
+        let payload = root.join("src/payload.txt");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/shared")).unwrap();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":"./src"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &entry,
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+        )
+        .unwrap();
+        std::fs::write(&worker, "import shared = require('shared'); shared();").unwrap();
+        std::fs::write(
+            &helper,
+            "import text from './payload.txt?raw'; export = () => new Worker(new URL('./nested.ts', import.meta.url), { type: 'module' });",
+        )
+        .unwrap();
+        std::fs::write(&nested, "self.postMessage('nested');").unwrap();
+        std::fs::write(&payload, "local payload").unwrap();
+        // A same-named installed package must not mask the baseUrl file.
+        std::fs::write(
+            root.join("node_modules/shared/index.js"),
+            "new SharedWorker(new URL('./third-party.js', import.meta.url));",
+        )
+        .unwrap();
+
+        let meta = scan_reachable_modules_with_meta(&[entry], &FsResolver::new()).unwrap();
+        let helper = helper.canonicalize().unwrap();
+        let nested = nested.canonicalize().unwrap();
+        let payload = payload.canonicalize().unwrap();
+        assert!(
+            meta.module_worker_edges.contains(&ModuleWorkerEdge {
+                importer: helper.clone(),
+                source_path: nested,
+            }),
+            "baseUrl project helper must win over node_modules: {meta:?}"
+        );
+        assert!(meta.raw_import_edges.contains(&RawImportEdge {
+            importer: helper,
+            target: payload,
         }));
     }
 

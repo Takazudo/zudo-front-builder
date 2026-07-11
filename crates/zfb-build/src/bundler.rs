@@ -9054,9 +9054,10 @@ mod tests {
         let required = root.join("components/required.ts");
         let css = root.join("components/search.css");
         let tokens = root.join("components/tokens.css");
+        let icon = root.join("components/icon.bin");
         let payload = root.join("components/payload.txt");
         for path in [
-            &page, &importer, &worker, &helper, &required, &css, &tokens, &payload,
+            &page, &importer, &worker, &helper, &required, &css, &tokens, &icon, &payload,
         ] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
         }
@@ -9071,13 +9072,18 @@ mod tests {
         .unwrap();
         fs::write(
             &worker,
-            "import { helper } from '@/search-helper'; require('./required'); import './search.css'; import payload from './payload.txt?raw'; self.postMessage([helper, payload]);",
+            "import { helper } from '@/search-helper'; import required = require('./required'); import './search.css'; import payload from './payload.txt?raw'; self.postMessage([helper, required, payload]);",
         )
         .unwrap();
         fs::write(&helper, "export const helper = 1;").unwrap();
         fs::write(&required, "module.exports = 2;").unwrap();
-        fs::write(&css, "@import './tokens.css'; .worker { color: red; }").unwrap();
+        fs::write(
+            &css,
+            "@import './tokens.css'; .worker { background: url('./icon.bin?v=1#icon'); }",
+        )
+        .unwrap();
         fs::write(&tokens, ":root { --worker: red; }").unwrap();
+        fs::write(&icon, [1_u8, 2, 3]).unwrap();
         fs::write(&payload, "worker payload").unwrap();
         let importer_real = importer.canonicalize().unwrap();
         let mut deps = vec![crate::metafile_deps::RouteModuleDeps {
@@ -9092,7 +9098,7 @@ mod tests {
                 .collect();
         augment_route_deps_with_worker_targets(&mut deps, &worker_dependencies, root);
         assert!(deps[0].module_deps.contains(&importer_real));
-        for dependency in [&worker, &helper, &required, &css, &tokens, &payload] {
+        for dependency in [&worker, &helper, &required, &css, &tokens, &icon, &payload] {
             assert!(
                 deps[0]
                     .module_deps
