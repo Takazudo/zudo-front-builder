@@ -74,15 +74,17 @@ pub struct CssPipelineConfig {
     /// still returned in [`CssPipelineOutput`].
     pub class_map_dir: Option<PathBuf>,
 
-    /// Framework-shipped CSS prepended ahead of the Tailwind utility
+    /// Framework-shipped CSS spliced in ahead of the Tailwind utility
     /// output (issue #1533; today this carries zfb's default
     /// `--zfb-hi-*` token stylesheet for class-mode syntax highlighting,
     /// see [`crate::default_hi_css`]). `None` (default) omits the block
     /// entirely, so [`combine`]/[`hash_8`] stay byte-for-byte identical
-    /// to their pre-#1533 output. Included in the [`hash_8`] inputs so
-    /// toggling this block changes the hashed asset URL — this
-    /// deliberately does NOT join the content-pipeline fingerprint
-    /// (that's a separate, config-owned concern).
+    /// to their pre-#1533 output. Folded into the asset hash — the
+    /// [`hash_8`] inputs on the `build()` path, and the combined bytes
+    /// (via [`combine`]) on the prod bytes-only path — so toggling this
+    /// block changes the hashed asset URL. This deliberately does NOT
+    /// join the content-pipeline fingerprint (that's a separate,
+    /// config-owned concern).
     pub framework_css: Option<String>,
 }
 
@@ -349,9 +351,12 @@ fn write_class_map_files(
 /// tests and the hashing helper agree on the canonical form.
 ///
 /// `framework` is [`CssPipelineConfig::framework_css`] (issue #1533); when
-/// `Some`, it is prepended as `framework + "\n" + tailwind + "\n" +
-/// modules`. When `None` the output is byte-for-byte identical to the
-/// pre-#1533 two-piece form (`tailwind + "\n" + modules`).
+/// `Some`, it is spliced in ahead of the Tailwind + modules body — but
+/// **after** any leading `@charset` / `@layer name,…;` order statements the
+/// Tailwind half emits (see [`splice_framework_after_layer_prefix`] for why a
+/// naive index-0 prepend would corrupt import hoisting). When `None` the
+/// output is byte-for-byte identical to the pre-#1533 two-piece form
+/// (`tailwind + "\n" + modules`).
 ///
 /// After concatenation, external `@import` at-rules are hoisted to the top
 /// of the stylesheet via [`hoist_external_imports`] — see that function for
@@ -360,17 +365,57 @@ fn write_class_map_files(
 /// perturb asset hashing: it is a deterministic pure function of the same
 /// inputs.
 pub(crate) fn combine(framework: Option<&str>, tailwind: &str, modules: &str) -> String {
-    let mut out = String::with_capacity(
-        framework.map_or(0, |f| f.len() + 1) + tailwind.len() + modules.len() + 1,
-    );
-    if let Some(framework) = framework {
-        out.push_str(framework);
+    let mut body = String::with_capacity(tailwind.len() + modules.len() + 1);
+    body.push_str(tailwind);
+    body.push('\n');
+    body.push_str(modules);
+
+    let combined = match framework {
+        None => body,
+        Some(framework) => splice_framework_after_layer_prefix(&body, framework),
+    };
+    hoist_external_imports(&combined)
+}
+
+/// Insert the framework block into `body` **after** any leading `@charset` /
+/// `@layer name,…;` order-statement prefix, rather than at absolute
+/// position 0.
+///
+/// **Why not a naive prepend (issue #1533):** the framework block is a
+/// *populated* `@layer zfb-hi { … }` — [`classify_node`] classes it as
+/// [`NodeKind::Other`] (an insertion ceiling), not a leading order
+/// statement. Prepending it at index 0 would push Tailwind v4's own leading
+/// `@layer theme, base, components, utilities;` order preamble out of the
+/// leading-prefix region [`hoist_external_imports`] scans, so a trailing
+/// external `@import` (e.g. an authored webfont) would then hoist *above*
+/// that layer-order statement and silently reorder the cascade layers.
+/// Splicing after the leading order-statement prefix keeps that preamble
+/// first, so imports hoist below it exactly as they did pre-#1533.
+///
+/// When `body` has no leading `@charset` / `@layer …;` prefix — the common
+/// case (Tailwind disabled, or the engine emits no order statement) — the
+/// framework block lands at position 0, byte-identical to a naive prepend.
+fn splice_framework_after_layer_prefix(body: &str, framework: &str) -> String {
+    let nodes = split_top_level(body);
+    let mut cut = 0usize;
+    for &(s, e) in &nodes {
+        match classify_node(&body[s..e]) {
+            NodeKind::Charset | NodeKind::LayerStatement => cut = e,
+            _ => break,
+        }
+    }
+    let mut out = String::with_capacity(body.len() + framework.len() + 2);
+    out.push_str(&body[..cut]);
+    // Separate from the preceding order statement's `;` when we spliced after
+    // a non-empty prefix; at cut == 0 this stays a bare prepend (no leading
+    // newline) so the no-order-statement case matches the old byte layout.
+    if cut > 0 {
         out.push('\n');
     }
-    out.push_str(tailwind);
+    out.push_str(framework);
     out.push('\n');
-    out.push_str(modules);
-    hoist_external_imports(&out)
+    out.push_str(&body[cut..]);
+    out
 }
 
 /// Move every top-level `@import` at-rule to the top of the stylesheet so it
@@ -629,10 +674,18 @@ fn starts_with_ascii_ci(haystack: &str, needle: &str) -> bool {
 ///
 /// The hash is the first 8 characters of `sha256(tailwind + "\n" +
 /// modules)`, with `framework + "\n"` prepended to the hasher input when
-/// `Some` (issue #1533 — toggling [`CssPipelineConfig::framework_css`] must
-/// change the hashed asset URL so a stale cached copy is never reused).
-/// Using a fixed separator means appending a class to one piece is
+/// `Some`. Using a fixed separator means appending a class to one piece is
 /// distinguishable from prepending it to another.
+///
+/// This is the hash the **disk-writing** [`CssPipeline::build`] path uses to
+/// name its `styles-<hash>.css`. The bytes-only production path
+/// ([`CssPipeline::build_emitter`] → `zfb-build`'s `ProductionAssetPipeline`)
+/// does **not** call this — it content-hashes the combined asset bytes
+/// directly (`sha256_8(&bytes)` in `crates/zfb-build/src/pipeline/prod.rs`).
+/// Folding `framework` into *both* this hash and the combined bytes (via
+/// [`combine`]) is what makes toggling [`CssPipelineConfig::framework_css`]
+/// change the emitted filename on either path, so a stale cached copy is
+/// never reused (issue #1533).
 pub fn hash_8(framework: Option<&str>, tailwind: &str, modules: &str) -> String {
     let mut hasher = Sha256::new();
     if let Some(framework) = framework {
@@ -998,6 +1051,38 @@ mod tests {
             ".mod{color:blue}",
         );
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn combine_keeps_import_below_leading_layer_statement_with_framework_block() {
+        // Regression (issue #1533): the framework block is a *populated*
+        // `@layer …{ … }` (an import-hoist ceiling). A naive index-0 prepend
+        // pushes Tailwind's leading `@layer …;` order statement out of the
+        // hoist prefix region, so a trailing external @import would hoist
+        // ABOVE the order statement and reorder the cascade layers. The
+        // splice must keep the order statement first.
+        let framework = "@layer zfb-hi { .hi-kw { color: var(--zfb-hi-kw) } }";
+        let tailwind = "@layer theme, base, components, utilities;\n\
+                        .tw { color: red }\n\
+                        @import url(\"https://fonts.googleapis.com/css2?family=Noto\");";
+        let combined = combine(Some(framework), tailwind, "");
+
+        // The @layer order statement stays first — the import hoists BELOW it,
+        // not above it.
+        assert!(
+            offset_of(&combined, "@layer theme,") < offset_of(&combined, "@import"),
+            "the leading @layer order statement must stay above the hoisted import:\n{combined}"
+        );
+        // The import is still hoisted above the style rule — its whole purpose.
+        assert!(
+            offset_of(&combined, "@import") < offset_of(&combined, ".tw"),
+            "the font import must still hoist above style rules:\n{combined}"
+        );
+        // And the framework block is present, spliced after the order statement.
+        assert!(
+            offset_of(&combined, "@layer theme,") < offset_of(&combined, "@layer zfb-hi"),
+            "the framework @layer block must sit after the order statement:\n{combined}"
+        );
     }
 
     #[test]
