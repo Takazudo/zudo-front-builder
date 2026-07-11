@@ -746,6 +746,48 @@ mod tests {
         );
     }
 
+    /// #1550 — a collection living OUTSIDE the project root
+    /// (`allowOutsideRoot`, e.g. a monorepo-shared content dir) is routed
+    /// through the extras channel and passed to the policy as its CANONICAL
+    /// ABSOLUTE root. A `.md`/`.mdx` in a NESTED subdir of that root must
+    /// classify as `Content` via the `path.starts_with(root)` arm — the
+    /// project-relative arm can't help (the event path never strips under
+    /// `project_root`).
+    #[test]
+    fn out_of_root_absolute_content_root_classifies_nested_md() {
+        // Canonical absolute root as the #1550 inventory would produce it.
+        let roots = vec![PathBuf::from("/home/user/packages/ui/src/posts")];
+        for f in [
+            "/home/user/packages/ui/src/posts/a.md",
+            "/home/user/packages/ui/src/posts/nested/deep/b.mdx",
+        ] {
+            assert_eq!(
+                classify_change_with_content_roots(Path::new(f), proj(), &roots, never_global),
+                PathClass::Content,
+                "out-of-root nested content file {f:?} must classify as Content"
+            );
+        }
+    }
+
+    /// #1550 — a co-located `.tsx` under an out-of-root collection root must
+    /// NOT be swept up as `Content` (the override is content-shaped-only).
+    /// Being out-of-tree, it falls through to the extension sniff and stays
+    /// `Module`, preserving islands invalidation for external component
+    /// edits.
+    #[test]
+    fn out_of_root_content_root_does_not_swallow_colocated_tsx() {
+        let roots = vec![PathBuf::from("/home/user/packages/ui/src/posts")];
+        assert_eq!(
+            classify_change_with_content_roots(
+                Path::new("/home/user/packages/ui/src/posts/Counter.tsx"),
+                proj(),
+                &roots,
+                never_global,
+            ),
+            PathClass::Module
+        );
+    }
+
     /// `classify_change` (no content roots) keeps its exact legacy
     /// behaviour — `src/**.mdx` still walks to `Module`.
     #[test]
