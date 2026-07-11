@@ -74,10 +74,25 @@ pub struct RawImportInvalidation {
 }
 
 impl RawImportInvalidation {
+    fn resolved_alias(path: &Path) -> Option<PathBuf> {
+        let mut cursor = path;
+        let mut missing_suffix = Vec::new();
+        loop {
+            if let Ok(mut canonical) = cursor.canonicalize() {
+                for component in missing_suffix.iter().rev() {
+                    canonical.push(component);
+                }
+                return Some(zfb_types::normalize_path_lexical(&canonical));
+            }
+            missing_suffix.push(cursor.file_name()?.to_os_string());
+            cursor = cursor.parent()?;
+        }
+    }
+
     fn aliases(path: PathBuf) -> impl Iterator<Item = PathBuf> {
         let lexical = zfb_types::normalize_path_lexical(&path);
-        let canonical = path.canonicalize().ok();
-        std::iter::once(lexical).chain(canonical)
+        let resolved = Self::resolved_alias(&path);
+        std::iter::once(lexical).chain(resolved)
     }
 
     fn replace(set: &RwLock<BTreeSet<PathBuf>>, paths: impl IntoIterator<Item = PathBuf>) {
@@ -124,12 +139,12 @@ impl RawImportInvalidation {
 
     fn contains(set: &RwLock<BTreeSet<PathBuf>>, path: &Path) -> bool {
         let lexical = zfb_types::normalize_path_lexical(path);
-        let canonical = path.canonicalize().ok();
+        let resolved = Self::resolved_alias(path);
         set.read()
             .map(|paths| {
                 paths.contains(path)
                     || paths.contains(&lexical)
-                    || canonical.as_ref().is_some_and(|path| paths.contains(path))
+                    || resolved.as_ref().is_some_and(|path| paths.contains(path))
             })
             .unwrap_or(false)
     }
@@ -1116,5 +1131,33 @@ mod tests {
         invalidation.replace_islands([alias.clone()]);
         assert!(invalidation.is_islands_target(&second));
         assert!(!invalidation.is_islands_target(&first));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_invalidation_aliases_missing_candidates_through_canonical_parent() {
+        let project = tempfile::tempdir().unwrap();
+        let physical = project.path().join("physical");
+        let linked = project.path().join("linked");
+        std::fs::create_dir_all(physical.join("src")).unwrap();
+        std::os::unix::fs::symlink(&physical, &linked).unwrap();
+        let logical_candidate = linked.join("src/tsconfig.json");
+        let physical_candidate = physical.join("src/tsconfig.json");
+
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_client_script_workers([logical_candidate.clone()]);
+        assert!(invalidation
+            .client_script_worker_paths()
+            .contains(&zfb_types::normalize_path_lexical(&logical_candidate)));
+        let resolved_candidate =
+            RawImportInvalidation::resolved_alias(&physical_candidate).unwrap();
+        assert!(invalidation
+            .client_script_worker_paths()
+            .contains(&resolved_candidate));
+        assert!(invalidation.is_client_script_worker_target(&physical_candidate));
+
+        std::fs::write(&physical_candidate, r#"{"compilerOptions":{}}"#).unwrap();
+        assert!(invalidation.is_client_script_worker_target(&physical_candidate));
+        assert!(invalidation.is_client_script_worker_target(&logical_candidate));
     }
 }

@@ -81,8 +81,11 @@ pub use head_inject::{
 };
 pub use metafile_deps::{route_module_deps, RouteEntryRef, RouteModuleDeps};
 pub use module_worker::{
-    rewrite_module_worker_urls, rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext,
-    ModuleWorkerDependency, ModuleWorkerEdge, ModuleWorkerRewrite,
+    discover_module_preprocessing_with_context,
+    discover_registered_virtual_preprocessing_with_context, rewrite_module_worker_urls,
+    rewrite_module_worker_urls_with_context, ModulePreprocessingDiscovery,
+    ModuleWorkerBuildContext, ModuleWorkerDependency, ModuleWorkerEdge, ModuleWorkerRawImportEdge,
+    ModuleWorkerRewrite,
 };
 pub use orchestrator::{
     BuildOrchestrator, DiscoveryHook, DiscoveryOutcome, ExternalInvalidationHook,

@@ -1223,6 +1223,95 @@ struct IslandsShadow {
     /// Dev invalidation watches this set even when a path lives outside the
     /// default islands roots such as `components/` and `src/`.
     module_worker_dependencies: std::collections::BTreeSet<PathBuf>,
+    /// Logical worker entry sources, including entries discovered only behind
+    /// an exact plugin alias. The caller emits one companion per source.
+    module_worker_sources: std::collections::BTreeSet<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PluginPreprocessingMeta {
+    files: std::collections::BTreeSet<PathBuf>,
+    raw_import_edges: std::collections::BTreeSet<zfb_build::ModuleWorkerRawImportEdge>,
+    worker_edges: std::collections::BTreeSet<zfb_build::ModuleWorkerEdge>,
+    config_dependencies: std::collections::BTreeSet<PathBuf>,
+}
+
+impl PluginPreprocessingMeta {
+    fn extend(&mut self, other: Self) {
+        self.files.extend(other.files);
+        self.raw_import_edges.extend(other.raw_import_edges);
+        self.worker_edges.extend(other.worker_edges);
+        self.config_dependencies.extend(other.config_dependencies);
+    }
+
+    fn extend_discovery(&mut self, graph: zfb_build::ModulePreprocessingDiscovery) {
+        self.files.extend(graph.files);
+        self.raw_import_edges.extend(graph.raw_import_edges);
+        self.worker_edges.extend(graph.worker_edges);
+        self.config_dependencies.extend(graph.config_dependencies);
+    }
+}
+
+fn discover_plugin_preprocessing(
+    project_root: &Path,
+    roots: impl IntoIterator<Item = PathBuf>,
+    worker_build_context: &zfb_build::ModuleWorkerBuildContext,
+    include_registered_virtuals: bool,
+) -> Result<PluginPreprocessingMeta> {
+    if !worker_build_context.has_plugin_resolver_inputs() {
+        return Ok(PluginPreprocessingMeta::default());
+    }
+    let paths = IslandsShadowPaths::new(project_root);
+    let mut discovered = PluginPreprocessingMeta::default();
+    if include_registered_virtuals {
+        discovered.extend_discovery(
+            zfb_build::discover_registered_virtual_preprocessing_with_context(
+                project_root,
+                worker_build_context,
+            )
+            .context("validate registered virtual-module preprocessing syntax")?,
+        );
+    }
+    for root in roots {
+        let Some(logical_root) = paths.logical_project_path(&root) else {
+            // Installed-package entries remain the documented first-party
+            // preprocessing boundary.
+            continue;
+        };
+        let graph = zfb_build::discover_module_preprocessing_with_context(
+            &logical_root,
+            project_root,
+            worker_build_context,
+        )
+        .with_context(|| {
+            format!(
+                "discover plugin-resolved preprocessing graph from {}",
+                logical_root.display()
+            )
+        })?;
+        discovered.extend_discovery(graph);
+    }
+    Ok(discovered)
+}
+
+fn remap_project_plugin_aliases_to_shadow(
+    project_root: &Path,
+    shadow_root: &Path,
+    aliases: &[(String, String)],
+) -> Vec<(String, String)> {
+    let paths = IslandsShadowPaths::new(project_root);
+    aliases
+        .iter()
+        .map(|(specifier, target)| {
+            let target_path = Path::new(target);
+            let remapped = paths
+                .project_local_rel(target_path)
+                .map(|relative| shadow_root.join(relative))
+                .filter(|candidate| candidate.is_file())
+                .unwrap_or_else(|| target_path.to_path_buf());
+            (specifier.clone(), remapped.to_string_lossy().into_owned())
+        })
+        .collect()
 }
 
 /// Outcome of attempting to build the islands shadow for a project whose
@@ -1293,6 +1382,18 @@ impl<'a> IslandsShadowPaths<'a> {
             None => None,
         }
     }
+}
+
+fn dedup_shadow_paths(
+    paths: &IslandsShadowPaths<'_>,
+    values: impl IntoIterator<Item = PathBuf>,
+) -> std::collections::BTreeSet<PathBuf> {
+    values
+        .into_iter()
+        .map(|path| (paths.path_key(&path), path))
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .into_values()
+        .collect()
 }
 
 fn is_islands_shadow_js_like_file(path: &Path) -> bool {
@@ -1936,6 +2037,7 @@ fn materialise_islands_shadow(
         islands,
         scan_meta,
         &zfb_build::ModuleWorkerBuildContext::default(),
+        &PluginPreprocessingMeta::default(),
     )
 }
 
@@ -1944,6 +2046,7 @@ fn materialise_islands_shadow_with_worker_context(
     islands: &[zfb_islands::Island],
     scan_meta: &zfb_islands::ScanMeta,
     worker_build_context: &zfb_build::ModuleWorkerBuildContext,
+    plugin_preprocessing: &PluginPreprocessingMeta,
 ) -> Result<IslandsShadowOutcome> {
     use std::collections::{BTreeSet, HashMap};
 
@@ -1962,11 +2065,15 @@ fn materialise_islands_shadow_with_worker_context(
     let mut expanded_glob_modules: BTreeSet<PathBuf> = BTreeSet::new();
     let mut expanded_by_key: HashMap<PathBuf, String> = HashMap::new();
     let mut matched_glob_targets: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut all_raw_edges: BTreeSet<zfb_islands::RawImportEdge> = scan_meta
+    let mut all_raw_edges: BTreeSet<zfb_build::ModuleWorkerRawImportEdge> = scan_meta
         .raw_import_edges_from_islands
         .iter()
-        .cloned()
+        .map(|edge| zfb_build::ModuleWorkerRawImportEdge {
+            importer: edge.importer.clone(),
+            target: edge.target.clone(),
+        })
         .collect();
+    all_raw_edges.extend(plugin_preprocessing.raw_import_edges.iter().cloned());
     for g in &scan_meta.glob_reachable_from_islands {
         if paths.project_local_rel(g).is_none() {
             offenders.push(format!(
@@ -2010,6 +2117,11 @@ fn materialise_islands_shadow_with_worker_context(
             to_mirror.insert(m.clone());
         }
     }
+    for file in &plugin_preprocessing.files {
+        if paths.project_local_rel(file).is_some() {
+            to_mirror.insert(file.clone());
+        }
+    }
     // (b) every file under each glob module's directory subtree (its matched
     //     targets live here).
     for g in &expanded_glob_modules {
@@ -2040,7 +2152,12 @@ fn materialise_islands_shadow_with_worker_context(
                         to_mirror.insert(m);
                     }
                 }
-                all_raw_edges.extend(meta.raw_import_edges);
+                all_raw_edges.extend(meta.raw_import_edges.into_iter().map(|edge| {
+                    zfb_build::ModuleWorkerRawImportEdge {
+                        importer: edge.importer,
+                        target: edge.target,
+                    }
+                }));
             }
             Err(zfb_islands::ScanError::Parse { path, message }) => {
                 let bytes = std::fs::read(&path).with_context(|| {
@@ -2078,10 +2195,10 @@ fn materialise_islands_shadow_with_worker_context(
         Vec<zfb_build::raw_import_expand::GeneratedRawModule>,
     > = HashMap::new();
     let mut raw_target_keys: BTreeSet<PathBuf> = BTreeSet::new();
-    let raw_importers: BTreeSet<PathBuf> = all_raw_edges
-        .iter()
-        .map(|edge| edge.importer.clone())
-        .collect();
+    let raw_importers = dedup_shadow_paths(
+        &paths,
+        all_raw_edges.iter().map(|edge| edge.importer.clone()),
+    );
     for importer in raw_importers {
         if paths.project_local_rel(&importer).is_none() {
             offenders.push(format!(
@@ -2136,11 +2253,19 @@ fn materialise_islands_shadow_with_worker_context(
     // using the same zfb-build span pass as SSR. The returned dependency
     // closure is mirrored for the later worker-emission sibling, but no import
     // is injected into the islands entry: worker sources remain browser-only.
-    let worker_importers: BTreeSet<PathBuf> = scan_meta
-        .module_worker_edges_from_islands
-        .iter()
-        .map(|edge| edge.importer.clone())
-        .collect();
+    let worker_importers = dedup_shadow_paths(
+        &paths,
+        scan_meta
+            .module_worker_edges_from_islands
+            .iter()
+            .map(|edge| edge.importer.clone())
+            .chain(
+                plugin_preprocessing
+                    .worker_edges
+                    .iter()
+                    .map(|edge| edge.importer.clone()),
+            ),
+    );
     let mut module_worker_dependencies: BTreeSet<PathBuf> = BTreeSet::new();
     for importer in worker_importers {
         if paths.project_local_rel(&importer).is_none() {
@@ -2190,9 +2315,21 @@ fn materialise_islands_shadow_with_worker_context(
                         )),
                     }
                 }
+                for config in rewrite.config_dependencies {
+                    let watched_config = paths
+                        .logical_project_path(&config.dependency)
+                        .unwrap_or(config.dependency);
+                    module_worker_dependencies.insert(watched_config);
+                }
             }
             Err(error) => offenders.push(format!("{}: {error:#}", importer.display())),
         }
+    }
+    for config in &plugin_preprocessing.config_dependencies {
+        let watched_config = paths
+            .logical_project_path(config)
+            .unwrap_or_else(|| config.clone());
+        module_worker_dependencies.insert(watched_config);
     }
 
     // --- Pre-flight: raw-mirrored JS-like companions must not contain a
@@ -2334,6 +2471,18 @@ fn materialise_islands_shadow_with_worker_context(
             remap.insert(island.source_path.clone(), shadow_root.join(rel));
         }
     }
+    let module_worker_sources = scan_meta
+        .module_worker_edges_from_islands
+        .iter()
+        .map(|edge| edge.source_path.clone())
+        .chain(
+            plugin_preprocessing
+                .worker_edges
+                .iter()
+                .map(|edge| edge.source_path.clone()),
+        )
+        .filter_map(|source| paths.logical_project_path(&source))
+        .collect();
 
     Ok(IslandsShadowOutcome::Ready(IslandsShadow {
         _tempdir: tempdir,
@@ -2344,6 +2493,7 @@ fn materialise_islands_shadow_with_worker_context(
             .filter_map(|edge| paths.logical_project_path(&edge.target))
             .collect(),
         module_worker_dependencies,
+        module_worker_sources,
     }))
 }
 
@@ -2566,18 +2716,27 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         matches!(bundle_mode, zfb_islands::BundleMode::Production),
         matches!(bundle_mode, zfb_islands::BundleMode::Development),
     );
+    let plugin_preprocessing = discover_plugin_preprocessing(
+        project_root,
+        islands_set.iter().map(|island| island.source_path.clone()),
+        &worker_build_context,
+        true,
+    )?;
 
     let mut _islands_shadow: Option<IslandsShadow> = None;
     let mut islands_preserve_symlinks = false;
     if !scan_meta.glob_reachable_from_islands.is_empty()
         || !scan_meta.raw_import_edges_from_islands.is_empty()
         || !scan_meta.module_worker_edges_from_islands.is_empty()
+        || !plugin_preprocessing.raw_import_edges.is_empty()
+        || !plugin_preprocessing.worker_edges.is_empty()
     {
         match materialise_islands_shadow_with_worker_context(
             project_root,
             &islands_set,
             &scan_meta,
             &worker_build_context,
+            &plugin_preprocessing,
         )? {
             IslandsShadowOutcome::Ready(shadow) => {
                 islands_preserve_symlinks = shadow.preserve_symlinks;
@@ -2798,8 +2957,18 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // registrations) no `--alias` flags are added and the bundle output is
     // byte-identical to a build without any plugins (zero-registration
     // regression guard).
-    if !plugin_config.alias_entries.is_empty() {
-        esbuild_cfg = esbuild_cfg.with_alias_entries(plugin_config.alias_entries.clone());
+    let islands_alias_entries = _islands_shadow
+        .as_ref()
+        .map(|shadow| {
+            remap_project_plugin_aliases_to_shadow(
+                project_root,
+                shadow._tempdir.path(),
+                &plugin_config.alias_entries,
+            )
+        })
+        .unwrap_or_else(|| plugin_config.alias_entries.clone());
+    if !islands_alias_entries.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_alias_entries(islands_alias_entries);
     }
     if !plugin_config.virtual_modules.is_empty() {
         esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
@@ -2822,11 +2991,14 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // been rewritten), while its filename is derived from the corresponding
     // original project path by the locked #1500 contract.
     let shadow_paths = IslandsShadowPaths::new(project_root);
-    let module_worker_sources: std::collections::BTreeSet<PathBuf> = scan_meta
-        .module_worker_edges_from_islands
-        .iter()
-        .map(|edge| edge.source_path.clone())
-        .collect();
+    let module_worker_sources: std::collections::BTreeSet<PathBuf> = match &_islands_shadow {
+        Some(shadow) => shadow.module_worker_sources.clone(),
+        None => scan_meta
+            .module_worker_edges_from_islands
+            .iter()
+            .map(|edge| edge.source_path.clone())
+            .collect(),
+    };
     let mut module_workers = Vec::with_capacity(module_worker_sources.len());
     for source in module_worker_sources {
         let logical_source = shadow_paths.logical_project_path(&source).ok_or_else(|| {
@@ -3024,7 +3196,28 @@ fn stage_client_script_preprocessing_with_worker_context(
     let resolver = FsResolver::new();
     let graph = scan_reachable_modules_with_meta(&roots, &resolver)
         .context("scan client-script graph for ?raw and module-worker preprocessing")?;
-    if graph.raw_import_edges.is_empty() && graph.module_worker_edges.is_empty() {
+    let mut plugin_preprocessing = discover_plugin_preprocessing(
+        project_root,
+        std::iter::empty(),
+        worker_build_context,
+        true,
+    )?;
+    let mut plugin_preprocessing_by_entry = std::collections::BTreeMap::new();
+    for entry in entries {
+        let entry_preprocessing = discover_plugin_preprocessing(
+            project_root,
+            [entry.source_path.clone()],
+            worker_build_context,
+            false,
+        )?;
+        plugin_preprocessing.extend(entry_preprocessing.clone());
+        plugin_preprocessing_by_entry.insert(entry.entry_name.clone(), entry_preprocessing);
+    }
+    if graph.raw_import_edges.is_empty()
+        && graph.module_worker_edges.is_empty()
+        && plugin_preprocessing.raw_import_edges.is_empty()
+        && plugin_preprocessing.worker_edges.is_empty()
+    {
         return Ok(None);
     }
 
@@ -3047,6 +3240,13 @@ fn stage_client_script_preprocessing_with_worker_context(
             .module_worker_edges
             .iter()
             .map(|edge| edge.source_path.clone())
+            .chain(
+                plugin_preprocessing_by_entry
+                    .get(&entry.entry_name)
+                    .into_iter()
+                    .flat_map(|meta| meta.worker_edges.iter())
+                    .map(|edge| edge.source_path.clone()),
+            )
             .collect::<std::collections::BTreeSet<_>>();
         if !worker_sources.is_empty() {
             worker_sources_by_entry.insert(entry.entry_name.clone(), worker_sources);
@@ -3068,11 +3268,19 @@ fn stage_client_script_preprocessing_with_worker_context(
         PathBuf,
         zfb_build::raw_import_expand::RawImportExpansion,
     > = std::collections::HashMap::new();
-    let raw_importers: std::collections::BTreeSet<PathBuf> = graph
+    let all_raw_edges: std::collections::BTreeSet<zfb_build::ModuleWorkerRawImportEdge> = graph
         .raw_import_edges
         .iter()
-        .map(|edge| edge.importer.clone())
+        .map(|edge| zfb_build::ModuleWorkerRawImportEdge {
+            importer: edge.importer.clone(),
+            target: edge.target.clone(),
+        })
+        .chain(plugin_preprocessing.raw_import_edges.iter().cloned())
         .collect();
+    let raw_importers = dedup_shadow_paths(
+        &paths,
+        all_raw_edges.iter().map(|edge| edge.importer.clone()),
+    );
     for importer in raw_importers {
         if paths.project_local_rel(&importer).is_none() {
             return Err(anyhow!(
@@ -3107,11 +3315,19 @@ fn stage_client_script_preprocessing_with_worker_context(
     let mut worker_expanded_by_key: std::collections::HashMap<PathBuf, String> =
         std::collections::HashMap::new();
     let mut worker_targets = std::collections::BTreeSet::new();
-    let worker_importers: std::collections::BTreeSet<PathBuf> = graph
-        .module_worker_edges
-        .iter()
-        .map(|edge| edge.importer.clone())
-        .collect();
+    let worker_importers = dedup_shadow_paths(
+        &paths,
+        graph
+            .module_worker_edges
+            .iter()
+            .map(|edge| edge.importer.clone())
+            .chain(
+                plugin_preprocessing
+                    .worker_edges
+                    .iter()
+                    .map(|edge| edge.importer.clone()),
+            ),
+    );
     for importer in worker_importers {
         if paths.project_local_rel(&importer).is_none() {
             return Err(anyhow!(
@@ -3164,11 +3380,23 @@ fn stage_client_script_preprocessing_with_worker_context(
                 })?;
             worker_targets.insert(logical_dependency);
         }
+        for config in rewrite.config_dependencies {
+            let watched_config = paths
+                .logical_project_path(&config.dependency)
+                .unwrap_or(config.dependency);
+            worker_targets.insert(watched_config);
+        }
         worker_expanded_by_key.insert(key, rewrite.expanded_source);
+    }
+    for config in &plugin_preprocessing.config_dependencies {
+        let watched_config = paths
+            .logical_project_path(config)
+            .unwrap_or_else(|| config.clone());
+        worker_targets.insert(watched_config);
     }
 
     let mut raw_targets = std::collections::BTreeSet::new();
-    for edge in &graph.raw_import_edges {
+    for edge in &all_raw_edges {
         if paths.project_local_rel(&edge.target).is_none() {
             return Err(anyhow!(
                 "client-script raw target {} imported from {} is outside the mirrorable \
@@ -3192,9 +3420,16 @@ fn stage_client_script_preprocessing_with_worker_context(
         .iter()
         .map(|entry| entry.source_path.clone())
         .chain(graph.modules.iter().cloned())
+        .chain(plugin_preprocessing.files.iter().cloned())
         .chain(
             graph
                 .module_worker_edges
+                .iter()
+                .flat_map(|edge| [edge.importer.clone(), edge.source_path.clone()]),
+        )
+        .chain(
+            plugin_preprocessing
+                .worker_edges
                 .iter()
                 .flat_map(|edge| [edge.importer.clone(), edge.source_path.clone()]),
         )
@@ -3203,6 +3438,12 @@ fn stage_client_script_preprocessing_with_worker_context(
         .module_worker_edges
         .iter()
         .map(|edge| edge.source_path.clone())
+        .chain(
+            plugin_preprocessing
+                .worker_edges
+                .iter()
+                .map(|edge| edge.source_path.clone()),
+        )
         .collect();
     for worker_root in worker_config_roots {
         let worker_graph =
@@ -3594,8 +3835,18 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
-    if !plugin_config.alias_entries.is_empty() {
-        esbuild_cfg = esbuild_cfg.with_alias_entries(plugin_config.alias_entries.clone());
+    let client_alias_entries = preprocess_stage
+        .as_ref()
+        .map(|stage| {
+            remap_project_plugin_aliases_to_shadow(
+                project_root,
+                &stage.root,
+                &plugin_config.alias_entries,
+            )
+        })
+        .unwrap_or_else(|| plugin_config.alias_entries.clone());
+    if !client_alias_entries.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_alias_entries(client_alias_entries);
     }
     if !plugin_config.virtual_modules.is_empty() {
         esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
@@ -3902,8 +4153,18 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
-    if !plugin_config.alias_entries.is_empty() {
-        esbuild_cfg = esbuild_cfg.with_alias_entries(plugin_config.alias_entries.clone());
+    let client_alias_entries = preprocess_stage
+        .as_ref()
+        .map(|stage| {
+            remap_project_plugin_aliases_to_shadow(
+                project_root,
+                &stage.root,
+                &plugin_config.alias_entries,
+            )
+        })
+        .unwrap_or_else(|| plugin_config.alias_entries.clone());
+    if !client_alias_entries.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_alias_entries(client_alias_entries);
     }
     if !plugin_config.virtual_modules.is_empty() {
         esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
@@ -7824,6 +8085,27 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn preprocessing_importers_dedup_logical_and_canonical_project_paths() {
+        let tmp = tempdir().unwrap();
+        let physical_root = tmp.path().join("physical");
+        let linked_root = tmp.path().join("linked");
+        std::fs::create_dir_all(physical_root.join("src")).unwrap();
+        std::fs::write(physical_root.join("src/importer.ts"), "export {};\n").unwrap();
+        std::os::unix::fs::symlink(&physical_root, &linked_root).unwrap();
+
+        let logical = linked_root.join("src/importer.ts");
+        let canonical = logical.canonicalize().unwrap();
+        let paths = IslandsShadowPaths::new(&linked_root);
+        let deduped = dedup_shadow_paths(&paths, [logical, canonical]);
+        assert_eq!(
+            deduped.len(),
+            1,
+            "one importer reached through logical and canonical spellings must be rewritten once"
+        );
+    }
+
     #[test]
     #[ignore = "env-gate: esbuild binary — cargo test -p zfb --lib \
                 commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild \
@@ -7968,14 +8250,29 @@ mod tests {
         let plugin_target = root.join("plugin-shadow-marker.ts");
         std::fs::write(
             &plugin_target,
-            "export const pluginMarker = 'ZFB_PLUGIN_ALIAS_MARKER';\n",
+            "import pluginPayload from './plugin-shadow-payload.txt?raw';\n\
+             new Worker(new URL('./plugin-shadow.worker.ts', import.meta.url), { type: 'module' });\n\
+             export const pluginMarker = 'ZFB_PLUGIN_ALIAS_MARKER:' + pluginPayload;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("plugin-shadow-payload.txt"),
+            "ZFB_PLUGIN_ALIAS_RAW_MARKER",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("plugin-shadow.worker.ts"),
+            "self.postMessage('ZFB_PLUGIN_ALIAS_WORKER_MARKER');\n",
         )
         .unwrap();
 
         let primary_worker = root.join("src/primary.worker.ts");
         let nested_worker = root.join("src/workers/nested.worker.ts");
+        let plugin_worker = root.join("plugin-shadow.worker.ts");
         let primary_filename = zfb_types::module_worker_filename(root, &primary_worker).unwrap();
         let nested_filename = zfb_types::module_worker_filename(root, &nested_worker).unwrap();
+        let plugin_worker_filename =
+            zfb_types::module_worker_filename(root, &plugin_worker).unwrap();
         let plugin_config = IslandsPluginConfig {
             alias_entries: vec![(
                 "plugin:shadow-marker".to_string(),
@@ -8009,6 +8306,7 @@ mod tests {
         for marker in [
             "ZFB_SHADOW_ALIAS_RAW_MARKER",
             "ZFB_PLUGIN_ALIAS_MARKER",
+            "ZFB_PLUGIN_ALIAS_RAW_MARKER",
             "ZFB_PLUGIN_VIRTUAL_MARKER",
         ] {
             assert!(
@@ -8018,6 +8316,7 @@ mod tests {
         }
         assert!(!islands_js.contains("ZFB_JSCONFIG_WRONG_PRECEDENCE"));
         assert!(islands_js.contains(&primary_filename), "{islands_js}");
+        assert!(islands_js.contains(&plugin_worker_filename), "{islands_js}");
         let island_companions = islands_payload
             .companions
             .into_iter()
@@ -8027,9 +8326,19 @@ mod tests {
         assert!(primary_js.contains("ZFB_NESTED_RAW_MARKER"), "{primary_js}");
         assert!(primary_js.contains(&nested_filename), "{primary_js}");
         assert!(
+            primary_js.contains("ZFB_PLUGIN_ALIAS_RAW_MARKER"),
+            "{primary_js}"
+        );
+        assert!(primary_js.contains(&plugin_worker_filename), "{primary_js}");
+        assert!(
             String::from_utf8(island_companions[&nested_filename].clone())
                 .unwrap()
                 .contains("ZFB_NESTED_WORKER")
+        );
+        assert!(
+            String::from_utf8(island_companions[&plugin_worker_filename].clone())
+                .unwrap()
+                .contains("ZFB_PLUGIN_ALIAS_WORKER_MARKER")
         );
 
         let client_payloads = build_default_client_scripts_payloads_with_plugin_config(
@@ -8049,6 +8358,7 @@ mod tests {
         for marker in [
             "ZFB_SHADOW_ALIAS_RAW_MARKER",
             "ZFB_PLUGIN_ALIAS_MARKER",
+            "ZFB_PLUGIN_ALIAS_RAW_MARKER",
             "ZFB_PLUGIN_VIRTUAL_MARKER",
         ] {
             assert!(
@@ -8067,6 +8377,7 @@ mod tests {
         for marker in [
             "ZFB_NESTED_RAW_MARKER",
             "ZFB_PLUGIN_ALIAS_MARKER",
+            "ZFB_PLUGIN_ALIAS_RAW_MARKER",
             "ZFB_PLUGIN_VIRTUAL_MARKER",
         ] {
             assert!(
@@ -8075,6 +8386,7 @@ mod tests {
             );
         }
         assert!(client_companions.contains_key(&nested_filename));
+        assert!(client_companions.contains_key(&plugin_worker_filename));
 
         let dev_assets_root = root.join("dev-assets");
         let (dev_changed, dev_outputs, dev_raw_targets, dev_worker_targets) =
@@ -8092,10 +8404,13 @@ mod tests {
         assert!(dev_outputs.contains("widget.js"));
         assert!(dev_outputs.contains(&primary_filename));
         assert!(dev_outputs.contains(&nested_filename));
+        assert!(dev_outputs.contains(&plugin_worker_filename));
         assert!(dev_raw_targets.contains(&root.join("src/island-payload.txt")));
         assert!(dev_raw_targets.contains(&root.join("src/workers/nested-payload.txt")));
+        assert!(dev_raw_targets.contains(&root.join("plugin-shadow-payload.txt")));
         assert!(dev_worker_targets.contains(&primary_worker));
         assert!(dev_worker_targets.contains(&nested_worker));
+        assert!(dev_worker_targets.contains(&plugin_worker));
 
         let dev_client_dir = dev_assets_root
             .join(zfb_types::DIST_ASSETS_DIR)
@@ -8104,6 +8419,7 @@ mod tests {
         for marker in [
             "ZFB_SHADOW_ALIAS_RAW_MARKER",
             "ZFB_PLUGIN_ALIAS_MARKER",
+            "ZFB_PLUGIN_ALIAS_RAW_MARKER",
             "ZFB_PLUGIN_VIRTUAL_MARKER",
         ] {
             assert!(
@@ -8118,6 +8434,7 @@ mod tests {
         for marker in [
             "ZFB_NESTED_RAW_MARKER",
             "ZFB_PLUGIN_ALIAS_MARKER",
+            "ZFB_PLUGIN_ALIAS_RAW_MARKER",
             "ZFB_PLUGIN_VIRTUAL_MARKER",
         ] {
             assert!(
@@ -8130,6 +8447,173 @@ mod tests {
             "{dev_primary_js}"
         );
         assert!(dev_client_dir.join(&nested_filename).is_file());
+        assert!(dev_client_dir.join(&plugin_worker_filename).is_file());
+    }
+
+    #[test]
+    fn client_virtual_module_preprocessing_syntax_is_an_explicit_command_error() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages/client")).unwrap();
+        std::fs::write(
+            root.join("pages/client/widget.client.ts"),
+            "import value from 'virtual:raw-widget'; console.log(value);\n",
+        )
+        .unwrap();
+        let plugin_config = IslandsPluginConfig {
+            alias_entries: Vec::new(),
+            virtual_modules: vec![(
+                "virtual:raw-widget".to_string(),
+                "import value from './payload.txt?raw'; export default value;".to_string(),
+            )],
+        };
+
+        let error = build_default_client_scripts_payloads_with_plugin_config(
+            root,
+            &root.join("dist"),
+            crate::config::Framework::Preact,
+            &zfb_build::ClientEntryList::new(),
+            None,
+            &plugin_config,
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(
+                "query-bearing import \"./payload.txt?raw\" inside plugin virtual module \"virtual:raw-widget\" is unsupported"
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("virtual sources cannot be rewritten into the preprocessing shadow"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    #[ignore = "env-gate: esbuild binary — plugin alias is the only preprocessing edge"]
+    fn plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild() {
+        let Some(_esbuild) = zfb_test_utils::locate_esbuild() else {
+            panic!("plugin-alias preprocessing regression requires a pinned real esbuild binary");
+        };
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages/client")).unwrap();
+        std::fs::write(
+            root.join("pages/client/alias-only.client.ts"),
+            "import { value } from 'plugin:only-preprocess'; console.log(value);\n",
+        )
+        .unwrap();
+        let alias = root.join("plugin-only.ts");
+        let worker = root.join("plugin-only.worker.ts");
+        std::fs::write(
+            &alias,
+            "import payload from './plugin-only.txt?raw';\n\
+             new Worker(new URL('./plugin-only.worker.ts', import.meta.url), { type: 'module' });\n\
+             export const value = 'ZFB_PLUGIN_ONLY_ENTRY:' + payload;\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("plugin-only.txt"), "ZFB_PLUGIN_ONLY_RAW").unwrap();
+        std::fs::write(&worker, "self.postMessage('ZFB_PLUGIN_ONLY_WORKER');\n").unwrap();
+        let worker_filename = zfb_types::module_worker_filename(root, &worker).unwrap();
+        let plugin_config = IslandsPluginConfig {
+            alias_entries: vec![(
+                "plugin:only-preprocess".to_string(),
+                alias.to_string_lossy().into_owned(),
+            )],
+            virtual_modules: Vec::new(),
+        };
+
+        let payloads = build_default_client_scripts_payloads_with_plugin_config(
+            root,
+            &root.join("dist"),
+            crate::config::Framework::Preact,
+            &zfb_build::ClientEntryList::new(),
+            None,
+            &plugin_config,
+        )
+        .expect("plugin-only preprocessing graph must trigger a client shadow");
+        let payload = payloads
+            .into_iter()
+            .find(|payload| payload.relative_path.ends_with("alias-only.js"))
+            .expect("alias-only client payload");
+        let js = String::from_utf8(payload.bytes).unwrap();
+        assert!(js.contains("ZFB_PLUGIN_ONLY_RAW"), "{js}");
+        assert!(js.contains(&worker_filename), "{js}");
+        let worker_js = payload
+            .companions
+            .into_iter()
+            .find(|companion| companion.filename == worker_filename)
+            .map(|companion| String::from_utf8(companion.bytes).unwrap())
+            .expect("plugin-only worker companion");
+        assert!(worker_js.contains("ZFB_PLUGIN_ONLY_WORKER"), "{worker_js}");
+    }
+
+    #[test]
+    fn ancestor_only_worker_config_stays_in_client_and_islands_closures() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let external_config = tmp.path().join("tsconfig.json");
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        std::fs::write(
+            &external_config,
+            r#"{"compilerOptions":{"useDefineForClassFields":true}}"#,
+        )
+        .unwrap();
+
+        let client_entry = root.join("pages/widget.client.ts");
+        std::fs::write(
+            &client_entry,
+            "new Worker(new URL('../src/client.worker.ts', import.meta.url), { type: 'module' });\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/client.worker.ts"),
+            "self.postMessage('client');\n",
+        )
+        .unwrap();
+        let client_stage = stage_client_script_preprocessing_with_worker_context(
+            &root,
+            &[zfb_islands::client_scripts::ClientScriptEntry {
+                entry_name: "widget".to_string(),
+                source_path: client_entry,
+            }],
+            &zfb_build::ModuleWorkerBuildContext::default(),
+        )
+        .unwrap()
+        .expect("client worker requires preprocessing");
+        assert!(client_stage.worker_targets.contains(&external_config));
+
+        let page = root.join("pages/index.tsx");
+        let island = root.join("components/Island.tsx");
+        std::fs::write(
+            &page,
+            "import { Island } from '../components/Island'; export default Island;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &island,
+            "'use client'; export function Island() { new Worker(new URL('./island.worker.ts', import.meta.url), { type: 'module' }); return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components/island.worker.ts"),
+            "self.postMessage('island');\n",
+        )
+        .unwrap();
+        let (islands, scan_meta) = scan_islands_with_meta(&[page], &FsResolver::new()).unwrap();
+        let shadow = match materialise_islands_shadow(&root, &islands, &scan_meta).unwrap() {
+            IslandsShadowOutcome::Ready(shadow) => shadow,
+            IslandsShadowOutcome::KeepStopgap(offenders) => {
+                panic!("islands worker config closure must materialise: {offenders:?}")
+            }
+        };
+        assert!(
+            shadow.module_worker_dependencies.contains(&external_config),
+            "external config parent must remain in the islands invalidation closure"
+        );
     }
 
     #[test]
@@ -8280,18 +8764,28 @@ mod tests {
             shadow.raw_targets,
             std::collections::BTreeSet::from([worker_payload.clone(), nested_payload.clone()])
         );
-        assert_eq!(
-            shadow.module_worker_dependencies,
-            std::collections::BTreeSet::from([
-                helper,
-                worker,
-                nested,
-                worker_payload,
-                nested_payload,
-                worker_css,
-            ]),
-            "full worker closure must stay available to dev invalidation"
+        let expected_worker_closure = std::collections::BTreeSet::from([
+            helper,
+            worker,
+            nested,
+            worker_payload,
+            nested_payload,
+            worker_css,
+        ]);
+        assert!(
+            expected_worker_closure.is_subset(&shadow.module_worker_dependencies),
+            "full worker closure must stay available to dev invalidation: {:?}",
+            shadow.module_worker_dependencies
         );
+        for config_candidate in [root.join("tsconfig.json"), root.join("jsconfig.json")] {
+            assert!(
+                shadow
+                    .module_worker_dependencies
+                    .contains(&config_candidate),
+                "absent nearest-config candidates must remain observable: {}",
+                config_candidate.display()
+            );
+        }
     }
 
     #[test]
