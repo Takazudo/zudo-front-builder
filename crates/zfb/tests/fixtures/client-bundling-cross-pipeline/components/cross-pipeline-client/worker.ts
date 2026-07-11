@@ -14,6 +14,12 @@ const nodeMode =
   process.env.NODE_ENV === "production"
     ? "ZFB_CLIENT_WORKER_NODE_PROD"
     : "ZFB_CLIENT_WORKER_NODE_DEV";
+const modeTuple = [
+  "ZFB_CLIENT_WORKER_MODE_TUPLE",
+  import.meta.env.DEV,
+  import.meta.env.PROD,
+  process.env.NODE_ENV,
+] as const;
 
 new Worker(new URL("./nested.ts", import.meta.url), { type: "module" });
 self.postMessage([
@@ -23,4 +29,5 @@ self.postMessage([
   __CROSS_PIPELINE_DEFINE__,
   metaMode,
   nodeMode,
+  modeTuple,
 ]);

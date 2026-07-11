@@ -80,6 +80,51 @@ fn assert_contains_none(body: &str, markers: &[&str], label: &str) {
     }
 }
 
+fn assert_mode_tuple(body: &str, marker: &str, development: bool, label: &str) {
+    let occurrences = body.match_indices(marker).collect::<Vec<_>>();
+    assert_eq!(
+        occurrences.len(),
+        1,
+        "{label} must contain exactly one mode tuple marker {marker:?}; found {}\n--- body ---\n{}",
+        occurrences.len(),
+        truncate(body, 4_000),
+    );
+
+    // Ignore formatting, but require the marker and all three substituted
+    // literals to remain adjacent and ordered in the emitted array. Production
+    // esbuild may shorten `true`/`false` to `!0`/`!1` while minifying.
+    let tuple_tail = &body[occurrences[0].0 + marker.len()..];
+    let compact = tuple_tail
+        .chars()
+        .take(512)
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect::<String>();
+    let (dev_tokens, prod_tokens, node_env) = if development {
+        (["true", "!0"], ["false", "!1"], "development")
+    } else {
+        (["false", "!1"], ["true", "!0"], "production")
+    };
+    let quotes = ['"', '\'', '`'];
+    let matches_expected = quotes.iter().any(|marker_quote| {
+        dev_tokens.iter().any(|dev| {
+            prod_tokens.iter().any(|prod| {
+                quotes.iter().any(|node_quote| {
+                    compact.starts_with(&format!(
+                        "{marker_quote},{dev},{prod},{node_quote}{node_env}{node_quote}"
+                    ))
+                })
+            })
+        })
+    });
+    assert!(
+        matches_expected,
+        "{label} mode tuple {marker:?} must be followed immediately by DEV={}, PROD={}, NODE_ENV={node_env:?}; got {:?}",
+        development,
+        !development,
+        truncate(&compact, 240),
+    );
+}
+
 fn truncate(value: &str, max: usize) -> &str {
     let end = value
         .char_indices()
@@ -181,6 +226,12 @@ fn assert_island_pipeline(
         ],
         "islands entry",
     );
+    assert_mode_tuple(
+        entry,
+        "ZFB_ISLAND_ENTRY_MODE_TUPLE",
+        development,
+        "islands entry",
+    );
     assert_parent_worker_url(entry, &names.island, "islands entry");
 
     assert_contains_all(
@@ -193,6 +244,12 @@ fn assert_island_pipeline(
         ],
         "islands worker",
     );
+    assert_mode_tuple(
+        worker,
+        "ZFB_ISLAND_WORKER_MODE_TUPLE",
+        development,
+        "islands worker",
+    );
     assert_parent_worker_url(worker, &names.island_nested, "islands worker");
 
     assert_contains_all(
@@ -202,6 +259,12 @@ fn assert_island_pipeline(
             "ZFB_ISLAND_NESTED_CONFIGURED_LOADER",
             "ZFB_CONFIGURED_DEFINE_VALUE",
         ],
+        "nested islands worker",
+    );
+    assert_mode_tuple(
+        nested,
+        "ZFB_ISLAND_NESTED_MODE_TUPLE",
+        development,
         "nested islands worker",
     );
 
@@ -291,6 +354,12 @@ fn assert_client_pipeline(
         ],
         "client-script entry",
     );
+    assert_mode_tuple(
+        entry,
+        "ZFB_CLIENT_ENTRY_MODE_TUPLE",
+        development,
+        "client-script entry",
+    );
     assert_parent_worker_url(entry, &names.client, "client-script entry");
 
     assert_contains_all(
@@ -303,6 +372,12 @@ fn assert_client_pipeline(
         ],
         "client-script worker",
     );
+    assert_mode_tuple(
+        worker,
+        "ZFB_CLIENT_WORKER_MODE_TUPLE",
+        development,
+        "client-script worker",
+    );
     assert_parent_worker_url(worker, &names.client_nested, "client-script worker");
 
     assert_contains_all(
@@ -312,6 +387,12 @@ fn assert_client_pipeline(
             "ZFB_CLIENT_NESTED_CONFIGURED_LOADER",
             "ZFB_CONFIGURED_DEFINE_VALUE",
         ],
+        "nested client-script worker",
+    );
+    assert_mode_tuple(
+        nested,
+        "ZFB_CLIENT_NESTED_MODE_TUPLE",
+        development,
         "nested client-script worker",
     );
 

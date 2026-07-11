@@ -16,10 +16,10 @@ defineConfig(config: ZfbConfig): ZfbConfig
 
 `zfb.config.ts` は **ベア** specifier の `zfb/config` から `defineConfig` をインポートします。zfb は設定ロード時にそのインポートをランタイム専用のスタブにエイリアスし（そのため `@takazudo/zfb` パッケージを入れていなくても設定をパースできます）、`node_modules` に実体としての `zfb/config` モジュールは存在しません。公開されている型は **スコープ付き** のサブパス `@takazudo/zfb/config` 配下にあります。そのため素の `tsc --noEmit`（`zfb check` が実行するもの）にはベアインポートを型付けする対象がなく、`Cannot find module 'zfb/config'` を報告します。
 
-両者を橋渡しするには、スコープ付きパッケージの型を **再エクスポート** する 1 行の ambient 宣言を使います。プロジェクトルートに `zfb-shim.d.ts` を追加してください（`tsconfig` が拾う `.d.ts` ならどれでも構いません）。
+両者を橋渡しするには、スコープ付きパッケージの型を **再エクスポート** する 1 行の ambient 宣言を使います。`zfb-shim.d.ts` は `tsconfig` に含まれるディレクトリへ置いてください。標準テンプレートでは `components/zfb-shim.d.ts` がそのまま使えます。代わりにプロジェクトルートへ置く場合は、`"zfb-shim.d.ts"` を `include` に明示的に追加します。
 
 ```ts
-// zfb-shim.d.ts — ベアの `zfb/config` specifier を型付けする。
+// components/zfb-shim.d.ts — ベアの `zfb/config` specifier を型付けする。
 declare module "zfb/config" {
   export * from "@takazudo/zfb/config";
 }
@@ -96,7 +96,7 @@ import { defineConfig } from "zfb/config";
 export default defineConfig({
   bundle: {
     loaders: {
-      ".txt": "text",
+      ".fixture": "text",
       ".data": "binary",
     },
   },
@@ -132,6 +132,40 @@ export default defineConfig({
 `bundle.define` は信頼された運用者が記述するビルド入力であり、secret store や入力サニタイズの境界ではありません。設定した各定義はブラウザバンドルから利用できます。到達可能なコードが使わない定義は esbuild が削除する場合もありますが、tree-shaking は機密性を保証しません。認証情報、非公開トークン、信頼できない式をこのマップへ入れないでください。
 
 </Warning>
+
+### TypeScript ambient declarations
+
+zfb はモード値、loader の結果、raw module、define の置換をバンドル時に提供しますが、それらの TypeScript 宣言は生成しません。`zfb check` は `tsc --noEmit` を実行するため、これらの機能を TypeScript ソースで使うには、`tsconfig` に含まれる `.d.ts` ファイルへ対応する ambient 宣言を追加する必要があります。たとえば、上の `.fixture` 用 text loader と 3 つの `bundle.define` エントリは、標準テンプレートの `tsconfig` にすでに含まれる `components/zfb-env.d.ts` で次のように型付けできます。
+
+```ts
+// components/zfb-env.d.ts
+interface ImportMetaEnv {
+  readonly DEV: boolean;
+  readonly PROD: boolean;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+
+declare module "*?raw" {
+  const source: string;
+  export default source;
+}
+
+declare module "*.fixture" {
+  const contents: string;
+  export default contents;
+}
+
+declare const __APP_NAME__: string;
+declare const __FEATURE_ENABLED__: boolean;
+declare const __BUILD_META__: { channel: string };
+```
+
+ファイル名とディレクトリ自体に特別な意味はなく、`tsconfig.json` の `include` に含まれていれば十分です。プロジェクトルートの `zfb-env.d.ts` を使う場合は、そのパスを `include` に明示的に追加してください。`include` の外にある宣言ファイルは `tsc` から見えません。
+
+これらの宣言は型情報だけを提供します。esbuild を設定したり、ランタイム値を注入したり、zfb がサポートしない import を有効にしたりするものではありません。カスタム module pattern とグローバルの型は、`bundle.loaders` および `bundle.define` と一致させてください。一致していないと、`zfb check` や `tsc` が誤ったランタイム上の前提を受け入れたり、zfb がバンドルできるコードを拒否したりします。raw import の結果は zfb の固定コントラクトであるため、`*?raw` は常に `string` を返すものとして宣言できます。
 
 ## プロジェクトルート外のパスを監視する
 
