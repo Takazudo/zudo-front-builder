@@ -2381,7 +2381,14 @@ pub fn bundle_with_session(
                     .map(|m| m.file_type().is_symlink())
                     .unwrap_or(false)
                 {
-                    let _ = fs::remove_dir_all(&shadow_nm);
+                    // A Windows symlink may be a file-symlink or a
+                    // directory-symlink/junction. Remove the LINK itself without
+                    // recursing into its target: `remove_file` clears a
+                    // file-symlink, `remove_dir` clears a dir-symlink/junction
+                    // (NOT `remove_dir_all`, which could follow the link and
+                    // delete the target tree's contents). The other no-ops.
+                    let _ = fs::remove_file(&shadow_nm);
+                    let _ = fs::remove_dir(&shadow_nm);
                 }
             }
         }
