@@ -177,6 +177,7 @@ async fn boot(
         allowed_hosts: opts.allowed_hosts,
         bound_host: None,
         render_on_request_hook: None,
+        redirects: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(serve_opts, listener, std::future::pending::<()>()).await

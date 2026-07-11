@@ -53,7 +53,7 @@
 //!   redirects (appended to `target` after substitution); rewrites
 //!   ignore it since the client-visible URL never changes.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// One parsed `_redirects` rule.
 #[derive(Debug, Clone)]
@@ -97,6 +97,21 @@ pub enum RedirectOutcome {
 pub struct Redirects {
     rules: Arc<Vec<Rule>>,
 }
+
+/// Shared live handle to the currently active `_redirects` ruleset
+/// (issue #1546, dev integration).
+///
+/// Mirrors [`crate::ssr::SsrRoutesHandle`] / [`crate::render_hook::RenderOnRequestHandle`]:
+/// a synchronous [`RwLock`] is correct here because every read is a
+/// cheap `.clone()` (the rule `Vec` is behind an `Arc`) released
+/// before any `await`, and the only writer is the dev file-watcher's
+/// reload callback. `zfb dev` seeds this at boot by parsing
+/// `public/_redirects` (an empty [`Redirects`] when the file is
+/// missing or unreadable — [`Redirects::parse`] never fails) and
+/// swaps it in place on every create/edit/delete the targeted watcher
+/// observes, so rule changes take effect without a dev-server restart
+/// or a full rebuild.
+pub type RedirectsHandle = Arc<RwLock<Redirects>>;
 
 impl Redirects {
     /// Parse `_redirects` file contents. Never fails — malformed lines

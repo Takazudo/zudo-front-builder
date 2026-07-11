@@ -183,6 +183,7 @@ async fn boot(
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: hook_handle,
+        redirects: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(serve_opts, listener, std::future::pending::<()>()).await
@@ -410,6 +411,7 @@ async fn hook_side_effect_served_after_hook_returns() {
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: Some(hook_handle),
+        redirects: None,
     };
     let _server = tokio::spawn(async move {
         serve_with_listener(serve_opts, listener, std::future::pending::<()>()).await
