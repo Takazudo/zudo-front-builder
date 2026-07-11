@@ -140,7 +140,7 @@ Only `GET`/`HEAD` requests reach the `_redirects` matcher — mirrors real Worke
 
 Static preview serves whatever `zfb build` emitted under the selected output directory, and does not know about your project's `base` prefix — it has no prefix-stripping layer of its own. So `_redirects` rule *sources* are matched against the **full request path**, exactly as written in the file — they are never rewritten to add or strip a `base` prefix. If `zfb.config.ts` sets `base: "/pj/site/"`, a rule meant to redirect `/pj/site/old-page` must be written with the prefix included (`/pj/site/old-page /pj/site/new-page 301`), not as `/old-page /new-page 301`.
 
-This is specific to static preview. `zfb dev`'s router is mounted *under* `base` (issue #229), so it matches `_redirects` sources against the prefix-**stripped** path — the same rule would need to be written without the prefix (`/old-page /new-page 301`) to fire in dev. A project combining `base` with `_redirects` today needs mode-aware rule sources; this is a known gap, not a deliberate design choice.
+This is specific to static preview. `zfb dev`'s router is mounted *under* `base` (issue #229), so it matches `_redirects` sources against the prefix-**stripped** path — the same rule would need to be written without the prefix (`/old-page /new-page 301`) to fire in dev. A project combining `base` with `_redirects` today needs mode-aware rule sources; this is a known gap, not a deliberate design choice ([#1562](https://github.com/Takazudo/zudo-front-builder/issues/1562)).
 
 </Note>
 

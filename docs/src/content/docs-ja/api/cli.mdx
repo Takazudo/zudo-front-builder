@@ -140,7 +140,7 @@ zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 
 静的 preview は選択された出力ディレクトリの下に `zfb build` が出力したものをそのまま配信し、プロジェクトの `base` プレフィックスについては関知しません — preview 自身にはプレフィックスを取り除くレイヤーがありません。そのため `_redirects` のルールの *source* は、ファイルに書かれたとおり **リクエストパス全体** に対してマッチングされます — `base` プレフィックスを付加したり取り除いたりする書き換えは一切行われません。`zfb.config.ts` で `base: "/pj/site/"` を設定している場合、`/pj/site/old-page` をリダイレクトしたいルールはプレフィックスを含めて書く必要があります（`/pj/site/old-page /pj/site/new-page 301`）。`/old-page /new-page 301` のようには書けません。
 
-これは静的 preview に固有の話です。`zfb dev` のルーターは `base` の **下に** マウントされる（issue #229）ため、プレフィックスを **取り除いた** パスに対して `_redirects` の source をマッチングします — 同じルールを dev で発火させるにはプレフィックスなしで書く必要があります（`/old-page /new-page 301`）。今日の時点で `base` と `_redirects` を組み合わせるプロジェクトはモードごとに異なるルール source を用意する必要があります。これは意図的な設計ではなく、既知のギャップです。
+これは静的 preview に固有の話です。`zfb dev` のルーターは `base` の **下に** マウントされる（issue #229）ため、プレフィックスを **取り除いた** パスに対して `_redirects` の source をマッチングします — 同じルールを dev で発火させるにはプレフィックスなしで書く必要があります（`/old-page /new-page 301`）。今日の時点で `base` と `_redirects` を組み合わせるプロジェクトはモードごとに異なるルール source を用意する必要があります。これは意図的な設計ではなく、既知のギャップです（[#1562](https://github.com/Takazudo/zudo-front-builder/issues/1562)）。
 
 </Note>
 
