@@ -5033,6 +5033,7 @@ fn build_dev_route_tables_inner(
 // backed by the in-process V8 host. Compiled in only when the
 // `embed_v8` feature is on (issue #371, sub-task 4.1a).
 #[cfg(feature = "embed_v8")]
+#[allow(clippy::too_many_arguments)] // 8 params: #1550 added collection_roots (index-aligned resolved absolute roots for canonical-path matching); a struct would just shuffle the same threaded fields
 fn boot_dev_renderer(
     project_root: &Path,
     cfg: &config::Config,
