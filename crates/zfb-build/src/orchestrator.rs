@@ -421,6 +421,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 }
                 if self.config.policy.is_client_script_candidate(&path)
                     || self.config.policy.is_client_script_raw_target(&path)
+                    || self.config.policy.is_client_script_worker_target(&path)
                 {
                     plan.mark_client_scripts();
                 }
@@ -558,6 +559,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             }
             if self.config.policy.is_client_script_candidate(&path)
                 || self.config.policy.is_client_script_raw_target(&path)
+                || self.config.policy.is_client_script_worker_target(&path)
             {
                 plan.mark_client_scripts();
             }
@@ -819,7 +821,9 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             if self.config.policy.is_islands_raw_target(path) {
                 plan.mark_islands();
             }
-            if self.config.policy.is_client_script_raw_target(path) {
+            if self.config.policy.is_client_script_raw_target(path)
+                || self.config.policy.is_client_script_worker_target(path)
+            {
                 plan.mark_client_scripts();
             }
         }
@@ -1934,6 +1938,31 @@ mod tests {
         let plan = orch.plan_for_changes([target]);
         assert!(!plan.rerun_islands);
         assert!(!plan.rerun_client_scripts);
+    }
+
+    #[test]
+    fn client_script_worker_edit_reruns_then_removed_graph_stops_triggering() {
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        let worker = PathBuf::from("/proj/src/search.worker.ts");
+        invalidation.replace_client_script_workers([worker.clone()]);
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("data")]).with_policy(
+            crate::policy::GranularityPolicy::default()
+                .with_raw_import_invalidation(invalidation.clone()),
+        );
+        let orch = BuildOrchestrator::new(config, make_graph(), CountingPipeline::default());
+
+        let first_tick = orch.plan_for_changes([worker.clone()]);
+        assert!(
+            first_tick.rerun_client_scripts,
+            "worker graph edits must re-emit the owning client script"
+        );
+
+        invalidation.replace_client_script_workers(Vec::new());
+        let second_tick = orch.plan_for_changes([worker]);
+        assert!(
+            !second_tick.rerun_client_scripts,
+            "a removed Worker edge must clear stale invalidation ownership"
+        );
     }
 
     /// `initial_build` on an empty graph (no pages) is a clean no-op,

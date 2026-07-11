@@ -54,18 +54,19 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-/// Live sets of ORIGINAL terminal raw targets consumed by the islands and
-/// client-script dev sub-pipelines.
+/// Live sets of original terminal raw targets plus client-script-owned module
+/// worker dependencies consumed by the browser dev sub-pipelines.
 ///
 /// Generated `.zfb-raw-*.mjs` files are ephemeral shadow artifacts and never
 /// watcher inputs. The successful scanner/preprocess pass replaces these sets
 /// with both logical and canonical real-path aliases; the granularity policy
-/// consults them on every event so edits and symlink retarget/deletes still
-/// rerun the consumer pipeline.
+/// consults them on every event so raw-target edits, worker-graph edits, and
+/// symlink retarget/deletes still rerun the consumer pipeline.
 #[derive(Debug, Clone, Default)]
 pub struct RawImportInvalidation {
     islands: Arc<RwLock<BTreeSet<PathBuf>>>,
     client_scripts: Arc<RwLock<BTreeSet<PathBuf>>>,
+    client_script_workers: Arc<RwLock<BTreeSet<PathBuf>>>,
 }
 
 impl RawImportInvalidation {
@@ -92,6 +93,12 @@ impl RawImportInvalidation {
         Self::replace(&self.client_scripts, paths);
     }
 
+    /// Atomically replace the complete first-party dependency closure for
+    /// client-script-owned module workers.
+    pub fn replace_client_script_workers(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        Self::replace(&self.client_script_workers, paths);
+    }
+
     fn contains(set: &RwLock<BTreeSet<PathBuf>>, path: &Path) -> bool {
         let lexical = zfb_types::normalize_path_lexical(path);
         let canonical = path.canonicalize().ok();
@@ -112,6 +119,11 @@ impl RawImportInvalidation {
     /// Whether `path` is a terminal target in the current client-script graph.
     pub fn is_client_script_target(&self, path: &Path) -> bool {
         Self::contains(&self.client_scripts, path)
+    }
+
+    /// Whether `path` is part of the current client-script worker graph.
+    pub fn is_client_script_worker_target(&self, path: &Path) -> bool {
+        Self::contains(&self.client_script_workers, path)
     }
 }
 
@@ -422,6 +434,13 @@ impl GranularityPolicy {
         self.raw_import_invalidation.is_client_script_target(path)
     }
 
+    /// Whether this exact changed path belongs to a client-script module
+    /// worker graph captured by the latest successful bundle.
+    pub fn is_client_script_worker_target(&self, path: &Path) -> bool {
+        self.raw_import_invalidation
+            .is_client_script_worker_target(path)
+    }
+
     /// Decide whether a `Module` change is inside an islands root.
     ///
     /// We do not parse the file here to check for the `"use client"`
@@ -488,6 +507,22 @@ fn path_starts_with_segment(path: &Path, segment: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_script_worker_invalidation_replaces_stale_graph_between_ticks() {
+        let invalidation = RawImportInvalidation::default();
+        let worker = PathBuf::from("/proj/src/search.worker.ts");
+        let helper = PathBuf::from("/proj/src/search-helper.ts");
+        invalidation.replace_client_script_workers([worker.clone(), helper.clone()]);
+        assert!(invalidation.is_client_script_worker_target(&worker));
+        assert!(invalidation.is_client_script_worker_target(&helper));
+
+        // A successful second scan replaces (rather than appends to) the
+        // graph, so removing the Worker constructor drops stale triggers.
+        invalidation.replace_client_script_workers(Vec::new());
+        assert!(!invalidation.is_client_script_worker_target(&worker));
+        assert!(!invalidation.is_client_script_worker_target(&helper));
+    }
 
     fn never_global(_: &Path) -> bool {
         false

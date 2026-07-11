@@ -384,7 +384,7 @@ impl BundleConfig {
 /// verbatim and MUST NOT rename it: the entry's `import("./<filename>")`
 /// references are relative and resolve only when entry and chunk share
 /// a directory under the un-renamed chunk name.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleChunk {
     /// Flat, self-hashed chunk basename (e.g. `islands-chunk-WOEGGERP.js`).
     /// Never contains a path separator. Never to be renamed downstream.

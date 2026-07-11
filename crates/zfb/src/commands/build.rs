@@ -66,9 +66,10 @@ use zfb_css::{
     CssPipelineConfig, TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 use zfb_islands::{
-    build_production_client_scripts, build_production_islands_asset, discover_client_scripts,
-    scan_islands_with_meta, scan_reachable_modules_with_meta, BundleConfig,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FrameworkKind, FsResolver,
+    build_production_client_scripts_with_workers, build_production_islands_asset,
+    discover_client_scripts, scan_islands_with_meta, scan_reachable_modules_with_meta,
+    BundleConfig, ClientScriptWorkerEntry, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
+    FrameworkKind, FsResolver,
 };
 use zfb_router::Router;
 
@@ -2320,6 +2321,8 @@ struct ClientScriptsPreprocessStage {
     entries: Vec<zfb_islands::client_scripts::ClientScriptEntry>,
     preserve_symlinks: bool,
     raw_targets: std::collections::BTreeSet<PathBuf>,
+    worker_targets: std::collections::BTreeSet<PathBuf>,
+    workers_by_entry: std::collections::BTreeMap<String, Vec<ClientScriptWorkerEntry>>,
 }
 
 fn materialise_client_preprocess_stage_file(
@@ -2410,26 +2413,39 @@ fn stage_client_script_preprocessing(
 
     let paths = IslandsShadowPaths::new(project_root);
     let mut external_entries_without_preprocessing = std::collections::BTreeSet::new();
+    let mut worker_sources_by_entry: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeSet<PathBuf>,
+    > = std::collections::BTreeMap::new();
     for entry in entries {
-        if paths.project_local_rel(&entry.source_path).is_some() {
-            continue;
-        }
         let entry_graph =
             scan_reachable_modules_with_meta(std::slice::from_ref(&entry.source_path), &resolver)
                 .with_context(|| {
                 format!(
-                    "scan external client-script entry {} for terminal ?raw imports",
+                    "scan client-script entry {} for preprocessing ownership",
                     entry.source_path.display()
                 )
             })?;
-        if !entry_graph.raw_import_edges.is_empty() || !entry_graph.module_worker_edges.is_empty() {
-            return Err(anyhow!(
-                "external client-script entry {} has a graph requiring `?raw`/module-worker \
-                 preprocessing; staging is limited to project-local graphs",
-                entry.source_path.display()
-            ));
+        let worker_sources = entry_graph
+            .module_worker_edges
+            .iter()
+            .map(|edge| edge.source_path.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        if !worker_sources.is_empty() {
+            worker_sources_by_entry.insert(entry.entry_name.clone(), worker_sources);
         }
-        external_entries_without_preprocessing.insert(entry.source_path.clone());
+        if paths.project_local_rel(&entry.source_path).is_none() {
+            if !entry_graph.raw_import_edges.is_empty()
+                || !entry_graph.module_worker_edges.is_empty()
+            {
+                return Err(anyhow!(
+                    "external client-script entry {} has a graph requiring `?raw`/module-worker \
+                     preprocessing; staging is limited to project-local graphs",
+                    entry.source_path.display()
+                ));
+            }
+            external_entries_without_preprocessing.insert(entry.source_path.clone());
+        }
     }
     let mut expanded_by_key: std::collections::HashMap<
         PathBuf,
@@ -2473,6 +2489,7 @@ fn stage_client_script_preprocessing(
 
     let mut worker_expanded_by_key: std::collections::HashMap<PathBuf, String> =
         std::collections::HashMap::new();
+    let mut worker_targets = std::collections::BTreeSet::new();
     let worker_importers: std::collections::BTreeSet<PathBuf> = graph
         .module_worker_edges
         .iter()
@@ -2510,6 +2527,17 @@ fn stage_client_script_preprocessing(
                         importer.display()
                     )
                 })?;
+        for dependency in rewrite.dependencies {
+            let logical_dependency = paths
+                .logical_project_path(&dependency.dependency)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "client-script module-worker dependency {} is outside the mirrorable project tree",
+                        dependency.dependency.display()
+                    )
+                })?;
+            worker_targets.insert(logical_dependency);
+        }
         worker_expanded_by_key.insert(key, rewrite.expanded_source);
     }
 
@@ -2690,12 +2718,68 @@ fn stage_client_script_preprocessing(
         })
         .collect::<Result<Vec<_>>>()?;
 
+    let mut workers_by_entry = std::collections::BTreeMap::new();
+    let mut filename_owners: std::collections::BTreeMap<String, PathBuf> =
+        std::collections::BTreeMap::new();
+    for (entry_name, sources) in worker_sources_by_entry {
+        let mut workers = Vec::with_capacity(sources.len());
+        for source in sources {
+            let rel = paths.project_local_rel(&source).ok_or_else(|| {
+                anyhow!(
+                    "client-script module-worker source {} is outside the mirrorable project tree",
+                    source.display()
+                )
+            })?;
+            let logical_source = project_root.join(&rel);
+            let filename = zfb_types::module_worker_filename(project_root, &logical_source)
+                .map_err(|error| anyhow!("client-script module-worker naming failed: {error}"))?;
+            if let Some(existing) = filename_owners.get(&filename) {
+                if existing != &logical_source {
+                    return Err(anyhow!(
+                        "client-script module-worker filename collision for {filename:?}: {} vs {}",
+                        existing.display(),
+                        logical_source.display()
+                    ));
+                }
+            } else {
+                filename_owners.insert(filename.clone(), logical_source);
+            }
+            workers.push(ClientScriptWorkerEntry {
+                filename,
+                source_path: root.join(rel),
+            });
+        }
+        workers.sort_by(|left, right| left.filename.cmp(&right.filename));
+        workers_by_entry.insert(entry_name, workers);
+    }
+
+    let entry_filenames = staged_entries
+        .iter()
+        .map(|entry| {
+            (
+                zfb_types::stable_client_script_filename(&entry.entry_name),
+                entry.source_path.as_path(),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (filename, worker_source) in &filename_owners {
+        if let Some(entry_source) = entry_filenames.get(filename) {
+            return Err(anyhow!(
+                "client-script output filename collision for {filename:?}: entry {} vs module worker {}",
+                entry_source.display(),
+                worker_source.display()
+            ));
+        }
+    }
+
     Ok(Some(ClientScriptsPreprocessStage {
         _tempdir: tempdir,
         root,
         entries: staged_entries,
         preserve_symlinks: !copy_mode,
         raw_targets,
+        worker_targets,
+        workers_by_entry,
     }))
 }
 
@@ -2846,8 +2930,18 @@ pub(crate) fn build_default_client_scripts_payloads(
         .with_define(crate::config::resolve_bundle_define(bundle_config))
         .with_preserve_symlinks(preserve_symlinks);
 
-    let assets = build_production_client_scripts(&bundler, bundle_entries, &bundle_cfg)
-        .context("client-script bundler failed")?;
+    let empty_workers = std::collections::BTreeMap::new();
+    let workers_by_entry = preprocess_stage
+        .as_ref()
+        .map(|stage| &stage.workers_by_entry)
+        .unwrap_or(&empty_workers);
+    let assets = build_production_client_scripts_with_workers(
+        &bundler,
+        bundle_entries,
+        workers_by_entry,
+        &bundle_cfg,
+    )
+    .context("client-script bundler failed")?;
 
     Ok(assets
         .into_iter()
@@ -2855,7 +2949,14 @@ pub(crate) fn build_default_client_scripts_payloads(
             bytes: a.bytes,
             relative_path: a.relative_path,
             stable_url: a.stable_url,
-            companions: Vec::new(),
+            companions: a
+                .companions
+                .into_iter()
+                .map(|companion| CompanionFile {
+                    filename: companion.filename,
+                    bytes: companion.bytes,
+                })
+                .collect(),
         })
         .collect())
 }
@@ -2869,22 +2970,56 @@ pub(crate) fn build_default_client_scripts_payloads(
 ///
 /// ## Stale-file pruning
 ///
-/// `prev_entry_names` is the set of entry names written by the *previous*
-/// call. Any name present in `prev_entry_names` but absent from the
-/// newly-discovered set has its on-disk file deleted. Pass an empty set on
-/// the first call (boot); update the tracker with the returned set on each
-/// subsequent call.
+/// `prev_output_filenames` is the set of flat entry/worker filenames written
+/// by the *previous* call. Any previous filename absent from the new output
+/// set is deleted, including workers whose constructor import disappeared.
+/// Pass an empty set on boot and retain the returned set for the next call.
 ///
 /// ## Return value
 ///
-/// Returns `(changed, current_names, raw_targets)` where:
+/// Returns `(changed, current_output_filenames, raw_targets, worker_targets)`
+/// where:
 /// - `changed` is `true` when at least one file was written with new or
 ///   changed bytes (or any stale file was pruned). The dev-server wires
 ///   this to a `ReloadEvent::Page`.
-/// - `current_names` is the set of entry names that were just written —
-///   pass it as `prev_entry_names` on the next call.
+/// - `current_output_filenames` is the set of entry and worker basenames that
+///   were just written — pass it as `prev_output_filenames` on the next call.
 /// - `raw_targets` is the logical original terminal-target set for dev
 ///   invalidation; the shared registry retains lexical + canonical aliases.
+/// - `worker_targets` is the complete first-party worker dependency closure;
+///   edits to any member must rerun the client-script pipeline.
+fn write_dev_client_script_output_if_changed(path: &Path, bytes: &[u8]) -> Result<bool> {
+    if std::fs::read(path).unwrap_or_default() == bytes {
+        return Ok(false);
+    }
+    std::fs::write(path, bytes)
+        .with_context(|| format!("client-scripts dev: failed to write {}", path.display()))?;
+    Ok(true)
+}
+
+fn prune_dev_client_script_outputs(
+    client_dir: &Path,
+    previous: &std::collections::HashSet<String>,
+    current: &std::collections::HashSet<String>,
+) -> bool {
+    let mut changed = false;
+    for stale_filename in previous.difference(current) {
+        let stale_path = client_dir.join(stale_filename);
+        if !stale_path.exists() {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(&stale_path) {
+            output::warn(format!(
+                "client-scripts dev: failed to prune stale file {}: {error}",
+                stale_path.display()
+            ));
+        } else {
+            changed = true;
+        }
+    }
+    changed
+}
+
 pub(crate) fn build_dev_client_scripts_to_disk(
     project_root: &Path,
     // Where dev client scripts are written + served from (issue #1189: the
@@ -2892,11 +3027,12 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     assets_root: &Path,
     framework: crate::config::Framework,
     bundle_config: Option<&crate::config::BundleConfig>,
-    prev_entry_names: &std::collections::HashSet<String>,
+    prev_output_filenames: &std::collections::HashSet<String>,
     registered: &zfb_build::ClientEntryList,
 ) -> Result<(
     bool,
     std::collections::HashSet<String>,
+    std::collections::BTreeSet<PathBuf>,
     std::collections::BTreeSet<PathBuf>,
 )> {
     let (mut entries, collisions) =
@@ -2938,48 +3074,57 @@ pub(crate) fn build_dev_client_scripts_to_disk(
         .join(zfb_types::DIST_ASSETS_DIR)
         .join(zfb_types::DIST_CLIENT_SCRIPTS_DIR);
 
-    // Prune stale files first (entries that existed in the previous run
-    // but are absent now — renamed or deleted client scripts). Do this
-    // before writing so a rename whose new name arrives in the same tick
-    // lands cleanly.
-    let current_names: std::collections::HashSet<String> =
-        entries.iter().map(|e| e.entry_name.clone()).collect();
-    let mut any_changed = false;
-    for stale_name in prev_entry_names.difference(&current_names) {
-        let stale_path = client_dir.join(zfb_types::stable_client_script_filename(stale_name));
-        if stale_path.exists() {
-            if let Err(e) = std::fs::remove_file(&stale_path) {
-                output::warn(format!(
-                    "client-scripts dev: failed to prune stale file {}: {e}",
-                    stale_path.display()
-                ));
-            } else {
-                any_changed = true;
-            }
-        }
+    let preprocess_stage = if entries.is_empty() {
+        None
+    } else {
+        stage_client_script_preprocessing(project_root, &entries)?
+    };
+    let mut current_output_filenames: std::collections::HashSet<String> = entries
+        .iter()
+        .map(|entry| zfb_types::stable_client_script_filename(&entry.entry_name))
+        .collect();
+    if let Some(stage) = &preprocess_stage {
+        current_output_filenames.extend(
+            stage
+                .workers_by_entry
+                .values()
+                .flatten()
+                .map(|worker| worker.filename.clone()),
+        );
     }
+
+    // Prune stale entry and worker outputs before writing. Because the set is
+    // filename-based, removing a Worker constructor prunes its stable
+    // companion even while the owning client entry remains present.
+    let mut any_changed = prune_dev_client_script_outputs(
+        &client_dir,
+        prev_output_filenames,
+        &current_output_filenames,
+    );
 
     if entries.is_empty() {
         return Ok((
             any_changed,
-            current_names,
+            current_output_filenames,
+            std::collections::BTreeSet::new(),
             std::collections::BTreeSet::new(),
         ));
     }
 
-    let preprocess_stage = stage_client_script_preprocessing(project_root, &entries)?;
-    let (bundle_entries, bundler_working_dir, preserve_symlinks, raw_targets) =
+    let (bundle_entries, bundler_working_dir, preserve_symlinks, raw_targets, worker_targets) =
         match preprocess_stage.as_ref() {
             Some(stage) => (
                 stage.entries.as_slice(),
                 stage.root.clone(),
                 stage.preserve_symlinks,
                 stage.raw_targets.clone(),
+                stage.worker_targets.clone(),
             ),
             None => (
                 entries.as_slice(),
                 project_root.to_path_buf(),
                 false,
+                std::collections::BTreeSet::new(),
                 std::collections::BTreeSet::new(),
             ),
         };
@@ -3052,9 +3197,25 @@ pub(crate) fn build_dev_client_scripts_to_disk(
         )
     })?;
 
+    let empty_workers = std::collections::BTreeMap::new();
+    let workers_by_entry = preprocess_stage
+        .as_ref()
+        .map(|stage| &stage.workers_by_entry)
+        .unwrap_or(&empty_workers);
+    let mut emitted_companions: std::collections::BTreeMap<String, Vec<u8>> =
+        std::collections::BTreeMap::new();
     for entry in bundle_entries {
-        let js = bundler
-            .bundle_client_script_file(&entry.entry_name, &entry.source_path, &bundle_cfg)
+        let workers = workers_by_entry
+            .get(&entry.entry_name)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let output = bundler
+            .bundle_client_script_file_with_workers(
+                &entry.entry_name,
+                &entry.source_path,
+                workers,
+                &bundle_cfg,
+            )
             .with_context(|| {
                 format!(
                     "client-scripts dev: bundler failed for entry `{}` ({})",
@@ -3068,17 +3229,35 @@ pub(crate) fn build_dev_client_scripts_to_disk(
         // Only write (and signal changed) when the bytes differ from
         // what's already on disk — avoids spurious page reloads on
         // no-op saves.
-        let new_bytes = js.as_bytes();
-        let existing = std::fs::read(&out_path).unwrap_or_default();
-        if existing != new_bytes {
-            std::fs::write(&out_path, new_bytes).with_context(|| {
-                format!("client-scripts dev: failed to write {}", out_path.display())
-            })?;
+        let new_bytes = output.js.as_bytes();
+        if write_dev_client_script_output_if_changed(&out_path, new_bytes)? {
             any_changed = true;
+        }
+
+        for companion in output.companions {
+            if let Some(previous) = emitted_companions.get(&companion.filename) {
+                if previous != &companion.bytes {
+                    return Err(anyhow!(
+                        "client-scripts dev: deterministic module-worker filename collision for {:?} produced different bytes",
+                        companion.filename
+                    ));
+                }
+                continue;
+            }
+            let companion_path = client_dir.join(&companion.filename);
+            if write_dev_client_script_output_if_changed(&companion_path, &companion.bytes)? {
+                any_changed = true;
+            }
+            emitted_companions.insert(companion.filename, companion.bytes);
         }
     }
 
-    Ok((any_changed, current_names, raw_targets))
+    Ok((
+        any_changed,
+        current_output_filenames,
+        raw_targets,
+        worker_targets,
+    ))
 }
 
 /// Drive the build for a fully-resolved input set. Returns the number
@@ -6688,6 +6867,8 @@ mod tests {
         let entry = root.join("pages/widget.client.ts");
         let helper = root.join("src/start.ts");
         let worker = root.join("src/search.worker.ts");
+        let nested_worker = root.join("src/nested.worker.ts");
+        let worker_helper = root.join("src/search-helper.ts");
         let payload = root.join("src/search.txt");
         std::fs::write(&entry, "import { start } from '../src/start'; start();\n").unwrap();
         std::fs::write(
@@ -6697,9 +6878,11 @@ mod tests {
         .unwrap();
         std::fs::write(
             &worker,
-            "import text from './search.txt?raw'; self.postMessage(text);\n",
+            "import { prefix } from './search-helper'; import text from './search.txt?raw'; new Worker(new URL('./nested.worker.ts', import.meta.url), { type: 'module' }); self.postMessage(prefix + text);\n",
         )
         .unwrap();
+        std::fs::write(&nested_worker, "self.postMessage('nested');\n").unwrap();
+        std::fs::write(&worker_helper, "export const prefix = 'ready:';\n").unwrap();
         std::fs::write(&payload, "ready payload").unwrap();
         let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
             entry_name: "widget".into(),
@@ -6711,7 +6894,7 @@ mod tests {
             .expect("worker-only graph needs the shared preprocessing stage");
         assert_eq!(
             stage.raw_targets,
-            std::collections::BTreeSet::from([payload])
+            std::collections::BTreeSet::from([payload.clone()])
         );
         let rewritten = std::fs::read_to_string(stage.root.join("src/start.ts")).unwrap();
         assert!(
@@ -6722,7 +6905,65 @@ mod tests {
         let rewritten_worker =
             std::fs::read_to_string(stage.root.join("src/search.worker.ts")).unwrap();
         assert!(!rewritten_worker.contains("?raw"), "{rewritten_worker}");
+        assert!(
+            rewritten_worker.contains("./worker-src-s-nested-d-worker-d-ts.js?v="),
+            "{rewritten_worker}"
+        );
         assert!(stage.entries[0].source_path.starts_with(&stage.root));
+        let workers = &stage.workers_by_entry["widget"];
+        assert_eq!(workers.len(), 2);
+        assert!(workers.iter().any(|worker| {
+            worker.filename == "worker-src-s-search-d-worker-d-ts.js"
+                && worker.source_path == stage.root.join("src/search.worker.ts")
+        }));
+        assert!(workers.iter().any(|worker| {
+            worker.filename == "worker-src-s-nested-d-worker-d-ts.js"
+                && worker.source_path == stage.root.join("src/nested.worker.ts")
+        }));
+        assert!(stage.worker_targets.contains(&worker));
+        assert!(stage.worker_targets.contains(&nested_worker));
+        assert!(stage.worker_targets.contains(&worker_helper));
+        assert!(stage.worker_targets.contains(&payload));
+    }
+
+    #[test]
+    fn client_script_worker_dev_outputs_change_on_second_tick_and_prune_on_third() {
+        let tmp = tempdir().unwrap();
+        let client_dir = tmp.path().join("assets/client");
+        std::fs::create_dir_all(&client_dir).unwrap();
+        let entry = client_dir.join("widget.js");
+        let worker_name = "worker-src-s-search-d-worker-d-ts.js";
+        let worker = client_dir.join(worker_name);
+
+        assert!(write_dev_client_script_output_if_changed(
+            &entry,
+            b"new URL('./worker-src-s-search-d-worker-d-ts.js?v=11111111')"
+        )
+        .unwrap());
+        assert!(write_dev_client_script_output_if_changed(&worker, b"worker-v1").unwrap());
+
+        // Second watcher tick: a worker-source edit changes both its bundle
+        // and the parent's rewritten cache query, so both files re-emit.
+        assert!(write_dev_client_script_output_if_changed(
+            &entry,
+            b"new URL('./worker-src-s-search-d-worker-d-ts.js?v=22222222')"
+        )
+        .unwrap());
+        assert!(write_dev_client_script_output_if_changed(&worker, b"worker-v2").unwrap());
+        assert!(!write_dev_client_script_output_if_changed(&worker, b"worker-v2").unwrap());
+
+        // Third tick removes the Worker constructor while retaining the
+        // client entry; the stale stable companion is pruned.
+        let previous =
+            std::collections::HashSet::from(["widget.js".to_string(), worker_name.to_string()]);
+        let current = std::collections::HashSet::from(["widget.js".to_string()]);
+        assert!(prune_dev_client_script_outputs(
+            &client_dir,
+            &previous,
+            &current
+        ));
+        assert!(!worker.exists());
+        assert!(entry.exists());
     }
 
     #[cfg(unix)]

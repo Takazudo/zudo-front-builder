@@ -872,9 +872,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // Client-scripts: eager initial bundle at boot + watcher-driven
     // rebuild. Mirrors the islands and CSS patterns above.
     //
-    // Tracks which entry names were written by the most recent bundle so
-    // the next rebuild can prune stale files (removed or renamed entries).
-    let live_client_script_names: Arc<Mutex<std::collections::HashSet<String>>> =
+    // Tracks every entry/worker basename written by the most recent bundle so
+    // the next rebuild can prune removed/renamed entries and stale workers.
+    let live_client_script_outputs: Arc<Mutex<std::collections::HashSet<String>>> =
         Arc::new(Mutex::new(std::collections::HashSet::new()));
 
     // Eager boot bundle — non-fatal, mirrors islands / CSS.
@@ -887,11 +887,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &std::collections::HashSet::new(),
         &registered_client_entries,
     ) {
-        Ok((_, names, raw_targets)) => {
-            if let Ok(mut guard) = live_client_script_names.lock() {
-                *guard = names;
+        Ok((_, outputs, raw_targets, worker_targets)) => {
+            if let Ok(mut guard) = live_client_script_outputs.lock() {
+                *guard = outputs;
             }
             raw_import_invalidation.replace_client_scripts(raw_targets);
+            raw_import_invalidation.replace_client_script_workers(worker_targets);
         }
         Err(err) => {
             output::warn(format!(
@@ -908,22 +909,22 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let dev_assets_root_for_cs = dev_assets_root.clone();
         let framework = cfg.framework;
         let bundle_config = cfg.bundle.clone();
-        let entry_names = Arc::clone(&live_client_script_names);
+        let output_filenames = Arc::clone(&live_client_script_outputs);
         // #1196 — capture registered entries for the watcher closure.
         let registered_for_cs = registered_client_entries.clone();
         let raw_invalidation = raw_import_invalidation.clone();
         Some(Arc::new(move || -> Result<bool> {
-            let prev = entry_names
+            let prev = output_filenames
                 .lock()
                 .unwrap_or_else(|p| {
                     tracing::warn!(
-                        site = "dev.run_client_scripts.entry_names",
+                        site = "dev.run_client_scripts.output_filenames",
                         "mutex poisoned, recovered"
                     );
                     p.into_inner()
                 })
                 .clone();
-            let (changed, new_names, raw_targets) =
+            let (changed, new_outputs, raw_targets, worker_targets) =
                 crate::commands::build::build_dev_client_scripts_to_disk(
                     &project_root_for_cs,
                     &dev_assets_root_for_cs,
@@ -932,15 +933,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     &prev,
                     &registered_for_cs,
                 )?;
-            let mut guard = entry_names.lock().unwrap_or_else(|p| {
+            let mut guard = output_filenames.lock().unwrap_or_else(|p| {
                 tracing::warn!(
-                    site = "dev.run_client_scripts.entry_names (write)",
+                    site = "dev.run_client_scripts.output_filenames (write)",
                     "mutex poisoned, recovered"
                 );
                 p.into_inner()
             });
-            *guard = new_names;
+            *guard = new_outputs;
             raw_invalidation.replace_client_scripts(raw_targets);
+            raw_invalidation.replace_client_script_workers(worker_targets);
             Ok(changed)
         }))
     };
