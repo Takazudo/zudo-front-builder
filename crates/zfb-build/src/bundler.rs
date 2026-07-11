@@ -143,7 +143,7 @@ use crate::adapter::run_capturing;
 use crate::glob_expand::expand_import_meta_glob;
 use crate::module_worker::{
     discover_module_preprocessing_with_context,
-    discover_registered_virtual_preprocessing_with_context,
+    discover_registered_virtual_preprocessing_with_context, probe_graph_candidate,
     rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext, ModuleWorkerDependency,
 };
 use crate::raw_import_expand::{expand_raw_imports, RawImportEdge};
@@ -2474,8 +2474,13 @@ pub fn bundle_with_session(
             .bundle_exclude
             .is_excluded(path, mat_ctx.project_root)
     };
+    let excluded_plugin_preprocessing_files = plugin_preprocessing_files
+        .iter()
+        .filter(|path| is_plugin_preprocessing_excluded(path))
+        .cloned()
+        .collect::<BTreeSet<_>>();
     for physical in &plugin_preprocessing_files {
-        if is_plugin_preprocessing_excluded(physical) {
+        if excluded_plugin_preprocessing_files.contains(physical) {
             continue;
         }
         let relative = physical
@@ -2488,6 +2493,23 @@ pub fn bundle_with_session(
                 )
             })?;
         let to = shadow.join(relative);
+        // This explicit closure exists precisely for files outside the broad
+        // source-root walks, so its parent directories may not exist in the
+        // shadow yet (notably for hidden/nested plugin targets). Create each
+        // component separately so `ShadowWriter::ensure_dir` can remove an
+        // intermediate symlink before a deeper `create_dir_all` could follow
+        // it out of the shadow. Directories are intentionally absent from the
+        // session's file-based visited/prune bookkeeping.
+        let mut shadow_parent = shadow.to_path_buf();
+        for component in relative.parent().into_iter().flat_map(Path::components) {
+            shadow_parent.push(component.as_os_str());
+            mat_ctx.writer.ensure_dir(&shadow_parent).with_context(|| {
+                format!(
+                    "bundler: create plugin preprocessing parent {}",
+                    shadow_parent.display()
+                )
+            })?;
+        }
         materialise_source_file(
             physical,
             physical,
@@ -2645,6 +2667,7 @@ pub fn bundle_with_session(
             &bundle_path,
             metafile_path.as_deref(),
             &bundle_exclude,
+            &excluded_plugin_preprocessing_files,
         )?;
     }
     let esbuild_ms = esbuild_start.map(|t| t.elapsed().as_millis());
@@ -4336,6 +4359,11 @@ fn materialise_collection(
         })?;
     let has_glob_filter = include.map(|p| !p.is_empty()).unwrap_or(false)
         || exclude.map(|p| !p.is_empty()).unwrap_or(false);
+    // `bundle.exclude` is global to the SSR graph and separate from the
+    // collection's snapshot/bridge include-exclude filter above. Keep one
+    // predicate for every non-Markdown collection materialisation seam so a
+    // plugin-aware file skipped later cannot already have been written here.
+    let is_bundle_excluded = |path: &Path| ctx.bundle_exclude.is_excluded(path, ctx.project_root);
     // Re-derive the same suffix `CollectionFilter` would have stored
     // (empty / whitespace → None) so the bundler's specifier rewrite
     // and the walker's rewrite agree on whether to strip.
@@ -4389,13 +4417,15 @@ fn materialise_collection(
             // stays mirrored in the shadow (see the matching block in
             // `materialise_shadow`).
             if ctx.copy_mode && entry.path_is_symlink() && from.is_dir() {
-                materialise_symlinked_dir(from, &to, ctx, &|_| false).with_context(|| {
-                    format!(
+                materialise_symlinked_dir(from, &to, ctx, &is_bundle_excluded).with_context(
+                    || {
+                        format!(
                         "bundler: failed materialising symlinked subdir {} -> {} under copy_mode",
                         from.display(),
                         to.display()
                     )
-                })?;
+                    },
+                )?;
             }
             continue;
         }
@@ -4426,6 +4456,14 @@ fn materialise_collection(
             from.extension().and_then(|s| s.to_str()),
             Some("md") | Some("mdx")
         );
+        // Preserve the collection snapshot/bridge contract for Markdown and
+        // MDX. Every other file is an SSR-resolver companion and must obey the
+        // global `bundle.exclude` policy before its own source is written;
+        // `materialise_source_file` only applies the predicate to nested
+        // glob/raw targets, not to `from` itself.
+        if !is_markdown && is_bundle_excluded(from) {
+            continue;
+        }
         if is_markdown {
             // Read + frontmatter-strip here in the caller because the
             // collection pass needs byte-parity with the snapshot walker:
@@ -4507,7 +4545,7 @@ fn materialise_collection(
                 from,
                 from,
                 &to,
-                &|_| false,
+                &is_bundle_excluded,
                 ctx.copy_mode,
                 ctx.writer,
                 &ctx.raw_import_edges,
@@ -4952,6 +4990,10 @@ impl BundleExcludeMatcher {
         Ok(Self { set })
     }
 
+    fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
+
     /// `true` when `abs` (an absolute path on disk) is under `project_root`
     /// and its project-relative POSIX path matches any compiled pattern.
     ///
@@ -4960,7 +5002,7 @@ impl BundleExcludeMatcher {
     /// never excluded — matching the user's mental model that
     /// `bundle.exclude` patterns are anchored at the project root.
     fn is_excluded(&self, abs: &Path, project_root: &Path) -> bool {
-        if self.set.is_empty() {
+        if self.is_empty() {
             return false;
         }
         let Ok(rel) = abs.strip_prefix(project_root) else {
@@ -5046,6 +5088,57 @@ fn rebase_tsconfig_paths_to_shadow(
     project_root: &Path,
     shadow: &Path,
 ) -> BTreeMap<String, Vec<String>> {
+    rebase_tsconfig_paths_to_shadow_with_exclusions(
+        paths,
+        project_root,
+        shadow,
+        None,
+        None,
+        &BTreeSet::new(),
+    )
+}
+
+fn concrete_tsconfig_target_is_excluded(
+    target: &Path,
+    project_root: &Path,
+    bundle_exclude: &BundleExcludeMatcher,
+) -> bool {
+    bundle_exclude.is_excluded(target, project_root)
+        || probe_graph_candidate(target, false)
+            .is_some_and(|resolved| bundle_exclude.is_excluded(&resolved, project_root))
+}
+
+/// Returns true when a wildcard target's static prefix can encompass one of
+/// the excluded files discovered in the plugin preprocessing closure.
+///
+/// We deliberately do NOT disable every under-root wildcard's real fallback
+/// merely because an unrelated `bundle.exclude` exists: top-level or ignored
+/// user-path targets may rely on that fallback. Restricting suppression to a
+/// wildcard whose static prefix contains an actually excluded closure file
+/// closes the known bypass without breaking unrelated aliases. Patterns more
+/// complex than the normal trailing `/*` form use their bytes before the first
+/// `*` as a conservative prefix.
+fn wildcard_tsconfig_target_covers_excluded_file(
+    target: &str,
+    excluded_files: &BTreeSet<PathBuf>,
+) -> bool {
+    let Some(star) = target.find('*') else {
+        return false;
+    };
+    let static_prefix = target[..star].replace('\\', "/");
+    excluded_files
+        .iter()
+        .any(|path| path_to_posix_string(path).starts_with(&static_prefix))
+}
+
+fn rebase_tsconfig_paths_to_shadow_with_exclusions(
+    paths: &BTreeMap<String, Vec<String>>,
+    project_root: &Path,
+    shadow: &Path,
+    bundle_exclude: Option<&BundleExcludeMatcher>,
+    excluded_target: Option<&Path>,
+    excluded_plugin_preprocessing_files: &BTreeSet<PathBuf>,
+) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, targets) in paths {
         let mut new_targets: Vec<String> = Vec::with_capacity(targets.len() + 1);
@@ -5061,6 +5154,26 @@ fn rebase_tsconfig_paths_to_shadow(
             let already_shadowed = prefix_path.starts_with(shadow);
             if !already_shadowed {
                 if let Ok(rel) = prefix_path.strip_prefix(project_root) {
+                    let has_wildcard = target.contains('*');
+                    if !has_wildcard
+                        && bundle_exclude.is_some_and(|matcher| {
+                            concrete_tsconfig_target_is_excluded(prefix_path, project_root, matcher)
+                        })
+                    {
+                        // A concrete user path mapping to an excluded file must
+                        // not retain either its ordinary shadow candidate or
+                        // the live-real fallback. Route it through the same
+                        // opaque absent child used for excluded plugin aliases.
+                        push_unique(
+                            &mut new_targets,
+                            excluded_target
+                                .expect("excluded concrete tsconfig target allocated a guard")
+                                .to_string_lossy()
+                                .into_owned(),
+                        );
+                        continue;
+                    }
+
                     // Under project_root → dual-target, shadow-first.
                     // `rel` is empty for the whole-root `@/* -> /root/*`
                     // (baseUrl ".") case — the most common alias shape.
@@ -5075,6 +5188,21 @@ fn rebase_tsconfig_paths_to_shadow(
                     let mut shadow_target = shadow_prefix.to_string_lossy().into_owned();
                     shadow_target.push_str(suffix);
                     push_unique(&mut new_targets, shadow_target);
+
+                    if bundle_exclude.is_some_and(|matcher| !matcher.is_empty())
+                        && has_wildcard
+                        && wildcard_tsconfig_target_covers_excluded_file(
+                            target,
+                            excluded_plugin_preprocessing_files,
+                        )
+                    {
+                        // The shadow wildcard still resolves every allowed
+                        // mirrored file, but the live-real fallback could
+                        // resurrect a matched closure file skipped from the
+                        // shadow. Suppress only this related wildcard; an
+                        // unrelated wildcard keeps its historical fallback.
+                        continue;
+                    }
                 }
             }
             // Always keep the original (real-abs / plugin / shadow) target
@@ -5702,6 +5830,7 @@ fn run_esbuild(
     bundle_path: &Path,
     metafile_path: Option<&Path>,
     bundle_exclude: &BundleExcludeMatcher,
+    excluded_plugin_preprocessing_files: &BTreeSet<PathBuf>,
 ) -> Result<()> {
     let bin = resolve_esbuild_binary(input.esbuild_binary.as_deref())?;
     let entry = shadow.join(SHADOW_ENTRY_FILENAME);
@@ -5841,6 +5970,46 @@ fn run_esbuild(
     // emitted as a plugin `--alias` (which esbuild applies BEFORE tsconfig
     // `paths`, overriding the user's mapping). User-wins, #1267.
     let project_root = normalize_path_lexical(&input.project_root);
+    let has_excluded_project_alias = !bundle_exclude.is_empty()
+        && input.plugin_alias_entries.iter().any(|(_, target)| {
+            let target_path = normalize_path_lexical(Path::new(target));
+            target_path.starts_with(&project_root)
+                && concrete_tsconfig_target_is_excluded(&target_path, &project_root, bundle_exclude)
+        });
+    let has_excluded_concrete_tsconfig_target = !bundle_exclude.is_empty()
+        && input
+            .tsconfig_paths
+            .values()
+            .flatten()
+            .filter(|target| !target.contains('*'))
+            .any(|target| {
+                let target_path = normalize_path_lexical(Path::new(target));
+                target_path.starts_with(&project_root)
+                    && concrete_tsconfig_target_is_excluded(
+                        &target_path,
+                        &project_root,
+                        bundle_exclude,
+                    )
+            });
+    // Allocate the resolution guard only after every source materialisation
+    // and stale-shadow prune has finished. Its random per-run directory cannot
+    // collide with a project-controlled shadow path; excluded aliases point at
+    // an absent child inside it. Keep the TempDir handle alive until esbuild
+    // returns so the missing target cannot be replaced during resolution.
+    let excluded_plugin_alias_guard =
+        if has_excluded_project_alias || has_excluded_concrete_tsconfig_target {
+            Some(
+                tempfile::Builder::new()
+                    .prefix(".zfb-excluded-alias-guard-")
+                    .tempdir_in(shadow)
+                    .context("bundler: failed allocating excluded plugin-alias resolution guard")?,
+            )
+        } else {
+            None
+        };
+    let excluded_plugin_alias_target = excluded_plugin_alias_guard
+        .as_ref()
+        .map(|guard| guard.path().join("unresolvable"));
     let effective_plugin_aliases = input
         .plugin_alias_entries
         .iter()
@@ -5849,14 +6018,20 @@ fn run_esbuild(
             let remapped = match target_path.strip_prefix(&project_root) {
                 Ok(relative) => {
                     let shadow_target = shadow.join(relative);
-                    if bundle_exclude.is_excluded(&target_path, &project_root) {
+                    if concrete_tsconfig_target_is_excluded(
+                        &target_path,
+                        &project_root,
+                        bundle_exclude,
+                    ) {
                         // Do not fall back to the live project file for an
-                        // excluded alias. Pointing at a dedicated hidden path
-                        // (never materialised by any source-root walk) keeps
-                        // unused registrations harmless while guaranteeing an
-                        // actual import fails resolution, even if another pass
-                        // happened to write the target's normal shadow path.
-                        shadow.join(".zfb-excluded-plugin-alias").join(relative)
+                        // excluded alias. The opaque guard was created after
+                        // materialisation, and its child deliberately does not
+                        // exist, so an actual import fails while an unused
+                        // registration remains harmless.
+                        excluded_plugin_alias_target
+                            .as_ref()
+                            .expect("excluded project alias allocated a guard")
+                            .clone()
                     } else if shadow_target.is_file() {
                         shadow_target
                     } else {
@@ -5897,8 +6072,14 @@ fn run_esbuild(
     // the shadow copy (carrying the in-shadow transform) is tried first, and
     // the real-root target is the graceful fallback when the shadow has no
     // such file. (TypeScript/esbuild tsconfig paths-array semantics.)
-    let mut merged_paths =
-        rebase_tsconfig_paths_to_shadow(&input.tsconfig_paths, &input.project_root, shadow);
+    let mut merged_paths = rebase_tsconfig_paths_to_shadow_with_exclusions(
+        &input.tsconfig_paths,
+        &input.project_root,
+        shadow,
+        Some(bundle_exclude),
+        excluded_plugin_alias_target.as_deref(),
+        excluded_plugin_preprocessing_files,
+    );
     zfb_plugin_resolver::merge_into_tsconfig_paths(
         &mut merged_paths,
         &resolver_inputs.paths_entries,
@@ -6040,6 +6221,10 @@ fn run_esbuild(
     // `NamedTempFile`s inside `_temp_files` delete themselves via
     // their Drop impl.
     drop(resolver_inputs);
+    // The excluded-alias guard must outlive the subprocess for its absent
+    // child to remain an authoritative unresolvable target. Removing it now
+    // also keeps persistent dev shadow sessions free of per-run directories.
+    drop(excluded_plugin_alias_guard);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -6322,6 +6507,62 @@ mod tests {
         );
         // external: single target, unchanged (keeps bundler_exact_match_resolution semantics)
         assert_eq!(out["@ext/*"], vec!["/other/pkg/*".to_string()]);
+    }
+
+    #[test]
+    fn exclusion_aware_tsconfig_rebase_blocks_exact_and_related_wildcard_fallbacks() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/secret.ts"), "export default 'secret';\n").unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let blocked = shadow.path().join("guard/unresolvable");
+        let matcher = BundleExcludeMatcher::new(&["src/secret.ts".to_string()]).unwrap();
+        let excluded_files = BTreeSet::from([root.join("src/secret.ts")]);
+        let root_string = root.to_string_lossy();
+        let mut paths = BTreeMap::new();
+        paths.insert(
+            "exact".to_string(),
+            vec![root.join("src/secret.ts").to_string_lossy().into_owned()],
+        );
+        paths.insert(
+            "extensionless".to_string(),
+            vec![root.join("src/secret").to_string_lossy().into_owned()],
+        );
+        paths.insert(
+            "related/*".to_string(),
+            vec![format!("{root_string}/src/*")],
+        );
+        paths.insert(
+            "unrelated/*".to_string(),
+            vec![format!("{root_string}/unmirrored/*")],
+        );
+
+        let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
+            &paths,
+            root,
+            shadow.path(),
+            Some(&matcher),
+            Some(&blocked),
+            &excluded_files,
+        );
+
+        let blocked_string = blocked.to_string_lossy().into_owned();
+        assert_eq!(out["exact"], vec![blocked_string.clone()]);
+        assert_eq!(out["extensionless"], vec![blocked_string]);
+        assert_eq!(
+            out["related/*"],
+            vec![format!("{}/src/*", shadow.path().display())]
+        );
+        assert_eq!(
+            out["unrelated/*"],
+            vec![
+                format!("{}/unmirrored/*", shadow.path().display()),
+                format!("{root_string}/unmirrored/*"),
+            ],
+            "an unrelated exclusion must preserve the historical real fallback"
+        );
     }
 
     // ── friendly_esbuild_error + its parsing helpers (#1388) ────────────────

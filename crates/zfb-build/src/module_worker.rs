@@ -574,7 +574,7 @@ fn ts_swap_candidates(path: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn probe_graph_candidate(candidate: &Path, exact: bool) -> Option<PathBuf> {
+pub(crate) fn probe_graph_candidate(candidate: &Path, exact: bool) -> Option<PathBuf> {
     if exact {
         return candidate.is_file().then(|| candidate.to_path_buf());
     }

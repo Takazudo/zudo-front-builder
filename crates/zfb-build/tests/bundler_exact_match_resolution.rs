@@ -265,22 +265,38 @@ fn imported_excluded_plugin_alias_never_falls_back_to_real_source() {
         "export default function ExcludedRealSourceMarker() { return null; }\n",
     )
     .unwrap();
+    // Materialise a separate, unexcluded plugin target at the exact project
+    // path used by the former fixed sentinel. An excluded alias must not be
+    // able to resolve this file through a project-controlled shadow collision.
+    let former_sentinel_collision =
+        root.join(".zfb-excluded-plugin-alias/content/blog/excluded-plugin.ts");
+    fs::create_dir_all(former_sentinel_collision.parent().unwrap()).unwrap();
+    fs::write(
+        &former_sentinel_collision,
+        "export default function FormerFixedSentinelMarker() { return null; }\n",
+    )
+    .unwrap();
 
     let mut input = make_input(
         &root,
         &esbuild,
         "dist-excluded-alias-root",
         BTreeMap::new(),
-        vec![(
-            "plugin:excluded-root".to_string(),
-            alias.to_string_lossy().into_owned(),
-        )],
+        vec![
+            (
+                "plugin:excluded-root".to_string(),
+                alias.to_string_lossy().into_owned(),
+            ),
+            (
+                "plugin:former-sentinel-collision".to_string(),
+                former_sentinel_collision.to_string_lossy().into_owned(),
+            ),
+        ],
         vec![],
     );
-    // A configured collection materialises this file at its ordinary
-    // shadow-relative path independently of the plugin closure. The excluded
-    // alias therefore needs a guaranteed-absent resolver sentinel, not merely
-    // the assumption that the ordinary shadow path was skipped.
+    // Exercise both collection-side exclusion and the resolver guard: the
+    // collection must not materialise the source, and the plugin alias must
+    // still point at the guaranteed-absent sentinel instead of the real file.
     input.content_collections = vec![ContentCollectionSpec::new(
         "blog",
         root.join("content/blog"),
@@ -296,6 +312,7 @@ fn imported_excluded_plugin_alias_never_falls_back_to_real_source() {
     if bundle_path.exists() {
         let body = fs::read_to_string(bundle_path).unwrap();
         assert!(!body.contains("ExcludedRealSourceMarker"), "{body}");
+        assert!(!body.contains("FormerFixedSentinelMarker"), "{body}");
     }
 }
 
@@ -349,14 +366,19 @@ fn plugin_alias_preprocessing_honours_excluded_nested_raw_target() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:excluded-raw", "unused.tsx");
-    let alias = root.join("plugin-excluded-raw.ts");
+    fs::create_dir_all(root.join("content/blog")).unwrap();
+    let alias = root.join("content/blog/plugin-excluded-raw.ts");
     fs::write(
         &alias,
         "import payload from './plugin-secret.txt?raw';\n\
          export default function Foo() { return payload; }\n",
     )
     .unwrap();
-    fs::write(root.join("plugin-secret.txt"), "EXCLUDED_PLUGIN_RAW_SECRET").unwrap();
+    fs::write(
+        root.join("content/blog/plugin-secret.txt"),
+        "EXCLUDED_PLUGIN_RAW_SECRET",
+    )
+    .unwrap();
 
     let mut input = make_input(
         &root,
@@ -369,7 +391,11 @@ fn plugin_alias_preprocessing_honours_excluded_nested_raw_target() {
         )],
         vec![],
     );
-    input.bundle_exclude = vec!["plugin-secret.txt".to_string()];
+    input.content_collections = vec![ContentCollectionSpec::new(
+        "blog",
+        root.join("content/blog"),
+    )];
+    input.bundle_exclude = vec!["content/blog/plugin-secret.txt".to_string()];
 
     let error = bundle(input).expect_err("an excluded required ?raw target must fail by name");
     let message = format!("{error:#}");
@@ -393,7 +419,8 @@ fn plugin_alias_preprocessing_honours_excluded_nested_module() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     write_fixture_project(&root, "plugin:excluded-module", "unused.tsx");
-    let alias = root.join("plugin-excluded-module.ts");
+    fs::create_dir_all(root.join("content/blog")).unwrap();
+    let alias = root.join("content/blog/plugin-excluded-module.ts");
     fs::write(
         &alias,
         "import marker from './plugin-secret.ts';\n\
@@ -401,7 +428,7 @@ fn plugin_alias_preprocessing_honours_excluded_nested_module() {
     )
     .unwrap();
     fs::write(
-        root.join("plugin-secret.ts"),
+        root.join("content/blog/plugin-secret.ts"),
         "export default 'EXCLUDED_PLUGIN_MODULE_SECRET';\n",
     )
     .unwrap();
@@ -417,7 +444,11 @@ fn plugin_alias_preprocessing_honours_excluded_nested_module() {
         )],
         vec![],
     );
-    input.bundle_exclude = vec!["plugin-secret.ts".to_string()];
+    input.content_collections = vec![ContentCollectionSpec::new(
+        "blog",
+        root.join("content/blog"),
+    )];
+    input.bundle_exclude = vec!["content/blog/plugin-secret.ts".to_string()];
 
     let error = bundle(input)
         .expect_err("an excluded nested module must remain absent from the SSR shadow");
@@ -427,6 +458,75 @@ fn plugin_alias_preprocessing_honours_excluded_nested_module() {
     if bundle_path.exists() {
         let body = fs::read_to_string(bundle_path).unwrap();
         assert!(!body.contains("EXCLUDED_PLUGIN_MODULE_SECRET"), "{body}");
+    }
+}
+
+#[test]
+fn plugin_alias_preprocessing_honours_excluded_exact_tsconfig_target() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:excluded-tsconfig", "unused.tsx");
+    fs::create_dir_all(root.join("content/blog")).unwrap();
+    let alias = root.join("content/blog/plugin-excluded-tsconfig.ts");
+    let secret = root.join("content/blog/plugin-tsconfig-secret.ts");
+    fs::write(
+        &alias,
+        "import marker from 'project:secret';\n\
+         export default function Foo() { return marker; }\n",
+    )
+    .unwrap();
+    fs::write(
+        &secret,
+        "export default 'EXCLUDED_TSCONFIG_TARGET_SECRET';\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("tsconfig.json"),
+        r#"{
+          "compilerOptions": {
+            "baseUrl": ".",
+            "paths": {
+              "project:secret": ["content/blog/plugin-tsconfig-secret.ts"]
+            }
+          }
+        }"#,
+    )
+    .unwrap();
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-excluded-plugin-tsconfig",
+        BTreeMap::from([(
+            "project:secret".to_string(),
+            vec![secret.to_string_lossy().into_owned()],
+        )]),
+        vec![(
+            "plugin:excluded-tsconfig".to_string(),
+            alias.to_string_lossy().into_owned(),
+        )],
+        vec![],
+    );
+    input.content_collections = vec![ContentCollectionSpec::new(
+        "blog",
+        root.join("content/blog"),
+    )];
+    input.bundle_exclude = vec!["content/blog/plugin-tsconfig-secret.ts".to_string()];
+
+    let error = bundle(input)
+        .expect_err("an excluded exact tsconfig target must not use its live-real fallback");
+    let message = format!("{error:#}");
+    assert!(message.contains("project:secret"), "{message}");
+    let bundle_path = root.join("dist-excluded-plugin-tsconfig/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("EXCLUDED_TSCONFIG_TARGET_SECRET"), "{body}");
     }
 }
 
