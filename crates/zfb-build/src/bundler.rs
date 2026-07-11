@@ -1862,6 +1862,7 @@ pub fn bundle_with_session(
     }
     extend_node_modules_dependency_staging(
         &project_root,
+        input.node_modules_dir.as_deref(),
         &bundle_exclude,
         !esbuild_will_preserve_symlinks(&input),
         &mut exact_target_staging_dirs,
@@ -5749,6 +5750,7 @@ fn resolve_installed_package_dir(
 
 fn extend_node_modules_dependency_staging(
     project_root: &Path,
+    node_modules_dir: Option<&Path>,
     bundle_exclude: &BundleExcludeMatcher,
     resolve_from_canonical_package: bool,
     staging_dirs: &mut BTreeSet<PathBuf>,
@@ -5757,9 +5759,20 @@ fn extend_node_modules_dependency_staging(
     let canonical_project_root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
+    // Staged-dependency-view contract seed set: every package root already
+    // staged as an exact target whose own bare dependencies must therefore be
+    // present in the isolated view too. Two seed kinds:
+    //   1. `node_modules` install roots (the original behaviour).
+    //   2. FIRST-PARTY project package roots — a package.json under
+    //      `project_root` but outside any `node_modules` (staged by
+    //      `plan_concrete_target_staging`'s first-party branch). Without this
+    //      seed a first-party package's bare deps were never closure-walked.
     let initial = staging_dirs
         .iter()
-        .filter_map(|path| node_modules_package_root(path, project_root))
+        .filter_map(|path| {
+            node_modules_package_root(path, project_root)
+                .or_else(|| first_party_staged_package_root(path, project_root))
+        })
         .collect::<BTreeSet<_>>();
     let mut pending = initial
         .iter()
@@ -5849,6 +5862,20 @@ fn extend_node_modules_dependency_staging(
                     resolve_installed_package_dir(&logical_importer, &package_name, project_root)
                 {
                     (dependency.clone(), dependency)
+                } else if let Some(dependency) =
+                    resolve_vendored_package_dir(node_modules_dir, &package_name)
+                {
+                    // The configured EXTERNAL vendored node_modules
+                    // (`BundlerInput::node_modules_dir`) is a closure source too:
+                    // a bare dep that lives only in the vendor tree (outside
+                    // `project_root`) is aliased to a logical node_modules path so
+                    // materialisation routes the staged copy through the isolation
+                    // root, keeping it out of the live `<shadow>/node_modules`
+                    // symlink.
+                    (
+                        logical_root.join("node_modules").join(&package_name),
+                        dependency,
+                    )
                 } else {
                     continue;
                 };
@@ -5867,6 +5894,35 @@ fn extend_node_modules_dependency_staging(
             }
         }
     }
+}
+
+/// A first-party package directory staged as an exact target: its `package.json`
+/// lives under `project_root`, outside any `node_modules`, and is not the
+/// project root itself (the root is never treated as a closure-walkable package —
+/// that would drag the whole project source in). Seeding it lets the closure
+/// walk discover the package's own bare dependencies, which the staged
+/// dependency-view contract requires present even though a first-party package
+/// never came from a `node_modules` install path.
+fn first_party_staged_package_root(path: &Path, project_root: &Path) -> Option<PathBuf> {
+    if project_path_is_inside_node_modules(path, project_root) {
+        return None;
+    }
+    let root = containing_project_package_root(path, project_root)?;
+    (root != project_root).then_some(root)
+}
+
+/// Resolve a bare package inside the configured external vendored node_modules
+/// (`BundlerInput::node_modules_dir`). This stages the whole package directory as
+/// a candidate; esbuild remains the sole resolver, choosing inside the staged
+/// copy. Returns `None` when no vendor dir is configured or the package is absent.
+fn resolve_vendored_package_dir(
+    node_modules_dir: Option<&Path>,
+    package_name: &str,
+) -> Option<PathBuf> {
+    let candidate = node_modules_dir?.join(package_name);
+    candidate
+        .is_dir()
+        .then(|| normalize_path_lexical(&candidate))
 }
 
 fn containing_project_package_root(path: &Path, project_root: &Path) -> Option<PathBuf> {

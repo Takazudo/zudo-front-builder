@@ -1112,6 +1112,273 @@ fn node_modules_symlinked_package_stages_non_hoisted_canonical_dependency_only_w
     );
 }
 
+// --- #1555 wave-1: allowed-closure POSITIVES for first-party closure seeding ---
+//
+// These guard against OVER-suppression: a non-excluded bare dependency reachable
+// from a staged FIRST-PARTY package (a `package.json` under the project, outside
+// `node_modules`) must resolve from the staged dependency view — across every
+// layout (project-local `node_modules`, an EXTERNAL vendored `node_modules_dir`,
+// and a pnpm virtual store) and in BOTH `preserve_symlinks` modes. They are
+// ADDITIVE prep: the live `<shadow>/node_modules` symlink still backs resolution
+// in wave 1, so each stays green whether or not the new explicit staging fires;
+// the NEGATIVE tests that prove the staged view is the SOLE resolver land with
+// the wave-2 symlink removal. esbuild stays the only resolver here — the Rust
+// change only widens the candidate SET staged into the shadow, never predicts a
+// winner.
+
+/// Lay down a first-party package `<root>/<dir>` (a `package.json` outside any
+/// `node_modules`) whose `entry.js` imports a single bare package specifier.
+/// Returns the package directory.
+fn write_first_party_bare_importer(root: &std::path::Path, dir: &str, bare_dep: &str) -> PathBuf {
+    let package = root.join(dir);
+    fs::create_dir_all(&package).unwrap();
+    fs::write(package.join("package.json"), r#"{"type":"module"}"#).unwrap();
+    fs::write(
+        package.join("entry.js"),
+        format!(
+            "import value from {dep}; export default value;\n",
+            dep = serde_json::to_string(bare_dep).unwrap()
+        ),
+    )
+    .unwrap();
+    package
+}
+
+/// Lay down a bare dependency package `<node_modules>/<name>` whose default
+/// export is the string `marker`. Returns the (physical) package directory.
+fn write_bare_package_in(node_modules: &std::path::Path, name: &str, marker: &str) -> PathBuf {
+    let dependency = node_modules.join(name);
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(
+        dependency.join("package.json"),
+        r#"{"type":"module","exports":"./index.js"}"#,
+    )
+    .unwrap();
+    fs::write(
+        dependency.join("index.js"),
+        format!("export default {marker:?};\n"),
+    )
+    .unwrap();
+    dependency
+}
+
+#[test]
+fn first_party_package_stages_project_local_bare_dependency_closure() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    for preserve in [false, true] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        write_fixture_project(&root, "plugin:fp-local", "unused.tsx");
+        write_value_page(&root, "plugin:fp-local");
+        let package = write_first_party_bare_importer(&root, "first-party-pkg", "local-dependency");
+        write_bare_package_in(
+            &root.join("node_modules"),
+            "local-dependency",
+            "ALLOWED_FIRST_PARTY_PROJECT_LOCAL_DEP",
+        );
+        fs::write(
+            root.join("src/unrelated-secret.ts"),
+            "export default 'secret';\n",
+        )
+        .unwrap();
+        let mut input = make_input(
+            &root,
+            &esbuild,
+            &format!("dist-fp-local-{preserve}"),
+            BTreeMap::new(),
+            vec![(
+                "plugin:fp-local".to_string(),
+                package.join("entry.js").to_string_lossy().into_owned(),
+            )],
+            vec![],
+        );
+        input.node_modules_dir = Some(root.join("node_modules"));
+        input.node_modules_preserve_symlinks = preserve;
+        input.bundle_exclude = vec!["src/unrelated-secret.ts".to_string()];
+        bundle(input)
+            .expect("first-party package's project-local bare dependency must stage into the view");
+        let body =
+            fs::read_to_string(root.join(format!("dist-fp-local-{preserve}/bundle.mjs"))).unwrap();
+        assert!(
+            body.contains("ALLOWED_FIRST_PARTY_PROJECT_LOCAL_DEP"),
+            "preserve_symlinks={preserve}: {body}"
+        );
+    }
+}
+
+#[test]
+fn first_party_package_stages_external_vendored_bare_dependency_closure() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    for preserve in [false, true] {
+        let project = tempfile::tempdir().expect("project tempdir");
+        let vendor = tempfile::tempdir().expect("vendor tempdir");
+        let root = project.path().to_path_buf();
+        let vendor_node_modules = vendor.path().join("node_modules");
+        write_fixture_project(&root, "plugin:fp-vendor", "unused.tsx");
+        write_value_page(&root, "plugin:fp-vendor");
+        let package =
+            write_first_party_bare_importer(&root, "first-party-pkg", "vendored-dependency");
+        write_bare_package_in(
+            &vendor_node_modules,
+            "vendored-dependency",
+            "ALLOWED_FIRST_PARTY_EXTERNAL_VENDOR_DEP",
+        );
+        fs::write(
+            root.join("src/unrelated-secret.ts"),
+            "export default 'secret';\n",
+        )
+        .unwrap();
+        let mut input = make_input(
+            &root,
+            &esbuild,
+            &format!("dist-fp-vendor-{preserve}"),
+            BTreeMap::new(),
+            vec![(
+                "plugin:fp-vendor".to_string(),
+                package.join("entry.js").to_string_lossy().into_owned(),
+            )],
+            vec![],
+        );
+        input.node_modules_dir = Some(vendor_node_modules.clone());
+        input.node_modules_preserve_symlinks = preserve;
+        input.bundle_exclude = vec!["src/unrelated-secret.ts".to_string()];
+        bundle(input).expect(
+            "first-party package's external vendored bare dependency must stage into the view",
+        );
+        let body =
+            fs::read_to_string(root.join(format!("dist-fp-vendor-{preserve}/bundle.mjs"))).unwrap();
+        assert!(
+            body.contains("ALLOWED_FIRST_PARTY_EXTERNAL_VENDOR_DEP"),
+            "preserve_symlinks={preserve}: {body}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn first_party_package_stages_pnpm_symlinked_bare_dependency_closure() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    for preserve in [false, true] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        write_fixture_project(&root, "plugin:fp-pnpm", "unused.tsx");
+        write_value_page(&root, "plugin:fp-pnpm");
+        let package = write_first_party_bare_importer(&root, "first-party-pkg", "pnpm-dependency");
+        // pnpm layout: the logical `node_modules/pnpm-dependency` is a symlink
+        // into the non-hoisted virtual store where the package physically lives.
+        let virtual_store = root.join("node_modules/.pnpm/pnpm-dependency@1/node_modules");
+        let physical_dependency = write_bare_package_in(
+            &virtual_store,
+            "pnpm-dependency",
+            "ALLOWED_FIRST_PARTY_PNPM_DEP",
+        );
+        fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::os::unix::fs::symlink(
+            &physical_dependency,
+            root.join("node_modules/pnpm-dependency"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/unrelated-secret.ts"),
+            "export default 'secret';\n",
+        )
+        .unwrap();
+        let mut input = make_input(
+            &root,
+            &esbuild,
+            &format!("dist-fp-pnpm-{preserve}"),
+            BTreeMap::new(),
+            vec![(
+                "plugin:fp-pnpm".to_string(),
+                package.join("entry.js").to_string_lossy().into_owned(),
+            )],
+            vec![],
+        );
+        input.node_modules_dir = Some(root.join("node_modules"));
+        input.node_modules_preserve_symlinks = preserve;
+        input.bundle_exclude = vec!["src/unrelated-secret.ts".to_string()];
+        bundle(input).expect(
+            "first-party package's pnpm-symlinked bare dependency must stage into the view",
+        );
+        let body =
+            fs::read_to_string(root.join(format!("dist-fp-pnpm-{preserve}/bundle.mjs"))).unwrap();
+        assert!(
+            body.contains("ALLOWED_FIRST_PARTY_PNPM_DEP"),
+            "preserve_symlinks={preserve}: {body}"
+        );
+    }
+}
+
+#[test]
+fn first_party_package_imports_external_stages_allowed_bare_dependency_closure() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:fp-imports", "unused.tsx");
+    write_value_page(&root, "plugin:fp-imports");
+    // A first-party package whose bare dependency is reached only through a
+    // package-`imports` `#dep` EXTERNAL branch — the closure source added by
+    // `package_external_import_names`.
+    let package = root.join("first-party-imports-pkg");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(
+        package.join("package.json"),
+        r##"{"type":"module","imports":{"#dep":"imports-dependency"}}"##,
+    )
+    .unwrap();
+    fs::write(
+        package.join("entry.js"),
+        "import value from '#dep'; export default value;\n",
+    )
+    .unwrap();
+    write_bare_package_in(
+        &root.join("node_modules"),
+        "imports-dependency",
+        "ALLOWED_FIRST_PARTY_PACKAGE_IMPORTS_DEP",
+    );
+    fs::write(
+        root.join("src/unrelated-secret.ts"),
+        "export default 'secret';\n",
+    )
+    .unwrap();
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-fp-imports",
+        BTreeMap::new(),
+        vec![(
+            "plugin:fp-imports".to_string(),
+            package.join("entry.js").to_string_lossy().into_owned(),
+        )],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec!["src/unrelated-secret.ts".to_string()];
+    bundle(input)
+        .expect("first-party package's #dep external imports target must stage into the view");
+    let body = fs::read_to_string(root.join("dist-fp-imports/bundle.mjs")).unwrap();
+    assert!(
+        body.contains("ALLOWED_FIRST_PARTY_PACKAGE_IMPORTS_DEP"),
+        "{body}"
+    );
+}
+
 #[test]
 fn css_import_context_does_not_use_allowed_invalid_ts_when_css_is_excluded() {
     let Some(esbuild) = locate_esbuild() else {
