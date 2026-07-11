@@ -42,7 +42,9 @@ use std::path::{Path, PathBuf};
 use zfb::cli::CheckArgs;
 use zfb::commands::check;
 use zfb::config;
-use zfb_build::{bundle_with_session, BundleMode, BundlerInput, ContentCollectionSpec, ShadowSession};
+use zfb_build::{
+    bundle_with_session, BundleMode, BundlerInput, ContentCollectionSpec, ShadowSession,
+};
 use zfb_content::{build_snapshot_with_config, CollectionConfig, PipelineSpec};
 use zfb_render::adapters::Framework;
 
@@ -138,13 +140,13 @@ async fn out_of_root_collection_passes_check_snapshot_and_build_materialisation(
         1,
         "include: [\"**/*.mdx\"] must keep only hello.mdx, got: {posts:?}"
     );
-    assert_eq!(posts[0].slug, "hello", "slug must derive from the out-of-root rel_path");
+    assert_eq!(
+        posts[0].slug, "hello",
+        "slug must derive from the out-of-root rel_path"
+    );
     assert_eq!(posts[0].rel_path, "hello.mdx");
     assert_eq!(
-        posts[0]
-            .frontmatter
-            .get("title")
-            .and_then(|v| v.as_str()),
+        posts[0].frontmatter.get("title").and_then(|v| v.as_str()),
         Some("Hello From Outside Root"),
         "frontmatter must be read from the out-of-root source file: {:?}",
         posts[0].frontmatter
