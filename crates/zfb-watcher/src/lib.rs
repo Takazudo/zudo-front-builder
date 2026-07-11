@@ -35,7 +35,7 @@
 //!   already-watched parent is handled automatically by recursive
 //!   watching.)
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
@@ -90,6 +90,17 @@ pub struct Watcher {
     // Detached on drop (JoinHandle dropped without abort); the task
     // exits itself after seeing the shutdown signal / closed bridge.
     debouncer: Option<JoinHandle<()>>,
+    /// Recursive roots registered at boot. Dynamic file watches below can
+    /// skip any parent already covered by one of these roots.
+    watched_recursive_roots: BTreeSet<PathBuf>,
+    /// Exact directories registered non-recursively for live dependencies
+    /// discovered after boot.
+    watched_dependency_dirs: BTreeSet<PathBuf>,
+}
+
+fn watch_aliases(path: &Path) -> impl Iterator<Item = PathBuf> {
+    let canonical = path.canonicalize().ok();
+    std::iter::once(path.to_path_buf()).chain(canonical)
 }
 
 impl Watcher {
@@ -171,6 +182,7 @@ impl Watcher {
             // shutting down and we should quietly stop pushing.
             let _ = raw_tx.send(res);
         })?;
+        let mut watched_recursive_roots = BTreeSet::new();
 
         for rel in relative_paths {
             let full = root.join(rel.as_ref());
@@ -181,6 +193,7 @@ impl Watcher {
             if let Err(e) = notify_watcher.watch(&full, RecursiveMode::Recursive) {
                 warn!(path = %full.display(), error = %e, "failed to watch path");
             } else {
+                watched_recursive_roots.extend(watch_aliases(&full));
                 debug!(path = %full.display(), "watching");
             }
         }
@@ -201,6 +214,7 @@ impl Watcher {
             if let Err(e) = notify_watcher.watch(extra, RecursiveMode::Recursive) {
                 warn!(path = %extra.display(), error = %e, "failed to watch extra path");
             } else {
+                watched_recursive_roots.extend(watch_aliases(extra));
                 debug!(path = %extra.display(), "watching extra path");
             }
         }
@@ -217,9 +231,62 @@ impl Watcher {
                 _notify: notify_watcher,
                 shutdown: Some(shutdown_tx),
                 debouncer: Some(debouncer),
+                watched_recursive_roots,
+                watched_dependency_dirs: BTreeSet::new(),
             },
             out_rx,
         ))
+    }
+
+    /// Add non-recursive watches for the parent directories of absolute
+    /// dependency files discovered after the watcher started.
+    ///
+    /// Watching the parent instead of the file preserves delete/recreate
+    /// visibility. Non-recursive mode avoids broadening a root-level
+    /// dependency into a recursive watch of the entire project (including
+    /// generated output). Existing boot roots and previously-added parents
+    /// are deduplicated. Per-path failures are warned and skipped, matching
+    /// the boot registration policy.
+    pub fn watch_additional_files<I, P>(&mut self, paths: I)
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        for path in paths {
+            let path = path.as_ref();
+            if !path.is_absolute() {
+                warn!(path = %path.display(), "dynamic watch dependency is not absolute; skipping");
+                continue;
+            }
+            let Some(parent) = path.parent() else {
+                continue;
+            };
+            if !parent.exists() {
+                warn!(path = %parent.display(), "dynamic watch dependency parent missing; skipping");
+                continue;
+            }
+
+            let aliases: Vec<PathBuf> = watch_aliases(parent).collect();
+            let recursively_covered = aliases.iter().any(|alias| {
+                self.watched_recursive_roots
+                    .iter()
+                    .any(|root| alias.starts_with(root))
+            });
+            if recursively_covered
+                || aliases
+                    .iter()
+                    .any(|alias| self.watched_dependency_dirs.contains(alias))
+            {
+                continue;
+            }
+
+            if let Err(error) = self._notify.watch(parent, RecursiveMode::NonRecursive) {
+                warn!(path = %parent.display(), %error, "failed to watch dynamic dependency parent");
+            } else {
+                self.watched_dependency_dirs.extend(aliases);
+                debug!(path = %parent.display(), "watching dynamic dependency parent");
+            }
+        }
     }
 }
 
@@ -906,6 +973,74 @@ mod tests {
         })
         .await;
         seen
+    }
+
+    async fn next_kind_for(
+        rx: &mut mpsc::Receiver<Change>,
+        target: &Path,
+        deadline: Duration,
+    ) -> Option<ChangeKind> {
+        tokio::time::timeout(deadline, async {
+            while let Some(change) = rx.recv().await {
+                if change.path == target {
+                    return Some(change.kind);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dynamic_dependency_parent_observes_edit_delete_and_recreate_outside_boot_roots() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        std::fs::create_dir_all(root.join("pages")).expect("pages dir");
+        std::fs::create_dir_all(root.join("lib")).expect("lib dir");
+        let dependency = root.join("lib/worker-helper.ts");
+        std::fs::write(&dependency, "export const marker = 'one';\n").expect("seed helper");
+
+        // `lib/` is deliberately absent from the boot roots. The worker graph
+        // is discovered during the boot islands pass and registers this file
+        // dynamically by watching its parent directory.
+        let (mut watcher, mut rx) = Watcher::start_with_debounce(
+            &root,
+            std::iter::once("pages"),
+            Duration::from_millis(50),
+        )
+        .expect("watcher start");
+        watcher.watch_additional_files([&dependency]);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        while rx.try_recv().is_ok() {}
+
+        std::fs::write(&dependency, "export const marker = 'two';\n").expect("edit helper");
+        assert!(
+            matches!(
+                next_kind_for(&mut rx, &dependency, Duration::from_secs(3)).await,
+                Some(ChangeKind::Created) | Some(ChangeKind::Modified)
+            ),
+            "outside-root worker helper edit must reach the watcher"
+        );
+
+        std::fs::remove_file(&dependency).expect("delete helper");
+        assert_eq!(
+            next_kind_for(&mut rx, &dependency, Duration::from_secs(3)).await,
+            Some(ChangeKind::Removed),
+            "watching the parent must preserve delete visibility"
+        );
+
+        std::fs::write(&dependency, "export const marker = 'three';\n").expect("recreate helper");
+        assert!(
+            matches!(
+                next_kind_for(&mut rx, &dependency, Duration::from_secs(3)).await,
+                Some(ChangeKind::Created) | Some(ChangeKind::Modified)
+            ),
+            "watching the parent must preserve recreate visibility"
+        );
+
+        watcher.shutdown().await;
     }
 
     /// `git checkout -- <file>` unlinks then recreates the tracked file. The

@@ -1216,6 +1216,12 @@ struct IslandsShadow {
     preserve_symlinks: bool,
     /// Logical original terminal targets represented by generated modules.
     raw_targets: std::collections::BTreeSet<PathBuf>,
+    /// Logical first-party paths that participate in any module-worker URL
+    /// graph: the constructor importer plus the worker entry and its complete
+    /// transitive closure (JS/TS helpers, terminal raw assets, CSS, etc.).
+    /// Dev invalidation watches this set even when a path lives outside the
+    /// default islands roots such as `components/` and `src/`.
+    module_worker_dependencies: std::collections::BTreeSet<PathBuf>,
 }
 
 /// Outcome of attempting to build the islands shadow for a project whose
@@ -1647,6 +1653,7 @@ fn materialise_islands_shadow(
         .iter()
         .map(|edge| edge.importer.clone())
         .collect();
+    let mut module_worker_dependencies: BTreeSet<PathBuf> = BTreeSet::new();
     for importer in worker_importers {
         if paths.project_local_rel(&importer).is_none() {
             offenders.push(format!(
@@ -1663,6 +1670,7 @@ fn materialise_islands_shadow(
                 project_root.display()
             )
         })?;
+        module_worker_dependencies.insert(logical_importer.clone());
         let source = match expanded_by_key.get(&key) {
             Some(expanded) => expanded.clone(),
             None => std::fs::read_to_string(&importer)
@@ -1675,6 +1683,11 @@ fn materialise_islands_shadow(
                 for dependency in rewrite.dependencies {
                     match paths.project_local_rel(&dependency.dependency) {
                         Some(_) => {
+                            if let Some(logical_dependency) =
+                                paths.logical_project_path(&dependency.dependency)
+                            {
+                                module_worker_dependencies.insert(logical_dependency);
+                            }
                             to_mirror.insert(dependency.dependency);
                         }
                         None => offenders.push(format!(
@@ -1820,6 +1833,7 @@ fn materialise_islands_shadow(
             .into_iter()
             .filter_map(|edge| paths.logical_project_path(&edge.target))
             .collect(),
+        module_worker_dependencies,
     }))
 }
 
@@ -1999,15 +2013,6 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
             return Ok((None, std::collections::BTreeSet::new()));
         }
     };
-    if let Some(invalidation) = raw_invalidation {
-        let paths = IslandsShadowPaths::new(project_root);
-        invalidation.replace_islands(scan_meta.raw_import_edges_from_islands.iter().map(|edge| {
-            paths
-                .logical_project_path(&edge.target)
-                .unwrap_or_else(|| edge.target.clone())
-        }));
-    }
-
     // Issue #1404 (full #1385 pt.1 fix): when `import.meta.glob` is reachable
     // from a `"use client"` island, materialise a minimal islands shadow —
     // the island graph mirrored under a TempDir with the Vite macro expanded
@@ -2039,9 +2044,6 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         match materialise_islands_shadow(project_root, &islands_set, &scan_meta)? {
             IslandsShadowOutcome::Ready(shadow) => {
                 islands_preserve_symlinks = shadow.preserve_symlinks;
-                if let Some(invalidation) = raw_invalidation {
-                    invalidation.replace_islands(shadow.raw_targets.iter().cloned());
-                }
                 _islands_shadow = Some(shadow);
             }
             IslandsShadowOutcome::KeepStopgap(offenders) => {
@@ -2081,6 +2083,31 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
                 }
             }
         }
+    }
+
+    // Replace the live islands invalidation closure only after the complete
+    // scan + preprocessing pass succeeds. Keeping the previous successful
+    // set across a transient scan/materialisation failure is intentional: a
+    // deleted worker helper must remain watched so recreating it can recover
+    // the dev bundle. The no-shadow fast path still carries terminal raw
+    // targets (normally empty); a worker shadow contributes its complete
+    // first-party graph in addition to raw targets.
+    if let Some(invalidation) = raw_invalidation {
+        let paths = IslandsShadowPaths::new(project_root);
+        let mut dependencies: std::collections::BTreeSet<PathBuf> = scan_meta
+            .raw_import_edges_from_islands
+            .iter()
+            .map(|edge| {
+                paths
+                    .logical_project_path(&edge.target)
+                    .unwrap_or_else(|| edge.target.clone())
+            })
+            .collect();
+        if let Some(shadow) = &_islands_shadow {
+            dependencies.extend(shadow.raw_targets.iter().cloned());
+            dependencies.extend(shadow.module_worker_dependencies.iter().cloned());
+        }
+        invalidation.replace_islands(dependencies);
     }
 
     // Issue #289: a project may use `<ClientRouter />` without any
@@ -2248,6 +2275,40 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         crate::config::Framework::React => zfb_islands::FrameworkKind::React,
     }
     .jsx_import_source();
+    // Issue #1501: turn the scanner's direct + nested worker edges into one
+    // deterministic entry per logical source. Worker code is read from the
+    // preprocessing shadow (where `?raw` and nested worker URLs have already
+    // been rewritten), while its filename is derived from the corresponding
+    // original project path by the locked #1500 contract.
+    let shadow_paths = IslandsShadowPaths::new(project_root);
+    let module_worker_sources: std::collections::BTreeSet<PathBuf> = scan_meta
+        .module_worker_edges_from_islands
+        .iter()
+        .map(|edge| edge.source_path.clone())
+        .collect();
+    let mut module_workers = Vec::with_capacity(module_worker_sources.len());
+    for source in module_worker_sources {
+        let logical_source = shadow_paths.logical_project_path(&source).ok_or_else(|| {
+            anyhow!(
+                "module-worker source {} has no logical path under {}",
+                source.display(),
+                project_root.display()
+            )
+        })?;
+        let physical_source = match &_islands_shadow {
+            Some(shadow) => shadow_paths
+                .project_local_rel(&source)
+                .map(|relative| shadow._tempdir.path().join(relative))
+                .unwrap_or_else(|| source.clone()),
+            None => source.clone(),
+        };
+        module_workers.push(zfb_islands::ModuleWorkerBundleEntry::new(
+            project_root,
+            &logical_source,
+            physical_source,
+        )?);
+    }
+
     let bundle_cfg = match bundle_mode {
         zfb_islands::BundleMode::Production => BundleConfig::production(),
         zfb_islands::BundleMode::Development => BundleConfig::dev(),
@@ -2257,6 +2318,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     .with_client_router(scan_meta.uses_client_router)
     .with_loaders(crate::config::resolve_bundle_loaders(bundle_config))
     .with_define(crate::config::resolve_bundle_define(bundle_config))
+    .with_module_workers(module_workers)
     // Issue #1413: the shadow carries the exact symlink-mode decision.
     // Most shadows need `--preserve-symlinks`; copy-mode shadows use real
     // source copies and deliberately omit it to mirror the SSR bundler.
@@ -2290,6 +2352,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
             let companions = asset
                 .chunks
                 .into_iter()
+                .chain(asset.workers)
                 .map(|c| CompanionFile {
                     filename: c.filename,
                     bytes: c.bytes,
@@ -6732,15 +6795,20 @@ mod tests {
     fn materialise_islands_shadow_rewrites_nested_worker_urls_without_importing_entries() {
         let tmp = tempdir().unwrap();
         let root = tmp.path();
-        std::fs::create_dir_all(root.join("pages")).unwrap();
-        std::fs::create_dir_all(root.join("components/workers")).unwrap();
+        std::fs::create_dir_all(root.join("pages/workers")).unwrap();
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        std::fs::create_dir_all(root.join("lib/workers")).unwrap();
         let page = root.join("pages/index.tsx");
         let island = root.join("components/Island.tsx");
-        let helper = root.join("components/start-worker.ts");
-        let worker = root.join("components/workers/search.ts");
-        let nested = root.join("components/workers/tokenize.ts");
-        let worker_payload = root.join("components/workers/search.txt");
-        let nested_payload = root.join("components/workers/tokenize.txt");
+        // Keep the constructor helper and most of the worker graph outside
+        // the default `components/` / `src/` islands roots. These exact
+        // logical paths must be retained for live invalidation.
+        let helper = root.join("lib/start-worker.ts");
+        let worker = root.join("pages/workers/search.ts");
+        let nested = root.join("lib/workers/tokenize.ts");
+        let worker_payload = root.join("lib/search.txt");
+        let nested_payload = root.join("lib/workers/tokenize.txt");
+        let worker_css = root.join("lib/worker.css");
         std::fs::write(
             &page,
             "import { Island } from '../components/Island'; export default Island;\n",
@@ -6748,17 +6816,17 @@ mod tests {
         .unwrap();
         std::fs::write(
             &island,
-            "'use client'; import { start } from './start-worker'; export function Island() { start(); return null; }\n",
+            "'use client'; import { start } from '../lib/start-worker'; export function Island() { start(); return null; }\n",
         )
         .unwrap();
         std::fs::write(
             &helper,
-            "export const start = () => new Worker(new URL('./workers/search.ts', import.meta.url), { type: 'module' });\n",
+            "export const start = () => new Worker(new URL('../pages/workers/search.ts', import.meta.url), { type: 'module' });\n",
         )
         .unwrap();
         std::fs::write(
             &worker,
-            "import text from './search.txt?raw'; new Worker(new URL('./tokenize.ts', import.meta.url), { type: 'module' }); self.postMessage(text);\n",
+            "import '../../lib/worker.css'; import text from '../../lib/search.txt?raw'; new Worker(new URL('../../lib/workers/tokenize.ts', import.meta.url), { type: 'module' }); self.postMessage(text);\n",
         )
         .unwrap();
         std::fs::write(
@@ -6768,6 +6836,7 @@ mod tests {
         .unwrap();
         std::fs::write(&worker_payload, "search payload").unwrap();
         std::fs::write(&nested_payload, "tokenize payload").unwrap();
+        std::fs::write(&worker_css, ".worker { color: rebeccapurple; }").unwrap();
 
         let (islands, scan_meta) = scan_islands_with_meta(&[page], &FsResolver::new()).unwrap();
         assert_eq!(scan_meta.module_worker_edges_from_islands.len(), 2);
@@ -6781,35 +6850,45 @@ mod tests {
         let shadow_island = shadow.remap.get(&island.canonicalize().unwrap()).unwrap();
         let shadow_root = shadow_island.parent().unwrap().parent().unwrap();
         let rewritten_helper =
-            std::fs::read_to_string(shadow_root.join("components/start-worker.ts")).unwrap();
+            std::fs::read_to_string(shadow_root.join("lib/start-worker.ts")).unwrap();
         assert!(
-            rewritten_helper
-                .contains("new URL(\"./worker-components-s-workers-s-search-d-ts.js?v="),
+            rewritten_helper.contains("new URL(\"./worker-pages-s-workers-s-search-d-ts.js?v="),
             "{rewritten_helper}"
         );
         assert!(rewritten_helper.contains(".js?v="), "{rewritten_helper}");
         assert!(
-            !rewritten_helper.contains("import './workers/search.ts'"),
+            !rewritten_helper.contains("import '../pages/workers/search.ts'"),
             "worker entry must not become an SSR/islands import: {rewritten_helper}"
         );
         let rewritten_worker =
-            std::fs::read_to_string(shadow_root.join("components/workers/search.ts")).unwrap();
+            std::fs::read_to_string(shadow_root.join("pages/workers/search.ts")).unwrap();
         assert!(
-            rewritten_worker
-                .contains("new URL(\"./worker-components-s-workers-s-tokenize-d-ts.js?v="),
+            rewritten_worker.contains("new URL(\"./worker-lib-s-workers-s-tokenize-d-ts.js?v="),
             "{rewritten_worker}"
         );
         assert!(!rewritten_worker.contains("?raw"), "{rewritten_worker}");
         let rewritten_nested =
-            std::fs::read_to_string(shadow_root.join("components/workers/tokenize.ts")).unwrap();
+            std::fs::read_to_string(shadow_root.join("lib/workers/tokenize.ts")).unwrap();
         assert!(!rewritten_nested.contains("?raw"), "{rewritten_nested}");
         assert!(
-            shadow_root.join("components/workers/tokenize.ts").exists(),
+            shadow_root.join("lib/workers/tokenize.ts").exists(),
             "nested worker entry is mirrored for the later emission pass"
         );
         assert_eq!(
             shadow.raw_targets,
-            std::collections::BTreeSet::from([worker_payload, nested_payload])
+            std::collections::BTreeSet::from([worker_payload.clone(), nested_payload.clone()])
+        );
+        assert_eq!(
+            shadow.module_worker_dependencies,
+            std::collections::BTreeSet::from([
+                helper,
+                worker,
+                nested,
+                worker_payload,
+                nested_payload,
+                worker_css,
+            ]),
+            "full worker closure must stay available to dev invalidation"
         );
     }
 

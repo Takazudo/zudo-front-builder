@@ -40,7 +40,7 @@ pub mod scanner;
 pub use bundler::{
     build_production_islands_asset, bundle_link_href, island_link_href, BundleChunk, BundleConfig,
     BundleMode, BundleOutput, ClientBundler, FrameworkKind, Island, IslandBundle, IslandsChunk,
-    ModuleId, PerIslandBundleOutput, ProductionIslandsAsset,
+    ModuleId, ModuleWorkerBundleEntry, PerIslandBundleOutput, ProductionIslandsAsset,
 };
 pub use client_scripts::{
     build_production_client_scripts, build_production_client_scripts_with_workers,

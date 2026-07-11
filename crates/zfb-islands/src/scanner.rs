@@ -8657,7 +8657,8 @@ mod tests {
             &entry,
             "new SharedWorker(new URL('./worker.js', import.meta.url));",
         );
-        let meta = scan_reachable_modules_with_meta(&[entry.clone()], &resolver).unwrap();
+        let meta =
+            scan_reachable_modules_with_meta(std::slice::from_ref(&entry), &resolver).unwrap();
         assert_eq!(meta.modules, vec![entry]);
         assert!(meta.module_worker_edges.is_empty());
     }
