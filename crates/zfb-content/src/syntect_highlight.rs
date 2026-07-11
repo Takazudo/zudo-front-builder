@@ -166,6 +166,22 @@ impl Highlighter {
         Ok(())
     }
 
+    /// Resolve a fence language tag to a bundled syntax, applying the
+    /// [`resolve_alias`] table. Shared by every highlight path
+    /// ([`Self::highlight_lines`], [`Self::highlight_lines_dual`],
+    /// [`Self::highlight_lines_classes`]) so alias handling lives in one place.
+    /// `None`/empty `lang` or an unresolvable tag yields `None`, and each
+    /// caller degrades to its own escaped fallback.
+    fn resolve_syntax(&self, lang: Option<&str>) -> Option<&syntect::parsing::SyntaxReference> {
+        lang.filter(|s| !s.is_empty()).and_then(|l| {
+            self.syntax_set.find_syntax_by_token(l).or_else(|| {
+                resolve_alias(l)
+                    .iter()
+                    .find_map(|name| self.syntax_set.find_syntax_by_name(name))
+            })
+        })
+    }
+
     /// Highlight a code block.
     ///
     /// * `code` - raw source code (no surrounding HTML).
@@ -226,13 +242,7 @@ impl Highlighter {
 
         let slug = theme_slug(theme_name);
 
-        let syntax = lang.filter(|s| !s.is_empty()).and_then(|l| {
-            self.syntax_set.find_syntax_by_token(l).or_else(|| {
-                resolve_alias(l)
-                    .iter()
-                    .find_map(|name| self.syntax_set.find_syntax_by_name(name))
-            })
-        });
+        let syntax = self.resolve_syntax(lang);
 
         let Some(syntax) = syntax else {
             return Ok(fallback_lines(code, &slug));
@@ -319,13 +329,7 @@ impl Highlighter {
         let light_bg = light_obj.settings.background.map(color_to_hex);
         let dark_bg = dark_obj.settings.background.map(color_to_hex);
 
-        let syntax = lang.filter(|s| !s.is_empty()).and_then(|l| {
-            self.syntax_set.find_syntax_by_token(l).or_else(|| {
-                resolve_alias(l)
-                    .iter()
-                    .find_map(|name| self.syntax_set.find_syntax_by_name(name))
-            })
-        });
+        let syntax = self.resolve_syntax(lang);
 
         let Some(syntax) = syntax else {
             return Ok(dual_fallback_lines(code, light_bg, dark_bg));
@@ -441,13 +445,7 @@ impl Highlighter {
         prefix: &str,
         role_classes: &BTreeMap<String, String>,
     ) -> Result<ClassHighlightedLines, HighlightError> {
-        let syntax = lang.filter(|s| !s.is_empty()).and_then(|l| {
-            self.syntax_set.find_syntax_by_token(l).or_else(|| {
-                resolve_alias(l)
-                    .iter()
-                    .find_map(|name| self.syntax_set.find_syntax_by_name(name))
-            })
-        });
+        let syntax = self.resolve_syntax(lang);
 
         let Some(syntax) = syntax else {
             return Ok(class_fallback_lines(code));

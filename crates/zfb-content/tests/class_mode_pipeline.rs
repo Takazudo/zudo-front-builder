@@ -11,8 +11,8 @@
 //! 3. A multi-line construct classifies line-2 correctly through the pipeline
 //!    (the ParseState + ScopeStack persistence contract, observed end-to-end).
 //! 4. The `<span class="line">` structure is identical to the single/dual path.
-//! 5. The INLINE and DUAL paths remain byte-identical to before — copied
-//!    assertions act as regression guards that this sub did not perturb them.
+//! 5. The INLINE and DUAL paths are unchanged — characteristic-substring
+//!    regression guards confirm this sub did not perturb them.
 
 use std::collections::BTreeMap;
 
@@ -251,7 +251,7 @@ fn class_pipeline_produces_span_line_structure() {
     }
 }
 
-// ── Regression guards: inline + dual paths byte-identical to before ──────────
+// ── Regression guards: inline + dual paths unchanged (characteristic substrings) ─
 
 /// The inline (default) mode must still emit inline `color:` and NO `--shiki-`
 /// vars, keep its `syntect-*` class, and NEVER carry a class-mode root. This
