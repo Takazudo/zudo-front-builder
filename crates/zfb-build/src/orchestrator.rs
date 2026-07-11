@@ -1100,11 +1100,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 on_outcome(&outcome);
             }
         }
-        // The eager boot browser passes may discover islands or client-script
-        // worker dependencies outside the configured source roots. Register
-        // each dependency's parent now so edits, deletes, and recreations enter
-        // the same watcher channel. The registry exposes the last successful
-        // closures, so a transient failed rebuild never drops recovery watches.
+        // The eager boot browser passes may discover islands, client raw
+        // targets, or client-script worker dependencies outside the configured
+        // source roots. Register each dependency's parent now so edits,
+        // deletes, and recreations enter the same watcher channel. The
+        // registry exposes the last successful closures, so a transient failed
+        // rebuild never drops recovery watches.
         register_dynamic_dependency_watches(&mut watcher, &self.config.policy);
 
         // Drain loop: wait for the first event, then drain everything
@@ -1958,6 +1959,69 @@ mod tests {
     }
 
     #[test]
+    fn client_raw_dependency_planning_survives_delete_recreate_and_replaces_stale_targets() {
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        let payload = root.join("lib/client-payload.txt");
+        let next_payload = root.join("lib/next-client-payload.txt");
+        std::fs::write(&payload, "generation one\n").unwrap();
+        invalidation.replace_client_scripts([payload.clone()]);
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let config = OrchestratorConfig::new(&root, vec![PathBuf::from("pages")]).with_policy(
+            crate::policy::GranularityPolicy::default()
+                .with_raw_import_invalidation(invalidation.clone()),
+        );
+        let orch = BuildOrchestrator::new(config, make_graph(), pipeline);
+        let dist = tempfile::tempdir().unwrap();
+
+        orch.tick_with_kinds(
+            vec![(payload.clone(), ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let edited = applies.lock().unwrap().last().unwrap().clone();
+        assert!(edited.rerun_client_scripts);
+        assert!(
+            !edited.rerun_islands,
+            "client-owned raw targets must not cross-classify as islands dependencies"
+        );
+
+        std::fs::remove_file(&payload).unwrap();
+        orch.tick_with_kinds(
+            vec![(payload.clone(), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let deleted = applies.lock().unwrap().last().unwrap().clone();
+        assert!(deleted.rerun_client_scripts);
+        assert!(!deleted.rerun_islands);
+
+        // The lexical alias remains live while the target is absent, so a
+        // recreate can recover. The next successful bundle then atomically
+        // replaces it with the newly-discovered target.
+        std::fs::write(&payload, "generation two\n").unwrap();
+        let recreated = orch.plan_for_changes([payload.clone()]);
+        assert!(recreated.rerun_client_scripts);
+        assert!(!recreated.rerun_islands);
+        std::fs::write(&next_payload, "next generation\n").unwrap();
+        invalidation.replace_client_scripts([next_payload.clone()]);
+        let stale_tick = orch.plan_for_changes([payload]);
+        assert!(
+            !stale_tick.rerun_client_scripts,
+            "successful client raw graph replacement must clear stale ownership"
+        );
+        let next_tick = orch.plan_for_changes([next_payload]);
+        assert!(next_tick.rerun_client_scripts);
+        assert!(!next_tick.rerun_islands);
+    }
+
+    #[test]
     fn client_script_worker_dependency_replacement_stops_stale_pipeline_planning() {
         let invalidation = crate::policy::RawImportInvalidation::default();
         let old_helper = PathBuf::from("/proj/lib/old-worker-helper.ts");
@@ -2032,6 +2096,84 @@ mod tests {
             matches!(observed, Some(ChangeKind::Created | ChangeKind::Modified)),
             "outside-root client worker edit must produce a write event, got {observed:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn client_raw_dependency_outside_boot_roots_survives_edit_delete_and_recreate() {
+        use std::time::Duration;
+
+        async fn next_kind_for(
+            rx: &mut tokio::sync::mpsc::Receiver<zfb_watcher::Change>,
+            target: &Path,
+        ) -> Option<ChangeKind> {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while let Some(change) = rx.recv().await {
+                    if change.path == target {
+                        return Some(change.kind);
+                    }
+                }
+                None
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        let payload = root.join("lib/client-payload.txt");
+        std::fs::write(&payload, "generation one\n").unwrap();
+
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_client_scripts([payload.clone()]);
+        let policy =
+            crate::policy::GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        assert!(policy.dynamic_dependency_paths().contains(&payload));
+        assert!(policy.is_client_script_raw_target(&payload));
+        assert!(!policy.is_client_script_worker_target(&payload));
+        assert!(!policy.is_islands_dependency(&payload));
+
+        let (mut watcher, mut rx) = Watcher::start_with_debounce(
+            &root,
+            std::iter::once("pages"),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        register_dynamic_dependency_watches(&mut watcher, &policy);
+
+        // `lib/` is deliberately absent from the recursive boot roots. The
+        // client raw snapshot must register its parent dynamically and keep
+        // that parent alive while the terminal file is missing.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        while rx.try_recv().is_ok() {}
+
+        std::fs::write(&payload, "generation two\n").unwrap();
+        assert!(
+            matches!(
+                next_kind_for(&mut rx, &payload).await,
+                Some(ChangeKind::Created | ChangeKind::Modified)
+            ),
+            "outside-root client raw edit must reach the watcher"
+        );
+
+        std::fs::remove_file(&payload).unwrap();
+        assert_eq!(
+            next_kind_for(&mut rx, &payload).await,
+            Some(ChangeKind::Removed),
+            "watching the raw target parent must preserve delete visibility"
+        );
+
+        std::fs::write(&payload, "generation three\n").unwrap();
+        assert!(
+            matches!(
+                next_kind_for(&mut rx, &payload).await,
+                Some(ChangeKind::Created | ChangeKind::Modified)
+            ),
+            "watching the raw target parent must preserve recreate recovery"
+        );
+        watcher.shutdown().await;
     }
 
     #[test]

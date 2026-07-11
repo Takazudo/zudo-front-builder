@@ -1573,6 +1573,111 @@ fn collect_shadow_config_chain(
     Ok(())
 }
 
+fn shadow_config_target_replacement(
+    project_root: &Path,
+    shadow_root: &Path,
+    base_dir: &Path,
+    target: &str,
+) -> Option<String> {
+    let authored = Path::new(target);
+    if authored.is_absolute() {
+        // Absolute external aliases already survive relocation. Preserve the
+        // authored spelling byte-for-byte; only absolute targets that point
+        // back into the project need rebasing into the shadow.
+        return rebase_config_path_to_shadow(project_root, shadow_root, authored)
+            .map(|path| path.to_string_lossy().into_owned());
+    }
+
+    let resolved = zfb_plugin_resolver::resolve_tsconfig_path_target(base_dir, target);
+    let resolved_path = Path::new(&resolved);
+    Some(
+        rebase_config_path_to_shadow(project_root, shadow_root, resolved_path)
+            .unwrap_or_else(|| resolved_path.to_path_buf())
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+fn rewrite_shadow_config_resolver_options(
+    project_root: &Path,
+    shadow_root: &Path,
+    config: &Path,
+    value: &mut serde_json::Value,
+) -> bool {
+    let parsed = zfb_plugin_resolver::read_tsconfig_paths_file(config);
+    let config_dir = config.parent().unwrap_or(project_root);
+    let paths_base_dir = parsed
+        .as_ref()
+        .map(|parsed| parsed.base_dir.clone())
+        .unwrap_or_else(|| normalize_shadow_path(config_dir));
+    let Some(compiler_options) = value
+        .get_mut("compilerOptions")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return false;
+    };
+
+    let mut changed = false;
+    if let Some(base_url) = compiler_options
+        .get("baseUrl")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    {
+        let authored = Path::new(&base_url);
+        let replacement = if authored.is_absolute() {
+            // As with absolute path aliases, a genuinely external absolute
+            // baseUrl is already stable and should retain its spelling.
+            rebase_config_path_to_shadow(project_root, shadow_root, authored)
+        } else {
+            let resolved = normalize_shadow_path(&config_dir.join(authored));
+            Some(
+                rebase_config_path_to_shadow(project_root, shadow_root, &resolved)
+                    .unwrap_or(resolved),
+            )
+        };
+        if let Some(replacement) = replacement {
+            let replacement = replacement.to_string_lossy().into_owned();
+            if replacement != base_url {
+                compiler_options.insert(
+                    "baseUrl".to_string(),
+                    serde_json::Value::String(replacement),
+                );
+                changed = true;
+            }
+        }
+    }
+
+    if let Some(paths) = compiler_options
+        .get_mut("paths")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for targets in paths.values_mut() {
+            let Some(targets) = targets.as_array_mut() else {
+                continue;
+            };
+            for target in targets {
+                let Some(authored) = target.as_str() else {
+                    continue;
+                };
+                let Some(replacement) = shadow_config_target_replacement(
+                    project_root,
+                    shadow_root,
+                    &paths_base_dir,
+                    authored,
+                ) else {
+                    continue;
+                };
+                if replacement != authored {
+                    *target = serde_json::Value::String(replacement);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    changed
+}
+
 fn islands_shadow_config_bytes(
     project_root: &Path,
     shadow_root: &Path,
@@ -1583,9 +1688,15 @@ fn islands_shadow_config_bytes(
     let cleaned = zfb_plugin_resolver::strip_tsconfig_jsonc(&raw);
     let mut value: serde_json::Value = serde_json::from_str(&cleaned)
         .with_context(|| format!("parse shadow TypeScript config {}", config.display()))?;
+    let mut changed =
+        rewrite_shadow_config_resolver_options(project_root, shadow_root, config, &mut value);
     let extends_values = config_extends_values(&value);
     if extends_values.is_empty() {
-        return Ok(raw.into_bytes());
+        return if changed {
+            serde_json::to_vec_pretty(&value).context("serialize rewritten shadow config")
+        } else {
+            Ok(raw.into_bytes())
+        };
     }
     let canonical_root = project_root.canonicalize().with_context(|| {
         format!(
@@ -1593,7 +1704,6 @@ fn islands_shadow_config_bytes(
             project_root.display()
         )
     })?;
-    let mut changed = false;
     let mut has_external_path_extends = false;
     let mut rewritten = Vec::with_capacity(extends_values.len());
     for extends in extends_values {
@@ -1738,16 +1848,47 @@ fn rebase_config_path_to_shadow(
     shadow_root: &Path,
     path: &Path,
 ) -> Option<PathBuf> {
+    fn canonicalize_existing_prefix(path: &Path) -> Option<PathBuf> {
+        let mut existing = normalize_shadow_path(path);
+        let mut suffix = Vec::new();
+        while !existing.exists() {
+            suffix.push(existing.file_name()?.to_os_string());
+            if !existing.pop() {
+                return None;
+            }
+        }
+        let mut canonical = existing.canonicalize().ok()?;
+        for component in suffix.into_iter().rev() {
+            canonical.push(component);
+        }
+        Some(normalize_shadow_path(&canonical))
+    }
+
     let lexical_root = normalize_shadow_path(project_root);
     let canonical_root = project_root
         .canonicalize()
         .map(|path| normalize_shadow_path(&path))
         .unwrap_or_else(|_| lexical_root.clone());
     let normalized = normalize_shadow_path(path);
-    let relative = normalized
-        .strip_prefix(&lexical_root)
-        .or_else(|_| normalized.strip_prefix(&canonical_root))
-        .ok()?;
+    let canonical_candidate = canonicalize_existing_prefix(&normalized);
+    let relative = if let Ok(relative) = normalized.strip_prefix(&lexical_root) {
+        // Preserve an authored in-project symlink spelling when its physical
+        // target also stays inside the project. A symlink escape is genuinely
+        // external and must remain an absolute real-tree resolver target.
+        if canonical_candidate
+            .as_ref()
+            .is_some_and(|candidate| !candidate.starts_with(&canonical_root))
+        {
+            return None;
+        }
+        relative
+    } else {
+        canonical_candidate
+            .as_deref()
+            .unwrap_or(&normalized)
+            .strip_prefix(&canonical_root)
+            .ok()?
+    };
     if relative.as_os_str().is_empty() {
         Some(shadow_root.to_path_buf())
     } else {
@@ -7497,6 +7638,141 @@ mod tests {
         );
     }
 
+    fn write_standalone_shadow_config_fixture(
+        config: &Path,
+        base_url: &str,
+        scope: &str,
+        local_target: &str,
+        external_target: &str,
+        absolute_external_target: &str,
+    ) {
+        let value = serde_json::json!({
+            "compilerOptions": {
+                "baseUrl": base_url,
+                "paths": {
+                    (format!("@{scope}-local/*")): [local_target],
+                    (format!("@{scope}-external/*")): [external_target],
+                    (format!("@{scope}-absolute/*")): [absolute_external_target]
+                }
+            }
+        });
+        std::fs::write(config, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    }
+
+    fn assert_standalone_shadow_config_rebased(
+        config: &Path,
+        expected_base_url: &Path,
+        scope: &str,
+        expected_local_target: &Path,
+        expected_external_target: &Path,
+        absolute_external_target: &str,
+    ) {
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+        assert_eq!(
+            value["compilerOptions"]["baseUrl"].as_str(),
+            Some(expected_base_url.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            value["compilerOptions"]["paths"][format!("@{scope}-local/*")][0].as_str(),
+            Some(expected_local_target.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            value["compilerOptions"]["paths"][format!("@{scope}-external/*")][0].as_str(),
+            Some(expected_external_target.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            value["compilerOptions"]["paths"][format!("@{scope}-absolute/*")][0].as_str(),
+            Some(absolute_external_target),
+            "already-absolute external aliases must retain their authored spelling"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_rebases_standalone_root_and_nested_configs() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let external = tmp.path().join("external");
+        for dir in [
+            root.join("pages"),
+            root.join("components/feature"),
+            root.join("src/root-local"),
+            root.join("src/nested-local"),
+            external.join("root-lib"),
+            external.join("nested-lib"),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let absolute_external = external
+            .join("../external/absolute/*")
+            .to_string_lossy()
+            .into_owned();
+        write_standalone_shadow_config_fixture(
+            &root.join("tsconfig.json"),
+            "../external",
+            "root",
+            "../project/src/root-local/*",
+            "root-lib/*",
+            &absolute_external,
+        );
+        write_standalone_shadow_config_fixture(
+            &root.join("components/feature/jsconfig.json"),
+            "../../../external",
+            "nested",
+            "../project/src/nested-local/*",
+            "nested-lib/*",
+            &absolute_external,
+        );
+
+        let root_island = root.join("RootIsland.tsx");
+        let nested_island = root.join("components/feature/NestedIsland.tsx");
+        std::fs::write(
+            root.join("pages/index.tsx"),
+            "import { RootIsland } from '../RootIsland';\n\
+             import { NestedIsland } from '../components/feature/NestedIsland';\n\
+             export default function Page() { return RootIsland() + NestedIsland(); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &root_island,
+            "'use client'; import raw from './root.txt?raw'; export function RootIsland() { return raw; }\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("root.txt"), "root raw").unwrap();
+        std::fs::write(
+            &nested_island,
+            "'use client'; import raw from './nested.txt?raw'; export function NestedIsland() { return raw; }\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("components/feature/nested.txt"), "nested raw").unwrap();
+
+        let (islands, scan_meta) =
+            scan_islands_with_meta(&[root.join("pages/index.tsx")], &FsResolver::new()).unwrap();
+        let shadow = match materialise_islands_shadow(&root, &islands, &scan_meta).unwrap() {
+            IslandsShadowOutcome::Ready(shadow) => shadow,
+            IslandsShadowOutcome::KeepStopgap(offenders) => {
+                panic!("standalone-config raw islands must materialise: {offenders:?}")
+            }
+        };
+        let shadow_root = shadow._tempdir.path();
+        assert_standalone_shadow_config_rebased(
+            &shadow_root.join("tsconfig.json"),
+            &external,
+            "root",
+            &shadow_root.join("src/root-local/*"),
+            &external.join("root-lib/*"),
+            &absolute_external,
+        );
+        assert_standalone_shadow_config_rebased(
+            &shadow_root.join("components/feature/jsconfig.json"),
+            &external,
+            "nested",
+            &shadow_root.join("src/nested-local/*"),
+            &external.join("nested-lib/*"),
+            &absolute_external,
+        );
+    }
+
     #[test]
     fn materialise_islands_shadow_rewrites_external_relative_extends_absolute() {
         let tmp = tempdir().unwrap();
@@ -8496,6 +8772,88 @@ mod tests {
         assert_eq!(
             paths["@feature/*"][0],
             stage.root.join("src/feature/*").to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn client_script_stage_rebases_standalone_root_and_nested_configs() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let external = tmp.path().join("external");
+        for dir in [
+            root.join("pages"),
+            root.join("src/feature"),
+            root.join("src/root-local"),
+            root.join("src/nested-local"),
+            external.join("root-lib"),
+            external.join("nested-lib"),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let absolute_external = external
+            .join("../external/absolute/*")
+            .to_string_lossy()
+            .into_owned();
+        write_standalone_shadow_config_fixture(
+            &root.join("jsconfig.json"),
+            "../external",
+            "root-client",
+            "../project/src/root-local/*",
+            "root-lib/*",
+            &absolute_external,
+        );
+        write_standalone_shadow_config_fixture(
+            &root.join("src/feature/tsconfig.json"),
+            "../../../external",
+            "nested-client",
+            "../project/src/nested-local/*",
+            "nested-lib/*",
+            &absolute_external,
+        );
+
+        let root_entry = root.join("pages/root.client.ts");
+        let nested_entry = root.join("src/feature/nested.client.ts");
+        std::fs::write(
+            &root_entry,
+            "import raw from './root.txt?raw'; console.log(raw);\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("pages/root.txt"), "root client raw").unwrap();
+        std::fs::write(
+            &nested_entry,
+            "import raw from './nested.txt?raw'; console.log(raw);\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/feature/nested.txt"), "nested client raw").unwrap();
+        let entries = vec![
+            zfb_islands::client_scripts::ClientScriptEntry {
+                entry_name: "root".into(),
+                source_path: root_entry,
+            },
+            zfb_islands::client_scripts::ClientScriptEntry {
+                entry_name: "nested".into(),
+                source_path: nested_entry,
+            },
+        ];
+
+        let stage = stage_client_script_preprocessing(&root, &entries)
+            .unwrap()
+            .expect("standalone-config raw client entries need a stage");
+        assert_standalone_shadow_config_rebased(
+            &stage.root.join("jsconfig.json"),
+            &external,
+            "root-client",
+            &stage.root.join("src/root-local/*"),
+            &external.join("root-lib/*"),
+            &absolute_external,
+        );
+        assert_standalone_shadow_config_rebased(
+            &stage.root.join("src/feature/tsconfig.json"),
+            &external,
+            "nested-client",
+            &stage.root.join("src/nested-local/*"),
+            &external.join("nested-lib/*"),
+            &absolute_external,
         );
     }
 
