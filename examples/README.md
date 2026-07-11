@@ -1,5 +1,12 @@
 # Examples Workspace Contract
 
+> **Looking for a full, deployable example?** This directory holds in-repo
+> scratch examples used to test published packages, not standalone projects.
+> For the 9 standalone Cloudflare Workers/Pages example repositories with
+> live demos, see the
+> [Examples](https://takazudomodular.com/pj/zudo-front-builder/docs/guides/examples/)
+> docs page.
+
 The `examples/*` workspace is for copyable, runnable examples that exercise
 published `@takazudo/*` packages the same way an external user would consume
 them. Example packages are intentionally excluded from release build and T1
