@@ -269,7 +269,8 @@ fn lexical_normalize(abs: &Path) -> PathBuf {
 /// AND `zfb dev` is restarted — the same "restart after creating" contract
 /// the extras channel already documents for a missing target.
 fn canonicalize_or_lexical(abs: &Path) -> PathBuf {
-    abs.canonicalize().unwrap_or_else(|_| lexical_normalize(abs))
+    abs.canonicalize()
+        .unwrap_or_else(|_| lexical_normalize(abs))
 }
 
 /// Boot-time resolved-root inventory (issue #1550).
@@ -6346,7 +6347,9 @@ mod tests {
         // same inventory so narrowing / discovery tests see canonical
         // out-of-root roots. Computed before `cfg` is moved into
         // `rebuild_inputs`.
-        let collection_roots = resolve_roots(&project_root, &cfg).collection_roots().to_vec();
+        let collection_roots = resolve_roots(&project_root, &cfg)
+            .collection_roots()
+            .to_vec();
         DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
                 routes_by_source,
@@ -6766,8 +6769,7 @@ mod tests {
             "canonical event path {event_path:?} must be under the canonical root {root:?}"
         );
 
-        let filter =
-            zfb_content::collection::CollectionFilter::new(None, None, None).unwrap();
+        let filter = zfb_content::collection::CollectionFilter::new(None, None, None).unwrap();
         // The site's actual matcher succeeds with the inventory root...
         assert!(
             zfb_content::collection::derive_slug_for_file(root, &event_path, &filter).is_some(),
