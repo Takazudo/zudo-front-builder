@@ -107,9 +107,10 @@ pub use inject::{inject_livereload, inject_livereload_into_tree, LIVERELOAD_TAG}
 pub use injected_routes::{pattern_matches, InjectedRouteSet};
 pub use livereload::{outcome_to_events, IslandsBundleInfo, ReloadEvent, ReloadTx};
 pub use plugin_middleware::{
-    path_matches_prefix, DevMiddlewareDispatcher, DevMiddlewareSet, PluginDispatchError,
+    body_limit_layer, dispatch_plugin, origin_gate, path_matches_prefix, plugin_error_response,
+    DevMiddlewareDispatcher, DevMiddlewareSet, PluginDispatchAttempt, PluginDispatchError,
     PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
-    PluginResponseEncoding,
+    PluginResponseEncoding, PLUGIN_BODY_LIMIT_BYTES,
 };
 pub use redirects::{RedirectOutcome, Redirects};
 pub use render_hook::{RenderOnRequestHandle, RenderOnRequestHook};
