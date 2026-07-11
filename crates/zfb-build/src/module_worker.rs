@@ -25,8 +25,181 @@ use swc_core::ecma::ast::{
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::visit::{Visit, VisitWith};
-use zfb_plugin_resolver::{read_tsconfig_paths, TsConfigPaths};
+use zfb_plugin_resolver::{read_tsconfig_paths_file, TsConfigPaths};
 use zfb_types::{module_worker_content_hash, module_worker_url_specifier, normalize_path_lexical};
+
+/// Every non-source input that can change emitted module-worker bytes.
+///
+/// The stable worker filename is path-derived, so the rewritten `?v=` query
+/// must cover both the first-party source graph and the esbuild/resolver
+/// semantics used by the later browser-only emission pass. Callers construct
+/// one context from the same bundle options and plugin registrations they
+/// hand to esbuild, then pass it to every SSR/islands/client rewrite.
+/// `preserve_symlinks` is intentionally absent: it is a preprocessing-shadow
+/// transport choice that may differ between SSR and browser staging but must
+/// resolve to the same logical graph. Hashing it would make those call sites
+/// disagree even when the emitted worker bytes are identical.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleWorkerBuildContext {
+    production: bool,
+    minify: bool,
+    sourcemap: bool,
+    loader_args: Vec<String>,
+    define: BTreeMap<String, String>,
+    jsx_import_source: String,
+    plugin_alias_entries: Vec<(String, String)>,
+    plugin_virtual_modules: Vec<(String, String)>,
+}
+
+impl Default for ModuleWorkerBuildContext {
+    fn default() -> Self {
+        Self::new(false, &BTreeMap::new(), &BTreeMap::new(), "preact")
+    }
+}
+
+impl ModuleWorkerBuildContext {
+    /// Construct a context from the canonical bundle loader/define maps.
+    pub fn new(
+        production: bool,
+        loaders: &BTreeMap<String, String>,
+        define: &BTreeMap<String, String>,
+        jsx_import_source: impl Into<String>,
+    ) -> Self {
+        Self {
+            production,
+            minify: production,
+            sourcemap: !production,
+            loader_args: loaders
+                .iter()
+                .map(|(extension, loader)| format!("--loader:{extension}={loader}"))
+                .collect(),
+            define: define.clone(),
+            jsx_import_source: jsx_import_source.into(),
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        }
+    }
+
+    /// Construct from the already-validated esbuild loader argv used by the
+    /// SSR bundler. Sorting makes equivalent config maps hash identically.
+    pub fn from_esbuild_loader_args(
+        production: bool,
+        loader_args: &[String],
+        define: &BTreeMap<String, String>,
+        jsx_import_source: impl Into<String>,
+    ) -> Self {
+        let mut loader_args = loader_args.to_vec();
+        loader_args.sort();
+        loader_args.dedup();
+        Self {
+            production,
+            minify: production,
+            sourcemap: !production,
+            loader_args,
+            define: define.clone(),
+            jsx_import_source: jsx_import_source.into(),
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+        }
+    }
+
+    /// Attach the exact plugin resolver inputs consumed by esbuild.
+    pub fn with_plugins(
+        mut self,
+        alias_entries: Vec<(String, String)>,
+        virtual_modules: Vec<(String, String)>,
+    ) -> Self {
+        self.plugin_alias_entries = alias_entries;
+        self.plugin_virtual_modules = virtual_modules;
+        self
+    }
+
+    /// Record output-affecting flags that are independently overrideable on
+    /// the lower-level bundler API. CLI presets normally derive these from
+    /// mode, but spelling them out prevents library callers from reusing a
+    /// query across different worker bytes.
+    pub fn with_output_semantics(mut self, minify: bool, sourcemap: bool) -> Self {
+        self.minify = minify;
+        self.sourcemap = sourcemap;
+        self
+    }
+
+    fn virtual_module_source(&self, specifier: &str) -> Option<&str> {
+        self.plugin_virtual_modules
+            .iter()
+            .find_map(|(candidate, source)| (candidate == specifier).then_some(source.as_str()))
+    }
+
+    fn append_cache_envelope(&self, aggregate: &mut Vec<u8>, project_root: &Path) {
+        fn field(aggregate: &mut Vec<u8>, tag: &[u8], value: &[u8]) {
+            aggregate.extend_from_slice(&(tag.len() as u64).to_le_bytes());
+            aggregate.extend_from_slice(tag);
+            aggregate.extend_from_slice(&(value.len() as u64).to_le_bytes());
+            aggregate.extend_from_slice(value);
+        }
+
+        field(aggregate, b"abi", b"zfb-module-worker-cache-v2");
+        field(
+            aggregate,
+            b"esbuild",
+            zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION.as_bytes(),
+        );
+        field(
+            aggregate,
+            b"mode",
+            if self.production {
+                b"production"
+            } else {
+                b"development"
+            },
+        );
+        field(
+            aggregate,
+            b"minify",
+            if self.minify { b"true" } else { b"false" },
+        );
+        field(
+            aggregate,
+            b"sourcemap",
+            if self.sourcemap { b"true" } else { b"false" },
+        );
+        field(
+            aggregate,
+            b"jsx-import-source",
+            self.jsx_import_source.as_bytes(),
+        );
+        for loader in &self.loader_args {
+            field(aggregate, b"loader", loader.as_bytes());
+        }
+        for (key, value) in &self.define {
+            field(aggregate, b"define-key", key.as_bytes());
+            field(aggregate, b"define-value", value.as_bytes());
+        }
+
+        // Resolver registries are semantically maps. Sort their serialized
+        // pairs so plugin registration iteration order cannot perturb URLs.
+        let mut aliases = self.plugin_alias_entries.clone();
+        aliases.sort();
+        let root = normalize_path_lexical(project_root);
+        for (specifier, target) in aliases {
+            let target_path = normalize_path_lexical(Path::new(&target));
+            let stable_target = target_path
+                .strip_prefix(&root)
+                .map(|relative| {
+                    format!("project:/{}", relative.to_string_lossy().replace('\\', "/"))
+                })
+                .unwrap_or_else(|_| format!("external:{}", target_path.to_string_lossy()));
+            field(aggregate, b"plugin-alias", specifier.as_bytes());
+            field(aggregate, b"plugin-alias-target", stable_target.as_bytes());
+        }
+        let mut virtual_modules = self.plugin_virtual_modules.clone();
+        virtual_modules.sort();
+        for (specifier, source) in virtual_modules {
+            field(aggregate, b"plugin-virtual", specifier.as_bytes());
+            field(aggregate, b"plugin-virtual-source", source.as_bytes());
+        }
+    }
+}
 
 /// A direct `new Worker(...)` edge discovered while rewriting a source.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -486,6 +659,13 @@ fn installed_package_exists(importer_dir: &Path, project_root: &Path, specifier:
 struct ProjectGraphResolver {
     project_root: PathBuf,
     tsconfig_paths: Option<TsConfigPaths>,
+    plugin_aliases: BTreeMap<String, String>,
+    plugin_virtual_modules: BTreeSet<String>,
+}
+
+enum GraphResolution {
+    File(PathBuf),
+    Virtual(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -505,10 +685,49 @@ fn has_css_url_scheme(specifier: &str) -> bool {
 }
 
 impl ProjectGraphResolver {
-    fn new(project_root: &Path) -> Self {
+    fn new(project_root: &Path, worker_entry: &Path, context: &ModuleWorkerBuildContext) -> Self {
+        // `compilerOptions.paths` keeps the first exact key on collision.
+        // Preserve that same behavior for duplicate plugin registrations.
+        let mut plugin_aliases = BTreeMap::new();
+        for (specifier, target) in &context.plugin_alias_entries {
+            plugin_aliases
+                .entry(specifier.clone())
+                .or_insert_with(|| target.clone());
+        }
+        let root = normalize_path_lexical(project_root);
+        let mut config_dir = normalize_path_lexical(worker_entry)
+            .parent()
+            .map(Path::to_path_buf);
+        let mut selected_config = None;
+        while let Some(dir) = config_dir {
+            if !dir.starts_with(&root) {
+                break;
+            }
+            // Match the emission-side selector: tsconfig wins over jsconfig
+            // when both exist at the same closest directory.
+            for filename in ["tsconfig.json", "jsconfig.json"] {
+                let candidate = dir.join(filename);
+                if candidate.is_file() {
+                    selected_config = Some(candidate);
+                    break;
+                }
+            }
+            if selected_config.is_some() || dir == root {
+                break;
+            }
+            config_dir = dir.parent().map(Path::to_path_buf);
+        }
         Self {
             project_root: project_root.to_path_buf(),
-            tsconfig_paths: read_tsconfig_paths(project_root),
+            tsconfig_paths: selected_config
+                .as_deref()
+                .and_then(read_tsconfig_paths_file),
+            plugin_aliases,
+            plugin_virtual_modules: context
+                .plugin_virtual_modules
+                .iter()
+                .map(|(specifier, _)| specifier.clone())
+                .collect(),
         }
     }
 
@@ -517,7 +736,7 @@ impl ProjectGraphResolver {
         importer: &Path,
         specifier: &str,
         kind: GraphSpecifierKind,
-    ) -> Result<Option<PathBuf>> {
+    ) -> Result<Option<GraphResolution>> {
         if specifier.starts_with("http://")
             || specifier.starts_with("https://")
             || specifier.starts_with("data:")
@@ -595,6 +814,43 @@ impl ProjectGraphResolver {
                     importer.display()
                 );
             }
+            let user_claims_specifier = self.tsconfig_paths.as_ref().is_some_and(|paths| {
+                paths
+                    .aliases
+                    .iter()
+                    .any(|alias| match_tsconfig_pattern(&alias.pattern, path_specifier).is_some())
+            });
+            // Plugin virtual modules are emitted through esbuild `--alias`
+            // unless the user's tsconfig claims the specifier. They have no
+            // stable filesystem identity, so their source bytes live in the
+            // context cache envelope instead of the watch-path closure.
+            if self.plugin_virtual_modules.contains(path_specifier) && !user_claims_specifier {
+                return Ok(Some(GraphResolution::Virtual(path_specifier.to_string())));
+            }
+
+            let user_has_exact = self.tsconfig_paths.as_ref().is_some_and(|paths| {
+                paths
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.pattern == path_specifier)
+            });
+            // Plugin aliases are exact `paths` entries. An exact user key
+            // wins; otherwise the plugin exact key outranks user wildcards,
+            // matching esbuild's path-pattern specificity.
+            if !user_has_exact {
+                if let Some(target) = self.plugin_aliases.get(path_specifier) {
+                    let candidate = normalize_path_lexical(Path::new(target));
+                    let found = probe_graph_candidate(&candidate, raw).ok_or_else(|| {
+                        anyhow!(
+                            "zfb bundler: plugin alias {path_specifier:?} imported by {} targets {}, but no module resolved; refusing to produce a stale worker cache key",
+                            importer.display(),
+                            candidate.display()
+                        )
+                    })?;
+                    return self.finish_file_resolution(found);
+                }
+            }
+
             let alias_resolution =
                 resolve_tsconfig_graph_alias(self.tsconfig_paths.as_ref(), path_specifier)?;
             if let Some(Some(found)) = alias_resolution.as_ref() {
@@ -619,6 +875,10 @@ impl ProjectGraphResolver {
                 )
             }
         };
+        self.finish_file_resolution(found)
+    }
+
+    fn finish_file_resolution(&self, found: PathBuf) -> Result<Option<GraphResolution>> {
         let resolves_under_node_modules = is_inside_node_modules(&found)
             || found
                 .canonicalize()
@@ -628,7 +888,7 @@ impl ProjectGraphResolver {
             return Ok(None);
         }
         match validate_first_party_path(&found, &self.project_root, "module-worker dependency") {
-            Ok(path) => Ok(Some(path)),
+            Ok(path) => Ok(Some(GraphResolution::File(path))),
             Err(error) => Err(error),
         }
     }
@@ -888,77 +1148,131 @@ struct WorkerGraph {
     files: BTreeSet<PathBuf>,
 }
 
-fn inspect_worker_graph(entry: &Path, project_root: &Path) -> Result<WorkerGraph> {
-    let resolver = ProjectGraphResolver::new(project_root);
+fn inspect_worker_graph(
+    entry: &Path,
+    project_root: &Path,
+    context: &ModuleWorkerBuildContext,
+) -> Result<WorkerGraph> {
+    let resolver = ProjectGraphResolver::new(project_root, entry, context);
     let mut visited = BTreeSet::new();
     let mut stack = vec![entry.to_path_buf()];
+    let mut virtual_stack = Vec::new();
+    let mut visited_virtual = BTreeSet::new();
     let mut file_bytes: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
     let mut worker_edges = BTreeSet::new();
 
-    while let Some(current) = stack.pop() {
-        if !visited.insert(current.clone()) {
-            continue;
-        }
-        let bytes = std::fs::read(&current)
-            .with_context(|| format!("read module-worker dependency {}", current.display()))?;
-        file_bytes.insert(current.clone(), bytes.clone());
-        if !is_js_like(&current) && !is_css_like(&current) {
-            continue;
-        }
-        let source = String::from_utf8(bytes).map_err(|error| {
-            anyhow!(
-                "zfb bundler: module-worker source {} is not valid UTF-8: {error}",
-                current.display()
-            )
-        })?;
-        if is_css_like(&current) {
-            let references = collect_css_references(&source, &current)?;
-            for specifier in references.imports {
-                if let Some(dependency) =
-                    resolver.resolve(&current, &specifier, GraphSpecifierKind::CssImport)?
-                {
-                    if !visited.contains(&dependency) {
-                        stack.push(dependency);
+    loop {
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            let bytes = std::fs::read(&current)
+                .with_context(|| format!("read module-worker dependency {}", current.display()))?;
+            file_bytes.insert(current.clone(), bytes.clone());
+            if !is_js_like(&current) && !is_css_like(&current) {
+                continue;
+            }
+            let source = String::from_utf8(bytes).map_err(|error| {
+                anyhow!(
+                    "zfb bundler: module-worker source {} is not valid UTF-8: {error}",
+                    current.display()
+                )
+            })?;
+            if is_css_like(&current) {
+                let references = collect_css_references(&source, &current)?;
+                for specifier in references.imports {
+                    if let Some(GraphResolution::File(dependency)) =
+                        resolver.resolve(&current, &specifier, GraphSpecifierKind::CssImport)?
+                    {
+                        if !visited.contains(&dependency) {
+                            stack.push(dependency);
+                        }
                     }
                 }
-            }
-            for specifier in references.urls {
-                if let Some(dependency) =
-                    resolver.resolve(&current, &specifier, GraphSpecifierKind::CssUrl)?
-                {
-                    if !visited.contains(&dependency) {
-                        stack.push(dependency);
+                for specifier in references.urls {
+                    if let Some(GraphResolution::File(dependency)) =
+                        resolver.resolve(&current, &specifier, GraphSpecifierKind::CssUrl)?
+                    {
+                        if !visited.contains(&dependency) {
+                            stack.push(dependency);
+                        }
                     }
                 }
+                continue;
             }
-            continue;
-        }
-        let (module, base, unresolved_ctxt) = parse_module(&current, &source)?;
-        for occurrence in collect_constructor_occurrences(&module, base, unresolved_ctxt) {
-            if occurrence.kind == ConstructorKind::SharedWorker {
-                bail!(
+            let (module, base, unresolved_ctxt) = parse_module(&current, &source)?;
+            for occurrence in collect_constructor_occurrences(&module, base, unresolved_ctxt) {
+                if occurrence.kind == ConstructorKind::SharedWorker {
+                    bail!(
                     "zfb bundler: unsupported SharedWorker in {} for {:?}. Only module `Worker` constructors are supported.",
                     current.display(),
                     occurrence.specifier
                 );
-            }
-            let nested = resolve_worker_target(&current, &occurrence.specifier, project_root)?;
-            worker_edges.insert(ModuleWorkerEdge {
-                importer: current.clone(),
-                source_path: nested.clone(),
-            });
-            if !visited.contains(&nested) {
-                stack.push(nested);
-            }
-        }
-        for specifier in collect_import_specifiers(&module, unresolved_ctxt) {
-            if let Some(dependency) =
-                resolver.resolve(&current, &specifier, GraphSpecifierKind::JavaScript)?
-            {
-                if !visited.contains(&dependency) {
-                    stack.push(dependency);
+                }
+                let nested = resolve_worker_target(&current, &occurrence.specifier, project_root)?;
+                worker_edges.insert(ModuleWorkerEdge {
+                    importer: current.clone(),
+                    source_path: nested.clone(),
+                });
+                if !visited.contains(&nested) {
+                    stack.push(nested);
                 }
             }
+            for specifier in collect_import_specifiers(&module, unresolved_ctxt) {
+                if let Some(resolution) =
+                    resolver.resolve(&current, &specifier, GraphSpecifierKind::JavaScript)?
+                {
+                    match resolution {
+                        GraphResolution::File(dependency) => {
+                            if !visited.contains(&dependency) {
+                                stack.push(dependency);
+                            }
+                        }
+                        GraphResolution::Virtual(specifier) => virtual_stack.push(specifier),
+                    }
+                }
+            }
+        }
+
+        while let Some(specifier) = virtual_stack.pop() {
+            if !visited_virtual.insert(specifier.clone()) {
+                continue;
+            }
+            let source = context.virtual_module_source(&specifier).ok_or_else(|| {
+                anyhow!(
+                    "zfb bundler: module-worker graph resolved virtual module {specifier:?} without source bytes"
+                )
+            })?;
+            // zfb-plugin-resolver materializes virtual modules directly inside
+            // the project working directory. This stable synthetic identity gives
+            // relative imports the same parent directory without leaking the
+            // random temp filename into the cache key.
+            let virtual_path = project_root.join(".zfb-worker-virtual-module.mjs");
+            let (module, base, unresolved_ctxt) = parse_module(&virtual_path, source)?;
+            if !collect_constructor_occurrences(&module, base, unresolved_ctxt).is_empty() {
+                bail!(
+                    "zfb bundler: module workers declared inside plugin virtual module {specifier:?} are unsupported; declare the Worker constructor in a project source file so zfb can emit its companion"
+                );
+            }
+            for dependency_specifier in collect_import_specifiers(&module, unresolved_ctxt) {
+                if let Some(resolution) = resolver.resolve(
+                    &virtual_path,
+                    &dependency_specifier,
+                    GraphSpecifierKind::JavaScript,
+                )? {
+                    match resolution {
+                        GraphResolution::File(dependency) => {
+                            if !visited.contains(&dependency) {
+                                stack.push(dependency);
+                            }
+                        }
+                        GraphResolution::Virtual(nested) => virtual_stack.push(nested),
+                    }
+                }
+            }
+        }
+        if stack.is_empty() {
+            break;
         }
     }
 
@@ -967,6 +1281,7 @@ fn inspect_worker_graph(entry: &Path, project_root: &Path) -> Result<WorkerGraph
     // across worktree locations and host operating systems.
     let root = normalize_path_lexical(project_root);
     let mut aggregate = Vec::new();
+    context.append_cache_envelope(&mut aggregate, project_root);
     for (path, bytes) in &file_bytes {
         let relative = path.strip_prefix(&root).map_err(|_| {
             anyhow!(
@@ -1012,6 +1327,21 @@ pub fn rewrite_module_worker_urls(
     importer: &Path,
     project_root: &Path,
 ) -> Result<ModuleWorkerRewrite> {
+    rewrite_module_worker_urls_with_context(
+        source,
+        importer,
+        project_root,
+        &ModuleWorkerBuildContext::default(),
+    )
+}
+
+/// Context-aware form used by every production bundling pipeline.
+pub fn rewrite_module_worker_urls_with_context(
+    source: &str,
+    importer: &Path,
+    project_root: &Path,
+    context: &ModuleWorkerBuildContext,
+) -> Result<ModuleWorkerRewrite> {
     if !source.contains("Worker") || is_inside_node_modules(&normalize_path_lexical(importer)) {
         return Ok(ModuleWorkerRewrite {
             expanded_source: source.to_string(),
@@ -1042,7 +1372,7 @@ pub fn rewrite_module_worker_urls(
             );
         }
         let worker = resolve_worker_target(importer, &occurrence.specifier, project_root)?;
-        let graph = inspect_worker_graph(&worker, project_root)?;
+        let graph = inspect_worker_graph(&worker, project_root, context)?;
         let rewritten = module_worker_url_specifier(project_root, &worker, &graph.hash)
             .map_err(|error| anyhow!("zfb bundler: {error}"))?;
         replacements.push((
@@ -1454,5 +1784,226 @@ mod tests {
         .unwrap();
         assert_eq!(rewrite.dependencies.len(), 1);
         assert_eq!(rewrite.dependencies[0].dependency, worker);
+    }
+
+    #[test]
+    fn transform_only_changes_invalidate_worker_query() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.ts");
+        let worker = project.path().join("src/worker.ts");
+        write(&importer, "placeholder");
+        write(
+            &worker,
+            "self.postMessage(__WORKER_FLAG__ + import.meta.env.DEV);",
+        );
+        let source = "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });";
+        let before = ModuleWorkerBuildContext::new(
+            false,
+            &BTreeMap::new(),
+            &BTreeMap::from([("__WORKER_FLAG__".into(), "1".into())]),
+            "preact",
+        );
+        let after = ModuleWorkerBuildContext::new(
+            false,
+            &BTreeMap::new(),
+            &BTreeMap::from([("__WORKER_FLAG__".into(), "2".into())]),
+            "preact",
+        );
+        let first =
+            rewrite_module_worker_urls_with_context(source, &importer, project.path(), &before)
+                .unwrap();
+        let second =
+            rewrite_module_worker_urls_with_context(source, &importer, project.path(), &after)
+                .unwrap();
+        assert_ne!(first.expanded_source, second.expanded_source);
+    }
+
+    #[test]
+    fn browser_and_ssr_context_constructors_agree_for_same_config() {
+        let loaders = BTreeMap::from([
+            (".frag".to_string(), "text".to_string()),
+            (".bin".to_string(), "binary".to_string()),
+        ]);
+        let define = BTreeMap::from([("__FLAG__".to_string(), "true".to_string())]);
+        let plugins = vec![("worker:alias".to_string(), "/project/alias.ts".to_string())];
+        let virtuals = vec![("virtual:worker".to_string(), "export default 1".to_string())];
+        let browser = ModuleWorkerBuildContext::new(true, &loaders, &define, "preact")
+            .with_plugins(plugins.clone(), virtuals.clone())
+            .with_output_semantics(true, false);
+        let loader_args = loaders
+            .iter()
+            .map(|(extension, loader)| format!("--loader:{extension}={loader}"))
+            .collect::<Vec<_>>();
+        let ssr = ModuleWorkerBuildContext::from_esbuild_loader_args(
+            true,
+            &loader_args,
+            &define,
+            "preact",
+        )
+        .with_plugins(plugins, virtuals)
+        .with_output_semantics(true, false);
+        assert_eq!(browser, ssr);
+    }
+
+    #[test]
+    fn plugin_alias_target_is_watched_hashed_and_root_independent() {
+        fn fixture(root: &Path) -> (PathBuf, ModuleWorkerBuildContext) {
+            let importer = root.join("src/app.ts");
+            let worker = root.join("src/worker.ts");
+            let alias_target = root.join("lib/alias-helper.ts");
+            write(&importer, "placeholder");
+            write(
+                &worker,
+                "import { value } from 'worker:alias'; self.postMessage(value);",
+            );
+            write(&alias_target, "export const value = 'one';");
+            let context = ModuleWorkerBuildContext::default().with_plugins(
+                vec![(
+                    "worker:alias".into(),
+                    alias_target.to_string_lossy().into_owned(),
+                )],
+                Vec::new(),
+            );
+            (importer, context)
+        }
+
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let (left_importer, left_context) = fixture(left.path());
+        let (right_importer, right_context) = fixture(right.path());
+        let source = "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });";
+        let first = rewrite_module_worker_urls_with_context(
+            source,
+            &left_importer,
+            left.path(),
+            &left_context,
+        )
+        .unwrap();
+        let relocated = rewrite_module_worker_urls_with_context(
+            source,
+            &right_importer,
+            right.path(),
+            &right_context,
+        )
+        .unwrap();
+        assert_eq!(first.expanded_source, relocated.expanded_source);
+        assert!(first.dependencies.iter().any(|dependency| {
+            dependency.dependency == left.path().join("lib/alias-helper.ts")
+        }));
+
+        write(
+            &left.path().join("lib/alias-helper.ts"),
+            "export const value = 'two';",
+        );
+        let changed = rewrite_module_worker_urls_with_context(
+            source,
+            &left_importer,
+            left.path(),
+            &left_context,
+        )
+        .unwrap();
+        assert_ne!(first.expanded_source, changed.expanded_source);
+    }
+
+    #[test]
+    fn worker_graph_uses_nearest_nested_config_for_alias_closure() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let importer = root.join("src/app.ts");
+        let worker = root.join("src/worker.ts");
+        let nested_helper = root.join("src/nested/helper.ts");
+        let root_helper = root.join("lib/helper.ts");
+        write(&importer, "placeholder");
+        write(
+            &worker,
+            "import { value } from '@worker/helper'; self.postMessage(value);",
+        );
+        write(&nested_helper, "export const value = 'nested-one';");
+        write(&root_helper, "export const value = 'root-one';");
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@worker/*":["lib/*"]}}}"#,
+        );
+        write(
+            &root.join("src/tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@worker/*":["nested/*"]}}}"#,
+        );
+        let source = "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });";
+        let context = ModuleWorkerBuildContext::default();
+        let first =
+            rewrite_module_worker_urls_with_context(source, &importer, root, &context).unwrap();
+        assert!(first
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.dependency == nested_helper));
+        assert!(!first
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.dependency == root_helper));
+
+        write(&root_helper, "export const value = 'root-two';");
+        let root_changed =
+            rewrite_module_worker_urls_with_context(source, &importer, root, &context).unwrap();
+        assert_eq!(first.expanded_source, root_changed.expanded_source);
+        write(&nested_helper, "export const value = 'nested-two';");
+        let nested_changed =
+            rewrite_module_worker_urls_with_context(source, &importer, root, &context).unwrap();
+        assert_ne!(first.expanded_source, nested_changed.expanded_source);
+    }
+
+    #[test]
+    fn virtual_source_and_its_project_helper_invalidate_worker_query() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.ts");
+        let worker = project.path().join("src/worker.ts");
+        let helper = project.path().join("src/virtual-helper.ts");
+        write(&importer, "placeholder");
+        write(
+            &worker,
+            "import { value } from 'virtual:worker-data'; self.postMessage(value);",
+        );
+        write(&helper, "export const helper = 'one';");
+        let source = "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });";
+        let context = ModuleWorkerBuildContext::default().with_plugins(
+            Vec::new(),
+            vec![(
+                "virtual:worker-data".into(),
+                "import { helper } from './src/virtual-helper.ts'; export const value = helper;"
+                    .into(),
+            )],
+        );
+        let first =
+            rewrite_module_worker_urls_with_context(source, &importer, project.path(), &context)
+                .unwrap();
+        assert!(first
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.dependency == helper));
+
+        write(&helper, "export const helper = 'two';");
+        let helper_changed =
+            rewrite_module_worker_urls_with_context(source, &importer, project.path(), &context)
+                .unwrap();
+        assert_ne!(first.expanded_source, helper_changed.expanded_source);
+
+        let virtual_changed = ModuleWorkerBuildContext::default().with_plugins(
+            Vec::new(),
+            vec![(
+                "virtual:worker-data".into(),
+                "import { helper } from './src/virtual-helper.ts'; export const value = helper + '!';"
+                    .into(),
+            )],
+        );
+        let virtual_changed = rewrite_module_worker_urls_with_context(
+            source,
+            &importer,
+            project.path(),
+            &virtual_changed,
+        )
+        .unwrap();
+        assert_ne!(
+            helper_changed.expanded_source,
+            virtual_changed.expanded_source
+        );
     }
 }

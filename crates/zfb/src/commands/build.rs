@@ -721,12 +721,13 @@ impl BuildRunner for DefaultRunner {
             None,
         )
         .context("islands emitter (DefaultRunner) failed")?;
-        let client_scripts = build_default_client_scripts_payloads(
+        let client_scripts = build_default_client_scripts_payloads_with_plugin_config(
             project_root,
             outdir,
             config.framework,
             &self.registered_client_entries,
             config.bundle.as_ref(),
+            &self.islands_plugin_config,
         )
         .context("client-script emitters (DefaultRunner) failed")?;
         Ok((
@@ -1452,10 +1453,25 @@ fn shadow_copy_file(from: &Path, to: &Path) -> std::io::Result<()> {
 /// a raw-mirrored JS-like companion file contains a nested glob, so the caller
 /// can apply the #1387 policy (hard error / dev warn-and-skip).
 /// A genuine filesystem error propagates as `Err`.
+#[cfg(test)]
 fn materialise_islands_shadow(
     project_root: &Path,
     islands: &[zfb_islands::Island],
     scan_meta: &zfb_islands::ScanMeta,
+) -> Result<IslandsShadowOutcome> {
+    materialise_islands_shadow_with_worker_context(
+        project_root,
+        islands,
+        scan_meta,
+        &zfb_build::ModuleWorkerBuildContext::default(),
+    )
+}
+
+fn materialise_islands_shadow_with_worker_context(
+    project_root: &Path,
+    islands: &[zfb_islands::Island],
+    scan_meta: &zfb_islands::ScanMeta,
+    worker_build_context: &zfb_build::ModuleWorkerBuildContext,
 ) -> Result<IslandsShadowOutcome> {
     use std::collections::{BTreeSet, HashMap};
 
@@ -1676,7 +1692,12 @@ fn materialise_islands_shadow(
             None => std::fs::read_to_string(&importer)
                 .with_context(|| format!("read module-worker importer {}", importer.display()))?,
         };
-        match zfb_build::rewrite_module_worker_urls(&source, &logical_importer, project_root) {
+        match zfb_build::rewrite_module_worker_urls_with_context(
+            &source,
+            &logical_importer,
+            project_root,
+            worker_build_context,
+        ) {
             Ok(rewrite) => {
                 expanded_by_key.insert(key, rewrite.expanded_source);
                 to_mirror.insert(importer.clone());
@@ -2035,13 +2056,40 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // applied ONLY to the bundle's island slice (built just before the
     // bundle call), NOT to `islands_set` itself, so the marker-name and
     // collision passes below keep seeing the real project paths.
+    let islands_jsx_import_source = match framework {
+        crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
+        crate::config::Framework::React => zfb_islands::FrameworkKind::React,
+    }
+    .jsx_import_source();
+    let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
+    let bundle_define = crate::config::resolve_bundle_define(bundle_config);
+    let worker_build_context = zfb_build::ModuleWorkerBuildContext::new(
+        matches!(bundle_mode, zfb_islands::BundleMode::Production),
+        &bundle_loaders,
+        &bundle_define,
+        islands_jsx_import_source,
+    )
+    .with_plugins(
+        plugin_config.alias_entries.clone(),
+        plugin_config.virtual_modules.clone(),
+    )
+    .with_output_semantics(
+        matches!(bundle_mode, zfb_islands::BundleMode::Production),
+        matches!(bundle_mode, zfb_islands::BundleMode::Development),
+    );
+
     let mut _islands_shadow: Option<IslandsShadow> = None;
     let mut islands_preserve_symlinks = false;
     if !scan_meta.glob_reachable_from_islands.is_empty()
         || !scan_meta.raw_import_edges_from_islands.is_empty()
         || !scan_meta.module_worker_edges_from_islands.is_empty()
     {
-        match materialise_islands_shadow(project_root, &islands_set, &scan_meta)? {
+        match materialise_islands_shadow_with_worker_context(
+            project_root,
+            &islands_set,
+            &scan_meta,
+            &worker_build_context,
+        )? {
             IslandsShadowOutcome::Ready(shadow) => {
                 islands_preserve_symlinks = shadow.preserve_symlinks;
                 _islands_shadow = Some(shadow);
@@ -2270,11 +2318,6 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // `--jsx-import-source` AND — because `produce_bundle_js` derives the
     // mount-glue framework back from this same field — the React vs
     // Preact hydration glue emitted into the shared bundle.
-    let islands_jsx_import_source = match framework {
-        crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
-        crate::config::Framework::React => zfb_islands::FrameworkKind::React,
-    }
-    .jsx_import_source();
     // Issue #1501: turn the scanner's direct + nested worker edges into one
     // deterministic entry per logical source. Worker code is read from the
     // preprocessing shadow (where `?raw` and nested worker URLs have already
@@ -2316,8 +2359,8 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     .with_outdir(outdir.to_path_buf())
     .with_jsx_import_source(islands_jsx_import_source)
     .with_client_router(scan_meta.uses_client_router)
-    .with_loaders(crate::config::resolve_bundle_loaders(bundle_config))
-    .with_define(crate::config::resolve_bundle_define(bundle_config))
+    .with_loaders(bundle_loaders)
+    .with_define(bundle_define)
     .with_module_workers(module_workers)
     // Issue #1413: the shadow carries the exact symlink-mode decision.
     // Most shadows need `--preserve-symlinks`; copy-mode shadows use real
@@ -2456,9 +2499,22 @@ fn materialise_client_preprocess_stage_file(
     Ok(())
 }
 
+#[cfg(test)]
 fn stage_client_script_preprocessing(
     project_root: &Path,
     entries: &[zfb_islands::client_scripts::ClientScriptEntry],
+) -> Result<Option<ClientScriptsPreprocessStage>> {
+    stage_client_script_preprocessing_with_worker_context(
+        project_root,
+        entries,
+        &zfb_build::ModuleWorkerBuildContext::default(),
+    )
+}
+
+fn stage_client_script_preprocessing_with_worker_context(
+    project_root: &Path,
+    entries: &[zfb_islands::client_scripts::ClientScriptEntry],
+    worker_build_context: &zfb_build::ModuleWorkerBuildContext,
 ) -> Result<Option<ClientScriptsPreprocessStage>> {
     if entries.is_empty() {
         return Ok(None);
@@ -2587,14 +2643,18 @@ fn stage_client_script_preprocessing(
         // still trigger one final client-script rebuild so the stable
         // companion is pruned and the live registry can be replaced.
         worker_targets.insert(logical_importer.clone());
-        let rewrite =
-            zfb_build::rewrite_module_worker_urls(&source, &logical_importer, project_root)
-                .with_context(|| {
-                    format!(
-                        "preprocess client-script module-worker importer {}",
-                        importer.display()
-                    )
-                })?;
+        let rewrite = zfb_build::rewrite_module_worker_urls_with_context(
+            &source,
+            &logical_importer,
+            project_root,
+            worker_build_context,
+        )
+        .with_context(|| {
+            format!(
+                "preprocess client-script module-worker importer {}",
+                importer.display()
+            )
+        })?;
         for dependency in rewrite.dependencies {
             let logical_dependency = paths
                 .logical_project_path(&dependency.dependency)
@@ -2877,12 +2937,32 @@ fn stage_client_script_preprocessing(
 /// `import.meta.glob(...)` still ships that macro unexpanded and throws at
 /// runtime. Do not over-claim glob support in the docs (#1406). Graphs without
 /// either preprocessing feature keep the direct real-project-tree fast path.
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn build_default_client_scripts_payloads(
     project_root: &Path,
     outdir: &Path,
     framework: crate::config::Framework,
     registered: &zfb_build::ClientEntryList,
     bundle_config: Option<&crate::config::BundleConfig>,
+) -> Result<Vec<AssetEmitterPayload>> {
+    build_default_client_scripts_payloads_with_plugin_config(
+        project_root,
+        outdir,
+        framework,
+        registered,
+        bundle_config,
+        &IslandsPluginConfig::default(),
+    )
+}
+
+pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
+    project_root: &Path,
+    outdir: &Path,
+    framework: crate::config::Framework,
+    registered: &zfb_build::ClientEntryList,
+    bundle_config: Option<&crate::config::BundleConfig>,
+    plugin_config: &IslandsPluginConfig,
 ) -> Result<Vec<AssetEmitterPayload>> {
     let (mut entries, collisions) =
         discover_client_scripts(project_root).context("client-script discovery failed")?;
@@ -2931,7 +3011,29 @@ pub(crate) fn build_default_client_scripts_payloads(
         return Ok(Vec::new());
     }
 
-    let preprocess_stage = stage_client_script_preprocessing(project_root, &entries)?;
+    let client_scripts_jsx_import_source = match framework {
+        crate::config::Framework::Preact => FrameworkKind::Preact,
+        crate::config::Framework::React => FrameworkKind::React,
+    }
+    .jsx_import_source();
+    let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
+    let bundle_define = crate::config::resolve_bundle_define(bundle_config);
+    let worker_build_context = zfb_build::ModuleWorkerBuildContext::new(
+        true,
+        &bundle_loaders,
+        &bundle_define,
+        client_scripts_jsx_import_source,
+    )
+    .with_plugins(
+        plugin_config.alias_entries.clone(),
+        plugin_config.virtual_modules.clone(),
+    )
+    .with_output_semantics(true, false);
+    let preprocess_stage = stage_client_script_preprocessing_with_worker_context(
+        project_root,
+        &entries,
+        &worker_build_context,
+    )?;
     let (bundle_entries, bundler_working_dir, preserve_symlinks) = match preprocess_stage.as_ref() {
         Some(stage) => (
             stage.entries.as_slice(),
@@ -2947,6 +3049,12 @@ pub(crate) fn build_default_client_scripts_payloads(
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    if !plugin_config.alias_entries.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_alias_entries(plugin_config.alias_entries.clone());
+    }
+    if !plugin_config.virtual_modules.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
+    }
     if detect_project_node_modules(project_root).is_some() {
         _embedded_nm_handle = None;
     } else {
@@ -2986,16 +3094,11 @@ pub(crate) fn build_default_client_scripts_payloads(
     // JSX is harmless for plain .ts files; reuse the islands JSX import
     // source so Preact/React aliases apply consistently to any .tsx
     // client scripts.
-    let client_scripts_jsx_import_source = match framework {
-        crate::config::Framework::Preact => FrameworkKind::Preact,
-        crate::config::Framework::React => FrameworkKind::React,
-    }
-    .jsx_import_source();
     let bundle_cfg = BundleConfig::production()
         .with_outdir(outdir.to_path_buf())
         .with_jsx_import_source(client_scripts_jsx_import_source)
-        .with_loaders(crate::config::resolve_bundle_loaders(bundle_config))
-        .with_define(crate::config::resolve_bundle_define(bundle_config))
+        .with_loaders(bundle_loaders)
+        .with_define(bundle_define)
         .with_preserve_symlinks(preserve_symlinks);
 
     let empty_workers = std::collections::BTreeMap::new();
@@ -3088,6 +3191,7 @@ fn prune_dev_client_script_outputs(
     changed
 }
 
+#[cfg(test)]
 pub(crate) fn build_dev_client_scripts_to_disk(
     project_root: &Path,
     // Where dev client scripts are written + served from (issue #1189: the
@@ -3097,6 +3201,31 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     bundle_config: Option<&crate::config::BundleConfig>,
     prev_output_filenames: &std::collections::HashSet<String>,
     registered: &zfb_build::ClientEntryList,
+) -> Result<(
+    bool,
+    std::collections::HashSet<String>,
+    std::collections::BTreeSet<PathBuf>,
+    std::collections::BTreeSet<PathBuf>,
+)> {
+    build_dev_client_scripts_to_disk_with_plugin_config(
+        project_root,
+        assets_root,
+        framework,
+        bundle_config,
+        prev_output_filenames,
+        registered,
+        &IslandsPluginConfig::default(),
+    )
+}
+
+pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
+    project_root: &Path,
+    assets_root: &Path,
+    framework: crate::config::Framework,
+    bundle_config: Option<&crate::config::BundleConfig>,
+    prev_output_filenames: &std::collections::HashSet<String>,
+    registered: &zfb_build::ClientEntryList,
+    plugin_config: &IslandsPluginConfig,
 ) -> Result<(
     bool,
     std::collections::HashSet<String>,
@@ -3142,10 +3271,32 @@ pub(crate) fn build_dev_client_scripts_to_disk(
         .join(zfb_types::DIST_ASSETS_DIR)
         .join(zfb_types::DIST_CLIENT_SCRIPTS_DIR);
 
+    let jsx_import_source = match framework {
+        crate::config::Framework::Preact => FrameworkKind::Preact,
+        crate::config::Framework::React => FrameworkKind::React,
+    }
+    .jsx_import_source();
+    let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
+    let bundle_define = crate::config::resolve_bundle_define(bundle_config);
+    let worker_build_context = zfb_build::ModuleWorkerBuildContext::new(
+        false,
+        &bundle_loaders,
+        &bundle_define,
+        jsx_import_source,
+    )
+    .with_plugins(
+        plugin_config.alias_entries.clone(),
+        plugin_config.virtual_modules.clone(),
+    )
+    .with_output_semantics(false, true);
     let preprocess_stage = if entries.is_empty() {
         None
     } else {
-        stage_client_script_preprocessing(project_root, &entries)?
+        stage_client_script_preprocessing_with_worker_context(
+            project_root,
+            &entries,
+            &worker_build_context,
+        )?
     };
     let mut current_output_filenames: std::collections::HashSet<String> = entries
         .iter()
@@ -3202,6 +3353,12 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    if !plugin_config.alias_entries.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_alias_entries(plugin_config.alias_entries.clone());
+    }
+    if !plugin_config.virtual_modules.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
+    }
     if detect_project_node_modules(project_root).is_some() {
         _embedded_nm_handle = None;
     } else {
@@ -3238,16 +3395,11 @@ pub(crate) fn build_dev_client_scripts_to_disk(
     }
 
     let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
-    let jsx_import_source = match framework {
-        crate::config::Framework::Preact => FrameworkKind::Preact,
-        crate::config::Framework::React => FrameworkKind::React,
-    }
-    .jsx_import_source();
     let bundle_cfg = BundleConfig::dev()
         .with_outdir(assets_root.to_path_buf())
         .with_jsx_import_source(jsx_import_source)
-        .with_loaders(crate::config::resolve_bundle_loaders(bundle_config))
-        .with_define(crate::config::resolve_bundle_define(bundle_config))
+        .with_loaders(bundle_loaders)
+        .with_define(bundle_define)
         .with_preserve_symlinks(preserve_symlinks);
 
     if let Some(parent) = client_dir.parent() {

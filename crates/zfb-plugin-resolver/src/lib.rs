@@ -423,8 +423,19 @@ pub struct TsPathAlias {
 /// directory anchors them instead.  When no anchoring `baseUrl` applies, the
 /// anchor defaults to the directory of the config that declared `paths`.
 pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
-    let tsconfig_file = tsconfig_dir.join("tsconfig.json");
+    read_tsconfig_paths_file(&tsconfig_dir.join("tsconfig.json"))
+}
 
+/// Read path-mapping resolver inputs from one explicit TypeScript-style
+/// config file.
+///
+/// This is the file-oriented sibling of [`read_tsconfig_paths`]. It accepts
+/// either `tsconfig.json`, `jsconfig.json`, or another config filename used as
+/// a leaf, and follows the same relative `extends` chain with the same
+/// leaf-wins semantics. Callers that already selected the closest config for
+/// a source file use this entry point so a nested `jsconfig.json` is not
+/// accidentally replaced by a more distant `tsconfig.json`.
+pub fn read_tsconfig_paths_file(config_file: &Path) -> Option<TsConfigPaths> {
     struct WalkState {
         base_dir: Option<PathBuf>,
         aliases: Option<Vec<TsPathAlias>>,
@@ -459,7 +470,11 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
                 // Strip a leading `./` so `dir.join("./src")` does not embed
                 // a `.` component in the resulting path string.
                 let clean = raw_url.strip_prefix("./").unwrap_or(raw_url);
-                dir.join(clean)
+                if clean.is_empty() || clean == "." {
+                    dir.to_path_buf()
+                } else {
+                    dir.join(clean)
+                }
             });
 
         let local_aliases = compiler_options
@@ -562,7 +577,7 @@ pub fn read_tsconfig_paths(tsconfig_dir: &Path) -> Option<TsConfigPaths> {
     }
 
     let (base_dir, aliases, base_url) = walk(
-        &tsconfig_file,
+        config_file,
         0,
         WalkState {
             base_dir: None,
@@ -593,6 +608,24 @@ pub fn read_tsconfig_paths_into_map(project_root: &Path) -> BTreeMap<String, Vec
         return BTreeMap::new();
     };
 
+    tsconfig_paths_into_map(&parsed)
+}
+
+/// Read one explicitly selected TypeScript-style config file and return its
+/// `compilerOptions.paths` as an absolutised map.
+///
+/// See [`read_tsconfig_paths_file`] for why the file-oriented form matters to
+/// preprocessing shadows with nested `tsconfig.json` / `jsconfig.json`
+/// scopes.
+pub fn read_tsconfig_paths_file_into_map(config_file: &Path) -> BTreeMap<String, Vec<String>> {
+    let Some(parsed) = read_tsconfig_paths_file(config_file) else {
+        return BTreeMap::new();
+    };
+
+    tsconfig_paths_into_map(&parsed)
+}
+
+fn tsconfig_paths_into_map(parsed: &TsConfigPaths) -> BTreeMap<String, Vec<String>> {
     let mut out = BTreeMap::new();
     for alias in &parsed.aliases {
         let entries: Vec<String> = alias

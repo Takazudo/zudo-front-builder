@@ -48,6 +48,7 @@ zfb-render = { path = "../zfb-render", default-features = false }
 # on-disk filenames the emitter adapters write. `zfb-types` is a
 # zero-zfb-dep leaf crate, so this introduces no transitive cost.
 zfb-types = { path = "../zfb-types" }
+zfb-toolchain-pins = { path = "../zfb-toolchain-pins" }
 # Shared helper that turns plugin-registered aliases + virtual modules
 # into exact-match `compilerOptions.paths` entries for the synthetic
 # tsconfig. Replaces the prefix-with-slash `--alias` flag emission so
