@@ -882,6 +882,103 @@ pub struct CodeHighlightConfig {
     /// Mutually exclusive with [`Self::theme`].
     #[serde(default)]
     pub theme_dark: Option<String>,
+
+    /// Output mode for fenced-code highlighting (Highlight Tokens epic,
+    /// zfb#1528). `"inline"` (default) bakes per-token colors into
+    /// `style="color:#rrggbb"` (or the dual `--shiki-*` custom
+    /// properties). `"class"` emits a semantic role class per token
+    /// instead, so colors become re-themeable CSS design tokens rather
+    /// than baked-in HTML.
+    ///
+    /// Mutually exclusive with [`Self::theme`] / [`Self::theme_light`] /
+    /// [`Self::theme_dark`] / [`Self::themes_dir`] — themes don't affect
+    /// class emission, so setting both is rejected rather than silently
+    /// ignoring the theme.
+    #[serde(default)]
+    pub mode: CodeHighlightMode,
+
+    /// Class-name prefix for class-mode role classes (e.g. the default
+    /// `"hi-"` yields `hi-kw`, `hi-str`, ...). Must match
+    /// `/^[A-Za-z][A-Za-z0-9_-]*$/`. Only meaningful when [`Self::mode`]
+    /// is [`CodeHighlightMode::Class`].
+    #[serde(default = "default_class_prefix")]
+    pub class_prefix: String,
+
+    /// Per-role class overrides for class mode, e.g.
+    /// `{ "keyword": "text-violet-600 dark:text-violet-400" }` to map a
+    /// role onto Tailwind utilities instead of the default
+    /// `{classPrefix}{role}` class. Keys must be one of the fixed role
+    /// names in [`CODE_HIGHLIGHT_ROLES`]; a value may hold multiple
+    /// space-separated classes. `None` (the default) uses
+    /// `{classPrefix}{role}` for every role.
+    #[serde(default)]
+    pub role_classes: Option<BTreeMap<String, String>>,
+
+    /// Whether to inject the built-in `--zfb-hi-*` token stylesheet
+    /// (`zfb-hi.css`) into the combined `styles.css` output. Default
+    /// `true`. Only meaningful in class mode. Does NOT affect the
+    /// content pipeline or its fingerprint — it is lowered separately
+    /// into the CSS wiring config (Highlight Tokens epic sub #1533).
+    #[serde(default = "default_true")]
+    pub default_stylesheet: bool,
+}
+
+/// `codeHighlight.mode` — `"inline"` (default) bakes per-token colors into
+/// `style="color:#rrggbb"` / `--shiki-*` custom properties; `"class"` emits
+/// a semantic role class per token instead (Highlight Tokens epic,
+/// zfb#1528), leaving color resolution to CSS.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum CodeHighlightMode {
+    /// Per-token inline colors (pre-epic behaviour). Default.
+    #[default]
+    Inline,
+    /// Per-token semantic role classes; colors resolved via CSS custom
+    /// properties or user-authored/Tailwind utilities instead of inline
+    /// styles.
+    Class,
+}
+
+pub(crate) fn default_class_prefix() -> String {
+    "hi-".to_string()
+}
+
+/// The fixed 18-role semantic taxonomy for class-mode syntax highlighting
+/// (Highlight Tokens epic, zfb#1528). This is the config-validation-side
+/// copy of the list; the scope->role classifier (`hi_roles.rs`, zfb#1529)
+/// owns the authoritative list and the confirm sub (#1535) asserts the two
+/// stay in sync.
+pub const CODE_HIGHLIGHT_ROLES: &[&str] = &[
+    "escape",
+    "operator",
+    "comment",
+    "string",
+    "number",
+    "constant",
+    "keyword",
+    "function",
+    "type",
+    "namespace",
+    "property",
+    "variable",
+    "tag",
+    "attribute",
+    "punctuation",
+    "inserted",
+    "deleted",
+    "heading",
+];
+
+/// `classPrefix` / role-class-value token validation: non-empty, first
+/// char an ASCII letter, remaining chars ASCII alphanumeric, `_`, or `-`.
+/// Mirrors the documented `/^[A-Za-z][A-Za-z0-9_-]*$/` pattern.
+fn is_valid_class_prefix(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// What to do when a `.md`/`.mdx` link cannot be found in the source map.
@@ -2101,6 +2198,75 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         if ch.theme.is_some() && (ch.theme_light.is_some() || ch.theme_dark.is_some()) {
             bail!("codeHighlight.theme is mutually exclusive with themeLight/themeDark");
         }
+        // Highlight Tokens epic (zfb#1528): class mode is mutually
+        // exclusive with every theme knob — themes don't affect class
+        // emission, so setting both would silently no-op the theme
+        // rather than error.
+        if ch.mode == CodeHighlightMode::Class {
+            if ch.theme.is_some() {
+                bail!(
+                    "codeHighlight.mode \"class\" is mutually exclusive with codeHighlight.theme"
+                );
+            }
+            if ch.theme_light.is_some() {
+                bail!(
+                    "codeHighlight.mode \"class\" is mutually exclusive with \
+                     codeHighlight.themeLight"
+                );
+            }
+            if ch.theme_dark.is_some() {
+                bail!(
+                    "codeHighlight.mode \"class\" is mutually exclusive with \
+                     codeHighlight.themeDark"
+                );
+            }
+            if ch.themes_dir.is_some() {
+                bail!(
+                    "codeHighlight.mode \"class\" is mutually exclusive with \
+                     codeHighlight.themesDir"
+                );
+            }
+        }
+        if !is_valid_class_prefix(&ch.class_prefix) {
+            bail!(
+                "codeHighlight.classPrefix {:?} must be non-empty and match \
+                 /^[A-Za-z][A-Za-z0-9_-]*$/",
+                ch.class_prefix
+            );
+        }
+        if let Some(role_classes) = &ch.role_classes {
+            for key in role_classes.keys() {
+                if !CODE_HIGHLIGHT_ROLES.contains(&key.as_str()) {
+                    bail!(
+                        "codeHighlight.roleClasses key {:?} is not a known role; valid roles \
+                         are: {}",
+                        key,
+                        CODE_HIGHLIGHT_ROLES.join(", ")
+                    );
+                }
+            }
+            for (key, value) in role_classes {
+                if value.split_whitespace().any(|token| token == "line") {
+                    bail!(
+                        "codeHighlight.roleClasses[{key:?}] value {value:?} must not contain \
+                         the token \"line\" (collides with the code-enrichment line wrapper \
+                         class)"
+                    );
+                }
+            }
+            // Authored-CSS path (`tailwind.enabled=false`): allowed, but no
+            // safelist can be generated for these classes on that path, so
+            // the mapped utilities must already exist in user-authored CSS.
+            let tailwind_enabled = cfg.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
+            if !role_classes.is_empty() && !tailwind_enabled {
+                tracing::warn!(
+                    "codeHighlight.roleClasses is set with tailwind.enabled=false: no \
+                     Tailwind safelist can be generated for these classes on the \
+                     authored-CSS path — ensure the mapped utilities already exist in \
+                     your own CSS"
+                );
+            }
+        }
     }
     if let Some(rml) = &cfg.resolve_markdown_links {
         if !rml.docs_dir.as_os_str().is_empty() {
@@ -2780,6 +2946,383 @@ mod tests {
         assert!(
             msg.contains("mutually exclusive with themeLight/themeDark"),
             "error must mention mutual exclusion; got: {msg}"
+        );
+    }
+
+    // ── Class-mode config tests (Highlight Tokens epic, zfb#1528 / #1530) ──
+
+    /// Defaults: `mode` is `"inline"`, `classPrefix` is `"hi-"`,
+    /// `roleClasses` is absent, `defaultStylesheet` is `true`.
+    #[tokio::test]
+    async fn code_highlight_class_mode_fields_default() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), "{}")
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert_eq!(cfg.code_highlight, None);
+
+        // Same defaults apply when codeHighlight is present but empty.
+        let tmp2 = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp2.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": {} }"#,
+        )
+        .await
+        .unwrap();
+        let cfg2 = load_from_dir(tmp2.path()).await.expect("load ok");
+        let ch = cfg2.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(ch.mode, CodeHighlightMode::Inline);
+        assert_eq!(ch.class_prefix, "hi-");
+        assert_eq!(ch.role_classes, None);
+        assert!(ch.default_stylesheet);
+    }
+
+    /// A valid class-mode config (mode + classPrefix + roleClasses +
+    /// defaultStylesheet) parses cleanly.
+    #[tokio::test]
+    async fn code_highlight_valid_class_mode_config_parses() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "codeHighlight": {
+                    "mode": "class",
+                    "classPrefix": "syn-",
+                    "roleClasses": { "keyword": "text-violet-600 dark:text-violet-400" },
+                    "defaultStylesheet": false
+                }
+            }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(ch.mode, CodeHighlightMode::Class);
+        assert_eq!(ch.class_prefix, "syn-");
+        assert_eq!(
+            ch.role_classes.as_ref().and_then(|m| m.get("keyword")),
+            Some(&"text-violet-600 dark:text-violet-400".to_string())
+        );
+        assert!(!ch.default_stylesheet);
+    }
+
+    /// `mode:"class"` + `theme` must be rejected, naming both fields.
+    #[tokio::test]
+    async fn code_highlight_class_mode_and_theme_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "mode": "class", "theme": "InspiredGitHub" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("mode class + theme must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("codeHighlight.mode") && msg.contains("codeHighlight.theme"),
+            "error must name both codeHighlight.mode and codeHighlight.theme; got: {msg}"
+        );
+    }
+
+    /// `mode:"class"` + `themeLight` must be rejected, naming both fields.
+    #[tokio::test]
+    async fn code_highlight_class_mode_and_theme_light_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "mode": "class", "themeLight": "base16-ocean.light" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("mode class + themeLight must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("codeHighlight.mode") && msg.contains("codeHighlight.themeLight"),
+            "error must name both codeHighlight.mode and codeHighlight.themeLight; got: {msg}"
+        );
+    }
+
+    /// `mode:"class"` + `themeDark` must be rejected, naming both fields.
+    #[tokio::test]
+    async fn code_highlight_class_mode_and_theme_dark_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "mode": "class", "themeDark": "base16-ocean.dark" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("mode class + themeDark must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("codeHighlight.mode") && msg.contains("codeHighlight.themeDark"),
+            "error must name both codeHighlight.mode and codeHighlight.themeDark; got: {msg}"
+        );
+    }
+
+    /// `mode:"class"` + `themesDir` must be rejected, naming both fields.
+    #[tokio::test]
+    async fn code_highlight_class_mode_and_themes_dir_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "mode": "class", "themesDir": "themes" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("mode class + themesDir must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("codeHighlight.mode") && msg.contains("codeHighlight.themesDir"),
+            "error must name both codeHighlight.mode and codeHighlight.themesDir; got: {msg}"
+        );
+    }
+
+    /// An unrecognised `mode` value is rejected by serde with a clear
+    /// "unknown variant" style error (no custom validation needed).
+    #[tokio::test]
+    async fn code_highlight_unknown_mode_value_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "mode": "block" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("unknown mode value must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.to_lowercase().contains("mode"),
+            "error should mention the mode field; got: {msg}"
+        );
+    }
+
+    /// An unknown `roleClasses` key is rejected, naming the bad key and
+    /// listing the valid roles.
+    #[tokio::test]
+    async fn code_highlight_role_classes_unknown_key_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "codeHighlight": {
+                    "mode": "class",
+                    "roleClasses": { "not-a-role": "hi-foo" }
+                }
+            }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("unknown roleClasses key must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not-a-role"),
+            "error must name the bad key; got: {msg}"
+        );
+        assert!(
+            msg.contains("keyword") && msg.contains("string"),
+            "error must list the valid roles; got: {msg}"
+        );
+    }
+
+    /// Every one of the 18 fixed role names is accepted as a `roleClasses`
+    /// key.
+    #[tokio::test]
+    async fn code_highlight_role_classes_every_known_role_accepted() {
+        let entries: String = CODE_HIGHLIGHT_ROLES
+            .iter()
+            .map(|role| format!(r#""{role}": "hi-{role}""#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            format!(
+                r#"{{ "codeHighlight": {{ "mode": "class", "roleClasses": {{ {entries} }} }} }}"#
+            ),
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("all 18 roles must be accepted");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(
+            ch.role_classes.as_ref().map(|m| m.len()),
+            Some(CODE_HIGHLIGHT_ROLES.len())
+        );
+    }
+
+    /// A `roleClasses` value containing the bare token `"line"` is rejected
+    /// (collides with the code-enrichment line wrapper class).
+    #[tokio::test]
+    async fn code_highlight_role_classes_line_token_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "codeHighlight": {
+                    "mode": "class",
+                    "roleClasses": { "keyword": "hi-kw line" }
+                }
+            }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("roleClasses value containing the \"line\" token must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("\"line\""),
+            "error must mention the offending \"line\" token; got: {msg}"
+        );
+    }
+
+    /// A `roleClasses` value that merely CONTAINS "line" as a substring of
+    /// a longer class name (not a standalone token) is fine.
+    #[tokio::test]
+    async fn code_highlight_role_classes_line_substring_is_allowed() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "codeHighlight": {
+                    "mode": "class",
+                    "roleClasses": { "keyword": "underline" }
+                }
+            }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("a class name that merely contains \"line\" as a substring is fine");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(
+            ch.role_classes.as_ref().and_then(|m| m.get("keyword")),
+            Some(&"underline".to_string())
+        );
+    }
+
+    /// An empty `classPrefix` is rejected.
+    #[tokio::test]
+    async fn code_highlight_class_prefix_empty_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "classPrefix": "" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("empty classPrefix must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("codeHighlight.classPrefix"),
+            "error should mention field; got: {msg}"
+        );
+    }
+
+    /// A `classPrefix` starting with a digit is rejected (must start with
+    /// an ASCII letter).
+    #[tokio::test]
+    async fn code_highlight_class_prefix_leading_digit_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "classPrefix": "1hi-" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("classPrefix starting with a digit must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("codeHighlight.classPrefix"),
+            "error should mention field; got: {msg}"
+        );
+    }
+
+    /// A `classPrefix` containing a disallowed character (e.g. a dot) is
+    /// rejected.
+    #[tokio::test]
+    async fn code_highlight_class_prefix_invalid_character_rejected() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "classPrefix": "hi.foo" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("classPrefix with a disallowed character must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("codeHighlight.classPrefix"),
+            "error should mention field; got: {msg}"
+        );
+    }
+
+    /// A `classPrefix` using underscores and hyphens throughout the tail is
+    /// accepted (matches the documented pattern).
+    #[tokio::test]
+    async fn code_highlight_class_prefix_underscores_and_hyphens_accepted() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "codeHighlight": { "classPrefix": "Hi_Token-" } }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("classPrefix with underscores/hyphens must be accepted");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(ch.class_prefix, "Hi_Token-");
+    }
+
+    /// `roleClasses` set while `tailwind.enabled` is `false` (the
+    /// authored-CSS path) is ALLOWED — not an error — even though no
+    /// Tailwind safelist can be generated for those classes on that path.
+    #[tokio::test]
+    async fn code_highlight_role_classes_with_tailwind_disabled_is_allowed() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{
+                "tailwind": { "enabled": false },
+                "codeHighlight": {
+                    "mode": "class",
+                    "roleClasses": { "keyword": "my-keyword-class" }
+                }
+            }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("roleClasses + tailwind.enabled=false must be allowed (warning only)");
+        let ch = cfg.code_highlight.as_ref().expect("codeHighlight present");
+        assert_eq!(
+            ch.role_classes.as_ref().and_then(|m| m.get("keyword")),
+            Some(&"my-keyword-class".to_string())
         );
     }
 

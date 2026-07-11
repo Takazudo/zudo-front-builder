@@ -76,6 +76,30 @@ pub(crate) fn pipeline_spec_from_config(
             .code_highlight
             .as_ref()
             .and_then(|c| c.theme_dark.clone()),
+        // `codeHighlight.mode` (Highlight Tokens epic, zfb#1528) — absent
+        // `codeHighlight` mirrors the field's own default (inline).
+        code_highlight_mode: match config.code_highlight.as_ref().map(|c| c.mode) {
+            Some(crate::config::CodeHighlightMode::Class) => zfb_content::CodeHighlightMode::Class,
+            Some(crate::config::CodeHighlightMode::Inline) | None => {
+                zfb_content::CodeHighlightMode::Inline
+            }
+        },
+        // `codeHighlight.classPrefix` — only meaningful in class mode.
+        // Absent `codeHighlight` falls back to the same default
+        // `CodeHighlightConfig::class_prefix` resolves to via serde.
+        code_highlight_class_prefix: config
+            .code_highlight
+            .as_ref()
+            .map(|c| c.class_prefix.clone())
+            .unwrap_or_else(crate::config::default_class_prefix),
+        // `codeHighlight.roleClasses` — role -> class attr value overrides;
+        // only meaningful in class mode. Absent -> empty map (every role
+        // uses `{classPrefix}{role}`).
+        code_highlight_role_classes: config
+            .code_highlight
+            .as_ref()
+            .and_then(|c| c.role_classes.clone())
+            .unwrap_or_default(),
         // Opt-in `stripMdExt` flag (zfb#127 / #129).
         strip_md_ext: config.strip_md_ext,
         // Derivation-owned — see the doc comment above.
