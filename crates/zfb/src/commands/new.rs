@@ -925,6 +925,39 @@ mod tests {
             has_md_post,
             "scaffolded content/posts/ must contain at least one .md seed post"
         );
+
+        // The emitted .gitignore must carry the Tailwind entry temp-file glob
+        // (issue #1538) so node-free projects (Tailwind defaults to enabled
+        // when the config key is absent) don't re-discover the need for it.
+        let gitignore = fs::read_to_string(dest.join(".gitignore"))
+            .expect("scaffolded node-free site must have a .gitignore");
+        assert!(
+            gitignore.contains("**/zfb-tailwind-entry-*.css"),
+            "scaffolded node-free .gitignore must ignore the Tailwind entry temp file, got:\n{gitignore}"
+        );
+    }
+
+    #[test]
+    fn templates_gitignore_ignores_tailwind_entry_temp_file() {
+        // Drift risk: this glob is hand-derived from zfb-css's private
+        // ENTRY_TMP_PREFIX ("zfb-tailwind-entry-") / ENTRY_TMP_SUFFIX
+        // (".css") constants (crates/zfb-css/src/engine.rs). If those change,
+        // this glob and the shipped .gitignore templates must change too.
+        const EXPECTED_GLOB: &str = "**/zfb-tailwind-entry-*.css";
+        for template_name in ["basic-blog", "node-free"] {
+            let dir = TEMPLATES
+                .get_dir(template_name)
+                .unwrap_or_else(|| panic!("{template_name} template missing from registry"));
+            let gitignore_path = format!("{template_name}/.gitignore");
+            let gitignore_file = dir
+                .get_file(&gitignore_path)
+                .unwrap_or_else(|| panic!("{gitignore_path} missing from template"));
+            let contents = String::from_utf8_lossy(gitignore_file.contents());
+            assert!(
+                contents.contains(EXPECTED_GLOB),
+                "{gitignore_path} must contain '{EXPECTED_GLOB}', got:\n{contents}"
+            );
+        }
     }
 
     #[test]

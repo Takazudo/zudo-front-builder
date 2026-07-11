@@ -61,6 +61,12 @@ scan, no preflight reset, no subprocess. CSS Modules compilation, class-name has
 and asset emission all keep working unchanged; only the Tailwind-specific steps are
 skipped.
 
+While Tailwind is enabled, the build pipeline synthesises a temp entry file named
+`zfb-tailwind-entry-*.css` next to your CSS entry (inside the tracked source tree) and
+removes it once the build finishes. New scaffolds ignore it automatically. If you are
+adding Tailwind to a project scaffolded before this glob shipped, add
+`**/zfb-tailwind-entry-*.css` to your `.gitignore`.
+
 ## Component-scoped styling
 
 There are two well-supported patterns for component-level styling: Tailwind utility classes, and CSS Modules.
