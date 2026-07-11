@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { definePreset } from "../config.js";
+import type { CollectionDef } from "../config.js";
 
 describe("definePreset", () => {
   it("stamps each object plugin entry with source_package", () => {
@@ -61,5 +62,29 @@ describe("definePreset", () => {
       { name: "./outer-plugin.mjs", source_package: "@scope/outer-preset" },
       { name: "./inner-plugin.mjs", source_package: "@scope/inner-preset" },
     ]);
+  });
+});
+
+describe("CollectionDef.allowOutsideRoot", () => {
+  it("is an optional field that defaults to undefined", () => {
+    const collection: CollectionDef = { name: "blog", path: "content/blog" };
+    expect(collection.allowOutsideRoot).toBeUndefined();
+  });
+
+  it("passes through definePreset unchanged (definePreset only stamps plugins)", () => {
+    // A preset can carry a collection with `allowOutsideRoot: true`
+    // pointing outside its own package — the flag must survive
+    // `definePreset` untouched so the Rust loader sees exactly what the
+    // preset author declared.
+    const collection: CollectionDef = {
+      name: "shared-notes",
+      path: "../shared-notes",
+      allowOutsideRoot: true,
+    };
+    const result = definePreset("my-preset-pkg", {
+      collections: [collection],
+      plugins: [{ name: "plugin-a" }],
+    });
+    expect(result.collections).toEqual([collection]);
   });
 });

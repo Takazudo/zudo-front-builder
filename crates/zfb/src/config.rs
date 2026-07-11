@@ -715,6 +715,14 @@ pub struct CollectionDef {
     /// into its own collection.
     #[serde(default)]
     pub id_strip_suffix: Option<String>,
+    /// Opt-in to a `path` that escapes the project root via `..`
+    /// (e.g. a monorepo-shared content dir living outside this
+    /// package). Default `false` keeps the standard
+    /// [`ensure_path_in_root`] protection. Absolute paths and Windows
+    /// drive-relative/prefix forms are rejected regardless of this
+    /// flag — only `..`-relative escapes are relaxed. See `validate`.
+    #[serde(default)]
+    pub allow_outside_root: bool,
 }
 
 /// Tailwind options. Empty by default (Tailwind enabled); users can flip
@@ -2084,7 +2092,29 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         if !seen.insert(c.name.as_str()) {
             bail!("duplicate collection name {:?}", c.name);
         }
-        ensure_path_in_root(&c.path, dir).with_context(|| format!("collection {:?}", c.name))?;
+        if c.allow_outside_root {
+            // allowOutsideRoot relaxes only the `..`-escape check. Absolute
+            // paths stay rejected, and `Path::is_absolute()` alone is
+            // weaker than `ensure_path_in_root`'s guard: on Windows a
+            // drive-relative path like `C:temp` (Prefix, no RootDir) is
+            // NOT "absolute" per Rust's definition, so check explicitly
+            // for a Prefix/RootDir component too.
+            if c.path.is_absolute()
+                || c.path
+                    .components()
+                    .any(|comp| matches!(comp, Component::Prefix(_) | Component::RootDir))
+            {
+                bail!(
+                    "collection {:?}: path {:?} must be relative even with allowOutsideRoot ({})",
+                    c.name,
+                    c.path,
+                    dir.display()
+                );
+            }
+        } else {
+            ensure_path_in_root(&c.path, dir)
+                .with_context(|| format!("collection {:?}", c.name))?;
+        }
     }
     if let Some(ch) = &cfg.code_highlight {
         if let Some(td) = &ch.themes_dir {
@@ -3063,6 +3093,139 @@ mod tests {
             .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("should accept");
         assert_eq!(cfg.collections.len(), 2);
+    }
+
+    // ── allowOutsideRoot opt-in (#1549) ───────────────────────────────────
+
+    #[tokio::test]
+    async fn allow_outside_root_permits_parent_dir_escape() {
+        // Flag-SET twin of `rejects_parent_dir_escape` above: with
+        // `allowOutsideRoot: true`, a `..`-relative collection path is
+        // now accepted.
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "collections": [
+                { "name": "blog", "path": "../outside", "allowOutsideRoot": true }
+            ]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("allowOutsideRoot should permit a `..` escape");
+        assert_eq!(cfg.collections.len(), 1);
+        assert!(cfg.collections[0].allow_outside_root);
+    }
+
+    #[tokio::test]
+    async fn allow_outside_root_still_rejects_absolute_path() {
+        // Absolute paths stay rejected even with the opt-in flag — only
+        // `..`-relative escapes are relaxed.
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "collections": [
+                { "name": "blog", "path": "/etc/passwd", "allowOutsideRoot": true }
+            ]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("absolute path must stay rejected even with allowOutsideRoot");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("relative"), "msg: {msg}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn allow_outside_root_still_rejects_windows_prefix_path() {
+        // `Component::Prefix` only exists when compiled for a Windows
+        // target, so this guard (and this test) only bites on Windows —
+        // zfb ships a windows binary (`@takazudo/zfb-win32-x64-msvc`).
+        // `C:temp` is drive-relative (Prefix component, no RootDir) and
+        // is NOT "absolute" per `Path::is_absolute()`'s own definition,
+        // so the opt-in branch checks for a Prefix/RootDir component
+        // explicitly — `is_absolute()` alone would let it through.
+        for bad_path in [r"C:temp", r"C:\foo", r"\\server\share"] {
+            let tmp = TempDir::new().unwrap();
+            let json = format!(
+                r#"{{ "collections": [ {{ "name": "blog", "path": {bad_path:?}, "allowOutsideRoot": true }} ] }}"#
+            );
+            tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+                .await
+                .unwrap();
+            let err = load_from_dir(tmp.path()).await.unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("relative"), "path {bad_path:?}, msg: {msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn allow_outside_root_unset_keeps_rejecting_parent_dir_escape() {
+        // Explicit `allowOutsideRoot: false` must behave identically to
+        // the flag being absent (already covered by
+        // `rejects_parent_dir_escape`).
+        let tmp = TempDir::new().unwrap();
+        let json = r#"{
+            "collections": [
+                { "name": "blog", "path": "../outside", "allowOutsideRoot": false }
+            ]
+        }"#;
+        tokio::fs::write(tmp.path().join("zfb.config.json"), json)
+            .await
+            .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("should reject .. escape when allowOutsideRoot is explicitly false");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("escapes"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn resolve_markdown_links_docs_dir_dotdot_escape_rejected() {
+        // Direct regression: the allowOutsideRoot bypass lives at the
+        // collection call site only, so `resolveMarkdownLinks.docsDir`
+        // must keep rejecting `..` escapes unconditionally.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "resolveMarkdownLinks": { "docsDir": "../outside-docs" } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("must reject .. escape");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("resolveMarkdownLinks.docsDir"),
+            "error should mention field; got: {msg}"
+        );
+        assert!(msg.contains("escapes"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn resolve_markdown_links_dirs_entry_dotdot_escape_rejected() {
+        // Direct regression: `resolveMarkdownLinks.dirs[].dir` has no
+        // opt-in bypass either.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "resolveMarkdownLinks": { "dirs": [ { "dir": "../outside-docs", "routePrefix": "/docs/" } ] } }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("must reject .. escape");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("resolveMarkdownLinks.dirs[0].dir"),
+            "error should mention field; got: {msg}"
+        );
+        assert!(msg.contains("escapes"), "msg: {msg}");
     }
 
     #[tokio::test]

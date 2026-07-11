@@ -396,6 +396,7 @@ mod tests {
             include: None,
             exclude: None,
             id_strip_suffix: None,
+            allow_outside_root: false,
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
@@ -428,6 +429,7 @@ mod tests {
             include: None,
             exclude: None,
             id_strip_suffix: None,
+            allow_outside_root: false,
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
@@ -464,6 +466,7 @@ mod tests {
             include: None,
             exclude: None,
             id_strip_suffix: None,
+            allow_outside_root: false,
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
@@ -490,6 +493,7 @@ mod tests {
             include: None,
             exclude: None,
             id_strip_suffix: None,
+            allow_outside_root: false,
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();
@@ -515,6 +519,7 @@ mod tests {
             include: None,
             exclude: None,
             id_strip_suffix: None,
+            allow_outside_root: false,
         };
 
         let issues = validate_collection(&tmp.path, &collection).unwrap();

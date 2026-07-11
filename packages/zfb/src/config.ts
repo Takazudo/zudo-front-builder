@@ -46,6 +46,20 @@ export type CollectionDef = {
    * collection's slugs round-trip as `foo` instead of `foo.en`.
    */
   idStripSuffix?: string;
+  /**
+   * Opt-in to a `path` that escapes the project root via `..` (e.g. a
+   * monorepo-shared content dir living outside this package). Default
+   * `false` keeps the standard project-root guard. Absolute paths and
+   * Windows drive-relative/prefix forms are rejected regardless of
+   * this flag — only `..`-relative escapes are relaxed.
+   *
+   * Security note: if this collection comes from a preset, the preset
+   * author — not the consuming project — controls `path`. Setting
+   * `allowOutsideRoot: true` on a preset-provided collection widens
+   * the project's read surface to wherever that preset points, so
+   * treat it the same as any other preset-granted filesystem access.
+   */
+  allowOutsideRoot?: boolean;
 };
 
 export type TailwindConfig = {
