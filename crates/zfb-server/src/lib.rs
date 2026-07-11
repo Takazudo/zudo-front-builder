@@ -50,6 +50,7 @@ pub mod injected_routes;
 pub mod livereload;
 pub mod middleware;
 pub mod plugin_middleware;
+pub mod redirects;
 pub mod render_hook;
 pub mod routes;
 pub mod ssr;
@@ -110,6 +111,7 @@ pub use plugin_middleware::{
     PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponse,
     PluginResponseEncoding,
 };
+pub use redirects::{RedirectOutcome, Redirects};
 pub use render_hook::{RenderOnRequestHandle, RenderOnRequestHook};
 pub use routes::{
     build_router, content_type_for_extension, resolve_content_type, AppState, CachedPage,
