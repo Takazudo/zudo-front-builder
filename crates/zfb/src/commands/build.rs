@@ -2247,6 +2247,40 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         crate::config::Framework::React => zfb_islands::FrameworkKind::React,
     }
     .jsx_import_source();
+    // Issue #1501: turn the scanner's direct + nested worker edges into one
+    // deterministic entry per logical source. Worker code is read from the
+    // preprocessing shadow (where `?raw` and nested worker URLs have already
+    // been rewritten), while its filename is derived from the corresponding
+    // original project path by the locked #1500 contract.
+    let shadow_paths = IslandsShadowPaths::new(project_root);
+    let module_worker_sources: std::collections::BTreeSet<PathBuf> = scan_meta
+        .module_worker_edges_from_islands
+        .iter()
+        .map(|edge| edge.source_path.clone())
+        .collect();
+    let mut module_workers = Vec::with_capacity(module_worker_sources.len());
+    for source in module_worker_sources {
+        let logical_source = shadow_paths.logical_project_path(&source).ok_or_else(|| {
+            anyhow!(
+                "module-worker source {} has no logical path under {}",
+                source.display(),
+                project_root.display()
+            )
+        })?;
+        let physical_source = match &_islands_shadow {
+            Some(shadow) => shadow_paths
+                .project_local_rel(&source)
+                .map(|relative| shadow._tempdir.path().join(relative))
+                .unwrap_or_else(|| source.clone()),
+            None => source.clone(),
+        };
+        module_workers.push(zfb_islands::ModuleWorkerBundleEntry::new(
+            project_root,
+            &logical_source,
+            physical_source,
+        )?);
+    }
+
     let bundle_cfg = match bundle_mode {
         zfb_islands::BundleMode::Production => BundleConfig::production(),
         zfb_islands::BundleMode::Development => BundleConfig::dev(),
@@ -2256,6 +2290,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     .with_client_router(scan_meta.uses_client_router)
     .with_loaders(crate::config::resolve_bundle_loaders(bundle_config))
     .with_define(crate::config::resolve_bundle_define(bundle_config))
+    .with_module_workers(module_workers)
     // Issue #1413: the shadow carries the exact symlink-mode decision.
     // Most shadows need `--preserve-symlinks`; copy-mode shadows use real
     // source copies and deliberately omit it to mirror the SSR bundler.
@@ -2289,6 +2324,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
             let companions = asset
                 .chunks
                 .into_iter()
+                .chain(asset.workers)
                 .map(|c| CompanionFile {
                     filename: c.filename,
                     bytes: c.bytes,

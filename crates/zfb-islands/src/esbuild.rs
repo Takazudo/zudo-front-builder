@@ -52,7 +52,7 @@ use zfb_types::json_string;
 
 use crate::bundler::{
     bundle_link_href, island_link_href, BundleChunk, BundleConfig, BundleOutput, ClientBundler,
-    FrameworkKind, Island, IslandBundle, ModuleId, PerIslandBundleOutput,
+    FrameworkKind, Island, IslandBundle, ModuleId, ModuleWorkerBundleEntry, PerIslandBundleOutput,
 };
 
 /// The pinned esbuild CLI version this crate runs against.
@@ -97,6 +97,16 @@ pub(crate) const ESBUILD_CHUNK_NAME_TEMPLATE: &str = "islands-chunk-[hash]";
 /// this prefix — a defence against a future esbuild change or a malformed
 /// template silently smuggling an unexpected file into `BundleOutput`.
 pub(crate) const ESBUILD_CHUNK_FILENAME_PREFIX: &str = "islands-chunk-";
+
+/// Prefix for each per-worker `--entry-names` template.
+///
+/// The complete entry name is derived from
+/// [`zfb_types::module_worker_filename`] with the trailing `.js` removed;
+/// esbuild appends that extension again. Keeping the reserved prefix beside
+/// the islands entry/chunk templates makes the read-back filename classes
+/// explicit; aliasing the shared constant pins this layer to the #1500
+/// contract at compile time.
+pub(crate) const ESBUILD_WORKER_ENTRY_NAME_PREFIX: &str = zfb_types::MODULE_WORKER_FILENAME_PREFIX;
 
 /// SHA-256 of the pinned esbuild binary for the current platform,
 /// lowercase hex.
@@ -795,6 +805,9 @@ impl EsbuildSubprocessBundler {
         config: &BundleConfig,
         splitting: bool,
     ) -> Result<OneEntryOutput> {
+        if splitting {
+            validate_module_worker_entries(&config.module_workers)?;
+        }
         if self.config.mock_subprocess {
             // Mock mode: return either the configured mock_output (when
             // set) or the entry source itself so tests can assert the
@@ -802,10 +815,32 @@ impl EsbuildSubprocessBundler {
             // chunks — the real esbuild subprocess is the only chunk
             // source, so the splitting path is exercised by the
             // `#[ignore]` integration tests that run the actual binary.
-            if !self.config.mock_output.is_empty() {
-                return Ok(OneEntryOutput::js_only(self.config.mock_output.clone()));
+            let js = if !self.config.mock_output.is_empty() {
+                self.config.mock_output.clone()
+            } else {
+                entry_source.to_string()
+            };
+            let mut output = OneEntryOutput::js_only(js);
+            if splitting {
+                output.workers = config
+                    .module_workers
+                    .iter()
+                    .map(|worker| {
+                        validate_chunk_filename(worker.filename())?;
+                        let bytes = std::fs::read(worker.source_path()).with_context(|| {
+                            format!(
+                                "mock: failed to read module-worker entry {}",
+                                worker.source_path().display()
+                            )
+                        })?;
+                        Ok(BundleChunk {
+                            filename: worker.filename().to_string(),
+                            bytes,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
             }
-            return Ok(OneEntryOutput::js_only(entry_source.to_string()));
+            return Ok(output);
         }
 
         ensure_binary_verified(&self.config.binary_path, false)?;
@@ -973,13 +1008,6 @@ impl EsbuildSubprocessBundler {
             .output()
             .with_context(|| format!("failed to spawn {}", self.config.binary_path.display()))?;
 
-        // Drop `resolver_inputs` and the synthetic tsconfig now — the
-        // subprocess has finished and esbuild no longer needs either.
-        // Explicit drops make the lifetime intent visible; both delete
-        // their on-disk file via Drop.
-        drop(resolver_inputs);
-        drop(plugin_tsconfig);
-
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let friendly = redact_temp_path(
@@ -1001,24 +1029,124 @@ impl EsbuildSubprocessBundler {
             ));
         }
 
+        // Issue #1501: esbuild does not discover `new Worker(new URL(...))`
+        // as another entry. Run one explicit browser bundle per locked #1500
+        // worker entry into the SAME staging outdir as `islands.js`. Each
+        // pass disables splitting so the stable `worker-*.js` companion is
+        // self-contained; the shared loaders, defines, mode, JSX policy,
+        // plugin aliases, and virtual modules all flow through the same arg
+        // builder and resolver inputs as the islands entry.
+        if splitting && !config.module_workers.is_empty() {
+            for worker in &config.module_workers {
+                let worker_args = build_esbuild_args_with_entry_name(
+                    config,
+                    &self.config.extra_args,
+                    out_dir.path(),
+                    worker.source_path(),
+                    false,
+                    worker.entry_name_template(),
+                );
+                let mut worker_cmd = Command::new(&self.config.binary_path);
+                worker_cmd.current_dir(&self.config.working_dir);
+                for (key, value) in &self.config.env_vars {
+                    worker_cmd.env(key, value);
+                }
+                if let Some(ref tsconfig_tmp) = plugin_tsconfig {
+                    worker_cmd.arg(OsString::from(format!(
+                        "--tsconfig={}",
+                        tsconfig_tmp.path().display()
+                    )));
+                }
+                for flag in resolver_inputs.virtual_module_alias_flags() {
+                    worker_cmd.arg(OsString::from(flag));
+                }
+                for arg in &worker_args {
+                    worker_cmd.arg(arg);
+                }
+
+                let worker_output = worker_cmd.output().with_context(|| {
+                    format!(
+                        "failed to spawn {} for module-worker entry {}",
+                        self.config.binary_path.display(),
+                        worker.source_path().display()
+                    )
+                })?;
+                if !worker_output.status.success() {
+                    let stderr = String::from_utf8_lossy(&worker_output.stderr);
+                    let friendly = redact_temp_path(
+                        &stderr,
+                        out_dir.path(),
+                        &self.config.working_dir,
+                        "<zfb-islands internal esbuild output directory>",
+                    );
+                    return Err(anyhow!(
+                        "esbuild exited with status {} bundling module worker {}: {}",
+                        worker_output.status,
+                        worker.source_path().display(),
+                        friendly.trim()
+                    ));
+                }
+            }
+        }
+
+        // All subprocesses are complete. Dropping these deletes the temporary
+        // plugin resolver modules/tsconfig only after every worker pass has
+        // had a chance to resolve through them.
+        drop(resolver_inputs);
+        drop(plugin_tsconfig);
+
         read_back_outdir(out_dir.path())
     }
 }
 
-/// In-memory result of one `bundle_one_entry` pass: the entry JS plus any
-/// code-split chunks esbuild emitted beside it.
+/// Validate caller-supplied worker entries before either the real or mock
+/// bundle path consumes them. This keeps both modes aligned and prevents two
+/// passes from overwriting the same stable companion inside the shared
+/// staging outdir.
+fn validate_module_worker_entries(entries: &[ModuleWorkerBundleEntry]) -> Result<()> {
+    let mut seen_worker_names = std::collections::BTreeSet::new();
+    for worker in entries {
+        match validate_chunk_filename(worker.filename())? {
+            OutputFilenameClass::Worker => {}
+            OutputFilenameClass::Chunk => {
+                return Err(anyhow!(
+                    "module-worker entry unexpectedly used chunk filename {:?}",
+                    worker.filename()
+                ));
+            }
+        }
+        if !seen_worker_names.insert(worker.filename()) {
+            return Err(anyhow!(
+                "duplicate module-worker output filename {:?}",
+                worker.filename()
+            ));
+        }
+        if !worker.source_path().is_file() {
+            return Err(anyhow!(
+                "module-worker entry source does not exist or is not a file: {}",
+                worker.source_path().display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// In-memory result of the shared `bundle_one_entry` pass: the entry JS plus
+/// any code-split chunks and independently bundled module workers emitted
+/// beside it.
 ///
 /// `chunks` is empty for a zero-dynamic-import entry, always in mock mode,
 /// and always on the per-island/runtime path (which bundles with
 /// `splitting = false`, so esbuild inlines dynamic imports instead of
 /// emitting chunks). The per-island path — not production-wired, chunk
 /// shipping/serving out of scope — reads only `js`; the shared-bundle path
-/// bundles with `splitting = true` and threads `chunks` into
+/// bundles with `splitting = true` and threads `chunks`/`workers` into
 /// [`BundleOutput`].
 #[derive(Debug)]
 struct OneEntryOutput {
     js: String,
     chunks: Vec<BundleChunk>,
+    workers: Vec<BundleChunk>,
 }
 
 impl OneEntryOutput {
@@ -1028,6 +1156,7 @@ impl OneEntryOutput {
         Self {
             js,
             chunks: Vec::new(),
+            workers: Vec::new(),
         }
     }
 }
@@ -1063,36 +1192,40 @@ fn redact_temp_path(stderr: &str, leak_path: &Path, cwd: &Path, label: &str) -> 
     out
 }
 
-/// Read every file esbuild staged into `out_dir` back into memory, split
-/// into the stable entry (`islands.js`) and its self-hashed chunks.
+/// Read every file esbuild staged into `out_dir` back into memory, split into
+/// the stable entry (`islands.js`), self-hashed chunks, and stable module
+/// workers.
 ///
 /// Contract enforced here (the read-back is the trust boundary for the
 /// `BundleOutput::chunks` shape downstream consumers rely on):
 ///
 /// - Exactly one entry named [`STABLE_ISLANDS_FILENAME`] must exist.
-/// - Every *other* `.js` file is treated as a code-split chunk and must be
-///   FLAT (the directory walk is non-recursive; we additionally reject any
-///   name containing a path separator or `..` as defence-in-depth) and must
-///   start with [`ESBUILD_CHUNK_FILENAME_PREFIX`]. Anything else is rejected
-///   rather than silently shipped.
-/// - Sourcemap siblings (`*.js.map`) are ignored on read-back, matching the
-///   pre-splitting behaviour (the old single-file path requested
+/// - Every *other* `.js` file must be FLAT (the directory walk is
+///   non-recursive; we additionally reject any name containing a path
+///   separator or `..` as defence-in-depth) and belong to exactly one reserved
+///   class: [`ESBUILD_CHUNK_FILENAME_PREFIX`] or
+///   [`ESBUILD_WORKER_ENTRY_NAME_PREFIX`]. Anything else is rejected rather
+///   than silently shipped.
+/// - Recognised sourcemap siblings (`*.js.map`) are ignored on read-back,
+///   matching the pre-splitting behaviour (the old single-file path requested
 ///   `--sourcemap=linked` but only ever read the `.js` back). Keeping that
 ///   exact behaviour means enabling splitting introduces zero new bytes for
 ///   the non-splitting case.
 fn read_back_outdir(out_dir: &Path) -> Result<OneEntryOutput> {
     let mut entry_js: Option<String> = None;
     let mut chunks: Vec<BundleChunk> = Vec::new();
+    let mut workers: Vec<BundleChunk> = Vec::new();
 
     for dirent in std::fs::read_dir(out_dir)
         .with_context(|| format!("failed to read esbuild outdir {}", out_dir.display()))?
     {
         let dirent = dirent.context("failed to read esbuild outdir entry")?;
         if !dirent.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            // esbuild emits flat files only; a non-file here would mean
-            // an unexpected layout — skip directories/symlinks rather than
-            // trust them.
-            continue;
+            return Err(anyhow!(
+                "esbuild emitted an unexpected non-file output entry {:?} in {}",
+                dirent.file_name(),
+                out_dir.display()
+            ));
         }
         let os_name = dirent.file_name();
         let name = os_name.to_str().ok_or_else(|| {
@@ -1102,8 +1235,20 @@ fn read_back_outdir(out_dir: &Path) -> Result<OneEntryOutput> {
             )
         })?;
 
-        // Ignore sourcemap siblings (see fn doc) — never shipped today.
-        if name.ends_with(".map") {
+        // Ignore only sourcemap siblings of a recognised JS output (see fn
+        // doc) — never shipped today. An arbitrary `sneaky.js.map` must not
+        // bypass the same filename trust boundary its hypothetical JS peer
+        // would fail.
+        if let Some(mapped_js) = name.strip_suffix(".map") {
+            if !mapped_js.ends_with(".js") {
+                return Err(anyhow!(
+                    "esbuild emitted an unexpected sourcemap file {name:?}; \
+                     expected a recognised `.js.map` sibling"
+                ));
+            }
+            if mapped_js != zfb_types::STABLE_ISLANDS_FILENAME {
+                validate_chunk_filename(mapped_js)?;
+            }
             continue;
         }
 
@@ -1114,20 +1259,22 @@ fn read_back_outdir(out_dir: &Path) -> Result<OneEntryOutput> {
             continue;
         }
 
-        // Everything else is a chunk — validate it hard before trusting it.
-        // `filename` must be flat and `islands-chunk-*`-shaped; reject path
-        // separators / traversal and any unexpected prefix. A future esbuild
-        // change (or a botched naming template) that emits something else
-        // surfaces as a build error here instead of leaking an arbitrary file
-        // into `BundleOutput.chunks` (which the prod pipeline writes to
-        // `dist/assets/` verbatim).
-        validate_chunk_filename(name)?;
+        // Everything else must belong to one of exactly two reserved
+        // companion classes: a self-hashed islands chunk or a stable module
+        // worker. Reject path separators / traversal and every unknown prefix
+        // before reading bytes so the read-back remains the trust boundary for
+        // downstream verbatim writes.
+        let class = validate_chunk_filename(name)?;
         let bytes = std::fs::read(dirent.path())
-            .with_context(|| format!("failed to read esbuild chunk {name}"))?;
-        chunks.push(BundleChunk {
+            .with_context(|| format!("failed to read esbuild companion {name}"))?;
+        let companion = BundleChunk {
             filename: name.to_string(),
             bytes,
-        });
+        };
+        match class {
+            OutputFilenameClass::Chunk => chunks.push(companion),
+            OutputFilenameClass::Worker => workers.push(companion),
+        }
     }
 
     let js = entry_js.ok_or_else(|| {
@@ -1143,18 +1290,30 @@ fn read_back_outdir(out_dir: &Path) -> Result<OneEntryOutput> {
     // *names* are already content-stable across rebuilds; sorting makes the
     // Vec order stable too.
     chunks.sort_by(|a, b| a.filename.cmp(&b.filename));
+    workers.sort_by(|a, b| a.filename.cmp(&b.filename));
 
-    Ok(OneEntryOutput { js, chunks })
+    Ok(OneEntryOutput {
+        js,
+        chunks,
+        workers,
+    })
 }
 
-/// Validate a discovered chunk filename against the split contract: it must
-/// be a flat basename (no path separators, no `..` traversal segment) and
-/// carry the [`ESBUILD_CHUNK_FILENAME_PREFIX`]. Returns an error describing
-/// the rejected name otherwise.
-fn validate_chunk_filename(name: &str) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputFilenameClass {
+    Chunk,
+    Worker,
+}
+
+/// Validate a discovered companion filename against the strict output
+/// contract: it must be a flat basename (no path separators, no `..`
+/// traversal segment) and belong to either the chunk or worker reserved
+/// filename class. Returns the recognised class, or an error describing the
+/// rejected name.
+fn validate_chunk_filename(name: &str) -> Result<OutputFilenameClass> {
     if name.contains('/') || name.contains('\\') || name.contains(std::path::MAIN_SEPARATOR) {
         return Err(anyhow!(
-            "esbuild chunk filename must be flat (no path separator): {name:?}"
+            "esbuild companion filename must be flat (no path separator): {name:?}"
         ));
     }
     // A legitimate self-hashed chunk basename never contains `..`; reject the
@@ -1162,7 +1321,7 @@ fn validate_chunk_filename(name: &str) -> Result<()> {
     // with the separator check above).
     if name.contains("..") {
         return Err(anyhow!(
-            "esbuild chunk filename must not contain `..`: {name:?}"
+            "esbuild companion filename must not contain `..`: {name:?}"
         ));
     }
     // Issue #1395: a residual `.css` output here means the `--loader:.css=empty`
@@ -1180,14 +1339,36 @@ fn validate_chunk_filename(name: &str) -> Result<()> {
              build_esbuild_args_with_entry_name"
         ));
     }
-    if !name.starts_with(ESBUILD_CHUNK_FILENAME_PREFIX) {
-        return Err(anyhow!(
-            "esbuild emitted an unexpected output file {name:?}; \
-             expected the entry `{}` or a `{ESBUILD_CHUNK_FILENAME_PREFIX}*` chunk",
-            zfb_types::STABLE_ISLANDS_FILENAME
-        ));
+    if let Some(hash) = name
+        .strip_prefix(ESBUILD_CHUNK_FILENAME_PREFIX)
+        .and_then(|rest| rest.strip_suffix(".js"))
+    {
+        if !hash.is_empty()
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Ok(OutputFilenameClass::Chunk);
+        }
     }
-    Ok(())
+    if let Some(encoded_path) = name
+        .strip_prefix(ESBUILD_WORKER_ENTRY_NAME_PREFIX)
+        .and_then(|rest| rest.strip_suffix(".js"))
+    {
+        if !encoded_path.is_empty()
+            && encoded_path
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Ok(OutputFilenameClass::Worker);
+        }
+    }
+    Err(anyhow!(
+        "esbuild emitted an unexpected output file {name:?}; expected the entry `{}`, \
+         a `{ESBUILD_CHUNK_FILENAME_PREFIX}*` chunk, or a \
+         `{ESBUILD_WORKER_ENTRY_NAME_PREFIX}*.js` module worker",
+        zfb_types::STABLE_ISLANDS_FILENAME
+    ))
 }
 
 /// Compose the esbuild CLI argument list for one entry-source bundle
@@ -1852,7 +2033,11 @@ fn serialize_manifest(entries: &[(String, String)]) -> String {
 
 impl ClientBundler for EsbuildSubprocessBundler {
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput> {
-        let OneEntryOutput { js, chunks } = self.produce_bundle_js(islands, config)?;
+        let OneEntryOutput {
+            js,
+            chunks,
+            workers,
+        } = self.produce_bundle_js(islands, config)?;
 
         // Carry the entry JS **in memory** — do NOT write `islands.js` to
         // disk here. Per the Prod Asset Graph epic, the single source of
@@ -1896,6 +2081,7 @@ impl ClientBundler for EsbuildSubprocessBundler {
             asset_url,
             module_ids,
             chunks,
+            workers,
         })
     }
 }
@@ -2951,19 +3137,90 @@ mod tests {
         );
     }
 
-    /// `validate_chunk_filename` accepts a well-formed self-hashed chunk
-    /// name and rejects pathological ones (path separators, traversal,
-    /// unexpected prefix) so the read-back can never smuggle an arbitrary
-    /// file into `BundleOutput.chunks`.
+    /// `validate_chunk_filename` accepts exactly the two reserved companion
+    /// classes and rejects pathological names (path separators, traversal,
+    /// malformed workers, unexpected prefix) so read-back can never smuggle
+    /// an arbitrary file into `BundleOutput`.
     #[test]
     fn validate_chunk_filename_accepts_and_rejects() {
-        assert!(validate_chunk_filename("islands-chunk-WOEGGERP.js").is_ok());
+        assert_eq!(
+            validate_chunk_filename("islands-chunk-WOEGGERP.js").unwrap(),
+            OutputFilenameClass::Chunk
+        );
+        assert_eq!(
+            validate_chunk_filename("worker-src-s-search-d-worker-d-ts.js").unwrap(),
+            OutputFilenameClass::Worker
+        );
 
         assert!(validate_chunk_filename("../islands-chunk-X.js").is_err());
         assert!(validate_chunk_filename("nested/islands-chunk-X.js").is_err());
         assert!(validate_chunk_filename("islands-chunk-..").is_err());
+        assert!(validate_chunk_filename("islands-chunk-.js").is_err());
+        assert!(validate_chunk_filename("islands-chunk-AAAA.css").is_err());
+        assert!(validate_chunk_filename("worker-.js").is_err());
+        assert!(validate_chunk_filename("worker-bad.name.js").is_err());
+        assert!(validate_chunk_filename("worker-valid-name.css").is_err());
         assert!(validate_chunk_filename("evil.js").is_err());
         assert!(validate_chunk_filename("islands.js").is_err());
+    }
+
+    /// Worker passes inherit the shared browser mode/loaders/defines while
+    /// deliberately disabling splitting and pinning the full contract name.
+    #[test]
+    fn module_worker_args_are_browser_non_splitting_and_inherit_config() {
+        let cfg = BundleConfig::dev()
+            .with_loaders(BTreeMap::from([(".txt".to_string(), "text".to_string())]))
+            .with_define(BTreeMap::from([(
+                "__WORKER_FLAG__".to_string(),
+                "true".to_string(),
+            )]));
+        let args: Vec<String> = build_esbuild_args_with_entry_name(
+            &cfg,
+            &[],
+            Path::new("/tmp/out"),
+            Path::new("/app/src/search.worker.ts"),
+            false,
+            "worker-src-s-search-d-worker-d-ts",
+        )
+        .into_iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+
+        assert!(args.iter().any(|arg| arg == "--platform=browser"));
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("--splitting")),
+            "worker bundles must be self-contained: {args:?}"
+        );
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--entry-names=worker-src-s-search-d-worker-d-ts"));
+        assert!(args.iter().any(|arg| arg == "--loader:.txt=text"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--define:__WORKER_FLAG__=true"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--define:import.meta.env.DEV=true"));
+    }
+
+    #[test]
+    fn duplicate_module_worker_outputs_are_rejected_in_mock_mode_too() {
+        let project = tempfile::tempdir().unwrap();
+        let source = project.path().join("worker.ts");
+        std::fs::write(&source, "self.postMessage('ok');").unwrap();
+        let worker = ModuleWorkerBundleEntry::new(project.path(), &source, &source).unwrap();
+        let config = BundleConfig::dev().with_module_workers(vec![worker.clone(), worker]);
+        let bundler = EsbuildSubprocessBundler::new(
+            EsbuildSubprocessConfig::default().with_mock_output("export {};"),
+        );
+
+        let error = bundler
+            .bundle(&[Island::new("Island", &source)], &config)
+            .expect_err("duplicate stable worker filenames must not overwrite each other");
+        assert!(
+            format!("{error}").contains("duplicate module-worker output filename"),
+            "{error}"
+        );
     }
 
     /// Issue #1395: a residual `.css` output must fail with the targeted
@@ -3056,6 +3313,7 @@ mod tests {
             "no chunks expected: {:?}",
             out.chunks
         );
+        assert!(out.workers.is_empty(), "no workers expected");
     }
 
     /// `read_back_outdir`: entry + chunks are split correctly, sourcemap
@@ -3078,6 +3336,30 @@ mod tests {
         assert_eq!(names, vec!["islands-chunk-AAA.js", "islands-chunk-ZZZ.js"]);
         assert_eq!(out.chunks[0].bytes, b"a\n");
         assert_eq!(out.chunks[1].bytes, b"z\n");
+        assert!(out.workers.is_empty());
+    }
+
+    /// Worker outputs share the staging directory but remain separate from
+    /// self-hashed chunks in the public result.
+    #[test]
+    fn read_back_outdir_collects_workers_separately_and_sorts_them() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("islands.js"), b"entry\n").unwrap();
+        std::fs::write(dir.path().join("islands-chunk-AAA.js"), b"chunk\n").unwrap();
+        std::fs::write(dir.path().join("worker-src-s-z-d-ts.js"), b"worker-z\n").unwrap();
+        std::fs::write(dir.path().join("worker-src-s-a-d-ts.js"), b"worker-a\n").unwrap();
+        std::fs::write(dir.path().join("worker-src-s-a-d-ts.js.map"), b"{}").unwrap();
+
+        let out = read_back_outdir(dir.path()).expect("read back");
+        assert_eq!(out.chunks.len(), 1);
+        assert_eq!(
+            out.workers
+                .iter()
+                .map(|worker| worker.filename.as_str())
+                .collect::<Vec<_>>(),
+            vec!["worker-src-s-a-d-ts.js", "worker-src-s-z-d-ts.js"]
+        );
+        assert_eq!(out.workers[0].bytes, b"worker-a\n");
     }
 
     /// `read_back_outdir`: a pathologically-named output file that is not
@@ -3094,6 +3376,20 @@ mod tests {
             format!("{err}").contains("unexpected output file"),
             "got: {err}"
         );
+
+        let map_only = tempfile::tempdir().unwrap();
+        std::fs::write(map_only.path().join("islands.js"), b"entry\n").unwrap();
+        std::fs::write(map_only.path().join("sneaky.js.map"), b"{}").unwrap();
+        let err = read_back_outdir(map_only.path())
+            .expect_err("an unknown sourcemap must not bypass filename validation");
+        assert!(format!("{err}").contains("unexpected output file"));
+
+        let malformed_map = tempfile::tempdir().unwrap();
+        std::fs::write(malformed_map.path().join("islands.js"), b"entry\n").unwrap();
+        std::fs::write(malformed_map.path().join("islands-chunk-AAAA.map"), b"{}").unwrap();
+        let err = read_back_outdir(malformed_map.path())
+            .expect_err("only .js.map sourcemap siblings are recognised");
+        assert!(format!("{err}").contains("unexpected sourcemap"));
     }
 
     /// `read_back_outdir`: a directory with no `islands.js` entry is an

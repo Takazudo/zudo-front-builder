@@ -706,9 +706,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let islands_bundle_url_handle: zfb_server::IslandsBundleUrl =
         Arc::new(std::sync::RwLock::new(None));
 
-    // Tracks chunk filenames written by the most recent islands bundle so the
-    // next rebundle tick can delete stale ones (issue #809).
-    let live_chunk_filenames: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    // Tracks chunk + module-worker companion filenames written by the most
+    // recent islands bundle so the next tick can prune stale files.
+    let live_companion_filenames: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
 
     // Issue #1170 — the eager initial islands bundle used to run HERE,
     // synchronously, before `TcpListener::bind`. On a large-dependency
@@ -724,19 +725,19 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     let run_islands: Option<IslandsRunner> = {
         let project_root = project_root.clone();
-        // Issue #1189: write islands.js + chunks to the isolated dev-assets
-        // root, not the build-shared `dist/`.
+        // Issue #1189/#1501: write islands.js + companions to the isolated
+        // dev-assets root, not the build-shared `dist/`.
         let dev_assets_root_for_islands = dev_assets_root.clone();
         let plugin_cfg = islands_plugin_config.clone();
         let framework = cfg.framework;
         let bundle_config = cfg.bundle.clone();
         let url_prefix = dev_islands_url_prefix.clone();
         let url_handle = Arc::clone(&islands_bundle_url_handle);
-        let chunk_names = Arc::clone(&live_chunk_filenames);
+        let companion_names = Arc::clone(&live_companion_filenames);
         let raw_invalidation = raw_import_invalidation.clone();
         // The watcher tick and the deferred boot build (issue #1170) share
         // ONE implementation — `rebundle_islands` — so the boot-time bundle
-        // and every rebundle tick write islands.js, prune chunks, and
+        // and every rebundle tick write islands.js, prune companions, and
         // publish the shared URL handle identically (no drift). The watcher
         // path propagates the `Err` (an esbuild / disk failure on a tick
         // should fail loudly); the boot path catches it and warns-and-
@@ -750,7 +751,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &plugin_cfg,
                 &url_prefix,
                 &url_handle,
-                &chunk_names,
+                &companion_names,
                 &raw_invalidation,
             )
         }))
@@ -1085,9 +1086,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // its inputs now, before `ServeOpts` / `run_islands` consume the
     // originals: `rebundle_islands` needs the project + dev-assets roots, the
     // framework, the islands plugin config, the URL prefix, the shared
-    // bundle-URL handle, and the live-chunk tracker.
+    // bundle-URL handle, and the live-companion tracker.
     let islands_url_handle_for_boot = Arc::clone(&islands_bundle_url_handle);
-    let islands_chunk_names_for_boot = Arc::clone(&live_chunk_filenames);
+    let islands_companion_names_for_boot = Arc::clone(&live_companion_filenames);
     let islands_plugin_config_for_boot = islands_plugin_config.clone();
     let raw_import_invalidation_for_boot = raw_import_invalidation.clone();
     let islands_url_prefix_for_boot = dev_islands_url_prefix.clone();
@@ -1450,7 +1451,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &islands_plugin_config_for_boot,
                 &islands_url_prefix_for_boot,
                 &islands_url_handle_for_boot,
-                &islands_chunk_names_for_boot,
+                &islands_companion_names_for_boot,
                 &raw_import_invalidation_for_boot,
             ) {
                 Ok(info) => info,
@@ -1623,18 +1624,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 /// result: build the payload, write the stable `islands.js` under
 /// `assets_root/assets/` (issue #1189: the isolated `.zfb-build/dev-assets`
 /// root, NOT the build-shared `dist/`),
-/// refresh / prune the chunk companions, and rewrite the shared bundle-URL
-/// handle. Returns `Some(IslandsBundleInfo { changed: true, .. })` when a
+/// refresh / prune chunk and module-worker companions, and rewrite the shared
+/// bundle-URL handle. Returns `Some(IslandsBundleInfo { changed: true, .. })` when a
 /// bundle was produced (so `outcome_to_events` emits a
 /// `ReloadEvent::Islands`), or `None` when the project has no `"use client"`
 /// components this run — in which case the handle is cleared and stale
-/// chunks are pruned so no `<script type="module">` and no dead chunk files
-/// keep being served.
+/// companions are pruned so no `<script type="module">` and no dead chunk or
+/// worker files keep being served.
 ///
 /// Shared by the watcher-tick `run_islands` callback and the deferred boot
-/// build (issue #1170) so both write disk, prune chunks, and publish the URL
+/// build (issue #1170) so both write disk, prune companions, and publish the URL
 /// IDENTICALLY — the two paths cannot drift. Lock poisoning is recovered (a
-/// writer panic must not strand the watcher loop). Disk / chunk-write
+/// writer panic must not strand the watcher loop). Disk / companion-write
 /// failures are returned as `Err`: the watcher path propagates it (a tick
 /// failure is loud), the boot path warns-and-continues (issue #1170).
 fn rebundle_islands(
@@ -1647,7 +1648,7 @@ fn rebundle_islands(
     plugin_config: &crate::commands::build::IslandsPluginConfig,
     url_prefix: &str,
     url_handle: &zfb_server::IslandsBundleUrl,
-    chunk_names: &Arc<Mutex<HashSet<String>>>,
+    companion_names: &Arc<Mutex<HashSet<String>>>,
     raw_invalidation: &zfb_build::RawImportInvalidation,
 ) -> anyhow::Result<Option<IslandsBundleInfo>> {
     // Marker names are only needed by the production build pass; dev mode
@@ -1703,12 +1704,12 @@ fn rebundle_islands(
         // last `"use client"` component would leave the previously-emitted
         // bundle URL visible on every page until the dev server restarts.
         *guard = None;
-        // Also prune any chunks that were part of the last bundle — with no
-        // islands bundle at all, none of the chunk files should be served.
+        // Also prune companions from the last bundle — with no islands bundle
+        // at all, neither chunks nor module workers should remain served.
         {
-            let mut prev = chunk_names.lock().unwrap_or_else(|p| {
+            let mut prev = companion_names.lock().unwrap_or_else(|p| {
                 tracing::warn!(
-                    site = "dev.rebundle_islands.chunk_names (clear)",
+                    site = "dev.rebundle_islands.companion_names (clear)",
                     "mutex poisoned, recovered"
                 );
                 p.into_inner()
@@ -1717,7 +1718,7 @@ fn rebundle_islands(
             if let Err(e) = refresh_dev_island_chunks(&assets_dir, &[], &prev) {
                 tracing::warn!(
                     error = %e,
-                    "dev islands: failed to prune stale chunks after no-bundle tick (ignored)"
+                    "dev islands: failed to prune stale companions after no-bundle tick (ignored)"
                 );
             }
             *prev = HashSet::new();
@@ -1744,11 +1745,11 @@ fn rebundle_islands(
     } else {
         format!("{url_prefix}{}", payload.stable_url)
     };
-    // Write / prune chunk files for this generation.
+    // Write / prune chunk and worker companions for this generation.
     {
-        let mut prev = chunk_names.lock().unwrap_or_else(|p| {
+        let mut prev = companion_names.lock().unwrap_or_else(|p| {
             tracing::warn!(
-                site = "dev.rebundle_islands.chunk_names",
+                site = "dev.rebundle_islands.companion_names",
                 "mutex poisoned, recovered"
             );
             p.into_inner()
@@ -1757,7 +1758,7 @@ fn rebundle_islands(
         match refresh_dev_island_chunks(&assets_dir, &payload.companions, &prev) {
             Ok(names) => *prev = names,
             Err(e) => {
-                return Err(e.context("dev islands: failed to refresh chunk files"));
+                return Err(e.context("dev islands: failed to refresh companion files"));
             }
         }
     }
@@ -2033,21 +2034,22 @@ fn resolve_css_import_watch_targets(project_root: &Path) -> Vec<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Dev islands chunk helpers
+// Dev islands companion helpers
 // ---------------------------------------------------------------------------
 
-/// Write new chunk files into `assets_dir`, delete chunks from the previous
-/// generation that are no longer in the new set, and return the new set.
+/// Write new companion files into `assets_dir`, delete companions from the
+/// previous generation that are no longer in the new set, and return the new
+/// filename set.
 ///
 /// `assets_dir` is the on-disk `<dist_root>/assets/` directory that the dev
-/// server already serves via ServeDir.  Because chunks land in that directory
-/// under their self-hashed basenames (e.g. `islands-chunk-WOEGGERP.js`), the
-/// entry's baked-in relative `import("./islands-chunk-WOEGGERP.js")` resolves
-/// without any additional routing code.
+/// server already serves via ServeDir. Because companions land in that directory
+/// under flat contract basenames (self-hashed `islands-chunk-*.js` chunks and
+/// stable `worker-*.js` module workers), the entry's baked-in relative URLs
+/// resolve without any additional routing code.
 ///
-/// Errors writing a chunk are returned immediately (callers treat them as
+/// Errors writing a companion are returned immediately (callers treat them as
 /// non-fatal at the boot path, fatal at the watcher tick path).  Errors
-/// deleting stale chunks are logged and ignored — a stale file that fails to
+/// deleting stale companions are logged and ignored — a stale file that fails to
 /// delete is preferable to aborting the rebuild loop.
 fn refresh_dev_island_chunks(
     assets_dir: &Path,
@@ -2056,8 +2058,7 @@ fn refresh_dev_island_chunks(
 ) -> anyhow::Result<HashSet<String>> {
     let new_filenames: HashSet<String> = companions.iter().map(|c| c.filename.clone()).collect();
 
-    // Write each new chunk file. The entry was already written by the bundler
-    // as a side effect of `bundle()`; these are the code-split companions.
+    // Write each new companion file beside the entry.
     for companion in companions {
         if companion.filename.is_empty()
             || companion.filename.contains('/')
@@ -2065,18 +2066,21 @@ fn refresh_dev_island_chunks(
             || companion.filename.contains("..")
         {
             anyhow::bail!(
-                "dev islands: chunk filename {:?} must be a flat basename \
+                "dev islands: companion filename {:?} must be a flat basename \
                  (no path separator or `..`)",
                 companion.filename
             );
         }
         let dest = assets_dir.join(&companion.filename);
         std::fs::write(&dest, &companion.bytes).with_context(|| {
-            format!("dev islands: failed to write chunk file {}", dest.display())
+            format!(
+                "dev islands: failed to write companion file {}",
+                dest.display()
+            )
         })?;
     }
 
-    // Prune stale chunk files from the previous generation.
+    // Prune stale companion files from the previous generation.
     for stale in prev_filenames.difference(&new_filenames) {
         let path = assets_dir.join(stale);
         if let Err(e) = std::fs::remove_file(&path) {
@@ -2084,7 +2088,7 @@ fn refresh_dev_island_chunks(
                 tracing::warn!(
                     path = %path.display(),
                     error = %e,
-                    "dev islands: failed to delete stale chunk (ignored)"
+                    "dev islands: failed to delete stale companion (ignored)"
                 );
             }
         }
@@ -7954,19 +7958,21 @@ mod tests {
     }
 
     #[test]
-    fn writes_chunk_files_to_assets_dir() {
+    fn writes_chunk_and_worker_companions_to_assets_dir() {
         let dir = tempfile::tempdir().unwrap();
         let assets = dir.path().to_path_buf();
 
         let companions = vec![
             make_companion("islands-chunk-AAAAAAAA.js", b"chunk-a"),
             make_companion("islands-chunk-BBBBBBBB.js", b"chunk-b"),
+            make_companion("worker-src-s-search-d-worker-d-ts.js", b"worker"),
         ];
         let result = refresh_dev_island_chunks(&assets, &companions, &HashSet::new()).unwrap();
 
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 3);
         assert!(result.contains("islands-chunk-AAAAAAAA.js"));
         assert!(result.contains("islands-chunk-BBBBBBBB.js"));
+        assert!(result.contains("worker-src-s-search-d-worker-d-ts.js"));
         assert_eq!(
             std::fs::read(assets.join("islands-chunk-AAAAAAAA.js")).unwrap(),
             b"chunk-a"
@@ -7974,6 +7980,10 @@ mod tests {
         assert_eq!(
             std::fs::read(assets.join("islands-chunk-BBBBBBBB.js")).unwrap(),
             b"chunk-b"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("worker-src-s-search-d-worker-d-ts.js")).unwrap(),
+            b"worker"
         );
     }
 
@@ -7986,10 +7996,12 @@ mod tests {
         let gen1 = vec![
             make_companion("islands-chunk-GEN1AAAA.js", b"gen1-a"),
             make_companion("islands-chunk-GEN1BBBB.js", b"gen1-b"),
+            make_companion("worker-src-s-old-d-ts.js", b"old-worker"),
         ];
         let prev = refresh_dev_island_chunks(&assets, &gen1, &HashSet::new()).unwrap();
         assert!(assets.join("islands-chunk-GEN1AAAA.js").exists());
         assert!(assets.join("islands-chunk-GEN1BBBB.js").exists());
+        assert!(assets.join("worker-src-s-old-d-ts.js").exists());
 
         // Generation 2: different chunks (simulates a dynamically-imported
         // module change so esbuild emits a new content hash).
@@ -8006,6 +8018,10 @@ mod tests {
         assert!(
             !assets.join("islands-chunk-GEN1BBBB.js").exists(),
             "stale chunk B must be pruned"
+        );
+        assert!(
+            !assets.join("worker-src-s-old-d-ts.js").exists(),
+            "stale worker must be pruned"
         );
         assert_eq!(next.len(), 1);
         assert!(next.contains("islands-chunk-GEN2CCCC.js"));

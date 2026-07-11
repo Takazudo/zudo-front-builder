@@ -15,9 +15,9 @@
 use std::path::{Path, PathBuf};
 
 use zfb_islands::{
-    bundle_link_href, manifest_json, scan_islands, BundleConfig, BundleOutput, ClientBundler,
-    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver, Island, Manifest,
-    NativeRustBundler,
+    bundle_link_href, manifest_json, module_worker_filename, scan_islands, BundleConfig,
+    BundleOutput, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver,
+    Island, Manifest, ModuleWorkerBundleEntry, NativeRustBundler,
 };
 
 fn island(name: &str, path: &str) -> Island {
@@ -738,6 +738,122 @@ fn client_script_raw_import_bundles_text() {
     assert!(!js.contains("?raw"), "{js}");
     assert!(js.contains("ZFB_RAW_CLIENT_MARKER"), "{js}");
     assert!(js.contains("second-line"), "{js}");
+}
+
+// -----------------------------------------------------------------------------
+// Module-worker emission (#1501) — real-esbuild integration
+// -----------------------------------------------------------------------------
+
+#[test]
+#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb-islands --test integration \
+            island_module_worker_emits_contract_companion_and_dev_layout -- --ignored"]
+fn island_module_worker_emits_contract_companion_and_dev_layout() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("components/workers")).unwrap();
+
+    let island_path = root.join("components/Search.tsx");
+    let worker_path = root.join("components/workers/search.worker.ts");
+    let helper_path = root.join("components/workers/tokenize.ts");
+    std::fs::write(
+        &island_path,
+        "'use client';\n\
+         export function Search() {\n\
+           new Worker(new URL('./workers/search.worker.ts', import.meta.url), { type: 'module' });\n\
+           return null;\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &worker_path,
+        "import { tokenize } from './tokenize';\n\
+         self.postMessage('ZFB_MODULE_WORKER_ENTRY:' + tokenize('ready'));\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &helper_path,
+        "export const tokenize = (value: string) => 'ZFB_MODULE_WORKER_HELPER:' + value;\n",
+    )
+    .unwrap();
+
+    // Mirror the command layer's locked #1500 preprocessing pass: only the
+    // URL literal changes, and the graph-derived `?v=` query is already part
+    // of the source before the islands entry reaches esbuild.
+    let rewrite = zfb_build::rewrite_module_worker_urls(
+        &std::fs::read_to_string(&island_path).unwrap(),
+        &island_path,
+        root,
+    )
+    .unwrap();
+    assert_eq!(rewrite.worker_edges.len(), 1);
+    std::fs::write(&island_path, &rewrite.expanded_source).unwrap();
+
+    let worker_filename = module_worker_filename(root, &worker_path).unwrap();
+    let rewritten_specifier_prefix = format!("./{worker_filename}?v=");
+    assert!(
+        rewrite
+            .expanded_source
+            .contains(&rewritten_specifier_prefix),
+        "rewritten island source must use the stable worker URL plus graph hash: {}",
+        rewrite.expanded_source
+    );
+
+    let dev_assets_root = root.join(".zfb-build/dev-assets");
+    let worker_entry = ModuleWorkerBundleEntry::new(root, &worker_path, &worker_path).unwrap();
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
+    );
+    let config = BundleConfig::dev()
+        .with_outdir(&dev_assets_root)
+        .with_sourcemap(false)
+        .with_module_workers(vec![worker_entry]);
+    let output = bundler
+        .bundle(&[Island::new("Search", island_path)], &config)
+        .expect("island + module-worker bundle");
+
+    assert_eq!(
+        output.asset_path,
+        dev_assets_root.join("assets/islands.js"),
+        "dev entry must target the isolated dev-assets root"
+    );
+    let entry_js = String::from_utf8(output.bytes.clone()).unwrap();
+    assert!(
+        entry_js.contains(&worker_filename) && entry_js.contains("?v="),
+        "bundled islands entry lost the rewritten worker URL: {entry_js}"
+    );
+    assert!(output.chunks.is_empty(), "fixture has no dynamic import");
+    assert_eq!(output.workers.len(), 1);
+    assert_eq!(output.workers[0].filename, worker_filename);
+    assert!(
+        !output.workers[0].filename.contains('/') && !output.workers[0].filename.contains('\\'),
+        "worker companion must stay flat"
+    );
+    let worker_js = String::from_utf8(output.workers[0].bytes.clone()).unwrap();
+    assert!(worker_js.contains("ZFB_MODULE_WORKER_ENTRY"), "{worker_js}");
+    assert!(
+        worker_js.contains("ZFB_MODULE_WORKER_HELPER"),
+        "splitting=false must inline the worker's local graph: {worker_js}"
+    );
+
+    // Exercise the exact disk layout the dev refresh lifecycle consumes:
+    // stable entry and stable worker companion flat beside one another under
+    // `.zfb-build/dev-assets/assets/`.
+    let assets_dir = output.asset_path.parent().unwrap();
+    std::fs::create_dir_all(assets_dir).unwrap();
+    std::fs::write(&output.asset_path, &output.bytes).unwrap();
+    for worker in &output.workers {
+        std::fs::write(assets_dir.join(&worker.filename), &worker.bytes).unwrap();
+    }
+    assert!(dev_assets_root.join("assets/islands.js").is_file());
+    assert!(
+        dev_assets_root
+            .join("assets")
+            .join(&output.workers[0].filename)
+            .is_file(),
+        "worker must be flat beside islands.js in dev-assets"
+    );
 }
 
 // -----------------------------------------------------------------------------
