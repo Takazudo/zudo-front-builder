@@ -15,5 +15,3 @@ docs/.zudo-doc/
 # byte-exact output, so prettier (which would re-flow the inline
 # interfaces) is not allowed to touch it.
 crates/zfb-content/tests/fixtures/two-collections-schemas/expected.d.ts
-
-_temp-resource/
