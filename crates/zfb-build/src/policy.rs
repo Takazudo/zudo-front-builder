@@ -54,14 +54,16 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-/// Live sets of ORIGINAL terminal raw targets consumed by the islands and
-/// client-script dev sub-pipelines.
+/// Live dependency sets consumed by the islands and client-script dev
+/// sub-pipelines.
 ///
 /// Generated `.zfb-raw-*.mjs` files are ephemeral shadow artifacts and never
-/// watcher inputs. The successful scanner/preprocess pass replaces these sets
-/// with both logical and canonical real-path aliases; the granularity policy
-/// consults them on every event so edits and symlink retarget/deletes still
-/// rerun the consumer pipeline.
+/// watcher inputs. For islands the set includes ORIGINAL raw targets plus the
+/// complete first-party module-worker graph; client scripts currently register
+/// raw targets only. A successful scanner/preprocess pass replaces each set
+/// with both logical and canonical real-path aliases. The granularity policy
+/// consults it on every event so edits and symlink retarget/deletes still rerun
+/// the consumer pipeline.
 #[derive(Debug, Clone, Default)]
 pub struct RawImportInvalidation {
     islands: Arc<RwLock<BTreeSet<PathBuf>>>,
@@ -81,9 +83,18 @@ impl RawImportInvalidation {
         }
     }
 
-    /// Atomically replace the island raw-target set after a successful scan.
+    /// Atomically replace the islands dependency set after a successful scan.
     pub fn replace_islands(&self, paths: impl IntoIterator<Item = PathBuf>) {
         Self::replace(&self.islands, paths);
+    }
+
+    /// Snapshot the current islands dependency aliases for dynamic watcher
+    /// registration. A clone keeps the registry lock out of notify calls.
+    pub fn islands_paths(&self) -> BTreeSet<PathBuf> {
+        self.islands
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
     }
 
     /// Atomically replace the client-script raw-target set after a successful
@@ -104,7 +115,7 @@ impl RawImportInvalidation {
             .unwrap_or(false)
     }
 
-    /// Whether `path` is a terminal target in the current islands graph.
+    /// Whether `path` participates in the current islands raw/worker graph.
     pub fn is_islands_target(&self, path: &Path) -> bool {
         Self::contains(&self.islands, path)
     }
@@ -412,9 +423,22 @@ impl GranularityPolicy {
         self
     }
 
-    /// Whether this exact changed path is an islands terminal raw target.
-    pub fn is_islands_raw_target(&self, path: &Path) -> bool {
+    /// Whether this exact changed path is in the live islands raw/worker
+    /// dependency closure.
+    pub fn is_islands_dependency(&self, path: &Path) -> bool {
         self.raw_import_invalidation.is_islands_target(path)
+    }
+
+    /// Backward-compatible name for callers that only register islands raw
+    /// targets. The live set may now also contain module-worker dependencies;
+    /// new code should use [`Self::is_islands_dependency`].
+    pub fn is_islands_raw_target(&self, path: &Path) -> bool {
+        self.is_islands_dependency(path)
+    }
+
+    /// Snapshot live islands dependency aliases for dynamic watch roots.
+    pub fn islands_dependency_paths(&self) -> BTreeSet<PathBuf> {
+        self.raw_import_invalidation.islands_paths()
     }
 
     /// Whether this exact changed path is a client-script terminal raw target.

@@ -9066,7 +9066,7 @@ mod tests {
             "new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });";
         fs::write(&importer, importer_source).unwrap();
         fs::write(
-            &root.join("tsconfig.json"),
+            root.join("tsconfig.json"),
             r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["components/*"]}}}"#,
         )
         .unwrap();

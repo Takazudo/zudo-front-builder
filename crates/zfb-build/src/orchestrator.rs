@@ -416,7 +416,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 {
                     plan.mark_islands();
                 }
-                if self.config.policy.is_islands_raw_target(&path) {
+                if self.config.policy.is_islands_dependency(&path) {
                     plan.mark_islands();
                 }
                 if self.config.policy.is_client_script_candidate(&path)
@@ -553,7 +553,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // `rerun_client_scripts = true`, so we never reach this point on a
             // Global change — the `is_client_script_candidate` guard here is
             // therefore only ever evaluated for non-Global changes.
-            if self.config.policy.is_islands_raw_target(&path) {
+            if self.config.policy.is_islands_dependency(&path) {
                 plan.mark_islands();
             }
             if self.config.policy.is_client_script_candidate(&path)
@@ -816,7 +816,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 }
                 PathClass::Asset | PathClass::Unclassified => {}
             }
-            if self.config.policy.is_islands_raw_target(path) {
+            if self.config.policy.is_islands_dependency(path) {
                 plan.mark_islands();
             }
             if self.config.policy.is_client_script_raw_target(path) {
@@ -1068,7 +1068,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             .config
             .debounce
             .unwrap_or(zfb_watcher::DEFAULT_DEBOUNCE);
-        let (watcher, mut rx) = Watcher::start_with_extras(
+        let (mut watcher, mut rx) = Watcher::start_with_extras(
             &self.config.project_root,
             self.config.watch_roots.iter().map(|p| p.as_path()),
             self.config.extra_watch_paths.iter().map(|p| p.as_path()),
@@ -1090,6 +1090,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 on_outcome(&outcome);
             }
         }
+        // The eager boot islands pass may discover browser-only worker
+        // dependencies outside the configured source roots. Register each
+        // dependency's parent now so edits, deletes, and recreations enter the
+        // same watcher channel. The registry exposes the last successful
+        // closure, so a transient failed rebuild never drops recovery watches.
+        watcher.watch_additional_files(self.config.policy.islands_dependency_paths());
 
         // Drain loop: wait for the first event, then drain everything
         // currently in the channel so we coalesce concurrent bursts
@@ -1150,6 +1156,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     }
                 },
             };
+            // A successful islands tick atomically replaces the dependency
+            // closure. Add newly-discovered parents before waiting for the
+            // next event; the watcher deduplicates existing/covered paths.
+            watcher.watch_additional_files(this.config.policy.islands_dependency_paths());
             match result {
                 Ok(Some(outcome)) => on_outcome(&outcome),
                 Ok(None) => {
@@ -1934,6 +1944,69 @@ mod tests {
         let plan = orch.plan_for_changes([target]);
         assert!(!plan.rerun_islands);
         assert!(!plan.rerun_client_scripts);
+    }
+
+    #[test]
+    fn live_worker_closure_outside_islands_roots_survives_edit_delete_and_next_generation() {
+        use zfb_watcher::ChangeKind;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("pages/workers")).unwrap();
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        let worker = root.join("pages/workers/search.worker.ts");
+        let helper = root.join("lib/tokenize.ts");
+        let raw = root.join("lib/dictionary.txt");
+        let css = root.join("lib/worker.css");
+        for path in [&worker, &helper, &raw, &css] {
+            std::fs::write(path, "generation one\n").unwrap();
+        }
+
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_islands([worker.clone(), helper.clone(), raw.clone(), css.clone()]);
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let config = OrchestratorConfig::new(&root, vec![PathBuf::from("pages")]).with_policy(
+            crate::policy::GranularityPolicy::default()
+                .with_raw_import_invalidation(invalidation.clone()),
+        );
+        let orch = BuildOrchestrator::new(config, make_graph(), pipeline);
+        let dist = tempfile::tempdir().unwrap();
+
+        // Tick 1: a helper under lib/ is neither a default islands candidate
+        // nor a watcher boot root, but the live worker closure marks it.
+        orch.tick_with_kinds(
+            vec![(helper.clone(), ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        assert!(applies.lock().unwrap().last().unwrap().rerun_islands);
+
+        // Tick 2: deletion takes the removed-path planning branch. The
+        // lexical dependency alias remains registered even though
+        // canonicalisation now fails, so islands still reruns.
+        std::fs::remove_file(&helper).unwrap();
+        orch.tick_with_kinds(
+            vec![(helper.clone(), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        assert!(applies.lock().unwrap().last().unwrap().rerun_islands);
+
+        // The next successful preprocessing generation atomically replaces
+        // the graph: recreated/new dependencies trigger, stale ones stop.
+        std::fs::write(&helper, "generation two\n").unwrap();
+        let next = root.join("lib/stemmer.ts");
+        std::fs::write(&next, "generation two\n").unwrap();
+        invalidation.replace_islands([worker, helper.clone(), css, next.clone()]);
+        assert!(orch.plan_for_changes([helper]).rerun_islands);
+        assert!(orch.plan_for_changes([next]).rerun_islands);
+        assert!(
+            !orch.plan_for_changes([raw]).rerun_islands,
+            "paths absent from the replacement graph must not stay stale"
+        );
     }
 
     /// `initial_build` on an empty graph (no pages) is a clean no-op,

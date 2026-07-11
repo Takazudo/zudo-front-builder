@@ -752,56 +752,68 @@ fn island_module_worker_emits_contract_companion_and_dev_layout() {
     let project = tempfile::tempdir().unwrap();
     let root = project.path();
     stage_minimal_node_modules(root);
-    std::fs::create_dir_all(root.join("components/workers")).unwrap();
-
-    let island_path = root.join("components/Search.tsx");
-    let worker_path = root.join("components/workers/search.worker.ts");
-    let helper_path = root.join("components/workers/tokenize.ts");
+    std::fs::create_dir_all(root.join("components")).unwrap();
+    std::fs::create_dir_all(root.join("pages")).unwrap();
+    std::fs::create_dir_all(root.join("lib")).unwrap();
     std::fs::write(
-        &island_path,
-        "'use client';\n\
-         export function Search() {\n\
-           new Worker(new URL('./workers/search.worker.ts', import.meta.url), { type: 'module' });\n\
-           return null;\n\
-         }\n",
+        root.join("tsconfig.json"),
+        r#"{
+          "compilerOptions": {
+            "baseUrl": ".",
+            "paths": { "@worker/*": ["lib/*"] }
+          }
+        }"#,
     )
     .unwrap();
+
+    let island_path = root.join("components/Search.tsx");
+    let worker_path = root.join("pages/search.worker.ts");
+    let helper_path = root.join("lib/tokenize.ts");
+    let island_source = "'use client';\n\
+         export function Search() {\n\
+           new Worker(new URL('../pages/search.worker.ts', import.meta.url), { type: 'module' });\n\
+           return null;\n\
+         }\n";
+    std::fs::write(&island_path, island_source).unwrap();
     std::fs::write(
         &worker_path,
-        "import { tokenize } from './tokenize';\n\
+        "import { tokenize } from '@worker/tokenize';\n\
          self.postMessage('ZFB_MODULE_WORKER_ENTRY:' + tokenize('ready'));\n",
     )
     .unwrap();
     std::fs::write(
         &helper_path,
-        "export const tokenize = (value: string) => 'ZFB_MODULE_WORKER_HELPER:' + value;\n",
+        "export const tokenize = (value: string) => 'ZFB_MODULE_WORKER_HELPER_ONE:' + value;\n",
     )
     .unwrap();
 
-    // Mirror the command layer's locked #1500 preprocessing pass: only the
-    // URL literal changes, and the graph-derived `?v=` query is already part
-    // of the source before the islands entry reaches esbuild.
-    let rewrite = zfb_build::rewrite_module_worker_urls(
-        &std::fs::read_to_string(&island_path).unwrap(),
-        &island_path,
-        root,
-    )
-    .unwrap();
-    assert_eq!(rewrite.worker_edges.len(), 1);
-    std::fs::write(&island_path, &rewrite.expanded_source).unwrap();
+    // Mirror the command layer's preprocessing shadow. The worker physical
+    // entry deliberately lives outside the project tree, so closest-parent
+    // tsconfig discovery cannot resolve `@worker/tokenize`; every worker
+    // esbuild pass must receive the explicit effective project config.
+    let shadow = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(shadow.path().join("components")).unwrap();
+    std::fs::create_dir_all(shadow.path().join("pages")).unwrap();
+    let shadow_island = shadow.path().join("components/Search.tsx");
+    let shadow_worker = shadow.path().join("pages/search.worker.ts");
+    std::fs::copy(&worker_path, &shadow_worker).unwrap();
 
     let worker_filename = module_worker_filename(root, &worker_path).unwrap();
     let rewritten_specifier_prefix = format!("./{worker_filename}?v=");
+    let first_rewrite =
+        zfb_build::rewrite_module_worker_urls(island_source, &island_path, root).unwrap();
+    assert_eq!(first_rewrite.worker_edges.len(), 1);
     assert!(
-        rewrite
+        first_rewrite
             .expanded_source
             .contains(&rewritten_specifier_prefix),
         "rewritten island source must use the stable worker URL plus graph hash: {}",
-        rewrite.expanded_source
+        first_rewrite.expanded_source
     );
+    std::fs::write(&shadow_island, &first_rewrite.expanded_source).unwrap();
 
     let dev_assets_root = root.join(".zfb-build/dev-assets");
-    let worker_entry = ModuleWorkerBundleEntry::new(root, &worker_path, &worker_path).unwrap();
+    let worker_entry = ModuleWorkerBundleEntry::new(root, &worker_path, &shadow_worker).unwrap();
     let bundler = EsbuildSubprocessBundler::new(
         EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
     );
@@ -809,9 +821,27 @@ fn island_module_worker_emits_contract_companion_and_dev_layout() {
         .with_outdir(&dev_assets_root)
         .with_sourcemap(false)
         .with_module_workers(vec![worker_entry]);
+    let first_output = bundler
+        .bundle(&[Island::new("Search", &shadow_island)], &config)
+        .expect("first island + shadow module-worker bundle with project tsconfig alias");
+
+    // Tick two: editing an alias-resolved helper outside components/src must
+    // change both the worker bytes and the parent island's #1500 graph query.
+    std::fs::write(
+        &helper_path,
+        "export const tokenize = (value: string) => 'ZFB_MODULE_WORKER_HELPER_TWO:' + value;\n",
+    )
+    .unwrap();
+    let second_rewrite =
+        zfb_build::rewrite_module_worker_urls(island_source, &island_path, root).unwrap();
+    assert_ne!(
+        first_rewrite.expanded_source, second_rewrite.expanded_source,
+        "worker dependency edit must update the parent URL ?v= graph query"
+    );
+    std::fs::write(&shadow_island, &second_rewrite.expanded_source).unwrap();
     let output = bundler
-        .bundle(&[Island::new("Search", island_path)], &config)
-        .expect("island + module-worker bundle");
+        .bundle(&[Island::new("Search", &shadow_island)], &config)
+        .expect("second island + shadow module-worker bundle with project tsconfig alias");
 
     assert_eq!(
         output.asset_path,
@@ -833,8 +863,12 @@ fn island_module_worker_emits_contract_companion_and_dev_layout() {
     let worker_js = String::from_utf8(output.workers[0].bytes.clone()).unwrap();
     assert!(worker_js.contains("ZFB_MODULE_WORKER_ENTRY"), "{worker_js}");
     assert!(
-        worker_js.contains("ZFB_MODULE_WORKER_HELPER"),
-        "splitting=false must inline the worker's local graph: {worker_js}"
+        worker_js.contains("ZFB_MODULE_WORKER_HELPER_TWO"),
+        "splitting=false must resolve and inline the project tsconfig alias: {worker_js}"
+    );
+    assert_ne!(
+        first_output.workers[0].bytes, output.workers[0].bytes,
+        "worker dependency edit must update emitted companion bytes"
     );
 
     // Exercise the exact disk layout the dev refresh lifecycle consumes:
