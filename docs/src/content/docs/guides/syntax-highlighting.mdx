@@ -247,8 +247,8 @@ With `mode: "class"`, zfb injects a built-in token stylesheet (`zfb-hi.css`)
 into your combined `styles.css`. It defines the `--zfb-hi-*` custom properties
 and the `.hi-*` rules that consume them, wrapped in an `@layer zfb-hi` cascade
 layer so your own un-layered rules always win. The default palette is extracted
-from syntect's `base16-ocean` light/dark themes — the same pair inline and dual
-mode default to.
+from syntect's `base16-ocean.light` / `base16-ocean.dark` themes — the same
+family inline mode's default theme, `base16-ocean.dark`, belongs to.
 
 To opt out and supply your own stylesheet entirely, set `defaultStylesheet:
 false`:
