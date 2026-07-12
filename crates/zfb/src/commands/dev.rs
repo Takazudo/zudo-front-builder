@@ -1003,12 +1003,28 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
     }
     let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
+
+    // #1581 — seed the session-live known-content registry from the boot
+    // collection MEMBERSHIP walk (not the frontmatter-hash map, which drops
+    // unparseable entries). This is what lets the #1058 spurious-`Created`
+    // normalization recognise a pre-existing entry on a COLD boot, where the
+    // dependency graph carries no `DepKind::Content` reverse edge for it yet.
+    // Without it, the first in-place edit of any collection entry that macOS
+    // FSEvents coalesces into `Created` loses the whole tick's #958 eager
+    // narrowing and re-stamps every route.
+    let known_content = zfb_build::KnownContentEntries::default();
+    known_content.insert_many(collect_collection_entries(
+        &cfg,
+        root_inventory.collection_roots(),
+    ));
+
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone())
         .with_extra_watch_paths(extra_watch_paths)
         .with_policy(
             zfb_build::GranularityPolicy::default()
                 .with_content_roots(content_roots)
-                .with_raw_import_invalidation(raw_import_invalidation.clone()),
+                .with_raw_import_invalidation(raw_import_invalidation.clone())
+                .with_known_content(known_content.clone()),
         );
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
@@ -1425,6 +1441,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             // reload_renderer when the discovery refresh marked the
             // renderer fresh).
             ssr_route_set.clone(),
+            known_content.clone(),
         )
     });
 
@@ -5417,25 +5434,27 @@ fn frontmatter_hash(path: &Path) -> Option<[u8; 32]> {
     Some(hasher.finalize().into())
 }
 
-/// Boot-seed the frontmatter gate cache (issue #958): hash every
-/// configured collection file's frontmatter, keyed by absolute path.
-/// Membership routes through `derive_slug_for_file` so the seeded set is
-/// exactly the walker's. Unreadable / unparseable files (and collections
-/// with uncompilable filter globs) are simply not seeded — their first
-/// edit falls back to a full render (G4) and seeds the hash then.
+/// Walk every configured collection root and yield the path of each file
+/// that passes its collection's include/exclude filter — i.e. the session's
+/// content-collection MEMBERSHIP, independent of whether the entry's
+/// frontmatter happens to be readable.
 ///
-/// `collection_roots` is the boot inventory's per-collection resolved
-/// absolute root (issue #1550), index-aligned with `cfg.collections`:
-/// canonical for out-of-root collections so the WalkDir-derived seed keys
-/// match the CANONICAL paths `notify` later delivers on an edit (a literal
-/// `project_root.join("../x")` would seed keys that never match, so the
-/// narrowing gate always tripped for out-of-root content).
+/// Two consumers, and the distinction between them matters (issue #1581):
+///
+/// - [`seed_frontmatter_hashes`] keeps only the entries it could hash — an
+///   unparseable entry has no meaningful G4 gate hash.
+/// - The `known_content` registry takes the FULL membership. An entry whose
+///   frontmatter is missing or malformed is still a real, already-known
+///   collection entry; dropping it would let a spurious FSEvents `Created`
+///   for that file fall through to the discovery regime and cost the tick
+///   its #958 narrowing — the exact bug #1581 fixes.
+///
+/// `collection_roots` comes from the boot [`ResolvedRoots`] inventory, so
+/// out-of-root roots are already canonical and the walked paths compare
+/// equal to the canonical paths `notify` delivers (#1550).
 #[cfg(feature = "embed_v8")]
-fn seed_frontmatter_hashes(
-    cfg: &config::Config,
-    collection_roots: &[PathBuf],
-) -> HashMap<PathBuf, [u8; 32]> {
-    let mut hashes: HashMap<PathBuf, [u8; 32]> = HashMap::new();
+fn collect_collection_entries(cfg: &config::Config, collection_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut entries: Vec<PathBuf> = Vec::new();
     for (collection, root) in cfg.collections.iter().zip(collection_roots) {
         let filter = match zfb_content::collection::CollectionFilter::new(
             collection.include.as_deref(),
@@ -5457,9 +5476,39 @@ fn seed_frontmatter_hashes(
             if zfb_content::collection::derive_slug_for_file(root, path, &filter).is_none() {
                 continue;
             }
-            if let Some(hash) = frontmatter_hash(path) {
-                hashes.insert(path.to_path_buf(), hash);
-            }
+            entries.push(path.to_path_buf());
+        }
+    }
+    entries
+}
+
+/// Boot-seed the frontmatter gate cache (issue #958): hash every
+/// configured collection file's frontmatter, keyed by absolute path.
+/// Membership routes through [`collect_collection_entries`] so the seeded
+/// set is exactly the walker's. Unreadable / unparseable files (and
+/// collections with uncompilable filter globs) are simply not seeded —
+/// their first edit falls back to a full render (G4) and seeds the hash
+/// then.
+///
+/// NOTE (#1581): the `known_content` registry deliberately does NOT share
+/// this map's key set — it takes the full membership walk instead, because
+/// an entry that failed to hash here is still an already-known entry.
+///
+/// `collection_roots` is the boot inventory's per-collection resolved
+/// absolute root (issue #1550), index-aligned with `cfg.collections`:
+/// canonical for out-of-root collections so the WalkDir-derived seed keys
+/// match the CANONICAL paths `notify` later delivers on an edit (a literal
+/// `project_root.join("../x")` would seed keys that never match, so the
+/// narrowing gate always tripped for out-of-root content).
+#[cfg(feature = "embed_v8")]
+fn seed_frontmatter_hashes(
+    cfg: &config::Config,
+    collection_roots: &[PathBuf],
+) -> HashMap<PathBuf, [u8; 32]> {
+    let mut hashes: HashMap<PathBuf, [u8; 32]> = HashMap::new();
+    for path in collect_collection_entries(cfg, collection_roots) {
+        if let Some(hash) = frontmatter_hash(&path) {
+            hashes.insert(path, hash);
         }
     }
     hashes
@@ -6014,6 +6063,11 @@ fn make_discovery_hook(
     // rewrite the handle HERE or a newly-created `prerender = false` route
     // 404s until a later edit. `None` when the project has no SSR.
     ssr_routes: Option<SsrRoutesHandle>,
+    // Issue #1581 — the session-live known-content registry. A file that
+    // discovery ACCEPTS becomes an already-known entry, so a later in-place
+    // edit of it that FSEvents coalesces into `Created` normalizes back to
+    // `Modified` instead of re-entering the discovery regime.
+    known_content: zfb_build::KnownContentEntries,
 ) -> zfb_build::DiscoveryHook {
     let mut relevant_roots: Vec<PathBuf> = vec![
         session.inner.project_root.join("content"),
@@ -6043,6 +6097,27 @@ fn make_discovery_hook(
         }
 
         let (changed, vanished_rel) = session.discover_created(&relevant)?;
+
+        // #1581 — discovery succeeded, so re-derive the collection membership
+        // and register it. Registering here (and NOT at the top of the
+        // closure) keeps the registry meaning "entries of the last SUCCESSFUL
+        // collection walk": a `discover_created` that fails returns early
+        // above and leaves the registry untouched, so the next tick still
+        // treats the file as new.
+        //
+        // This MUST re-walk rather than insert the raw event paths in
+        // `relevant`. The watcher can report a created DIRECTORY (its children
+        // never surface as individual events), in which case `relevant` holds
+        // only the directory — registering that would leave every entry
+        // beneath it unknown, so the next FSEvents-coalesced `Created` for one
+        // of those children would be mistaken for a new file all over again.
+        // `relevant` is also broader than the collection (it admits `pages/`
+        // and `content/` paths that are not collection members at all); the
+        // membership walk is the authoritative set.
+        known_content.insert_many(collect_collection_entries(
+            &session.inner.rebuild_inputs.cfg,
+            &session.inner.collection_roots,
+        ));
 
         // Issue #807 — the discovery refresh swapped in a fresh V8 host and
         // rebuilt the route tables, but it reports `renderer_reloaded: true`,
@@ -7249,6 +7324,67 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, format!("---\n{fm}\n---\n\n{body}\n")).unwrap();
             path
+        }
+
+        /// #1581 — the `known_content` registry is seeded from this walk, and
+        /// the discovery hook RE-walks rather than registering the watcher's
+        /// raw event paths. Both rely on the walk being authoritative:
+        ///
+        /// - It must descend into NESTED directories. The watcher can report a
+        ///   created DIRECTORY whose children never surface as individual
+        ///   events; registering only the event path would leave those children
+        ///   unknown, so the next FSEvents-coalesced `Created` for one of them
+        ///   would be mistaken for a new file and lose the tick its narrowing.
+        /// - It must yield FILES only, never the directories it walks through.
+        #[test]
+        fn collect_collection_entries_descends_into_nested_dirs_and_yields_files_only() {
+            let (tmp, cfg) = scaffold(&[("top.md", "title: Top"), ("deep/nested.md", "title: N")]);
+            let collection_roots = resolve_roots(tmp.path(), &cfg).collection_roots().to_vec();
+
+            let entries = collect_collection_entries(&cfg, &collection_roots);
+
+            let blog = tmp.path().join("content/blog");
+            assert!(
+                entries.contains(&blog.join("top.md")),
+                "top-level entry must be walked; got {entries:?}"
+            );
+            assert!(
+                entries.contains(&blog.join("deep/nested.md")),
+                "an entry inside a NESTED dir must be walked — this is the case a \
+                 created-directory watcher event cannot enumerate; got {entries:?}"
+            );
+            assert!(
+                !entries.contains(&blog.join("deep")),
+                "the walk must yield files only, never the directories it descends"
+            );
+        }
+
+        /// #1581 — the registry takes the FULL membership, unlike
+        /// [`seed_frontmatter_hashes`] which keeps only what it could hash. An
+        /// entry with unparseable frontmatter is still an already-known entry:
+        /// dropping it would let a spurious FSEvents `Created` for that file
+        /// fall through to the discovery regime.
+        #[test]
+        fn collect_collection_entries_includes_entries_whose_frontmatter_is_unparseable() {
+            let (tmp, cfg) = scaffold(&[("good.md", "title: Good")]);
+            let blog = tmp.path().join("content/blog");
+            let broken = blog.join("broken.md");
+            std::fs::write(&broken, "---\n: : not: valid: yaml\n---\n\nbody\n").unwrap();
+            let collection_roots = resolve_roots(tmp.path(), &cfg).collection_roots().to_vec();
+
+            let entries = collect_collection_entries(&cfg, &collection_roots);
+            assert!(
+                entries.contains(&broken),
+                "membership does not depend on frontmatter parsing; got {entries:?}"
+            );
+
+            let hashed = seed_frontmatter_hashes(&cfg, &collection_roots);
+            assert!(
+                !hashed.contains_key(&broken),
+                "the frontmatter seed, by contrast, skips what it cannot hash — this \
+                 divergence is exactly why the registry must not be keyed off it"
+            );
+            assert!(hashed.contains_key(&blog.join("good.md")));
         }
 
         /// Stub session with boot-seeded frontmatter hashes, like
