@@ -63,7 +63,11 @@
 //! - `shared-content/posts/` — the out-of-root collection root, a sibling of
 //!   `project/`, seeded with two entries (`alpha.mdx`, `beta.mdx`) so there
 //!   are two independent dynamic routes to distinguish "own route" from
-//!   "sibling route".
+//!   "sibling route", plus `__warmup.mdx`, a third entry that exists ONLY so
+//!   the watcher-live handshake has a pre-existing file to EDIT. The
+//!   handshake must not CREATE entries (#1581): a genuinely-new entry
+//!   correctly forces a full fan-out, which re-stamps `beta` and races
+//!   scenario (a)'s baseline snapshot. See the Phase C comment.
 //!
 //! ## Blind spot
 //!
@@ -471,34 +475,48 @@ async fn boot_and_handshake(
         }
     }
 
-    // Phase C: watcher-live handshake. Subscribe to SSE FIRST, then write
-    // fresh-named warmup POSTS into the out-of-root collection root until the
-    // first SSE event arrives.
+    // Phase C: watcher-live handshake. Subscribe to SSE FIRST, then EDIT the
+    // pre-existing `__warmup.mdx` entry (body only, frontmatter held constant)
+    // until the first SSE event arrives.
     //
     // This MUST target `shared_content_posts`, not an arbitrary project-root
     // file: `DEFAULT_WATCH_ROOTS` in commands/dev.rs is `pages`, `content`,
     // `components`, `layouts`, `styles`, `data`, `src`, and the two config
     // files — a bare file dropped directly under the project root (this
     // fixture's `project/` has none of those as its own root) is never
-    // watched and would hang this handshake until `SSE_DEADLINE`. A real
-    // content-collection ADD is also the ONLY warmup shape guaranteed to
-    // produce an observable SSE event (an unrecognized file type could
-    // legitimately produce a no-op tick with nothing broadcast) — mirrors
-    // `dev_serve_e2e.rs`'s `content/posts/__warmup-{i}.md` choice, relocated
-    // to the out-of-root root since this fixture has no in-root collection.
+    // watched and would hang this handshake until `SSE_DEADLINE`. Touching a
+    // real collection entry also guarantees an observable SSE event (an
+    // unrecognized file type could legitimately produce a no-op tick with
+    // nothing broadcast).
+    //
+    // It must be an EDIT of an entry the fixture already ships, NOT a
+    // fresh-named `__warmup-{i}.mdx` CREATE (issue #1581). A brand-new
+    // collection entry is genuinely new, so its tick is correctly NOT
+    // `fan_out_safe` — a new entry can change aggregate pages — and it
+    // re-renders the FULL fan-out, re-stamping every route's on-disk HTML,
+    // including the `beta` sibling scenario (a) snapshots as its untouched
+    // baseline. That fan-out then races the `beta_before` snapshot: a run was
+    // captured where `alpha.mdx` narrowed perfectly and the test STILL failed,
+    // purely on a warmup tick's late write to beta. Editing a pre-existing
+    // entry keeps every handshake tick narrow (it re-renders only
+    // `/posts/__warmup/`), so no warmup tick can touch beta whenever it lands.
+    // Holding the frontmatter constant keeps the G4 gate from tripping too.
     {
+        let warmup_entry = shared_content_posts.join("__warmup.mdx");
         let sse = subscribe_sse(&client, &base).await;
         let stop = Arc::new(AtomicBool::new(false));
         let writer = {
-            let posts_root = shared_content_posts.to_path_buf();
+            let warmup_entry = warmup_entry.clone();
             let stop = Arc::clone(&stop);
             tokio::spawn(async move {
                 let mut i = 0u32;
                 while !stop.load(Ordering::SeqCst) {
-                    let warmup = posts_root.join(format!("__warmup-{i}.mdx"));
                     let _ = fs::write(
-                        &warmup,
-                        format!("---\ntitle: warmup {i}\n---\n\nwarmup body {i}\n"),
+                        &warmup_entry,
+                        format!(
+                            "---\ntitle: Warmup Out Of Root\n---\n\n\
+                             V1-MARKER-WARMUP body for the warmup post. rev {i}\n"
+                        ),
                     );
                     i += 1;
                     tokio::time::sleep(Duration::from_millis(400)).await;

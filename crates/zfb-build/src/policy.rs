@@ -408,6 +408,69 @@ fn classify_by_extension(ext: Option<&str>) -> PathClass {
     }
 }
 
+/// Session-live set of content-collection entries the dev server ALREADY
+/// knows about — "every file in the last successful collection membership
+/// walk" (issue #1581).
+///
+/// Sole consumer: the #1058 spurious-`Created` normalization in
+/// [`crate::BuildOrchestrator::tick_with_kinds`]. macOS FSEvents coalesces
+/// an in-place edit of an EXISTING file into `Created` (see
+/// `zfb_watcher::merge_kind`), which poisons the strict all-`Modified`
+/// `fan_out_safe` gate and costs the whole tick its #958 eager narrowing.
+/// #1058 normalizes that artifact away, but keyed only on the dependency
+/// graph having a non-empty `consumers_of` reverse edge — and NO boot-time
+/// collection entry has one on a cold start (the dev server's only
+/// `DepKind::Content` writer is the discovery hook, which fires just for
+/// newly-CREATED files). So on a clean boot the normalization never fired
+/// and the FIRST edit of any pre-existing entry lost its narrowing.
+///
+/// This registry is the authoritative "already known" oracle the graph
+/// could not be. It deliberately does NOT feed `dirty_pages`: an unknown
+/// content path must keep tripping the planner's `PageSelection::All`
+/// fallback, which is the only thing re-rendering AGGREGATE pages (a post
+/// index listing every entry) on a content edit.
+#[derive(Debug, Clone, Default)]
+pub struct KnownContentEntries {
+    entries: Arc<RwLock<BTreeSet<PathBuf>>>,
+}
+
+impl KnownContentEntries {
+    /// Lexical `.`/`..` collapse so a configured root that could not be
+    /// canonicalised (the not-yet-created-dir fallback) still compares
+    /// equal to the canonical path `notify` delivers.
+    fn key(path: &Path) -> PathBuf {
+        zfb_types::normalize_path_lexical(path)
+    }
+
+    /// Add collection entries — the boot membership walk, and each entry a
+    /// successful discovery pass accepted.
+    pub fn insert_many(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut set) = self.entries.write() {
+            set.extend(paths.into_iter().map(|p| Self::key(&p)));
+        }
+    }
+
+    /// Forget `path` and everything beneath it (a removed directory takes
+    /// its entries with it). Called for every raw `Removed` change BEFORE
+    /// the `Created` normalization runs, so a delete→recreate is not
+    /// mistaken for an in-place edit and still routes through discovery.
+    pub fn remove_path_and_descendants(&self, path: &Path) {
+        let prefix = Self::key(path);
+        if let Ok(mut set) = self.entries.write() {
+            set.retain(|known| known != &prefix && !known.starts_with(&prefix));
+        }
+    }
+
+    /// Whether this exact path is an already-known collection entry.
+    pub fn contains(&self, path: &Path) -> bool {
+        let key = Self::key(path);
+        self.entries
+            .read()
+            .map(|set| set.contains(&key))
+            .unwrap_or(false)
+    }
+}
+
 /// The granularity policy combines a [`PathClass`] with the dependency
 /// graph to decide what sub-pipelines run.
 ///
@@ -432,6 +495,12 @@ pub struct GranularityPolicy {
     /// Session-live raw-target and module-worker dependency sets. Empty by
     /// default.
     pub raw_import_invalidation: RawImportInvalidation,
+
+    /// Session-live set of already-known content-collection entries
+    /// (issue #1581). Empty by default — an empty registry simply leaves
+    /// the #1058 normalization keyed on the graph alone, i.e. exactly the
+    /// pre-#1581 behaviour.
+    pub known_content: KnownContentEntries,
 }
 
 impl Default for GranularityPolicy {
@@ -440,6 +509,7 @@ impl Default for GranularityPolicy {
             islands_roots: vec![PathBuf::from("components"), PathBuf::from("src")],
             content_roots: Vec::new(),
             raw_import_invalidation: RawImportInvalidation::default(),
+            known_content: KnownContentEntries::default(),
         }
     }
 }
@@ -471,6 +541,20 @@ impl GranularityPolicy {
     pub fn with_raw_import_invalidation(mut self, invalidation: RawImportInvalidation) -> Self {
         self.raw_import_invalidation = invalidation;
         self
+    }
+
+    /// Attach the live known-content-entry registry shared with the dev
+    /// server's boot seed and discovery hook (issue #1581).
+    pub fn with_known_content(mut self, known_content: KnownContentEntries) -> Self {
+        self.known_content = known_content;
+        self
+    }
+
+    /// Whether this changed path is a content-collection entry the dev
+    /// session already knew about (so a `Created` for it is an FSEvents
+    /// coalescing artifact, not a genuinely new file).
+    pub fn is_known_content_entry(&self, path: &Path) -> bool {
+        self.known_content.contains(path)
     }
 
     /// Whether this exact changed path is in the live islands raw/worker
@@ -1225,5 +1309,54 @@ mod tests {
         std::fs::write(&physical_candidate, r#"{"compilerOptions":{}}"#).unwrap();
         assert!(invalidation.is_client_script_worker_target(&physical_candidate));
         assert!(invalidation.is_client_script_worker_target(&logical_candidate));
+    }
+
+    /// #1581 — the registry's whole job: recognise an entry the dev session
+    /// already walked, so the orchestrator can tell a spurious FSEvents
+    /// `Created` apart from a genuinely new file.
+    #[test]
+    fn known_content_entries_recognises_seeded_paths() {
+        let known = KnownContentEntries::default();
+        known.insert_many([PathBuf::from("/proj/content/post.md")]);
+
+        assert!(known.contains(Path::new("/proj/content/post.md")));
+        assert!(!known.contains(Path::new("/proj/content/never-seen.md")));
+    }
+
+    /// #1581 — an out-of-root collection root that could not be canonicalised
+    /// keeps a literal `..` component (the `canonicalize_or_lexical` fallback
+    /// for a not-yet-created dir). The registry collapses it lexically on both
+    /// insert and lookup, so it still matches the path `notify` delivers.
+    #[test]
+    fn known_content_entries_collapses_dot_dot_on_both_sides() {
+        let known = KnownContentEntries::default();
+        known.insert_many([PathBuf::from("/proj/../shared-content/posts/alpha.mdx")]);
+
+        assert!(
+            known.contains(Path::new("/shared-content/posts/alpha.mdx")),
+            "a `..`-carrying out-of-root entry must match its collapsed form"
+        );
+    }
+
+    /// #1581 — a removed directory takes its entries with it, so a file
+    /// recreated underneath it is genuinely new again and routes through
+    /// discovery rather than normalizing to an in-place edit.
+    #[test]
+    fn known_content_entries_removes_descendants_of_a_removed_directory() {
+        let known = KnownContentEntries::default();
+        known.insert_many([
+            PathBuf::from("/proj/content/nested/x.md"),
+            PathBuf::from("/proj/content/nested/deep/y.md"),
+            PathBuf::from("/proj/content/keep.md"),
+        ]);
+
+        known.remove_path_and_descendants(Path::new("/proj/content/nested"));
+
+        assert!(!known.contains(Path::new("/proj/content/nested/x.md")));
+        assert!(!known.contains(Path::new("/proj/content/nested/deep/y.md")));
+        assert!(
+            known.contains(Path::new("/proj/content/keep.md")),
+            "a sibling outside the removed directory must survive the purge"
+        );
     }
 }

@@ -1003,12 +1003,28 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
     }
     let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
+
+    // #1581 — seed the session-live known-content registry from the boot
+    // collection MEMBERSHIP walk (not the frontmatter-hash map, which drops
+    // unparseable entries). This is what lets the #1058 spurious-`Created`
+    // normalization recognise a pre-existing entry on a COLD boot, where the
+    // dependency graph carries no `DepKind::Content` reverse edge for it yet.
+    // Without it, the first in-place edit of any collection entry that macOS
+    // FSEvents coalesces into `Created` loses the whole tick's #958 eager
+    // narrowing and re-stamps every route.
+    let known_content = zfb_build::KnownContentEntries::default();
+    known_content.insert_many(collect_collection_entries(
+        &cfg,
+        root_inventory.collection_roots(),
+    ));
+
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone())
         .with_extra_watch_paths(extra_watch_paths)
         .with_policy(
             zfb_build::GranularityPolicy::default()
                 .with_content_roots(content_roots)
-                .with_raw_import_invalidation(raw_import_invalidation.clone()),
+                .with_raw_import_invalidation(raw_import_invalidation.clone())
+                .with_known_content(known_content.clone()),
         );
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
@@ -1425,6 +1441,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             // reload_renderer when the discovery refresh marked the
             // renderer fresh).
             ssr_route_set.clone(),
+            known_content.clone(),
         )
     });
 
@@ -5431,11 +5448,26 @@ fn frontmatter_hash(path: &Path) -> Option<[u8; 32]> {
 /// `project_root.join("../x")` would seed keys that never match, so the
 /// narrowing gate always tripped for out-of-root content).
 #[cfg(feature = "embed_v8")]
-fn seed_frontmatter_hashes(
-    cfg: &config::Config,
-    collection_roots: &[PathBuf],
-) -> HashMap<PathBuf, [u8; 32]> {
-    let mut hashes: HashMap<PathBuf, [u8; 32]> = HashMap::new();
+/// Walk every configured collection root and yield the path of each file
+/// that passes its collection's include/exclude filter — i.e. the session's
+/// content-collection MEMBERSHIP, independent of whether the entry's
+/// frontmatter happens to be readable.
+///
+/// Two consumers, and the distinction between them matters (issue #1581):
+///
+/// - [`seed_frontmatter_hashes`] keeps only the entries it could hash — an
+///   unparseable entry has no meaningful G4 gate hash.
+/// - The `known_content` registry takes the FULL membership. An entry whose
+///   frontmatter is missing or malformed is still a real, already-known
+///   collection entry; dropping it would let a spurious FSEvents `Created`
+///   for that file fall through to the discovery regime and cost the tick
+///   its #958 narrowing — the exact bug #1581 fixes.
+///
+/// `collection_roots` comes from the boot [`ResolvedRoots`] inventory, so
+/// out-of-root roots are already canonical and the walked paths compare
+/// equal to the canonical paths `notify` delivers (#1550).
+fn collect_collection_entries(cfg: &config::Config, collection_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut entries: Vec<PathBuf> = Vec::new();
     for (collection, root) in cfg.collections.iter().zip(collection_roots) {
         let filter = match zfb_content::collection::CollectionFilter::new(
             collection.include.as_deref(),
@@ -5457,9 +5489,20 @@ fn seed_frontmatter_hashes(
             if zfb_content::collection::derive_slug_for_file(root, path, &filter).is_none() {
                 continue;
             }
-            if let Some(hash) = frontmatter_hash(path) {
-                hashes.insert(path.to_path_buf(), hash);
-            }
+            entries.push(path.to_path_buf());
+        }
+    }
+    entries
+}
+
+fn seed_frontmatter_hashes(
+    cfg: &config::Config,
+    collection_roots: &[PathBuf],
+) -> HashMap<PathBuf, [u8; 32]> {
+    let mut hashes: HashMap<PathBuf, [u8; 32]> = HashMap::new();
+    for path in collect_collection_entries(cfg, collection_roots) {
+        if let Some(hash) = frontmatter_hash(&path) {
+            hashes.insert(path, hash);
         }
     }
     hashes
@@ -6014,6 +6057,11 @@ fn make_discovery_hook(
     // rewrite the handle HERE or a newly-created `prerender = false` route
     // 404s until a later edit. `None` when the project has no SSR.
     ssr_routes: Option<SsrRoutesHandle>,
+    // Issue #1581 — the session-live known-content registry. A file that
+    // discovery ACCEPTS becomes an already-known entry, so a later in-place
+    // edit of it that FSEvents coalesces into `Created` normalizes back to
+    // `Modified` instead of re-entering the discovery regime.
+    known_content: zfb_build::KnownContentEntries,
 ) -> zfb_build::DiscoveryHook {
     let mut relevant_roots: Vec<PathBuf> = vec![
         session.inner.project_root.join("content"),
@@ -6043,6 +6091,14 @@ fn make_discovery_hook(
         }
 
         let (changed, vanished_rel) = session.discover_created(&relevant)?;
+
+        // #1581 — discovery succeeded, so every file it accepted is now an
+        // already-known collection entry. Registering them here (and NOT at
+        // the top of the closure) keeps the registry meaning "entries of the
+        // last SUCCESSFUL collection walk": a `discover_created` that fails
+        // returns early above and leaves the registry untouched, so the next
+        // tick still treats the file as new.
+        known_content.insert_many(relevant.iter().cloned());
 
         // Issue #807 — the discovery refresh swapped in a fresh V8 host and
         // rebuilt the route tables, but it reports `renderer_reloaded: true`,

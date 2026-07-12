@@ -646,17 +646,55 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         ctx: &BuildContext,
         discover: Option<&DiscoveryHook>,
     ) -> Result<Option<BuildOutcome>> {
+        // Issue #1581 — a `Removed` path is no longer a known collection
+        // entry, so forget it (and, for a removed directory, everything
+        // beneath it) BEFORE the `Created` normalization below reads the
+        // registry. Order is load-bearing: the watcher can batch a `Removed`
+        // and a `Created` into the SAME tick, and purging afterwards would
+        // let a genuine delete→recreate normalize to `Modified` and skip the
+        // discovery regime that must re-establish its routes.
+        for (path, kind) in &changes {
+            if *kind == ChangeKind::Removed {
+                self.config
+                    .policy
+                    .known_content
+                    .remove_path_and_descendants(path);
+            }
+        }
+
         // Issue #1058 — normalize a spurious `Created` for an already-known
         // content source back to `Modified`. On a loaded arm64 macOS host,
         // FSEvents coalescing can deliver an in-place edit of an EXISTING
         // file as `Created` (see `zfb_watcher::merge_kind` rule 2). Left as
         // `Created` the change routes through the discovery regime (watch-ADD)
         // instead of the in-place-edit regime, so the lazy path never
-        // eager-renders the edited entry's own route — the dropped eager
-        // render this issue tracks. A path the graph already knows as a
-        // content dependency (`consumers_of` is non-empty) cannot be
-        // genuinely new, so the `Created` flag is an artifact; a truly new
-        // file has no reverse edge yet and stays `Created` for discovery.
+        // eager-renders the edited entry's own route, and the strict #958
+        // `fan_out_safe` gate below (all-`Modified`) is poisoned — costing
+        // the whole tick its eager narrowing and re-stamping every route.
+        //
+        // "Already known" has TWO sources, and the registry is the load-
+        // bearing one (issue #1581):
+        //
+        // - The session-live collection-entry registry (`known_content`) —
+        //   seeded at boot from the collection membership walk and extended
+        //   by discovery. This is authoritative.
+        // - The dependency graph's reverse edge (`consumers_of` non-empty) —
+        //   #1058's original check, kept because a warm PERSISTED graph can
+        //   restore Content edges from a previous session. On a COLD boot it
+        //   is always empty for a pre-existing entry (the dev server's only
+        //   `DepKind::Content` writer is the discovery hook, which fires just
+        //   for newly-created files), which is why #1058 alone never fired
+        //   for the first edit of any boot-time entry.
+        //
+        // A genuinely new file is in neither, so it stays `Created` for
+        // discovery. Known-ness is read OUTSIDE the graph mutex to keep the
+        // two locks uncoupled.
+        let known_created: Vec<bool> = changes
+            .iter()
+            .map(|(path, kind)| {
+                *kind == ChangeKind::Created && self.config.policy.is_known_content_entry(path)
+            })
+            .collect();
         let changes: Vec<(PathBuf, ChangeKind)> = {
             let graph = self.graph.lock().unwrap_or_else(|p| {
                 warn!(
@@ -667,9 +705,10 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             });
             changes
                 .into_iter()
-                .map(|(path, kind)| {
+                .zip(known_created)
+                .map(|((path, kind), known)| {
                     let spurious_created = kind == ChangeKind::Created
-                        && graph.consumers_of(&path).is_some_and(|c| !c.is_empty())
+                        && (known || graph.consumers_of(&path).is_some_and(|c| !c.is_empty()))
                         && classify_change_with_content_roots(
                             &path,
                             &self.config.project_root,
@@ -1662,6 +1701,188 @@ mod tests {
                 fan_out_safe: true,
             }),
             "a Created for a known content source is normalized to a fan-out-safe edit (#1058)"
+        );
+    }
+
+    /// Build an orchestrator whose policy carries a live known-content
+    /// registry (issue #1581), pre-seeded with `known`.
+    fn make_orch_with_known_content<P: AssetPipeline>(
+        pipeline: P,
+        known: &[&str],
+    ) -> (BuildOrchestrator<P>, crate::policy::KnownContentEntries) {
+        let registry = crate::policy::KnownContentEntries::default();
+        registry.insert_many(known.iter().map(PathBuf::from));
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            )
+            .with_policy(GranularityPolicy::default().with_known_content(registry.clone())),
+            make_graph(),
+            pipeline,
+        );
+        (orch, registry)
+    }
+
+    /// #1581 — the regression this issue is about. `other.md` is a content
+    /// entry with NO graph reverse edge (`consumers_of` is `None`), which is
+    /// the state of EVERY collection entry on a cold `zfb dev` boot: the only
+    /// `DepKind::Content` writer is the discovery hook, and it fires just for
+    /// newly-created files. #1058's graph-keyed normalization therefore never
+    /// fired for a pre-existing entry, so the first macOS FSEvents-coalesced
+    /// `Created` for it lost the whole tick's #958 eager narrowing.
+    ///
+    /// With the entry in the known-content registry the `Created` is now
+    /// recognized as the artifact it is and normalized to `Modified` →
+    /// `fan_out_safe`, WITHOUT the graph needing any Content edge.
+    #[test]
+    fn edge_less_known_boot_entry_created_normalizes_to_modified() {
+        use zfb_watcher::ChangeKind;
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        // `other.md` deliberately has no consumers in `make_graph()`.
+        let (orch, _registry) = make_orch_with_known_content(pipeline, &["/proj/content/other.md"]);
+        let dist = tempfile::tempdir().unwrap();
+
+        let boot_entry = PathBuf::from("/proj/content/other.md");
+        orch.tick_with_kinds(
+            vec![(boot_entry.clone(), ChangeKind::Created)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].content_narrowing,
+            Some(crate::plan::ContentNarrowing {
+                changed_content: vec![boot_entry],
+                fan_out_safe: true,
+            }),
+            "a Created for a registry-known boot entry must normalize to a \
+             fan-out-safe edit even though the graph has no Content edge for it"
+        );
+    }
+
+    /// #1581 — the discrimination that keeps discovery working: a file the
+    /// registry does NOT know is genuinely new, so it stays `Created` and
+    /// still poisons the strict gate (routing it through the discovery
+    /// regime that must establish its routes).
+    #[test]
+    fn genuinely_new_entry_absent_from_registry_stays_created() {
+        use zfb_watcher::ChangeKind;
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        // Registry knows `other.md`, but the tick creates `brand-new.md`.
+        let (orch, _registry) = make_orch_with_known_content(pipeline, &["/proj/content/other.md"]);
+        let dist = tempfile::tempdir().unwrap();
+
+        let brand_new = PathBuf::from("/proj/content/brand-new.md");
+        orch.tick_with_kinds(
+            vec![(brand_new.clone(), ChangeKind::Created)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert!(
+            !plans[0]
+                .content_narrowing
+                .as_ref()
+                .expect("content narrowing hint")
+                .fan_out_safe,
+            "a Created for a file the registry has never seen is genuinely new \
+             and must NOT be normalized — it belongs to the discovery regime"
+        );
+    }
+
+    /// #1581 — delete→recreate must still re-discover. A `Removed` purges the
+    /// path from the registry, so the NEXT tick's `Created` for it is treated
+    /// as genuinely new again rather than as an in-place-edit artifact.
+    #[test]
+    fn removed_entry_is_purged_so_a_later_recreate_still_discovers() {
+        use zfb_watcher::ChangeKind;
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let (orch, registry) = make_orch_with_known_content(pipeline, &["/proj/content/other.md"]);
+        let dist = tempfile::tempdir().unwrap();
+
+        let entry = PathBuf::from("/proj/content/other.md");
+        assert!(registry.contains(&entry), "precondition: seeded as known");
+
+        // Tick 1 — the file is deleted.
+        orch.tick_with_kinds(
+            vec![(entry.clone(), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        assert!(
+            !registry.contains(&entry),
+            "a Removed must purge the path from the known-content registry"
+        );
+
+        // Tick 2 — it comes back. It is new again, so it must not normalize.
+        orch.tick_with_kinds(
+            vec![(entry.clone(), ChangeKind::Created)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        assert!(
+            !plans[1]
+                .content_narrowing
+                .as_ref()
+                .expect("content narrowing hint")
+                .fan_out_safe,
+            "after a delete, a recreate must route through discovery again — \
+             not be mistaken for a spurious FSEvents Created"
+        );
+    }
+
+    /// #1581 — the purge must run BEFORE the normalization, not after: the
+    /// watcher can batch a removed DIRECTORY and a `Created` for a file
+    /// beneath it into the SAME tick. Purging afterwards would let the child
+    /// normalize to `Modified` off a registry entry that is already dead.
+    #[test]
+    fn removed_directory_purges_descendants_before_normalizing_same_tick() {
+        use zfb_watcher::ChangeKind;
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let (orch, registry) =
+            make_orch_with_known_content(pipeline, &["/proj/content/nested/x.md"]);
+        let dist = tempfile::tempdir().unwrap();
+
+        let dir = PathBuf::from("/proj/content/nested");
+        let child = PathBuf::from("/proj/content/nested/x.md");
+        orch.tick_with_kinds(
+            vec![
+                (dir, ChangeKind::Removed),
+                (child.clone(), ChangeKind::Created),
+            ],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            !registry.contains(&child),
+            "removing a directory must purge its descendants from the registry"
+        );
+        let plans = applies.lock().unwrap();
+        assert!(
+            !plans[0]
+                .content_narrowing
+                .as_ref()
+                .expect("content narrowing hint")
+                .fan_out_safe,
+            "the same-tick Created under a removed directory must NOT normalize \
+             — the purge runs first, so the child is no longer known"
         );
     }
 
