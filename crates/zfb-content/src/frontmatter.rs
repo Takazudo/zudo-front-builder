@@ -130,6 +130,26 @@ pub fn extract(path: &Path, source: &str) -> Result<UnifiedFrontmatter, Frontmat
     }
 }
 
+/// Filename-only wrapper around [`extract`] (zfb#1574).
+///
+/// `extract`'s `path` argument is used exclusively for its extension —
+/// never touched on disk — but a wasm host typically only has a bare
+/// filename string, not a real filesystem `Path`. This wrapper builds the
+/// `Path` internally so callers don't need `std::path` in their own
+/// surface.
+///
+/// # Errors
+/// Same error set as [`extract`]: [`FrontmatterError::MissingExtension`]
+/// if `filename` has no extension, [`FrontmatterError::UnsupportedExtension`]
+/// for anything other than `md` / `mdx` / `tsx`, plus the YAML/TSX parse
+/// errors for malformed frontmatter.
+pub fn extract_from_filename(
+    filename: &str,
+    source: &str,
+) -> Result<UnifiedFrontmatter, FrontmatterError> {
+    extract(Path::new(filename), source)
+}
+
 /// YAML-only frontmatter parser. Internal helper — external code
 /// should call [`extract`] instead.
 ///
