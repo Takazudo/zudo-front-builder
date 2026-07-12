@@ -79,7 +79,7 @@ use crate::cli::{BuildArgs, BuildMinifyHtml};
 use crate::commands::resolve::{
     resolve_outdir, resolve_outdir_arg, validate_outdir_safety, wipe_outdir_contents,
 };
-use crate::config::{Config, OutputMode};
+use crate::config::{CodeHighlightMode, Config, OutputMode};
 use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, check_runtime_installed, embedded_binary,
@@ -782,9 +782,16 @@ pub(crate) fn build_default_css_payload(
     // global CSS + CSS Modules still ship (issue #824). Falling back to
     // the Tailwind subprocess path here would re-add the preflight the
     // user opted out of and incur subprocess cost.
+    // #1533: the default hi token stylesheet is class-mode-only and
+    // classPrefix-aware. Resolve it once here and thread the plain
+    // `Option<String>` down — both the authored-only and Tailwind paths
+    // funnel through `run_css_emitter`, so neither helper needs the whole
+    // `&Config`.
+    let framework_css = resolve_framework_css(config);
+
     let tailwind_enabled = config.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
     if !tailwind_enabled {
-        return build_authored_only_css_payload(project_root, outdir);
+        return build_authored_only_css_payload(project_root, outdir, framework_css);
     }
 
     let sources = discover_css_source_files(project_root);
@@ -829,7 +836,8 @@ pub(crate) fn build_default_css_payload(
 
     let mut tw_cfg = TailwindSubprocessConfig::default()
         .with_working_dir(project_root.to_path_buf())
-        .with_content_globs(content_globs);
+        .with_content_globs(content_globs)
+        .with_inline_sources(role_classes_inline_sources(config));
 
     // Sub #212 — wire in the embedded-binary extraction tier so consumers
     // running `zfb build` from a project that doesn't ship the
@@ -870,8 +878,76 @@ pub(crate) fn build_default_css_payload(
     // Tailwind path always ships a payload — its preflight bytes are never
     // empty, so there is no whitespace-only guard here (unlike the
     // authored-only path).
-    let payload = run_css_emitter(engine, project_root, outdir, sources)?;
+    let payload = run_css_emitter(engine, project_root, outdir, sources, framework_css)?;
     Ok(Some(payload))
+}
+
+/// Resolve the `framework_css` block ([`CssPipelineConfig::framework_css`])
+/// for the current build (Highlight Tokens epic sub #1533).
+///
+/// Ships `zfb_css::default_hi_css()` — the framework's default
+/// `--zfb-hi-*` token stylesheet for class-mode syntax highlighting — iff
+/// the resolved config has `codeHighlight.mode == "class"` AND the user
+/// has not opted out via `codeHighlight.defaultStylesheet: false`. `None`
+/// in every other case (including the default `mode: "inline"`), so
+/// inline-mode and pre-epic projects see byte-identical `combine()`/
+/// `hash_8()` output.
+///
+/// **classPrefix-aware:** `default_hi_css()` hardcodes `.hi-*` role
+/// selectors, matching the default `codeHighlight.classPrefix` of `"hi-"`.
+/// A project with a custom `classPrefix` (e.g. `"syn-"`) emits
+/// `{classPrefix}{role}` spans, so shipping the `.hi-*` sheet unchanged
+/// would style nothing. When `classPrefix != "hi-"` the `.hi-` SELECTOR
+/// prefix is rewritten to the configured one. The `--zfb-hi-*` custom
+/// properties are namespaced independently of `classPrefix` and stay
+/// `--zfb-hi-*` — the `.replace(".hi-", …)` leaves them untouched because
+/// they carry no leading dot (`--zfb-hi-` does not contain `.hi-`).
+fn resolve_framework_css(config: &Config) -> Option<String> {
+    let code_highlight = config.code_highlight.as_ref()?;
+    if code_highlight.mode != CodeHighlightMode::Class || !code_highlight.default_stylesheet {
+        return None;
+    }
+    let css = zfb_css::default_hi_css();
+    let prefix = code_highlight.class_prefix.as_str();
+    if prefix == "hi-" {
+        Some(css.to_string())
+    } else {
+        Some(css.replace(".hi-", &format!(".{prefix}")))
+    }
+}
+
+/// zfb#1534: compute the Tailwind `@source inline("...")` safelist for
+/// `codeHighlight.roleClasses`.
+///
+/// `roleClasses` values live in `zfb.config.ts` (not a Tailwind-scanned
+/// content root) and are emitted only into rendered `dist/*.html`
+/// (never scanned, and itself an output of this same build) — without
+/// safelisting, the mapped utilities are silently never generated
+/// (green build, unstyled tokens). Every value is split on whitespace
+/// (a mapping may hold multiple space-separated classes, e.g.
+/// `"text-violet-600 dark:text-violet-400"`), deduped, and sorted: the
+/// result feeds the synthesised entry CSS, which feeds the CSS
+/// `hash_8` input, so unstable ordering would churn the asset hash for
+/// an unchanged config.
+///
+/// Returns empty when `codeHighlight.roleClasses` is absent — the
+/// common case. Callers only reach this on the `tailwind.enabled`
+/// path; the authored-CSS path (`tailwind.enabled = false`) returns
+/// early in [`build_default_css_payload`] before ever calling this, and
+/// instead relies on the build warning emitted at config-load time
+/// (`crates/zfb/src/config.rs`, issue #1530).
+fn role_classes_inline_sources(config: &Config) -> Vec<String> {
+    let mut classes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Some(role_classes) = config
+        .code_highlight
+        .as_ref()
+        .and_then(|ch| ch.role_classes.as_ref())
+    {
+        for value in role_classes.values() {
+            classes.extend(value.split_whitespace().map(str::to_string));
+        }
+    }
+    classes.into_iter().collect()
 }
 
 /// Shared tail of the two CSS-emitter paths
@@ -890,6 +966,7 @@ fn run_css_emitter<E: CssEngine>(
     project_root: &Path,
     outdir: &Path,
     sources: Vec<PathBuf>,
+    framework_css: Option<String>,
 ) -> Result<AssetEmitterPayload> {
     let pipe_cfg = CssPipelineConfig {
         sources,
@@ -909,6 +986,12 @@ fn run_css_emitter<E: CssEngine>(
         // Hash root shared with `compute_css_module_class_maps` via
         // `CssModulesConfig::for_project_root` (issue #825).
         modules_config: zfb_css::modules::CssModulesConfig::for_project_root(project_root),
+        // zfb-hi.css default token stylesheet, class-mode only (#1533).
+        // Computed once by the caller (`build_default_css_payload`) and
+        // threaded down as a plain `Option<String>`, so both the Tailwind
+        // and authored-only paths — the two callers of this helper — carry
+        // the same block without re-resolving config here.
+        framework_css,
         ..CssPipelineConfig::default()
     };
 
@@ -947,6 +1030,7 @@ fn run_css_emitter<E: CssEngine>(
 fn build_authored_only_css_payload(
     project_root: &Path,
     outdir: &Path,
+    framework_css: Option<String>,
 ) -> Result<Option<AssetEmitterPayload>> {
     let authored_css = match resolve_input_global_css(project_root) {
         Some(path) => {
@@ -966,7 +1050,7 @@ fn build_authored_only_css_payload(
     let sources = discover_css_source_files(project_root);
     let engine = AuthoredCssEngine::new(authored_css);
 
-    let payload = run_css_emitter(engine, project_root, outdir, sources)?;
+    let payload = run_css_emitter(engine, project_root, outdir, sources, framework_css)?;
 
     // Skip the link when there is nothing to ship. With Tailwind off and
     // no authored globals + no modules, `combine` yields only its `"\n"`
@@ -7417,6 +7501,147 @@ mod tests {
         assert_eq!(resolve_input_global_css(project_root), None);
     }
 
+    // -----------------------------------------------------------------------
+    // zfb#1534 — `role_classes_inline_sources` (the `@source inline(...)`
+    // safelist feeding `build_default_css_payload`'s `tw_cfg`)
+    // -----------------------------------------------------------------------
+
+    /// Build a `CodeHighlightConfig` in class mode with the given
+    /// `roleClasses` map — the only shape `role_classes_inline_sources`
+    /// reads from.
+    fn code_highlight_with_role_classes(
+        role_classes: std::collections::BTreeMap<String, String>,
+    ) -> crate::config::CodeHighlightConfig {
+        crate::config::CodeHighlightConfig {
+            theme: None,
+            themes_dir: None,
+            theme_light: None,
+            theme_dark: None,
+            mode: crate::config::CodeHighlightMode::Class,
+            class_prefix: crate::config::default_class_prefix(),
+            role_classes: Some(role_classes),
+            default_stylesheet: true,
+        }
+    }
+
+    /// No `codeHighlight` configured at all => empty safelist (the
+    /// common case — must not error, must not fabricate entries).
+    #[test]
+    fn role_classes_inline_sources_empty_when_no_code_highlight() {
+        let cfg = Config::default();
+        assert_eq!(role_classes_inline_sources(&cfg), Vec::<String>::new());
+    }
+
+    /// `codeHighlight` set but `roleClasses` absent => empty safelist.
+    #[test]
+    fn role_classes_inline_sources_empty_when_role_classes_absent() {
+        let cfg = Config {
+            code_highlight: Some(crate::config::CodeHighlightConfig {
+                theme: None,
+                themes_dir: None,
+                theme_light: None,
+                theme_dark: None,
+                mode: crate::config::CodeHighlightMode::Class,
+                class_prefix: crate::config::default_class_prefix(),
+                role_classes: None,
+                default_stylesheet: true,
+            }),
+            ..Config::default()
+        };
+        assert_eq!(role_classes_inline_sources(&cfg), Vec::<String>::new());
+    }
+
+    /// A multi-class value (`"text-violet-600 dark:text-violet-400"`) is
+    /// split on whitespace into two independent inline sources — each
+    /// token becomes its own `@source inline(...)` directive.
+    #[test]
+    fn role_classes_inline_sources_splits_multi_class_values() {
+        let mut role_classes = std::collections::BTreeMap::new();
+        role_classes.insert(
+            "keyword".to_string(),
+            "text-violet-600 dark:text-violet-400".to_string(),
+        );
+        let cfg = Config {
+            code_highlight: Some(code_highlight_with_role_classes(role_classes)),
+            ..Config::default()
+        };
+        assert_eq!(
+            role_classes_inline_sources(&cfg),
+            vec![
+                "dark:text-violet-400".to_string(),
+                "text-violet-600".to_string(),
+            ]
+        );
+    }
+
+    /// A class shared by two roles (e.g. `keyword` and `operator` both
+    /// mapped to the same utility) is de-duplicated to a single
+    /// `@source inline(...)` directive.
+    #[test]
+    fn role_classes_inline_sources_dedupes_shared_classes() {
+        let mut role_classes = std::collections::BTreeMap::new();
+        role_classes.insert("keyword".to_string(), "text-violet-600".to_string());
+        role_classes.insert("operator".to_string(), "text-violet-600".to_string());
+        let cfg = Config {
+            code_highlight: Some(code_highlight_with_role_classes(role_classes)),
+            ..Config::default()
+        };
+        assert_eq!(
+            role_classes_inline_sources(&cfg),
+            vec!["text-violet-600".to_string()]
+        );
+    }
+
+    /// Output is always sorted regardless of the `BTreeMap` role-key
+    /// insertion order or the class token order within a value —
+    /// determinism, since this feeds the synthesised entry CSS and
+    /// hence the CSS asset hash (a config that hasn't changed must not
+    /// churn the hash across builds).
+    #[test]
+    fn role_classes_inline_sources_is_sorted_and_deterministic() {
+        let mut role_classes = std::collections::BTreeMap::new();
+        role_classes.insert("keyword".to_string(), "text-violet-600".to_string());
+        role_classes.insert("comment".to_string(), "text-zinc-500".to_string());
+        role_classes.insert("string".to_string(), "text-green-600".to_string());
+        let cfg = Config {
+            code_highlight: Some(code_highlight_with_role_classes(role_classes)),
+            ..Config::default()
+        };
+        let result = role_classes_inline_sources(&cfg);
+        let mut sorted = result.clone();
+        sorted.sort();
+        assert_eq!(result, sorted, "output must already be sorted");
+        assert_eq!(
+            result,
+            vec![
+                "text-green-600".to_string(),
+                "text-violet-600".to_string(),
+                "text-zinc-500".to_string(),
+            ]
+        );
+    }
+
+    /// Same `Config` => byte-identical (`Vec`-identical) output across
+    /// repeated calls — the determinism guarantee `role_classes_inline_sources`
+    /// exists to provide.
+    #[test]
+    fn role_classes_inline_sources_is_stable_across_calls() {
+        let mut role_classes = std::collections::BTreeMap::new();
+        role_classes.insert(
+            "keyword".to_string(),
+            "text-violet-600 dark:text-violet-400".to_string(),
+        );
+        role_classes.insert("string".to_string(), "text-green-600".to_string());
+        let cfg = Config {
+            code_highlight: Some(code_highlight_with_role_classes(role_classes)),
+            ..Config::default()
+        };
+        assert_eq!(
+            role_classes_inline_sources(&cfg),
+            role_classes_inline_sources(&cfg)
+        );
+    }
+
     /// Regression (issue #824): `tailwind.enabled = false` disables only
     /// the Tailwind layers, NOT the authored-CSS pipeline. With an
     /// authored global stylesheet and a CSS Module present, the emitter
@@ -7555,6 +7780,304 @@ mod tests {
         assert!(
             css.contains(".real-rule"),
             "non-import authored rules must survive the strip; got:\n{css}",
+        );
+    }
+
+    /// Highlight Tokens epic sub #1533: builds a `codeHighlight` config for
+    /// the test matrix below without depending on `CodeHighlightConfig`
+    /// implementing `Default` (it deliberately doesn't — every field is
+    /// meaningful to the highlighting pipeline, see config.rs). `class_prefix`
+    /// is parameterized so the classPrefix-rewrite test can pass a
+    /// non-default prefix; pass `"hi-"` for the default-prefix cases.
+    fn code_highlight_config(
+        mode: CodeHighlightMode,
+        default_stylesheet: bool,
+        class_prefix: &str,
+    ) -> crate::config::CodeHighlightConfig {
+        crate::config::CodeHighlightConfig {
+            theme: None,
+            themes_dir: None,
+            theme_light: None,
+            theme_dark: None,
+            mode,
+            class_prefix: class_prefix.to_string(),
+            role_classes: None,
+            default_stylesheet,
+        }
+    }
+
+    /// Highlight Tokens epic sub #1533: class mode + `defaultStylesheet`
+    /// true (the default) ships `zfb_css::default_hi_css()` ahead of the
+    /// authored CSS, even on the Tailwind-disabled (`build_authored_only_
+    /// css_payload`) path — proving the wiring shared with the Tailwind
+    /// path via `run_css_emitter`. Hermetic: runs through
+    /// `AuthoredCssEngine`, no tailwind binary required.
+    #[test]
+    fn css_payload_ships_default_hi_stylesheet_in_class_mode() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            code_highlight: Some(code_highlight_config(CodeHighlightMode::Class, true, "hi-")),
+            ..Config::default()
+        };
+        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            .expect("should not error")
+            .expect(
+                "expected Some payload: default_hi_css() is non-empty so class mode always ships a payload",
+            );
+
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(
+            css.contains("--zfb-hi-kw"),
+            "class-mode default stylesheet must ship the --zfb-hi-kw token; got:\n{css}",
+        );
+        assert!(
+            css.contains(".hi-kw"),
+            "class-mode default stylesheet must ship the .hi-kw role class; got:\n{css}",
+        );
+    }
+
+    /// `codeHighlight.defaultStylesheet: false` opts out — the framework
+    /// block must be absent even in class mode.
+    #[test]
+    fn css_payload_omits_default_hi_stylesheet_when_opted_out() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        // An authored global keeps the payload `Some(..)` so the negative
+        // assertion below is meaningful (an entirely empty payload would
+        // trivially "not contain" the marker for the wrong reason).
+        std::fs::create_dir_all(project_root.join("styles")).unwrap();
+        std::fs::write(
+            project_root.join("styles/global.css"),
+            ".authored-global { color: rebeccapurple; }\n",
+        )
+        .unwrap();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            code_highlight: Some(code_highlight_config(
+                CodeHighlightMode::Class,
+                false,
+                "hi-",
+            )),
+            ..Config::default()
+        };
+        let payload =
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+                .expect("should not error")
+                .expect("authored global CSS keeps the payload non-empty");
+
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(
+            !css.contains("--zfb-hi-kw"),
+            "defaultStylesheet:false must omit the framework block; got:\n{css}",
+        );
+    }
+
+    /// Inline mode (the default `codeHighlight.mode`) never ships the
+    /// class-mode token stylesheet, even though `defaultStylesheet`
+    /// defaults to `true` — the field is documented as "only meaningful
+    /// in class mode" (config.rs).
+    #[test]
+    fn css_payload_omits_default_hi_stylesheet_in_inline_mode() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("styles")).unwrap();
+        std::fs::write(
+            project_root.join("styles/global.css"),
+            ".authored-global { color: rebeccapurple; }\n",
+        )
+        .unwrap();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            // code_highlight: None => mode defaults to Inline.
+            ..Config::default()
+        };
+        let payload =
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+                .expect("should not error")
+                .expect("authored global CSS keeps the payload non-empty");
+
+        let css = String::from_utf8(payload.bytes).unwrap();
+        assert!(
+            !css.contains("--zfb-hi-kw"),
+            "inline mode (default) must never ship the class-mode token stylesheet; got:\n{css}",
+        );
+    }
+
+    /// Pure-logic coverage (Level 1) of the `resolve_framework_css` gating
+    /// predicate itself, isolated from the heavier payload-builder tests
+    /// above: the 3 meaningfully distinct `(mode, default_stylesheet)`
+    /// combinations.
+    #[test]
+    fn resolve_framework_css_gating_matrix() {
+        let class_on = Config {
+            code_highlight: Some(code_highlight_config(CodeHighlightMode::Class, true, "hi-")),
+            ..Config::default()
+        };
+        assert!(
+            resolve_framework_css(&class_on).is_some(),
+            "class mode + defaultStylesheet:true must inject the framework block",
+        );
+
+        let class_off = Config {
+            code_highlight: Some(code_highlight_config(
+                CodeHighlightMode::Class,
+                false,
+                "hi-",
+            )),
+            ..Config::default()
+        };
+        assert!(
+            resolve_framework_css(&class_off).is_none(),
+            "class mode + defaultStylesheet:false must NOT inject the framework block",
+        );
+
+        let no_code_highlight = Config::default();
+        assert!(
+            resolve_framework_css(&no_code_highlight).is_none(),
+            "absent codeHighlight config (mode defaults to inline) must NOT inject the framework block",
+        );
+    }
+
+    /// Highlight Tokens epic sub #1533: a custom `codeHighlight.classPrefix`
+    /// must rewrite the default stylesheet's `.hi-*` role SELECTORS to the
+    /// configured prefix (otherwise the `{classPrefix}{role}` spans the
+    /// emitter produces would match nothing — a silent dead stylesheet). The
+    /// `--zfb-hi-*` custom PROPERTIES are namespaced independently of
+    /// classPrefix and must stay `--zfb-hi-*`.
+    #[test]
+    fn resolve_framework_css_rewrites_selectors_for_custom_class_prefix() {
+        let cfg = Config {
+            code_highlight: Some(code_highlight_config(
+                CodeHighlightMode::Class,
+                true,
+                "syn-",
+            )),
+            ..Config::default()
+        };
+        let css = resolve_framework_css(&cfg)
+            .expect("class mode + defaultStylesheet:true must inject the framework block");
+
+        assert!(
+            css.contains(".syn-kw"),
+            "the role selector must use the configured classPrefix; got:\n{css}",
+        );
+        assert!(
+            !css.contains(".hi-kw"),
+            "the default `.hi-` selector must be rewritten away; got:\n{css}",
+        );
+        // Custom properties are prefix-independent — both the declaration and
+        // the `var()` reference must stay `--zfb-hi-*`.
+        assert!(
+            css.contains("--zfb-hi-kw:"),
+            "the --zfb-hi-* property declaration must stay intact; got:\n{css}",
+        );
+        assert!(
+            css.contains("var(--zfb-hi-kw)"),
+            "the var(--zfb-hi-*) reference must stay intact; got:\n{css}",
+        );
+    }
+
+    /// Highlight Tokens epic confirm sub (zfb#1535), check 6, part 2 of 2:
+    /// the full three-way role-taxonomy parity assertion. `zfb` is the
+    /// only crate that depends on BOTH `zfb-content` (the classifier,
+    /// `HiRole::ALL` / zfb#1529) and `zfb-css` (the stylesheet,
+    /// `default_hi_css()` / zfb#1531), and it owns the config validation
+    /// list ([`CODE_HIGHLIGHT_ROLES`]) itself — so this is the one test
+    /// that can see all three legs in the same process:
+    ///
+    /// 1. classifier short/full names (`zfb_content::hi_roles::HiRole`)
+    /// 2. config validation list (`CODE_HIGHLIGHT_ROLES`, full names)
+    /// 3. stylesheet suffixes (`zfb_css::default_hi_css()`, short names)
+    ///
+    /// A PARTIAL of this (legs 1 and 3 only — classifier <-> stylesheet)
+    /// lives in `crates/zfb-css/tests/hi_role_parity.rs`; that crate
+    /// cannot see `CODE_HIGHLIGHT_ROLES` without depending on `zfb`, which
+    /// would be a cycle. This full three-way test is `zfb`-tier: the `zfb`
+    /// crate's test binaries link the embedded V8 host (the `embed_v8`
+    /// default feature), so they run in CI via `health.yml`'s
+    /// `cargo nextest run --workspace` rather than in a lightweight local
+    /// subset. The `zfb-css` partial above is V8-free and covers the
+    /// classifier<->stylesheet legs on every local `cargo test -p zfb-css`.
+    #[test]
+    fn hi_role_taxonomy_parity_across_classifier_config_and_stylesheet() {
+        use zfb_content::hi_roles::HiRole;
+
+        assert_eq!(
+            HiRole::ALL.len(),
+            crate::config::CODE_HIGHLIGHT_ROLES.len(),
+            "classifier role count must match the config validation list length"
+        );
+
+        let css = zfb_css::default_hi_css();
+
+        for (role, config_name) in HiRole::ALL
+            .iter()
+            .zip(crate::config::CODE_HIGHLIGHT_ROLES.iter())
+        {
+            // Leg 1 <-> Leg 2: classifier `full_name()` — the key the
+            // class-mode emitter resolves `roleClasses` overrides by — must
+            // equal the config validation list entry at the SAME taxonomy
+            // index. `CODE_HIGHLIGHT_ROLES`'s doc comment promises it
+            // "matches the #1529 table" in order, not just as an unordered
+            // set. This is load-bearing: if `full_name()` drifts from the
+            // config key, overrides silently miss (zfb#1528 deep-review fix).
+            assert_eq!(
+                role.full_name(),
+                *config_name,
+                "classifier role {role:?} full_name() must match CODE_HIGHLIGHT_ROLES \
+                 entry {config_name:?} at the same taxonomy index",
+            );
+
+            // Leg 1 <-> Leg 3: classifier short_name() must have a
+            // declared --zfb-hi-<suffix> property AND a .hi-<suffix>
+            // selector in the shipped stylesheet.
+            let suffix = role.short_name();
+            assert!(
+                css.contains(&format!("--zfb-hi-{suffix}:")),
+                "stylesheet must declare --zfb-hi-{suffix} for role {role:?}; got:\n{css}",
+            );
+            assert!(
+                css.contains(&format!(".hi-{suffix} {{")),
+                "stylesheet must declare .hi-{suffix} selector for role {role:?}; got:\n{css}",
+            );
+        }
+    }
+
+    /// Regression (zfb#1528 deep-review): a `codeHighlight.roleClasses`
+    /// override — keyed by the FULL role name, the only form config accepts —
+    /// must survive the config -> `PipelineSpec` lowering with its key intact
+    /// (NOT rekeyed to the short suffix). The class-mode emitter resolves
+    /// overrides by `HiRole::full_name()` (`"keyword"`), so a lowering that
+    /// dropped or renamed the key would silently disable every override.
+    /// Pairs with the content-crate test
+    /// `pipeline_spec_class_mode_applies_role_classes_override`, which proves
+    /// the key is then honored end-to-end in the emitted HTML.
+    #[test]
+    fn role_classes_full_name_key_survives_config_to_spec_lowering() {
+        let config: crate::config::Config = serde_json::from_str(
+            r#"{"codeHighlight":{"mode":"class","roleClasses":{"keyword":"text-violet-600 dark:text-violet-400"}}}"#,
+        )
+        .expect("config parses");
+        let spec = crate::commands::bundler_input::pipeline_spec_from_config(
+            std::path::Path::new("."),
+            &config,
+        );
+        assert_eq!(
+            spec.code_highlight_role_classes
+                .get("keyword")
+                .map(String::as_str),
+            Some("text-violet-600 dark:text-violet-400"),
+            "the full-name roleClasses key must reach PipelineSpec unchanged; got {:?}",
+            spec.code_highlight_role_classes,
+        );
+        assert!(
+            !spec.code_highlight_role_classes.contains_key("kw"),
+            "lowering must not rekey the override to the short suffix",
         );
     }
 

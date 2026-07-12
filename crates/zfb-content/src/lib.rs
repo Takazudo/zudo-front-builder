@@ -6,6 +6,7 @@ pub mod dep_manifest;
 pub mod diagnostics;
 pub mod frontmatter;
 pub mod heading_registry;
+pub mod hi_roles;
 pub mod mdx_jsx_emit;
 pub(crate) mod path_norm;
 pub mod pipeline;
@@ -20,7 +21,7 @@ pub use content_bridge::{
     build_snapshot, build_snapshot_with_config, debug_snapshot_enabled, BridgeError,
     CollectionConfig, ContentSnapshot, EntrySnapshot,
 };
-pub use pipeline_spec::{PipelineSpec, PipelineSpecError};
+pub use pipeline_spec::{CodeHighlightMode, PipelineSpec, PipelineSpecError};
 
 pub use pipeline::{constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs};
 pub use plugins::{ExternalLinksConfig, ExternalLinksPlugin};

@@ -31,6 +31,7 @@
 //! The plugin holds the highlighter behind an [`Arc`] so it can be
 //! cheaply cloned across multi-document pipelines.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::pipeline::{HastNode, HastVisitor};
@@ -56,6 +57,18 @@ enum SyntectMode {
         light: String,
         /// Dark-mode syntect theme name (e.g. `"base16-ocean.dark"`).
         dark: String,
+    },
+    /// Class-emission mode — forwards to `highlight_lines_classes` and emits
+    /// per-token `<span class="…">` role classes (from the #1529 taxonomy)
+    /// instead of any inline colour. The `<pre>` element is classed
+    /// `{prefix}root` (e.g. `hi-root`). This is `codeHighlight.mode: "class"`
+    /// (Highlight Tokens epic, zfb#1528).
+    Classes {
+        /// Class-name prefix for role classes (e.g. `"hi-"`); the default
+        /// class for a role is `{prefix}{short_name}`.
+        prefix: String,
+        /// Per-role class overrides keyed by role short name (e.g. `"kw"`).
+        role_classes: BTreeMap<String, String>,
     },
 }
 
@@ -118,6 +131,27 @@ impl SyntectPlugin {
         };
         self
     }
+
+    /// Switch to class-emission mode (`codeHighlight.mode: "class"`).
+    ///
+    /// In class mode every fenced code block is highlighted via
+    /// [`Highlighter::highlight_lines_classes`]: each token becomes a
+    /// `<span class="…">` carrying a semantic role class (default
+    /// `{prefix}{short_name}`, e.g. `hi-kw`, or the `role_classes` override
+    /// for that role) instead of any inline `color:` or `--shiki-*` property.
+    /// The `<pre>` element is classed `{prefix}root` (default `hi-root`).
+    #[must_use]
+    pub fn with_class_mode(
+        mut self,
+        prefix: impl Into<String>,
+        role_classes: BTreeMap<String, String>,
+    ) -> Self {
+        self.mode = SyntectMode::Classes {
+            prefix: prefix.into(),
+            role_classes,
+        };
+        self
+    }
 }
 
 impl HastVisitor for SyntectPlugin {
@@ -146,6 +180,12 @@ fn rewrite_children(children: &mut [HastNode], highlighter: &Highlighter, mode: 
                 }
                 SyntectMode::Dual { light, dark } => {
                     rewrite_dual(child, highlighter, light, dark, &lang, meta, &code);
+                }
+                SyntectMode::Classes {
+                    prefix,
+                    role_classes,
+                } => {
+                    rewrite_classes(child, highlighter, prefix, role_classes, &lang, meta, &code);
                 }
             }
         }
@@ -235,6 +275,44 @@ fn rewrite_dual(
         *child = HastNode::Element {
             tag: "pre".to_string(),
             attrs,
+            children: vec![code_el],
+            void: false,
+        };
+    }
+}
+
+/// Rewrite `child` using the class-emission path.
+///
+/// Calls [`Highlighter::highlight_lines_classes`] and emits:
+/// ```html
+/// <pre class="{prefix}root">
+///   <code>
+///     <span class="line">Raw(class_line_html)</span>…
+///   </code>
+/// </pre>
+/// ```
+///
+/// Per-token spans carry role classes (`{prefix}{short_name}` or the
+/// `role_classes` override) with NO inline colour. The `<pre>` element is
+/// classed `{prefix}root` (default `hi-root`). The `<pre> → <code>[data-meta]
+/// → <span class="line"> → Raw` shape is byte-identical to the single/dual
+/// paths — `build_line_spans` / `build_code_el` are reused verbatim.
+fn rewrite_classes(
+    child: &mut HastNode,
+    highlighter: &Highlighter,
+    prefix: &str,
+    role_classes: &BTreeMap<String, String>,
+    lang: &str,
+    meta: Option<String>,
+    code: &str,
+) {
+    if let Ok(result) = highlighter.highlight_lines_classes(code, Some(lang), prefix, role_classes)
+    {
+        let line_spans = build_line_spans(result.lines);
+        let code_el = build_code_el(line_spans, meta);
+        *child = HastNode::Element {
+            tag: "pre".to_string(),
+            attrs: vec![("class".to_string(), format!("{prefix}root"))],
             children: vec![code_el],
             void: false,
         };
@@ -646,5 +724,221 @@ mod tests {
                 span_children[0]
             );
         }
+    }
+
+    // ── Class-emission mode (with_class_mode) ─────────────────────────────
+
+    /// Build a class-mode plugin over a fresh highlighter with the given
+    /// prefix and empty role overrides.
+    fn class_plugin(prefix: &str) -> SyntectPlugin {
+        SyntectPlugin::new(Arc::new(Highlighter::new())).with_class_mode(prefix, BTreeMap::new())
+    }
+
+    /// Structural check for class mode, mirroring [`assert_syntect_structure`]
+    /// but expecting `class="{prefix}root"` on the `<pre>` instead of a
+    /// `syntect-…` slug. Returns the serialized HTML.
+    fn assert_class_structure(node: &HastNode, prefix: &str) -> String {
+        use crate::serializer::serialize;
+
+        let HastNode::Element {
+            tag: pre_tag,
+            attrs: pre_attrs,
+            children: pre_children,
+            ..
+        } = node
+        else {
+            panic!("expected Element<pre>, got {node:?}");
+        };
+        assert_eq!(pre_tag, "pre", "outer tag must be pre");
+        let expected_root = format!("{prefix}root");
+        assert!(
+            pre_attrs
+                .iter()
+                .any(|(k, v)| k == "class" && *v == expected_root),
+            "pre must have class=\"{expected_root}\": {pre_attrs:?}"
+        );
+        let code_el = pre_children.first().expect("pre must have a child <code>");
+        let HastNode::Element {
+            tag: code_tag,
+            children: code_children,
+            ..
+        } = code_el
+        else {
+            panic!("expected Element<code> inside pre, got {code_el:?}");
+        };
+        assert_eq!(code_tag, "code", "inner tag must be code");
+        for (i, span) in code_children.iter().enumerate() {
+            let HastNode::Element {
+                tag: span_tag,
+                attrs: span_attrs,
+                children: span_children,
+                ..
+            } = span
+            else {
+                panic!("line {i}: expected Element<span>, got {span:?}");
+            };
+            assert_eq!(span_tag, "span", "line {i}: span tag must be span");
+            assert!(
+                span_attrs.iter().any(|(k, v)| k == "class" && v == "line"),
+                "line {i}: span must have class=\"line\": {span_attrs:?}"
+            );
+            assert_eq!(
+                span_children.len(),
+                1,
+                "line {i}: span must have exactly one child (Raw)"
+            );
+            assert!(
+                matches!(span_children[0], HastNode::Raw(_)),
+                "line {i}: span child must be Raw, got {:?}",
+                span_children[0]
+            );
+        }
+        serialize(node)
+    }
+
+    /// Class mode emits `<pre class="hi-root">` with role-classed token spans
+    /// and NO inline colour form, preserving the structured HAST shape.
+    #[test]
+    fn class_mode_emits_prefix_root_and_role_classes() {
+        let mut plugin = class_plugin("hi-");
+        let mut tree = HastNode::Root {
+            children: vec![pre_code(Some("rust"), "fn main() {}\n")],
+        };
+        plugin.visit(&mut tree);
+        let HastNode::Root { children } = &tree else {
+            unreachable!("expected Root")
+        };
+        let html = assert_class_structure(&children[0], "hi-");
+        assert!(
+            html.contains("class=\"hi-root\""),
+            "pre must carry hi-root: {html}"
+        );
+        assert!(
+            html.contains("class=\"hi-kw\""),
+            "must carry a role class: {html}"
+        );
+        assert!(
+            !html.contains("color:#"),
+            "class mode must NOT emit inline color: {html}"
+        );
+        assert!(
+            !html.contains("--shiki-"),
+            "class mode must NOT emit shiki vars: {html}"
+        );
+    }
+
+    /// The class prefix threads through to BOTH the `<pre>` root class and the
+    /// per-token role classes.
+    #[test]
+    fn class_mode_honours_custom_prefix() {
+        let mut plugin = class_plugin("tok-");
+        let mut tree = HastNode::Root {
+            children: vec![pre_code(Some("rust"), "fn main() {}\n")],
+        };
+        plugin.visit(&mut tree);
+        let HastNode::Root { children } = &tree else {
+            unreachable!("expected Root")
+        };
+        let html = assert_class_structure(&children[0], "tok-");
+        assert!(
+            html.contains("class=\"tok-root\""),
+            "custom prefix on pre: {html}"
+        );
+        assert!(
+            html.contains("class=\"tok-kw\""),
+            "custom prefix on tokens: {html}"
+        );
+    }
+
+    /// A configured `roleClasses` override reaches the emitted span verbatim.
+    #[test]
+    fn class_mode_plugin_applies_role_class_override() {
+        let mut roles = BTreeMap::new();
+        // Keyed by the FULL role name (`"keyword"`), matching user config.
+        roles.insert("keyword".to_string(), "text-violet-600".to_string());
+        let mut plugin =
+            SyntectPlugin::new(Arc::new(Highlighter::new())).with_class_mode("hi-", roles);
+        let mut tree = HastNode::Root {
+            children: vec![pre_code(Some("rust"), "fn main() {}\n")],
+        };
+        plugin.visit(&mut tree);
+        use crate::serializer::serialize;
+        let HastNode::Root { children } = &tree else {
+            unreachable!("expected Root")
+        };
+        let html = serialize(&children[0]);
+        assert!(
+            html.contains("class=\"text-violet-600\""),
+            "override applied: {html}"
+        );
+        assert!(
+            !html.contains("class=\"hi-kw\""),
+            "overridden role must not use the default class: {html}"
+        );
+    }
+
+    /// A 3-line block produces 3 `<span class="line">` Element nodes (same
+    /// contract as single/dual mode).
+    #[test]
+    fn class_mode_three_line_block_produces_three_span_lines() {
+        let mut plugin = class_plugin("hi-");
+        let code = "fn a() {}\nfn b() {}\nfn c() {}\n";
+        let mut tree = HastNode::Root {
+            children: vec![pre_code(Some("rust"), code)],
+        };
+        plugin.visit(&mut tree);
+        let HastNode::Root { children } = &tree else {
+            unreachable!("expected Root")
+        };
+        let HastNode::Element {
+            children: pre_children,
+            ..
+        } = &children[0]
+        else {
+            panic!("expected Element<pre>, got {:?}", children[0])
+        };
+        let HastNode::Element {
+            tag: code_tag,
+            children: code_children,
+            ..
+        } = pre_children.first().expect("pre must have <code>")
+        else {
+            panic!("expected Element<code>")
+        };
+        assert_eq!(code_tag, "code");
+        assert_eq!(
+            code_children.len(),
+            3,
+            "3 source lines → 3 line spans, got {}",
+            code_children.len()
+        );
+        assert_class_structure(&children[0], "hi-");
+    }
+
+    /// Class mode skips mermaid blocks (same as single/dual mode).
+    #[test]
+    fn class_mode_skips_mermaid_block() {
+        let mut plugin = class_plugin("hi-");
+        let mut tree = HastNode::Root {
+            children: vec![pre_code(Some("mermaid"), "graph TD;")],
+        };
+        let original = tree.clone();
+        plugin.visit(&mut tree);
+        assert_eq!(tree, original, "class mode must skip mermaid blocks");
+    }
+
+    /// Class mode skips blocks with no `data-lang` (same as single/dual mode).
+    #[test]
+    fn class_mode_skips_block_without_data_lang() {
+        let mut plugin = class_plugin("hi-");
+        let mut tree = HastNode::Root {
+            children: vec![pre_code(None, "anything")],
+        };
+        let original = tree.clone();
+        plugin.visit(&mut tree);
+        assert_eq!(
+            tree, original,
+            "class mode must skip blocks without data-lang"
+        );
     }
 }

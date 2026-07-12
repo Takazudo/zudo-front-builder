@@ -33,10 +33,31 @@
 //! fingerprint drift guards in `pipeline.rs` enforce for
 //! `MarkdownFeaturesConfig` / GFM fields.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use crate::pipeline::{Pipeline, ResolvedGfmConstructs};
+
+/// Resolved `codeHighlight.mode` — mirrors the `"inline"` / `"class"`
+/// string-literal union in `zfb.config.ts` (`CodeHighlightConfig::mode` in
+/// `crates/zfb/src/config.rs`). `Default` is [`CodeHighlightMode::Inline`]
+/// — the pre-epic behaviour; class-emission is opt-in (Highlight Tokens
+/// epic, zfb#1528).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CodeHighlightMode {
+    /// Per-token inline colors (`style="color:#rrggbb"` or the dual
+    /// `--shiki-*` custom properties). Pre-epic behaviour.
+    #[default]
+    Inline,
+    /// Per-token semantic role classes (zfb#1532): every token becomes a
+    /// `<span class="…">` carrying a role class from the #1529 taxonomy
+    /// (default `{classPrefix}{short_name}`, or the `roleClasses` override),
+    /// with NO inline colour; the `<pre>` is classed `{classPrefix}root`.
+    /// Routed via [`crate::pipeline::Pipeline::with_defaults_and_full_config_class`],
+    /// which also encodes `classPrefix`/`roleClasses` into the compile-cache
+    /// fingerprint so class-mode configs never alias an inline/dual entry.
+    Class,
+}
 
 /// Error from [`PipelineSpec::build_pipeline`].
 ///
@@ -106,6 +127,23 @@ pub struct PipelineSpec {
     /// contract. Must be a SYNTECT theme name (e.g. `"base16-ocean.dark"`),
     /// NOT a Shiki name. Mirrors `codeHighlight.themeDark` in `zfb.config.ts`.
     pub code_highlight_theme_dark: Option<String>,
+    /// Output mode for fenced-code highlighting. Mirrors
+    /// `codeHighlight.mode` in `zfb.config.ts`. `Default` is
+    /// [`CodeHighlightMode::Inline`]. See [`CodeHighlightMode`] for the
+    /// Wave-1 class-mode stub note.
+    pub code_highlight_mode: CodeHighlightMode,
+    /// Class-name prefix for class-mode role classes (e.g. `"hi-"`).
+    /// Mirrors `codeHighlight.classPrefix` in `zfb.config.ts`. Only
+    /// consumed when [`Self::code_highlight_mode`] is
+    /// [`CodeHighlightMode::Class`]; otherwise inert.
+    pub code_highlight_class_prefix: String,
+    /// Per-role class overrides for class mode (role name -> class attr
+    /// value). Mirrors `codeHighlight.roleClasses` in `zfb.config.ts`. A
+    /// `BTreeMap` so its `Debug` formatting (used by the content
+    /// fingerprint) is deterministically ordered. Only consumed when
+    /// [`Self::code_highlight_mode`] is [`CodeHighlightMode::Class`];
+    /// otherwise inert.
+    pub code_highlight_role_classes: BTreeMap<String, String>,
     /// When `true`, append [`Pipeline::add_strip_md_ext`] so internal
     /// `[link](other.md)` style hrefs are rewritten to `other/`. Mirrors
     /// the opt-in `stripMdExt` flag in `zfb.config.ts` (zfb#127 / #129).
@@ -185,6 +223,9 @@ impl Default for PipelineSpec {
             code_highlight_themes_dir: None,
             code_highlight_theme_light: None,
             code_highlight_theme_dark: None,
+            code_highlight_mode: CodeHighlightMode::Inline,
+            code_highlight_class_prefix: "hi-".to_string(),
+            code_highlight_role_classes: BTreeMap::new(),
             strip_md_ext: false,
             resolve_source_map: None,
             gfm_constructs: ResolvedGfmConstructs::default(),
@@ -229,6 +270,9 @@ impl PipelineSpec {
             code_highlight_themes_dir,
             code_highlight_theme_light,
             code_highlight_theme_dark,
+            code_highlight_mode,
+            code_highlight_class_prefix,
+            code_highlight_role_classes,
             strip_md_ext,
             resolve_source_map,
             gfm_constructs,
@@ -249,10 +293,25 @@ impl PipelineSpec {
             _ => None,
         };
 
-        // Single or dual feature-aware entry point. `features = None` is an
-        // empty feature set: the former-Core framework features are off (the
-        // post-epic opt-in default, #583 / #586).
-        let mut pipeline = if let Some((light, dark)) = dual_pair {
+        // Class / dual / single feature-aware entry point. `features = None`
+        // is an empty feature set: the former-Core framework features are
+        // off (the post-epic opt-in default, #583 / #586). Class mode takes
+        // priority over the dual pair — config.rs validation already makes
+        // `mode:"class"` mutually exclusive with every theme knob, so the
+        // two branches can never both be live for a config that passed
+        // validation; the ordering here is only a defensive tie-break for
+        // hand-built specs that bypass config.rs.
+        let mut pipeline = if *code_highlight_mode == CodeHighlightMode::Class {
+            Pipeline::with_defaults_and_full_config_class(
+                *gfm_constructs,
+                code_highlight_themes_dir.as_deref(),
+                *cjk_friendly,
+                *hard_breaks,
+                features.as_ref(),
+                code_highlight_class_prefix.as_str(),
+                code_highlight_role_classes,
+            )
+        } else if let Some((light, dark)) = dual_pair {
             Pipeline::with_defaults_and_full_config_dual(
                 *gfm_constructs,
                 code_highlight_themes_dir.as_deref(),

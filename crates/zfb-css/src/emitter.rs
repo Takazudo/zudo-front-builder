@@ -37,8 +37,10 @@ use anyhow::Result;
 /// Raw bytes + stable URL produced by [`crate::CssPipeline::build_emitter`].
 ///
 /// The `bytes` are the same combined CSS string `CssPipeline::build()`
-/// would write — Tailwind utilities first, then CSS Modules output,
-/// joined by a single `\n`. `stable_url` always equals
+/// would write — the optional framework block (issue #1533,
+/// [`crate::pipeline::CssPipelineConfig::framework_css`]), then Tailwind
+/// utilities, then CSS Modules output, each joined by a single `\n`.
+/// `stable_url` always equals
 /// `zfb_types::STABLE_CSS_URL` (`/assets/styles.css`); the prod
 /// pipeline matches this string against rendered HTML and rewrites it
 /// to `/assets/styles-<hash>.css`.

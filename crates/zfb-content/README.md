@@ -93,13 +93,29 @@ output, which the build cache relies on.
 `.zfb/types.d.ts` TypeScript declarations and (b) validate frontmatter at
 `zfb check` time.
 
-### Syntax highlighting (`syntect_highlight`)
+### Syntax highlighting (`syntect_highlight`, `hi_roles`)
 
 Provides a `Highlighter` cache around syntect's `SyntaxSet` and `ThemeSet`.
-`Highlighter::highlight` returns an HTML fragment:
-`<pre class="syntect-{theme-slug}"><code>…spans…</code></pre>`.
-The per-`<pre>` class allows CSS theming while syntect-coloured spans are
-preserved inside.
+
+**Inline mode (default).** `Highlighter::highlight` returns an HTML fragment
+`<pre class="syntect-{theme-slug}"><code>…spans…</code></pre>` with each token
+coloured by an inline `style="color:…"` (or, in dual-theme mode, the
+`--shiki-light` / `--shiki-dark` custom properties). The per-`<pre>` class allows
+CSS theming while syntect-coloured spans are preserved inside.
+
+**Class mode (`codeHighlight.mode: "class"`).** Instead of inline colours, each
+token is classified into one of a fixed 18-role semantic taxonomy (`hi_roles`:
+the `HiRole` enum plus the syntect-scope→role classifier) and emitted as a
+`<span>` carrying a role class — `{prefix}{suffix}` (default `hi-kw`, `hi-str`,
+…) or a per-role `roleClasses` override. The `<pre>` element is classed
+`{prefix}root` (default `hi-root`) and no inline colour is emitted; colours
+resolve through the `--zfb-hi-*` CSS custom properties defined by the default
+token stylesheet (`zfb-hi.css`, shipped by `zfb-css`), making highlight colours
+re-themeable design tokens. The 18 roles and their class suffixes are frozen —
+`hi_roles` is the authoritative source, and the config-side
+`CODE_HIGHLIGHT_ROLES` list is asserted to stay in sync. See the docs site's
+[Syntax Highlighting → Class mode](../../docs/src/content/docs/guides/syntax-highlighting.mdx)
+guide for the full role table and re-theming recipes.
 
 ## Key public types
 

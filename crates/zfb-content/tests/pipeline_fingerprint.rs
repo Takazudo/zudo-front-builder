@@ -10,12 +10,13 @@
 //! keep their fingerprint since zfb#944 — their per-file reads are
 //! validated through the read-recorder dependency manifest instead.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use serde_json::json;
 use zfb_content::pipeline::{HastNode, HastVisitor, Pipeline, ResolvedGfmConstructs};
 use zfb_content::{
-    ExternalLinksConfig, HeadingIdStrategy, MarkdownFeaturesConfig, PipelineSpec, TocConfig,
+    CodeHighlightMode, ExternalLinksConfig, HeadingIdStrategy, MarkdownFeaturesConfig,
+    PipelineSpec, TocConfig,
 };
 
 fn features(value: serde_json::Value) -> MarkdownFeaturesConfig {
@@ -688,6 +689,207 @@ fn single_and_default_fingerprints_unchanged_by_dual_wiring() {
     assert_ne!(
         single_fp_a, default_fp,
         "single-theme spec must differ from the default"
+    );
+}
+
+// ── Class-mode fingerprint tests (Highlight Tokens epic, zfb#1528 / #1530) ──
+//
+// Wave-1 stub: `Pipeline::with_defaults_and_full_config_class` still falls
+// back to single-theme rendering for the actual `SyntectPlugin` wiring (the
+// class-emission sub, zfb#1532, replaces that), but the fingerprint segment
+// is fully wired here so `mode` / `classPrefix` / `roleClasses` correctly
+// invalidate the compile cache from day one — a missed knob here would
+// silently serve stale JSX once class-mode emission lands.
+
+fn role_classes(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// Class mode must produce a fingerprint distinct from both the default
+/// (inline) and an explicit single-theme config — a `{ mode: "class" }`
+/// config can never alias an inline entry in the compile cache.
+#[test]
+fn class_mode_fingerprint_is_distinct_from_inline_and_default() {
+    let default_fp = baseline()
+        .config_fingerprint()
+        .expect("default fingerprintable");
+
+    let inline_fp = full_config(
+        Some("InspiredGitHub"),
+        ResolvedGfmConstructs::CONSERVATIVE,
+        true,
+        false,
+        None,
+    )
+    .config_fingerprint()
+    .expect("inline fingerprintable");
+
+    let class_fp = PipelineSpec {
+        code_highlight_mode: CodeHighlightMode::Class,
+        ..Default::default()
+    }
+    .build_pipeline()
+    .expect("class-mode stub still builds — falls back to single-theme rendering")
+    .config_fingerprint()
+    .expect("class-mode fingerprintable");
+
+    assert_ne!(
+        default_fp, class_fp,
+        "default (inline) and class-mode must have different fingerprints"
+    );
+    assert_ne!(
+        inline_fp, class_fp,
+        "single-theme inline and class-mode must have different fingerprints — an inline \
+         config must never alias a class-mode entry in the compile cache"
+    );
+}
+
+/// Two specs differing ONLY in `classPrefix` (both in class mode) must
+/// produce different fingerprints.
+#[test]
+fn class_mode_prefix_change_produces_different_fingerprint() {
+    let default_prefix_fp = PipelineSpec {
+        code_highlight_mode: CodeHighlightMode::Class,
+        ..Default::default()
+    }
+    .build_pipeline()
+    .expect("builds")
+    .config_fingerprint()
+    .expect("fingerprintable");
+
+    let custom_prefix_fp = PipelineSpec {
+        code_highlight_mode: CodeHighlightMode::Class,
+        code_highlight_class_prefix: "syn-".to_string(),
+        ..Default::default()
+    }
+    .build_pipeline()
+    .expect("builds")
+    .config_fingerprint()
+    .expect("fingerprintable");
+
+    assert_ne!(
+        default_prefix_fp, custom_prefix_fp,
+        "classPrefix must join the content fingerprint"
+    );
+}
+
+/// Two specs differing ONLY in `roleClasses` (both in class mode) must
+/// produce different fingerprints.
+#[test]
+fn class_mode_role_classes_change_produces_different_fingerprint() {
+    let no_roles_fp = PipelineSpec {
+        code_highlight_mode: CodeHighlightMode::Class,
+        ..Default::default()
+    }
+    .build_pipeline()
+    .expect("builds")
+    .config_fingerprint()
+    .expect("fingerprintable");
+
+    let with_roles_fp = PipelineSpec {
+        code_highlight_mode: CodeHighlightMode::Class,
+        code_highlight_role_classes: role_classes(&[(
+            "keyword",
+            "text-violet-600 dark:text-violet-400",
+        )]),
+        ..Default::default()
+    }
+    .build_pipeline()
+    .expect("builds")
+    .config_fingerprint()
+    .expect("fingerprintable");
+
+    assert_ne!(
+        no_roles_fp, with_roles_fp,
+        "roleClasses must join the content fingerprint"
+    );
+
+    // A different roleClasses VALUE for the same key must also split.
+    let other_roles_fp = PipelineSpec {
+        code_highlight_mode: CodeHighlightMode::Class,
+        code_highlight_role_classes: role_classes(&[("keyword", "text-blue-600")]),
+        ..Default::default()
+    }
+    .build_pipeline()
+    .expect("builds")
+    .config_fingerprint()
+    .expect("fingerprintable");
+    assert_ne!(
+        with_roles_fp, other_roles_fp,
+        "a different roleClasses value must also change the fingerprint"
+    );
+}
+
+/// Two class-mode specs built from equal `roleClasses` maps (inserted in a
+/// different order) must agree — the `BTreeMap` backing keeps the
+/// fingerprint's `Debug`-formatted segment key-sorted, so insertion order
+/// never splits the cache key for an otherwise-equal map.
+#[test]
+fn class_mode_fingerprint_is_stable_regardless_of_role_classes_insertion_order() {
+    let mut a = BTreeMap::new();
+    a.insert("keyword".to_string(), "hi-kw".to_string());
+    a.insert("string".to_string(), "hi-str".to_string());
+
+    let mut b = BTreeMap::new();
+    b.insert("string".to_string(), "hi-str".to_string());
+    b.insert("keyword".to_string(), "hi-kw".to_string());
+
+    let fp_a = PipelineSpec {
+        code_highlight_mode: CodeHighlightMode::Class,
+        code_highlight_role_classes: a,
+        ..Default::default()
+    }
+    .build_pipeline()
+    .expect("builds")
+    .config_fingerprint()
+    .expect("fingerprintable");
+    let fp_b = PipelineSpec {
+        code_highlight_mode: CodeHighlightMode::Class,
+        code_highlight_role_classes: b,
+        ..Default::default()
+    }
+    .build_pipeline()
+    .expect("builds")
+    .config_fingerprint()
+    .expect("fingerprintable");
+
+    assert_eq!(
+        fp_a, fp_b,
+        "equal roleClasses maps must fingerprint identically regardless of insertion order"
+    );
+}
+
+/// `defaultStylesheet` is deliberately NOT a `PipelineSpec` field (it's
+/// CSS-only output wiring, lowered separately — see sub #1533), so by
+/// construction no `PipelineSpec` fingerprint can vary based on it. This
+/// test pins the structural guarantee: a class-mode spec's fingerprint
+/// depends only on `mode` / `classPrefix` / `roleClasses` (plus the other
+/// pre-existing knobs) — building the identical spec twice always agrees.
+#[test]
+fn class_mode_fingerprint_has_no_default_stylesheet_input() {
+    let spec = PipelineSpec {
+        code_highlight_mode: CodeHighlightMode::Class,
+        code_highlight_class_prefix: "hi-".to_string(),
+        code_highlight_role_classes: role_classes(&[("keyword", "hi-kw")]),
+        ..Default::default()
+    };
+    let fp_a = spec
+        .build_pipeline()
+        .expect("builds")
+        .config_fingerprint()
+        .expect("fingerprintable");
+    let fp_b = spec
+        .build_pipeline()
+        .expect("builds")
+        .config_fingerprint()
+        .expect("fingerprintable");
+    assert_eq!(
+        fp_a, fp_b,
+        "an equal class-mode spec must fingerprint identically across builds — there is no \
+         defaultStylesheet field on PipelineSpec to accidentally vary the outcome"
     );
 }
 

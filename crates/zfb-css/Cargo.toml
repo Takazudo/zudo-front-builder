@@ -29,3 +29,15 @@ hex = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Dev-only: drives the one-time zfb-hi.css color-extraction helper (an
+# `#[ignore]`d test), which resolves representative scopes through the
+# bundled base16-ocean themes. Not a runtime dependency of the crate.
+syntect = { workspace = true }
+# Dev-only, confirm sub zfb#1535 (Highlight Tokens epic): reads
+# `zfb_content::hi_roles::HiRole` so `tests/hi_role_parity.rs` can assert
+# the classifier's role taxonomy and this crate's `default_hi_css()`
+# stylesheet stay in sync, without either crate depending on the other at
+# runtime. Safe as a dev-dependency-only edge: `zfb-content` does not
+# depend on `zfb-css` in any capacity (dev or otherwise), so this adds no
+# cycle.
+zfb-content = { path = "../zfb-content" }

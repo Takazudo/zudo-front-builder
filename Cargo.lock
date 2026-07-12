@@ -6068,9 +6068,11 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "syntect",
  "tempfile",
  "thiserror",
  "walkdir",
+ "zfb-content",
  "zfb-types",
 ]
 

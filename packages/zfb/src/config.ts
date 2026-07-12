@@ -455,8 +455,9 @@ export type ZfbConfig = {
 
   /**
    * Syntect code-highlight options; absent = default theme
-   * (`base16-ocean.dark`). See {@link CodeHighlightConfig} for accepted
-   * theme names and custom-theme loading.
+   * (`base16-ocean.dark`) and inline color mode. See
+   * {@link CodeHighlightConfig} for accepted theme names, custom-theme
+   * loading, and the class-emission mode (Highlight Tokens epic).
    *
    * Mirrors `Config::code_highlight` in crates/zfb/src/config.rs.
    */
@@ -584,6 +585,12 @@ export type OutputMode = "static" | "hybrid" | "auto";
  * `"base16-ocean.light"`, `"base16-ocean.dark"`, `"InspiredGitHub"`,
  * `"Solarized (dark)"`), NOT Shiki names like `"dracula"`.
  *
+ * **Class mode** (Highlight Tokens epic, zfb#1528): set `mode: "class"`.
+ * Each token gets a semantic role class instead of an inline color, so
+ * highlight colors become re-themeable CSS design tokens. Mutually
+ * exclusive with `theme` / `themeLight` / `themeDark` / `themesDir` —
+ * themes don't affect class emission, so setting both is a build error.
+ *
  * Mirrors `CodeHighlightConfig` in crates/zfb/src/config.rs.
  */
 export type CodeHighlightConfig = {
@@ -630,7 +637,83 @@ export type CodeHighlightConfig = {
    * NOT a Shiki name like `"dracula"`.
    */
   themeDark?: string;
+  /**
+   * Output mode for fenced-code highlighting (Highlight Tokens epic,
+   * zfb#1528). `"inline"` (default) bakes per-token colors into
+   * `style="color:#rrggbb"` (or the dual `--shiki-*` custom properties).
+   * `"class"` emits a semantic role class per token instead, so colors
+   * become re-themeable CSS design tokens rather than baked-in HTML.
+   *
+   * Mutually exclusive with {@link theme} / {@link themeLight} /
+   * {@link themeDark} / {@link themesDir} — themes don't affect class
+   * emission, so setting both is rejected rather than silently ignoring
+   * the theme.
+   */
+  mode?: CodeHighlightMode;
+  /**
+   * Class-name prefix for class-mode role classes (e.g. the default
+   * `"hi-"` yields `hi-kw`, `hi-str`, ...). Must match
+   * `/^[A-Za-z][A-Za-z0-9_-]*$/`. Only meaningful when {@link mode} is
+   * `"class"`. Default: `"hi-"`.
+   */
+  classPrefix?: string;
+  /**
+   * Per-role class overrides for class mode, e.g.
+   * `{ keyword: "text-violet-600 dark:text-violet-400" }` to map a role
+   * onto Tailwind utilities instead of the default `{classPrefix}{role}`
+   * class. Keys must be one of the 18 fixed role names (see
+   * {@link CodeHighlightRole}); a value may hold multiple
+   * space-separated classes and must not contain the bare token `"line"`
+   * (collides with the code-enrichment line wrapper class). Absent uses
+   * `{classPrefix}{role}` for every role.
+   *
+   * Setting this while `tailwind.enabled` is `false` (the authored-CSS
+   * path) is allowed but emits a build warning — no Tailwind safelist can
+   * be generated on that path, so the mapped utilities must already exist
+   * in your own CSS.
+   */
+  roleClasses?: Partial<Record<CodeHighlightRole, string>>;
+  /**
+   * Whether to inject the built-in `--zfb-hi-*` token stylesheet
+   * (`zfb-hi.css`) into the combined `styles.css` output. Only meaningful
+   * in class mode. Default: `true`.
+   */
+  defaultStylesheet?: boolean;
 };
+
+/**
+ * `codeHighlight.mode` — see {@link CodeHighlightConfig.mode}.
+ *
+ * Mirrors `CodeHighlightMode` in crates/zfb/src/config.rs.
+ */
+export type CodeHighlightMode = "inline" | "class";
+
+/**
+ * The fixed 18-role semantic taxonomy for class-mode syntax highlighting
+ * (Highlight Tokens epic, zfb#1528) — valid {@link CodeHighlightConfig.roleClasses}
+ * keys.
+ *
+ * Mirrors `CODE_HIGHLIGHT_ROLES` in crates/zfb/src/config.rs.
+ */
+export type CodeHighlightRole =
+  | "escape"
+  | "operator"
+  | "comment"
+  | "string"
+  | "number"
+  | "constant"
+  | "keyword"
+  | "function"
+  | "type"
+  | "namespace"
+  | "property"
+  | "variable"
+  | "tag"
+  | "attribute"
+  | "punctuation"
+  | "inserted"
+  | "deleted"
+  | "heading";
 
 /**
  * Table-of-contents options. Wire via `markdown.toc` in `zfb.config.ts`.

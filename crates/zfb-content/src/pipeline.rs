@@ -1495,6 +1495,15 @@ impl Pipeline {
         p.push_config_derived_hast_visitor(Box::new(HeadingLinksPlugin::new()));
         p.push_config_derived_hast_visitor(Box::new(CodeTitlePlugin::new()));
         p.push_config_derived_hast_visitor(Box::new(MermaidPlugin::new()));
+        // No class-mode branch here: this legacy chain (`with_defaults` /
+        // `with_theme*`) has no config-driven `codeHighlight.mode` input at
+        // all — it is used by direct callers (tests, embedders), never by
+        // `PipelineSpec::build_pipeline`. Class emission (zfb#1532) lives on
+        // the full-config path via
+        // `with_defaults_and_full_config_class` → the `class_mode` arm in
+        // `with_defaults_and_full_config_inner`. If a legacy class-mode entry
+        // point is ever needed, add a `with_theme_class_mode`-style
+        // constructor rather than branching here.
         let syntect = if let Some(t) = theme {
             SyntectPlugin::new(highlighter).with_theme(t)
         } else {
@@ -1630,6 +1639,7 @@ impl Pipeline {
             hard_breaks,
             features,
             None,
+            None,
         )
     }
 
@@ -1658,10 +1668,49 @@ impl Pipeline {
             hard_breaks,
             features,
             Some((theme_light, theme_dark)),
+            None,
         )
     }
 
-    /// Internal shared builder for both single and dual full-config constructors.
+    /// Like [`Pipeline::with_defaults_and_full_config`] but in class-emission
+    /// mode (`codeHighlight.mode: "class"`, Highlight Tokens epic zfb#1528).
+    ///
+    /// Wires the `SyntectPlugin` in class-emission mode
+    /// ([`SyntectPlugin::with_class_mode`]): every token becomes a
+    /// `<span class="…">` role class (default `{class_prefix}{short_name}`, or
+    /// the `role_classes` override) with NO inline colour, and the `<pre>` is
+    /// classed `{class_prefix}root`. The `class_prefix` / `role_classes` pair
+    /// is also encoded into the compile-cache fingerprint segment (see the
+    /// `class_mode` arm inside [`Self::with_defaults_and_full_config_inner`])
+    /// so a class-mode config can never alias an inline/dual entry and
+    /// `classPrefix`/`roleClasses` edits correctly invalidate the cache.
+    pub fn with_defaults_and_full_config_class(
+        resolved: ResolvedGfmConstructs,
+        themes_dir: Option<&Path>,
+        cjk_friendly: bool,
+        hard_breaks: bool,
+        features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
+        class_prefix: &str,
+        role_classes: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Self, crate::syntect_highlight::HighlightError> {
+        Self::with_defaults_and_full_config_inner(
+            None,
+            resolved,
+            themes_dir,
+            cjk_friendly,
+            hard_breaks,
+            features,
+            None,
+            Some((class_prefix, role_classes)),
+        )
+    }
+
+    /// Internal shared builder for the single / dual / class full-config
+    /// constructors.
+    // Private shared impl of three public constructors; each knob is a distinct
+    // pipeline input threaded verbatim into the fingerprint, so bundling them
+    // into a params struct would only obscure the drift guard.
+    #[allow(clippy::too_many_arguments)]
     fn with_defaults_and_full_config_inner(
         theme: Option<&str>,
         resolved: ResolvedGfmConstructs,
@@ -1670,6 +1719,11 @@ impl Pipeline {
         hard_breaks: bool,
         features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
         dual: Option<(&str, &str)>,
+        // Highlight Tokens epic (zfb#1528, zfb#1532):
+        // `Some((class_prefix, role_classes))` when `codeHighlight.mode` is
+        // `"class"`. Selects `SyntectPlugin::with_class_mode` in the syntect
+        // arm below and is encoded into the compile-cache fingerprint segment.
+        class_mode: Option<(&str, &std::collections::BTreeMap<String, String>)>,
     ) -> Result<Self, crate::syntect_highlight::HighlightError> {
         // `markdown.features` absent → empty feature set (post-epic opt-in
         // default, #583 / #586): the former-Core framework features
@@ -1788,7 +1842,15 @@ impl Pipeline {
         // Dual mode: when `dual` is `Some((light, dark))` the plugin is
         // constructed via `with_dual_themes`; the `theme` param is ignored.
         // Single mode: mirrors the pre-dual logic.
-        let syntect = if let Some((light, dark)) = dual {
+        let syntect = if let Some((class_prefix, role_classes)) = class_mode {
+            // Class-emission mode (zfb#1532): every token becomes a
+            // `<span class="…">` role class (default `{prefix}{short_name}`,
+            // or the `roleClasses` override) with NO inline colour; the
+            // `<pre>` is classed `{prefix}root`. config.rs validation forbids
+            // setting `theme`/`themeLight`/`themeDark` alongside class mode,
+            // so this arm never coexists with `dual`/`theme`.
+            SyntectPlugin::new(highlighter).with_class_mode(class_prefix, role_classes.clone())
+        } else if let Some((light, dark)) = dual {
             SyntectPlugin::new(highlighter).with_dual_themes(light, dark)
         } else if let Some(t) = theme {
             SyntectPlugin::new(highlighter).with_theme(t)
@@ -1817,12 +1879,18 @@ impl Pipeline {
         // stale when a referenced file changes between dev ticks.
         //
         // The mode is encoded EXPLICITLY in the fingerprint segment
-        // (`code_highlight=single(theme=…)` vs `code_highlight=dual(light=…,dark=…)`)
-        // so a single-theme config can never alias a dual-theme entry in the
-        // compile cache, regardless of how the theme names compare (codex #5).
+        // (`code_highlight=single(theme=…)` vs `code_highlight=dual(light=…,dark=…)`
+        // vs `code_highlight=class(prefix=…,roles=…)`) so a single-theme
+        // config can never alias a dual-theme or class-mode entry in the
+        // compile cache, regardless of how the theme names compare (codex
+        // #5). `role_classes` is a `BTreeMap` so its `Debug` output is
+        // deterministically key-sorted — required for fingerprint
+        // stability across two constructions of an equal map.
         // IMPORTANT: the single-mode segment must be BYTE-IDENTICAL to the
         // pre-dual form so existing warm caches are not invalidated on upgrade.
-        let code_highlight_seg = if let Some((light, dark)) = dual {
+        let code_highlight_seg = if let Some((prefix, role_classes)) = class_mode {
+            format!("code_highlight=class(prefix={prefix:?},roles={role_classes:?})")
+        } else if let Some((light, dark)) = dual {
             format!("code_highlight=dual(light={light:?},dark={dark:?})")
         } else {
             // Single mode: reproduce the exact pre-dual descriptor string so
