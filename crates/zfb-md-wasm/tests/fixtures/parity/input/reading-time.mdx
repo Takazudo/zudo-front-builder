@@ -1,0 +1,19 @@
+# Setup Guide
+
+Follow these steps to get the project running locally before you open a pull
+request. First clone the repository and install every workspace dependency
+with the package manager pinned in the root config file. Second, copy the
+example environment file and fill in the values your local services expect.
+Third, run the database migration script so the schema matches what the
+application code assumes at startup. Fourth, start the development server
+and confirm the health check endpoint responds successfully within a few
+seconds. Finally, run the test suite once to make sure your machine produces
+the same results as continuous integration before you start making changes.
+
+```bash
+pnpm install
+pnpm dev
+```
+
+The code block above is intentionally full of words that must not count
+toward the estimate: install install install install install install.

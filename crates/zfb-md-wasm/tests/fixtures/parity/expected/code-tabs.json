@@ -1,0 +1,5 @@
+{
+  "html": "<CodeGroup tabs={[\"app.ts\",\"js\",\"app.py\"]}><pre data-lang=\"ts\">export const app = true;</pre><pre data-lang=\"js\">export const app = true;</pre><pre data-lang=\"py\">app = True</pre></CodeGroup>",
+  "frontmatter": null,
+  "diagnostics": []
+}

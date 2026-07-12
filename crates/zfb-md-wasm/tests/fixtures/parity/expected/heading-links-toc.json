@@ -1,0 +1,5 @@
+{
+  "html": "<h2 id=\"getting-started\">Getting Started<a href=\"#getting-started\" class=\"hash-link\" aria-label=\"Direct link to Getting Started\"></a></h2><p>First heading.</p><h2 id=\"getting-started-1\">Getting Started<a href=\"#getting-started-1\" class=\"hash-link\" aria-label=\"Direct link to Getting Started\"></a></h2><p>Duplicate heading — slug must be deduplicated.</p><h3 id=\"sub-heading\">Sub Heading<a href=\"#sub-heading\" class=\"hash-link\" aria-label=\"Direct link to Sub Heading\"></a></h3><p>Nested text under a duplicate-slug parent.</p>",
+  "frontmatter": null,
+  "diagnostics": []
+}

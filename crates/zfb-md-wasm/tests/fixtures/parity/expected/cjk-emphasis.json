@@ -1,0 +1,5 @@
+{
+  "html": "<p>これは<strong>重要</strong>な機能です</p><p>中文 <em>斜体</em> 中文</p><p>한국어<strong>강조</strong>한국어</p><p>これは<del>不要</del>な部分です</p>",
+  "frontmatter": null,
+  "diagnostics": []
+}

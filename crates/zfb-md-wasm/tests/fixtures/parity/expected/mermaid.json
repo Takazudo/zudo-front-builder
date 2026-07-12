@@ -1,0 +1,5 @@
+{
+  "html": "<div class=\"mermaid\" data-mermaid=\"\">graph TD\nA--&gt;B\nB--&gt;C</div>",
+  "frontmatter": null,
+  "diagnostics": []
+}

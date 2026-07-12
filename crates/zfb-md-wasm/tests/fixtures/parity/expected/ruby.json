@@ -1,0 +1,5 @@
+{
+  "html": "<p>私は<ruby><rb>東京</rb><rt>とうきょう</rt></ruby>に住んでいます。</p><p><ruby><rb>日本語</rb><rt>にほんご</rt></ruby>を<ruby><rb>学ぶ</rb><rt>まなぶ</rt></ruby></p><p><strong>x</strong><ruby><rb>これは</rb><rt>これ</rt></ruby>です</p><p><ruby><rb>東</rb><rt>とう</rt></ruby><ruby><rb>京</rb><rt>きょう</rt></ruby></p>",
+  "frontmatter": null,
+  "diagnostics": []
+}

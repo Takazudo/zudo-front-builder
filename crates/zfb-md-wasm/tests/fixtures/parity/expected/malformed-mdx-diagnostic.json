@@ -1,0 +1,13 @@
+{
+  "code": null,
+  "frontmatter": { "title": "Bad Doc" },
+  "diagnostics": [
+    {
+      "severity": "error",
+      "source": "markdown",
+      "message": "Expected a closing tag for `<Callout>` (2:1) (markdown-rs:end-tag-mismatch)",
+      "line": 8,
+      "column": 1
+    }
+  ]
+}

@@ -10,6 +10,30 @@ description = "zfb md/mdx → JS / HTML conversion compiled to WebAssembly (wasm
 # parity harness (epic zfb#1572 wave 4) link the same code on the host triple.
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Gates the `generate_parity_oracle` bin below out of every DEFAULT build of
+# this package -- including `cargo build --target wasm32-unknown-unknown
+# ... -p zfb-md-wasm` (the npm package's `pnpm build`, scripts/build.mjs),
+# which invokes cargo with no `--lib`/`--bin` filter and would otherwise
+# happily cross-compile this native-only, filesystem-touching bin for
+# wasm32-unknown-unknown too (wastefully, and pointlessly -- it would panic
+# at runtime with no filesystem to read). Empty on purpose: it turns on no
+# optional dependency, it only exists so `required-features` below can gate
+# the bin target.
+parity-oracle = []
+
+[[bin]]
+# Regenerates the wasm-vs-native parity oracle fixtures (zfb#1578, epic
+# zfb#1572 wave 4). `required-features` keeps this out of every default
+# build (see the `parity-oracle` feature doc above) -- see the doc comment
+# at the top of its source for why this is a `[[bin]]` under tests/ rather
+# than a `#[test]`, and why its output is fancy-regex-backed. Run:
+# `cargo run -p zfb-md-wasm --bin generate_parity_oracle --features
+# parity-oracle`.
+name = "generate_parity_oracle"
+path = "tests/bin/generate_parity_oracle.rs"
+required-features = ["parity-oracle"]
+
 [dependencies]
 # Wasm-safe pipeline facade (zfb#1574) + unified frontmatter extraction.
 # `syntect-fancy` selects the pure-Rust regex backend (zfb#1573) — the
