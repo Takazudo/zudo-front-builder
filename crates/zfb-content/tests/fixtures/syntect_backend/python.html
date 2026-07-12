@@ -1,0 +1,19 @@
+== styled ==
+<pre class="syntect-base16-ocean-dark"><code><span style="color:#b48ead;">import </span><span style="color:#c0c5ce;">re
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#bf616a;">PATTERN </span><span style="color:#c0c5ce;">= re.</span><span style="color:#8fa1b3;">compile</span><span style="color:#c0c5ce;">(</span><span style="color:#b48ead;">r</span><span style="color:#c0c5ce;">&quot;</span><span style="color:#b48ead;">^</span><span style="color:#a3be8c;">(?P&lt;key&gt;</span><span style="color:#d08770;">\w</span><span style="color:#c0c5ce;">+</span><span style="color:#a3be8c;">)</span><span style="color:#d08770;">\s</span><span style="color:#c0c5ce;">*</span><span style="color:#a3be8c;">=</span><span style="color:#d08770;">\s</span><span style="color:#c0c5ce;">*</span><span style="color:#a3be8c;">(</span><span style="color:#d08770;">.</span><span style="color:#c0c5ce;">+</span><span style="color:#a3be8c;">)</span><span style="color:#b48ead;">$</span><span style="color:#c0c5ce;">&quot;)
+</span><span style="color:#c0c5ce;">
+</span><span style="color:#b48ead;">def </span><span style="color:#8fa1b3;">parse</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">text</span><span style="color:#c0c5ce;">: str) -&gt; dict:
+</span><span style="color:#c0c5ce;">    </span><span style="color:#65737e;">&quot;&quot;&quot;Docstring
+</span><span style="color:#65737e;">    over two lines.&quot;&quot;&quot;
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">return </span><span style="color:#c0c5ce;">{m[&quot;</span><span style="color:#a3be8c;">key</span><span style="color:#c0c5ce;">&quot;]: m[</span><span style="color:#d08770;">2</span><span style="color:#c0c5ce;">] </span><span style="color:#b48ead;">for </span><span style="color:#c0c5ce;">m </span><span style="color:#b48ead;">in </span><span style="color:#c0c5ce;">PATTERN.</span><span style="color:#8fa1b3;">finditer</span><span style="color:#c0c5ce;">(text)}
+</span></code></pre>
+== classes ==
+<span class="hi-kw">import</span> re
+
+<span class="hi-var">PATTERN</span> <span class="hi-op">=</span> re<span class="hi-punct">.</span><span class="hi-fn">compile</span>(<span class="hi-kw">r</span><span class="hi-str">&quot;</span><span class="hi-kw">^</span><span class="hi-str">(?P&lt;key&gt;</span><span class="hi-const">\w</span><span class="hi-op">+</span><span class="hi-str">)</span><span class="hi-const">\s</span><span class="hi-op">*</span><span class="hi-str">=</span><span class="hi-const">\s</span><span class="hi-op">*</span><span class="hi-str">(</span><span class="hi-const">.</span><span class="hi-op">+</span><span class="hi-str">)</span><span class="hi-kw">$</span><span class="hi-str">&quot;</span>)
+
+<span class="hi-kw">def</span> <span class="hi-fn">parse</span>(<span class="hi-var">text</span><span class="hi-punct">:</span> <span class="hi-ty">str</span>) <span class="hi-punct">-&gt;</span> <span class="hi-ty">dict</span>:
+    <span class="hi-com">&quot;&quot;&quot;Docstring
+</span><span class="hi-com">    over two lines.&quot;&quot;&quot;</span>
+    <span class="hi-kw">return</span> {m[<span class="hi-str">&quot;key&quot;</span>]<span class="hi-punct">:</span> m[<span class="hi-num">2</span>] <span class="hi-kw">for</span> m <span class="hi-kw">in</span> PATTERN<span class="hi-punct">.</span><span class="hi-fn">finditer</span>(text)}
