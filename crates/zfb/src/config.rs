@@ -2187,21 +2187,12 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         if let Some(td) = &ch.themes_dir {
             ensure_path_in_root(td, dir).context("codeHighlight.themesDir")?;
         }
-        // Dual-theme validation: themeLight and themeDark must be set together.
-        match (ch.theme_light.as_ref(), ch.theme_dark.as_ref()) {
-            (Some(_), None) | (None, Some(_)) => {
-                bail!("codeHighlight.themeLight and themeDark must be set together");
-            }
-            _ => {}
-        }
-        // Mutual exclusion: theme and the dual pair cannot both be set.
-        if ch.theme.is_some() && (ch.theme_light.is_some() || ch.theme_dark.is_some()) {
-            bail!("codeHighlight.theme is mutually exclusive with themeLight/themeDark");
-        }
         // Highlight Tokens epic (zfb#1528): class mode is mutually
         // exclusive with every theme knob — themes don't affect class
         // emission, so setting both would silently no-op the theme
-        // rather than error.
+        // rather than error. Runs before the theme-pair checks below so
+        // a class-mode config with a lone themeLight/themeDark is
+        // reported against the mode, not the incomplete pair.
         if ch.mode == CodeHighlightMode::Class {
             if ch.theme.is_some() {
                 bail!(
@@ -2226,6 +2217,17 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
                      codeHighlight.themesDir"
                 );
             }
+        }
+        // Dual-theme validation: themeLight and themeDark must be set together.
+        match (ch.theme_light.as_ref(), ch.theme_dark.as_ref()) {
+            (Some(_), None) | (None, Some(_)) => {
+                bail!("codeHighlight.themeLight and themeDark must be set together");
+            }
+            _ => {}
+        }
+        // Mutual exclusion: theme and the dual pair cannot both be set.
+        if ch.theme.is_some() && (ch.theme_light.is_some() || ch.theme_dark.is_some()) {
+            bail!("codeHighlight.theme is mutually exclusive with themeLight/themeDark");
         }
         if !is_valid_class_prefix(&ch.class_prefix) {
             bail!(
@@ -3103,8 +3105,10 @@ mod tests {
             .expect_err("unknown mode value must be rejected");
         let msg = format!("{err:#}");
         assert!(
-            msg.to_lowercase().contains("mode"),
-            "error should mention the mode field; got: {msg}"
+            msg.contains("unknown variant `block`")
+                && msg.contains("`inline`")
+                && msg.contains("`class`"),
+            "error must reject the bad value and list the valid variants; got: {msg}"
         );
     }
 
