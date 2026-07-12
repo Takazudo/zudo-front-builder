@@ -1,0 +1,205 @@
+---
+title: Browser Markdown Preview
+description: "Compile MDX to a runnable ES module or render Markdown to HTML entirely in the browser, with output parity to zfb's build-time pipeline, via the @takazudo/zfb-md-wasm package."
+sidebar_position: 7.5
+---
+
+<Info title="What this page covers">
+
+`@takazudo/zfb-md-wasm`, a WebAssembly build of zfb's md/mdx → JS/HTML pipeline
+for **browser-side dynamic conversion**. The two API tiers (`compile()` and
+`renderHtml()`), how to evaluate a compiled module in a browser, Node usage
+for tests and tooling, and the parity guarantee's explicit limitations.
+
+</Info>
+
+## What it is and why it exists
+
+`@takazudo/zfb-md-wasm` compiles zfb's own markdown/MDX → JS conversion
+pipeline to WebAssembly so it can run in a browser tab, not only at build
+time on your machine.
+
+The headline use case is **CMS live preview**: as an editor types Markdown or
+MDX into a CMS, the preview pane should show exactly what `zfb build` would
+eventually produce — not an approximation. Running
+[`@mdx-js/mdx`](https://mdxjs.com/) in the browser for this would use a
+*different* pipeline, with its own parsing, plugin, and JSX-emission
+behavior, so its preview can drift from zfb's real build output.
+`zfb-md-wasm` avoids that drift by compiling the **same Rust pipeline** zfb
+itself uses at build time, so a preview stays faithful to what actually
+ships. Parity is the entire reason this package exists instead of just
+reaching for `@mdx-js/mdx`.
+
+Node ≥ 20 can also load the package — that's what its own test suite uses —
+but the browser is the target. A server with shell access to run the `zfb`
+binary directly should keep doing that instead of loading this package.
+
+<Note>
+
+Install with `pnpm add @takazudo/zfb-md-wasm` (or your package manager of
+choice).
+
+</Note>
+
+## Two API tiers
+
+Both `compile()` and `renderHtml()` take a markdown/MDX `source` string and
+an options object — every field optional, `{}` selects all defaults — and
+both resolve to a result object with a `diagnostics` array. **Expected
+failures never throw.** Parse errors, malformed options JSON, unknown
+themes, and similar problems all come back as `Diagnostic[]` entries with
+`code`/`html` set to `null`, never as a thrown error. (A thrown
+`ZfbMdWasmTrapError` means an actual bug in the wasm build — see the
+package's own README, "Error / trap / re-init contract", for that
+narrower case.)
+
+### `compile()` — MDX to ES-module JS
+
+Full MDX → JSX → SWC → ES module. The result's `code` is ES-module source
+with an `MDXContent` default export (a component function) using the
+automatic JSX runtime.
+
+```ts
+import { compile } from "@takazudo/zfb-md-wasm";
+
+const { code, frontmatter, diagnostics } = await compile(
+  "---\ntitle: Hello\n---\n\n# {frontmatter.title}\n\n<Callout>Hi</Callout>\n",
+  { filename: "post.mdx", jsxRuntime: "preact" },
+);
+// code        -> ES-module JS source (string), or null on failure
+// frontmatter -> { title: "Hello" }
+// diagnostics -> []
+```
+
+### Evaluating the compiled module in a browser
+
+`compile()` hands back ES-module *source text*, not a runnable module. Turn
+it into one with a blob URL and a dynamic `import()`:
+
+```ts
+const { code } = await compile(source, { filename: "preview.mdx" });
+const url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+const { default: MDXContent } = await import(/* @vite-ignore */ url);
+URL.revokeObjectURL(url);
+
+// render <MDXContent components={{ Callout }} /> with your framework
+```
+
+Pass your PascalCase components (`<Callout>` in the source above) through
+the module's `components` prop — the same convention zfb uses for its own
+[MDX Components](../concepts/mdx-components.mdx).
+
+### Supplying the JSX runtime
+
+The compiled module imports its JSX runtime by bare specifier —
+`preact/jsx-runtime` or `react/jsx-runtime` — so the page evaluating it must
+resolve those specifiers itself, via an
+[import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap)
+or your bundler. `zfb-md-wasm` does not ship or bundle either runtime.
+
+<Warning title="The Fragment quirk — preact consumers need one alias">
+
+zfb's emitter takes the JSX *factory* from your chosen `jsxRuntime`, but it
+**always imports `Fragment` from `react/jsx-runtime`**, regardless of which
+runtime you picked. This is zfb's production emitter shape — parity-correct,
+not a bug — but it means a **preact** consumer must alias
+`react/jsx-runtime` onto preact's own runtime, or `Fragment` fails to
+resolve at runtime:
+
+```html
+<script type="importmap">
+  {
+    "imports": {
+      "preact/jsx-runtime": "https://esm.sh/preact/jsx-runtime",
+      "react/jsx-runtime": "https://esm.sh/preact/jsx-runtime"
+    }
+  }
+</script>
+```
+
+A `react` consumer just maps `react/jsx-runtime` to React's own runtime and
+needs no alias.
+
+</Warning>
+
+### `renderHtml()` — Markdown to HTML
+
+Markdown → hast → HTML string, **skipping SWC at runtime**. Reach for this
+when you only need a plain-markdown preview and don't need to evaluate a
+component module.
+
+```ts
+import { renderHtml } from "@takazudo/zfb-md-wasm";
+
+const { html, frontmatter, diagnostics } = await renderHtml(
+  "# Heading\n\nSome **bold** text.\n",
+  { filename: "post.md" },
+);
+// html -> "<h1>Heading</h1><p>Some <strong>bold</strong> text.</p>"
+```
+
+`renderHtml` accepts and ignores `jsxRuntime` / `development`, so one
+options object can serve both tiers if you build it dynamically.
+
+## Node usage (tests and tooling)
+
+The same `compile` / `renderHtml` / `version` API runs under Node ≥ 20 with
+no extra setup — this is exactly how the package's own vitest suite
+exercises the wasm build. Useful for snapshot-testing preview output, or for
+tooling that wants parity checks without shelling out to the `zfb` binary.
+
+```ts
+import { renderHtml } from "@takazudo/zfb-md-wasm";
+
+const { html } = await renderHtml("# Hello from Node\n");
+```
+
+## Parity guarantee and limitations
+
+Output matches zfb's native pipeline on a fixed fixture corpus — the parity
+test suite gates on an exact match. That guarantee comes with deliberate
+limitations for the browser build:
+
+- **Filesystem-bound plugins are inert.** `transclude`, `imageDimensions`,
+  and `linkValidation` are registered but never touch a filesystem — there
+  is none in a browser tab — exactly as zfb's own MDX loader runs them with
+  build-context roots unarmed. Host-callback versions (letting a browser
+  host supply file contents on demand) are a possible future epic, not
+  implemented here.
+- **Config is resolved JSON, not `zfb.config.ts`.** Evaluating a TypeScript
+  config needs a JS engine, and that stays build-side. Resolve your config
+  to JSON first — the same shape zfb derives from `zfb.config.ts` at build
+  time, see [Customizing Markdown](./customizing-markdown.mdx) — and pass it
+  as the `pipeline` option.
+- **No cross-file features.** Route-table link resolution and cross-file
+  anchor resolution need the whole project's route graph, which a
+  single-document browser call never has.
+- **The one wasm artifact carries SWC even for `renderHtml`-only use.** A
+  single cdylib can't tree-shake SWC out of the download just because a
+  consumer only ever calls `renderHtml`. A slim `renderHtml`-only artifact
+  is a documented possible follow-up, not implemented here.
+- **Syntax highlighting uses syntect's `fancy-regex` backend**, not native
+  zfb's `oniguruma` backend (`oniguruma` can't compile to wasm). See
+  [Syntax Highlighting](./syntax-highlighting.mdx) for the native-side
+  behavior. The two backends are byte-identical on zfb's fixture corpus; any
+  grammar-level divergence is tracked by the crate's own informational
+  backend-divergence test.
+
+## Bundle size
+
+Shipping SWC in the wasm bytes makes this a large module by design — the
+build applies a size-optimized profile (`opt-level = "z"`, LTO, one codegen
+unit, `panic = "abort"`) plus `wasm-opt` to cut it down. Don't rely on a
+specific number here; it drifts release to release. The CI `wasm-md` job
+prints the authoritative gzipped size on every run — check that job's size
+line for the current figure rather than trusting a number written into this
+page.
+
+## See also
+
+- [MDX Components](../concepts/mdx-components.mdx) — the `components` prop
+  convention `compile()`'s output follows.
+- [Customizing Markdown](./customizing-markdown.mdx) — how zfb resolves the
+  pipeline config that the `pipeline` option mirrors.
+- [Syntax Highlighting](./syntax-highlighting.mdx) — native zfb's syntect
+  setup, for comparison with the wasm build's `fancy-regex` backend.
