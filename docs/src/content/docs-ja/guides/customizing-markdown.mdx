@@ -36,7 +36,7 @@ export default function PostPage({ post }) {
 
 ## 拡張ポイント
 
-`zfb.config` の `plugins: []` フィールドは、ビルドオーケストレーション用のプラグインシステムです。登録された各プラグインは 4 つのオプションフックを公開します — `setup`、`preBuild`、`postBuild`、`devMiddleware` — それぞれ、起動時のインポートエイリアスや仮想モジュールの登録（`setup`）、ビルドと並行した追加ファイルの出力（`preBuild`）、ビルド後の検証の実行（`postBuild`）、開発サーバーへのルート追加（`devMiddleware`）といったタスクのためのものです。これらのプラグインは Markdown のレンダリングには**関与しません**。パースと visitor チェーンは Rust エンジンの内部で実行され、npm でインストールされたプラグインへコールバックすることはありません。
+`zfb.config` の `plugins: []` フィールドは、ビルドオーケストレーション用のプラグインシステムです。登録された各プラグインは 5 つのオプションフックを公開します — `setup`、`preBuild`、`postBuild`、`devMiddleware`、`previewMiddleware` — それぞれ、起動時のインポートエイリアスや仮想モジュールの登録（`setup`）、ビルドと並行した追加ファイルの出力（`preBuild`）、ビルド後の検証の実行（`postBuild`）、開発サーバーまたは静的 preview サーバーへのルート追加（`devMiddleware` / `previewMiddleware`）といったタスクのためのものです。これらのプラグインは Markdown のレンダリングには**関与しません**。パースと visitor チェーンは Rust エンジンの内部で実行され、npm でインストールされたプラグインへコールバックすることはありません。
 
 Markdown パイプラインのカスタマイズは、エンジン側で `MdastVisitor` /
 `HastVisitor` 実装として in-tree に存在します。[Extending the Markdown Pipeline](./extending-the-markdown-pipeline.mdx) を参照してください。

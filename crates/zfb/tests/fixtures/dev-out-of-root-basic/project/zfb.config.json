@@ -1,0 +1,10 @@
+{
+  "framework": "preact",
+  "collections": [
+    {
+      "name": "posts",
+      "path": "../shared-content/posts",
+      "allowOutsideRoot": true
+    }
+  ]
+}

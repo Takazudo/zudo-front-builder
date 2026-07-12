@@ -89,7 +89,6 @@ use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
-use axum::extract::DefaultBodyLimit;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, Extensions, HeaderMap, HeaderValue, Method, Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -104,9 +103,9 @@ use crate::embed_handlers::EmbedHandlerSet;
 use crate::inject::inject_livereload_with_prefix;
 use crate::livereload::{sse_response, ReloadTx};
 use crate::plugin_middleware::{
-    DevMiddlewareSet, PluginDispatchOutcome, PluginRegistration, PluginRequest,
-    PluginResponseEncoding,
+    dispatch_plugin, origin_gate, DevMiddlewareSet, PluginDispatchAttempt,
 };
+use crate::redirects::{RedirectOutcome, Redirects};
 use crate::ssr::{SsrRequest, SsrRouteSet};
 
 /// HTML body returned when a page is not in the cache.
@@ -510,6 +509,12 @@ pub struct AppState {
     /// `ssr_routes`.
     pub render_on_request_hook: Option<crate::render_hook::RenderOnRequestHandle>,
 
+    /// Shared handle to the active `_redirects` ruleset (issue #1546).
+    /// `None` = no `_redirects` support for this caller (Preview / Embed /
+    /// most tests) — [`serve_page`] skips the leg entirely. See
+    /// [`crate::ServeOpts::redirects`] for the full precedence contract.
+    pub redirects: Option<crate::RedirectsHandle>,
+
     /// Pre-canonicalized forms of the three root paths, computed once at
     /// server startup (perf item #1145-3).  `resolve_within_root` re-
     /// canonicalizes `root` on every disk fallback hit; storing the result
@@ -626,10 +631,11 @@ pub fn build_router(state: AppState) -> Router {
     // unchanged) when the validator is not enforcing (loopback bind).
     // TraceLayer wraps outermost so rejected requests still get traced.
     crate::host_validation::apply_host_validation_layer(router, host_validation)
-        // 2 MiB cap: generous enough for any legitimate dev-middleware
-        // POST payload, prevents unbounded memory buffering on the page
-        // routes that extract `body: Bytes` with no size guard.
-        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
+        // Body cap owned by `plugin_middleware` (issue #1544) so dev and
+        // preview apply the exact same limit — see
+        // [`crate::plugin_middleware::PLUGIN_BODY_LIMIT_BYTES`] for the
+        // rationale.
+        .layer(crate::plugin_middleware::body_limit_layer())
         .layer(TraceLayer::new_for_http())
 }
 
@@ -878,25 +884,70 @@ async fn serve_page(
             }
             // Path + optional query, with the dev server's mount
             // prefix stripped so the plugin handler sees the URL
-            // shape it registered.
+            // shape it registered. The seam owns the wire-shape
+            // conversion of headers/body, so we hand it the raw axum
+            // pieces (issue #1544).
             let full = strip_prefix_from_full_uri(uri, state.base_prefix.as_deref())
                 .unwrap_or_else(|| path_only.clone());
-            let plugin_headers = headermap_to_string_map(&headers);
-            let plugin_body = body_bytes_to_utf8_string(&body);
-            match dispatch_plugin(
-                set,
-                reg,
-                &full,
-                method.as_str(),
-                plugin_headers,
-                plugin_body,
-                state.mode,
-            )
-            .await
-            {
+            match dispatch_plugin(set, reg, &full, &method, &headers, &body, state.mode).await {
                 PluginDispatchAttempt::Responded(resp) => return resp,
                 PluginDispatchAttempt::Passthrough => {}
                 PluginDispatchAttempt::Errored(resp) => return resp,
+            }
+        }
+    }
+
+    // Issue #1546 — `_redirects` (issue #1543 / epic #1541 Preview
+    // Parity). Evaluated right after the dev-only plugin override
+    // (which always wins locally) but ahead of every other dispatch
+    // leg — embed handlers, request-time SSR, the render-on-request
+    // hook, and the disk/cache waterfall — mirroring Cloudflare
+    // Workers Static Assets, where `_redirects` is evaluated by the
+    // assets layer before the Worker script ever sees the request.
+    // GET/HEAD only: `Redirects::match_request` already no-ops for
+    // other methods, gate on `is_get_like` here to skip the lock and
+    // path-format work for POST/PUT/etc.
+    if is_get_like {
+        let path_only = format!("/{trimmed}");
+        // `/_redirects` itself must never be servable — Cloudflare
+        // never exposes the control file at its own URL, and it would
+        // otherwise leak through the `public_root` disk leg further
+        // down (the raw source file, not a servable asset).
+        if path_only == "/_redirects" {
+            return page_response_bytes(
+                StatusCode::NOT_FOUND,
+                DEV_404_BODY.as_bytes().to_vec(),
+                "text/html; charset=utf-8",
+                true,
+                lr_prefix,
+                state.trailing_slash,
+                state.mode,
+                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                current_css_bundle_url(&state.css_bundle_url).as_deref(),
+            );
+        }
+        if let Some(handle) = state.redirects.as_ref() {
+            // Snapshot under a short read lock, same discipline as
+            // `ssr_routes` / `render_on_request_hook` — released before
+            // any I/O so the watcher's reload is never blocked by an
+            // in-flight request.
+            let snapshot: Redirects = handle.read().unwrap_or_else(|p| p.into_inner()).clone();
+            if let Some(outcome) = snapshot.match_request(&path_only, uri.query(), method.as_str())
+            {
+                match outcome {
+                    RedirectOutcome::Redirect { status, location } => {
+                        return redirect_response(status, &location);
+                    }
+                    RedirectOutcome::Rewrite { target } => {
+                        // No-chaining contract (see the `redirects` module
+                        // docs): resolve the target through the exact same
+                        // waterfall a normal request would eventually
+                        // reach, never re-consulting plugins, embed
+                        // handlers, SSR, the hook, or the rule set again.
+                        let target_trimmed = target.trim_start_matches('/');
+                        return serve_from_waterfall(state, target_trimmed, lr_prefix).await;
+                    }
+                }
             }
         }
     }
@@ -1044,6 +1095,25 @@ async fn serve_page(
         }
     }
 
+    serve_from_waterfall(state, trimmed, lr_prefix).await
+}
+
+/// Page-cache / on-disk waterfall: `PageCache` → `html_root` →
+/// `public_root` → `dist_root` (Dev boot-lazy seed) → dev 404.
+///
+/// Split out of `serve_page` (issue #1546) so a `_redirects` `200`
+/// rewrite can resolve its target through the exact same waterfall a
+/// normal request for that path would eventually reach — without
+/// re-running plugin dev-middleware, embed handlers, SSR dispatch, or
+/// the render-on-request hook. This mirrors both the `_redirects`
+/// "resolve once, no chaining" contract (see the `redirects` module
+/// docs) and Cloudflare's real Workers Static Assets layer, which
+/// never hands a rewritten request back to the Worker either.
+///
+/// `trimmed` is the lookup path WITHOUT a leading slash — either the
+/// original request's `trimmed` (the common case) or a `_redirects`
+/// rewrite target's trimmed form.
+async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) -> Response {
     let candidates = lookup_keys(trimmed);
     for key in &candidates {
         if let Some(entry) = state.pages.get(key).await {
@@ -1256,6 +1326,18 @@ async fn serve_page(
     )
 }
 
+/// Build a redirect response for a matched `_redirects` rule
+/// (issue #1546). `status` is always one of 301/302/303/307/308 —
+/// [`Redirects::parse`] rejects any other value at parse time — so
+/// `StatusCode::from_u16` cannot fail in practice; the fallback exists
+/// purely to keep this function total.
+fn redirect_response(status: u16, location: &str) -> Response {
+    let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::FOUND);
+    let location_value =
+        HeaderValue::from_str(location).unwrap_or_else(|_| HeaderValue::from_static("/"));
+    (status_code, [(header::LOCATION, location_value)]).into_response()
+}
+
 /// Strip the dev server's mount prefix from `uri`'s path-and-query
 /// shape so plugin handlers see the unprefixed URL they registered.
 ///
@@ -1445,114 +1527,6 @@ fn is_safe_url_path(url_path: &str) -> bool {
         }
     }
     true
-}
-
-/// Result of a plugin dev-middleware dispatch attempt. The dev server
-/// folds `Passthrough` into the regular page-cache lookup; everything
-/// else short-circuits with a Response.
-enum PluginDispatchAttempt {
-    Responded(Response),
-    Passthrough,
-    Errored(Response),
-}
-
-/// Build a [`PluginRequest`] for the given URL/method/headers/body and
-/// dispatch it.
-///
-/// Issue #230: the request method, headers, and body are forwarded
-/// verbatim so plugin handlers can implement non-GET endpoints (form
-/// submissions, save actions, sidecar API proxies). Non-UTF-8 request
-/// bodies are dropped here — dev-middleware bodies are line-protocol
-/// JSON over stdio to the plugin host, and the wire shape only
-/// supports UTF-8 strings. Binary uploads are a separate extension.
-async fn dispatch_plugin(
-    set: &DevMiddlewareSet,
-    reg: &PluginRegistration,
-    url_path: &str,
-    method: &str,
-    headers: HashMap<String, String>,
-    body: Option<String>,
-    mode: crate::ServerMode,
-) -> PluginDispatchAttempt {
-    let req = PluginRequest {
-        method: method.to_string(),
-        url: url_path.to_string(),
-        headers,
-        body,
-    };
-    match set.dispatcher.dispatch(&reg.handler_id, req).await {
-        Ok(PluginDispatchOutcome::Response(resp)) => {
-            // Decode body and build an axum response. The plugin host
-            // pre-validates the status code; clamp out-of-range to 500
-            // so a misbehaving handler can't synthesise an invalid
-            // response.
-            let status =
-                StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            let body_bytes: Vec<u8> = match resp.body_encoding {
-                // Plugin handlers may opt into binary bodies via
-                // `bodyEncoding: "base64"`. Use the standard crate
-                // rather than rolling our own decoder so all the edge
-                // cases (padding, whitespace, URL-safe alphabet) are
-                // handled correctly.
-                PluginResponseEncoding::Base64 => {
-                    use base64::Engine as _;
-                    match base64::engine::general_purpose::STANDARD.decode(resp.body.as_bytes()) {
-                        Ok(bytes) => bytes,
-                        Err(e) => {
-                            let msg = format!(
-                                "plugin `{}` returned an invalid base64 body: {}",
-                                reg.plugin, e
-                            );
-                            return PluginDispatchAttempt::Errored(plugin_error_response(
-                                &msg, mode,
-                            ));
-                        }
-                    }
-                }
-                PluginResponseEncoding::Utf8 => resp.body.into_bytes(),
-            };
-            let mut builder = Response::builder().status(status);
-            // `resp.headers` is an ordered `Vec<(name, value)>`; iterating
-            // it and calling `Builder::header` (which *appends*) preserves
-            // duplicate names, so multiple `Set-Cookie` entries from the
-            // plugin each reach the wire instead of collapsing.
-            for (k, v) in resp.headers {
-                // The body is reconstructed Rust-side (base64 decode /
-                // into_bytes), so any Content-Length / Transfer-Encoding the
-                // plugin returned is stale; Connection is hop-by-hop. Drop
-                // them and let hyper recompute framing (matches dispatch_ssr).
-                let lower = k.to_ascii_lowercase();
-                if matches!(
-                    lower.as_str(),
-                    "content-length" | "transfer-encoding" | "connection"
-                ) {
-                    continue;
-                }
-                if let Ok(value) = HeaderValue::try_from(v) {
-                    builder = builder.header(k, value);
-                }
-            }
-            // Cache busting matches the rest of the dev server — plugin
-            // responses are dev-only artefacts; never let a browser
-            // cache a stale plugin emission across reloads.
-            builder = builder.header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-            match builder.body(axum::body::Body::from(body_bytes)) {
-                Ok(resp) => PluginDispatchAttempt::Responded(resp),
-                Err(e) => PluginDispatchAttempt::Errored(plugin_error_response(
-                    &format!("failed to build response from plugin `{}`: {e}", reg.plugin,),
-                    mode,
-                )),
-            }
-        }
-        Ok(PluginDispatchOutcome::Passthrough) => PluginDispatchAttempt::Passthrough,
-        Err(err) => PluginDispatchAttempt::Errored(plugin_error_response(
-            &format!(
-                "plugin `{}` dev-middleware failed: {}",
-                err.plugin, err.message,
-            ),
-            mode,
-        )),
-    }
 }
 
 /// Dispatch one request through the SSR layer (issue #367 / Gap 1).
@@ -1786,53 +1760,12 @@ fn ssr_error_response(url_path: &str, message: &str, mode: crate::ServerMode) ->
 
 /// Origin gate for non-GET/HEAD requests reaching the dynamic dispatch
 /// surfaces — plugin dev-middleware, embed handlers, request-time SSR
-/// (issue #931 / #919). Returns `Some(403)` when the server is
-/// LAN-exposed (host validation enforced) and either:
-///
-/// - the `Origin` header is absent on a non-GET request (fail closed —
-///   browsers always send `Origin` on cross-origin non-GET requests, so
-///   absence implies a non-browser LAN client bypassing CORS), or
-/// - the request carries an `Origin` whose host fails the same allowlist
-///   the Host-header layer uses.
-///
-/// Returns `None` (allow) when:
-///
-/// - the method is GET/HEAD (safe methods rely on the Host check), or
-/// - the server is bound to loopback (default — zero behaviour change).
-///
-/// Static read paths (`/assets`, dist/public fallbacks, livereload) are
-/// exempt by construction — this helper is only invoked at the three
-/// dynamic-dispatch sites inside [`serve_page`].
+/// (issue #931 / #919). Thin `AppState`-shaped wrapper over
+/// [`crate::plugin_middleware::origin_gate`] (issue #1544), which owns the
+/// actual logic so the preview server can call the same gate without
+/// building an `AppState`.
 fn origin_rejection(state: &AppState, method: &Method, headers: &HeaderMap) -> Option<Response> {
-    if matches!(*method, Method::GET | Method::HEAD) {
-        return None;
-    }
-    let validation = &state.host_validation;
-    if !validation.is_enforced() {
-        return None;
-    }
-    let Some(value) = headers.get(header::ORIGIN) else {
-        // When enforcement is on, a non-GET request that omits the Origin
-        // header cannot be a browser cross-origin request (browsers always
-        // send it). Fail closed: return 403 so non-browser LAN clients
-        // cannot bypass the CSRF guard by dropping the header.
-        return Some(crate::host_validation::missing_origin_forbidden_response(
-            state.mode,
-        ));
-    };
-    // Present-but-unreadable (non-ASCII) and disallowed origins both
-    // fail closed.
-    let allowed = value
-        .to_str()
-        .map(|origin| validation.origin_allowed(origin))
-        .unwrap_or(false);
-    if allowed {
-        return None;
-    }
-    let shown = value.to_str().unwrap_or("<non-ASCII>");
-    Some(crate::host_validation::origin_forbidden_response(
-        shown, state.mode,
-    ))
+    origin_gate(&state.host_validation, method, headers)
 }
 
 /// Build the `405 Method Not Allowed` response returned when a non-GET
@@ -1847,61 +1780,6 @@ fn method_not_allowed_get_head() -> Response {
         .header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))
         .body(axum::body::Body::empty())
         .expect("static 405 response builds")
-}
-
-/// Convert an axum [`HeaderMap`] into the flat string map shape the
-/// plugin host wire protocol expects. Header values that are not valid
-/// UTF-8 are dropped — the JS-side handler receives a string-keyed
-/// object and cannot represent arbitrary bytes. Multi-valued headers
-/// keep the last seen value (the protocol does not currently model
-/// repeated headers; see the dev-middleware contract in
-/// `crates/zfb/js/plugin-host.mjs`).
-fn headermap_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
-    let mut out = HashMap::with_capacity(headers.len());
-    for (name, value) in headers.iter() {
-        if let Ok(v) = value.to_str() {
-            out.insert(name.as_str().to_string(), v.to_string());
-        }
-    }
-    out
-}
-
-/// Convert an inbound request body (already drained into [`Bytes`]) to
-/// the `Option<String>` shape the plugin host wire protocol expects.
-/// Empty bodies become `None`; non-UTF-8 bodies are dropped (see the
-/// note in [`dispatch_plugin`] about binary uploads being a separate
-/// extension).
-fn body_bytes_to_utf8_string(body: &Bytes) -> Option<String> {
-    if body.is_empty() {
-        return None;
-    }
-    std::str::from_utf8(body).ok().map(|s| s.to_string())
-}
-
-fn plugin_error_response(message: &str, mode: crate::ServerMode) -> Response {
-    // Dev mode: verbose body with the plugin error detail. Preview/Embed: generic
-    // body only; full detail is logged server-side so clients never see internal info.
-    let body = if matches!(mode, crate::ServerMode::Dev) {
-        format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev — plugin error</title></head><body><h1>Plugin dev-middleware error</h1><pre>{}</pre></body></html>",
-            escape_html(message),
-        )
-    } else {
-        tracing::error!(message, "plugin dev-middleware error");
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Internal Server Error</title></head><body><h1>Internal Server Error</h1></body></html>".to_string()
-    };
-    let mut resp = (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        [(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("text/html; charset=utf-8"),
-        )],
-        body,
-    )
-        .into_response();
-    resp.headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    resp
 }
 
 /// Generate the lookup-key candidates for a given URL path.
@@ -2096,6 +1974,9 @@ mod tests {
     use super::*;
     use crate::inject::LIVERELOAD_TAG;
     use crate::livereload::ReloadEvent;
+    use crate::plugin_middleware::{
+        PluginDispatchOutcome, PluginRegistration, PluginRequest, PluginResponseEncoding,
+    };
     use axum::body::{to_bytes, Body};
     use axum::http::{Request, StatusCode};
     use tokio::sync::broadcast;
@@ -2122,6 +2003,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             // Tests use bogus/temp paths — canonical roots are not precomputed.
             canonical_html_root: None,
             canonical_dist_root: None,
@@ -2150,6 +2032,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2233,6 +2116,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2309,6 +2193,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2375,6 +2260,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2441,6 +2327,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -2508,6 +2395,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: Some(dev_assets_dir.path().to_path_buf()),
@@ -3006,6 +2894,7 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -3074,6 +2963,7 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -3123,6 +3013,7 @@ mod tests {
             css_bundle_url: Some(make_css_bundle_url("/assets/styles.css")),
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -3222,6 +3113,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -3457,20 +3349,6 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_string(resp).await;
         assert!(body.contains("cached"), "body: {body}");
-    }
-
-    #[tokio::test]
-    async fn body_bytes_to_utf8_string_drops_empty_and_non_utf8() {
-        // Empty body collapses to None.
-        assert!(body_bytes_to_utf8_string(&Bytes::new()).is_none());
-        // UTF-8 round-trips.
-        assert_eq!(
-            body_bytes_to_utf8_string(&Bytes::from("hello")),
-            Some("hello".to_string())
-        );
-        // Non-UTF-8 is dropped (binary upload is a future extension).
-        let bad = Bytes::from(vec![0xff, 0xfe, 0xfd]);
-        assert!(body_bytes_to_utf8_string(&bad).is_none());
     }
 
     // ---- base prefix mounting (issue #229) -------------------------------
@@ -4062,6 +3940,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -4123,6 +4002,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -4186,6 +4066,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -4243,6 +4124,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -4295,6 +4177,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -4351,6 +4234,7 @@ mod tests {
             css_bundle_url: None,
             host_validation: crate::host_validation::HostValidation::disabled(),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,
@@ -4414,6 +4298,7 @@ mod tests {
                 crate::ServerMode::Dev,
             ),
             render_on_request_hook: None,
+            redirects: None,
             canonical_html_root: None,
             canonical_dist_root: None,
             dev_assets_root: None,

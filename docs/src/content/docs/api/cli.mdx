@@ -132,9 +132,27 @@ Serve a previously built site locally. Run `zfb build` first.
 zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 ```
 
+In static mode (no adapter, or `adapter: "none"`), `zfb preview` also runs the SAME two request-time layers `zfb dev` does, ahead of the plain static-file waterfall: a plugin's `previewMiddleware` registrations, then `public/_redirects` (see [Static Assets — `_redirects`](../concepts/static-assets.mdx#_redirects-—-redirect-rewrite-rules)). A plugin claiming a URL always wins over a `_redirects` rule for that same URL.
+
+Only `GET`/`HEAD` requests reach the `_redirects` matcher — mirrors real Workers Static Assets, which only ever probes the asset layer (and therefore `_redirects`) for those two methods. Any other method either reaches a plugin handler (which accepts every method) or 405s; a rule that would otherwise fire for `GET /old-page` never fires for `POST /old-page`.
+
+<Note title="_redirects and a custom `base`">
+
+Static preview serves whatever `zfb build` emitted under the selected output directory, and does not know about your project's `base` prefix — it has no prefix-stripping layer of its own. So `_redirects` rule *sources* are matched against the **full request path**, exactly as written in the file — they are never rewritten to add or strip a `base` prefix. If `zfb.config.ts` sets `base: "/pj/site/"`, a rule meant to redirect `/pj/site/old-page` must be written with the prefix included (`/pj/site/old-page /pj/site/new-page 301`), not as `/old-page /new-page 301`.
+
+This is specific to static preview. `zfb dev`'s router is mounted *under* `base` (issue #229), so it matches `_redirects` sources against the prefix-**stripped** path — the same rule would need to be written without the prefix (`/old-page /new-page 301`) to fire in dev. A project combining `base` with `_redirects` today needs mode-aware rule sources; this is a known gap, not a deliberate design choice ([#1562](https://github.com/Takazudo/zudo-front-builder/issues/1562)).
+
+</Note>
+
 When `zfb.config.json`'s `adapter` field names a supported adapter (e.g. `@takazudo/zfb-adapter-cloudflare`), `zfb preview` hands off to `wrangler dev` instead of zfb's own static server — the output directory selected from `--outdir` or config `outDir` then only pre-checks that the directory exists, since wrangler's own config controls what it actually serves. See [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx).
 
 Adapter preview runs a pre-flight `pnpm exec wrangler --version` check before handing off. Set `ZFB_SKIP_WRANGLER_VERSION_CHECK=1` only as a temporary escape hatch when that pin is being updated.
+
+<Caution title="Adapter mode: zfb serves nothing">
+
+Under adapter mode, `wrangler dev` serves the whole site — zfb never boots its own router, and no plugin host is spawned to check for `previewMiddleware` at all. `_redirects` still works there, but it's `wrangler`/Workers Static Assets honouring the file natively, not zfb's `_redirects` engine. A `previewMiddleware` registration has no wrangler equivalent and simply does not run under adapter-mode preview — if your project has plugins configured, `zfb preview` prints a one-time warning to that effect before handing off.
+
+</Caution>
 
 ### Flags
 

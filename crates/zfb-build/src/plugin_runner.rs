@@ -1,11 +1,13 @@
 //! Plugin host subprocess + lifecycle hook dispatcher (Sub 3 / #108,
 //! extended in Astro-migration epic #253 / #255 with the new `setup`
-//! hook).
+//! hook, and in Preview Parity epic #1541 / sub-issue #1542 with the
+//! `previewMiddleware` hook + `"preview"` setup command).
 //!
 //! Owns one long-lived `node crates/zfb/js/plugin-host.mjs` process for
-//! the lifetime of a build (or dev session) and dispatches the four
-//! lifecycle hooks — `setup`, `preBuild`, `postBuild`, `devMiddleware` —
-//! over a newline-delimited JSON stdio protocol.
+//! the lifetime of a build (or dev / preview session) and dispatches
+//! the lifecycle hooks — `setup`, `preBuild`, `postBuild`,
+//! `devMiddleware`, `previewMiddleware` — over a newline-delimited JSON
+//! stdio protocol.
 //!
 //! `setup` is the newest addition (#255). It runs once per host boot,
 //! before `preBuild`, and lets a plugin register virtual modules,
@@ -59,6 +61,12 @@
 //!   the list of `(path, handler_id)` pairs the dev server should
 //!   route into the plugin host. [`PluginHost::invoke_dev_handler`]
 //!   dispatches one HTTP request to a registered handler.
+//! - Preview middleware (#1542): [`PluginHost::register_preview_middlewares`]
+//!   / [`PluginHost::invoke_preview_handler`] mirror the dev-middleware
+//!   pair above byte-for-byte in wire shape ([`DevRegisterContext`],
+//!   [`DevRegistration`], [`DevRequest`], [`DevResponse`] are all
+//!   shared) — only the plugin-module hook (`previewMiddleware` vs
+//!   `devMiddleware`) and JS-host message `kind` differ.
 //! - [`PluginHost::shutdown`] sends a `shutdown` command, waits the
 //!   child, and joins the reader task (bounded). It is idempotent — the
 //!   host is `Clone` and only the first caller across all clones tears
@@ -210,8 +218,8 @@ pub struct DevRegisterContext {
 #[serde(rename_all = "camelCase")]
 pub struct SetupHookContext {
     pub project_root: PathBuf,
-    /// `"build"` or `"dev"` — string form matches the `command` field
-    /// the JS-side `SetupContext` exposes.
+    /// `"build"`, `"dev"`, or `"preview"` (#1542) — string form matches
+    /// the `command` field the JS-side `SetupContext` exposes.
     pub command: String,
     pub config: serde_json::Value,
 }
@@ -694,14 +702,7 @@ impl PluginHost {
         &self,
         ctx: &DevRegisterContext,
     ) -> Result<Vec<DevRegistration>> {
-        #[derive(Deserialize)]
-        struct Reply {
-            registrations: Vec<DevRegistration>,
-        }
-        let reply: Reply = self
-            .request_typed("devRegister", serde_json::json!({ "ctx": ctx }))
-            .await?;
-        Ok(reply.registrations)
+        self.register_middlewares_via("devRegister", ctx).await
     }
 
     /// Invoke a previously-registered dev-middleware handler.
@@ -710,9 +711,78 @@ impl PluginHost {
         handler_id: &str,
         request: DevRequest,
     ) -> Result<DevResponse> {
+        self.invoke_middleware_via("devInvoke", handler_id, request)
+            .await
+    }
+
+    /// Call `previewMiddleware(ctx)` on every plugin and collect the
+    /// `(path, handlerId)` registrations the preview server should
+    /// route (#1542). Mirrors [`PluginHost::register_dev_middlewares`]
+    /// end-to-end — same wire shapes ([`DevRegisterContext`],
+    /// [`DevRegistration`]) — the only difference is which plugin-module
+    /// hook fires (`previewMiddleware`, not `devMiddleware`) and which
+    /// JS-host message `kind` is sent (`previewRegister`, not
+    /// `devRegister`), both threaded through the shared
+    /// [`PluginHost::register_middlewares_via`] helper. A plugin
+    /// declaring only `devMiddleware` produces NO registration here, and
+    /// vice versa — the two hooks are dispatched independently (#1542
+    /// baked decision 1: explicit per-mode opt-in, not devMiddleware-reuse).
+    pub async fn register_preview_middlewares(
+        &self,
+        ctx: &DevRegisterContext,
+    ) -> Result<Vec<DevRegistration>> {
+        self.register_middlewares_via("previewRegister", ctx).await
+    }
+
+    /// Invoke a previously-registered preview-middleware handler.
+    /// Mirrors [`PluginHost::invoke_dev_handler`] — same [`DevRequest`] /
+    /// [`DevResponse`] wire shapes, dispatched via the JS host's
+    /// `previewInvoke` message kind (via the shared
+    /// [`PluginHost::invoke_middleware_via`] helper) against the handler
+    /// map the host populated from `previewRegister` (kept separate from
+    /// the dev-middleware handler map on the JS side, so a preview
+    /// handler id can never resolve to a dev handler or vice versa).
+    pub async fn invoke_preview_handler(
+        &self,
+        handler_id: &str,
+        request: DevRequest,
+    ) -> Result<DevResponse> {
+        self.invoke_middleware_via("previewInvoke", handler_id, request)
+            .await
+    }
+
+    /// Shared implementation behind [`PluginHost::register_dev_middlewares`]
+    /// / [`PluginHost::register_preview_middlewares`] (#1542). `kind` is
+    /// the JS-host message kind (`"devRegister"` or `"previewRegister"`)
+    /// — everything else about the round-trip (wire shape, reply
+    /// decoding) is identical between the two hooks.
+    async fn register_middlewares_via(
+        &self,
+        kind: &str,
+        ctx: &DevRegisterContext,
+    ) -> Result<Vec<DevRegistration>> {
+        #[derive(Deserialize)]
+        struct Reply {
+            registrations: Vec<DevRegistration>,
+        }
+        let reply: Reply = self
+            .request_typed(kind, serde_json::json!({ "ctx": ctx }))
+            .await?;
+        Ok(reply.registrations)
+    }
+
+    /// Shared implementation behind [`PluginHost::invoke_dev_handler`] /
+    /// [`PluginHost::invoke_preview_handler`] (#1542). `kind` is the
+    /// JS-host message kind (`"devInvoke"` or `"previewInvoke"`).
+    async fn invoke_middleware_via(
+        &self,
+        kind: &str,
+        handler_id: &str,
+        request: DevRequest,
+    ) -> Result<DevResponse> {
         let resp: DevResponse = self
             .request_typed(
-                "devInvoke",
+                kind,
                 serde_json::json!({
                     "handlerId": handler_id,
                     "request": request,
@@ -1257,6 +1327,184 @@ mod tests {
         host.shutdown().await.ok();
     }
 
+    // --- #1542 previewMiddleware integration tests ---------------------------
+
+    #[tokio::test]
+    async fn host_preview_middleware_register_and_invoke_round_trip() {
+        // Mirrors `host_dev_middleware_register_and_invoke_round_trip`
+        // above byte-for-byte, but through the `previewMiddleware` hook
+        // and the `previewRegister`/`previewInvoke` message kinds
+        // (#1542) — proves the preview path is a genuine end-to-end
+        // mirror of the dev path, not a stub.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("preview-middleware.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "echo-preview-mw",
+              previewMiddleware({ register }) {
+                register("/echo", (req) => ({
+                  status: 200,
+                  headers: { "x-method": req.method },
+                  body: `hello ${req.url}`,
+                }));
+              },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let module_url = file_url_for_test(&plugin_path);
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "echo-preview-mw".into(),
+                module: module_url,
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+
+        let regs = host
+            .register_preview_middlewares(&DevRegisterContext {
+                project_root: tmp.path().to_path_buf(),
+                config: serde_json::json!({}),
+            })
+            .await
+            .expect("register ok");
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0].path, "/echo");
+
+        let resp = host
+            .invoke_preview_handler(
+                &regs[0].handler_id,
+                DevRequest {
+                    method: "GET".into(),
+                    url: "/echo?x=1".into(),
+                    headers: HashMap::new(),
+                    body: None,
+                },
+            )
+            .await
+            .expect("invoke ok");
+        assert!(!resp.passthrough);
+        assert_eq!(resp.status, 200);
+        assert_eq!(
+            resp.headers.get("x-method").map(|s| s.as_str()),
+            Some("GET")
+        );
+        assert_eq!(resp.body, "hello /echo?x=1");
+
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn preview_and_dev_middleware_hooks_are_dispatched_independently() {
+        // #1542 baked decision 1: a NEW `previewMiddleware` hook, NOT
+        // devMiddleware-reuse. A plugin declaring only `devMiddleware`
+        // must produce zero registrations under `previewRegister`, and
+        // a plugin declaring only `previewMiddleware` must produce zero
+        // registrations under `devRegister` — the two hooks are
+        // dispatched independently, never conflated. Also locks in
+        // invoke-time isolation: a handler_id minted by one hook must
+        // fail (not cross-dispatch) when passed to the other hook's
+        // invoke method.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("split-middleware.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "split-mw",
+              devMiddleware({ register }) {
+                register("/dev-only", () => ({ status: 200, body: "dev" }));
+              },
+              previewMiddleware({ register }) {
+                register("/preview-only", () => ({ status: 200, body: "preview" }));
+              },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "split-mw".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+
+        let ctx = DevRegisterContext {
+            project_root: tmp.path().to_path_buf(),
+            config: serde_json::json!({}),
+        };
+        let dev_regs = host
+            .register_dev_middlewares(&ctx)
+            .await
+            .expect("devRegister ok");
+        assert_eq!(dev_regs.len(), 1);
+        assert_eq!(dev_regs[0].path, "/dev-only");
+
+        let preview_regs = host
+            .register_preview_middlewares(&ctx)
+            .await
+            .expect("previewRegister ok");
+        assert_eq!(preview_regs.len(), 1);
+        assert_eq!(preview_regs[0].path, "/preview-only");
+
+        // Isolation must hold at INVOKE time too, not just registration
+        // time — a dev handler_id must never resolve through
+        // `invoke_preview_handler` (and vice versa), because the JS host
+        // keeps the two hooks' handler maps entirely separate.
+        let dev_via_preview = host
+            .invoke_preview_handler(
+                &dev_regs[0].handler_id,
+                DevRequest {
+                    method: "GET".into(),
+                    url: "/dev-only".into(),
+                    headers: HashMap::new(),
+                    body: None,
+                },
+            )
+            .await;
+        assert!(
+            dev_via_preview.is_err(),
+            "a dev handler_id must NOT resolve via invoke_preview_handler"
+        );
+
+        let preview_via_dev = host
+            .invoke_dev_handler(
+                &preview_regs[0].handler_id,
+                DevRequest {
+                    method: "GET".into(),
+                    url: "/preview-only".into(),
+                    headers: HashMap::new(),
+                    body: None,
+                },
+            )
+            .await;
+        assert!(
+            preview_via_dev.is_err(),
+            "a preview handler_id must NOT resolve via invoke_dev_handler"
+        );
+
+        host.shutdown().await.ok();
+    }
+
     // --- #255 setup-hook integration tests ----------------------------------
 
     #[tokio::test]
@@ -1632,6 +1880,140 @@ mod tests {
             "SetupContext leaked forbidden surfaces: {leaked}",
         );
         host.shutdown().await.ok();
+    }
+
+    // --- #1542 preview setup-lifecycle integration tests ----------------------
+
+    #[tokio::test]
+    async fn preview_setup_drives_setup_hook_with_preview_command() {
+        // #1542 decision 2: `run_preview_setup` (crate::plugin_registries)
+        // fires the shared JS `setup` handler with `ctx.command ===
+        // "preview"` — same wire kind as build/dev, distinguished only
+        // by the new `SetupCommand::Preview` variant — so plugin-side
+        // state init runs under preview too.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("preview-setupper.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "preview-setupper",
+              setup({ command }) {
+                if (command !== "preview") {
+                  throw new Error("expected preview, got " + command);
+                }
+              },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "preview-setupper".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+
+        crate::plugin_registries::run_preview_setup(
+            Some(&host),
+            tmp.path(),
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("preview setup must see command == \"preview\"");
+
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn preview_setup_with_no_host_is_a_no_op() {
+        // `run_preview_setup(None, ...)` mirrors `run_plugin_setup`'s
+        // "no host, no-op" handling for plugin-less projects — Level 1,
+        // no node/subprocess required.
+        let root = std::path::PathBuf::from("/proj");
+        let regs = crate::plugin_registries::run_preview_setup(None, &root, &serde_json::json!({}))
+            .await
+            .expect("no-host preview setup must succeed");
+        assert!(regs.aliases.is_empty());
+        assert!(regs.virtual_modules.is_empty());
+        assert!(regs.injected_routes.is_empty());
+        assert!(regs.client_entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn preview_lifecycle_never_fires_pre_build() {
+        // #1542 decision 3: `preBuild` does NOT fire under preview. There
+        // is no Rust-side call path from the preview lifecycle
+        // (`run_preview_setup` + `register_preview_middlewares`) into
+        // `run_pre_build` — this test locks that in behaviourally: a
+        // plugin's `preBuild` hook writes a marker file, and driving
+        // ONLY the preview-side lifecycle must never touch it.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("preview-no-prebuild.mjs");
+        let marker = tmp.path().join("prebuild-marker.txt");
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync }} from "node:fs";
+            export default {{
+              name: "preview-no-prebuild",
+              setup() {{}},
+              preBuild() {{
+                writeFileSync({marker:?}, "fired");
+              }},
+              previewMiddleware({{ register }}) {{
+                register("/x", () => ({{ status: 200 }}));
+              }},
+            }};
+            "#,
+            marker = marker.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "preview-no-prebuild".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+
+        crate::plugin_registries::run_preview_setup(
+            Some(&host),
+            tmp.path(),
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("preview setup ok");
+        let regs = host
+            .register_preview_middlewares(&DevRegisterContext {
+                project_root: tmp.path().to_path_buf(),
+                config: serde_json::json!({}),
+            })
+            .await
+            .expect("previewRegister ok");
+        assert_eq!(regs.len(), 1);
+
+        host.shutdown().await.ok();
+
+        assert!(
+            !marker.exists(),
+            "preBuild must NOT fire anywhere in the preview lifecycle"
+        );
     }
 
     // --- #262 routes-manifest tests ------------------------------------------

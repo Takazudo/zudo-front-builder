@@ -57,6 +57,8 @@ Tailwind v4 の CSS ファーストな設定は `global.css` 内の `@theme` デ
 
 `tailwind: { enabled: false }` を設定すると `AuthoredCssEngine` に切り替わり、あなたが書いた `styles/global.css` がそのまま素通りします。Tailwind の `@import` も、ユーティリティのスキャンも、preflight のリセットも、サブプロセスもありません。CSS Modules のコンパイル、クラス名のハッシュ化、アセットの出力はすべて変わらず動作し続け、Tailwind 固有のステップだけがスキップされます。
 
+Tailwind が有効な間、ビルドパイプラインは CSS エントリの隣に `zfb-tailwind-entry-*.css` という名前の一時エントリファイルを（追跡対象のソースツリー内に）生成し、ビルド完了後に削除します。新規にスキャフォールドしたプロジェクトはこれを自動的に無視します。このグロブが導入される前にスキャフォールドしたプロジェクトに Tailwind を追加する場合は、`.gitignore` に `**/zfb-tailwind-entry-*.css` を追加してください。
+
 ## コンポーネントスコープなスタイリング
 
 コンポーネントレベルのスタイリングには、十分にサポートされたパターンが 2 つあります。Tailwind ユーティリティクラスと CSS Modules です。

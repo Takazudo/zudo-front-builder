@@ -2,3 +2,7 @@ node_modules
 dist
 .zfb-build
 .DS_Store
+
+# Tailwind entry temp file synthesised by zfb-css next to the CSS entry
+# (see zfb-css's ENTRY_TMP_PREFIX/ENTRY_TMP_SUFFIX).
+**/zfb-tailwind-entry-*.css

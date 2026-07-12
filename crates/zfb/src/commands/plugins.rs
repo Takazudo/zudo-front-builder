@@ -20,7 +20,7 @@ use zfb_build::{
 };
 use zfb_server::{
     DevMiddlewareDispatcher, DevMiddlewareSet, PluginDispatchError, PluginDispatchOutcome,
-    PluginRegistration, PluginRequest, PluginResponse, PluginResponseEncoding,
+    PluginRegistration, PluginRequest, PluginResponse, PluginResponseEncoding, ServerMode,
 };
 
 /// Convert `Config.plugins` into the wire shape the plugin host wants.
@@ -191,8 +191,17 @@ pub(crate) async fn run_plugin_setup(
 /// Adapter that bridges a [`PluginHost`] to the dev-server's
 /// [`DevMiddlewareDispatcher`] trait so the server doesn't need to
 /// know about the build crate's plugin host directly.
+///
+/// `mode` picks which plugin-host hook a dispatch call round-trips
+/// through — [`ServerMode::Dev`] uses `devInvoke`
+/// ([`PluginHost::invoke_dev_handler`]); [`ServerMode::Preview`] (and
+/// `Embed`, which shares Preview's shape) use `previewInvoke`
+/// ([`PluginHost::invoke_preview_handler`]) instead (issue #1545). The
+/// host keeps the two handler maps separate, so this has to be threaded
+/// per dispatcher instance rather than inferred from the handler id.
 struct HostDispatcher {
     host: PluginHost,
+    mode: ServerMode,
 }
 
 #[async_trait]
@@ -208,20 +217,22 @@ impl DevMiddlewareDispatcher for HostDispatcher {
             headers: request.headers,
             body: request.body,
         };
-        let resp: DevResponse = self
-            .host
-            .invoke_dev_handler(handler_id, req)
-            .await
-            .map_err(|err| {
-                let pe = zfb_build::extract_plugin_error(&err);
-                let plugin = pe
-                    .map(|p| p.plugin.clone())
-                    .unwrap_or_else(|| "(host)".to_string());
-                let message = pe
-                    .map(|p| p.message.clone())
-                    .unwrap_or_else(|| format!("{err:#}"));
-                PluginDispatchError { plugin, message }
-            })?;
+        let resp: DevResponse = match self.mode {
+            ServerMode::Dev => self.host.invoke_dev_handler(handler_id, req).await,
+            ServerMode::Preview | ServerMode::Embed => {
+                self.host.invoke_preview_handler(handler_id, req).await
+            }
+        }
+        .map_err(|err| {
+            let pe = zfb_build::extract_plugin_error(&err);
+            let plugin = pe
+                .map(|p| p.plugin.clone())
+                .unwrap_or_else(|| "(host)".to_string());
+            let message = pe
+                .map(|p| p.message.clone())
+                .unwrap_or_else(|| format!("{err:#}"));
+            PluginDispatchError { plugin, message }
+        })?;
         if resp.passthrough {
             return Ok(PluginDispatchOutcome::Passthrough);
         }
@@ -240,24 +251,32 @@ impl DevMiddlewareDispatcher for HostDispatcher {
     }
 }
 
-/// Register every plugin's `devMiddleware` hook against the supplied
-/// host and produce the [`DevMiddlewareSet`] the dev server consumes.
-/// Returns `Ok(None)` when no plugin declared the hook.
+/// Register every plugin's `devMiddleware` (Dev mode) or
+/// `previewMiddleware` (Preview/Embed mode) hook against the supplied
+/// host and produce the [`DevMiddlewareSet`] the dev/preview server
+/// consumes. Returns `Ok(None)` when no plugin declared the relevant
+/// hook.
+///
+/// `mode` is the only per-caller difference (issue #1545): it selects
+/// `devRegister`/`devInvoke` vs `previewRegister`/`previewInvoke` both
+/// here and in the [`HostDispatcher`] this function builds.
 pub async fn build_dev_middleware_set(
     host: &PluginHost,
     project_root: &std::path::Path,
     config: &Config,
+    mode: ServerMode,
 ) -> Result<Option<DevMiddlewareSet>> {
     let ctx = DevRegisterContext {
         project_root: project_root.to_path_buf(),
         config: serde_json::to_value(config)
             .context("plugin lifecycle: serialise config for devMiddleware ctx")?,
     };
-    let registrations = host
-        .register_dev_middlewares(&ctx)
-        .await
-        .map_err(zfb_build::annotate_with_plugin_error)
-        .context("devMiddleware lifecycle hook")?;
+    let registrations = match mode {
+        ServerMode::Dev => host.register_dev_middlewares(&ctx).await,
+        ServerMode::Preview | ServerMode::Embed => host.register_preview_middlewares(&ctx).await,
+    }
+    .map_err(zfb_build::annotate_with_plugin_error)
+    .context("devMiddleware/previewMiddleware lifecycle hook")?;
     if registrations.is_empty() {
         return Ok(None);
     }
@@ -269,8 +288,10 @@ pub async fn build_dev_middleware_set(
             plugin: r.plugin,
         })
         .collect();
-    let dispatcher: Arc<dyn DevMiddlewareDispatcher> =
-        Arc::new(HostDispatcher { host: host.clone() });
+    let dispatcher: Arc<dyn DevMiddlewareDispatcher> = Arc::new(HostDispatcher {
+        host: host.clone(),
+        mode,
+    });
     Ok(Some(DevMiddlewareSet {
         registrations: Arc::new(registrations),
         dispatcher,

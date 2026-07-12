@@ -87,12 +87,12 @@ recipe here be annoying to find and adapt?" — the LLM handles that. The right
 question is "is this something 100% of zfb consumers would use the same way,
 with no legitimate reason to deviate?"
 
-**The narrow plugin API zfb ships today** — the four lifecycle hooks, virtual
+**The narrow plugin API zfb ships today** — the five lifecycle hooks, virtual
 modules, import aliases, injected routes, and client entries documented in
 [Plugins](./plugins.mdx) — is exactly that narrow exception. The `setup`
 hook's virtual module, alias, injected-route, and client-entry registrations,
-the `preBuild` / `postBuild` file-generation hooks, and the `devMiddleware`
-handler cover patterns that are structurally inseparable from the build pipeline: things a consumer
+the `preBuild` / `postBuild` file-generation hooks, and the `devMiddleware` /
+`previewMiddleware` handlers cover patterns that are structurally inseparable from the build pipeline: things a consumer
 cannot implement as a recipe without forking the engine itself. The surface is
 deliberately closed elsewhere — no `addRemarkPlugin`, no `addModuleTransform`,
 no `onModuleLoad` — because those patterns belong in recipes, not in a stable
@@ -131,7 +131,7 @@ for the in-tree visitor path.
 - [Engine vs Framework](./engine-vs-framework.mdx) — the six primitives
   zfb commits to, and the line between engine and framework concerns.
 - [Markdown Features](../markdown-features/index.mdx) — the opt-in extras catalog.
-- [Plugins](./plugins.mdx) — the narrow exception: the four lifecycle hooks
+- [Plugins](./plugins.mdx) — the narrow exception: the five lifecycle hooks
   and what they do and do not cover.
 - [Choosing zfb](./choosing-zfb.mdx) — when the narrow-on-purpose tradeoff
   is the right call for your project, and when it is not.

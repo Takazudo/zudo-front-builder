@@ -43,6 +43,8 @@ export {
   type ZfbDevMiddlewareResponse,
   type ZfbPlugin,
   type ZfbPluginLogger,
+  type ZfbPreviewMiddlewareContext,
+  type ZfbPreviewMiddlewareHandler,
 } from "./plugins.js";
 
 export { slugify, SlugAllocator } from "./slugify.js";

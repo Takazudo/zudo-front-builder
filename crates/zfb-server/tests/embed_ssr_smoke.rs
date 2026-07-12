@@ -130,6 +130,7 @@ async fn boot_with_plugins(
         css_bundle_url: None,
         host_validation: zfb_server::HostValidation::disabled(),
         render_on_request_hook: None,
+        redirects: None,
         // Test uses temp dirs — canonical roots not precomputed.
         canonical_html_root: None,
         canonical_dist_root: None,

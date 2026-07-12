@@ -67,7 +67,7 @@
 #![cfg_attr(not(feature = "embed_v8"), allow(unused_imports, dead_code))]
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -87,8 +87,9 @@ use zfb_build::{
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
 use zfb_server::{
-    outcome_to_events, serve_with_listener, InjectedRouteSet, PageCache, ReloadEvent, ServeOpts,
-    SsrDispatcher, SsrRouteRecord, SsrRouteSet, SsrRoutesHandle,
+    outcome_to_events, serve_with_listener, InjectedRouteSet, PageCache, Redirects,
+    RedirectsHandle, ReloadEvent, ServeOpts, SsrDispatcher, SsrRouteRecord, SsrRouteSet,
+    SsrRoutesHandle,
 };
 
 use crate::cli::DevArgs;
@@ -185,6 +186,12 @@ fn derive_watch_roots(cfg: &config::Config) -> Vec<PathBuf> {
         .iter()
         .map(|c| normalize_relative(&c.path))
         .filter(|p| !p.as_os_str().is_empty())
+        // #1550 — an out-of-root collection (`allowOutsideRoot`, a `..`
+        // escape) must NOT ride the relative watch-root list: a literal
+        // `project_root.join("../x")` keeps a `..` component that never
+        // matches notify's canonical event paths. Those roots are routed to
+        // the absolute extras channel via [`ResolvedRoots`] instead.
+        .filter(|p| !collection_path_escapes_root(p))
         .collect();
     // Shallow-first so a parent collection root lands before its
     // children and the coverage check below collapses the family to
@@ -197,6 +204,175 @@ fn derive_watch_roots(cfg: &config::Config) -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+/// Does a project-root-relative collection path escape the project root
+/// via `..`? A purely LEXICAL check (no filesystem access): walk the
+/// components tracking depth, and report an escape the moment a
+/// `ParentDir` would pop above the root (or an absolute component is
+/// seen). `.` components are ignored (already stripped by
+/// [`normalize_relative`], but tolerated here too).
+///
+/// This is the routing predicate for #1550. An escaping collection path
+/// is only reachable at all because wave-1's `allowOutsideRoot` opt-in
+/// let it pass config validation (#1549); it must ride the absolute
+/// extras watch channel rather than the relative watch-root list.
+fn collection_path_escapes_root(path: &Path) -> bool {
+    let mut depth: i32 = 0;
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return true;
+                }
+            }
+            // An absolute component means this was never an in-root
+            // project-relative path in the first place.
+            Component::Prefix(_) | Component::RootDir => return true,
+            Component::Normal(_) => depth += 1,
+        }
+    }
+    false
+}
+
+/// Collapse `.` / `..` components lexically (no filesystem access). Used
+/// as the fallback when [`canonicalize_or_lexical`]'s target is absent.
+fn lexical_normalize(abs: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in abs.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Pop the last real segment; a root/prefix stays put.
+                if !out.pop() {
+                    out.push(comp.as_os_str());
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Canonicalise `abs` (an already-absolute path), falling back to a
+/// LEXICAL `..`-collapse when the target does not exist yet.
+///
+/// `notify` delivers canonical event paths, so an out-of-root collection
+/// root must be canonical to compare against them. But canonicalisation
+/// hits the filesystem and FAILS for a directory the user has not created
+/// yet — we must not panic or drop the root (dropping it would silently
+/// disable watching once the dir appears). The lexical fallback yields a
+/// stable, deterministic absolute path for the missing-target warning and
+/// the manifest digest; it won't match live events until the dir exists
+/// AND `zfb dev` is restarted — the same "restart after creating" contract
+/// the extras channel already documents for a missing target.
+fn canonicalize_or_lexical(abs: &Path) -> PathBuf {
+    abs.canonicalize()
+        .unwrap_or_else(|_| lexical_normalize(abs))
+}
+
+/// Boot-time resolved-root inventory (issue #1550).
+///
+/// Built ONCE at dev boot from `(project_root, cfg)` and threaded through
+/// every site that compares a configured collection root against a
+/// filesystem event path. The problem it solves: `notify` delivers
+/// CANONICAL event paths (macOS canonicalises `/tmp` → `/private/tmp`, and
+/// any symlink in the path is resolved), whereas
+/// `project_root.join("../pkg/src")` keeps a literal `..` component — so a
+/// lexical `strip_prefix` / `starts_with` of an out-of-root collection
+/// root against an event path never matches. That silently degraded three
+/// dev sites (`derive_tick_candidates` narrowing, `seed_frontmatter_hashes`
+/// keying, `make_discovery_hook` created-file acceptance) for a collection
+/// living outside the project root.
+///
+/// Each out-of-root root is canonicalised exactly ONCE here (lexical
+/// fallback for a not-yet-created dir) and read back everywhere — no
+/// per-site re-canonicalisation, which would drift on deletion or a
+/// symlink alias.
+pub(crate) struct ResolvedRoots {
+    /// Project-root-RELATIVE watch roots handed to `OrchestratorConfig::new`
+    /// and the manifest digest: `DEFAULT_WATCH_ROOTS` + every IN-root
+    /// collection path, deduped/collapsed by [`derive_watch_roots`].
+    /// Out-of-root collections are deliberately absent — they ride the
+    /// absolute extras channel (`out_of_root_watch_roots`). For a project
+    /// with no out-of-root collection this is byte-identical to the
+    /// pre-#1550 `derive_watch_roots(cfg)` output.
+    relative_watch_roots: Vec<PathBuf>,
+    /// Absolute, CANONICAL roots of out-of-root collections, routed through
+    /// `Watcher::start_with_extras` (the #368 absolute channel). Deduped
+    /// among themselves; the caller dedupes them against the resolved
+    /// `extraWatchPaths` set at the merge point.
+    out_of_root_watch_roots: Vec<PathBuf>,
+    /// Per-collection resolved ABSOLUTE root, index-aligned with
+    /// `cfg.collections`. In-root: the literal `project_root.join(path)`
+    /// (byte-identical to the pre-#1550 form). Out-of-root: canonical
+    /// (lexical fallback when absent). Read by `seed_frontmatter_hashes`,
+    /// `derive_tick_candidates`, and `make_discovery_hook` so each site's
+    /// root form matches the notify event paths for that collection.
+    collection_roots: Vec<PathBuf>,
+}
+
+impl ResolvedRoots {
+    /// In-root relative watch roots (for `OrchestratorConfig::new`).
+    fn relative_watch_roots(&self) -> &[PathBuf] {
+        &self.relative_watch_roots
+    }
+
+    /// Canonical absolute out-of-root roots (for the extras channel,
+    /// policy `content_roots`, and the manifest digest).
+    fn out_of_root_watch_roots(&self) -> &[PathBuf] {
+        &self.out_of_root_watch_roots
+    }
+
+    /// Per-collection resolved absolute root, index-aligned with
+    /// `cfg.collections`.
+    fn collection_roots(&self) -> &[PathBuf] {
+        &self.collection_roots
+    }
+
+    /// Roots for the persisted-graph manifest digest: the relative in-root
+    /// roots PLUS the canonical out-of-root roots. Without the latter,
+    /// routing out-of-root content through the extras channel would drop it
+    /// from `.zfb/graph.bin` invalidation — an external-content edit would
+    /// not flip the digest and a stale cached graph could be reused.
+    fn manifest_digest_roots(&self) -> Vec<PathBuf> {
+        let mut roots = self.relative_watch_roots.clone();
+        roots.extend(self.out_of_root_watch_roots.iter().cloned());
+        roots
+    }
+}
+
+/// Build the [`ResolvedRoots`] inventory for a dev session (issue #1550) —
+/// the single source of truth every root-vs-event-path comparison reads.
+pub(crate) fn resolve_roots(project_root: &Path, cfg: &config::Config) -> ResolvedRoots {
+    let relative_watch_roots = derive_watch_roots(cfg);
+    let mut out_of_root_watch_roots: Vec<PathBuf> = Vec::new();
+    let mut collection_roots: Vec<PathBuf> = Vec::with_capacity(cfg.collections.len());
+    for collection in &cfg.collections {
+        let norm = normalize_relative(&collection.path);
+        let abs_literal = project_root.join(&norm);
+        if collection_path_escapes_root(&norm) {
+            // Out-of-root: canonicalise once so the root matches notify's
+            // canonical event paths, and register it on the absolute extras
+            // channel.
+            let canonical = canonicalize_or_lexical(&abs_literal);
+            if !out_of_root_watch_roots.contains(&canonical) {
+                out_of_root_watch_roots.push(canonical.clone());
+            }
+            collection_roots.push(canonical);
+        } else {
+            // In-root: the literal join — byte-identical to the pre-#1550
+            // form the three content sites used.
+            collection_roots.push(abs_literal);
+        }
+    }
+    ResolvedRoots {
+        relative_watch_roots,
+        out_of_root_watch_roots,
+        collection_roots,
+    }
 }
 
 /// Compute which derived watch roots + `extraWatchPaths` targets are
@@ -252,6 +428,142 @@ fn missing_watch_targets(
         }
     }
     missing
+}
+
+/// Load `public/_redirects` for the initial dev-server boot (issue
+/// #1546). A missing file is the common case — `_redirects` support is
+/// opt-in — so it stays silent and produces an empty [`Redirects`]; any
+/// other read failure (permissions, a directory named `_redirects`,
+/// etc.) is warned once so it is not silently swallowed. Malformed
+/// lines within a readable file are handled by [`Redirects::parse`]
+/// itself (warn-and-skip per line).
+fn load_redirects_at_boot(path: &Path) -> Redirects {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Redirects::parse(&contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Redirects::default(),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "_redirects: failed to read file at boot; starting with an empty ruleset"
+            );
+            Redirects::default()
+        }
+    }
+}
+
+/// Re-parse `public/_redirects` after the targeted watcher (see
+/// [`spawn_redirects_watch`]) observes a create/edit/delete of the file.
+///
+/// Unlike [`load_redirects_at_boot`], every read failure here —
+/// including "file no longer exists" (the delete case) — warns exactly
+/// once per reload attempt: a watch event firing at all means the
+/// file's state just changed, so silently reverting to an empty
+/// ruleset would hide a real (if expected) event from the developer.
+fn reload_redirects(path: &Path) -> Redirects {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Redirects::parse(&contents),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "_redirects: failed to read file on reload; using an empty ruleset"
+            );
+            Redirects::default()
+        }
+    }
+}
+
+/// Start a targeted, dedicated watch for `public/_redirects` (issue
+/// #1546) and return the live [`RedirectsHandle`] the dev router reads
+/// from.
+///
+/// `public/` is deliberately excluded from [`DEFAULT_WATCH_ROOTS`] (the
+/// per-request on-disk fallback already serves it live, and a recursive
+/// watch of the whole directory would trigger the `BuildOrchestrator`'s
+/// rebuild pipeline for every static-asset edit — see the `public_root`
+/// leg in `zfb-server`'s `serve_page`). `_redirects` still needs a
+/// watch of its own so rule edits take effect without a dev-server
+/// restart, but it must NOT ride on the orchestrator's watcher (that
+/// would mean a rule change either does nothing or wastefully triggers
+/// a full rebuild, depending on how the orchestrator classifies an
+/// unrecognised `public/` path). So this spins up a wholly separate
+/// [`zfb_watcher::Watcher`] instance — decoupled from the orchestrator
+/// and its `on_outcome` reload-broadcast plumbing — dedicated to this
+/// one file.
+///
+/// Implementation mirrors the orchestrator's own
+/// [`zfb_watcher::Watcher::watch_additional_files`] pattern used for
+/// dynamic dependency files: watch the PARENT directory (`public/`)
+/// non-recursively rather than the file itself, so a delete-then-
+/// recreate (the shape most editors' "save" produces) stays visible —
+/// watching the file's own inode directly can silently stop firing
+/// once that inode is unlinked. Because a non-recursive directory watch
+/// reports every entry in that directory, not just `_redirects`, the
+/// consumer loop below filters events down to the exact filename
+/// before reloading (the "event filtering" the extras-channel doc talks
+/// about — see the `zfb_watcher` module docs for the channel mechanics,
+/// issue #368).
+///
+/// The returned `Watcher` is moved into the spawned task so it — and
+/// therefore the OS-level watch — stays alive for the lifetime of that
+/// task (i.e. the dev server process); dropping it would stop the
+/// watch immediately.
+fn spawn_redirects_watch(project_root: &Path, public_root: &Path) -> RedirectsHandle {
+    let redirects_path = public_root.join("_redirects");
+    let handle: RedirectsHandle = Arc::new(std::sync::RwLock::new(load_redirects_at_boot(
+        &redirects_path,
+    )));
+
+    let (mut watcher, mut rx) = match zfb_watcher::Watcher::start_with_debounce(
+        project_root,
+        std::iter::empty::<&Path>(),
+        zfb_watcher::DEFAULT_DEBOUNCE,
+    ) {
+        Ok(pair) => pair,
+        Err(e) => {
+            // Non-fatal: the dev server still boots and serves whatever
+            // ruleset was parsed at boot — it just won't pick up later
+            // edits without a restart. Mirrors `missing_watch_targets`'s
+            // "degrade, don't fail the boot" posture for watch setup.
+            tracing::warn!(
+                error = %e,
+                "_redirects: failed to start targeted watcher; edits to public/_redirects \
+                 will require a dev-server restart to take effect"
+            );
+            return handle;
+        }
+    };
+    // `public/` does not exist at all on a fresh project with no static
+    // assets — `watch_additional_files` already warns-and-skips a
+    // missing parent, matching `load_redirects_at_boot`'s silence on a
+    // missing file.
+    watcher.watch_additional_files([redirects_path.clone()]);
+
+    let handle_for_task = Arc::clone(&handle);
+    tokio::spawn(async move {
+        // Keep the watcher (and therefore the OS-level watch) alive for
+        // as long as this task runs.
+        let _watcher = watcher;
+        while let Some(change) = rx.recv().await {
+            let is_redirects_file = change
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n == "_redirects")
+                .unwrap_or(false);
+            if !is_redirects_file {
+                continue;
+            }
+            let updated = reload_redirects(&redirects_path);
+            match handle_for_task.write() {
+                Ok(mut guard) => *guard = updated,
+                Err(poisoned) => *poisoned.into_inner() = updated,
+            }
+        }
+    });
+
+    handle
 }
 
 /// Entry point for `zfb dev`.
@@ -414,7 +726,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     // Dev-only: register devMiddleware hooks.
     let plugin_set = if let Some(h) = plugin_host.as_ref() {
-        crate::commands::plugins::build_dev_middleware_set(h, &project_root, &cfg).await?
+        crate::commands::plugins::build_dev_middleware_set(
+            h,
+            &project_root,
+            &cfg,
+            zfb_server::ServerMode::Dev,
+        )
+        .await?
     } else {
         None
     };
@@ -455,6 +773,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         std::env::var("ZFB_DEV_DEFER_BUNDLE").ok().as_deref(),
     );
 
+    // #1550 — build the boot-time resolved-root inventory ONCE, before the
+    // renderer boots, and thread it through every root-vs-event-path site
+    // (renderer seeding, watch-root partition, policy content roots, and the
+    // manifest digest). Out-of-root collections (`allowOutsideRoot`, #1549)
+    // are canonicalised here so they match notify's canonical event paths.
+    let root_inventory = resolve_roots(&project_root, &cfg);
+
     // 2. Stand up the long-lived renderer state if the project looks
     //    runnable. We surface failures as a warning + fall back to the
     //    noop renderer so the dev server still boots — the user can
@@ -463,6 +788,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let dev_session = match boot_dev_renderer(
         &project_root,
         &cfg,
+        // #1550 — the per-collection resolved roots the renderer's content
+        // sites (frontmatter-hash seeding, tick narrowing, created-file
+        // discovery) key on; canonical for out-of-root collections.
+        root_inventory.collection_roots(),
         v8_plugin_hooks,
         dev_plugin_alias_entries.clone(),
         dev_plugin_virtual_modules.clone(),
@@ -510,10 +839,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // If the manifest digest still matches the current project layout,
     // deserialise and reuse — otherwise build fresh and save the new
     // graph back on shutdown so the *next* cold start is fast.
-    // Includes configured collection paths (e.g. `src/mdx/notes`) so
-    // edits there produce watcher events; the manifest digest covers
-    // them automatically since it walks the same roots.
-    let watch_roots: Vec<PathBuf> = derive_watch_roots(&cfg);
+    // Includes configured IN-root collection paths (e.g. `src/mdx/notes`)
+    // so edits there produce watcher events; the manifest digest covers
+    // them automatically since it walks the same roots. Out-of-root
+    // collections (#1550) are NOT here — they ride the extras channel below
+    // and are folded into the digest via `manifest_digest_roots`.
+    let watch_roots: Vec<PathBuf> = root_inventory.relative_watch_roots().to_vec();
     let graph_cache_path = project_root.join(".zfb").join("graph.bin");
 
     // The graph starts EMPTY. The deferred task (step 7) loads the
@@ -624,6 +955,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             extra_watch_paths.push(real.clone());
         }
     }
+    // #1550 — out-of-root collections (`allowOutsideRoot`, #1549) ride the
+    // absolute extras channel: their canonical root matches notify's
+    // canonical event paths, which a literal `project_root.join("../x")`
+    // relative watch root never would. Dedupe against anything an explicit
+    // `extraWatchPaths` entry (or the #1284 / #1288 auto-watch resolvers
+    // above) already registered, so an out-of-root collection that also
+    // appears under `extraWatchPaths` is not double-watched.
+    for root in root_inventory.out_of_root_watch_roots() {
+        if !extra_watch_paths.contains(root) {
+            extra_watch_paths.push(root.clone());
+        }
+    }
     // Issue #1391 — every watch root + extra target is now finalised;
     // warn about any that don't exist yet so the silent no-reload mode
     // (see `missing_watch_targets` doc) is at least visible in the
@@ -639,12 +982,26 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // standard root-segment walk — without this, a collection under
     // `src/` (e.g. `src/mdx/notes`) classifies as Module and wastefully
     // re-bundles islands on every entry edit.
-    let content_roots: Vec<PathBuf> = cfg
+    //
+    // #1550 — in-root collections stay RELATIVE (matched via the
+    // project-relative arm of `classify_change_with_content_roots`, byte-
+    // identical to before). Out-of-root collections contribute their
+    // CANONICAL ABSOLUTE root instead: the relative `../x` form never
+    // prefixes a canonical event path, so the policy's `path.starts_with`
+    // arm needs the absolute canonical root to classify an external `.md`
+    // as Content.
+    let mut content_roots: Vec<PathBuf> = cfg
         .collections
         .iter()
         .map(|c| normalize_relative(&c.path))
         .filter(|p| !p.as_os_str().is_empty())
+        .filter(|p| !collection_path_escapes_root(p))
         .collect();
+    for root in root_inventory.out_of_root_watch_roots() {
+        if !content_roots.contains(root) {
+            content_roots.push(root.clone());
+        }
+    }
     let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone())
         .with_extra_watch_paths(extra_watch_paths)
@@ -1074,9 +1431,15 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // Issue #1166 — handles the deferred boot task needs that ServeOpts
     // also consumes below. Clone them now, before ServeOpts moves the
     // originals: the deferred task computes the manifest digest (which
-    // needs `project_root` + `watch_roots`), loads + seeds the graph, and
+    // needs `project_root` + the digest roots), loads + seeds the graph, and
     // runs the boot render against `dev_session`.
     let project_root_for_boot = project_root.clone();
+    // #1550 — the digest walks the in-root relative roots PLUS the canonical
+    // out-of-root roots. Routing out-of-root content through the extras
+    // channel removed it from `watch_roots`, so without folding it back in
+    // here an external-content edit would not flip the persisted-graph digest
+    // and a stale `.zfb/graph.bin` could be reused.
+    let digest_watch_roots = root_inventory.manifest_digest_roots();
     let dev_session_for_boot = dev_session.clone();
     let graph_for_seed = Arc::clone(&graph_for_save);
     let graph_cache_path_for_boot = graph_cache_path.clone();
@@ -1149,6 +1512,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             )
         });
 
+    // Issue #1546 — `_redirects` dev integration. Loads `public/_redirects`
+    // (an empty ruleset when absent) and starts the targeted watch that
+    // keeps it live for the rest of this session. Must run before
+    // `project_root` / `public_root` are moved into `ServeOpts` below.
+    let redirects_handle = spawn_redirects_watch(&project_root, &public_root);
+
     let opts = ServeOpts {
         project_root,
         dist_root,
@@ -1197,6 +1566,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // `ZFB_DEV_EAGER=1` hatch) — which keeps serve_page's hook leg
         // entirely inert.
         render_on_request_hook,
+        // Issue #1546 — see `spawn_redirects_watch` above.
+        redirects: Some(redirects_handle),
     };
 
     // 7. Bind the TCP listener FIRST — before the manifest-digest walk,
@@ -1372,7 +1743,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             }
 
             // 1. Manifest digest — the size-bound walk moved past bind.
-            let manifest_digest = compute_manifest_digest(&project_root_for_boot, &watch_roots);
+            let manifest_digest =
+                compute_manifest_digest(&project_root_for_boot, &digest_watch_roots);
 
             // 2+3. Load the persisted graph (digest-gated) and assemble the
             //      boot graph under a single lock acquisition.
@@ -2728,6 +3100,16 @@ struct DevRenderInner {
     /// populates it on the V8 path.
     #[cfg(feature = "embed_v8")]
     rebuild_inputs: DevRebuildInputs,
+
+    /// Per-collection resolved absolute root (issue #1550), index-aligned
+    /// with `rebuild_inputs.cfg.collections`. In-root collections carry the
+    /// literal `project_root.join(path)`; out-of-root collections
+    /// (`allowOutsideRoot`, #1549) carry the CANONICAL absolute root. Read
+    /// by [`derive_tick_candidates`] and [`make_discovery_hook`] so each
+    /// site compares against a root form that matches notify's canonical
+    /// event paths. Built once from the boot [`ResolvedRoots`] inventory.
+    #[cfg(feature = "embed_v8")]
+    collection_roots: Vec<PathBuf>,
 
     /// Skip key from the last SUCCESSFUL `refresh_bundle_and_routes` call
     /// (issue #940 — Phase B). Hashes bundle bytes + the router scan's
@@ -4651,9 +5033,16 @@ fn build_dev_route_tables_inner(
 // backed by the in-process V8 host. Compiled in only when the
 // `embed_v8` feature is on (issue #371, sub-task 4.1a).
 #[cfg(feature = "embed_v8")]
+#[allow(clippy::too_many_arguments)] // 8 params: #1550 added collection_roots (index-aligned resolved absolute roots for canonical-path matching); a struct would just shuffle the same threaded fields
 fn boot_dev_renderer(
     project_root: &Path,
     cfg: &config::Config,
+    // #1550 — per-collection resolved absolute roots, index-aligned with
+    // `cfg.collections` (canonical for out-of-root collections). Stored on
+    // the session so the frontmatter-hash seed, tick-narrowing, and
+    // discovery sites key on a root form that matches notify's canonical
+    // event paths. Sourced from the boot-time [`ResolvedRoots`] inventory.
+    collection_roots: &[PathBuf],
     v8_plugin_hooks: zfb_render::PluginRegistryHooks,
     // Plugin-registered import aliases from `setup_registries.aliases`.
     // Threaded into `BundlerInput::plugin_alias_entries` so the dev-mode
@@ -4966,7 +5355,7 @@ fn boot_dev_renderer(
     // edit of a pre-existing collection file can already narrow (G4 only
     // fires for genuinely missing/changed frontmatter). ~1 read + parse +
     // hash per collection file; trivial against the bundle step above.
-    let fm_hashes = seed_frontmatter_hashes(project_root, cfg);
+    let fm_hashes = seed_frontmatter_hashes(cfg, collection_roots);
 
     let session = DevRenderSession {
         inner: Arc::new(DevRenderInner {
@@ -4978,6 +5367,9 @@ fn boot_dev_renderer(
             renderer,
             project_root: project_root.to_path_buf(),
             rebuild_inputs,
+            // #1550 — canonical-for-out-of-root collection roots from the
+            // boot inventory; the content sites key on these.
+            collection_roots: collection_roots.to_vec(),
             // No successful refresh yet — first tick always runs fully.
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(fm_hashes),
@@ -5031,14 +5423,20 @@ fn frontmatter_hash(path: &Path) -> Option<[u8; 32]> {
 /// exactly the walker's. Unreadable / unparseable files (and collections
 /// with uncompilable filter globs) are simply not seeded — their first
 /// edit falls back to a full render (G4) and seeds the hash then.
+///
+/// `collection_roots` is the boot inventory's per-collection resolved
+/// absolute root (issue #1550), index-aligned with `cfg.collections`:
+/// canonical for out-of-root collections so the WalkDir-derived seed keys
+/// match the CANONICAL paths `notify` later delivers on an edit (a literal
+/// `project_root.join("../x")` would seed keys that never match, so the
+/// narrowing gate always tripped for out-of-root content).
 #[cfg(feature = "embed_v8")]
 fn seed_frontmatter_hashes(
-    project_root: &Path,
     cfg: &config::Config,
+    collection_roots: &[PathBuf],
 ) -> HashMap<PathBuf, [u8; 32]> {
     let mut hashes: HashMap<PathBuf, [u8; 32]> = HashMap::new();
-    for collection in &cfg.collections {
-        let root = project_root.join(normalize_relative(&collection.path));
+    for (collection, root) in cfg.collections.iter().zip(collection_roots) {
         let filter = match zfb_content::collection::CollectionFilter::new(
             collection.include.as_deref(),
             collection.exclude.as_deref(),
@@ -5047,7 +5445,7 @@ fn seed_frontmatter_hashes(
             Ok(f) => f,
             Err(_) => continue,
         };
-        for entry in walkdir::WalkDir::new(&root)
+        for entry in walkdir::WalkDir::new(root)
             .follow_links(false)
             .into_iter()
             .flatten()
@@ -5056,7 +5454,7 @@ fn seed_frontmatter_hashes(
                 continue;
             }
             let path = entry.path();
-            if zfb_content::collection::derive_slug_for_file(&root, path, &filter).is_none() {
+            if zfb_content::collection::derive_slug_for_file(root, path, &filter).is_none() {
                 continue;
             }
             if let Some(hash) = frontmatter_hash(path) {
@@ -5221,20 +5619,28 @@ fn derive_tick_candidates(
     // Compile each collection's (root, filter) pair once for the tick. A
     // bad glob means membership cannot be evaluated reliably — trip the
     // gate and yield no candidates.
+    //
+    // #1550 — the root comes from the boot inventory's per-collection
+    // `collection_roots` (canonical for out-of-root collections), NOT a
+    // fresh `project_root.join(normalize_relative(path))`. `hint.changed_content`
+    // holds CANONICAL notify event paths, so an out-of-root collection's
+    // literal `../x` root would never `derive_slug_for_file`-match and the
+    // G2 gate tripped every tick (full re-render fallback).
     let mut compiled: Vec<(PathBuf, zfb_content::collection::CollectionFilter)> =
         Vec::with_capacity(inner.rebuild_inputs.cfg.collections.len());
-    for collection in &inner.rebuild_inputs.cfg.collections {
+    for (collection, root) in inner
+        .rebuild_inputs
+        .cfg
+        .collections
+        .iter()
+        .zip(&inner.collection_roots)
+    {
         match zfb_content::collection::CollectionFilter::new(
             collection.include.as_deref(),
             collection.exclude.as_deref(),
             collection.id_strip_suffix.as_deref(),
         ) {
-            Ok(filter) => compiled.push((
-                inner
-                    .project_root
-                    .join(normalize_relative(&collection.path)),
-                filter,
-            )),
+            Ok(filter) => compiled.push((root.clone(), filter)),
             Err(err) => {
                 tracing::warn!(
                     site = "derive_tick_candidates",
@@ -5613,10 +6019,14 @@ fn make_discovery_hook(
         session.inner.project_root.join("content"),
         session.inner.project_root.join("pages"),
     ];
-    for collection in &session.inner.rebuild_inputs.cfg.collections {
-        let root = session.inner.project_root.join(&collection.path);
-        if !relevant_roots.contains(&root) {
-            relevant_roots.push(root);
+    // #1550 — use the boot inventory's resolved collection roots (canonical
+    // for out-of-root collections). The created-file check below is a
+    // lexical `p.starts_with(root)` against a CANONICAL notify event path, so
+    // an out-of-root collection's literal `../x` root would never match and a
+    // newly-created external post stayed invisible until a `zfb dev` restart.
+    for root in &session.inner.collection_roots {
+        if !relevant_roots.contains(root) {
+            relevant_roots.push(root.clone());
         }
     }
     Arc::new(move |created: &[PathBuf]| {
@@ -5865,6 +6275,8 @@ pub(crate) fn stub_session_for_adapter_tests(
                 esbuild: None,
                 injected_pages_root: None,
             },
+            // Default config carries no collections (#1550).
+            collection_roots: Vec::new(),
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),
             shadow_session: Mutex::new(None),
@@ -5932,6 +6344,13 @@ mod tests {
         ssr_routes: Vec<RouteUniverseEntry>,
     ) -> DevRenderInner {
         let url_index = build_url_index(&routes_by_source);
+        // #1550 — mirror the real boot: resolve per-collection roots from the
+        // same inventory so narrowing / discovery tests see canonical
+        // out-of-root roots. Computed before `cfg` is moved into
+        // `rebuild_inputs`.
+        let collection_roots = resolve_roots(&project_root, &cfg)
+            .collection_roots()
+            .to_vec();
         DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
                 routes_by_source,
@@ -5948,6 +6367,7 @@ mod tests {
                 esbuild: None,
                 injected_pages_root: None,
             },
+            collection_roots,
             last_successful_skip_key: Mutex::new(None),
             fm_hashes: Mutex::new(HashMap::new()),
             shadow_session: Mutex::new(None),
@@ -6034,6 +6454,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 id_strip_suffix: None,
+                allow_outside_root: false,
             }],
             ..Default::default()
         };
@@ -6130,6 +6551,7 @@ mod tests {
                     include: None,
                     exclude: None,
                     id_strip_suffix: None,
+                    allow_outside_root: false,
                 })
                 .collect(),
             ..config::Config::default()
@@ -6230,6 +6652,268 @@ mod tests {
         let roots = derive_watch_roots(&cfg);
         assert!(roots.contains(&PathBuf::from("articles")));
         assert_eq!(roots.len(), DEFAULT_WATCH_ROOTS.len() + 1);
+    }
+
+    // ── resolved-root inventory / out-of-root collections (#1550) ─────────
+
+    /// Build a config with one collection at `path`, flagged
+    /// `allowOutsideRoot` (the wave-1 #1549 opt-in that lets an out-of-root
+    /// path pass config validation in the first place).
+    fn cfg_out_of_root(path: &str) -> config::Config {
+        config::Config {
+            collections: vec![config::CollectionDef {
+                name: "external".into(),
+                path: PathBuf::from(path),
+                schema: None,
+                include: None,
+                exclude: None,
+                id_strip_suffix: None,
+                allow_outside_root: true,
+            }],
+            ..config::Config::default()
+        }
+    }
+
+    #[test]
+    fn collection_path_escapes_root_detects_escapes() {
+        assert!(collection_path_escapes_root(Path::new("../shared")));
+        assert!(collection_path_escapes_root(Path::new("../../a/b")));
+        assert!(collection_path_escapes_root(Path::new("a/../../b"))); // net escape
+        assert!(collection_path_escapes_root(Path::new("/abs/path")));
+        assert!(!collection_path_escapes_root(Path::new("content/blog")));
+        assert!(!collection_path_escapes_root(Path::new("src/mdx/notes")));
+        assert!(!collection_path_escapes_root(Path::new("a/../b"))); // stays in-root
+        assert!(!collection_path_escapes_root(Path::new("")));
+    }
+
+    #[test]
+    fn lexical_normalize_collapses_parent_dir() {
+        assert_eq!(
+            lexical_normalize(Path::new("/home/user/proj/../shared/x")),
+            PathBuf::from("/home/user/shared/x"),
+        );
+        // Already-normal absolute path is unchanged.
+        assert_eq!(
+            lexical_normalize(Path::new("/a/b/c")),
+            PathBuf::from("/a/b/c"),
+        );
+    }
+
+    /// An out-of-root (`..`-escaping) collection path must NOT appear in the
+    /// relative watch-root list — it rides the absolute extras channel.
+    #[test]
+    fn derive_watch_roots_excludes_out_of_root_collection() {
+        let cfg = cfg_out_of_root("../shared-content");
+        let roots = derive_watch_roots(&cfg);
+        assert!(!roots.contains(&PathBuf::from("../shared-content")));
+        assert_eq!(
+            roots.len(),
+            DEFAULT_WATCH_ROOTS.len(),
+            "an out-of-root collection adds no RELATIVE watch root"
+        );
+    }
+
+    /// An IN-root collection keeps its pre-#1550 shape: relative watch root
+    /// present, no out-of-root entry, and its resolved `collection_roots`
+    /// value is the literal `project_root.join(path)` (byte-identical).
+    #[test]
+    fn resolve_roots_in_root_collection_is_byte_identical() {
+        let base = tempfile::tempdir().unwrap();
+        let project_root = base.path().canonicalize().unwrap();
+        let cfg = cfg_with_collections(&["articles/notes"]);
+        let inv = resolve_roots(&project_root, &cfg);
+
+        assert!(inv
+            .relative_watch_roots()
+            .contains(&PathBuf::from("articles/notes")));
+        assert!(
+            inv.out_of_root_watch_roots().is_empty(),
+            "an in-root collection contributes no extras-channel root"
+        );
+        assert_eq!(
+            inv.collection_roots(),
+            [project_root.join("articles/notes")].as_slice(),
+            "in-root collection root stays the literal join (pre-#1550 form)"
+        );
+    }
+
+    /// The heart of #1550: an out-of-root collection resolves to a CANONICAL
+    /// ABSOLUTE root that a canonical `notify` event path (what the OS
+    /// delivers on macOS symlinked-tmp, and after any symlink resolution)
+    /// actually prefixes — while the old literal `project_root.join("../x")`
+    /// form does not. Proves the tick-narrowing / discovery / seed matching
+    /// at the shared `derive_slug_for_file` level without a V8 host.
+    #[test]
+    fn resolve_roots_out_of_root_root_matches_canonical_event_path() {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let project_root = base.join("proj");
+        let external = base.join("shared"); // == ../shared from proj
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        let post = external.join("post.md");
+        std::fs::write(&post, "---\ntitle: hi\n---\nbody\n").unwrap();
+
+        let cfg = cfg_out_of_root("../shared");
+        let inv = resolve_roots(&project_root, &cfg);
+
+        // Routed to the extras channel, absolute + canonical.
+        let root = &inv.collection_roots()[0];
+        assert_eq!(inv.out_of_root_watch_roots(), std::slice::from_ref(root));
+        assert!(root.is_absolute());
+        assert_eq!(root, &external, "root must be the canonical external dir");
+
+        // The canonical event path the watcher delivers on an edit.
+        let event_path = post.canonicalize().unwrap();
+        assert!(
+            event_path.starts_with(root),
+            "canonical event path {event_path:?} must be under the canonical root {root:?}"
+        );
+
+        let filter = zfb_content::collection::CollectionFilter::new(None, None, None).unwrap();
+        // The site's actual matcher succeeds with the inventory root...
+        assert!(
+            zfb_content::collection::derive_slug_for_file(root, &event_path, &filter).is_some(),
+            "tick/seed/discovery must resolve a slug for a canonical event path"
+        );
+        // ...and FAILS with the old literal `project_root.join("../x")` root,
+        // which is the bug #1550 fixes (falsifiability guard).
+        let literal_root = project_root.join("../shared");
+        assert!(
+            zfb_content::collection::derive_slug_for_file(&literal_root, &event_path, &filter)
+                .is_none(),
+            "the pre-#1550 literal `..` root must NOT match a canonical event path"
+        );
+    }
+
+    /// Frontmatter-hash SEEDING keys the map by the WalkDir-derived path.
+    /// With a canonical collection root, those keys equal the canonical
+    /// paths `notify` later delivers — so an edit hits the seeded entry
+    /// instead of tripping the narrowing gate. (Non-V8 proof of the seed
+    /// key/event-path alignment `seed_frontmatter_hashes` relies on.)
+    #[test]
+    fn resolve_roots_out_of_root_walk_keys_match_canonical_event_paths() {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let project_root = base.join("proj");
+        let external = base.join("shared");
+        std::fs::create_dir_all(&external).unwrap();
+        let post = external.join("post.md");
+        std::fs::write(&post, "---\ntitle: hi\n---\n").unwrap();
+
+        let inv = resolve_roots(&project_root, &cfg_out_of_root("../shared"));
+        let root = &inv.collection_roots()[0];
+
+        let walked: Vec<PathBuf> = walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .flatten()
+            .filter(|e| e.file_type().is_file())
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        assert_eq!(
+            walked,
+            vec![post.canonicalize().unwrap()],
+            "seed keys (WalkDir over the canonical root) must equal canonical event paths"
+        );
+    }
+
+    /// Two collections resolving to the same canonical directory register a
+    /// single extras-channel root (dedupe of overlapping collections).
+    #[test]
+    fn resolve_roots_dedups_overlapping_out_of_root_collections() {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let project_root = base.join("proj");
+        let external = base.join("shared");
+        std::fs::create_dir_all(&external).unwrap();
+
+        let cfg = config::Config {
+            collections: vec![
+                config::CollectionDef {
+                    name: "a".into(),
+                    path: PathBuf::from("../shared"),
+                    schema: None,
+                    include: None,
+                    exclude: None,
+                    id_strip_suffix: None,
+                    allow_outside_root: true,
+                },
+                config::CollectionDef {
+                    name: "b".into(),
+                    // ./ prefix + same target ⇒ same canonical dir.
+                    path: PathBuf::from(".././shared"),
+                    schema: None,
+                    include: None,
+                    exclude: None,
+                    id_strip_suffix: None,
+                    allow_outside_root: true,
+                },
+            ],
+            ..config::Config::default()
+        };
+        let inv = resolve_roots(&project_root, &cfg);
+        assert_eq!(
+            inv.out_of_root_watch_roots(),
+            std::slice::from_ref(&external),
+            "overlapping out-of-root collections must not double-register"
+        );
+        // collection_roots stays index-aligned (one per collection).
+        assert_eq!(inv.collection_roots().len(), 2);
+    }
+
+    /// A not-yet-created out-of-root dir cannot be canonicalised; the
+    /// inventory must fall back to a lexical absolute path (never panic /
+    /// drop the root), so the missing-target warning and digest still see a
+    /// stable path.
+    #[test]
+    fn resolve_roots_out_of_root_missing_dir_falls_back_to_lexical() {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let project_root = base.join("proj");
+        std::fs::create_dir_all(&project_root).unwrap();
+        // `../not-yet` does not exist.
+        let inv = resolve_roots(&project_root, &cfg_out_of_root("../not-yet"));
+        let root = &inv.collection_roots()[0];
+        assert!(root.is_absolute());
+        assert_eq!(root, &base.join("not-yet"));
+        assert!(
+            !root.components().any(|c| c == Component::ParentDir),
+            "lexical fallback must collapse the `..`"
+        );
+        assert_eq!(inv.out_of_root_watch_roots(), std::slice::from_ref(root));
+    }
+
+    /// The manifest digest must fold in the canonical out-of-root roots
+    /// (they left `watch_roots` when routed to the extras channel), and an
+    /// external-content edit must change the digest — otherwise a stale
+    /// `.zfb/graph.bin` could be reused after an out-of-tree content change.
+    #[test]
+    fn manifest_digest_changes_on_external_content_edit() {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let project_root = base.join("proj");
+        let external = base.join("shared");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        let post = external.join("post.md");
+        std::fs::write(&post, "a").unwrap();
+
+        let inv = resolve_roots(&project_root, &cfg_out_of_root("../shared"));
+        let roots = inv.manifest_digest_roots();
+        assert!(
+            roots.contains(&external),
+            "digest roots must include the canonical out-of-root dir"
+        );
+
+        let d1 = compute_manifest_digest(&project_root, &roots).expect("digest 1");
+        // Length-changing edit guarantees a different (mtime+len) fingerprint.
+        std::fs::write(&post, "aa-changed").unwrap();
+        let d2 = compute_manifest_digest(&project_root, &roots).expect("digest 2");
+        assert_ne!(
+            d1, d2,
+            "editing an out-of-root collection file must flip the manifest digest"
+        );
     }
 
     /// Issue #1391 — a configured-but-missing derived watch root (e.g.
@@ -6553,6 +7237,7 @@ mod tests {
                     include: None,
                     exclude: None,
                     id_strip_suffix: None,
+                    allow_outside_root: false,
                 }],
                 ..config::Config::default()
             };
@@ -6573,7 +7258,10 @@ mod tests {
             cfg: config::Config,
             routes: HashMap<PathBuf, Vec<DevRouteEntry>>,
         ) -> DevRenderSession {
-            let seeded = seed_frontmatter_hashes(tmp.path(), &cfg);
+            // #1550 — seed against the same resolved collection roots the
+            // session's inner will carry (see `stub_dev_inner_at`).
+            let collection_roots = resolve_roots(tmp.path(), &cfg).collection_roots().to_vec();
+            let seeded = seed_frontmatter_hashes(&cfg, &collection_roots);
             let inner = stub_dev_inner_at(tmp.path().to_path_buf(), cfg, routes, Vec::new());
             *inner.fm_hashes.lock().unwrap() = seeded;
             DevRenderSession {
@@ -7057,7 +7745,10 @@ mod tests {
                 cfg: config::Config,
                 routes: HashMap<PathBuf, Vec<DevRouteEntry>>,
             ) -> DevRenderSession {
-                let seeded = seed_frontmatter_hashes(tmp.path(), &cfg);
+                // #1550 — seed against the same resolved collection roots the
+                // session's inner will carry (see `stub_dev_inner_at`).
+                let collection_roots = resolve_roots(tmp.path(), &cfg).collection_roots().to_vec();
+                let seeded = seed_frontmatter_hashes(&cfg, &collection_roots);
                 let mut inner =
                     stub_dev_inner_at(tmp.path().to_path_buf(), cfg, routes, Vec::new());
                 *inner.fm_hashes.lock().unwrap() = seeded;

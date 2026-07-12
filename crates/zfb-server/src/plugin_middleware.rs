@@ -16,11 +16,30 @@
 //! server then falls through to its built-in routes (the page cache,
 //! `/__zfb/livereload.js`, etc.) so dev-middleware can layer cleanly
 //! over the dev surface without owning the whole URL space.
+//!
+//! ## Mode-aware dispatch seam (issue #1544)
+//!
+//! [`dispatch_plugin`], [`origin_gate`], [`plugin_error_response`], and
+//! [`PLUGIN_BODY_LIMIT_BYTES`] were extracted out of `routes.rs` so the
+//! dev router and the preview server (`zfb preview` in
+//! `crates/zfb/src/commands/preview.rs`, wired through
+//! `crates/zfb/src/commands/plugins.rs`) share ONE implementation
+//! instead of a drifting reimplementation. Every piece
+//! here is mode-aware — it takes a [`crate::ServerMode`] (or a
+//! [`crate::host_validation::HostValidation`] that already carries one)
+//! and adjusts behaviour accordingly (verbose vs. generic error bodies)
+//! — but otherwise has no dependency on `routes::AppState`, so it is
+//! callable standalone from a router that never builds one.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::body::Bytes;
+use axum::extract::DefaultBodyLimit;
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::response::{IntoResponse, Response};
+use zfb_types::escape_html;
 
 /// One registered dev-middleware handler.
 #[derive(Debug, Clone)]
@@ -185,6 +204,258 @@ fn strip_trailing_slash(s: &str) -> &str {
     }
 }
 
+// ---------------------------------------------------------------------
+// Mode-aware dispatch seam (issue #1544) — extracted from `routes.rs`
+// so dev and preview share one implementation.
+// ---------------------------------------------------------------------
+
+/// Request body cap applied to the dynamic dispatch surfaces (plugin
+/// dev-middleware, and — by the same posture — any other route that
+/// extracts a full `Bytes` body with no size guard of its own). 2 MiB
+/// is generous enough for any legitimate dev-middleware POST payload
+/// while preventing unbounded memory buffering.
+pub const PLUGIN_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+
+/// Build the [`DefaultBodyLimit`] layer for [`PLUGIN_BODY_LIMIT_BYTES`].
+/// A small convenience so callers building their own router (dev's
+/// `build_router` and preview's future router alike) apply the exact
+/// same cap via `.layer(plugin_middleware::body_limit_layer())` instead
+/// of re-deriving the byte count.
+pub fn body_limit_layer() -> DefaultBodyLimit {
+    DefaultBodyLimit::max(PLUGIN_BODY_LIMIT_BYTES)
+}
+
+/// Origin gate for non-GET/HEAD requests reaching the dynamic dispatch
+/// surfaces — plugin dev-middleware, embed handlers, request-time SSR
+/// (issue #931 / #919). Returns `Some(403)` when the server is
+/// LAN-exposed (host validation enforced) and either:
+///
+/// - the `Origin` header is absent on a non-GET request (fail closed —
+///   browsers always send `Origin` on cross-origin non-GET requests, so
+///   absence implies a non-browser LAN client bypassing CORS), or
+/// - the request carries an `Origin` whose host fails the same allowlist
+///   the Host-header layer uses.
+///
+/// Returns `None` (allow) when:
+///
+/// - the method is GET/HEAD (safe methods rely on the Host check), or
+/// - the server is bound to loopback (default — zero behaviour change).
+///
+/// Static read paths (`/assets`, dist/public fallbacks, livereload) are
+/// exempt by construction — this helper is only invoked at the dynamic-
+/// dispatch call sites in `serve_page` (and, from wave 3, preview's
+/// equivalent call sites). The response body's verbosity is driven by
+/// `host_validation.mode()` — no separate mode parameter needed since a
+/// [`crate::host_validation::HostValidation`] always carries the mode it
+/// was built for.
+pub fn origin_gate(
+    host_validation: &crate::host_validation::HostValidation,
+    method: &Method,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    if matches!(*method, Method::GET | Method::HEAD) {
+        return None;
+    }
+    if !host_validation.is_enforced() {
+        return None;
+    }
+    let Some(value) = headers.get(header::ORIGIN) else {
+        // When enforcement is on, a non-GET request that omits the Origin
+        // header cannot be a browser cross-origin request (browsers always
+        // send it). Fail closed: return 403 so non-browser LAN clients
+        // cannot bypass the CSRF guard by dropping the header.
+        return Some(crate::host_validation::missing_origin_forbidden_response(
+            host_validation.mode(),
+        ));
+    };
+    // Present-but-unreadable (non-ASCII) and disallowed origins both
+    // fail closed.
+    let allowed = value
+        .to_str()
+        .map(|origin| host_validation.origin_allowed(origin))
+        .unwrap_or(false);
+    if allowed {
+        return None;
+    }
+    let shown = value.to_str().unwrap_or("<non-ASCII>");
+    Some(crate::host_validation::origin_forbidden_response(
+        shown,
+        host_validation.mode(),
+    ))
+}
+
+/// Build the HTML 5xx response served when a plugin dev-middleware
+/// handler fails to dispatch. Mode-gated per issue #926: Dev mode shows
+/// the underlying plugin error so the developer sees it immediately;
+/// Preview/Embed show a generic body only (detail goes to the server
+/// log) so internal error text never leaks to a client.
+pub fn plugin_error_response(message: &str, mode: crate::ServerMode) -> Response {
+    let body = if matches!(mode, crate::ServerMode::Dev) {
+        format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>zfb dev — plugin error</title></head><body><h1>Plugin dev-middleware error</h1><pre>{}</pre></body></html>",
+            escape_html(message),
+        )
+    } else {
+        tracing::error!(message, "plugin dev-middleware error");
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Internal Server Error</title></head><body><h1>Internal Server Error</h1></body></html>".to_string()
+    };
+    let mut resp = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )],
+        body,
+    )
+        .into_response();
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+/// Result of a plugin dev-middleware dispatch attempt. The caller folds
+/// `Passthrough` into its own regular fallback lookup (the dev
+/// page-cache, or preview's static-file lookup); everything else
+/// short-circuits with a Response.
+pub enum PluginDispatchAttempt {
+    Responded(Response),
+    Passthrough,
+    Errored(Response),
+}
+
+/// Convert an axum [`HeaderMap`] into the flat string map shape the
+/// plugin host wire protocol expects. Header values that are not valid
+/// UTF-8 are dropped — the JS-side handler receives a string-keyed
+/// object and cannot represent arbitrary bytes. Multi-valued headers
+/// keep the last seen value (the protocol does not currently model
+/// repeated headers; see the dev-middleware contract in
+/// `crates/zfb/js/plugin-host.mjs`).
+fn headermap_to_string_map(headers: &HeaderMap) -> HashMap<String, String> {
+    let mut out = HashMap::with_capacity(headers.len());
+    for (name, value) in headers.iter() {
+        if let Ok(v) = value.to_str() {
+            out.insert(name.as_str().to_string(), v.to_string());
+        }
+    }
+    out
+}
+
+/// Convert an inbound request body (already drained into [`Bytes`]) to
+/// the `Option<String>` shape the plugin host wire protocol expects.
+/// Empty bodies become `None`; non-UTF-8 bodies are dropped (see the
+/// note in [`dispatch_plugin`] about binary uploads being a separate
+/// extension).
+fn body_bytes_to_utf8_string(body: &Bytes) -> Option<String> {
+    if body.is_empty() {
+        return None;
+    }
+    std::str::from_utf8(body).ok().map(|s| s.to_string())
+}
+
+/// Build a [`PluginRequest`] for the given URL/method/headers/body and
+/// dispatch it.
+///
+/// The `HeaderMap` → string-map and `Bytes` → `Option<String>` wire-shape
+/// conversions happen internally so this seam is self-contained: both dev
+/// (`serve_page`) and preview call it with the raw axum request pieces and
+/// never touch the plugin-host wire encoding (issue #1544).
+///
+/// Issue #230: the request method, headers, and body are forwarded
+/// verbatim so plugin handlers can implement non-GET endpoints (form
+/// submissions, save actions, sidecar API proxies). Non-UTF-8 request
+/// bodies are dropped here — dev-middleware bodies are line-protocol
+/// JSON over stdio to the plugin host, and the wire shape only
+/// supports UTF-8 strings. Binary uploads are a separate extension.
+pub async fn dispatch_plugin(
+    set: &DevMiddlewareSet,
+    reg: &PluginRegistration,
+    url_path: &str,
+    method: &Method,
+    headers: &HeaderMap,
+    body: &Bytes,
+    mode: crate::ServerMode,
+) -> PluginDispatchAttempt {
+    let req = PluginRequest {
+        method: method.as_str().to_string(),
+        url: url_path.to_string(),
+        headers: headermap_to_string_map(headers),
+        body: body_bytes_to_utf8_string(body),
+    };
+    match set.dispatcher.dispatch(&reg.handler_id, req).await {
+        Ok(PluginDispatchOutcome::Response(resp)) => {
+            // Decode body and build an axum response. The plugin host
+            // pre-validates the status code; clamp out-of-range to 500
+            // so a misbehaving handler can't synthesise an invalid
+            // response.
+            let status =
+                StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let body_bytes: Vec<u8> = match resp.body_encoding {
+                // Plugin handlers may opt into binary bodies via
+                // `bodyEncoding: "base64"`. Use the standard crate
+                // rather than rolling our own decoder so all the edge
+                // cases (padding, whitespace, URL-safe alphabet) are
+                // handled correctly.
+                PluginResponseEncoding::Base64 => {
+                    use base64::Engine as _;
+                    match base64::engine::general_purpose::STANDARD.decode(resp.body.as_bytes()) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            let msg = format!(
+                                "plugin `{}` returned an invalid base64 body: {}",
+                                reg.plugin, e
+                            );
+                            return PluginDispatchAttempt::Errored(plugin_error_response(
+                                &msg, mode,
+                            ));
+                        }
+                    }
+                }
+                PluginResponseEncoding::Utf8 => resp.body.into_bytes(),
+            };
+            let mut builder = Response::builder().status(status);
+            // `resp.headers` is an ordered `Vec<(name, value)>`; iterating
+            // it and calling `Builder::header` (which *appends*) preserves
+            // duplicate names, so multiple `Set-Cookie` entries from the
+            // plugin each reach the wire instead of collapsing.
+            for (k, v) in resp.headers {
+                // The body is reconstructed Rust-side (base64 decode /
+                // into_bytes), so any Content-Length / Transfer-Encoding the
+                // plugin returned is stale; Connection is hop-by-hop. Drop
+                // them and let hyper recompute framing (matches dispatch_ssr).
+                let lower = k.to_ascii_lowercase();
+                if matches!(
+                    lower.as_str(),
+                    "content-length" | "transfer-encoding" | "connection"
+                ) {
+                    continue;
+                }
+                if let Ok(value) = HeaderValue::try_from(v) {
+                    builder = builder.header(k, value);
+                }
+            }
+            // Cache busting matches the rest of the dev server — plugin
+            // responses are dev-only artefacts; never let a browser
+            // cache a stale plugin emission across reloads.
+            builder = builder.header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            match builder.body(axum::body::Body::from(body_bytes)) {
+                Ok(resp) => PluginDispatchAttempt::Responded(resp),
+                Err(e) => PluginDispatchAttempt::Errored(plugin_error_response(
+                    &format!("failed to build response from plugin `{}`: {e}", reg.plugin,),
+                    mode,
+                )),
+            }
+        }
+        Ok(PluginDispatchOutcome::Passthrough) => PluginDispatchAttempt::Passthrough,
+        Err(err) => PluginDispatchAttempt::Errored(plugin_error_response(
+            &format!(
+                "plugin `{}` dev-middleware failed: {}",
+                err.plugin, err.message,
+            ),
+            mode,
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +520,19 @@ mod tests {
         assert!(path_matches_prefix("/", "/"));
         assert!(path_matches_prefix("/anything", "/"));
         assert!(path_matches_prefix("/anything/nested", "/"));
+    }
+
+    #[test]
+    fn body_bytes_to_utf8_string_drops_empty_and_non_utf8() {
+        // Empty body collapses to None.
+        assert!(body_bytes_to_utf8_string(&Bytes::new()).is_none());
+        // UTF-8 round-trips.
+        assert_eq!(
+            body_bytes_to_utf8_string(&Bytes::from("hello")),
+            Some("hello".to_string())
+        );
+        // Non-UTF-8 is dropped (binary upload is a future extension).
+        let bad = Bytes::from(vec![0xff, 0xfe, 0xfd]);
+        assert!(body_bytes_to_utf8_string(&bad).is_none());
     }
 }

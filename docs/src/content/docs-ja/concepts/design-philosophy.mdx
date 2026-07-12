@@ -79,9 +79,9 @@ LLM があらゆるワークフローの一部になる前は、レシピとプ�
 逸脱する正当な理由なく、同じやり方で使うものか？」です。
 
 **zfb が今日出荷している狭いプラグイン API** — [Plugins](./plugins.mdx) に文書化された
-4 つのライフサイクルフック、仮想モジュール、インポートエイリアス、注入ルート、client entry — は、
+5 つのライフサイクルフック、仮想モジュール、インポートエイリアス、注入ルート、client entry — は、
 まさにその狭い例外です。`setup` フックの仮想モジュール、エイリアス、注入ルート、client entry の登録、`preBuild` /
-`postBuild` のファイル生成フック、そして `devMiddleware` ハンドラは、ビルドパイプラインと
+`postBuild` のファイル生成フック、そして `devMiddleware` / `previewMiddleware` ハンドラは、ビルドパイプラインと
 構造的に切り離せないパターンをカバーします。エンジン自体をフォークしなければ利用者がレシピ
 として実装できないものたちです。表面はそれ以外では意図的に閉じられています — `addRemarkPlugin`
 も `addModuleTransform` も `onModuleLoad` もありません — なぜなら、それらのパターンは
@@ -118,5 +118,5 @@ GitHub スタイルのアラート、リンク検証、トランスクルージ�
 
 - [Engine vs Framework](./engine-vs-framework.mdx) — zfb がコミットする 6 つのプリミティブと、エンジンとフレームワークの関心事の境界線。
 - [Markdown Features](/ja/docs/markdown-features/) — オプトインの拡張カタログ。
-- [Plugins](./plugins.mdx) — 狭い例外: 4 つのライフサイクルフックと、それらがカバーするもの・しないもの。
+- [Plugins](./plugins.mdx) — 狭い例外: 5 つのライフサイクルフックと、それらがカバーするもの・しないもの。
 - [Choosing zfb](./choosing-zfb.mdx) — 「意図的に狭く」というトレードオフがプロジェクトにとって正しい判断になるのはいつか、ならないのはいつか。

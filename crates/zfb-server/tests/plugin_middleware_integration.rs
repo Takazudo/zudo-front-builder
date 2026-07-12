@@ -131,6 +131,7 @@ async fn boot_with_dispatcher(
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: None,
+        redirects: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await
@@ -451,6 +452,7 @@ async fn boot_with_failing_dispatcher(
         allowed_hosts: Vec::new(),
         bound_host: None,
         render_on_request_hook: None,
+        redirects: None,
     };
     let server = tokio::spawn(async move {
         serve_with_listener(opts, listener, std::future::pending::<()>()).await

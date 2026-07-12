@@ -154,6 +154,42 @@ export type ZfbDevMiddlewareContext = {
 };
 
 /**
+ * Handler signature for a `previewMiddleware` registration (#1542).
+ * Deliberately reuses [`ZfbDevMiddlewareRequest`] /
+ * [`ZfbDevMiddlewareResponse`] verbatim — the wire shape crossing the
+ * Rust↔JS boundary is genuinely the SAME for dev and preview (mirrors
+ * the Rust side, which shares `DevRequest`/`DevResponse` between both
+ * hooks too), so there is nothing preview-specific to say about the
+ * request/response contract itself. `next` is likewise reserved for
+ * future composition; returning `undefined` signals "I did not handle
+ * this request" and the preview server falls through to its built-in
+ * routes (static-file serving, or the wrangler-backed adapter in
+ * adapter mode).
+ */
+export type ZfbPreviewMiddlewareHandler = (
+  req: ZfbDevMiddlewareRequest,
+) => Promise<ZfbDevMiddlewareResponse | undefined> | ZfbDevMiddlewareResponse | undefined;
+
+/**
+ * Context passed to `previewMiddleware` (#1542). Structurally identical
+ * to [`ZfbDevMiddlewareContext`] today — one handler per URL path
+ * prefix, matched the same way — but declared as its own named type
+ * (unlike the request/response types above, which are reused verbatim)
+ * because the *context* is where a hook-specific capability would land
+ * first if one were ever added (e.g. something preview-only that
+ * `devMiddleware` has no equivalent for). Keeping it a separate
+ * declaration costs nothing today and avoids a breaking rename later.
+ */
+export type ZfbPreviewMiddlewareContext = {
+  projectRoot: string;
+  config: import("./config.js").ZfbConfig;
+  options: Record<string, unknown>;
+  logger: ZfbPluginLogger;
+  /** Register an HTTP handler at `path`. Calling twice on the same path overwrites. */
+  register(path: string, handler: ZfbPreviewMiddlewareHandler): void;
+};
+
+/**
  * Loader signature for a virtual-module registration. Must return the
  * **complete ESM module source text** as a string — the bundler /
  * embedded V8 host feeds the returned string in as the module's
@@ -201,11 +237,23 @@ export type ZfbVirtualModuleLoader = () => string | Promise<string>;
 export type ZfbSetupContext = {
   /**
    * Active zfb command. `"build"` during `zfb build`; `"dev"` during
-   * `zfb dev`. Affects `injectRoute`: in `"dev"`, `"/"` is reserved for
-   * the devMiddleware catch-all and is rejected; in `"build"`, a `"/"`
-   * package route is allowed (see [`injectRoute`](#injectRoute)).
+   * `zfb dev`; `"preview"` during `zfb preview` (#1542). Affects
+   * `injectRoute`: in `"dev"`, `"/"` is reserved for the devMiddleware
+   * catch-all and is rejected; in `"build"`, a `"/"` package route is
+   * allowed (see [`injectRoute`](#injectRoute)).
+   *
+   * Under `"preview"`, `setup` still fires (Rust-side via the minimal
+   * non-V8 `run_preview_setup` path) so plugin-side state
+   * initialisation runs, but `zfb preview` serves an ALREADY-BUILT
+   * `dist/` verbatim and never re-enters the scan → bundle → render
+   * pipeline. Consequently `injectRoute` / `addVirtualModule` /
+   * `addAlias` / `addClientEntry` calls made under `"preview"` are
+   * accepted (for shape-consistency with `"build"`/`"dev"`) but are
+   * **inert** — nothing downstream ever reads them. Only the hook's
+   * side effects and a subsequent `previewMiddleware` registration do
+   * anything meaningful under `"preview"`.
    */
-  command: "build" | "dev";
+  command: "build" | "dev" | "preview";
   /** Project root — the directory containing `zfb.config.ts`. */
   projectRoot: string;
   /** The full loaded `ZfbConfig` (data-only view). */
@@ -315,19 +363,31 @@ export type ZfbSetupContext = {
  * specifier wins for identification on the Rust side) and helps the
  * plugin self-identify in logs.
  *
- * Four optional hooks; declaration-order matters when multiple plugins
+ * Five optional hooks; declaration-order matters when multiple plugins
  * touch the same surface. Each hook is independent — a plugin may
  * declare any subset:
  *
  * - `setup` (#255) — register virtual modules, aliases, injected
- *   routes. Runs once at host boot, before `preBuild`.
+ *   routes. Runs once at host boot, before `preBuild`. Also runs under
+ *   `zfb preview` (#1542) via the minimal non-V8 `run_preview_setup`
+ *   path — see [`ZfbSetupContext.command`](#command) for what is and
+ *   isn't meaningful there.
  * - `preBuild` — file-generation work that downstream stages will
- *   see. Runs once per `zfb build` and once per `zfb dev` boot.
+ *   see. Runs once per `zfb build` and once per `zfb dev` boot. Does
+ *   **NOT** fire under `zfb preview` (#1542) — preview serves an
+ *   already-built `dist/` and never re-triggers file generation.
  * - `postBuild` — finalisation work that runs after `dist/` has been
- *   written.
+ *   written. Does not fire under `zfb preview` either, for the same
+ *   reason as `preBuild`.
  * - `devMiddleware` — register HTTP handlers for ad-hoc dev-only
  *   URLs. Per-request dispatch, distinct from `injectRoute` (which
- *   goes through the page renderer).
+ *   goes through the page renderer). Fires only during `zfb dev`.
+ * - `previewMiddleware` (#1542) — register HTTP handlers for ad-hoc
+ *   preview-only URLs. Same register-context shape as `devMiddleware`,
+ *   fires only during `zfb preview`. A plugin wanting coverage in both
+ *   modes registers the same handler under both hooks — `zfb` does
+ *   NOT reuse a `devMiddleware` registration for preview automatically
+ *   (explicit per-mode opt-in, by design).
  */
 export type ZfbPlugin = {
   /** Plugin display name; surfaces in error / log lines. */
@@ -336,6 +396,7 @@ export type ZfbPlugin = {
   preBuild?(ctx: ZfbBuildHookContext): Promise<void> | void;
   postBuild?(ctx: ZfbBuildHookContext): Promise<void> | void;
   devMiddleware?(ctx: ZfbDevMiddlewareContext): Promise<void> | void;
+  previewMiddleware?(ctx: ZfbPreviewMiddlewareContext): Promise<void> | void;
 };
 
 /**
