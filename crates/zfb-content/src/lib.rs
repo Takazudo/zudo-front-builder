@@ -4,6 +4,7 @@ pub mod collection;
 pub mod content_bridge;
 pub mod dep_manifest;
 pub mod diagnostics;
+pub mod facade;
 pub mod frontmatter;
 pub mod heading_registry;
 pub mod hi_roles;
@@ -23,8 +24,21 @@ pub use content_bridge::{
 };
 pub use pipeline_spec::{CodeHighlightMode, PipelineSpec, PipelineSpecError};
 
-pub use pipeline::{constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs};
+pub use pipeline::{
+    constructs_for_jsx_emit, constructs_for_pipeline, Pipeline, PipelineError,
+    ResolvedGfmConstructs,
+};
 pub use plugins::{ExternalLinksConfig, ExternalLinksPlugin};
+
+// Wasm-safe facade (zfb#1574): config-JSON -> Pipeline -> { jsx module |
+// html }, with no filesystem coupling. See `facade` module docs for the
+// full contract; re-exported here so downstream crates (e.g. the future
+// `zfb-md-wasm`) can name every facade type/fn from the crate root.
+pub use facade::{
+    build_pipeline, build_pipeline_from_json, compile_mdx_jsx_from_config, parse_pipeline_options,
+    render_html, render_html_from_config, render_mdx_jsx_module, FacadeError, GfmOptions,
+    PipelineOptions,
+};
 
 pub use plugins::toc::TocConfig;
 
@@ -56,7 +70,7 @@ pub use zfb_md_ast::{ReadOutcome, ReadRecorder};
 // MUST apply the same helper, never a near-match.
 pub use zfb_md_ast::{CrossFileLinkCandidate, FileHeadings};
 
-pub use frontmatter::{FrontmatterError, UnifiedFrontmatter};
+pub use frontmatter::{extract_from_filename, FrontmatterError, UnifiedFrontmatter};
 pub use mdx_jsx_emit::{
     compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached,
     compile_mdx_to_jsx_module_cached_with_deps, mdx_to_jsx_module, mdx_to_jsx_module_with_pipeline,
