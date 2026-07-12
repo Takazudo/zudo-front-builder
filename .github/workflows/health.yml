@@ -445,8 +445,13 @@ jobs:
       # coverage that exercises the no-v8 fallback paths); the workspace's
       # full integration coverage for those subcommands still runs under V8
       # in the `health` job above.
+      # `--features syntect-onig`: since zfb#1576 the syntect regex backend
+      # is independently selectable on zfb-render (its zfb-content edge is
+      # default-features = false so wasm consumers can pick syntect-fancy),
+      # and syntect does not compile with NO backend. This step tests the
+      # V8-off toggle, not the backend choice — pin the native default.
       - name: cargo test (zfb-render --no-default-features)
-        run: cargo test --no-default-features -p zfb-render
+        run: cargo test --no-default-features -p zfb-render --features syntect-onig
 
       - name: cargo test (zfb --no-default-features --lib)
         run: cargo test --no-default-features -p zfb --lib

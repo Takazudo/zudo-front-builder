@@ -16,11 +16,15 @@ default = ["syntect-onig"]
 # `default-features = false, features = ["syntect-fancy"]`). If cargo
 # feature unification enables BOTH, syntect gives regex-onig precedence
 # (syntect-5.3.0 src/parsing/regex.rs:191), so a unified native workspace
-# build stays byte-identical to onig-only. Note the zfb-render dev-dep below
+# build stays byte-identical to onig-only. With NEITHER backend enabled,
+# syntect itself fails to compile (cryptic unresolved `regex_impl` errors in
+# the syntect crate — cargo stops there, before this crate's units) — every
+# consumer must select exactly one backend, directly or via zfb-render's
+# forwarding features (zfb#1576). Note the zfb-render dev-dep below
 # depends back on this crate with default features, so `cargo test -p
 # zfb-content --no-default-features --features syntect-fancy` still unifies
 # to onig — a genuinely fancy-only build needs a graph without that
-# dev-dep cycle (e.g. an external consumer of this crate).
+# dev-dep cycle (`zfb-md-wasm` is exactly that consumer since zfb#1576).
 syntect-onig = ["syntect/regex-onig"]
 syntect-fancy = ["syntect/regex-fancy"]
 
