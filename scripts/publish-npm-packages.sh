@@ -76,11 +76,21 @@ PLATFORM_DIRS=(
 # on it). npm does not validate dependency existence at publish time, so order
 # is not required for success, but matching pnpm -r's topological default keeps
 # the published set self-consistent at every intermediate moment.
+#
+# crates/zfb-md-wasm/npm (zfb#1579) is the first NONPLATFORM_DIRS occupant
+# outside packages/* — it lives in the `crates/*/npm` workspace glob
+# (pnpm-workspace.yaml), which `pnpm -r --filter <name>` resolves the same
+# way regardless of the path prefix (verified locally: `pnpm -r --filter
+# "@takazudo/zfb-md-wasm" exec pwd` resolves to crates/zfb-md-wasm/npm). It
+# has no workspace:* deps of its own, so the rewrite is a no-op for it, but
+# it goes through the same idempotent/tolerant/dist-tag machinery as every
+# other entry here.
 NONPLATFORM_DIRS=(
   packages/zfb
   packages/zfb-runtime
   packages/zfb-adapter-cloudflare
   packages/create-zfb
+  crates/zfb-md-wasm/npm
 )
 
 # Read a field from a package's manifest (name | version). Deriving the package
@@ -203,12 +213,25 @@ publish_platform_packages() {
 }
 
 publish_nonplatform_packages() {
-  local dir name version
+  local dir name version extra_flags
   for dir in "${NONPLATFORM_DIRS[@]}"; do
     name="$(manifest_field "$dir" name)"
     version="$(manifest_field "$dir" version)"
     if should_skip_publish "$name" "$version"; then
       continue
+    fi
+    extra_flags=()
+    if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
+      # @takazudo/zfb-md-wasm's `prepublishOnly` hook runs `pnpm build && pnpm
+      # test`, and `build` needs the Rust wasm32 toolchain + a pinned
+      # wasm-bindgen-cli — neither is installed in this job (unlike the other
+      # NONPLATFORM_DIRS entries, whose `build`/`prepublishOnly` are plain
+      # tsc/vitest, already satisfied here). release.yml's build-wasm-md job
+      # builds dist/ separately and it's already downloaded into
+      # crates/zfb-md-wasm/npm/dist before this script runs (see release.yml's
+      # publish job) — --ignore-scripts skips the redundant, here-unrunnable
+      # rebuild and publishes that pre-built dist/ directly.
+      extra_flags=(--ignore-scripts)
     fi
     # `pnpm -r --filter "$name"` scopes a recursive publish to exactly this one
     # package (verified: packs only "$name", and -r keeps the filter semantics
@@ -216,7 +239,7 @@ publish_nonplatform_packages() {
     # no workspace package a loud failure, never a silent no-op.
     _run_and_classify "$name" "$version" \
       pnpm -r --filter "$name" --fail-if-no-match publish \
-      --tag "$DIST_TAG" --no-git-checks --access public --provenance
+      --tag "$DIST_TAG" --no-git-checks --access public --provenance "${extra_flags[@]}"
   done
 }
 

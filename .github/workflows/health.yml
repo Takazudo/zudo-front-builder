@@ -143,14 +143,24 @@ jobs:
       # which transpiles (via esbuild/swc) without type-checking, so a type
       # error could merge green. `--if-present` mirrors b4push's invocation:
       # packages without a `typecheck` script are skipped rather than failing.
-      - run: pnpm -r --filter '!./examples/*' --if-present typecheck
+      # @takazudo/zfb-md-wasm is excluded: its src/index.ts type-imports the
+      # wasm-bindgen-generated ./wasm/zfb_md_wasm.js glue, which does not
+      # exist until the crate has been compiled for wasm32-unknown-unknown —
+      # this job never installs that target. The wasm-md job below builds
+      # the package (which runs `tsc` as its own final step, catching the
+      # same type errors) so coverage isn't lost, just relocated.
+      - run: pnpm -r --filter '!./examples/*' --filter '!@takazudo/zfb-md-wasm' --if-present typecheck
 
       # Run the JS/TS test suites across all packages (@takazudo/zfb and
       # @takazudo/zfb-runtime). Includes the slugify parity tests that
       # consume the shared fixture in crates/zfb-content/tests/fixtures/
       # (issue #973), so any drift between the TS port and the Rust
       # slugifier fails here as well as in cargo test.
-      - run: pnpm -r test
+      # @takazudo/zfb-md-wasm is excluded for the same reason as the
+      # typecheck step above — its tests import the built `dist/index.js`,
+      # which needs the wasm32 toolchain this job doesn't have. Covered by
+      # the wasm-md job below instead.
+      - run: pnpm -r --filter '!@takazudo/zfb-md-wasm' test
 
       - run: pnpm format:check
 
@@ -455,3 +465,105 @@ jobs:
 
       - name: cargo test (zfb --no-default-features --lib)
         run: cargo test --no-default-features -p zfb --lib
+
+  # @takazudo/zfb-md-wasm CI (epic #1572, issue #1579): checks the crate on
+  # its wasm32 target and builds + tests the npm package. Modeled on
+  # build-no-v8 above (same shape: checkout, pnpm/node, rust toolchain,
+  # scoped rust-cache, install, then a handful of check/build/test steps) —
+  # but this crate needs the wasm32-unknown-unknown target, which is NOT in
+  # rust-toolchain.toml's `targets` (decision baked in #1575: keep that file
+  # native-only so every other job's toolchain setup stays untouched, and
+  # install the wasm target only in the one job that needs it).
+  #
+  # NOT added to the `main` branch ruleset's required-status-checks (see
+  # CLAUDE.md "Branch ruleset on main"): this job runs on every PR
+  # unconditionally, same as build-no-v8, but promoting it to required is a
+  # separate follow-up decision per repo policy — do not add it here.
+  wasm-md:
+    name: wasm-md
+    runs-on: ubuntu-latest
+    # Generous headroom over build-no-v8's 20 min: this job compiles the
+    # zfb-md-wasm dependency subgraph twice (once under `cargo check`/
+    # `clippy`'s dev profile, once under the size-optimized `wasm-release`
+    # profile via `pnpm build`) and additionally compiles wasm-bindgen-cli
+    # from source on a cold cache.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+        with:
+          components: clippy
+
+      # Job-local target install (see the job-level comment above for why
+      # this isn't in rust-toolchain.toml).
+      - name: rustup target add wasm32-unknown-unknown
+        run: rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          # Own prefix: the wasm32 target dir isn't interchangeable with the
+          # native-target caches the other two jobs above key on.
+          prefix-key: "v2-zfb-wasm-md"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: cargo check (zfb-md-wasm, wasm32-unknown-unknown)
+        run: cargo check --target wasm32-unknown-unknown -p zfb-md-wasm
+
+      - name: cargo clippy (zfb-md-wasm, wasm32-unknown-unknown)
+        run: cargo clippy --target wasm32-unknown-unknown -p zfb-md-wasm -- -D warnings
+
+      # wasm-bindgen requires an EXACT version match between this CLI and the
+      # `wasm-bindgen` crate resolved in Cargo.lock (pinned in
+      # crates/zfb-md-wasm/npm/scripts/build.mjs's
+      # EXPECTED_WASM_BINDGEN_VERSION constant — bump both together). No
+      # SHA-pinned prebuilt-binary action covers this exact version, so this
+      # installs from source like the rest of the toolchain.
+      - name: Install wasm-bindgen-cli (pinned to match Cargo.lock)
+        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+
+      # wasm-opt (binaryen) comes from the package's own devDependency via
+      # the `pnpm install` above — nothing extra to install for it here.
+      - name: Build @takazudo/zfb-md-wasm npm package
+        run: pnpm --filter @takazudo/zfb-md-wasm build
+
+      # Whatever tests exist at merge time — do NOT assert the parity
+      # suite's presence. #1578 (a same-wave sibling) adds a test file under
+      # this package's test/ dir; once merged this step picks it up
+      # automatically, no wiring change needed here.
+      - name: Test @takazudo/zfb-md-wasm npm package
+        run: pnpm --filter @takazudo/zfb-md-wasm test
+
+      # Informational only (no size budget enforced here). The package
+      # README's "Artifact size" section and the docs page (#1580) point
+      # back at this job's log as the authoritative, freshly-measured
+      # number. Recomputed directly from the built .wasm file rather than
+      # grepped out of the build step's stdout, so it stays correct even if
+      # build.mjs's log format changes.
+      - name: Report gzip'd .wasm size (informational)
+        run: |
+          WASM_FILE="crates/zfb-md-wasm/npm/dist/wasm/zfb_md_wasm_bg.wasm"
+          if [ ! -f "$WASM_FILE" ]; then
+            echo "::error::$WASM_FILE not found — the build step above did not produce it."
+            exit 1
+          fi
+          RAW_BYTES=$(stat -c%s "$WASM_FILE")
+          # Node's zlib (level 9), not the system `gzip` CLI: the two encoders
+          # are not byte-identical (different default strategy/window), and
+          # this must match build.mjs's own gzipSync(..., { level: 9 })
+          # figure exactly, since that is the number this line is meant to
+          # corroborate.
+          GZIP_BYTES=$(node -e "
+            const { readFileSync } = require('node:fs');
+            const { gzipSync } = require('node:zlib');
+            process.stdout.write(String(gzipSync(readFileSync(process.argv[1]), { level: 9 }).length));
+          " "$WASM_FILE")
+          echo "zfb-md-wasm .wasm size: raw=${RAW_BYTES} bytes, gzip-9=${GZIP_BYTES} bytes"

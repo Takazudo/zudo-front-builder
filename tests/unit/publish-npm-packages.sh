@@ -153,7 +153,11 @@ MOCK_PNPM
 chmod +x "$MOCK_BIN/npm" "$MOCK_BIN/pnpm"
 
 V=$(node -p "require('./packages/zfb/package.json').version")
-ALL_SPECS="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/zfb-linux-arm64-gnu@$V @takazudo/zfb-linux-x64-gnu@$V @takazudo/zfb-win32-x64-msvc@$V @takazudo/zfb@$V @takazudo/zfb-runtime@$V @takazudo/zfb-adapter-cloudflare@$V create-zfb@$V"
+# @takazudo/zfb-md-wasm (crates/zfb-md-wasm/npm, zfb#1579) versions
+# independently of the packages/* lockstep set above (sync-platform-versions.mjs
+# does not touch it) — read its own version rather than assuming it equals $V.
+V_MDWASM=$(node -p "require('./crates/zfb-md-wasm/npm/package.json').version")
+ALL_SPECS="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/zfb-linux-arm64-gnu@$V @takazudo/zfb-linux-x64-gnu@$V @takazudo/zfb-win32-x64-msvc@$V @takazudo/zfb@$V @takazudo/zfb-runtime@$V @takazudo/zfb-adapter-cloudflare@$V create-zfb@$V @takazudo/zfb-md-wasm@$V_MDWASM"
 
 # log_has <name> — true iff the publish log has a line for exactly <name>
 # (matching <name> at line start followed by '@' or end-of-line, so
@@ -162,19 +166,19 @@ log_has() {
   grep -Eq "^$1(@|$)" "$PUB_LOG"
 }
 
-# Case 1 — idempotent re-run: 7 packages already published, only
-# @takazudo/zfb-runtime + create-zfb missing. Expect exit 0 and ONLY the two
-# missing ones published.
+# Case 1 — idempotent re-run: 8 packages already published (incl.
+# @takazudo/zfb-md-wasm), only @takazudo/zfb-runtime + create-zfb missing.
+# Expect exit 0 and ONLY the two missing ones published.
 PUB_LOG=$(mktemp)
 : >"$PUB_LOG"
 if PATH="$MOCK_BIN:$PATH" \
    DIST_TAG=next \
    MOCK_PUBLISH_LOG="$PUB_LOG" \
-   MOCK_EXISTING="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/zfb-linux-arm64-gnu@$V @takazudo/zfb-linux-x64-gnu@$V @takazudo/zfb-win32-x64-msvc@$V @takazudo/zfb@$V @takazudo/zfb-adapter-cloudflare@$V" \
+   MOCK_EXISTING="@takazudo/zfb-darwin-arm64@$V @takazudo/zfb-darwin-x64@$V @takazudo/zfb-linux-arm64-gnu@$V @takazudo/zfb-linux-x64-gnu@$V @takazudo/zfb-win32-x64-msvc@$V @takazudo/zfb@$V @takazudo/zfb-adapter-cloudflare@$V @takazudo/zfb-md-wasm@$V_MDWASM" \
    bash "$SCRIPT" all-provenance >/dev/null 2>&1; then
   if log_has "@takazudo/zfb-runtime" && log_has "create-zfb" \
      && ! log_has "@takazudo/zfb" && ! log_has "@takazudo/zfb-adapter-cloudflare" \
-     && ! log_has "@takazudo/zfb-darwin-x64"; then
+     && ! log_has "@takazudo/zfb-darwin-x64" && ! log_has "@takazudo/zfb-md-wasm"; then
     pass "integration: idempotent re-run publishes ONLY the 2 missing packages"
   else
     fail "integration: idempotent re-run published the wrong set: $(tr '\n' ' ' <"$PUB_LOG")"
@@ -183,8 +187,9 @@ else
   fail "integration: idempotent re-run exited non-zero"
 fi
 
-# Case 2 — fresh publish: nothing on the registry → all 9 packages published
-# (5 platform via npm publish, 4 non-platform via pnpm publish).
+# Case 2 — fresh publish: nothing on the registry → all 10 packages published
+# (5 platform via npm publish, 5 non-platform via pnpm publish — the 5th
+# non-platform package being @takazudo/zfb-md-wasm, zfb#1579).
 PUB_LOG=$(mktemp)
 : >"$PUB_LOG"
 if PATH="$MOCK_BIN:$PATH" \
@@ -193,10 +198,10 @@ if PATH="$MOCK_BIN:$PATH" \
    MOCK_EXISTING="" \
    bash "$SCRIPT" all-provenance >/dev/null 2>&1; then
   COUNT=$(grep -c . "$PUB_LOG" || true)
-  if [ "$COUNT" -eq 9 ] && log_has "@takazudo/zfb-darwin-x64" && log_has "create-zfb" && log_has "@takazudo/zfb-runtime"; then
-    pass "integration: fresh registry publishes all 9 packages"
+  if [ "$COUNT" -eq 10 ] && log_has "@takazudo/zfb-darwin-x64" && log_has "create-zfb" && log_has "@takazudo/zfb-runtime" && log_has "@takazudo/zfb-md-wasm"; then
+    pass "integration: fresh registry publishes all 10 packages"
   else
-    fail "integration: fresh publish count=$COUNT (want 9): $(tr '\n' ' ' <"$PUB_LOG")"
+    fail "integration: fresh publish count=$COUNT (want 10): $(tr '\n' ' ' <"$PUB_LOG")"
   fi
 else
   fail "integration: fresh publish exited non-zero"
