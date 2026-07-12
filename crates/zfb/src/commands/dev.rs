@@ -6098,13 +6098,26 @@ fn make_discovery_hook(
 
         let (changed, vanished_rel) = session.discover_created(&relevant)?;
 
-        // #1581 — discovery succeeded, so every file it accepted is now an
-        // already-known collection entry. Registering them here (and NOT at
-        // the top of the closure) keeps the registry meaning "entries of the
-        // last SUCCESSFUL collection walk": a `discover_created` that fails
-        // returns early above and leaves the registry untouched, so the next
-        // tick still treats the file as new.
-        known_content.insert_many(relevant.iter().cloned());
+        // #1581 — discovery succeeded, so re-derive the collection membership
+        // and register it. Registering here (and NOT at the top of the
+        // closure) keeps the registry meaning "entries of the last SUCCESSFUL
+        // collection walk": a `discover_created` that fails returns early
+        // above and leaves the registry untouched, so the next tick still
+        // treats the file as new.
+        //
+        // This MUST re-walk rather than insert the raw event paths in
+        // `relevant`. The watcher can report a created DIRECTORY (its children
+        // never surface as individual events), in which case `relevant` holds
+        // only the directory — registering that would leave every entry
+        // beneath it unknown, so the next FSEvents-coalesced `Created` for one
+        // of those children would be mistaken for a new file all over again.
+        // `relevant` is also broader than the collection (it admits `pages/`
+        // and `content/` paths that are not collection members at all); the
+        // membership walk is the authoritative set.
+        known_content.insert_many(collect_collection_entries(
+            &session.inner.rebuild_inputs.cfg,
+            &session.inner.collection_roots,
+        ));
 
         // Issue #807 — the discovery refresh swapped in a fresh V8 host and
         // rebuilt the route tables, but it reports `renderer_reloaded: true`,
@@ -7311,6 +7324,67 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, format!("---\n{fm}\n---\n\n{body}\n")).unwrap();
             path
+        }
+
+        /// #1581 — the `known_content` registry is seeded from this walk, and
+        /// the discovery hook RE-walks rather than registering the watcher's
+        /// raw event paths. Both rely on the walk being authoritative:
+        ///
+        /// - It must descend into NESTED directories. The watcher can report a
+        ///   created DIRECTORY whose children never surface as individual
+        ///   events; registering only the event path would leave those children
+        ///   unknown, so the next FSEvents-coalesced `Created` for one of them
+        ///   would be mistaken for a new file and lose the tick its narrowing.
+        /// - It must yield FILES only, never the directories it walks through.
+        #[test]
+        fn collect_collection_entries_descends_into_nested_dirs_and_yields_files_only() {
+            let (tmp, cfg) = scaffold(&[("top.md", "title: Top"), ("deep/nested.md", "title: N")]);
+            let collection_roots = resolve_roots(tmp.path(), &cfg).collection_roots().to_vec();
+
+            let entries = collect_collection_entries(&cfg, &collection_roots);
+
+            let blog = tmp.path().join("content/blog");
+            assert!(
+                entries.contains(&blog.join("top.md")),
+                "top-level entry must be walked; got {entries:?}"
+            );
+            assert!(
+                entries.contains(&blog.join("deep/nested.md")),
+                "an entry inside a NESTED dir must be walked — this is the case a \
+                 created-directory watcher event cannot enumerate; got {entries:?}"
+            );
+            assert!(
+                !entries.contains(&blog.join("deep")),
+                "the walk must yield files only, never the directories it descends"
+            );
+        }
+
+        /// #1581 — the registry takes the FULL membership, unlike
+        /// [`seed_frontmatter_hashes`] which keeps only what it could hash. An
+        /// entry with unparseable frontmatter is still an already-known entry:
+        /// dropping it would let a spurious FSEvents `Created` for that file
+        /// fall through to the discovery regime.
+        #[test]
+        fn collect_collection_entries_includes_entries_whose_frontmatter_is_unparseable() {
+            let (tmp, cfg) = scaffold(&[("good.md", "title: Good")]);
+            let blog = tmp.path().join("content/blog");
+            let broken = blog.join("broken.md");
+            std::fs::write(&broken, "---\n: : not: valid: yaml\n---\n\nbody\n").unwrap();
+            let collection_roots = resolve_roots(tmp.path(), &cfg).collection_roots().to_vec();
+
+            let entries = collect_collection_entries(&cfg, &collection_roots);
+            assert!(
+                entries.contains(&broken),
+                "membership does not depend on frontmatter parsing; got {entries:?}"
+            );
+
+            let hashed = seed_frontmatter_hashes(&cfg, &collection_roots);
+            assert!(
+                !hashed.contains_key(&broken),
+                "the frontmatter seed, by contrast, skips what it cannot hash — this \
+                 divergence is exactly why the registry must not be keyed off it"
+            );
+            assert!(hashed.contains_key(&blog.join("good.md")));
         }
 
         /// Stub session with boot-seeded frontmatter hashes, like
