@@ -5434,20 +5434,6 @@ fn frontmatter_hash(path: &Path) -> Option<[u8; 32]> {
     Some(hasher.finalize().into())
 }
 
-/// Boot-seed the frontmatter gate cache (issue #958): hash every
-/// configured collection file's frontmatter, keyed by absolute path.
-/// Membership routes through `derive_slug_for_file` so the seeded set is
-/// exactly the walker's. Unreadable / unparseable files (and collections
-/// with uncompilable filter globs) are simply not seeded — their first
-/// edit falls back to a full render (G4) and seeds the hash then.
-///
-/// `collection_roots` is the boot inventory's per-collection resolved
-/// absolute root (issue #1550), index-aligned with `cfg.collections`:
-/// canonical for out-of-root collections so the WalkDir-derived seed keys
-/// match the CANONICAL paths `notify` later delivers on an edit (a literal
-/// `project_root.join("../x")` would seed keys that never match, so the
-/// narrowing gate always tripped for out-of-root content).
-#[cfg(feature = "embed_v8")]
 /// Walk every configured collection root and yield the path of each file
 /// that passes its collection's include/exclude filter — i.e. the session's
 /// content-collection MEMBERSHIP, independent of whether the entry's
@@ -5466,6 +5452,7 @@ fn frontmatter_hash(path: &Path) -> Option<[u8; 32]> {
 /// `collection_roots` comes from the boot [`ResolvedRoots`] inventory, so
 /// out-of-root roots are already canonical and the walked paths compare
 /// equal to the canonical paths `notify` delivers (#1550).
+#[cfg(feature = "embed_v8")]
 fn collect_collection_entries(cfg: &config::Config, collection_roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = Vec::new();
     for (collection, root) in cfg.collections.iter().zip(collection_roots) {
@@ -5495,6 +5482,25 @@ fn collect_collection_entries(cfg: &config::Config, collection_roots: &[PathBuf]
     entries
 }
 
+/// Boot-seed the frontmatter gate cache (issue #958): hash every
+/// configured collection file's frontmatter, keyed by absolute path.
+/// Membership routes through [`collect_collection_entries`] so the seeded
+/// set is exactly the walker's. Unreadable / unparseable files (and
+/// collections with uncompilable filter globs) are simply not seeded —
+/// their first edit falls back to a full render (G4) and seeds the hash
+/// then.
+///
+/// NOTE (#1581): the `known_content` registry deliberately does NOT share
+/// this map's key set — it takes the full membership walk instead, because
+/// an entry that failed to hash here is still an already-known entry.
+///
+/// `collection_roots` is the boot inventory's per-collection resolved
+/// absolute root (issue #1550), index-aligned with `cfg.collections`:
+/// canonical for out-of-root collections so the WalkDir-derived seed keys
+/// match the CANONICAL paths `notify` later delivers on an edit (a literal
+/// `project_root.join("../x")` would seed keys that never match, so the
+/// narrowing gate always tripped for out-of-root content).
+#[cfg(feature = "embed_v8")]
 fn seed_frontmatter_hashes(
     cfg: &config::Config,
     collection_roots: &[PathBuf],
