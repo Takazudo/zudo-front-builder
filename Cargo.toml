@@ -56,3 +56,17 @@ swc_core = { version = "64" }
 # Applied workspace-wide — member crate [profile.release] blocks are ignored
 # by Cargo when a workspace root profile is present.
 strip = "symbols"
+
+# Dedicated wasm size-optimized profile (zfb#1577, zfb-md-wasm npm package).
+# Opt-in via `cargo build --profile wasm-release`, so it never changes the
+# default `release` profile other crates/binaries build with. `opt-level =
+# "z"` + `lto = true` + `codegen-units = 1` + `panic = "abort"` are the
+# standard size-minimizing combination for wasm32-unknown-unknown cdylibs
+# (panic="abort" is safe here because a wasm trap is unrecoverable in-process
+# either way — see crates/zfb-md-wasm/README.md's trap contract).
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

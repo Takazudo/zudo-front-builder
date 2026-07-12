@@ -1,0 +1,21 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM"],
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "declaration": true,
+    // Published tarball ships dist/ but not src/ (see package.json "files"), so maps that point at
+    // ../src/*.ts dangle in consumers (issue #1325). inlineSources embeds the .ts into .js.map so JS
+    // maps are self-contained; declarationMap is off because .d.ts.map can't inline sources.
+    "declarationMap": false,
+    "sourceMap": true,
+    "inlineSources": true,
+    "types": ["node"],
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "noEmit": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["dist", "node_modules", "src/wasm", "src/**/*.test.ts", "test"]
+}
