@@ -298,7 +298,7 @@ fn compile_impl(source: &str, options_json: &str) -> CompileResult {
                 code: None,
                 frontmatter,
                 diagnostics: vec![diag],
-            }
+            };
         }
     };
     let Prepared {
@@ -350,7 +350,7 @@ fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
                 html: None,
                 frontmatter,
                 diagnostics: vec![diag],
-            }
+            };
         }
     };
     let Prepared {
