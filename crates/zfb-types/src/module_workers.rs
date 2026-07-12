@@ -104,19 +104,22 @@ fn encode_os_component(value: &std::ffi::OsStr, out: &mut String) {
     // Valid Unicode paths use UTF-8 on every host, keeping ordinary project
     // filenames byte-stable across platforms. Windows' rare ill-formed
     // UTF-16 spellings are encoded by code unit instead of going through a
-    // lossy replacement character.
-    if let Some(value) = value.to_str() {
-        for &byte in value.as_bytes() {
-            encode_path_byte(byte, out);
+    // lossy replacement character. (let-else so the diverging `return` stays
+    // required on every target — on non-windows non-unix targets like wasm32
+    // the cfg(windows) block compiles away, which made a trailing plain
+    // `return` trip clippy::needless_return there.)
+    let Some(utf8) = value.to_str() else {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            for unit in value.encode_wide() {
+                out.push_str(&format!("-u{unit:04x}-"));
+            }
         }
         return;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        for unit in value.encode_wide() {
-            out.push_str(&format!("-u{unit:04x}-"));
-        }
+    };
+    for &byte in utf8.as_bytes() {
+        encode_path_byte(byte, out);
     }
 }
 
