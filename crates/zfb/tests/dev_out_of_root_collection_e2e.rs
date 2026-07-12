@@ -69,14 +69,25 @@
 //!   correctly forces a full fan-out, which re-stamps `beta` and races
 //!   scenario (a)'s baseline snapshot. See the Phase C comment.
 //!
+//! ## Where it runs
+//!
+//! CI runs it on ubuntu/inotify (`health.yml`'s `cargo nextest`, via the
+//! `e2e-heavy` test-group). It has since also been run for real on macOS
+//! arm64 / FSEvents during issue #1581 — which is where the FSEvents
+//! `Created`-coalescing bug it now guards was found and fixed. The PR gate is
+//! still ubuntu-only, so macOS parity rides the weekly `exam.yml` macOS
+//! re-exam, not the PR gate.
+//!
 //! ## Blind spot
 //!
-//! This container cannot build the V8-embedding `zfb` binary (rusty_v8
-//! download blocked), so this test is UNRUN here — it is written and proven
-//! to COMPILE (`cargo check --no-default-features -p zfb --test
-//! dev_out_of_root_collection_e2e`) and runs for real in CI (`health.yml`'s
-//! `cargo nextest`, ubuntu/inotify). macOS/FSEvents parity is NOT covered by
-//! the PR gate — only by the weekly `exam.yml` macOS re-exam.
+//! Scenario (a) proves the sibling POST route is untouched. It does NOT prove
+//! `pages/index.tsx` is untouched: a static route carries no params
+//! provenance, so it re-renders in full via the S1 fallback on every content
+//! tick regardless (the fixture's index deliberately does not read the
+//! collection, so this never confuses the sibling proof). An AGGREGATE dynamic
+//! page — a post index listing every entry — is likewise out of scope: nothing
+//! here guards the planner's unknown-path `PageSelection::All` fallback that
+//! such a page currently relies on to stay fresh (see #1581's commit message).
 
 #![cfg(unix)]
 
