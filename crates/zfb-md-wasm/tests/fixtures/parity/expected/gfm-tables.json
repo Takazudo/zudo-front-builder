@@ -1,0 +1,5 @@
+{
+  "html": "<table><thead><tr><th>Name</th><th style=\"text-align: center\">Role</th><th style=\"text-align: right\">Score</th></tr></thead><tbody><tr><td>Alice</td><td style=\"text-align: center\">Admin</td><td style=\"text-align: right\">95</td></tr><tr><td>Bob</td><td style=\"text-align: center\">User</td><td style=\"text-align: right\">82</td></tr></tbody></table>",
+  "frontmatter": null,
+  "diagnostics": []
+}

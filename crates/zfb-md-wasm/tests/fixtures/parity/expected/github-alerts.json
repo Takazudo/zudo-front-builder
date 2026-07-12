@@ -1,0 +1,5 @@
+{
+  "html": "<Note>This is a note with bold text.</Note><Warning>First paragraph of the warning.Second paragraph.</Warning><Tip>A helpful tip.</Tip>",
+  "frontmatter": null,
+  "diagnostics": []
+}

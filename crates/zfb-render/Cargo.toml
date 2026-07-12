@@ -14,8 +14,18 @@ description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orch
 # only runs the SWC pipeline) can opt out with
 # `--no-default-features`.
 [features]
-default = ["embed_v8"]
+default = ["embed_v8", "syntect-onig"]
 embed_v8 = ["dep:deno_core", "dep:tokio"]
+# Syntect regex-backend forwarding (zfb#1576, epic zfb#1572). The
+# `zfb-content` edge below is `default-features = false` so a wasm consumer
+# of this crate (`zfb-md-wasm`) can select the pure-Rust `syntect-fancy`
+# backend — otherwise this edge would re-unify `syntect-onig` (C `onig_sys`,
+# which cannot compile for wasm32-unknown-unknown) into every downstream
+# graph. Native behaviour is unchanged: `syntect-onig` is in `default`, and
+# even when both backends unify (e.g. whole-workspace builds), syntect gives
+# regex-onig precedence (see zfb-content's feature docs / zfb#1573).
+syntect-onig = ["zfb-content/syntect-onig"]
+syntect-fancy = ["zfb-content/syntect-fancy"]
 
 [dependencies]
 # Canonical shared types (Segment, etc.).
@@ -63,7 +73,9 @@ tokio = { version = "1", features = ["rt", "macros", "sync"], optional = true }
 # Sibling crate: MDX → JSX-source emitter. The loader funnels `.mdx` and
 # `mdx://` specifiers through `mdx_to_jsx_module` before handing the
 # resulting JSX text to the SWC pipeline below.
-zfb-content = { path = "../zfb-content" }
+# `default-features = false` so the syntect backend choice flows through the
+# `syntect-onig`/`syntect-fancy` forwarding features above (zfb#1576).
+zfb-content = { path = "../zfb-content", default-features = false }
 
 # SWC pipeline (TSX → JS). The umbrella version is pinned in the
 # workspace `Cargo.toml`; this crate only declares its feature opt-ins.

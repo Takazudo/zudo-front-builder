@@ -1,0 +1,69 @@
+{
+  "name": "@takazudo/zfb-md-wasm",
+  "version": "0.1.0-next.79",
+  "private": false,
+  "type": "module",
+  "description": "zfb's md/mdx -> JS/HTML conversion pipeline compiled to WebAssembly, for browser-side dynamic conversion (CMS live preview with parity to zfb's production output).",
+  "keywords": [
+    "zfb",
+    "zfb-md-wasm",
+    "markdown",
+    "mdx",
+    "wasm",
+    "webassembly",
+    "cms",
+    "live-preview"
+  ],
+  "license": "MIT",
+  "author": "Takeshi Takatsudo <takazudo@gmail.com> (https://github.com/Takazudo)",
+  "homepage": "https://takazudomodular.com/pj/zudo-front-builder/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Takazudo/zudo-front-builder.git",
+    "directory": "crates/zfb-md-wasm/npm"
+  },
+  "bugs": {
+    "url": "https://github.com/Takazudo/zudo-front-builder/issues"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepublishOnly": "pnpm build && pnpm test",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "binaryen": "130.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^2.1.9"
+  }
+}

@@ -1,0 +1,60 @@
+[package]
+name = "zfb-md-wasm"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb md/mdx → JS / HTML conversion compiled to WebAssembly (wasm32-unknown-unknown) for browser-side dynamic conversion — CMS live preview with parity to zfb's production output."
+
+[lib]
+# rlib only in the manifest: native unit/integration tests and the parity
+# harness (epic zfb#1572 wave 4) link the rlib on the host triple. The wasm
+# artifact is a cdylib, produced by `cargo rustc --crate-type cdylib` for the
+# wasm32 target in npm/scripts/build.mjs — NOT declared here. A native cdylib
+# would be built by `cargo build --workspace --all-targets`, and under
+# workspace feature unification it transitively links V8 (zfb-render's default
+# `embed_v8`, enabled by zfb/zfb-build); V8's thread-local relocations
+# (R_X86_64_TPOFF32) are illegal in an ELF `-shared` object, so that native
+# cdylib link fails on Linux (fine on macOS Mach-O, and `cargo check` never
+# links — which is why it only surfaced in CI).
+crate-type = ["rlib"]
+
+[features]
+# Gates the `generate_parity_oracle` bin below out of every DEFAULT build of
+# this package -- including `cargo build --target wasm32-unknown-unknown
+# ... -p zfb-md-wasm` (the npm package's `pnpm build`, scripts/build.mjs),
+# which invokes cargo with no `--lib`/`--bin` filter and would otherwise
+# happily cross-compile this native-only, filesystem-touching bin for
+# wasm32-unknown-unknown too (wastefully, and pointlessly -- it would panic
+# at runtime with no filesystem to read). Empty on purpose: it turns on no
+# optional dependency, it only exists so `required-features` below can gate
+# the bin target.
+parity-oracle = []
+
+[[bin]]
+# Regenerates the wasm-vs-native parity oracle fixtures (zfb#1578, epic
+# zfb#1572 wave 4). `required-features` keeps this out of every default
+# build (see the `parity-oracle` feature doc above) -- see the doc comment
+# at the top of its source for why this is a `[[bin]]` under tests/ rather
+# than a `#[test]`, and why its output is fancy-regex-backed. Run:
+# `cargo run -p zfb-md-wasm --bin generate_parity_oracle --features
+# parity-oracle`.
+name = "generate_parity_oracle"
+path = "tests/bin/generate_parity_oracle.rs"
+required-features = ["parity-oracle"]
+
+[dependencies]
+# Wasm-safe pipeline facade (zfb#1574) + unified frontmatter extraction.
+# `syntect-fancy` selects the pure-Rust regex backend (zfb#1573) — the
+# default `syntect-onig` backend is C (`onig_sys`) and cannot compile for
+# wasm32-unknown-unknown.
+zfb-content = { path = "../zfb-content", default-features = false, features = ["syntect-fancy"] }
+# SwcPipeline (JSX → ES-module JS). Repo invariant: one place where JSX
+# becomes JS (see zfb-content's mdx_jsx_emit module docs). `default-features
+# = false` keeps `embed_v8` (deno_core + tokio, native-only) out of the wasm
+# graph; `syntect-fancy` keeps this edge's zfb-content backend selection in
+# lock-step with the direct edge above (zfb#1576 added the forwarding
+# features to zfb-render).
+zfb-render = { path = "../zfb-render", default-features = false, features = ["syntect-fancy"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = "0.2"

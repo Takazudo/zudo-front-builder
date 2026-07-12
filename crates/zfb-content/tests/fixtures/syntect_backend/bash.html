@@ -1,0 +1,17 @@
+== styled ==
+<pre class="syntect-base16-ocean-dark"><code><span style="color:#65737e;">#!/usr/bin/env bash
+</span><span style="color:#96b5b4;">set</span><span style="color:#c0c5ce;"> -euo pipefail
+</span><span style="color:#b48ead;">for</span><span style="color:#c0c5ce;"> f </span><span style="color:#b48ead;">in </span><span style="color:#c0c5ce;">&quot;$</span><span style="color:#bf616a;">@</span><span style="color:#c0c5ce;">&quot;; </span><span style="color:#b48ead;">do
+</span><span style="color:#c0c5ce;">  </span><span style="color:#8fa1b3;">cat </span><span style="color:#c0c5ce;">&lt;&lt;</span><span style="color:#b48ead;">EOF
+</span><span style="color:#a3be8c;">name: </span><span style="color:#c0c5ce;">$</span><span style="color:#a3be8c;">{</span><span style="color:#bf616a;">f</span><span style="color:#c0c5ce;">%%</span><span style="color:#a3be8c;">.</span><span style="color:#c0c5ce;">*</span><span style="color:#a3be8c;">}
+</span><span style="color:#b48ead;">EOF
+</span><span style="color:#b48ead;">done
+</span></code></pre>
+== classes ==
+<span class="hi-com">#!/usr/bin/env bash
+</span><span class="hi-fn">set</span> -euo pipefail
+<span class="hi-kw">for</span> f <span class="hi-kw">in</span> <span class="hi-str">&quot;$</span><span class="hi-var">@</span><span class="hi-str">&quot;</span><span class="hi-op">;</span> <span class="hi-kw">do</span>
+  <span class="hi-fn">cat</span> <span class="hi-op">&lt;&lt;</span><span class="hi-kw">EOF</span><span class="hi-str">
+</span><span class="hi-str">name: ${</span><span class="hi-var">f</span><span class="hi-op">%%</span><span class="hi-str">.</span><span class="hi-op">*</span><span class="hi-str">}
+</span><span class="hi-kw">EOF</span>
+<span class="hi-kw">done</span>

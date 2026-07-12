@@ -9,7 +9,12 @@ serde_yaml = "0.9"
 serde_json = "1"
 anyhow = "1"
 thiserror = "2"
-syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "regex-onig", "plist-load"] }
+# The regex backend (regex-onig vs regex-fancy) is deliberately NOT pinned
+# here: zfb-content selects it via its `syntect-onig` (default) /
+# `syntect-fancy` features, because onig_sys is C and cannot compile for
+# wasm32-unknown-unknown (zfb#1573). When feature unification enables both
+# backends, syntect gives regex-onig precedence (syntect src/parsing/regex.rs).
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "plist-load"] }
 garde = { version = "0.22", features = ["derive"] }
 tempfile = "3"
 walkdir = "2"
@@ -51,3 +56,17 @@ swc_core = { version = "64" }
 # Applied workspace-wide — member crate [profile.release] blocks are ignored
 # by Cargo when a workspace root profile is present.
 strip = "symbols"
+
+# Dedicated wasm size-optimized profile (zfb#1577, zfb-md-wasm npm package).
+# Opt-in via `cargo build --profile wasm-release`, so it never changes the
+# default `release` profile other crates/binaries build with. `opt-level =
+# "z"` + `lto = true` + `codegen-units = 1` + `panic = "abort"` are the
+# standard size-minimizing combination for wasm32-unknown-unknown cdylibs
+# (panic="abort" is safe here because a wasm trap is unrecoverable in-process
+# either way — see crates/zfb-md-wasm/README.md's trap contract).
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

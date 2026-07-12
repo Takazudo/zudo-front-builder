@@ -1,0 +1,152 @@
+{
+  "$comment": "Frozen parity corpus for zfb#1578 (epic zfb#1572, wave 4). Single source of truth read by BOTH the native oracle generator (crates/zfb-md-wasm/tests/bin/generate_parity_oracle.rs) and the wasm-side vitest suite (crates/zfb-md-wasm/npm/test/parity.test.ts). Do not expand this list mid-task -- see the corpus's header comment in parity.test.ts for the bounded-finish-line rationale.",
+  "fixtures": [
+    {
+      "slug": "github-alerts",
+      "tier": "renderHtml",
+      "input": "input/github-alerts.md",
+      "options": {
+        "filename": "alerts.md",
+        "pipeline": { "features": { "githubAlerts": true } }
+      }
+    },
+    {
+      "slug": "code-tabs",
+      "tier": "renderHtml",
+      "input": "input/code-tabs.md",
+      "options": {
+        "filename": "code-tabs.md",
+        "pipeline": { "features": { "codeTabs": true } }
+      }
+    },
+    {
+      "slug": "ruby",
+      "tier": "renderHtml",
+      "input": "input/ruby.md",
+      "options": {
+        "filename": "ruby.md",
+        "pipeline": { "features": { "ruby": true } }
+      }
+    },
+    {
+      "slug": "directives",
+      "tier": "renderHtml",
+      "input": "input/directives.md",
+      "options": {
+        "filename": "directives.md",
+        "pipeline": {
+          "features": {
+            "directives": {
+              "note": "Note",
+              "tip": "Tip",
+              "warning": "Warning",
+              "details": "Details"
+            }
+          }
+        }
+      }
+    },
+    {
+      "slug": "cjk-emphasis",
+      "tier": "renderHtml",
+      "input": "input/cjk-emphasis.md",
+      "options": {
+        "filename": "cjk.md",
+        "pipeline": {
+          "cjkFriendly": true,
+          "gfm": { "strikethrough": true }
+        }
+      }
+    },
+    {
+      "slug": "gfm-tables",
+      "tier": "renderHtml",
+      "input": "input/gfm-tables.md",
+      "options": {
+        "filename": "table.md",
+        "pipeline": { "gfm": { "table": true } }
+      }
+    },
+    {
+      "slug": "heading-links-toc",
+      "tier": "renderHtml",
+      "input": "input/heading-links-toc.md",
+      "options": {
+        "filename": "headings.md",
+        "pipeline": {}
+      }
+    },
+    {
+      "slug": "reading-time",
+      "tier": "compile",
+      "input": "input/reading-time.mdx",
+      "options": {
+        "filename": "reading-time.mdx",
+        "pipeline": { "features": { "readingTime": { "wpm": 100 } } }
+      }
+    },
+    {
+      "slug": "code-enrichment",
+      "tier": "renderHtml",
+      "input": "input/code-enrichment.md",
+      "options": {
+        "filename": "enrich.md",
+        "pipeline": {
+          "theme": "InspiredGitHub",
+          "features": { "codeEnrichment": {} }
+        }
+      }
+    },
+    {
+      "slug": "mermaid",
+      "tier": "renderHtml",
+      "input": "input/mermaid.md",
+      "options": {
+        "filename": "diagram.md",
+        "pipeline": { "features": { "mermaid": true } }
+      }
+    },
+    {
+      "slug": "autolinks",
+      "tier": "renderHtml",
+      "input": "input/autolinks.md",
+      "options": {
+        "filename": "autolinks.md",
+        "pipeline": {
+          "features": {
+            "githubAutolinks": { "repo": "takazudo/zudo-front-builder" }
+          }
+        }
+      }
+    },
+    {
+      "slug": "frontmatter-variants",
+      "tier": "renderHtml",
+      "input": "input/frontmatter-variants.md",
+      "options": {
+        "filename": "fm.md",
+        "pipeline": {}
+      }
+    },
+    {
+      "slug": "mdx-components-expressions",
+      "tier": "compile",
+      "input": "input/mdx-components-expressions.mdx",
+      "options": {
+        "filename": "components.mdx",
+        "jsxRuntime": "react",
+        "development": true,
+        "pipeline": {}
+      }
+    },
+    {
+      "slug": "malformed-mdx-diagnostic",
+      "tier": "compile",
+      "input": "input/malformed-mdx-diagnostic.mdx",
+      "options": {
+        "filename": "bad.mdx",
+        "pipeline": {}
+      }
+    }
+  ]
+}

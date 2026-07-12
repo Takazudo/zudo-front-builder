@@ -1,0 +1,17 @@
+== styled ==
+<pre class="syntect-base16-ocean-dark"><code><span style="color:#65737e;">/// Doc comment with `code`.
+</span><span style="color:#b48ead;">pub fn </span><span style="color:#8fa1b3;">greet</span><span style="color:#c0c5ce;">(</span><span style="color:#bf616a;">name</span><span style="color:#c0c5ce;">: &amp;</span><span style="color:#b48ead;">str</span><span style="color:#c0c5ce;">) -&gt; String {
+</span><span style="color:#c0c5ce;">    </span><span style="color:#b48ead;">let</span><span style="color:#c0c5ce;"> template = format!(&quot;</span><span style="color:#a3be8c;">hello </span><span style="color:#d08770;">{name}</span><span style="color:#c0c5ce;">&quot;);
+</span><span style="color:#c0c5ce;">    </span><span style="color:#65737e;">/* block
+</span><span style="color:#65737e;">       comment */
+</span><span style="color:#c0c5ce;">    template.</span><span style="color:#96b5b4;">to_uppercase</span><span style="color:#c0c5ce;">()
+</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+== classes ==
+<span class="hi-com">/// Doc comment with `code`.
+</span><span class="hi-kw">pub</span> <span class="hi-kw">fn</span> <span class="hi-fn">greet</span>(<span class="hi-var">name</span><span class="hi-punct">:</span> <span class="hi-op">&amp;</span><span class="hi-kw">str</span>) <span class="hi-punct">-&gt;</span> String {
+    <span class="hi-kw">let</span> template <span class="hi-op">=</span> format!(<span class="hi-str">&quot;hello </span><span class="hi-const">{name}</span><span class="hi-str">&quot;</span>)<span class="hi-punct">;</span>
+    <span class="hi-com">/* block
+</span><span class="hi-com">       comment */</span>
+    template.<span class="hi-fn">to_uppercase</span>()
+}

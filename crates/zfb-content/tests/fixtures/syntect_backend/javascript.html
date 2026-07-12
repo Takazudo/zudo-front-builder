@@ -1,0 +1,15 @@
+== styled ==
+<pre class="syntect-base16-ocean-dark"><code><span style="color:#b48ead;">const </span><span style="color:#bf616a;">re </span><span style="color:#c0c5ce;">= /</span><span style="color:#96b5b4;">ab</span><span style="color:#c0c5ce;">+</span><span style="color:#96b5b4;">c\/</span><span style="color:#d08770;">[</span><span style="color:#c0c5ce;">^</span><span style="color:#d08770;">d]</span><span style="color:#c0c5ce;">/</span><span style="color:#b48ead;">gi</span><span style="color:#c0c5ce;">;
+</span><span style="color:#b48ead;">async function </span><span style="color:#8fa1b3;">load</span><span style="color:#c0c5ce;">({ url = &quot;</span><span style="color:#a3be8c;">https://example.com</span><span style="color:#c0c5ce;">&quot; } = {}) {
+</span><span style="color:#c0c5ce;">  </span><span style="color:#b48ead;">const </span><span style="color:#bf616a;">body </span><span style="color:#c0c5ce;">= `</span><span style="color:#a3be8c;">template </span><span style="color:#c0c5ce;">${url}</span><span style="color:#a3be8c;"> literal
+</span><span style="color:#a3be8c;">spanning lines</span><span style="color:#c0c5ce;">`;
+</span><span style="color:#c0c5ce;">  </span><span style="color:#b48ead;">return </span><span style="color:#8fa1b3;">fetch</span><span style="color:#c0c5ce;">(url).</span><span style="color:#8fa1b3;">then</span><span style="color:#c0c5ce;">((r) </span><span style="color:#b48ead;">=&gt; </span><span style="color:#bf616a;">r</span><span style="color:#c0c5ce;">.</span><span style="color:#8fa1b3;">json</span><span style="color:#c0c5ce;">());
+</span><span style="color:#c0c5ce;">}
+</span></code></pre>
+== classes ==
+<span class="hi-kw">const</span> <span class="hi-var">re</span> <span class="hi-op">=</span> <span class="hi-str">/ab</span><span class="hi-op">+</span><span class="hi-str">c</span><span class="hi-esc">\/</span><span class="hi-const">[</span><span class="hi-op">^</span><span class="hi-const">d]</span><span class="hi-str">/</span><span class="hi-kw">gi</span><span class="hi-punct">;</span>
+<span class="hi-kw">async</span> <span class="hi-kw">function</span> <span class="hi-fn">load</span>({ <span class="hi-var">url</span> <span class="hi-op">=</span> <span class="hi-str">&quot;https://example.com&quot;</span> } <span class="hi-op">=</span> {}) {
+  <span class="hi-kw">const</span> <span class="hi-var">body</span> <span class="hi-op">=</span> <span class="hi-str">`template </span>${url}<span class="hi-str"> literal
+</span><span class="hi-str">spanning lines`</span><span class="hi-punct">;</span>
+  <span class="hi-kw">return</span> <span class="hi-fn">fetch</span>(url)<span class="hi-punct">.</span><span class="hi-fn">then</span>((<span class="hi-var">r</span>) <span class="hi-kw">=&gt;</span> <span class="hi-var">r</span><span class="hi-punct">.</span><span class="hi-fn">json</span>())<span class="hi-punct">;</span>
+}

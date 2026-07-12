@@ -1,0 +1,13 @@
+{
+  "html": "<h1>Body</h1><p>Just checking frontmatter extraction across value types.</p>",
+  "frontmatter": {
+    "count": 42,
+    "date": "2026-07-13",
+    "meta": { "author": "Zudo", "reviewed": false },
+    "published": true,
+    "ratio": 3.14,
+    "tags": ["rust", "wasm", "parity"],
+    "title": "Hello World"
+  },
+  "diagnostics": []
+}

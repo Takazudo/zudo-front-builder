@@ -32,7 +32,10 @@ tempfile = { workspace = true }
 # Dev-only: drives the one-time zfb-hi.css color-extraction helper (an
 # `#[ignore]`d test), which resolves representative scopes through the
 # bundled base16-ocean themes. Not a runtime dependency of the crate.
-syntect = { workspace = true }
+# The workspace dep stopped pinning a regex backend (zfb#1573), so request
+# regex-onig explicitly instead of relying on feature unification with the
+# zfb-content dev-dep's default.
+syntect = { workspace = true, features = ["regex-onig"] }
 # Dev-only, confirm sub zfb#1535 (Highlight Tokens epic): reads
 # `zfb_content::hi_roles::HiRole` so `tests/hi_role_parity.rs` can assert
 # the classifier's role taxonomy and this crate's `default_hi_css()`

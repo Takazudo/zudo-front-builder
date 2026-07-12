@@ -17,6 +17,16 @@
 //! only the theme map when user-supplied `.tmTheme` files must be layered on
 //! top of the defaults.
 
+// Backend contract (zfb#1573): without one of these features, syntect itself
+// fails first with E0433 `regex_impl` errors (its parsing::regex has no
+// implementation), so plain builds never reach this guard — it exists for
+// tooling that type-checks this crate against a pre-built graph, and to make
+// the feature contract greppable at the point of use.
+#[cfg(not(any(feature = "syntect-onig", feature = "syntect-fancy")))]
+compile_error!(
+    "zfb-content needs a syntect regex backend: enable feature `syntect-onig` (native default) or `syntect-fancy` (wasm-safe); `default-features = false` alone leaves syntect without a regex implementation"
+);
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, LazyLock};

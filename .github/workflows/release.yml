@@ -423,6 +423,64 @@ jobs:
           # promoted to GitHub Release assets, so cap Actions storage at the 1-day floor.
           retention-days: 1
 
+  # @takazudo/zfb-md-wasm build leg (epic #1572, issue #1579). Unlike the
+  # zfb Rust binary matrix above, this produces an npm package artifact (a
+  # built dist/ dir), not a GH Release asset — it is downloaded and placed
+  # into crates/zfb-md-wasm/npm/dist by the publish job below, which then
+  # publishes it like any other non-platform package. Runs standalone (no
+  # `needs:` on prepare-matrix/detect-mac-local) since it doesn't touch the
+  # zfb binary matrix at all.
+  build-wasm-md:
+    name: Build @takazudo/zfb-md-wasm npm package
+    runs-on: ubuntu-latest
+    # Same headroom rationale as health.yml's wasm-md job: two compiles
+    # (dev + wasm-release profiles are NOT both done here, but the
+    # wasm-release compile plus a from-source wasm-bindgen-cli install on a
+    # cold cache still costs more than a typical TS-only build leg).
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
+
+      # No `targets` key in rust-toolchain.toml (decision baked in #1575) —
+      # install job-locally, same as health.yml's wasm-md job.
+      - name: rustup target add wasm32-unknown-unknown
+        run: rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          prefix-key: "v2-zfb-wasm-md"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Must exactly match the wasm-bindgen crate version resolved in
+      # Cargo.lock (pinned in crates/zfb-md-wasm/npm/scripts/build.mjs's
+      # EXPECTED_WASM_BINDGEN_VERSION constant) — same pin as health.yml's
+      # wasm-md job.
+      - name: Install wasm-bindgen-cli (pinned to match Cargo.lock)
+        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+
+      - name: Build @takazudo/zfb-md-wasm npm package
+        run: pnpm --filter @takazudo/zfb-md-wasm build
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wasm-md-dist
+          path: crates/zfb-md-wasm/npm/dist
+          if-no-files-found: error
+          # Consumed within this run by the publish job; cap Actions storage
+          # at the 1-day floor like the other build artifacts above.
+          retention-days: 1
+
   release-assets:
     # Attaches all 5 archives + 5 sha256 files to the GitHub Release.
     # Runs after all platform builds complete to avoid first-vs-append GH Release
@@ -495,7 +553,11 @@ jobs:
     # pnpm -r publish honors the dependency graph:
     #   platform packages → @takazudo/zfb → @takazudo/zfb-runtime → @takazudo/zfb-adapter-cloudflare → create-zfb
     # pnpm (not npm) is used so workspace:* peer-deps are rewritten at publish time.
-    needs: [build, detect-mac-local]
+    # @takazudo/zfb-md-wasm (needs: build-wasm-md) is a separate, unrelated
+    # dependency graph (crates/zfb-md-wasm/npm) — it's just published
+    # alongside the rest, see the "Download @takazudo/zfb-md-wasm dist
+    # artifact" step below.
+    needs: [build, detect-mac-local, build-wasm-md]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -596,11 +658,25 @@ jobs:
           cp artifacts/binary-x86_64-apple-darwin/zfb packages/zfb-darwin-x64/zfb
           chmod +x packages/zfb-darwin-x64/zfb
 
+      # Built by the build-wasm-md job above (needs the Rust wasm32 toolchain
+      # + pinned wasm-bindgen-cli — this job installs neither). Downloaded
+      # straight into the package's dist/ so it's ready to pack/publish
+      # without a rebuild; see the "Build TypeScript packages" exclusion and
+      # publish-npm-packages.sh's --ignore-scripts handling for this package.
+      - name: Download @takazudo/zfb-md-wasm dist artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-md-dist
+          path: crates/zfb-md-wasm/npm/dist
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # @takazudo/zfb-md-wasm is excluded: its dist/ was already built by the
+      # build-wasm-md job and downloaded above; this job has no Rust wasm32
+      # toolchain, so re-running its `build` script here would fail.
       - name: Build TypeScript packages
-        run: pnpm -r --filter '!./examples/*' build
+        run: pnpm -r --filter '!./examples/*' --filter '!@takazudo/zfb-md-wasm' build
 
       - name: Sync platform package versions (lockstep verification — should be no-op)
         shell: bash
@@ -777,7 +853,16 @@ jobs:
     # an earlier job (e.g. detect-mac-local) fails and cascades a *skip*
     # (not a failure) into its dependents. Same IFTTT pattern as
     # docs-deploy.yml's notify job (status-computed, reuses IFTTT_PROD_NOTIFY).
-    needs: [detect-mac-local, prepare-matrix, build, release-assets, publish, smoke-clean-room]
+    needs:
+      [
+        detect-mac-local,
+        prepare-matrix,
+        build,
+        build-wasm-md,
+        release-assets,
+        publish,
+        smoke-clean-room,
+      ]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -790,6 +875,7 @@ jobs:
           DETECT_MAC_LOCAL_RESULT: ${{ needs.detect-mac-local.result }}
           PREPARE_MATRIX_RESULT: ${{ needs.prepare-matrix.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          BUILD_WASM_MD_RESULT: ${{ needs.build-wasm-md.result }}
           RELEASE_ASSETS_RESULT: ${{ needs.release-assets.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           SMOKE_CLEAN_ROOM_RESULT: ${{ needs.smoke-clean-room.result }}
@@ -806,6 +892,8 @@ jobs:
             FAILED_JOB="prepare-matrix"
           elif [ "$BUILD_RESULT" = "failure" ]; then
             FAILED_JOB="build"
+          elif [ "$BUILD_WASM_MD_RESULT" = "failure" ]; then
+            FAILED_JOB="build-wasm-md"
           elif [ "$RELEASE_ASSETS_RESULT" = "failure" ]; then
             FAILED_JOB="release-assets"
           elif [ "$PUBLISH_RESULT" = "failure" ]; then
@@ -815,7 +903,7 @@ jobs:
           fi
 
           if [ -z "$FAILED_JOB" ]; then
-            echo "No failed job among detect-mac-local/prepare-matrix/build/release-assets/publish/smoke-clean-room — skipping notification."
+            echo "No failed job among detect-mac-local/prepare-matrix/build/build-wasm-md/release-assets/publish/smoke-clean-room — skipping notification."
             exit 0
           fi
 
