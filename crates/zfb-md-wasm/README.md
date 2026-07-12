@@ -120,7 +120,8 @@ it (details: `SPIKE-FINDINGS.md` in this directory for the swc half):
 The graph stays clean by assertion, not eyeballing:
 `scripts/assert-zfb-md-wasm-graph.sh` greps
 `cargo tree --target wasm32-unknown-unknown -p zfb-md-wasm -e normal` for
-`onig_sys`/`deno_core`/`tokio` (CI wiring is the wave-4 sub-issue zfb#1579).
+`onig_sys`/`deno_core`/`tokio`. It runs in CI on every PR via the `wasm-md`
+job in `.github/workflows/health.yml` (added in zfb#1579).
 
 ## Parity notes
 

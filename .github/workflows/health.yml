@@ -521,6 +521,16 @@ jobs:
       - name: cargo clippy (zfb-md-wasm, wasm32-unknown-unknown)
         run: cargo clippy --target wasm32-unknown-unknown -p zfb-md-wasm -- -D warnings
 
+      # Defense in depth over the two cargo steps above: onig_sys (C) and
+      # deno_core (rusty_v8) already fail to compile for wasm32 so a
+      # regression pulling them in would break `cargo check` — but a wasm-safe
+      # tokio feature subset (sync/macros/time) DOES compile for wasm32, so a
+      # dependency edit that dragged tokio into the graph would pass the checks
+      # above and silently bloat the artifact. This named-crate assertion is
+      # the only thing that catches that.
+      - name: Assert zfb-md-wasm graph is free of onig_sys / deno_core / tokio
+        run: bash scripts/assert-zfb-md-wasm-graph.sh
+
       # wasm-bindgen requires an EXACT version match between this CLI and the
       # `wasm-bindgen` crate resolved in Cargo.lock (pinned in
       # crates/zfb-md-wasm/npm/scripts/build.mjs's

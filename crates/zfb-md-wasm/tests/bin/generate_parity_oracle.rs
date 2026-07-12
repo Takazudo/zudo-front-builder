@@ -43,9 +43,18 @@
 //! 2. Calls `zfb_md_wasm::compile` or `zfb_md_wasm::render_html` (selected
 //!    by the fixture's `tier`) with the fixture's `options` re-serialized
 //!    to a JSON string.
-//! 3. Writes the raw JSON string returned (unmodified -- this is the exact
-//!    byte sequence the parity gate compares against) to
-//!    `tests/fixtures/parity/expected/<slug>.json`.
+//! 3. Writes the raw JSON string returned (unmodified) to
+//!    `tests/fixtures/parity/expected/<slug>.json`. The parity gate parses
+//!    this JSON and compares the re-serialized value (see that suite's
+//!    header for why parse-then-compare is the right boundary), so the
+//!    on-disk formatting is not load-bearing.
+//!
+//! IMPORTANT: the committed `expected/*.json` are prettier-formatted (the
+//! repo's `format:check` gate covers `**/*.json`), but this bin writes
+//! compact single-line JSON. After regenerating, run `pnpm format` (or
+//! `pnpm --filter docs exec prettier --write <dir>`) so the committed files
+//! stay `format:check`-clean. Key order is identical either way (the same
+//! serde struct order the wasm build emits), so this is formatting only.
 //!
 //! Not a `#[test]` on purpose: this is a one-shot regeneration tool, not a
 //! regression check (the regression check is the vitest parity suite that

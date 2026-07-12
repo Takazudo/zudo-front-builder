@@ -48,12 +48,13 @@
 // touch). Both assertions below are therefore run per fixture:
 //   1. `toStrictEqual` against the oracle file parsed the same way --
 //      structural, type-exact equality (no fuzzy/tolerance matching).
-//   2. `JSON.stringify(actual) === JSON.stringify(expected)` -- since both
-//      sides are plain JSON-shaped values (strings/numbers/booleans/
-//      null/arrays/objects with a fixed key set) produced by parsing
-//      single-line JSON text, re-serializing both and comparing the
-//      resulting strings is a literal byte-for-byte identity check. This
-//      is the practical byte-exact gate: the oracle and the wasm build run
+//   2. `JSON.stringify(actual) === JSON.stringify(expected)` -- both sides
+//      are plain JSON-shaped values (strings/numbers/booleans/null/arrays/
+//      objects with a fixed key set). `JSON.parse` then `JSON.stringify`
+//      normalizes away source formatting (the committed oracle files are
+//      prettier-formatted multi-line JSON; the wasm wire string is compact)
+//      while preserving key order, so comparing the re-serialized strings
+//      is an exact value-identity check. The oracle and the wasm build run
 //      the identical Rust serialization code (serde_json, same struct
 //      field order), so nothing here has room to drift except a genuine
 //      behavioral difference between the two targets.

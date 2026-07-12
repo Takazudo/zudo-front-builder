@@ -63,7 +63,7 @@ automatic JSX runtime.
 import { compile } from "@takazudo/zfb-md-wasm";
 
 const { code, frontmatter, diagnostics } = await compile(
-  "---\ntitle: Hello\n---\n\n# {frontmatter.title}\n\n<Callout>Hi</Callout>\n",
+  "---\ntitle: Hello\n---\n\n# Welcome\n\n<Callout>Sum is {1 + 2}</Callout>\n",
   { filename: "post.mdx", jsxRuntime: "preact" },
 );
 // code        -> ES-module JS source (string), or null on failure
@@ -71,13 +71,23 @@ const { code, frontmatter, diagnostics } = await compile(
 // diagnostics -> []
 ```
 
+Frontmatter values come back in the result's `frontmatter` field — they are
+**not** exposed as an in-content binding. Reference them from your host code
+(the `frontmatter` object above), not with `{frontmatter.title}` inside the
+source: the compiled module has no `frontmatter` variable in scope, so an
+in-content reference to it would throw `ReferenceError` when the module runs.
+
 ### Evaluating the compiled module in a browser
 
 `compile()` hands back ES-module *source text*, not a runnable module. Turn
 it into one with a blob URL and a dynamic `import()`:
 
 ```ts
-const { code } = await compile(source, { filename: "preview.mdx" });
+const { code, diagnostics } = await compile(source, { filename: "preview.mdx" });
+if (code === null) {
+  // Compilation failed — render the `diagnostics` array instead of a module.
+  return;
+}
 const url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
 const { default: MDXContent } = await import(/* @vite-ignore */ url);
 URL.revokeObjectURL(url);

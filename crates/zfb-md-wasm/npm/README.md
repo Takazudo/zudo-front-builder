@@ -38,13 +38,19 @@ default export (a component function) using the automatic JSX runtime.
 import { compile } from "@takazudo/zfb-md-wasm";
 
 const { code, frontmatter, diagnostics } = await compile(
-  "---\ntitle: Hello\n---\n\n# {frontmatter.title}\n\n<Callout>Hi</Callout>\n",
+  "---\ntitle: Hello\n---\n\n# Welcome\n\n<Callout>Sum is {1 + 2}</Callout>\n",
   { filename: "post.mdx", jsxRuntime: "preact" },
 );
 // code        -> ES-module JS source (string) or null on failure
 // frontmatter -> { title: "Hello" }
 // diagnostics -> []
 ```
+
+Frontmatter values are returned in the `frontmatter` field — they are **not**
+exposed as an in-content binding. The compiled module has no `frontmatter`
+variable in scope, so a `{frontmatter.title}` reference inside the source
+would throw `ReferenceError` at runtime; read the values from the result
+object instead.
 
 ### `renderHtml(source, options?)` — markdown → HTML
 
@@ -102,7 +108,11 @@ nesting levels (an `options`-source diagnostic).
 blob URL is the usual trick) and dynamic-import it:
 
 ```ts
-const { code } = await compile(source, { filename: "preview.mdx" });
+const { code, diagnostics } = await compile(source, { filename: "preview.mdx" });
+if (code === null) {
+  // Compilation failed — render `diagnostics` instead of a module.
+  return;
+}
 const url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
 const { default: MDXContent } = await import(/* @vite-ignore */ url);
 URL.revokeObjectURL(url);

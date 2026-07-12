@@ -21,9 +21,9 @@ set -euo pipefail
 #
 # Usage: scripts/assert-zfb-md-wasm-graph.sh
 # Runs from any cwd; exits non-zero (with the offending lines) on violation.
-# Wired into CI by the epic's wave-4 CI sub-issue (zfb#1579); until then run
-# it manually alongside `cargo check --target wasm32-unknown-unknown -p
-# zfb-md-wasm`.
+# Run in CI by the `wasm-md` job in .github/workflows/health.yml (added in
+# zfb#1579); also runnable locally alongside `cargo check --target
+# wasm32-unknown-unknown -p zfb-md-wasm`.
 
 cd "$(dirname "$0")/.."
 

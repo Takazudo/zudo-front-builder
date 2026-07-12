@@ -181,11 +181,12 @@ export async function version(): Promise<string> {
  * `callWasm`'s catch clause keys on -- so this exercises the real
  * catch-and-reinstantiate path without needing to coax an actual Rust panic
  * out of a crate that is deliberately designed to never panic on structured
- * input. Not exported from package.json's "exports" map (only reachable via
- * a direct relative import into `src/`/`dist/`, which is how the test file
- * uses it) and not part of the supported public API -- the raw ABI details
- * it pokes at (argument order, retptr convention) are wasm-bindgen internals
- * that can change on a wasm-bindgen version bump.
+ * input. This is NOT part of the supported public API: it is a named export
+ * of the package entry, so a `import { __forceTrapForTests } from
+ * "@takazudo/zfb-md-wasm"` does resolve -- but the `__`-prefix marks it
+ * internal, and the raw ABI details it pokes at (argument order, retptr
+ * convention) are wasm-bindgen internals that can change on a wasm-bindgen
+ * version bump. Do not call it outside this package's own tests.
  */
 export async function __forceTrapForTests(): Promise<void> {
   await callWasm(({ raw }) => {
