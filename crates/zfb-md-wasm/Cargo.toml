@@ -1,0 +1,28 @@
+[package]
+name = "zfb-md-wasm"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "zfb md/mdx → JS / HTML conversion compiled to WebAssembly (wasm32-unknown-unknown) for browser-side dynamic conversion — CMS live preview with parity to zfb's production output."
+
+[lib]
+# cdylib → the wasm artifact; rlib → native unit/integration tests and the
+# parity harness (epic zfb#1572 wave 4) link the same code on the host triple.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Wasm-safe pipeline facade (zfb#1574) + unified frontmatter extraction.
+# `syntect-fancy` selects the pure-Rust regex backend (zfb#1573) — the
+# default `syntect-onig` backend is C (`onig_sys`) and cannot compile for
+# wasm32-unknown-unknown.
+zfb-content = { path = "../zfb-content", default-features = false, features = ["syntect-fancy"] }
+# SwcPipeline (JSX → ES-module JS). Repo invariant: one place where JSX
+# becomes JS (see zfb-content's mdx_jsx_emit module docs). `default-features
+# = false` keeps `embed_v8` (deno_core + tokio, native-only) out of the wasm
+# graph; `syntect-fancy` keeps this edge's zfb-content backend selection in
+# lock-step with the direct edge above (zfb#1576 added the forwarding
+# features to zfb-render).
+zfb-render = { path = "../zfb-render", default-features = false, features = ["syntect-fancy"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = "0.2"
