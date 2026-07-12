@@ -165,18 +165,21 @@ struct Prepared {
 /// Shared front half: options JSON → frontmatter extraction → pipeline
 /// construction. The error branch carries the best-effort frontmatter
 /// (already-extracted values are still returned when a later stage
-/// fails).
+/// fails). The `Err` is boxed: the `(JsonValue, Diagnostic)` tuple is
+/// ~160 bytes on 64-bit hosts (`clippy::result_large_err` under the native
+/// `cargo clippy --workspace`), though it stays under the threshold on the
+/// shipped wasm32 target — boxing keeps it lint-clean on every target.
 fn prepare(
     source: &str,
     options_json: &str,
     default_filename: &str,
-) -> Result<Prepared, (JsonValue, Diagnostic)> {
+) -> Result<Prepared, Box<(JsonValue, Diagnostic)>> {
     let opts: WasmOptions = match serde_json::from_str(options_json) {
         Ok(o) => o,
         Err(e) => {
             let diag = Diagnostic::error("options", format!("invalid options JSON: {e}"))
                 .at(Some(e.line() as u64), Some(e.column() as u64));
-            return Err((JsonValue::Null, diag));
+            return Err(Box::new((JsonValue::Null, diag)));
         }
     };
     let filename = opts
@@ -190,12 +193,12 @@ fn prepare(
             "options",
             format!("filename `{filename}` must end in `.md` or `.mdx` for this entry point"),
         );
-        return Err((JsonValue::Null, diag));
+        return Err(Box::new((JsonValue::Null, diag)));
     }
 
     let extracted = match extract_from_filename(&filename, source) {
         Ok(uf) => uf,
-        Err(e) => return Err((JsonValue::Null, frontmatter_diagnostic(&e))),
+        Err(e) => return Err(Box::new((JsonValue::Null, frontmatter_diagnostic(&e)))),
     };
     let (Some(body), Some(body_offset)) = (extracted.body, extracted.body_offset) else {
         // Unreachable after the extension gate above (`.md`/`.mdx` always
@@ -205,7 +208,7 @@ fn prepare(
             "options",
             format!("filename `{filename}` did not resolve to a markdown body"),
         );
-        return Err((JsonValue::Null, diag));
+        return Err(Box::new((JsonValue::Null, diag)));
     };
     let frontmatter = extracted.value;
     let prefix_lines = source
@@ -217,7 +220,7 @@ fn prepare(
         Ok(p) => p,
         Err(e) => {
             let diag = Diagnostic::error("options", e.to_string());
-            return Err((frontmatter, diag));
+            return Err(Box::new((frontmatter, diag)));
         }
     };
 
@@ -289,7 +292,8 @@ fn markdown_diagnostic(err: &PipelineError, filename: &str, prefix_lines: u64) -
 fn compile_impl(source: &str, options_json: &str) -> CompileResult {
     let prepared = match prepare(source, options_json, "<anonymous>.mdx") {
         Ok(p) => p,
-        Err((frontmatter, diag)) => {
+        Err(boxed) => {
+            let (frontmatter, diag) = *boxed;
             return CompileResult {
                 code: None,
                 frontmatter,
@@ -340,7 +344,8 @@ fn compile_impl(source: &str, options_json: &str) -> CompileResult {
 fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
     let prepared = match prepare(source, options_json, "<anonymous>.md") {
         Ok(p) => p,
-        Err((frontmatter, diag)) => {
+        Err(boxed) => {
+            let (frontmatter, diag) = *boxed;
             return RenderHtmlResult {
                 html: None,
                 frontmatter,
