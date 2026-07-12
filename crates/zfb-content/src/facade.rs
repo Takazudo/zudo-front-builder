@@ -201,6 +201,16 @@ pub enum FacadeError {
     /// `repo`, an invalid `headingIds.strategy`).
     #[error("invalid pipeline options JSON: {0}")]
     InvalidConfig(#[from] serde_json::Error),
+    /// Pipeline construction rejected the resolved options. With
+    /// `themes_dir` never set by this facade (see the module docs), the
+    /// only reachable case is
+    /// [`HighlightError::UnknownTheme`](crate::syntect_highlight::HighlightError::UnknownTheme):
+    /// `with_defaults_and_full_config` validates the configured theme
+    /// *name* against the loaded theme set at build start (zfb#1067 /
+    /// zfb#1070), so a misspelled `theme` fails loudly instead of
+    /// silently rendering unhighlighted code blocks.
+    #[error("invalid pipeline options: {0}")]
+    Highlight(#[from] crate::syntect_highlight::HighlightError),
     /// The pipeline itself failed to run against the supplied source.
     #[error(transparent)]
     Pipeline(#[from] PipelineError),
@@ -222,35 +232,37 @@ pub fn parse_pipeline_options(config_json: &str) -> Result<PipelineOptions, Faca
 /// Mirrors [`Pipeline::with_defaults_and_full_config`] with `themes_dir`
 /// hard-coded to `None` and `build_context_roots` never armed — see the
 /// module docs for why that keeps `transclude` / `imageDimensions` /
-/// `linkValidation` inert. This function is infallible: the only failure
-/// mode of `with_defaults_and_full_config` is a `themes_dir` theme-file
-/// load error, which cannot occur here since `themes_dir` is always
-/// `None`.
-#[must_use]
-pub fn build_pipeline(options: &PipelineOptions) -> Pipeline {
+/// `linkValidation` inert.
+///
+/// # Errors
+/// Returns [`FacadeError::Highlight`] when `options.theme` names a theme
+/// that does not exist in the built-in syntect theme set —
+/// `with_defaults_and_full_config` validates theme names at build start
+/// (zfb#1067 / zfb#1070). A wasm host must surface this as a structured
+/// diagnostic, never a panic (zfb#1576): the theme name comes straight
+/// from user-supplied options JSON, and on `wasm32-unknown-unknown` a
+/// panic traps and poisons the instance.
+pub fn build_pipeline(options: &PipelineOptions) -> Result<Pipeline, FacadeError> {
     let resolved_gfm: ResolvedGfmConstructs = options.gfm.into();
-    Pipeline::with_defaults_and_full_config(
+    Ok(Pipeline::with_defaults_and_full_config(
         options.theme.as_deref(),
         resolved_gfm,
         None,
         options.cjk_friendly,
         options.hard_breaks,
         Some(&options.features),
-    )
-    .expect(
-        "facade::build_pipeline never sets themes_dir, so with_defaults_and_full_config cannot fail",
-    )
+    )?)
 }
 
 /// Parse `config_json` and build a fully-wired [`Pipeline`] in one step.
 ///
 /// # Errors
 /// Returns [`FacadeError::InvalidConfig`] on malformed/invalid config JSON
-/// (see [`parse_pipeline_options`]). Pipeline construction itself cannot
-/// fail — see [`build_pipeline`].
+/// (see [`parse_pipeline_options`]), or [`FacadeError::Highlight`] when
+/// the config names an unknown syntect theme (see [`build_pipeline`]).
 pub fn build_pipeline_from_json(config_json: &str) -> Result<Pipeline, FacadeError> {
     let options = parse_pipeline_options(config_json)?;
-    Ok(build_pipeline(&options))
+    build_pipeline(&options)
 }
 
 /// Render `input` to an HTML fragment string through `pipeline`.
@@ -313,8 +325,10 @@ pub fn render_mdx_jsx_module(
 /// re-parsing the options JSON and re-wiring the plugin chain per call.
 ///
 /// # Errors
-/// Returns [`FacadeError::InvalidConfig`] on invalid config JSON, or
-/// [`FacadeError::Pipeline`] if markdown-rs rejects `source`.
+/// Returns [`FacadeError::InvalidConfig`] on invalid config JSON,
+/// [`FacadeError::Highlight`] on an unknown syntect theme name (see
+/// [`build_pipeline`]), or [`FacadeError::Pipeline`] if markdown-rs
+/// rejects `source`.
 pub fn render_html_from_config(config_json: &str, source: &str) -> Result<String, FacadeError> {
     let mut pipeline = build_pipeline_from_json(config_json)?;
     Ok(render_html(&mut pipeline, source)?)
@@ -329,8 +343,10 @@ pub fn render_html_from_config(config_json: &str, source: &str) -> Result<String
 /// compiling multiple sources against the same config.
 ///
 /// # Errors
-/// Returns [`FacadeError::InvalidConfig`] on invalid config JSON, or
-/// [`FacadeError::Pipeline`] if markdown-rs rejects `source`.
+/// Returns [`FacadeError::InvalidConfig`] on invalid config JSON,
+/// [`FacadeError::Highlight`] on an unknown syntect theme name (see
+/// [`build_pipeline`]), or [`FacadeError::Pipeline`] if markdown-rs
+/// rejects `source`.
 pub fn compile_mdx_jsx_from_config(
     config_json: &str,
     source: &str,

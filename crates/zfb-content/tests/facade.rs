@@ -26,7 +26,8 @@
 
 use zfb_content::facade::{
     build_pipeline, build_pipeline_from_json, compile_mdx_jsx_from_config, parse_pipeline_options,
-    render_html, render_html_from_config, render_mdx_jsx_module, GfmOptions, PipelineOptions,
+    render_html, render_html_from_config, render_mdx_jsx_module, FacadeError, GfmOptions,
+    PipelineOptions,
 };
 use zfb_content::frontmatter::extract_from_filename;
 use zfb_content::pipeline::{Pipeline, ResolvedGfmConstructs};
@@ -37,7 +38,7 @@ use zfb_content::serializer::serialize;
 #[test]
 fn pipeline_options_default_matches_bare_full_config_constructor() {
     let options = PipelineOptions::default();
-    let mut from_facade = build_pipeline(&options);
+    let mut from_facade = build_pipeline(&options).expect("default options build a pipeline");
     let mut from_bare = Pipeline::with_defaults_and_full_config(
         None,
         ResolvedGfmConstructs::CONSERVATIVE,
@@ -100,6 +101,29 @@ fn gfm_options_json_round_trips_into_resolved_constructs() {
     assert!(resolved.autolink_literal);
     assert!(resolved.task_list_item);
     assert!(resolved.footnote_definition);
+}
+
+// ── theme-name validation surfaces as an error, not a panic ─────────────────
+
+/// `with_defaults_and_full_config` validates theme names at build start
+/// (zfb#1067 / zfb#1070) even with `themes_dir = None`, so an unknown
+/// `theme` in user options JSON reaches `build_pipeline`. Before zfb#1576
+/// the facade `.expect`ed this path away — on wasm32 that panic would trap
+/// and poison the instance. It must surface as `FacadeError::Highlight`.
+#[test]
+fn unknown_theme_name_is_an_error_not_a_panic() {
+    let err = build_pipeline_from_json(r#"{"theme": "NoSuchThemeName"}"#)
+        .map(|_| ())
+        .expect_err("unknown theme must be rejected");
+    assert!(
+        matches!(err, FacadeError::Highlight(_)),
+        "expected FacadeError::Highlight, got: {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("NoSuchThemeName"),
+        "error must name the unknown theme: {msg}"
+    );
 }
 
 // ── render_html matches the equivalent existing test-composed path ─────────
