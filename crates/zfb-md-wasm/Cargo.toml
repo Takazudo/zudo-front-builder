@@ -6,9 +6,17 @@ license = "MIT"
 description = "zfb md/mdx → JS / HTML conversion compiled to WebAssembly (wasm32-unknown-unknown) for browser-side dynamic conversion — CMS live preview with parity to zfb's production output."
 
 [lib]
-# cdylib → the wasm artifact; rlib → native unit/integration tests and the
-# parity harness (epic zfb#1572 wave 4) link the same code on the host triple.
-crate-type = ["cdylib", "rlib"]
+# rlib only in the manifest: native unit/integration tests and the parity
+# harness (epic zfb#1572 wave 4) link the rlib on the host triple. The wasm
+# artifact is a cdylib, produced by `cargo rustc --crate-type cdylib` for the
+# wasm32 target in npm/scripts/build.mjs — NOT declared here. A native cdylib
+# would be built by `cargo build --workspace --all-targets`, and under
+# workspace feature unification it transitively links V8 (zfb-render's default
+# `embed_v8`, enabled by zfb/zfb-build); V8's thread-local relocations
+# (R_X86_64_TPOFF32) are illegal in an ELF `-shared` object, so that native
+# cdylib link fails on Linux (fine on macOS Mach-O, and `cargo check` never
+# links — which is why it only surfaced in CI).
+crate-type = ["rlib"]
 
 [features]
 # Gates the `generate_parity_oracle` bin below out of every DEFAULT build of

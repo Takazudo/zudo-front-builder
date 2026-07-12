@@ -3,11 +3,12 @@
  * scripts/build.mjs — builds @takazudo/zfb-md-wasm (zfb#1577, epic zfb#1572).
  *
  * Pipeline:
- *   1. cargo build --target wasm32-unknown-unknown --profile wasm-release
- *      -p zfb-md-wasm   (the size-optimized profile added to the repo root
- *      Cargo.toml by this issue — opt-level "z", LTO, 1 codegen unit,
- *      panic=abort; opt-in via --profile so it never changes the default
- *      `release` profile other crates/binaries build with)
+ *   1. cargo rustc --target wasm32-unknown-unknown --profile wasm-release
+ *      -p zfb-md-wasm --crate-type cdylib   (the size-optimized profile added
+ *      to the repo root Cargo.toml by this issue — opt-level "z", LTO, 1
+ *      codegen unit, panic=abort; opt-in via --profile so it never changes the
+ *      default `release` profile other crates/binaries build with. `rustc
+ *      --crate-type cdylib` because the manifest is rlib-only — see Cargo.toml)
  *   2. wasm-bindgen --target web                (ESM glue, browser + Node)
  *   3. wasm-opt -O1 (binaryen, pinned via the `binaryen` devDependency)
  *   4. tsc                                       (src/*.ts -> dist/*.js)
@@ -126,12 +127,26 @@ function main() {
   rmSync(distDir, { recursive: true, force: true });
   mkdirSync(srcWasmDir, { recursive: true });
 
+  // `cargo rustc --crate-type cdylib`, not `cargo build`: the crate's manifest
+  // declares `crate-type = ["rlib"]` (see Cargo.toml for why — a native cdylib
+  // links V8 and fails as an ELF `-shared` object). The wasm cdylib is forced
+  // here for the wasm32 target only, where nothing pulls V8 into the graph.
   log(
-    `== 1/4: cargo build --target wasm32-unknown-unknown --profile wasm-release -p ${crateName} ==`,
+    `== 1/4: cargo rustc --target wasm32-unknown-unknown --profile wasm-release -p ${crateName} --crate-type cdylib ==`,
   );
   run(
     "cargo",
-    ["build", "--target", "wasm32-unknown-unknown", "--profile", "wasm-release", "-p", crateName],
+    [
+      "rustc",
+      "--target",
+      "wasm32-unknown-unknown",
+      "--profile",
+      "wasm-release",
+      "-p",
+      crateName,
+      "--crate-type",
+      "cdylib",
+    ],
     {
       env,
     },

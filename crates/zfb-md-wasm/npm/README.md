@@ -184,7 +184,7 @@ suite gates exact-match). Deliberate limitations of the browser build:
 Shipping SWC in the bytes makes this a large module. The build applies a
 size-optimized cargo profile (`opt-level = "z"`, LTO, one codegen unit,
 `panic = "abort"`) plus `wasm-opt`, which roughly halves the raw binary. The
-current build produces **~3.3 MB raw / ~1.4 MB gzipped** for the `.wasm`. The CI
+current build produces **~2.9 MB raw / ~1.3 MB gzipped** for the `.wasm`. The CI
 `wasm-md` job prints the authoritative gzipped size on every run — treat that
 as the source of truth rather than this figure, which can drift.
 
