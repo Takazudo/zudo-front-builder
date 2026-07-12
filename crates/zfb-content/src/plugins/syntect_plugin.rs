@@ -854,7 +854,8 @@ mod tests {
     #[test]
     fn class_mode_plugin_applies_role_class_override() {
         let mut roles = BTreeMap::new();
-        roles.insert("kw".to_string(), "text-violet-600".to_string());
+        // Keyed by the FULL role name (`"keyword"`), matching user config.
+        roles.insert("keyword".to_string(), "text-violet-600".to_string());
         let mut plugin =
             SyntectPlugin::new(Arc::new(Highlighter::new())).with_class_mode("hi-", roles);
         let mut tree = HastNode::Root {

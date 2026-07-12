@@ -7959,16 +7959,18 @@ mod tests {
             .iter()
             .zip(crate::config::CODE_HIGHLIGHT_ROLES.iter())
         {
-            // Leg 1 <-> Leg 2: classifier full name (Debug, lowercased)
-            // must equal the config validation list entry at the SAME
-            // taxonomy index — `CODE_HIGHLIGHT_ROLES`'s doc comment
-            // promises it "matches the #1529 table" in order, not just as
-            // an unordered set.
-            let full_name = format!("{role:?}").to_lowercase();
+            // Leg 1 <-> Leg 2: classifier `full_name()` — the key the
+            // class-mode emitter resolves `roleClasses` overrides by — must
+            // equal the config validation list entry at the SAME taxonomy
+            // index. `CODE_HIGHLIGHT_ROLES`'s doc comment promises it
+            // "matches the #1529 table" in order, not just as an unordered
+            // set. This is load-bearing: if `full_name()` drifts from the
+            // config key, overrides silently miss (zfb#1528 deep-review fix).
             assert_eq!(
-                &full_name, config_name,
-                "classifier role {role:?} must match CODE_HIGHLIGHT_ROLES entry \
-                 {config_name:?} at the same taxonomy index",
+                role.full_name(),
+                *config_name,
+                "classifier role {role:?} full_name() must match CODE_HIGHLIGHT_ROLES \
+                 entry {config_name:?} at the same taxonomy index",
             );
 
             // Leg 1 <-> Leg 3: classifier short_name() must have a
@@ -7984,6 +7986,39 @@ mod tests {
                 "stylesheet must declare .hi-{suffix} selector for role {role:?}; got:\n{css}",
             );
         }
+    }
+
+    /// Regression (zfb#1528 deep-review): a `codeHighlight.roleClasses`
+    /// override — keyed by the FULL role name, the only form config accepts —
+    /// must survive the config -> `PipelineSpec` lowering with its key intact
+    /// (NOT rekeyed to the short suffix). The class-mode emitter resolves
+    /// overrides by `HiRole::full_name()` (`"keyword"`), so a lowering that
+    /// dropped or renamed the key would silently disable every override.
+    /// Pairs with the content-crate test
+    /// `pipeline_spec_class_mode_applies_role_classes_override`, which proves
+    /// the key is then honored end-to-end in the emitted HTML.
+    #[test]
+    fn role_classes_full_name_key_survives_config_to_spec_lowering() {
+        let config: crate::config::Config = serde_json::from_str(
+            r#"{"codeHighlight":{"mode":"class","roleClasses":{"keyword":"text-violet-600 dark:text-violet-400"}}}"#,
+        )
+        .expect("config parses");
+        let spec = crate::commands::bundler_input::pipeline_spec_from_config(
+            std::path::Path::new("."),
+            &config,
+        );
+        assert_eq!(
+            spec.code_highlight_role_classes
+                .get("keyword")
+                .map(String::as_str),
+            Some("text-violet-600 dark:text-violet-400"),
+            "the full-name roleClasses key must reach PipelineSpec unchanged; got {:?}",
+            spec.code_highlight_role_classes,
+        );
+        assert!(
+            !spec.code_highlight_role_classes.contains_key("kw"),
+            "lowering must not rekey the override to the short suffix",
+        );
     }
 
     #[test]

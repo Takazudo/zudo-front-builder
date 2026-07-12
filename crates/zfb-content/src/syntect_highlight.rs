@@ -477,11 +477,15 @@ impl Highlighter {
                     continue;
                 }
                 let resolved = classify(stack.as_slice()).map(|role| {
-                    let key = role.short_name();
+                    // `roleClasses` overrides are keyed by the FULL role name
+                    // (`"keyword"`), matching user config / `CODE_HIGHLIGHT_ROLES`.
+                    // The default class uses the short suffix (`hi-kw`). Looking
+                    // the override up by `short_name` would silently miss every
+                    // full-name key (zfb#1528 deep-review fix).
                     role_classes
-                        .get(key)
+                        .get(role.full_name())
                         .cloned()
-                        .unwrap_or_else(|| format!("{prefix}{key}"))
+                        .unwrap_or_else(|| format!("{prefix}{}", role.short_name()))
                 });
                 let escaped = escape_html(tok);
                 match runs.last_mut() {
@@ -1495,8 +1499,9 @@ mod tests {
     fn class_mode_role_classes_override_emitted_verbatim() {
         let h = Highlighter::new();
         let mut roles = BTreeMap::new();
+        // Keyed by the FULL role name, exactly as user config supplies it.
         roles.insert(
-            "kw".to_string(),
+            "keyword".to_string(),
             "text-violet-600 dark:text-violet-400".to_string(),
         );
         let html = h
@@ -1524,7 +1529,7 @@ mod tests {
     fn class_mode_role_class_override_is_attribute_escaped() {
         let h = Highlighter::new();
         let mut roles = BTreeMap::new();
-        roles.insert("kw".to_string(), "a\"b&c".to_string());
+        roles.insert("keyword".to_string(), "a\"b&c".to_string());
         let html = h
             .highlight_lines_classes("let x = 1;\n", Some("rust"), "hi-", &roles)
             .expect("ok")

@@ -130,8 +130,11 @@ fn pipeline_spec_class_mode_builds_class_pipeline() {
 #[test]
 fn pipeline_spec_class_mode_applies_role_classes_override() {
     let mut roles = BTreeMap::new();
+    // Keyed by the FULL role name (`"keyword"`), exactly as `codeHighlight.roleClasses`
+    // supplies it — NOT the short suffix `"kw"`. Looking overrides up by short
+    // name silently dropped them (zfb#1528 deep-review fix).
     roles.insert(
-        "kw".to_string(),
+        "keyword".to_string(),
         "text-violet-600 dark:text-violet-400".to_string(),
     );
     let spec = PipelineSpec {

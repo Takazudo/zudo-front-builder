@@ -86,6 +86,36 @@ impl HiRole {
             HiRole::Heading => "hd",
         }
     }
+
+    /// The full role name — the user-facing `codeHighlight.roleClasses` key
+    /// (e.g. `"keyword"`) and the config-validation name in
+    /// `CODE_HIGHLIGHT_ROLES` (`crates/zfb/src/config.rs`). This is the enum
+    /// variant name lowercased. The class-mode emitter resolves `roleClasses`
+    /// overrides by THIS name; the default class uses [`Self::short_name`]
+    /// (`hi-kw`). The two must not be conflated — user config keys by full
+    /// name, so looking overrides up by `short_name` silently drops them.
+    pub fn full_name(self) -> &'static str {
+        match self {
+            HiRole::Escape => "escape",
+            HiRole::Operator => "operator",
+            HiRole::Comment => "comment",
+            HiRole::String => "string",
+            HiRole::Number => "number",
+            HiRole::Constant => "constant",
+            HiRole::Keyword => "keyword",
+            HiRole::Function => "function",
+            HiRole::Type => "type",
+            HiRole::Namespace => "namespace",
+            HiRole::Property => "property",
+            HiRole::Variable => "variable",
+            HiRole::Tag => "tag",
+            HiRole::Attribute => "attribute",
+            HiRole::Punctuation => "punctuation",
+            HiRole::Inserted => "inserted",
+            HiRole::Deleted => "deleted",
+            HiRole::Heading => "heading",
+        }
+    }
 }
 
 /// Scope-prefix → role rules, kept as plain strings so the mapping is
