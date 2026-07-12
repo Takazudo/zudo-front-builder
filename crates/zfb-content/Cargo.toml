@@ -7,6 +7,23 @@ description = "zfb content engine: markdown/MDX pipeline, frontmatter, syntect, 
 
 [lib]
 
+[features]
+default = ["syntect-onig"]
+# Syntect regex backend selection (zfb#1573). Exactly one backend must be
+# enabled: `syntect-onig` (oniguruma, C — the historical native backend) or
+# `syntect-fancy` (pure Rust — the only backend that compiles for
+# wasm32-unknown-unknown; wasm consumers depend on this crate with
+# `default-features = false, features = ["syntect-fancy"]`). If cargo
+# feature unification enables BOTH, syntect gives regex-onig precedence
+# (syntect-5.3.0 src/parsing/regex.rs:191), so a unified native workspace
+# build stays byte-identical to onig-only. Note the zfb-render dev-dep below
+# depends back on this crate with default features, so `cargo test -p
+# zfb-content --no-default-features --features syntect-fancy` still unifies
+# to onig — a genuinely fancy-only build needs a graph without that
+# dev-dep cycle (e.g. an external consumer of this crate).
+syntect-onig = ["syntect/regex-onig"]
+syntect-fancy = ["syntect/regex-fancy"]
+
 [dependencies]
 zfb-md-ast = { path = "../zfb-md-ast" }
 zfb-md-extras = { path = "../zfb-md-extras" }
