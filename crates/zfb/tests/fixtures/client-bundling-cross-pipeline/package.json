@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "name": "client-bundling-cross-pipeline-fixture",
+  "packageManager": "pnpm@10.13.1"
+}

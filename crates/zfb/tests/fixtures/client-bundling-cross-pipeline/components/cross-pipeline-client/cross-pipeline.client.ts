@@ -1,4 +1,5 @@
 import shader from "./demo.frag?raw";
+import { aliasedShader } from "plugin:cross-pipeline-alias-raw";
 import configuredLoader from "./entry.fixture";
 
 declare const __CROSS_PIPELINE_DEFINE__: string;
@@ -20,6 +21,7 @@ if (import.meta.env.DEV) {
 console.info(
   "ZFB_CLIENT_ENTRY",
   shader,
+  aliasedShader,
   configuredLoader,
   __CROSS_PIPELINE_DEFINE__,
   metaMode,

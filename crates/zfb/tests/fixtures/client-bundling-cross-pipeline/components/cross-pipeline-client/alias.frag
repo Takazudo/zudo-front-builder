@@ -1,0 +1,2 @@
+ZFB_CLIENT_ALIAS_RAW_PAYLOAD_V1
+alias raw payload reached through tsconfig paths

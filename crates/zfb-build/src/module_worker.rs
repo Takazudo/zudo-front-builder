@@ -324,6 +324,16 @@ fn atom_to_string(value: &swc_core::atoms::Wtf8Atom) -> String {
     value.to_atom_lossy().to_string()
 }
 
+fn parse_as_tsx(path: &Path) -> bool {
+    !matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("ts" | "mts" | "cts")
+    )
+}
+
 fn parse_module(path: &Path, source: &str) -> Result<(Module, u32, SyntaxContext)> {
     let cm: Lrc<SourceMap> = Default::default();
     let fm = cm.new_source_file(
@@ -333,7 +343,7 @@ fn parse_module(path: &Path, source: &str) -> Result<(Module, u32, SyntaxContext
     let base = fm.start_pos.0;
     let lexer = Lexer::new(
         Syntax::Typescript(TsSyntax {
-            tsx: true,
+            tsx: parse_as_tsx(path),
             decorators: false,
             dts: false,
             no_early_errors: false,
@@ -363,6 +373,40 @@ fn parse_module(path: &Path, source: &str) -> Result<(Module, u32, SyntaxContext
         (module, SyntaxContext::empty().apply_mark(unresolved_mark))
     });
     Ok((module, base, unresolved_ctxt))
+}
+
+fn source_contains_worker_constructor_text(source: &str) -> bool {
+    source.contains("new Worker") || source.contains("new SharedWorker")
+}
+
+// This guard is intentionally substring-based. A comment or string containing
+// `new Worker` is treated as a possible worker site because silently skipping
+// a real unparseable worker rewrite would ship a runtime 404.
+fn fail_closed_unparseable_worker_source(
+    path: &Path,
+    source: &str,
+    error: anyhow::Error,
+) -> Result<()> {
+    if source_contains_worker_constructor_text(source) {
+        Err(error).with_context(|| {
+            format!(
+                "zfb bundler: cannot safely skip unparseable module-worker source {} because it contains `new Worker` or `new SharedWorker` text; comments and strings are treated as possible worker syntax",
+                path.display()
+            )
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn empty_rewrite(source: &str) -> ModuleWorkerRewrite {
+    ModuleWorkerRewrite {
+        expanded_source: source.to_string(),
+        worker_edges: Vec::new(),
+        dependencies: Vec::new(),
+        raw_import_edges: Vec::new(),
+        config_dependencies: Vec::new(),
+    }
 }
 
 fn literal_url_arg(
@@ -623,7 +667,7 @@ pub(crate) fn probe_graph_candidate(candidate: &Path, exact: bool) -> Option<Pat
         })
 }
 
-fn match_tsconfig_pattern(pattern: &str, specifier: &str) -> Option<Option<String>> {
+pub(crate) fn match_tsconfig_pattern(pattern: &str, specifier: &str) -> Option<Option<String>> {
     match pattern.matches('*').count() {
         0 => (pattern == specifier).then_some(None),
         1 => {
@@ -644,14 +688,14 @@ fn match_tsconfig_pattern(pattern: &str, specifier: &str) -> Option<Option<Strin
     }
 }
 
-fn tsconfig_pattern_specificity(pattern: &str) -> usize {
+pub(crate) fn tsconfig_pattern_specificity(pattern: &str) -> usize {
     pattern
         .find('*')
         .map(|star| star.max(pattern.len().saturating_sub(star + 1)))
         .unwrap_or(pattern.len())
 }
 
-fn substitute_tsconfig_target(target: &str, capture: Option<&str>) -> String {
+pub(crate) fn substitute_tsconfig_target(target: &str, capture: Option<&str>) -> String {
     match (target.find('*'), capture) {
         (Some(star), Some(capture)) => {
             let mut out = String::with_capacity(target.len() + capture.len());
@@ -667,6 +711,7 @@ fn substitute_tsconfig_target(target: &str, capture: Option<&str>) -> String {
 fn resolve_tsconfig_graph_alias(
     paths: Option<&TsConfigPaths>,
     specifier: &str,
+    exact: bool,
 ) -> Result<Option<Option<PathBuf>>> {
     let Some(paths) = paths else {
         return Ok(None);
@@ -687,7 +732,7 @@ fn resolve_tsconfig_graph_alias(
         for target in &alias.targets {
             let target = substitute_tsconfig_target(target, capture.as_deref());
             let candidate = normalize_path_lexical(&paths.base_dir.join(target));
-            if let Some(found) = probe_graph_candidate(&candidate, false) {
+            if let Some(found) = probe_graph_candidate(&candidate, exact) {
                 return Ok(Some(Some(found)));
             }
         }
@@ -695,9 +740,13 @@ fn resolve_tsconfig_graph_alias(
     Ok(Some(None))
 }
 
-fn resolve_tsconfig_base_url(paths: Option<&TsConfigPaths>, specifier: &str) -> Option<PathBuf> {
+fn resolve_tsconfig_base_url(
+    paths: Option<&TsConfigPaths>,
+    specifier: &str,
+    exact: bool,
+) -> Option<PathBuf> {
     let base_url = paths?.base_url.as_ref()?;
-    probe_graph_candidate(&normalize_path_lexical(&base_url.join(specifier)), false)
+    probe_graph_candidate(&normalize_path_lexical(&base_url.join(specifier)), exact)
 }
 
 fn bare_package_name(specifier: &str) -> Option<PathBuf> {
@@ -1046,7 +1095,7 @@ impl ProjectGraphResolver {
             }
 
             let alias_resolution =
-                resolve_tsconfig_graph_alias(self.tsconfig_paths.as_ref(), path_specifier)?;
+                resolve_tsconfig_graph_alias(self.tsconfig_paths.as_ref(), path_specifier, raw)?;
             if let Some(Some(found)) = alias_resolution.as_ref() {
                 found.clone()
             } else if alias_resolution.is_some() {
@@ -1055,7 +1104,7 @@ impl ProjectGraphResolver {
                     importer.display()
                 )
             } else if let Some(found) =
-                resolve_tsconfig_base_url(self.tsconfig_paths.as_ref(), path_specifier)
+                resolve_tsconfig_base_url(self.tsconfig_paths.as_ref(), path_specifier, raw)
             {
                 found
             } else if path_specifier.starts_with("node:")
@@ -1581,7 +1630,7 @@ fn validated_virtual_import_specifiers(
             "zfb bundler: import.meta.glob(...) inside plugin virtual module {specifier:?} is unsupported because virtual sources cannot be rewritten into the preprocessing shadow; move the glob into a project source file"
         );
     }
-    match crate::raw_import_expand::supported_raw_import_specifier(source) {
+    match crate::raw_import_expand::supported_raw_import_specifier_for_path(source, &virtual_path) {
         Ok(Some(raw_specifier)) => {
             bail!(
                 "zfb bundler: query-bearing import {raw_specifier:?} inside plugin virtual module {specifier:?} is unsupported because virtual sources cannot be rewritten into the preprocessing shadow; move the import into a project source file"
@@ -1717,7 +1766,13 @@ fn inspect_worker_graph(
                 config_hash_inputs.extend(config.hash_inputs);
                 config_files.extend(config.watch_paths);
             }
-            let (module, base, unresolved_ctxt) = parse_module(&current, &source)?;
+            let (module, base, unresolved_ctxt) = match parse_module(&current, &source) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    fail_closed_unparseable_worker_source(&current, &source, error)?;
+                    continue;
+                }
+            };
             for occurrence in collect_constructor_occurrences(&module, base, unresolved_ctxt) {
                 if occurrence.kind == ConstructorKind::SharedWorker {
                     bail!(
@@ -2020,25 +2075,19 @@ pub fn rewrite_module_worker_urls_with_context(
     context: &ModuleWorkerBuildContext,
 ) -> Result<ModuleWorkerRewrite> {
     if !source.contains("Worker") || is_inside_node_modules(&normalize_path_lexical(importer)) {
-        return Ok(ModuleWorkerRewrite {
-            expanded_source: source.to_string(),
-            worker_edges: Vec::new(),
-            dependencies: Vec::new(),
-            raw_import_edges: Vec::new(),
-            config_dependencies: Vec::new(),
-        });
+        return Ok(empty_rewrite(source));
     }
     validate_first_party_path(importer, project_root, "module-worker importer")?;
-    let (module, base, unresolved_ctxt) = parse_module(importer, source)?;
+    let (module, base, unresolved_ctxt) = match parse_module(importer, source) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            fail_closed_unparseable_worker_source(importer, source, error)?;
+            return Ok(empty_rewrite(source));
+        }
+    };
     let occurrences = collect_constructor_occurrences(&module, base, unresolved_ctxt);
     if occurrences.is_empty() {
-        return Ok(ModuleWorkerRewrite {
-            expanded_source: source.to_string(),
-            worker_edges: Vec::new(),
-            dependencies: Vec::new(),
-            raw_import_edges: Vec::new(),
-            config_dependencies: Vec::new(),
-        });
+        return Ok(empty_rewrite(source));
     }
 
     let mut replacements = Vec::new();
@@ -2115,6 +2164,80 @@ mod tests {
     fn write(path: &Path, source: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, source).unwrap();
+    }
+
+    #[test]
+    fn ts_importer_generic_arrow_without_worker_constructor_is_unchanged() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.ts");
+        write(&importer, "placeholder");
+        let source =
+            "const WorkerLabel = 'Worker';\nconst o = { m: async <T>() => {} };\nexport { o };\n";
+        let rewrite = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        assert_eq!(rewrite.expanded_source, source);
+        assert!(rewrite.worker_edges.is_empty());
+    }
+
+    #[test]
+    fn ts_importer_generic_arrow_with_worker_rewrites() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.ts");
+        let worker = project.path().join("src/worker.ts");
+        write(&importer, "placeholder");
+        write(&worker, "self.postMessage('ready');");
+        let source = "const o = { m: async <T>() => {} };\nnew Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });\n";
+        let rewrite = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        assert!(rewrite
+            .expanded_source
+            .contains("new Worker(new URL(\"./worker-src-s-worker-d-ts.js?v="));
+        assert_eq!(
+            rewrite.worker_edges,
+            vec![ModuleWorkerEdge {
+                importer,
+                source_path: worker,
+            }]
+        );
+    }
+
+    #[test]
+    fn tsx_importer_with_jsx_still_rewrites_worker() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.tsx");
+        let worker = project.path().join("src/worker.ts");
+        write(&importer, "placeholder");
+        write(&worker, "self.postMessage('ready');");
+        let source = "const view = <span />;\nnew Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });\nexport default view;\n";
+        let rewrite = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        assert!(rewrite.expanded_source.contains("const view = <span />;"));
+        assert!(rewrite
+            .expanded_source
+            .contains("new Worker(new URL(\"./worker-src-s-worker-d-ts.js?v="));
+    }
+
+    #[test]
+    fn unparseable_without_worker_constructor_is_unchanged() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.ts");
+        write(&importer, "placeholder");
+        let source = "const WorkerLabel = 'Worker';\nconst broken = ;\n";
+        let rewrite = rewrite_module_worker_urls(source, &importer, project.path()).unwrap();
+        assert_eq!(rewrite.expanded_source, source);
+        assert!(rewrite.worker_edges.is_empty());
+    }
+
+    #[test]
+    fn unparseable_with_worker_constructor_text_fails_closed() {
+        let project = tempfile::tempdir().unwrap();
+        let importer = project.path().join("src/app.ts");
+        write(&importer, "placeholder");
+        let source = "const broken = ;\nnew Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });\n";
+        let error = rewrite_module_worker_urls(source, &importer, project.path()).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("cannot safely skip unparseable module-worker source"),
+            "{message}"
+        );
+        assert!(message.contains("failed to parse"), "{message}");
     }
 
     #[test]
@@ -2733,6 +2856,148 @@ mod tests {
     }
 
     #[test]
+    fn discovery_ts_generic_arrow_with_raw_import_reports_raw_edge() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let entry = root.join("src/client.ts");
+        let payload = root.join("src/payload.txt");
+        write(
+            &entry,
+            "import payload from './payload.txt?raw';\nconst o = { m: async <T>() => {} };\nexport { payload, o };\n",
+        );
+        write(&payload, "payload");
+
+        let discovery = discover_module_preprocessing_with_context(
+            &entry,
+            root,
+            &ModuleWorkerBuildContext::default(),
+        )
+        .unwrap();
+        assert!(discovery
+            .raw_import_edges
+            .contains(&ModuleWorkerRawImportEdge {
+                importer: entry,
+                target: payload,
+            }));
+    }
+
+    #[test]
+    fn module_worker_raw_import_resolves_tsconfig_alias_exact_file() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let importer = root.join("src/app.ts");
+        let worker = root.join("src/worker.ts");
+        let payload = root.join("src/payload.txt");
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        );
+        write(&importer, "placeholder");
+        write(
+            &worker,
+            "import payload from '@/payload.txt?raw'; self.postMessage(payload);",
+        );
+        write(&payload, "aliased worker raw");
+
+        let rewrite = rewrite_module_worker_urls(
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            &importer,
+            root,
+        )
+        .unwrap();
+
+        assert!(rewrite
+            .raw_import_edges
+            .contains(&ModuleWorkerRawImportEdge {
+                importer: worker,
+                target: payload.clone(),
+            }));
+        assert!(rewrite
+            .dependencies
+            .iter()
+            .any(|edge| edge.dependency == payload));
+    }
+
+    #[test]
+    fn module_worker_raw_alias_does_not_probe_extensions() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let importer = root.join("src/app.ts");
+        let worker = root.join("src/worker.ts");
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        );
+        write(&importer, "placeholder");
+        write(
+            &worker,
+            "import payload from '@/payload?raw'; self.postMessage(payload);",
+        );
+        write(&root.join("src/payload.txt"), "must not be probed");
+
+        let error = rewrite_module_worker_urls(
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            &importer,
+            root,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("matched a first-party mapping but no target resolved"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn discovery_unparseable_dependency_without_worker_constructor_is_tolerated() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let entry = root.join("src/client.ts");
+        let dependency = root.join("src/broken.ts");
+        write(&entry, "import './broken';\nexport const ok = true;\n");
+        write(
+            &dependency,
+            "const WorkerLabel = 'Worker';\nconst broken = ;\n",
+        );
+
+        let discovery = discover_module_preprocessing_with_context(
+            &entry,
+            root,
+            &ModuleWorkerBuildContext::default(),
+        )
+        .unwrap();
+        assert!(discovery.files.contains(&dependency));
+        assert!(discovery.worker_edges.is_empty());
+    }
+
+    #[test]
+    fn discovery_unparseable_dependency_with_worker_constructor_fails_closed() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let entry = root.join("src/client.ts");
+        let dependency = root.join("src/broken.ts");
+        write(&entry, "import './broken';\nexport const ok = true;\n");
+        write(
+            &dependency,
+            "const broken = ;\nnew SharedWorker(new URL('./worker.ts', import.meta.url));\n",
+        );
+
+        let error = discover_module_preprocessing_with_context(
+            &entry,
+            root,
+            &ModuleWorkerBuildContext::default(),
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("cannot safely skip unparseable module-worker source"),
+            "{message}"
+        );
+        assert!(message.contains("new Worker") || message.contains("new SharedWorker"));
+    }
+
+    #[test]
     fn virtual_module_query_preprocessing_fails_before_worker_hashing() {
         let project = tempfile::tempdir().unwrap();
         let root = project.path();
@@ -2811,6 +3076,28 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("dynamic import"), "{message}");
+    }
+
+    #[test]
+    fn global_virtual_validation_rejects_unparseable_query_sources() {
+        let project = tempfile::tempdir().unwrap();
+        let context = ModuleWorkerBuildContext::default().with_plugins(
+            Vec::new(),
+            vec![(
+                "virtual:broken-query".into(),
+                "const broken = ;\n// import value from './payload.txt?raw';".into(),
+            )],
+        );
+
+        let error =
+            discover_registered_virtual_preprocessing_with_context(project.path(), &context)
+                .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("failed to parse"), "{message}");
+        assert!(
+            message.contains(".zfb-worker-virtual-module.mjs"),
+            "{message}"
+        );
     }
 
     #[test]

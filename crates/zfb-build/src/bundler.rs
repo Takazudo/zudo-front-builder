@@ -146,7 +146,9 @@ use crate::module_worker::{
     discover_registered_virtual_preprocessing_with_context,
     rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext, ModuleWorkerDependency,
 };
-use crate::raw_import_expand::{expand_raw_imports, RawImportEdge};
+use crate::raw_import_expand::{
+    expand_raw_imports_with_aliases, RawImportAliasContext, RawImportEdge,
+};
 
 /// `import.meta.env.{PROD,DEV}` substitution mode.
 ///
@@ -2008,6 +2010,10 @@ pub fn bundle_with_session(
         project_root: &input.project_root,
         writer: &writer,
         raw_import_edges: RefCell::new(BTreeSet::new()),
+        raw_import_aliases: RawImportAliasContext::from_paths_and_project_base_url(
+            &input.tsconfig_paths,
+            &input.project_root,
+        ),
         module_worker_dependencies: RefCell::new(BTreeSet::new()),
         worker_build_context,
         raw_preflight_complete: Cell::new(false),
@@ -2109,6 +2115,16 @@ pub fn bundle_with_session(
             Ok(discovery) => discovery,
             Err(error) => {
                 let message = format!("{error:#}");
+                if message
+                    .contains("zfb bundler: cannot safely skip unparseable module-worker source")
+                {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "bundler: discover exact-target preprocessing graph from {}",
+                            target.display()
+                        )
+                    });
+                }
                 if message.contains("zfb bundler: failed to parse ")
                     || message.contains(" is not valid UTF-8")
                 {
@@ -3038,6 +3054,7 @@ pub fn bundle_with_session(
             },
             target_writer,
             &mat_ctx.raw_import_edges,
+            &mat_ctx.raw_import_aliases,
             &mat_ctx.module_worker_dependencies,
             mat_ctx.project_root,
             &mat_ctx.worker_build_context,
@@ -3565,6 +3582,7 @@ fn materialise_mdx_components_file(
         true,
         ctx.writer,
         &ctx.raw_import_edges,
+        &ctx.raw_import_aliases,
         &ctx.module_worker_dependencies,
         ctx.project_root,
         &ctx.worker_build_context,
@@ -3686,7 +3704,13 @@ fn preflight_raw_file(physical: &Path, logical: &Path, ctx: &MaterialiseCtx<'_, 
     if !source.contains("?raw") {
         return;
     }
-    if let Ok(expansion) = expand_raw_imports(&source, logical, ctx.project_root, &|_| false) {
+    if let Ok(expansion) = expand_raw_imports_with_aliases(
+        &source,
+        logical,
+        ctx.project_root,
+        &ctx.raw_import_aliases,
+        &|_| false,
+    ) {
         ctx.raw_import_edges.borrow_mut().extend(expansion.edges);
     }
 }
@@ -3771,6 +3795,7 @@ fn materialise_symlinked_dir(
                     true,
                     ctx.writer,
                     &ctx.raw_import_edges,
+                    &ctx.raw_import_aliases,
                     &ctx.module_worker_dependencies,
                     ctx.project_root,
                     &ctx.worker_build_context,
@@ -3882,6 +3907,10 @@ struct MaterialiseCtx<'a, 's> {
     /// generated `.zfb-raw-*.mjs` input back to the ORIGINAL target for dev
     /// invalidation.
     raw_import_edges: RefCell<BTreeSet<RawImportEdge>>,
+    /// First-party tsconfig alias/baseUrl mappings used by terminal `?raw`
+    /// expansion. Kept in logical project-root shape so alias-resolved raw
+    /// targets register identically to equivalent relative spellings.
+    raw_import_aliases: RawImportAliasContext,
     /// Browser-only worker closure paths found while rewriting source URLs.
     /// They feed invalidation bookkeeping but never become SSR imports.
     module_worker_dependencies: RefCell<BTreeSet<ModuleWorkerDependency>>,
@@ -4254,6 +4283,7 @@ fn materialise_shadow(
                 ctx.copy_mode,
                 ctx.writer,
                 &ctx.raw_import_edges,
+                &ctx.raw_import_aliases,
                 &ctx.module_worker_dependencies,
                 ctx.project_root,
                 &ctx.worker_build_context,
@@ -5201,6 +5231,7 @@ fn materialise_collection(
                 ctx.copy_mode,
                 ctx.writer,
                 &ctx.raw_import_edges,
+                &ctx.raw_import_aliases,
                 &ctx.module_worker_dependencies,
                 ctx.project_root,
                 &ctx.worker_build_context,
@@ -5355,6 +5386,7 @@ fn materialise_source_file(
     copy_mode: bool,
     writer: &ShadowWriter<'_>,
     raw_import_edges: &RefCell<BTreeSet<RawImportEdge>>,
+    raw_import_aliases: &RawImportAliasContext,
     module_worker_dependencies: &RefCell<BTreeSet<ModuleWorkerDependency>>,
     project_root: &Path,
     worker_build_context: &ModuleWorkerBuildContext,
@@ -5468,11 +5500,16 @@ fn materialise_source_file(
                 }
 
                 if has_query_syntax {
-                    let raw_expansion =
-                        expand_raw_imports(&expanded, logical_from, project_root, is_excluded)
-                            .with_context(|| {
-                                format!("expand ?raw imports in {}", logical_from.display())
-                            })?;
+                    let raw_expansion = expand_raw_imports_with_aliases(
+                        &expanded,
+                        logical_from,
+                        project_root,
+                        raw_import_aliases,
+                        is_excluded,
+                    )
+                    .with_context(|| {
+                        format!("expand ?raw imports in {}", logical_from.display())
+                    })?;
                     has_raw = !raw_expansion.generated_modules.is_empty();
                     if has_raw {
                         let generated_dir = to.parent().unwrap_or_else(|| Path::new("."));
@@ -9386,6 +9423,7 @@ mod tests {
             project_root: &project_root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
@@ -9452,6 +9490,7 @@ mod tests {
             project_root: &project_root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
@@ -10482,6 +10521,7 @@ mod tests {
                 false,
                 &writer,
                 &raw_import_edges,
+                &RawImportAliasContext::empty(),
                 &module_worker_dependencies,
                 from.parent().unwrap_or(from),
                 &ModuleWorkerBuildContext::default(),
@@ -10567,6 +10607,7 @@ mod tests {
                 false,
                 &writer,
                 &raw_edges,
+                &RawImportAliasContext::empty(),
                 &worker_dependencies,
                 root,
                 &ModuleWorkerBuildContext::default(),
@@ -10834,6 +10875,53 @@ mod tests {
     }
 
     #[test]
+    fn materialise_source_file_expands_alias_raw_import_with_logical_edge() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("data")).unwrap();
+        let importer = root.join("pages/index.ts");
+        let target = root.join("data/message.txt");
+        fs::write(
+            &importer,
+            "import text from '@/data/message.txt?raw';\nexport default text;\n",
+        )
+        .unwrap();
+        fs::write(&target, "aliased materialise raw").unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, false, None).unwrap();
+        let raw_edges = RefCell::new(BTreeSet::new());
+        let worker_dependencies = RefCell::new(BTreeSet::new());
+        let aliases = RawImportAliasContext::from_paths(&BTreeMap::from([(
+            "@/*".to_string(),
+            vec![root.join("*").to_string_lossy().into_owned()],
+        )]));
+        let staged = shadow.path().join("pages/index.ts");
+        writer.ensure_dir(staged.parent().unwrap()).unwrap();
+
+        materialise_source_file(
+            &importer,
+            &importer,
+            &staged,
+            &|_| false,
+            false,
+            &writer,
+            &raw_edges,
+            &aliases,
+            &worker_dependencies,
+            root,
+            &ModuleWorkerBuildContext::default(),
+        )
+        .unwrap();
+
+        let staged_source = fs::read_to_string(&staged).unwrap();
+        assert!(!staged_source.contains("?raw"), "{staged_source}");
+        assert!(raw_edges
+            .borrow()
+            .contains(&RawImportEdge { importer, target }));
+    }
+
+    #[test]
     fn ssr_terminal_js_raw_target_is_never_reparsed_by_broad_mirror() {
         let project = tempfile::tempdir().unwrap();
         let root = project.path();
@@ -10859,6 +10947,7 @@ mod tests {
             project_root: root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
@@ -10882,6 +10971,58 @@ mod tests {
         );
         let importer = fs::read_to_string(shadow_components.join("z-importer.ts")).unwrap();
         assert!(!importer.contains("?raw"), "{importer}");
+    }
+
+    #[test]
+    fn materialise_ts_generic_arrow_with_query_text_is_not_a_raw_error() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let components = root.join("components");
+        fs::create_dir_all(&components).unwrap();
+        let valid_source =
+            "const o = { m: async <T>() => {} };\nconst q = '?';\nexport { o, q };\n";
+        let invalid_source = "const broken = ;\n// import text from './message.txt?raw'\n";
+        fs::write(components.join("generic.ts"), valid_source).unwrap();
+        fs::write(components.join("unparseable.ts"), invalid_source).unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_components = shadow.path().join("components");
+        let exclude = no_bundle_exclude();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        let ctx = MaterialiseCtx {
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            copy_mode: true,
+            bundle_exclude: &exclude,
+            project_root: root,
+            writer: &writer,
+            raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_import_aliases: RawImportAliasContext::empty(),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
+            raw_preflight_complete: Cell::new(false),
+            snapshot_specifiers: None,
+        };
+
+        materialise_shadow(
+            &components,
+            &shadow_components,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(shadow_components.join("generic.ts")).unwrap(),
+            valid_source
+        );
+        assert_eq!(
+            fs::read_to_string(shadow_components.join("unparseable.ts")).unwrap(),
+            invalid_source
+        );
     }
 
     #[test]
@@ -10911,6 +11052,7 @@ mod tests {
             project_root: root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
@@ -10964,6 +11106,7 @@ mod tests {
             project_root: root,
             writer: &writer,
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
@@ -11013,6 +11156,7 @@ mod tests {
             false,
             &writer,
             &edges,
+            &RawImportAliasContext::empty(),
             &worker_dependencies,
             tmp.path(),
             &ModuleWorkerBuildContext::default(),
@@ -13287,6 +13431,7 @@ mod tests {
             project_root,
             writer: leaked_passthrough_writer(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
