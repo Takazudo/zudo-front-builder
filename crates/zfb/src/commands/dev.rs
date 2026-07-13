@@ -5238,7 +5238,7 @@ fn boot_dev_renderer(
     // Persistent dev shadow-tree session (issue #993) — created once
     // here, used for the boot bundle below, then stored on
     // `DevRenderInner` so every refresh reuses the same shadow tree.
-    let mut shadow_session = ShadowSession::new()?;
+    let mut shadow_session = ShadowSession::new(project_root)?;
 
     // #994 item B — the PathsCache is seeded here and stored on
     // `DevRenderInner` below, so every refresh tick reuses the entries

@@ -2894,7 +2894,7 @@ fn session_transition_removes_and_restores_node_modules_symlink_under_exclusions
         .to_string_lossy()
         .into_owned()];
 
-    let mut session = ShadowSession::new().unwrap();
+    let mut session = ShadowSession::new(&root).unwrap();
 
     // Tick 1 (empty exclude): the live symlink resolves the bare dep.
     let first = bundle_with_session(make_tick(Vec::new(), "dist-session-a"), Some(&mut session))

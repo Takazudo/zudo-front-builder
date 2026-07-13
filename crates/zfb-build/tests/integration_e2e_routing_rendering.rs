@@ -314,11 +314,12 @@ fn make_test_node_modules() -> Option<tempfile::TempDir> {
     std::os::unix::fs::symlink(&zfb_runtime_src, &zfb_runtime_dst)
         .unwrap_or_else(|e| panic!("symlink @takazudo/zfb-runtime: {e}"));
 
-    // `zfb` — point at the workspace's packages/zfb.
+    // `@takazudo/zfb` — point at the workspace's packages/zfb.
     let zfb_src = worktree_root.join("packages/zfb");
-    let zfb_dst = nm.join("zfb");
+    let zfb_dst = takazudo_dir.join("zfb");
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&zfb_src, &zfb_dst).unwrap_or_else(|e| panic!("symlink zfb: {e}"));
+    std::os::unix::fs::symlink(&zfb_src, &zfb_dst)
+        .unwrap_or_else(|e| panic!("symlink @takazudo/zfb: {e}"));
 
     Some(tmp)
 }
