@@ -19,6 +19,7 @@
 //! minimal hast representation here. This mirrors the
 //! `remark` (mdast) → `rehype` (hast) split in the unified ecosystem.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -487,6 +488,13 @@ impl Default for Pipeline {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Clone, Copy)]
+enum HiEmit<'a> {
+    Single(Option<&'a str>),
+    Dual(&'a str, &'a str),
+    Class(&'a str, &'a BTreeMap<String, String>),
 }
 
 impl Pipeline {
@@ -1500,7 +1508,7 @@ impl Pipeline {
         // all — it is used by direct callers (tests, embedders), never by
         // `PipelineSpec::build_pipeline`. Class emission (zfb#1532) lives on
         // the full-config path via
-        // `with_defaults_and_full_config_class` → the `class_mode` arm in
+        // `with_defaults_and_full_config_class` → the class-emission arm in
         // `with_defaults_and_full_config_inner`. If a legacy class-mode entry
         // point is ever needed, add a `with_theme_class_mode`-style
         // constructor rather than branching here.
@@ -1614,15 +1622,6 @@ impl Pipeline {
     /// [`Pipeline::with_defaults_and_theme_and_gfm_and_themes_dir`] (and
     /// `zfb::config::resolve_hard_breaks`). Returns `Err` only when
     /// `themes_dir` is `Some` and a `.tmTheme` file fails to load.
-    ///
-    /// `dual` — when `Some((light, dark))`, constructs [`SyntectPlugin`] in
-    /// dual-theme mode via [`SyntectPlugin::with_dual_themes`] and overrides
-    /// `theme`. Both names must be SYNTECT theme names (e.g.
-    /// `"base16-ocean.light"`, `"base16-ocean.dark"`), NOT Shiki names like
-    /// `"dracula"`. When `None`, the single-theme path is used (with the
-    /// `theme` param as usual). The fingerprint encodes the mode explicitly
-    /// (`code_highlight=single(theme=…)` vs `code_highlight=dual(light=…,dark=…)`)
-    /// so single/dual configs can never alias a compile-cache entry.
     pub fn with_defaults_and_full_config(
         theme: Option<&str>,
         resolved: ResolvedGfmConstructs,
@@ -1632,23 +1631,20 @@ impl Pipeline {
         features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
     ) -> Result<Self, crate::syntect_highlight::HighlightError> {
         Self::with_defaults_and_full_config_inner(
-            theme,
+            HiEmit::Single(theme),
             resolved,
             themes_dir,
             cjk_friendly,
             hard_breaks,
             features,
-            None,
-            None,
         )
     }
 
     /// Like [`Pipeline::with_defaults_and_full_config`] but with an explicit
     /// dual-theme pair.
     ///
-    /// When `dual` is `Some((light, dark))`, the `SyntectPlugin` is constructed
-    /// in dual-theme mode (CSS custom properties `--shiki-light`/`--shiki-dark`
-    /// instead of inline `color:`). The `theme` parameter is ignored in this case.
+    /// Constructs the `SyntectPlugin` in dual-theme mode (CSS custom properties
+    /// `--shiki-light`/`--shiki-dark` instead of inline `color:`).
     ///
     /// Both theme names must be SYNTECT names — NOT Shiki names like `"dracula"`.
     pub fn with_defaults_and_full_config_dual(
@@ -1661,14 +1657,12 @@ impl Pipeline {
         theme_dark: &str,
     ) -> Result<Self, crate::syntect_highlight::HighlightError> {
         Self::with_defaults_and_full_config_inner(
-            None,
+            HiEmit::Dual(theme_light, theme_dark),
             resolved,
             themes_dir,
             cjk_friendly,
             hard_breaks,
             features,
-            Some((theme_light, theme_dark)),
-            None,
         )
     }
 
@@ -1681,7 +1675,7 @@ impl Pipeline {
     /// the `role_classes` override) with NO inline colour, and the `<pre>` is
     /// classed `{class_prefix}root`. The `class_prefix` / `role_classes` pair
     /// is also encoded into the compile-cache fingerprint segment (see the
-    /// `class_mode` arm inside [`Self::with_defaults_and_full_config_inner`])
+    /// class-emission arm inside [`Self::with_defaults_and_full_config_inner`])
     /// so a class-mode config can never alias an inline/dual entry and
     /// `classPrefix`/`roleClasses` edits correctly invalidate the cache.
     pub fn with_defaults_and_full_config_class(
@@ -1691,39 +1685,27 @@ impl Pipeline {
         hard_breaks: bool,
         features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
         class_prefix: &str,
-        role_classes: &std::collections::BTreeMap<String, String>,
+        role_classes: &BTreeMap<String, String>,
     ) -> Result<Self, crate::syntect_highlight::HighlightError> {
         Self::with_defaults_and_full_config_inner(
-            None,
+            HiEmit::Class(class_prefix, role_classes),
             resolved,
             themes_dir,
             cjk_friendly,
             hard_breaks,
             features,
-            None,
-            Some((class_prefix, role_classes)),
         )
     }
 
     /// Internal shared builder for the single / dual / class full-config
     /// constructors.
-    // Private shared impl of three public constructors; each knob is a distinct
-    // pipeline input threaded verbatim into the fingerprint, so bundling them
-    // into a params struct would only obscure the drift guard.
-    #[allow(clippy::too_many_arguments)]
     fn with_defaults_and_full_config_inner(
-        theme: Option<&str>,
+        hi_emit: HiEmit<'_>,
         resolved: ResolvedGfmConstructs,
         themes_dir: Option<&Path>,
         cjk_friendly: bool,
         hard_breaks: bool,
         features: Option<&zfb_md_extras::MarkdownFeaturesConfig>,
-        dual: Option<(&str, &str)>,
-        // Highlight Tokens epic (zfb#1528, zfb#1532):
-        // `Some((class_prefix, role_classes))` when `codeHighlight.mode` is
-        // `"class"`. Selects `SyntectPlugin::with_class_mode` in the syntect
-        // arm below and is encoded into the compile-cache fingerprint segment.
-        class_mode: Option<(&str, &std::collections::BTreeMap<String, String>)>,
     ) -> Result<Self, crate::syntect_highlight::HighlightError> {
         // `markdown.features` absent → empty feature set (post-epic opt-in
         // default, #583 / #586): the former-Core framework features
@@ -1767,9 +1749,10 @@ impl Pipeline {
         // modes. (config.rs only validates name *presence* / dual-pair
         // completeness; theme-name existence depends on `themesDir`, which is
         // not known until here.)
-        let required_themes: Vec<&str> = match dual {
-            Some((light, dark)) => vec![light, dark],
-            None => theme.into_iter().collect(),
+        let required_themes: Vec<&str> = match hi_emit {
+            HiEmit::Single(theme) => theme.into_iter().collect(),
+            HiEmit::Dual(light, dark) => vec![light, dark],
+            HiEmit::Class(_, _) => Vec::new(),
         };
         if !required_themes.is_empty() {
             let names = highlighter.theme_names();
@@ -1839,23 +1822,21 @@ impl Pipeline {
         // SyntectPlugin MUST be added AFTER register_features so pre-syntect
         // extras visitors (mermaid, …) run first.
         //
-        // Dual mode: when `dual` is `Some((light, dark))` the plugin is
-        // constructed via `with_dual_themes`; the `theme` param is ignored.
-        // Single mode: mirrors the pre-dual logic.
-        let syntect = if let Some((class_prefix, role_classes)) = class_mode {
-            // Class-emission mode (zfb#1532): every token becomes a
-            // `<span class="…">` role class (default `{prefix}{short_name}`,
-            // or the `roleClasses` override) with NO inline colour; the
-            // `<pre>` is classed `{prefix}root`. config.rs validation forbids
-            // setting `theme`/`themeLight`/`themeDark` alongside class mode,
-            // so this arm never coexists with `dual`/`theme`.
-            SyntectPlugin::new(highlighter).with_class_mode(class_prefix, role_classes.clone())
-        } else if let Some((light, dark)) = dual {
-            SyntectPlugin::new(highlighter).with_dual_themes(light, dark)
-        } else if let Some(t) = theme {
-            SyntectPlugin::new(highlighter).with_theme(t)
-        } else {
-            SyntectPlugin::new(highlighter)
+        let syntect = match hi_emit {
+            HiEmit::Class(class_prefix, role_classes) => {
+                // Class-emission mode (zfb#1532): every token becomes a
+                // `<span class="…">` role class (default `{prefix}{short_name}`,
+                // or the `roleClasses` override) with NO inline colour; the
+                // `<pre>` is classed `{prefix}root`. config.rs validation forbids
+                // setting `theme`/`themeLight`/`themeDark` alongside class mode,
+                // so this variant never coexists with single/dual theme input.
+                SyntectPlugin::new(highlighter).with_class_mode(class_prefix, role_classes.clone())
+            }
+            HiEmit::Dual(light, dark) => {
+                SyntectPlugin::new(highlighter).with_dual_themes(light, dark)
+            }
+            HiEmit::Single(Some(theme)) => SyntectPlugin::new(highlighter).with_theme(theme),
+            HiEmit::Single(None) => SyntectPlugin::new(highlighter),
         };
         p.push_config_derived_hast_visitor(Box::new(syntect));
         // Post-syntect extras visitors operate on the per-line
@@ -1888,14 +1869,18 @@ impl Pipeline {
         // stability across two constructions of an equal map.
         // IMPORTANT: the single-mode segment must be BYTE-IDENTICAL to the
         // pre-dual form so existing warm caches are not invalidated on upgrade.
-        let code_highlight_seg = if let Some((prefix, role_classes)) = class_mode {
-            format!("code_highlight=class(prefix={prefix:?},roles={role_classes:?})")
-        } else if let Some((light, dark)) = dual {
-            format!("code_highlight=dual(light={light:?},dark={dark:?})")
-        } else {
-            // Single mode: reproduce the exact pre-dual descriptor string so
-            // fingerprints are unchanged for all existing single-theme configs.
-            format!("theme={theme:?}")
+        let code_highlight_seg = match hi_emit {
+            HiEmit::Class(prefix, role_classes) => {
+                format!("code_highlight=class(prefix={prefix:?},roles={role_classes:?})")
+            }
+            HiEmit::Dual(light, dark) => {
+                format!("code_highlight=dual(light={light:?},dark={dark:?})")
+            }
+            HiEmit::Single(theme) => {
+                // Single mode: reproduce the exact pre-dual descriptor string so
+                // fingerprints are unchanged for all existing single-theme configs.
+                format!("theme={theme:?}")
+            }
         };
         let base = match (
             themes_dir_fingerprint_segment(themes_dir),
