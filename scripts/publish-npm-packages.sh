@@ -77,14 +77,12 @@ PLATFORM_DIRS=(
 # is not required for success, but matching pnpm -r's topological default keeps
 # the published set self-consistent at every intermediate moment.
 #
-# crates/zfb-md-wasm/npm (zfb#1579) is the first NONPLATFORM_DIRS occupant
-# outside packages/* — it lives in the `crates/*/npm` workspace glob
-# (pnpm-workspace.yaml), which `pnpm -r --filter <name>` resolves the same
-# way regardless of the path prefix (verified locally: `pnpm -r --filter
-# "@takazudo/zfb-md-wasm" exec pwd` resolves to crates/zfb-md-wasm/npm). It
-# has no workspace:* deps of its own, so the rewrite is a no-op for it, but
-# it goes through the same idempotent/tolerant/dist-tag machinery as every
-# other entry here.
+# @takazudo/zfb-md-wasm is a lockstep non-platform package that lives outside
+# packages/* under the `crates/*/npm` workspace glob (pnpm-workspace.yaml).
+# `pnpm -r --filter <name>` resolves it by manifest name regardless of path
+# prefix (verified locally: `pnpm -r --filter "@takazudo/zfb-md-wasm" exec pwd`
+# resolves to crates/zfb-md-wasm/npm), so it belongs in the same
+# idempotent/tolerant/dist-tag publish machinery as the packages/* entries.
 NONPLATFORM_DIRS=(
   packages/zfb
   packages/zfb-runtime
