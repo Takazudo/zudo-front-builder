@@ -2,10 +2,10 @@
 /**
  * sync-platform-versions.mjs
  *
- * Keep packages/zfb-{platform}/package.json version fields,
- * packages/zfb/package.json optionalDependencies entries
- * (prefixed with @takazudo/zfb-), and related workspace package version
- * fields in lockstep with packages/zfb/package.json version.
+ * Keep lockstep package version fields, packages/zfb/package.json
+ * optionalDependencies entries (prefixed with @takazudo/zfb-), and related
+ * workspace package version fields in lockstep with packages/zfb/package.json
+ * version.
  *
  * Usage:
  *   node scripts/sync-platform-versions.mjs
@@ -146,7 +146,26 @@ function main() {
     }
   }
 
-  // 4. Rewrite packages/zfb-adapter-cloudflare/package.json version field.
+  // 4. Rewrite crates/zfb-md-wasm/npm/package.json version field.
+  // Deliberately reverses the c2a4ac55 independence choice: md-wasm is lockstep again.
+  {
+    const pkgPath = resolve(repoRoot, "crates", "zfb-md-wasm", "npm", "package.json");
+    const { raw, data: pkg } = readJson(pkgPath);
+    const previousVersion = pkg.version;
+    pkg.version = srcVersion;
+    const changed = writeJsonIfChanged(pkgPath, pkg, raw);
+    if (changed) {
+      process.stdout.write(
+        `  crates/zfb-md-wasm/npm/package.json: ${previousVersion} -> ${srcVersion}\n`,
+      );
+    } else {
+      process.stdout.write(
+        `  crates/zfb-md-wasm/npm/package.json: already ${srcVersion} (no change)\n`,
+      );
+    }
+  }
+
+  // 5. Rewrite packages/zfb-adapter-cloudflare/package.json version field.
   {
     const pkgPath = resolve(repoRoot, "packages", "zfb-adapter-cloudflare", "package.json");
     const { raw, data: pkg } = readJson(pkgPath);
@@ -164,14 +183,14 @@ function main() {
     }
   }
 
-  // 5. (Removed) crates/zfb/src/commands/new.rs no longer carries a
+  // 6. (Removed) crates/zfb/src/commands/new.rs no longer carries a
   //    WORKSPACE_DEP_PLACEHOLDER constant to keep in sync. The scaffold pin is
   //    now self-syncing — derived at compile time from the binary's own
   //    release version (ZFB_RELEASE_VERSION, else CARGO_PKG_VERSION). See
   //    workspace_dep_placeholder() in new.rs and issue #503. Nothing to rewrite
   //    here.
 
-  // 6. Rewrite packages/create-zfb/package.json:
+  // 7. Rewrite packages/create-zfb/package.json:
   //    - version field
   //    - dependencies."@takazudo/zfb" (preserving "workspace:" prefix if present)
   {

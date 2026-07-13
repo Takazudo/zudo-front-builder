@@ -411,12 +411,16 @@ pub fn render_html(source: &str, options_json: &str) -> String {
     to_json(&render_html_impl(source, options_json))
 }
 
-/// This crate's version (`CARGO_PKG_VERSION`), for host-side
-/// compatibility checks.
+/// This package's release version, stamped by CI at compile time.
+///
+/// Development builds without `ZFB_RELEASE_VERSION` fall back to this crate's
+/// manifest version (`CARGO_PKG_VERSION`).
 #[wasm_bindgen]
 #[must_use]
 pub fn version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+    option_env!("ZFB_RELEASE_VERSION")
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+        .to_string()
 }
 
 #[cfg(test)]
