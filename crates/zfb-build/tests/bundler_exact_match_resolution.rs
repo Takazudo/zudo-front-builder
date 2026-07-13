@@ -2682,6 +2682,119 @@ fn first_party_root_exact_target_cannot_climb_to_excluded_bare_dependency() {
     }
 }
 
+#[test]
+fn root_level_plugin_entry_stages_allowed_direct_bare_dependency_under_exclusions() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "plugin:root-direct", "unused.tsx");
+    write_value_page(&root, "plugin:root-direct");
+    fs::write(
+        root.join(".root-direct-entry.js"),
+        "import value from 'allowed-root-direct-dependency'; export default value;\n",
+    )
+    .unwrap();
+    write_root_bare_package(
+        &root,
+        "allowed-root-direct-dependency",
+        "ALLOWED_ROOT_DIRECT_DEPENDENCY",
+    );
+    let excluded = write_root_bare_package(
+        &root,
+        "excluded-root-direct-dependency",
+        "EXCLUDED_ROOT_DIRECT_DEPENDENCY",
+    );
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-root-direct-allowed",
+        BTreeMap::new(),
+        vec![(
+            "plugin:root-direct".to_string(),
+            root.join(".root-direct-entry.js")
+                .to_string_lossy()
+                .into_owned(),
+        )],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec![excluded
+        .join("index.js")
+        .strip_prefix(&root)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()];
+
+    bundle(input).expect("root-level plugin entry must stage its allowed direct bare dependency");
+    let body = fs::read_to_string(root.join("dist-root-direct-allowed/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_ROOT_DIRECT_DEPENDENCY"), "{body}");
+    assert!(!body.contains("EXCLUDED_ROOT_DIRECT_DEPENDENCY"), "{body}");
+}
+
+#[test]
+fn root_level_tsconfig_entry_stages_allowed_transitive_bare_dependency_under_exclusions() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:root-hop", "unused.tsx");
+    write_value_page(&root, "project:root-hop");
+    fs::write(
+        root.join(".root-hop-entry.js"),
+        "import value from './root-hop-local.js'; export default value;\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("root-hop-local.js"),
+        "import value from 'allowed-root-hop-dependency'; export default value;\n",
+    )
+    .unwrap();
+    write_root_bare_package(
+        &root,
+        "allowed-root-hop-dependency",
+        "ALLOWED_ROOT_HOP_DEPENDENCY",
+    );
+    let excluded = write_root_bare_package(
+        &root,
+        "excluded-root-hop-dependency",
+        "EXCLUDED_ROOT_HOP_DEPENDENCY",
+    );
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-root-hop-allowed",
+        BTreeMap::from([(
+            "project:root-hop".to_string(),
+            vec![root
+                .join(".root-hop-entry.js")
+                .to_string_lossy()
+                .into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec![excluded
+        .join("index.js")
+        .strip_prefix(&root)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()];
+
+    bundle(input)
+        .expect("root-level tsconfig entry must stage a bare dependency imported by a local hop");
+    let body = fs::read_to_string(root.join("dist-root-hop-allowed/bundle.mjs")).unwrap();
+    assert!(body.contains("ALLOWED_ROOT_HOP_DEPENDENCY"), "{body}");
+    assert!(!body.contains("EXCLUDED_ROOT_HOP_DEPENDENCY"), "{body}");
+}
+
 // Finding 2 — a first-party package resolving an external via package `imports`
 // must use the filtered dependency view, not climb to the excluded dependency.
 #[test]

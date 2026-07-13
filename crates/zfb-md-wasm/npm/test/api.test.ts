@@ -11,8 +11,19 @@ import {
   version,
   init,
   ZfbMdWasmTrapError,
+  ZfbMdWasmTrapRecoveryLimitError,
   __forceTrapForTests,
+  __getTrapRecoveryStateForTests,
 } from "../dist/index.js";
+
+function nestedYamlFrontmatter(depth: number): string {
+  let yaml = "root:\n";
+  for (let i = 0; i < depth; i += 1) {
+    yaml += `${"  ".repeat(i + 1)}k${i}:\n`;
+  }
+  yaml += `${"  ".repeat(depth + 1)}leaf: ok\n`;
+  return `---\n${yaml}---\n# Body\n`;
+}
 
 describe("renderHtml (md -> HTML, no SWC)", () => {
   it("renders markdown and returns parsed frontmatter VALUES", async () => {
@@ -101,6 +112,33 @@ describe("expected failures surface as structured diagnostics (never a throw)", 
     expect(out.code).toBeNull();
     expect(out.diagnostics[0]?.source).toBe("options");
   });
+
+  it("deep YAML frontmatter returns a diagnostic rather than trapping", async () => {
+    const before = __getTrapRecoveryStateForTests();
+
+    const out = await renderHtml(nestedYamlFrontmatter(512), { filename: "deep.md" });
+
+    const after = __getTrapRecoveryStateForTests();
+    expect(out.html).toBeNull();
+    expect(out.frontmatter).toBeNull();
+    expect(out.diagnostics).toHaveLength(1);
+    expect(out.diagnostics[0]?.source).toBe("frontmatter");
+    expect(out.diagnostics[0]?.message).toContain("recursion limit exceeded");
+    expect(after.trapRecoveriesStarted).toBe(before.trapRecoveriesStarted);
+  });
+
+  it("reasonable YAML frontmatter depth still parses", async () => {
+    const out = await renderHtml(nestedYamlFrontmatter(20), { filename: "reasonable.md" });
+
+    expect(out.html).toBe("<h1>Body</h1>");
+    expect(out.diagnostics).toHaveLength(0);
+    let cursor = out.frontmatter as Record<string, unknown>;
+    cursor = cursor.root as Record<string, unknown>;
+    for (let i = 0; i < 20; i += 1) {
+      cursor = cursor[`k${i}`] as Record<string, unknown>;
+    }
+    expect(cursor.leaf).toBe("ok");
+  });
 });
 
 describe("version()", () => {
@@ -123,5 +161,49 @@ describe("trap / auto-re-init contract", () => {
     const out = await renderHtml("# recovered\n");
     expect(out.html).toBe("<h1>recovered</h1>");
     expect(out.diagnostics).toHaveLength(0);
+  });
+
+  it("single-flights concurrent trap recovery to one fresh instantiation", async () => {
+    await init();
+    const before = __getTrapRecoveryStateForTests();
+
+    const trapA = __forceTrapForTests();
+    const trapB = __forceTrapForTests();
+
+    await Promise.all([
+      expect(trapA).rejects.toBeInstanceOf(ZfbMdWasmTrapError),
+      expect(trapB).rejects.toBeInstanceOf(ZfbMdWasmTrapError),
+    ]);
+
+    const after = __getTrapRecoveryStateForTests();
+    expect(after.trapRecoveriesStarted - before.trapRecoveriesStarted).toBe(1);
+    expect(after.freshInstanceStarts - before.freshInstanceStarts).toBe(1);
+
+    const out = await renderHtml("# recovered after concurrent traps\n");
+    expect(out.html).toBe("<h1>recovered after concurrent traps</h1>");
+    expect(out.diagnostics).toHaveLength(0);
+  });
+
+  it("stops recovering after the cap and mints no further module records", async () => {
+    await init();
+    const before = __getTrapRecoveryStateForTests();
+    const remainingRecoveries = before.maxTrapRecoveries - before.trapRecoveriesStarted;
+    expect(remainingRecoveries).toBeGreaterThan(0);
+
+    for (let i = 0; i < remainingRecoveries; i += 1) {
+      await expect(__forceTrapForTests()).rejects.toBeInstanceOf(ZfbMdWasmTrapError);
+    }
+
+    const atCap = __getTrapRecoveryStateForTests();
+    expect(atCap.trapRecoveriesStarted).toBe(atCap.maxTrapRecoveries);
+    const freshInstanceStartsAtCap = atCap.freshInstanceStarts;
+
+    await expect(__forceTrapForTests()).rejects.toBeInstanceOf(ZfbMdWasmTrapRecoveryLimitError);
+    const terminal = __getTrapRecoveryStateForTests();
+    expect(terminal.terminal).toBe(true);
+    expect(terminal.freshInstanceStarts).toBe(freshInstanceStartsAtCap);
+
+    await expect(__forceTrapForTests()).rejects.toBeInstanceOf(ZfbMdWasmTrapRecoveryLimitError);
+    expect(__getTrapRecoveryStateForTests().freshInstanceStarts).toBe(freshInstanceStartsAtCap);
   });
 });
