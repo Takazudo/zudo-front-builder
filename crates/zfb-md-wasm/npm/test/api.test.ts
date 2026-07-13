@@ -11,7 +11,9 @@ import {
   version,
   init,
   ZfbMdWasmTrapError,
+  ZfbMdWasmTrapRecoveryLimitError,
   __forceTrapForTests,
+  __getTrapRecoveryStateForTests,
 } from "../dist/index.js";
 
 describe("renderHtml (md -> HTML, no SWC)", () => {
@@ -123,5 +125,49 @@ describe("trap / auto-re-init contract", () => {
     const out = await renderHtml("# recovered\n");
     expect(out.html).toBe("<h1>recovered</h1>");
     expect(out.diagnostics).toHaveLength(0);
+  });
+
+  it("single-flights concurrent trap recovery to one fresh instantiation", async () => {
+    await init();
+    const before = __getTrapRecoveryStateForTests();
+
+    const trapA = __forceTrapForTests();
+    const trapB = __forceTrapForTests();
+
+    await Promise.all([
+      expect(trapA).rejects.toBeInstanceOf(ZfbMdWasmTrapError),
+      expect(trapB).rejects.toBeInstanceOf(ZfbMdWasmTrapError),
+    ]);
+
+    const after = __getTrapRecoveryStateForTests();
+    expect(after.trapRecoveriesStarted - before.trapRecoveriesStarted).toBe(1);
+    expect(after.freshInstanceStarts - before.freshInstanceStarts).toBe(1);
+
+    const out = await renderHtml("# recovered after concurrent traps\n");
+    expect(out.html).toBe("<h1>recovered after concurrent traps</h1>");
+    expect(out.diagnostics).toHaveLength(0);
+  });
+
+  it("stops recovering after the cap and mints no further module records", async () => {
+    await init();
+    const before = __getTrapRecoveryStateForTests();
+    const remainingRecoveries = before.maxTrapRecoveries - before.trapRecoveriesStarted;
+    expect(remainingRecoveries).toBeGreaterThan(0);
+
+    for (let i = 0; i < remainingRecoveries; i += 1) {
+      await expect(__forceTrapForTests()).rejects.toBeInstanceOf(ZfbMdWasmTrapError);
+    }
+
+    const atCap = __getTrapRecoveryStateForTests();
+    expect(atCap.trapRecoveriesStarted).toBe(atCap.maxTrapRecoveries);
+    const freshInstanceStartsAtCap = atCap.freshInstanceStarts;
+
+    await expect(__forceTrapForTests()).rejects.toBeInstanceOf(ZfbMdWasmTrapRecoveryLimitError);
+    const terminal = __getTrapRecoveryStateForTests();
+    expect(terminal.terminal).toBe(true);
+    expect(terminal.freshInstanceStarts).toBe(freshInstanceStartsAtCap);
+
+    await expect(__forceTrapForTests()).rejects.toBeInstanceOf(ZfbMdWasmTrapRecoveryLimitError);
+    expect(__getTrapRecoveryStateForTests().freshInstanceStarts).toBe(freshInstanceStartsAtCap);
   });
 });
