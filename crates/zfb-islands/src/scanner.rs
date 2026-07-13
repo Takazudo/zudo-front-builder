@@ -84,7 +84,10 @@ use swc_core::ecma::ast::{
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use swc_core::ecma::transforms::base::resolver as swc_resolver;
 use thiserror::Error;
-use zfb_plugin_resolver::{read_tsconfig_paths, TsConfigPaths, TsPathAlias};
+use zfb_plugin_resolver::{
+    read_tsconfig_paths, resolve_raw_target_with_aliases, RawImportAliasContext, TsConfigPaths,
+    TsPathAlias,
+};
 use zfb_types::normalize_path_lexical;
 
 use crate::bundler::Island;
@@ -154,6 +157,8 @@ pub enum ScanError {
 
 /// Convenience alias for scanner results.
 pub type ScanResult<T> = std::result::Result<T, ScanError>;
+
+const RAW_RESOLUTION_MISS_MESSAGE: &str = "terminal target must be an existing exact project-local file (relative or configured tsconfig alias/baseUrl); no JS extension probing is applied";
 
 /// The result of [`scan_islands`].
 pub type IslandsSet = Vec<Island>;
@@ -451,9 +456,20 @@ pub struct FsResolver {
     /// `Clone` is cheap and the cache is shared across clones (which
     /// the scanner makes when running in parallel test harnesses).
     tsconfig_cache: Arc<Mutex<HashMap<PathBuf, Option<TsConfigPaths>>>>,
+    /// Optional project-root-scoped alias table for exact terminal
+    /// `?raw` targets. Disabled by default so `FsResolver::new()`
+    /// preserves the historical relative-only raw behavior until the
+    /// production caller opts in with the project root.
+    raw_alias_context: Option<FsRawAliasContext>,
 }
 
 // TsConfigPaths and TsPathAlias are imported from zfb_plugin_resolver above.
+
+#[derive(Debug, Clone)]
+struct FsRawAliasContext {
+    project_root: PathBuf,
+    aliases: RawImportAliasContext,
+}
 
 impl Default for FsResolver {
     fn default() -> Self {
@@ -467,6 +483,7 @@ impl Default for FsResolver {
             workspace_probe_enabled: true,
             injected_route_roots: Vec::new(),
             tsconfig_cache: Arc::new(Mutex::new(HashMap::new())),
+            raw_alias_context: None,
         }
     }
 }
@@ -505,6 +522,33 @@ impl FsResolver {
             .filter_map(|e| Self::injected_route_pkg_root(e.as_ref()))
             .collect();
         self
+    }
+
+    /// Enable exact `?raw` resolution through a caller-supplied
+    /// tsconfig alias/baseUrl context scoped to `project_root`.
+    ///
+    /// Relative raw targets keep the historical path-preserving branch.
+    /// Non-relative, non-absolute raw targets are delegated to
+    /// `zfb_plugin_resolver`, which enforces exact-file resolution and
+    /// project-root containment.
+    pub fn with_raw_alias_context(
+        mut self,
+        project_root: impl AsRef<Path>,
+        aliases: RawImportAliasContext,
+    ) -> Self {
+        self.raw_alias_context = Some(FsRawAliasContext {
+            project_root: normalize_path_lexical(project_root.as_ref()),
+            aliases,
+        });
+        self
+    }
+
+    /// Enable exact `?raw` alias/baseUrl resolution using
+    /// `<project_root>/tsconfig.json`.
+    pub fn with_project_root(self, project_root: impl AsRef<Path>) -> Self {
+        let project_root = project_root.as_ref();
+        let aliases = RawImportAliasContext::from_project_root(project_root);
+        self.with_raw_alias_context(project_root, aliases)
     }
 
     /// Walk up from `start_dir` looking for the first ancestor that
@@ -1379,7 +1423,17 @@ impl Resolver for FsResolver {
 
     fn resolve_raw(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
         if !(specifier.starts_with("./") || specifier.starts_with("../")) {
-            return None;
+            if Path::new(specifier).is_absolute() {
+                return None;
+            }
+            let context = self.raw_alias_context.as_ref()?;
+            return resolve_raw_target_with_aliases(
+                importer_dir,
+                specifier,
+                &context.project_root,
+                &context.aliases,
+            )
+            .ok();
         }
         let candidate = normalize_path_lexical(&importer_dir.join(specifier));
         if !candidate.is_file() {
@@ -1613,13 +1667,14 @@ pub fn scan_reachable_modules_with_meta<R: Resolver>(
                     }
                 }
                 CollectedImportEdge::Raw(specifier) => {
-                    let resolved = resolver.resolve_raw(&importer_dir, &specifier).ok_or_else(|| {
-                        ScanError::RawImport {
-                            path: current.clone(),
-                            specifier: specifier.clone(),
-                            message: "terminal target must be an existing exact relative file; no JS extension probing is applied".to_string(),
-                        }
-                    })?;
+                    let resolved =
+                        resolver
+                            .resolve_raw(&importer_dir, &specifier)
+                            .ok_or_else(|| ScanError::RawImport {
+                                path: current.clone(),
+                                specifier: specifier.clone(),
+                                message: RAW_RESOLUTION_MISS_MESSAGE.to_string(),
+                            })?;
                     raw_import_edges.insert(RawImportEdge {
                         importer: current.clone(),
                         target: resolved,
@@ -1795,13 +1850,14 @@ pub fn scan_islands_with_meta<R: Resolver>(
                     }
                 }
                 CollectedImportEdge::Raw(specifier) => {
-                    let resolved = resolver.resolve_raw(&importer_dir, &specifier).ok_or_else(|| {
-                        ScanError::RawImport {
-                            path: current.clone(),
-                            specifier: specifier.clone(),
-                            message: "terminal target must be an existing exact relative file; no JS extension probing is applied".to_string(),
-                        }
-                    })?;
+                    let resolved =
+                        resolver
+                            .resolve_raw(&importer_dir, &specifier)
+                            .ok_or_else(|| ScanError::RawImport {
+                                path: current.clone(),
+                                specifier: specifier.clone(),
+                                message: RAW_RESOLUTION_MISS_MESSAGE.to_string(),
+                            })?;
                     raw_edges.entry(current.clone()).or_default().push(resolved);
                 }
             }
@@ -2221,13 +2277,14 @@ fn discover_module_workers<R: Resolver>(
                     }
                 }
                 CollectedImportEdge::Raw(specifier) => {
-                    let target = resolver.resolve_raw(&importer_dir, &specifier).ok_or_else(|| {
-                        ScanError::RawImport {
-                            path: current.clone(),
-                            specifier: specifier.clone(),
-                            message: "terminal target must be an existing exact relative file; no JS extension probing is applied".to_string(),
-                        }
-                    })?;
+                    let target =
+                        resolver
+                            .resolve_raw(&importer_dir, &specifier)
+                            .ok_or_else(|| ScanError::RawImport {
+                                path: current.clone(),
+                                specifier: specifier.clone(),
+                                message: RAW_RESOLUTION_MISS_MESSAGE.to_string(),
+                            })?;
                     raw_import_edges.insert(RawImportEdge {
                         importer: current.clone(),
                         target,
@@ -2681,7 +2738,9 @@ enum CollectedImportEdge {
 fn supported_raw_form(reason: impl AsRef<str>) -> String {
     format!(
         "{}. Only a static default import written as \
-         `import text from \"./file.ext?raw\"` is supported. Dynamic imports, \
+         `import text from \"./file.ext?raw\"` is supported. The target must \
+         be project-local: relative paths and exact first-party tsconfig \
+         alias/baseUrl targets are supported; absolute paths are not. Dynamic imports, \
          `?url`, named/namespace/side-effect raw imports, and additional query \
          parameters are not supported.",
         reason.as_ref()
@@ -2731,9 +2790,9 @@ fn collect_import_edges(module: &Module) -> std::result::Result<Vec<CollectedImp
                             .strip_suffix("?raw")
                             .expect("exact raw query")
                             .to_string();
-                        if !(target.starts_with("./") || target.starts_with("../")) {
+                        if Path::new(&target).is_absolute() {
                             return Err(supported_raw_form(format!(
-                                "raw import target {target:?} is not project-local and relative"
+                                "raw import target {target:?} is absolute"
                             )));
                         }
                         out.push(CollectedImportEdge::Raw(target));
@@ -8275,6 +8334,198 @@ mod tests {
                 target: root().join("src/message.txt"),
             }]
         );
+    }
+
+    #[test]
+    fn fs_raw_alias_edge_reachable_from_island_is_recorded() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().canonicalize().expect("canonical project root");
+        let pages = project.join("pages");
+        let components = project.join("components");
+        let data = project.join("src").join("data");
+        fs::create_dir_all(&pages).unwrap();
+        fs::create_dir_all(&components).unwrap();
+        fs::create_dir_all(&data).unwrap();
+
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"@/*":["src/*"]}}}"#,
+        )
+        .unwrap();
+        let page = pages.join("home.tsx");
+        let island = components.join("demo.tsx");
+        let payload = data.join("payload.txt");
+        fs::write(
+            &page,
+            r#"import { Demo } from "../components/demo";
+               export default function Home() { return <Demo/>; }"#,
+        )
+        .unwrap();
+        fs::write(
+            &island,
+            r#""use client";
+               import text from "@/data/payload.txt?raw";
+               export function Demo() { return text; }"#,
+        )
+        .unwrap();
+        fs::write(&payload, "aliased raw text").unwrap();
+
+        let resolver = FsResolver::new().with_project_root(&project);
+        let (_islands, meta) = scan_islands_with_meta(&[page], &resolver).unwrap();
+
+        assert_eq!(
+            meta.raw_import_edges_from_islands,
+            vec![RawImportEdge {
+                importer: island.canonicalize().unwrap(),
+                target: payload,
+            }]
+        );
+    }
+
+    #[test]
+    fn fs_missing_raw_alias_target_reports_raw_import_with_specifier() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().canonicalize().expect("canonical project root");
+        let pages = project.join("pages");
+        fs::create_dir_all(&pages).unwrap();
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"@/*":["src/*"]}}}"#,
+        )
+        .unwrap();
+        let page = pages.join("home.tsx");
+        fs::write(
+            &page,
+            r#"import text from "@/data/missing.txt?raw";
+               export default text;"#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new().with_project_root(&project);
+        let error = scan_reachable_modules_with_meta(&[page], &resolver).unwrap_err();
+
+        match &error {
+            ScanError::RawImport { specifier, .. } => {
+                assert_eq!(specifier, "@/data/missing.txt");
+            }
+            other => panic!("expected raw import miss, got {other:?}"),
+        }
+        let message = error.to_string();
+        assert!(
+            message.contains("raw import resolution failed"),
+            "{message}"
+        );
+        assert!(message.contains("\"@/data/missing.txt\""), "{message}");
+    }
+
+    #[test]
+    fn fs_base_url_raw_target_resolves_bare_specifier_exact_file() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().canonicalize().expect("canonical project root");
+        let src = project.join("src");
+        let data = src.join("data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":"./src"}}"#,
+        )
+        .unwrap();
+        let entry = src.join("app.client.ts");
+        let payload = data.join("payload.txt");
+        fs::write(
+            &entry,
+            r#"import text from "data/payload.txt?raw";
+               export const payload = text;"#,
+        )
+        .unwrap();
+        fs::write(&payload, "baseUrl raw text").unwrap();
+
+        let resolver = FsResolver::new().with_project_root(&project);
+        let meta = scan_reachable_modules_with_meta(&[entry.clone()], &resolver).unwrap();
+
+        assert_eq!(
+            meta.raw_import_edges,
+            vec![RawImportEdge {
+                importer: entry,
+                target: payload,
+            }]
+        );
+    }
+
+    #[test]
+    fn absolute_raw_target_is_still_rejected_during_collection() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().canonicalize().expect("canonical project root");
+        let entry = project.join("entry.ts");
+        let absolute = project.join("secret.txt");
+        let specifier = format!("{}?raw", absolute.display());
+        fs::write(
+            &entry,
+            format!("import text from {specifier:?}; export default text;"),
+        )
+        .unwrap();
+        fs::write(&absolute, "secret").unwrap();
+
+        let error = scan_reachable_modules_with_meta(&[entry], &FsResolver::new()).unwrap_err();
+
+        match error {
+            ScanError::ImportQuery { message, .. } => {
+                assert!(message.contains("absolute"), "{message}");
+                assert!(message.contains("import text from"), "{message}");
+            }
+            other => panic!("expected collection-time import-query error, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fs_raw_alias_symlink_escape_is_rejected() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let project = dir.path().canonicalize().expect("canonical project root");
+        let src = project.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            project.join("tsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"secret":["src/secret.txt"]}}}"#,
+        )
+        .unwrap();
+        let entry = project.join("entry.ts");
+        let outside_target = outside.path().join("secret.txt");
+        let symlink_target = src.join("secret.txt");
+        fs::write(
+            &entry,
+            r#"import text from "secret?raw"; export default text;"#,
+        )
+        .unwrap();
+        fs::write(&outside_target, "outside secret").unwrap();
+        std::os::unix::fs::symlink(&outside_target, &symlink_target).unwrap();
+
+        let resolver = FsResolver::new().with_project_root(&project);
+        let error = scan_reachable_modules_with_meta(&[entry], &resolver).unwrap_err();
+
+        match &error {
+            ScanError::RawImport { specifier, .. } => {
+                assert_eq!(specifier, "secret");
+            }
+            other => panic!("expected raw import miss for symlink escape, got {other:?}"),
+        }
+        let message = error.to_string();
+        assert!(
+            message.contains("raw import resolution failed"),
+            "{message}"
+        );
+        assert!(message.contains("\"secret\""), "{message}");
     }
 
     #[test]
