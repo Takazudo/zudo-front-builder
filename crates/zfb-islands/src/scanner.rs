@@ -8447,8 +8447,8 @@ mod tests {
         fs::write(&payload, "baseUrl raw text").unwrap();
 
         let resolver = FsResolver::new().with_project_root(&project);
-        let meta = scan_reachable_modules_with_meta(std::slice::from_ref(&entry), &resolver)
-            .unwrap();
+        let meta =
+            scan_reachable_modules_with_meta(std::slice::from_ref(&entry), &resolver).unwrap();
 
         assert_eq!(
             meta.raw_import_edges,
