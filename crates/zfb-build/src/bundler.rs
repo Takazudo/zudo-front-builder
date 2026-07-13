@@ -3463,9 +3463,8 @@ fn emitted_wasm_assets_from_metafile(
     outdir: &Path,
     bundle_path: &Path,
 ) -> Result<Vec<PathBuf>> {
-    let bundle_references_wasm = bundle_references_wasm(bundle_path)?;
     let Some(metafile_bytes) = metafile_bytes else {
-        if bundle_references_wasm {
+        if bundle_references_wasm(bundle_path)? {
             bail!(
                 "bundler: wasm asset manifest is unavailable: esbuild did not write {} for a bundle that imports Wasm",
                 metafile_path.display()
@@ -3476,17 +3475,19 @@ fn emitted_wasm_assets_from_metafile(
 
     let wasm_output_keys = match wasm_output_keys_from_metafile(metafile_bytes) {
         Ok(keys) => keys,
-        Err(error) if bundle_references_wasm => {
-            return Err(error.context(format!(
-                "bundler: wasm asset manifest is malformed at {} for a bundle that imports Wasm",
-                metafile_path.display()
-            )));
+        Err(error) => {
+            if bundle_references_wasm(bundle_path)? {
+                return Err(error.context(format!(
+                    "bundler: wasm asset manifest is malformed at {} for a bundle that imports Wasm",
+                    metafile_path.display()
+                )));
+            }
+            return Ok(Vec::new());
         }
-        Err(_) => return Ok(Vec::new()),
     };
 
     if wasm_output_keys.is_empty() {
-        if bundle_references_wasm {
+        if bundle_references_wasm(bundle_path)? {
             bail!(
                 "bundler: wasm asset manifest at {} listed no .wasm output for a bundle that imports Wasm",
                 metafile_path.display()
@@ -3499,15 +3500,22 @@ fn emitted_wasm_assets_from_metafile(
 }
 
 fn bundle_references_wasm(bundle_path: &Path) -> Result<bool> {
-    let bundle = fs::read(bundle_path).with_context(|| {
-        format!(
-            "bundler: failed to read emitted bundle {}",
-            bundle_path.display()
-        )
-    })?;
-    Ok(bundle
-        .windows(b".wasm".len())
-        .any(|window| window == b".wasm"))
+    // A bare `.wasm` substring is not sufficient: user-facing messages,
+    // comments, and template literals can all contain one without requiring a
+    // deployable module. Reuse the existing static-ESM parser so this guard
+    // only trips for a real emitted module dependency.
+    let specifiers = crate::module_worker::collect_runtime_import_specifiers_from_file(bundle_path)
+        .with_context(|| {
+            format!(
+                "bundler: failed to inspect emitted bundle {} for Wasm ESM imports",
+                bundle_path.display()
+            )
+        })?;
+    Ok(specifiers.into_iter().any(|specifier| {
+        Path::new(&specifier)
+            .extension()
+            .is_some_and(|extension| extension == "wasm")
+    }))
 }
 
 fn wasm_output_keys_from_metafile(metafile_bytes: &[u8]) -> Result<Vec<String>> {
@@ -12583,6 +12591,35 @@ mod tests {
             &bundle,
         )
         .expect("Wasm-free bundles retain best-effort metafile behavior");
+        assert!(assets.is_empty());
+    }
+
+    #[test]
+    fn wasm_asset_manifest_ignores_wasm_text_outside_static_esm_imports() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path().join("shadow");
+        let outdir = tmp.path().join("dist");
+        fs::create_dir_all(&shadow).unwrap();
+        fs::create_dir_all(&outdir).unwrap();
+        let bundle = outdir.join("bundle.mjs");
+        fs::write(
+            &bundle,
+            r#"
+                // import wasm from "./comment-only.wasm";
+                const message = "./string-only.wasm";
+                const template = `import wasm from "./template-only.wasm";`;
+            "#,
+        )
+        .unwrap();
+
+        let assets = emitted_wasm_assets_from_metafile(
+            &shadow.join(".zfb-metafile.json"),
+            Some(b"not json"),
+            &shadow,
+            &outdir,
+            &bundle,
+        )
+        .expect("non-import Wasm text must not require a metafile");
         assert!(assets.is_empty());
     }
 
