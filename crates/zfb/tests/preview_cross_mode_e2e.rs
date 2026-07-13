@@ -911,9 +911,7 @@ async fn preview_and_dev_agree_on_redirects_and_plugin_middleware() {
         if !run_cross_mode_case(CrossModeCase::Default, &client, &esbuild).await {
             return;
         }
-        if !run_cross_mode_case(CrossModeCase::CustomBase, &client, &esbuild).await {
-            return;
-        }
+        run_cross_mode_case(CrossModeCase::CustomBase, &client, &esbuild).await;
     };
 
     tokio::time::timeout(OVERALL_DEADLINE, overall)
