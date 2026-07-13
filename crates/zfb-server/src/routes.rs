@@ -908,12 +908,17 @@ async fn serve_page(
     // other methods, gate on `is_get_like` here to skip the lock and
     // path-format work for POST/PUT/etc.
     if is_get_like {
-        let path_only = format!("/{trimmed}");
+        let redirects_path = redirects_match_path(trimmed, state.base_prefix.as_deref());
         // `/_redirects` itself must never be servable — Cloudflare
         // never exposes the control file at its own URL, and it would
         // otherwise leak through the `public_root` disk leg further
         // down (the raw source file, not a servable asset).
-        if path_only == "/_redirects" {
+        if redirects_path == "/_redirects"
+            || state
+                .base_prefix
+                .as_deref()
+                .is_some_and(|prefix| redirects_path == format!("{prefix}/_redirects"))
+        {
             return page_response_bytes(
                 StatusCode::NOT_FOUND,
                 DEV_404_BODY.as_bytes().to_vec(),
@@ -932,7 +937,8 @@ async fn serve_page(
             // any I/O so the watcher's reload is never blocked by an
             // in-flight request.
             let snapshot: Redirects = handle.read().unwrap_or_else(|p| p.into_inner()).clone();
-            if let Some(outcome) = snapshot.match_request(&path_only, uri.query(), method.as_str())
+            if let Some(outcome) =
+                snapshot.match_request(&redirects_path, uri.query(), method.as_str())
             {
                 match outcome {
                     RedirectOutcome::Redirect { status, location } => {
@@ -944,8 +950,11 @@ async fn serve_page(
                         // waterfall a normal request would eventually
                         // reach, never re-consulting plugins, embed
                         // handlers, SSR, the hook, or the rule set again.
-                        let target_trimmed = target.trim_start_matches('/');
-                        return serve_from_waterfall(state, target_trimmed, lr_prefix).await;
+                        let target_trimmed = waterfall_trimmed_for_rewrite_target(
+                            &target,
+                            state.base_prefix.as_deref(),
+                        );
+                        return serve_from_waterfall(state, &target_trimmed, lr_prefix).await;
                     }
                 }
             }
@@ -1336,6 +1345,62 @@ fn redirect_response(status: u16, location: &str) -> Response {
     let location_value =
         HeaderValue::from_str(location).unwrap_or_else(|_| HeaderValue::from_static("/"));
     (status_code, [(header::LOCATION, location_value)]).into_response()
+}
+
+/// Reconstruct the full request path used by `_redirects` matching.
+///
+/// The base-prefixed dev router registers routes at `<base>/{*path}` and
+/// passes only the captured, prefix-stripped path into [`serve_page`].
+/// Static preview (and Workers Static Assets) match `_redirects` against
+/// the full request path, so dev has to put the mount prefix back before
+/// consulting the shared matcher.
+fn redirects_match_path(trimmed: &str, base_prefix: Option<&str>) -> String {
+    let local_path = if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    match base_prefix {
+        Some(prefix) if !prefix.is_empty() && local_path == "/" => format!("{prefix}/"),
+        Some(prefix) if !prefix.is_empty() => format!("{prefix}{local_path}"),
+        _ => local_path,
+    }
+}
+
+/// Convert a `_redirects` 200-rewrite target into the prefix-stripped
+/// path shape expected by [`serve_from_waterfall`].
+///
+/// Spec-form rules under a custom `base` use full-path targets such as
+/// `/pj/site/rewritten/?literal=1`. Dev's waterfall, however, stores and
+/// probes pages/public files without the mount prefix. Query strings are
+/// not part of filesystem/page-cache lookup; preview splits them before
+/// calling its static waterfall, and dev mirrors that here.
+fn waterfall_trimmed_for_rewrite_target(target: &str, base_prefix: Option<&str>) -> String {
+    let path = target
+        .split_once('?')
+        .map(|(path, _)| path)
+        .unwrap_or(target);
+    strip_prefix_from_path(path, base_prefix)
+        .trim_start_matches('/')
+        .to_string()
+}
+
+fn strip_prefix_from_path<'a>(path: &'a str, prefix: Option<&str>) -> &'a str {
+    let prefix = match prefix {
+        Some(p) if !p.is_empty() => p,
+        _ => return path,
+    };
+    if !path.starts_with(prefix) {
+        return path;
+    }
+    let rest = &path[prefix.len()..];
+    if rest.is_empty() {
+        return "/";
+    }
+    match rest.as_bytes()[0] {
+        b'/' => rest,
+        _ => path,
+    }
 }
 
 /// Strip the dev server's mount prefix from `uri`'s path-and-query
@@ -1979,6 +2044,7 @@ mod tests {
     };
     use axum::body::{to_bytes, Body};
     use axum::http::{Request, StatusCode};
+    use std::sync::{Arc, RwLock};
     use tokio::sync::broadcast;
     use tower::ServiceExt;
 
@@ -3574,6 +3640,129 @@ mod tests {
         assert!(
             body.contains("<script src=\"/foo/__zfb/livereload.js\"></script>"),
             "expected prefixed livereload tag in 404, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_prefix_redirects_match_full_path_and_rewrite_strips_base() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let public_root = tmp.path().to_path_buf();
+        std::fs::write(
+            public_root.join("_redirects"),
+            b"this control file must never be served",
+        )
+        .unwrap();
+
+        let mut state = test_state_with_base("/pj/site");
+        state.public_root = public_root;
+        state.redirects = Some(Arc::new(RwLock::new(Redirects::parse(
+            "\
+/pj/site/old /pj/site/new-page 302
+/pj/site/rewrite-me /pj/site/rewritten/?literal=1 200
+",
+        ))));
+        state
+            .pages
+            .insert(
+                "/rewritten",
+                "<html><body>BASE_REWRITE_TARGET_MARKER</body></html>",
+            )
+            .await;
+        state
+            .pages
+            .insert(
+                "/pass-through",
+                "<html><body>BASE_PASS_THROUGH_MARKER</body></html>",
+            )
+            .await;
+        let router = test_router_with_base(state);
+
+        let redirect_resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pj/site/old")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(redirect_resp.status(), StatusCode::FOUND);
+        let location = redirect_resp
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(
+            location, "/pj/site/new-page",
+            "redirect Location must be the rule target exactly, not double-prefixed"
+        );
+
+        let rewrite_resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pj/site/rewrite-me?request=ignored")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rewrite_resp.status(), StatusCode::OK);
+        let rewrite_body = body_string(rewrite_resp).await;
+        assert!(
+            rewrite_body.contains("BASE_REWRITE_TARGET_MARKER"),
+            "base-prefixed 200 rewrite with literal query must resolve through the waterfall: {rewrite_body}"
+        );
+
+        let pass_through_resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pj/site/pass-through")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pass_through_resp.status(), StatusCode::OK);
+        let pass_through_body = body_string(pass_through_resp).await;
+        assert!(
+            pass_through_body.contains("BASE_PASS_THROUGH_MARKER"),
+            "non-matching full-path request must fall through to the ordinary dev waterfall: {pass_through_body}"
+        );
+
+        let prefixed_control_resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pj/site/_redirects")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prefixed_control_resp.status(), StatusCode::NOT_FOUND);
+        let prefixed_control_body = body_string(prefixed_control_resp).await;
+        assert!(
+            !prefixed_control_body.contains("this control file must never be served"),
+            "base-prefixed _redirects must remain hidden"
+        );
+
+        let bare_control_resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/_redirects")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bare_control_resp.status(), StatusCode::NOT_FOUND);
+        let bare_control_body = body_string(bare_control_resp).await;
+        assert!(
+            !bare_control_body.contains("this control file must never be served"),
+            "bare _redirects must remain hidden even when a base is configured"
         );
     }
 

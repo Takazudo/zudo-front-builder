@@ -111,6 +111,39 @@ const SCENARIO_DEADLINE: Duration = Duration::from_secs(30);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+#[derive(Clone, Copy)]
+enum CrossModeCase {
+    Default,
+    CustomBase,
+}
+
+impl CrossModeCase {
+    fn preview_readiness_path(self) -> &'static str {
+        "/"
+    }
+
+    fn dev_readiness_path(self) -> &'static str {
+        match self {
+            CrossModeCase::Default => "/",
+            CrossModeCase::CustomBase => "/pj/site/",
+        }
+    }
+
+    fn preview_label(self) -> &'static str {
+        match self {
+            CrossModeCase::Default => "preview",
+            CrossModeCase::CustomBase => "preview-custom-base",
+        }
+    }
+
+    fn dev_label(self) -> &'static str {
+        match self {
+            CrossModeCase::Default => "dev",
+            CrossModeCase::CustomBase => "dev-custom-base",
+        }
+    }
+}
+
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -142,6 +175,34 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn configure_fixture_case(root: &Path, case: CrossModeCase) {
+    match case {
+        CrossModeCase::Default => {}
+        CrossModeCase::CustomBase => {
+            fs::write(
+                root.join("zfb.config.json"),
+                r#"{
+  "framework": "preact",
+  "base": "/pj/site/",
+  "plugins": [{ "name": "./preset.mjs" }]
+}
+"#,
+            )
+            .expect("write custom-base zfb.config.json");
+            fs::write(
+                root.join("public/_redirects"),
+                "\
+# Custom-base parity rules: spec-form sources include the base prefix.
+/pj/site/old-page /pj/site/new-page 301
+/pj/site/rewrite-me /rewritten/?literal=1 200
+/pj/site/blog/* /pj/site/new-page?src=:splat 301
+",
+            )
+            .expect("write custom-base _redirects");
+        }
+    }
 }
 
 /// Owns one spawned `zfb <subcommand>` process (dev OR preview). Drop
@@ -267,16 +328,18 @@ fn spawn_zfb(
     }
 }
 
-/// Wait for the ready banner and confirm `GET /` answers 200. Panics if
-/// the process exits prematurely, or the deadline is exceeded, with the
-/// captured logs attached — there is no "known-skip indicator" branch
-/// here (unlike `dev_serve_e2e.rs`): by the time this is called,
-/// `locate_esbuild()`/`node_available()` have already gated the whole
-/// test, so a premature exit is a real failure, not an environment gap.
+/// Wait for the ready banner and confirm the case's readiness URL
+/// answers 200. Panics if the process exits prematurely, or the deadline
+/// is exceeded, with the captured logs attached — there is no
+/// "known-skip indicator" branch here (unlike `dev_serve_e2e.rs`): by
+/// the time this is called, `locate_esbuild()`/`node_available()` have
+/// already gated the whole test, so a premature exit is a real failure,
+/// not an environment gap.
 async fn boot_and_get_port(
     session: &mut ServerSession,
     client: &reqwest::Client,
     boot_deadline: Duration,
+    readiness_path: &str,
 ) -> u16 {
     let boot_start = Instant::now();
     let port = loop {
@@ -312,14 +375,14 @@ async fn boot_and_get_port(
     let base = format!("http://localhost:{port}");
     let start = Instant::now();
     loop {
-        if let Ok(resp) = client.get(format!("{base}/")).send().await {
+        if let Ok(resp) = client.get(format!("{base}{readiness_path}")).send().await {
             if resp.status().as_u16() == 200 {
                 return port;
             }
         }
         assert!(
             start.elapsed() < boot_deadline,
-            "`{}` GET / never answered 200 within {}s after the ready banner.\n{}",
+            "`{}` GET {readiness_path} never answered 200 within {}s after the ready banner.\n{}",
             session.label,
             boot_deadline.as_secs(),
             session.logs(),
@@ -619,6 +682,49 @@ async fn run_shared_get_scenarios(client: &reqwest::Client, base: &str, session:
     .await;
 }
 
+/// Custom-base GET assertions for issue #1594. The rule sources are
+/// authored in Cloudflare/preview spec form, so they include `/pj/site`.
+/// Dev must reconstruct that full source path before matching, while
+/// preview naturally feeds the full request path to the same matcher.
+async fn run_custom_base_get_scenarios(
+    client: &reqwest::Client,
+    base: &str,
+    session: &ServerSession,
+) {
+    poll_get_redirect(
+        client,
+        &format!("{base}/pj/site/old-page?x=1"),
+        301,
+        "/pj/site/new-page?x=1",
+        SCENARIO_DEADLINE,
+        "custom base: redirect preserves exact base-prefixed Location + query",
+        session,
+    )
+    .await;
+
+    poll_get_contains(
+        client,
+        &format!("{base}/pj/site/rewrite-me?extra=1"),
+        200,
+        "CROSS_MODE_REWRITTEN_MARKER",
+        SCENARIO_DEADLINE,
+        "custom base: 200 rewrite matches a base-prefixed source before serving target content",
+        session,
+    )
+    .await;
+
+    poll_get_redirect(
+        client,
+        &format!("{base}/pj/site/blog/2024/07/hello?x=1"),
+        301,
+        "/pj/site/new-page?src=2024/07/hello&x=1",
+        SCENARIO_DEADLINE,
+        "custom base: splat capture + exact base-prefixed Location",
+        session,
+    )
+    .await;
+}
+
 /// POST assertions: `_redirects` bypass (no rule fires for a non-GET/HEAD
 /// method) and the shared plugin handler's POST response.
 async fn run_shared_post_scenarios(client: &reqwest::Client, base: &str, session: &ServerSession) {
@@ -660,6 +766,117 @@ async fn run_shared_post_scenarios(client: &reqwest::Client, base: &str, session
 // The test
 // ---------------------------------------------------------------------------
 
+async fn run_cross_mode_case(
+    case: CrossModeCase,
+    client: &reqwest::Client,
+    esbuild: &Path,
+) -> bool {
+    // ── Build once, for the preview half ──────────────────────────
+    let preview_tmp = tempfile::tempdir().expect("tempdir for preview root");
+    let preview_root = preview_tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize preview root");
+    copy_dir(&fixture_dir(), &preview_root).expect("copy fixture into preview root");
+    configure_fixture_case(&preview_root, case);
+
+    let build_ok = {
+        let root = preview_root.clone();
+        let esbuild = esbuild.to_path_buf();
+        tokio::task::spawn_blocking(move || run_build(&root, &esbuild))
+            .await
+            .expect("join zfb build task")
+    };
+    if !build_ok {
+        return false; // known-skip, already logged by run_build
+    }
+
+    // ── Dev gets its OWN fresh, unbuilt copy of the fixture ───────
+    let dev_tmp = tempfile::tempdir().expect("tempdir for dev root");
+    let dev_root = dev_tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize dev root");
+    copy_dir(&fixture_dir(), &dev_root).expect("copy fixture into dev root");
+    configure_fixture_case(&dev_root, case);
+
+    // ── Preview half ───────────────────────────────────────────────
+    let mut preview_session = spawn_zfb(
+        &preview_root,
+        &["preview", "--port", "0"],
+        &[],
+        case.preview_label(),
+    );
+    let preview_port = boot_and_get_port(
+        &mut preview_session,
+        client,
+        PREVIEW_BOOT_DEADLINE,
+        case.preview_readiness_path(),
+    )
+    .await;
+    let preview_base = format!("http://localhost:{preview_port}");
+
+    match case {
+        CrossModeCase::Default => {
+            run_shared_get_scenarios(client, &preview_base, &preview_session).await;
+            run_shared_post_scenarios(client, &preview_base, &preview_session).await;
+
+            // Sanity: an unmatched route 404s cleanly (not a panic/500)
+            // — cheap belt-and-suspenders check that the
+            // redirects/plugin wiring above didn't swallow the ordinary
+            // static-file waterfall.
+            poll_get_status(
+                client,
+                &format!("{preview_base}/nonexistent-route-for-404-check"),
+                404,
+                SCENARIO_DEADLINE,
+                "sanity: an unmatched route 404s (not a panic/500)",
+                &preview_session,
+            )
+            .await;
+        }
+        CrossModeCase::CustomBase => {
+            run_custom_base_get_scenarios(client, &preview_base, &preview_session).await;
+        }
+    }
+
+    // Explicitly release the preview server before booting dev — the
+    // two never need to run concurrently, and shutting one down first
+    // keeps the failure logs for whichever phase is running unambiguous.
+    drop(preview_session);
+
+    // ── Dev half — same scenarios, same expected literal values ────
+    let mut dev_session = spawn_zfb(
+        &dev_root,
+        &["dev", "--port", "0"],
+        &[(
+            "ZFB_ESBUILD_BIN",
+            esbuild.to_str().expect("esbuild path is UTF-8"),
+        )],
+        case.dev_label(),
+    );
+    let dev_port = boot_and_get_port(
+        &mut dev_session,
+        client,
+        DEV_BOOT_DEADLINE,
+        case.dev_readiness_path(),
+    )
+    .await;
+    let dev_base = format!("http://localhost:{dev_port}");
+
+    match case {
+        CrossModeCase::Default => {
+            run_shared_get_scenarios(client, &dev_base, &dev_session).await;
+            run_shared_post_scenarios(client, &dev_base, &dev_session).await;
+        }
+        CrossModeCase::CustomBase => {
+            run_custom_base_get_scenarios(client, &dev_base, &dev_session).await;
+        }
+    }
+
+    true
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn preview_and_dev_agree_on_redirects_and_plugin_middleware() {
     // Cross-binary lock acquired BEFORE anything else (issue #1339) — see
@@ -684,33 +901,6 @@ async fn preview_and_dev_agree_on_redirects_and_plugin_middleware() {
     }
 
     let overall = async {
-        // ── Build once, for the preview half ──────────────────────────
-        let preview_tmp = tempfile::tempdir().expect("tempdir for preview root");
-        let preview_root = preview_tmp
-            .path()
-            .canonicalize()
-            .expect("canonicalize preview root");
-        copy_dir(&fixture_dir(), &preview_root).expect("copy fixture into preview root");
-
-        let build_ok = {
-            let root = preview_root.clone();
-            let esbuild = esbuild.clone();
-            tokio::task::spawn_blocking(move || run_build(&root, &esbuild))
-                .await
-                .expect("join zfb build task")
-        };
-        if !build_ok {
-            return; // known-skip, already logged by run_build
-        }
-
-        // ── Dev gets its OWN fresh, unbuilt copy of the fixture ───────
-        let dev_tmp = tempfile::tempdir().expect("tempdir for dev root");
-        let dev_root = dev_tmp
-            .path()
-            .canonicalize()
-            .expect("canonicalize dev root");
-        copy_dir(&fixture_dir(), &dev_root).expect("copy fixture into dev root");
-
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(10))
@@ -718,50 +908,12 @@ async fn preview_and_dev_agree_on_redirects_and_plugin_middleware() {
             .build()
             .expect("build reqwest client");
 
-        // ── Preview half ───────────────────────────────────────────────
-        let mut preview_session =
-            spawn_zfb(&preview_root, &["preview", "--port", "0"], &[], "preview");
-        let preview_port =
-            boot_and_get_port(&mut preview_session, &client, PREVIEW_BOOT_DEADLINE).await;
-        let preview_base = format!("http://localhost:{preview_port}");
-
-        run_shared_get_scenarios(&client, &preview_base, &preview_session).await;
-        run_shared_post_scenarios(&client, &preview_base, &preview_session).await;
-
-        // Sanity: an unmatched route 404s cleanly (not a panic/500) —
-        // cheap belt-and-suspenders check that the redirects/plugin wiring
-        // above didn't swallow the ordinary static-file waterfall.
-        poll_get_status(
-            &client,
-            &format!("{preview_base}/nonexistent-route-for-404-check"),
-            404,
-            SCENARIO_DEADLINE,
-            "sanity: an unmatched route 404s (not a panic/500)",
-            &preview_session,
-        )
-        .await;
-
-        // Explicitly release the preview server before booting dev — the
-        // two never need to run concurrently, and shutting one down first
-        // keeps the failure logs for whichever phase is running
-        // unambiguous.
-        drop(preview_session);
-
-        // ── Dev half — same scenarios, same expected literal values ────
-        let mut dev_session = spawn_zfb(
-            &dev_root,
-            &["dev", "--port", "0"],
-            &[(
-                "ZFB_ESBUILD_BIN",
-                esbuild.to_str().expect("esbuild path is UTF-8"),
-            )],
-            "dev",
-        );
-        let dev_port = boot_and_get_port(&mut dev_session, &client, DEV_BOOT_DEADLINE).await;
-        let dev_base = format!("http://localhost:{dev_port}");
-
-        run_shared_get_scenarios(&client, &dev_base, &dev_session).await;
-        run_shared_post_scenarios(&client, &dev_base, &dev_session).await;
+        if !run_cross_mode_case(CrossModeCase::Default, &client, &esbuild).await {
+            return;
+        }
+        if !run_cross_mode_case(CrossModeCase::CustomBase, &client, &esbuild).await {
+            return;
+        }
     };
 
     tokio::time::timeout(OVERALL_DEADLINE, overall)
