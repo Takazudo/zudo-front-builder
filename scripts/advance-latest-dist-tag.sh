@@ -46,6 +46,7 @@ _tag_with_retry "@takazudo/zfb" "$ZFB_SEMVER"                || FAILED=1
 _tag_with_retry "@takazudo/zfb-runtime" "$ZFB_SEMVER"        || FAILED=1
 _tag_with_retry "@takazudo/zfb-adapter-cloudflare" "$ZFB_SEMVER" || FAILED=1
 _tag_with_retry "create-zfb" "$ZFB_SEMVER"                   || FAILED=1
+_tag_with_retry "@takazudo/zfb-md-wasm" "$ZFB_SEMVER"        || FAILED=1
 
 if [[ "$FAILED" -ne 0 ]]; then
   echo "::error::One or more 'npm dist-tag add ... latest' calls failed (see above). The packages are published but 'latest' was not advanced. Re-run the manual remediation commands listed above."
