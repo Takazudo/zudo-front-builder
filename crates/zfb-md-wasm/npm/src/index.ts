@@ -226,7 +226,12 @@ export async function renderHtml(
   return JSON.parse(json) as RenderHtmlResult;
 }
 
-/** This crate's version (`CARGO_PKG_VERSION`), for host-side compatibility checks. */
+/**
+ * Package version for host-side compatibility checks.
+ *
+ * Release artifacts are stamped with the published package semver at build
+ * time; local development builds fall back to the Rust manifest placeholder.
+ */
 export async function version(): Promise<string> {
   return callWasm(({ glue }) => glue.version());
 }

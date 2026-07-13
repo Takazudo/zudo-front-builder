@@ -13,11 +13,13 @@ renderHtml-only artifact is a documented possible follow-up):
 |---|---|---|
 | `compile(source, optionsJson)` | mdx → JSX → SWC → ES-module JS | `{ code, frontmatter, diagnostics }` |
 | `renderHtml(source, optionsJson)` | md → mdast → visitors → hast → HTML | `{ html, frontmatter, diagnostics }` |
-| `version()` | — | crate version string |
+| `version()` | — | release-stamped package version string |
 
 The whole boundary is JSON-in/JSON-out strings; the authoritative shape
 documentation is the crate rustdoc (`src/lib.rs`) plus
 `zfb_content::facade::PipelineOptions` for the `pipeline` sub-object.
+Published artifacts stamp `version()` with the package semver during release;
+local development builds fall back to the Rust manifest version placeholder.
 
 ## Options JSON (shared by both entry points)
 

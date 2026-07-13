@@ -72,7 +72,9 @@ object can serve both tiers.
 
 ### `version()` / `init()`
 
-`version()` returns the crate version (for host-side compatibility checks).
+`version()` returns the package version for host-side compatibility checks.
+Published artifacts are stamped with the release semver at build time; local
+development builds fall back to the Rust manifest placeholder.
 `init()` eagerly loads and instantiates the wasm module; it's optional (every
 call instantiates on first use) but useful to front-load the one-time
 fetch/compile cost at app startup.
