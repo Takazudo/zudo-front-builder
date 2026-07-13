@@ -120,7 +120,7 @@ Every `#[ignore]`d Rust test carries a reason starting with one of 5 machine-gre
 - `verification: <why>` — one-time "it was done" proof, not a regression guard (no issue URL needed).
 - `pending-feature: <issue-url>` — blocked on an unimplemented product feature or unwritten test body (issue URL mandatory).
 
-Audited and retagged in full during issue #1337 (2026-07); reconciled again during issue #1504 (2026-07). The table below lists all **28** ignored Rust tests (**23** `env-gate`, **5** `heavy`) and their scheduled homes. Update this table whenever a `#[ignore]` is added, removed, or reclassified.
+Audited and retagged in full during issue #1337 (2026-07); reconciled again during issue #1504 (2026-07). The table below lists all **29** ignored Rust tests (**23** `env-gate`, **5** `heavy`, **1** `verification`) and their scheduled homes. Update this table whenever a `#[ignore]` is added, removed, or reclassified.
 
 | Test (file:line) | Tag | Where / how it runs |
 |---|---|---|
@@ -147,13 +147,14 @@ Audited and retagged in full during issue #1337 (2026-07); reconciled again duri
 | `crates/zfb-css/tests/integration.rs:48` `subprocess_engine_against_real_binary` | `env-gate` (tailwindcss v4) | Local: `cargo test -p zfb-css --test integration -- --include-ignored`. **CI, T1 (issue #1393)**: `health.yml` → "Run zfb-css tailwindcss-v4 env-gate integration test" step. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job runs it via the exact-name filterset (issue #1344). |
 | `crates/zfb-build/tests/prod_asset_graph_e2e.rs:795` `prod_asset_graph_with_real_tailwind_binary_against_fixture` | `env-gate` (tailwindcss v4) | Local: `cargo test -p zfb-build --test prod_asset_graph_e2e -- --include-ignored`. **CI, T1 (issue #1393)**: `health.yml` → "Run zfb-build tailwindcss-v4 env-gate integration test" step. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job (issue #1344). |
 | `crates/zfb/src/commands/build.rs:10477` `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project` | `env-gate` (tailwindcss v4) | Local: `cargo test -p zfb --lib commands::build:: -- --include-ignored`. **CI, T1 (issue #1393)**: `health.yml` → "Run zfb command-layer env-gate unit tests (commands::build)" step. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job (issue #1344). |
+| `crates/zfb-css/tests/hi_color_extraction.rs:60` `extract_zfb_hi_colors_from_base16_ocean` | `verification` | Local only: `cargo test -p zfb-css --test hi_color_extraction -- --ignored --nocapture`. One-time color extraction helper for `assets/zfb-hi.css`, not a regression guard. |
 | `crates/zfb/tests/version_stamp.rs:22` `version_stamp_from_env` | `heavy` | Local (T4): `cargo test -p zfb --test version_stamp -- --ignored`. Performs a full isolated `cargo run` recompile. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job (issue #1344), allowed-to-fail. |
 | `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:497` `e2e_src_component_edit_rerenders_route` | `heavy` | Local (T4): `cargo test -p zfb --test dev_dep_invalidation_1284_e2e -- --ignored`. Level-4 e2e, spawns a real `zfb dev` server. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job, allowed-to-fail. |
 | `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:706` `e2e_transitive_css_import_refreshes_stylesheet` | `heavy` | Same as above. |
 | `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:907` `e2e_new_utility_class_in_component_is_emitted` | `heavy` | Same as above. |
 | `crates/zfb/src/render_pipeline.rs:2146` `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` | `heavy` | Local (T4): `cargo test -p zfb --lib render_pipeline:: -- --ignored`. Level-4 integration test: boots a real esbuild subprocess + embedded V8 isolate via `crate::v8_host_adapter::ThreadedV8Host`. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job (issue #1344), allowed-to-fail. |
 
-No `flaky:` or `verification:` tagged tests exist as of this audit.
+No `flaky:` tagged tests exist as of this audit. The lone `verification:` helper above is a one-time extraction aid, not a regression guard.
 
 ### TS-side flaky/verification idiom (vitest)
 
