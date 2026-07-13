@@ -37,13 +37,16 @@ export interface EmitWorkerInput {
   /**
    * Absolute path to the output directory. The emitter creates it if
    * missing and writes `_worker.js`, `_zfb_inner.mjs` (the copied input
-   * bundle), and `.assetsignore` into it.
+   * bundle), copied Wasm assets, and `.assetsignore` into it. The ignore
+   * file protects every generated JavaScript and Wasm basename from the
+   * public asset upload.
    */
   readonly outdir: string;
   /**
    * Wasm modules emitted beside the input bundle. Relative paths resolve from
    * the input bundle's directory and each module is copied into the Worker
-   * package under its basename.
+   * package under its basename, then added to `.assetsignore` so it remains a
+   * Worker module rather than a public static asset.
    */
   readonly assets?: readonly string[];
 }
@@ -59,17 +62,18 @@ export interface EmitWorkerOutput {
 }
 
 /**
- * Emit a Cloudflare Workers Static Assets (Pages-compatible) `_worker.js`
- * that wraps the zfb input bundle.
+ * Emit a Cloudflare Workers Static Assets `_worker.js` that wraps the zfb
+ * input bundle. Cloudflare Pages advanced mode is unverified.
  *
- * Output shape (three files in `outdir`):
+ * Output shape (two generated JavaScript files, `.assetsignore`, and zero or
+ * more copied Wasm assets in `outdir`):
  *
- *   _worker.js       — Worker entry point (`main` in wrangler.toml, or the
- *                      Pages advanced-mode convention)
+ *   _worker.js       — Worker entry point (`main` in wrangler.toml)
  *   _zfb_inner.mjs   — the input bundle, copied verbatim
- *   .assetsignore    — excludes the two files above from the asset upload
- *                      so they are only reachable through the Worker's
- *                      module graph, never served as a public static file
+ *   <asset>.wasm     — each bundle-relative Wasm input, copied by basename
+ *   .assetsignore    — excludes every generated JavaScript and Wasm basename
+ *                      from the asset upload so they are only reachable
+ *                      through the Worker's module graph
  *
  * The wrapper imports the inner bundle via the relative path
  * `./_zfb_inner.mjs`. Workerd's Module loader resolves relative ESM

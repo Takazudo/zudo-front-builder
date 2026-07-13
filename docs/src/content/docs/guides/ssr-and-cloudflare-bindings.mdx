@@ -132,8 +132,10 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
 - `_worker.js` + `_zfb_inner.mjs` — the Worker entry (a thin wrapper
   plus the bundled SSR routes) that serves your `prerender = false`
   routes, and
-- `.assetsignore` — lists `_worker.js` and `_zfb_inner.mjs` so the
-  asset server never serves your server code as a public file (a request
+- `x-<hash>.wasm` files for every Wasm module imported by the SSR bundle,
+  plus `.assetsignore`. The ignore file lists `_worker.js`,
+  `_zfb_inner.mjs`, and every emitted Wasm basename, so the asset server
+  never serves server code or compiled modules as public files (a request
   for `/_worker.js` would otherwise download it as plain text).
 
 You deploy this `dist/` as a **Cloudflare Worker with Static Assets**
@@ -142,17 +144,15 @@ that points `main` at `dist/_worker.js` and hands the rest of `dist/` to
 the built-in asset server. The Worker handles dynamic routes; the asset
 server handles everything else.
 
-<Note title="Still deployable to Cloudflare Pages">
+<Warning title="Cloudflare Pages advanced mode is unverified">
 
-The same `dist/` output remains deployable to **Cloudflare Pages
-advanced mode** — a root-level `_worker.js` is Pages' equivalent
-convention, and the wrapper dispatches identically on both platforms.
-Workers Static Assets is the primary, recommended target; Pages advanced
-mode stays supported for existing Pages projects. (The only
-platform-visible difference is a trailing-slash asset redirect: `307` on
-Workers Static Assets versus `308` on Pages.)
+This adapter is verified on **Workers Static Assets**. The generated
+root-level `_worker.js` follows the Pages advanced-mode convention, but
+Cloudflare Pages advanced mode has not been verified for this adapter.
+Do not treat it as a supported deployment target until it has a dedicated
+smoke test.
 
-</Note>
+</Warning>
 
 ### The `wrangler.toml`
 
@@ -207,6 +207,111 @@ as the missing module. See
 for the deeper mechanism.
 
 </Warning>
+
+## Importing Wasm in an SSR route
+
+An SSR route (or any helper it imports) can default-import a `.wasm` file.
+zfb copies the module through the SSR bundle and exposes it to the Worker as
+a compiled Wasm module. A practical use case is OG-image generation with
+[`satori`](https://github.com/vercel/satori) and
+[`@resvg/resvg-wasm`](https://www.npmjs.com/package/@resvg/resvg-wasm):
+the example assumes `loadOgFonts()` is an app helper that returns Satori's
+font configuration.
+
+```tsx
+// pages/api/og.tsx
+import satori from "satori";
+import { initWasm, Resvg } from "@resvg/resvg-wasm";
+import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
+
+export const prerender = false;
+
+let resvgReady: Promise<void> | undefined;
+
+function ensureResvgWasm(): Promise<void> {
+  return (resvgReady ??= initWasm(resvgWasm));
+}
+
+export default async function OgImage() {
+  await ensureResvgWasm();
+  const ogFonts = await loadOgFonts();
+  const svg = await satori(
+    <div style={{ color: "white", background: "black", padding: 48 }}>zfb</div>,
+    {
+      width: 1200,
+      height: 630,
+      fonts: ogFonts,
+    },
+  );
+  const png = new Resvg(svg).render().asPng();
+  return new Response(png, { headers: { "content-type": "image/png" } });
+}
+```
+
+The SDK declares the default import as `WebAssembly.Module`; it is not an
+instantiated module or an untyped URL string. The starter's page files already
+import `@takazudo/zfb`, which makes that ambient declaration part of the
+TypeScript program. If a project keeps Wasm-only helpers outside that import
+graph, add an included declaration-only bridge instead of duplicating the
+module declaration:
+
+```ts
+// src/zfb-wasm.d.ts
+import "@takazudo/zfb";
+```
+
+For example, make sure the file is covered by your `tsconfig.json` `include`
+list when it does not already include all of `src/`.
+
+### Emitted Wasm layout
+
+The adapter copies each bundle-relative Wasm asset next to the Worker entry
+and records it in `.assetsignore`. A build that imports Resvg can look like:
+
+```text
+dist/
+  _worker.js
+  _zfb_inner.mjs
+  index_bg-a1b2c3d4.wasm
+  .assetsignore
+```
+
+```text
+_worker.js
+_zfb_inner.mjs
+index_bg-a1b2c3d4.wasm
+```
+
+The last block is the relevant part of `dist/.assetsignore`: the Wasm file is
+a Worker module, not a public static asset. The adapter merges these required
+entries with an existing ignore file rather than overwriting it.
+
+### Wrangler rules and size limits
+
+zfb pins Wrangler to **exactly `4.85.0`**. Use the version in your project's
+lockfile (for example, through `pnpm exec wrangler`); do not treat `4.85.0` as
+a minimum-version hint.
+
+The standard route needs no custom `[[rules]]` block: Wrangler's default module
+rules classify imported `.wasm` files as `CompiledWasm` while it bundles `main`.
+Custom rules do not globally replace the defaults. The important exception is
+a same-type, non-fallthrough `CompiledWasm` rule: that rule suppresses the
+default Wasm rule, so add one only when its matching behavior is deliberate.
+
+Compiled Wasm counts toward the compressed Worker package limit: **3 MiB on
+Workers Free and 10 MiB on Workers Paid**. Check the gzip size with
+`wrangler deploy --dry-run`. When an image renderer or another Wasm dependency
+outgrows that package, move it to a separate Worker and call it through a
+service binding instead of growing the zfb Worker further:
+
+```toml
+[[services]]
+binding = "OG_IMAGE"
+service = "og-image"
+```
+
+The SSR handler can then call `env.OG_IMAGE.fetch(...)`; the heavy Wasm module
+stays in the dedicated Worker.
 
 ## Reading the Worker `env` from an SSR handler
 

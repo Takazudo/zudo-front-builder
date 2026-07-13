@@ -12,6 +12,8 @@ category: Concepts
 このページはメンタルモデルです。実際のセットアップ（アダプターのインストール、`wrangler.toml` の配線、D1 へのクエリ、`compatibility_flags` の設定）については [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) を読んでください。
 また、このページは zfb が出力する `dist/_worker.js` に特化したものであり、wrangler で別途デプロイする外部の Worker についてではありません。
 
+このモデルは **Workers Static Assets** 上で検証されています。Cloudflare Pages のアドバンストモードはこのアダプターについて未検証であるため、以下の Pages との比較はデプロイサポートを主張するものではありません。
+
 </Info>
 
 ## あなたのページはただの関数
@@ -53,11 +55,15 @@ export default async function AccountPage(): Promise<Response> {
 
 ## ビルドが実際に出力するもの
 
-`@takazudo/zfb-adapter-cloudflare` を設定した状態で `zfb build` を実行すると、`dist/` 配下に 2 つのファイルが生成されます。
+`@takazudo/zfb-adapter-cloudflare` を設定した状態で `zfb build` を実行すると、`dist/` 配下に 2 つの生成された JavaScript ファイルと、SSR グラフ内の `.wasm` インポートごとのコンパイル済み Wasm モジュールが生成されます。
 
-**`dist/_worker.js`** — アダプターが書き出す小さな自動生成のスタブ。これは Workers Static Assets において wrangler 設定の `main` が指し示す Worker のエントリであり、同時に Cloudflare Pages のアドバンスドモードのエントリとしても有効なままです。つまり同一の出力ファイルが、どちらのターゲットにもそのままデプロイできます（dual-compat）。その役割は、`(env, ctx, request)` のための `AsyncLocalStorage` スコープをセットアップし、実際に受け取ったリクエストを（`env.ASSETS` 経由の静的アセットサーバーか内側のバンドルのいずれかへ）ディスパッチすることです。あなたのアプリケーションコードは含みません。
+**`dist/_worker.js`** — アダプターが書き出す小さな自動生成のスタブ。これは Workers Static Assets において wrangler 設定の `main` が指し示す Worker のエントリです。ルート直下の形は Cloudflare Pages のアドバンストモードの慣習に従いますが、そのターゲットは未検証です。その役割は、`(env, ctx, request)` のための `AsyncLocalStorage` スコープをセットアップし、実際に受け取ったリクエストを（`env.ASSETS` 経由の静的アセットサーバーか内側のバンドルのいずれかへ）ディスパッチすることです。あなたのアプリケーションコードは含みません。
 
 **`dist/_zfb_inner.mjs`** — 本物のアプリケーションバンドル。すべての `pages/*.tsx` ファイル、レイアウト、コンポーネント、lib ヘルパーを単一の Hono 形の ESM モジュールにコンパイルしたものです。これが実際にページをレンダリングします。
+
+### コンパイル済み Wasm モジュール
+
+SSR ルートが Wasm をインポートすると、zfb はこれら 2 つの JavaScript ファイルの隣に `x-<hash>.wasm` ファイルを出力します。`_zfb_inner.mjs` はこれをコンパイル済みの `WebAssembly.Module` としてインポートし、`.assetsignore` はそれが公開アセットにならないようにします。Satori/Resvg の設定、Wrangler のルール、パッケージサイズの詳細は [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#ssr-ルートで-wasm-をインポートする) にあります。
 
 この 2 ファイル構成は、アダプター内での 2 回目の esbuild パスを回避します。Workerd のモジュールローダーは、デプロイされたワーカーディレクトリ内の相対 ESM インポートを解決するため、`_worker.js` は単純に `import inner from "./_zfb_inner.mjs"` でき、両ファイルは独立したままです。
 

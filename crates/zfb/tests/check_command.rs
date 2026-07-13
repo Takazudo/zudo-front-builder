@@ -1,14 +1,15 @@
 //! Integration test for `zfb check`.
 //!
-//! Spawns the built `zfb` binary as a subprocess against two fixture
-//! projects (one passing, one with a deliberate schema violation) and
-//! asserts the command exits 0/1 and prints the expected violation.
+//! Spawns the built `zfb` binary as a subprocess against fixture projects,
+//! including passing paths and deliberate schema and TypeScript failures, and
+//! asserts the expected statuses and diagnostics.
 //!
-//! tsc is not invoked — the fixtures pass `--skip-tsc` so the test
-//! does NOT depend on a TypeScript install. Schema-only is the
-//! interesting axis here; the tsc subprocess is exercised by manual
-//! smoke tests.
+//! Most fixtures pass `--skip-tsc` so schema validation can run without a
+//! TypeScript installation. The deterministic failure fixture and the Wasm
+//! fixture exercise the tsc subprocess directly; the latter uses the real
+//! compiler.
 
+use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -141,5 +142,54 @@ fn check_fails_when_tsc_exits_nonzero() {
     assert!(
         combined.contains("type errors") || combined.contains("check failed"),
         "expected 'type errors' or 'check failed' in output:\n{combined}",
+    );
+}
+
+/// Prove that the SDK's ambient `*.wasm` declaration reaches a normal project
+/// through its root entry point. This invokes the real TypeScript compiler;
+/// the fixture rejects `any` and requires the imported default to be exactly
+/// `WebAssembly.Module`.
+#[test]
+fn check_passes_with_sdk_wasm_import_types() {
+    let dir = fixture("check-wasm-import");
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crates/zfb must have a repository root")
+        .to_path_buf();
+    let typescript_bin_dir = repo_root.join("packages/zfb/node_modules/.bin");
+    assert!(
+        typescript_bin_dir.exists(),
+        "TypeScript must be installed at {}; run pnpm install first",
+        typescript_bin_dir.display(),
+    );
+    let mut path_entries = vec![typescript_bin_dir];
+    if let Some(existing) = env::var_os("PATH") {
+        path_entries.extend(env::split_paths(&existing));
+    }
+    let path = env::join_paths(path_entries)
+        .expect("TypeScript bin directory and inherited PATH entries must be valid");
+
+    let output = Command::new(zfb_binary!())
+        .arg("check")
+        .current_dir(&dir)
+        .env("PATH", path)
+        .output()
+        .expect("spawn zfb");
+    assert!(
+        output.status.success(),
+        "expected Wasm fixture to typecheck, got status={:?}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        combined.contains("no errors"),
+        "expected success message, got:\n{combined}",
     );
 }
