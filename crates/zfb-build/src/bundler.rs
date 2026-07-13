@@ -2109,6 +2109,16 @@ pub fn bundle_with_session(
             Ok(discovery) => discovery,
             Err(error) => {
                 let message = format!("{error:#}");
+                if message
+                    .contains("zfb bundler: cannot safely skip unparseable module-worker source")
+                {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "bundler: discover exact-target preprocessing graph from {}",
+                            target.display()
+                        )
+                    });
+                }
                 if message.contains("zfb bundler: failed to parse ")
                     || message.contains(" is not valid UTF-8")
                 {
@@ -10882,6 +10892,57 @@ mod tests {
         );
         let importer = fs::read_to_string(shadow_components.join("z-importer.ts")).unwrap();
         assert!(!importer.contains("?raw"), "{importer}");
+    }
+
+    #[test]
+    fn materialise_ts_generic_arrow_with_query_text_is_not_a_raw_error() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let components = root.join("components");
+        fs::create_dir_all(&components).unwrap();
+        let valid_source =
+            "const o = { m: async <T>() => {} };\nconst q = '?';\nexport { o, q };\n";
+        let invalid_source = "const broken = ;\n// import text from './message.txt?raw'\n";
+        fs::write(components.join("generic.ts"), valid_source).unwrap();
+        fs::write(components.join("unparseable.ts"), invalid_source).unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_components = shadow.path().join("components");
+        let exclude = no_bundle_exclude();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        let ctx = MaterialiseCtx {
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            copy_mode: true,
+            bundle_exclude: &exclude,
+            project_root: root,
+            writer: &writer,
+            raw_import_edges: RefCell::new(BTreeSet::new()),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
+            raw_preflight_complete: Cell::new(false),
+            snapshot_specifiers: None,
+        };
+
+        materialise_shadow(
+            &components,
+            &shadow_components,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(shadow_components.join("generic.ts")).unwrap(),
+            valid_source
+        );
+        assert_eq!(
+            fs::read_to_string(shadow_components.join("unparseable.ts")).unwrap(),
+            invalid_source
+        );
     }
 
     #[test]

@@ -62,6 +62,12 @@ struct RawOccurrence {
     specifier: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RawScanMode {
+    Tolerant,
+    Validation,
+}
+
 fn supported_form_error(reason: impl AsRef<str>) -> anyhow::Error {
     anyhow!(
         "zfb bundler: unsupported import query form: {}. Only a static default import \
@@ -80,13 +86,27 @@ fn query_suffix(specifier: &str) -> Option<&str> {
     specifier.split_once('?').map(|(_, query)| query)
 }
 
-fn parse_module(source: &str) -> Result<(Module, u32)> {
+fn parse_as_tsx(importer: &Path) -> bool {
+    !matches!(
+        importer
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("ts" | "mts" | "cts")
+    )
+}
+
+fn parse_module(importer: &Path, source: &str) -> Result<(Module, u32)> {
     let cm: Lrc<SourceMap> = Default::default();
-    let fm = cm.new_source_file(FileName::Anon.into(), source.to_string());
+    let fm = cm.new_source_file(
+        FileName::Real(importer.to_path_buf()).into(),
+        source.to_string(),
+    );
     let base = fm.start_pos.0;
     let lexer = Lexer::new(
         Syntax::Typescript(TsSyntax {
-            tsx: true,
+            tsx: parse_as_tsx(importer),
             decorators: false,
             dts: false,
             no_early_errors: false,
@@ -103,12 +123,27 @@ fn parse_module(source: &str) -> Result<(Module, u32)> {
     Ok((module, base))
 }
 
-fn collect_raw_occurrences(source: &str) -> Result<Vec<RawOccurrence>> {
+fn collect_raw_occurrences(
+    source: &str,
+    importer: &Path,
+    mode: RawScanMode,
+) -> Result<Vec<RawOccurrence>> {
     if !source.contains('?') {
         return Ok(Vec::new());
     }
 
-    let (module, base) = parse_module(source)?;
+    let (module, base) = match parse_module(importer, source) {
+        Ok(parsed) => parsed,
+        Err(error) => match mode {
+            RawScanMode::Tolerant => {
+                // Source scans are best-effort: esbuild remains the syntax
+                // oracle and will report a real query import if this file is
+                // selected by the final bundle.
+                return Ok(Vec::new());
+            }
+            RawScanMode::Validation => return Err(error),
+        },
+    };
     let mut out = Vec::new();
 
     for item in &module.body {
@@ -241,11 +276,20 @@ fn collect_raw_occurrences(source: &str) -> Result<Vec<RawOccurrence>> {
 /// Unsupported query shapes return the same named error as
 /// [`expand_raw_imports`]. Virtual-module validation uses this broader AST
 /// pass because virtual sources cannot support even the otherwise-valid form.
+pub fn supported_raw_import_specifier_for_path(
+    source: &str,
+    importer: &Path,
+) -> Result<Option<String>> {
+    Ok(
+        collect_raw_occurrences(source, importer, RawScanMode::Validation)?
+            .into_iter()
+            .next()
+            .map(|occurrence| occurrence.specifier),
+    )
+}
+
 pub fn supported_raw_import_specifier(source: &str) -> Result<Option<String>> {
-    Ok(collect_raw_occurrences(source)?
-        .into_iter()
-        .next()
-        .map(|occurrence| occurrence.specifier))
+    supported_raw_import_specifier_for_path(source, Path::new(".zfb-virtual-module.mjs"))
 }
 
 /// Resolve a raw target without routing the stripped path through the normal
@@ -339,7 +383,7 @@ pub fn expand_raw_imports(
     project_root: &Path,
     is_excluded: &dyn Fn(&Path) -> bool,
 ) -> Result<RawImportExpansion> {
-    let occurrences = collect_raw_occurrences(source)?;
+    let occurrences = collect_raw_occurrences(source, importer, RawScanMode::Tolerant)?;
     if occurrences.is_empty() {
         return Ok(RawImportExpansion {
             expanded_source: source.to_string(),
@@ -455,8 +499,17 @@ mod tests {
         target_name: &str,
         target: &[u8],
     ) -> (tempfile::TempDir, PathBuf) {
+        fixture_with_importer("entry.tsx", importer_source, target_name, target)
+    }
+
+    fn fixture_with_importer(
+        importer_name: &str,
+        importer_source: &str,
+        target_name: &str,
+        target: &[u8],
+    ) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let importer = dir.path().join("entry.tsx");
+        let importer = dir.path().join(importer_name);
         std::fs::write(&importer, importer_source).unwrap();
         std::fs::write(dir.path().join(target_name), target).unwrap();
         (dir, importer)
@@ -493,6 +546,58 @@ mod tests {
         assert!(out.generated_modules[0]
             .source
             .contains("this is not valid javascript"));
+    }
+
+    #[test]
+    fn ts_importer_generic_arrow_with_query_text_passes_through() {
+        let source = "const o = { m: async <T>() => {} };\nconst q = '?';\nexport { o, q };\n";
+        let (dir, importer) = fixture_with_importer("entry.ts", source, "unused.txt", b"unused");
+        let out = expand_raw_imports(source, &importer, dir.path(), &no_exclude).unwrap();
+        assert_eq!(out.expanded_source, source);
+        assert!(out.generated_modules.is_empty());
+    }
+
+    #[test]
+    fn ts_importer_generic_arrow_with_raw_import_expands() {
+        let source = "import text from './message.txt?raw';\nconst o = { m: async <T>() => {} };\nexport { text, o };\n";
+        let (dir, importer) =
+            fixture_with_importer("entry.ts", source, "message.txt", b"hello from raw");
+        let out = expand_raw_imports(source, &importer, dir.path(), &no_exclude).unwrap();
+        assert!(!out.expanded_source.contains("?raw"));
+        assert_eq!(out.generated_modules.len(), 1);
+        assert!(out.generated_modules[0].source.contains("hello from raw"));
+    }
+
+    #[test]
+    fn tsx_importer_with_jsx_still_expands() {
+        let source = "import text from './message.txt?raw';\nconst node = <span>{text}</span>;\nexport default node;\n";
+        let (dir, importer) = fixture_with_importer("entry.tsx", source, "message.txt", b"jsx raw");
+        let out = expand_raw_imports(source, &importer, dir.path(), &no_exclude).unwrap();
+        assert!(!out.expanded_source.contains("?raw"));
+        assert_eq!(out.generated_modules.len(), 1);
+    }
+
+    #[test]
+    fn unparseable_query_text_passes_through_for_expansion() {
+        let source = "const broken = ;\n// import text from './message.txt?raw'\n";
+        let (dir, importer) = fixture_with_importer("entry.ts", source, "message.txt", b"unused");
+        let out = expand_raw_imports(source, &importer, dir.path(), &no_exclude).unwrap();
+        assert_eq!(out.expanded_source, source);
+        assert!(out.generated_modules.is_empty());
+        assert!(out.edges.is_empty());
+    }
+
+    #[test]
+    fn validation_scan_still_fails_loud_on_parse_errors() {
+        let source = "const broken = ;\n// import text from './message.txt?raw'\n";
+        let error =
+            supported_raw_import_specifier_for_path(source, Path::new("entry.ts")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("failed to parse module for ?raw expansion"),
+            "{error:#}"
+        );
     }
 
     #[test]
