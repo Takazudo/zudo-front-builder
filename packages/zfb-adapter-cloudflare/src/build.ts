@@ -40,6 +40,12 @@ export interface EmitWorkerInput {
    * bundle), and `.assetsignore` into it.
    */
   readonly outdir: string;
+  /**
+   * Wasm modules emitted beside the input bundle. Relative paths resolve from
+   * the input bundle's directory and each module is copied into the Worker
+   * package under its basename.
+   */
+  readonly assets?: readonly string[];
 }
 
 /**
@@ -79,6 +85,7 @@ export async function emitWorker(input: EmitWorkerInput): Promise<EmitWorkerOutp
   return _emitWorker({
     inputBundlePath: input.inputBundlePath,
     outdir: input.outdir,
+    assets: input.assets,
     workerWrapperSource: WORKER_WRAPPER_SOURCE,
   }) as Promise<EmitWorkerOutput>;
 }

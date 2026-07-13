@@ -181,6 +181,15 @@ pub struct AdapterBundleInput {
     /// Output directory the adapter writes its artifact(s) into.
     /// Typically the project's `dist/`.
     pub outdir: PathBuf,
+    /// Wasm files emitted beside [`Self::input_bundle`] by esbuild's
+    /// `.wasm=copy` loader. Every relative path is interpreted from the
+    /// input bundle's parent directory, preserving the bundle-relative
+    /// contract on [`crate::bundler::BundlerOutput`].
+    ///
+    /// Adapters receive each path as a repeated `--asset <path>` argument
+    /// and are responsible for copying the referenced module into their
+    /// target-specific package layout.
+    pub emitted_wasm_assets: Vec<PathBuf>,
 }
 
 /// Invoke the adapter package's CLI to wrap the SSR bundle.
@@ -190,7 +199,7 @@ pub struct AdapterBundleInput {
 /// pins the CLI contract:
 ///
 /// ```text
-/// <package-bin> bundle <input> --outdir <outdir>
+/// <package-bin> bundle <input> --outdir <outdir> [--asset <path>]...
 /// ```
 ///
 /// We invoke through `pnpm exec` so the user does not need to install
@@ -233,14 +242,7 @@ impl AdapterRunner for DefaultAdapterRunner {
         // for scoped packages; non-scoped names pass through.
         let bin_name = bin_name_for_package(package);
 
-        let mut cmd = Command::new("pnpm");
-        cmd.current_dir(&input.project_root);
-        cmd.arg("exec");
-        cmd.arg(bin_name);
-        cmd.arg("bundle");
-        cmd.arg(&input.input_bundle);
-        cmd.arg("--outdir");
-        cmd.arg(&input.outdir);
+        let mut cmd = adapter_command(bin_name, input);
 
         let output = run_capturing(&mut cmd).with_context(|| {
             format!("spawning `pnpm exec {bin_name} bundle ...` for adapter {package}")
@@ -261,6 +263,24 @@ impl AdapterRunner for DefaultAdapterRunner {
 
         Ok(AdapterBundleOutput { stdout, stderr })
     }
+}
+
+/// Construct the adapter CLI command independently from process execution so
+/// the repeated asset forwarding contract stays unit-testable.
+fn adapter_command(bin_name: &str, input: &AdapterBundleInput) -> Command {
+    let mut cmd = Command::new("pnpm");
+    cmd.current_dir(&input.project_root);
+    cmd.arg("exec");
+    cmd.arg(bin_name);
+    cmd.arg("bundle");
+    cmd.arg(&input.input_bundle);
+    cmd.arg("--outdir");
+    cmd.arg(&input.outdir);
+    for asset in &input.emitted_wasm_assets {
+        cmd.arg("--asset");
+        cmd.arg(asset);
+    }
+    cmd
 }
 
 /// Run `cmd`, capturing stdout and stderr without reading inherited-pipe
@@ -619,6 +639,7 @@ mod tests {
             project_root: tmp.path().to_path_buf(),
             input_bundle: bundle.clone(),
             outdir: tmp.path().join("dist"),
+            emitted_wasm_assets: Vec::new(),
         };
         let runner = FakeRunner::new();
         let out = run_adapter_bundle_with(
@@ -643,6 +664,7 @@ mod tests {
             project_root: tmp.path().to_path_buf(),
             input_bundle: bundle,
             outdir: tmp.path().join("dist"),
+            emitted_wasm_assets: Vec::new(),
         };
         let runner = FakeRunner::new();
         let err = run_adapter_bundle_with(&AdapterChoice::None, input, &runner).unwrap_err();
@@ -656,12 +678,48 @@ mod tests {
             project_root: tmp.path().to_path_buf(),
             input_bundle: tmp.path().join("does-not-exist.mjs"),
             outdir: tmp.path().join("dist"),
+            emitted_wasm_assets: Vec::new(),
         };
         let runner = FakeRunner::new();
         let err =
             run_adapter_bundle_with(&AdapterChoice::Package("anything".into()), input, &runner)
                 .unwrap_err();
         assert!(format!("{err}").contains("does not exist"));
+    }
+
+    #[test]
+    fn adapter_command_forwards_each_emitted_wasm_asset() {
+        let tmp = tempdir().unwrap();
+        let input = AdapterBundleInput {
+            project_root: tmp.path().to_path_buf(),
+            input_bundle: tmp.path().join(".zfb-build/bundle-runtime.mjs"),
+            outdir: tmp.path().join("dist"),
+            emitted_wasm_assets: vec![
+                PathBuf::from("alpha-a1b2c3d4.wasm"),
+                PathBuf::from("nested/beta-e5f6a7b8.wasm"),
+            ],
+        };
+
+        let command = adapter_command("zfb-adapter-cloudflare", &input);
+        assert_eq!(command.get_program(), std::ffi::OsStr::new("pnpm"));
+        assert_eq!(command.get_current_dir(), Some(tmp.path()));
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let expected_args = vec![
+            "exec".to_owned(),
+            "zfb-adapter-cloudflare".to_owned(),
+            "bundle".to_owned(),
+            input.input_bundle.to_string_lossy().into_owned(),
+            "--outdir".to_owned(),
+            input.outdir.to_string_lossy().into_owned(),
+            "--asset".to_owned(),
+            "alpha-a1b2c3d4.wasm".to_owned(),
+            "--asset".to_owned(),
+            "nested/beta-e5f6a7b8.wasm".to_owned(),
+        ];
+        assert_eq!(args, expected_args);
     }
 
     /// Verify that run_capturing returns promptly even when the direct
