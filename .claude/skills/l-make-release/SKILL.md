@@ -22,6 +22,7 @@ The lockstep packages are:
 
 - `@takazudo/zfb` (`packages/zfb/package.json`) — **version source-of-truth**
 - `@takazudo/zfb-runtime` (`packages/zfb-runtime/package.json`)
+- `@takazudo/zfb-md-wasm` (`crates/zfb-md-wasm/npm/package.json`)
 - `@takazudo/zfb-adapter-cloudflare` (`packages/zfb-adapter-cloudflare/package.json`)
 - `create-zfb` (unscoped — `packages/create-zfb/package.json`)
 - `@takazudo/zfb-darwin-arm64` (`packages/zfb-darwin-arm64/package.json`)
@@ -239,7 +240,7 @@ Note: the Rust CLI binary is built by `.github/workflows/release.yml` — do not
 Stage and commit all bumped files atomically in a **single commit**:
 
 ```bash
-git add packages/*/package.json pnpm-lock.yaml crates/zfb/src/commands/new.rs docs/src/content/docs/changelog/v<version>.mdx
+git add packages/*/package.json crates/zfb-md-wasm/npm/package.json pnpm-lock.yaml crates/zfb/src/commands/new.rs docs/src/content/docs/changelog/v<version>.mdx
 git commit -m "chore(release): bump to v<version>"
 git push origin main
 ```
