@@ -215,8 +215,13 @@ impl ModuleWorkerBuildContext {
         let mut virtual_modules = self.plugin_virtual_modules.clone();
         virtual_modules.sort();
         for (specifier, source) in virtual_modules {
+            let stable_source = stable_virtual_module_source(&source, project_root);
             field(aggregate, b"plugin-virtual", specifier.as_bytes());
-            field(aggregate, b"plugin-virtual-source", source.as_bytes());
+            field(
+                aggregate,
+                b"plugin-virtual-source",
+                stable_source.as_bytes(),
+            );
         }
     }
 }
@@ -303,6 +308,13 @@ enum ConstructorKind {
 #[derive(Debug, Clone)]
 struct ConstructorOccurrence {
     kind: ConstructorKind,
+    specifier: String,
+    lo: usize,
+    hi: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ImportSpecifierOccurrence {
     specifier: String,
     lo: usize,
     hi: usize,
@@ -990,13 +1002,17 @@ impl ProjectGraphResolver {
                     importer_dir.display()
                 )
             })?
+        } else if Path::new(path_specifier).is_absolute() {
+            let candidate = normalize_path_lexical(Path::new(path_specifier));
+            let found = probe_graph_candidate(&candidate, raw).ok_or_else(|| {
+                anyhow!(
+                    "zfb bundler: module-worker dependency {specifier:?} in {} cannot be resolved exactly enough to produce a safe cache key (looked from {})",
+                    importer.display(),
+                    importer_dir.display()
+                )
+            })?;
+            return self.finish_absolute_file_resolution(specifier, importer, found, raw);
         } else {
-            if path_specifier.starts_with('/') {
-                bail!(
-                    "zfb bundler: absolute module-worker dependency {specifier:?} in {} is outside the project graph contract",
-                    importer.display()
-                );
-            }
             let user_claims_specifier = self.user_claims_specifier(path_specifier);
             // Plugin virtual modules are emitted through esbuild `--alias`
             // unless the user's tsconfig claims the specifier. They have no
@@ -1055,6 +1071,59 @@ impl ProjectGraphResolver {
             }
         };
         self.finish_file_resolution(found, raw)
+    }
+
+    fn finish_absolute_file_resolution(
+        &self,
+        specifier: &str,
+        importer: &Path,
+        found: PathBuf,
+        raw: bool,
+    ) -> Result<Option<GraphResolution>> {
+        if is_inside_node_modules(&found) {
+            return Ok(None);
+        }
+
+        let canonical_root = self.project_root.canonicalize().with_context(|| {
+            format!("canonicalize project root {}", self.project_root.display())
+        })?;
+        let canonical = found.canonicalize().with_context(|| {
+            format!(
+                "canonicalize absolute module-worker dependency {}",
+                found.display()
+            )
+        })?;
+        if !canonical.starts_with(&canonical_root) {
+            bail!(
+                "zfb bundler: absolute module-worker dependency {specifier:?} in {} is outside the project graph contract (canonical target {})",
+                importer.display(),
+                canonical.display()
+            );
+        }
+
+        if is_inside_node_modules(&canonical) {
+            return Ok(None);
+        }
+
+        let relative = canonical.strip_prefix(&canonical_root).with_context(|| {
+            format!(
+                "map canonical module-worker dependency {} into project root {}",
+                canonical.display(),
+                canonical_root.display()
+            )
+        })?;
+        let logical = normalize_path_lexical(&self.project_root.join(relative));
+        match validate_first_party_path(&logical, &self.project_root, "module-worker dependency") {
+            Ok(path) => Ok(Some(if raw {
+                GraphResolution::RawFile(path)
+            } else {
+                GraphResolution::File(path)
+            })),
+            Err(error) => bail!(
+                "zfb bundler: absolute module-worker dependency {specifier:?} in {} is outside the project graph contract: {error:#}",
+                importer.display()
+            ),
+        }
     }
 
     fn finish_file_resolution(&self, found: PathBuf, raw: bool) -> Result<Option<GraphResolution>> {
@@ -1323,6 +1392,148 @@ fn collect_import_specifiers(module: &Module, unresolved_ctxt: SyntaxContext) ->
     module.visit_with(&mut runtime_calls);
     specifiers.extend(runtime_calls.specifiers);
     specifiers
+}
+
+fn collect_import_specifier_occurrences(
+    module: &Module,
+    base: u32,
+    unresolved_ctxt: SyntaxContext,
+) -> Vec<ImportSpecifierOccurrence> {
+    fn occurrence(value: &swc_core::ecma::ast::Str, base: u32) -> ImportSpecifierOccurrence {
+        let span = value.span();
+        ImportSpecifierOccurrence {
+            specifier: atom_to_string(&value.value),
+            lo: (span.lo.0 - base) as usize,
+            hi: (span.hi.0 - base) as usize,
+        }
+    }
+
+    let mut specifiers = Vec::new();
+    for item in &module.body {
+        let ModuleItem::ModuleDecl(declaration) = item else {
+            continue;
+        };
+        match declaration {
+            ModuleDecl::Import(import) if !import.type_only => {
+                let runtime = import.specifiers.iter().any(|specifier| {
+                    !matches!(specifier, ImportSpecifier::Named(named) if named.is_type_only)
+                });
+                if runtime || import.specifiers.is_empty() {
+                    specifiers.push(occurrence(&import.src, base));
+                }
+            }
+            ModuleDecl::ExportNamed(export) if !export.type_only => {
+                if let Some(source) = &export.src {
+                    specifiers.push(occurrence(source, base));
+                }
+            }
+            ModuleDecl::ExportAll(export) if !export.type_only => {
+                specifiers.push(occurrence(&export.src, base));
+            }
+            ModuleDecl::TsImportEquals(import_equals) if !import_equals.is_type_only => {
+                if let swc_core::ecma::ast::TsModuleRef::TsExternalModuleRef(module_ref) =
+                    &import_equals.module_ref
+                {
+                    specifiers.push(occurrence(&module_ref.expr, base));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    struct RuntimeCalls {
+        base: u32,
+        unresolved_ctxt: SyntaxContext,
+        specifiers: Vec<ImportSpecifierOccurrence>,
+    }
+    impl Visit for RuntimeCalls {
+        fn visit_call_expr(&mut self, node: &swc_core::ecma::ast::CallExpr) {
+            let is_dynamic_import = matches!(node.callee, Callee::Import(_));
+            let is_global_require = matches!(
+                &node.callee,
+                Callee::Expr(callee)
+                    if matches!(&**callee, Expr::Ident(ident)
+                        if ident.sym == "require" && ident.ctxt == self.unresolved_ctxt)
+            );
+            if is_dynamic_import || is_global_require {
+                if let Some(argument) = node.args.first() {
+                    if argument.spread.is_none() {
+                        if let Expr::Lit(Lit::Str(value)) = &*argument.expr {
+                            self.specifiers.push(occurrence(value, self.base));
+                        }
+                    }
+                }
+            }
+            node.visit_children_with(self);
+        }
+    }
+    let mut runtime_calls = RuntimeCalls {
+        base,
+        unresolved_ctxt,
+        specifiers: Vec::new(),
+    };
+    module.visit_with(&mut runtime_calls);
+    specifiers.extend(runtime_calls.specifiers);
+    specifiers
+}
+
+fn stable_virtual_module_source(source: &str, project_root: &Path) -> String {
+    let virtual_path = project_root.join(".zfb-worker-virtual-module.mjs");
+    let Ok((module, base, unresolved_ctxt)) = parse_module(&virtual_path, source) else {
+        return source.to_string();
+    };
+    let mut replacements = collect_import_specifier_occurrences(&module, base, unresolved_ctxt)
+        .into_iter()
+        .filter_map(|occurrence| {
+            let stable = stable_project_virtual_specifier(&occurrence.specifier, project_root)
+                .unwrap_or(occurrence.specifier);
+            let replacement = serde_json::to_string(&stable).ok()?;
+            Some((occurrence.lo, occurrence.hi, replacement))
+        })
+        .collect::<Vec<_>>();
+    if replacements.is_empty() {
+        return source.to_string();
+    }
+
+    replacements.sort_by(|left, right| right.0.cmp(&left.0));
+    let mut stable = source.to_string();
+    for (lo, hi, replacement) in replacements {
+        stable.replace_range(lo..hi, &replacement);
+    }
+    stable
+}
+
+fn stable_project_virtual_specifier(specifier: &str, project_root: &Path) -> Option<String> {
+    if specifier.contains('?') || specifier.contains('#') {
+        return None;
+    }
+    let specifier_path = Path::new(specifier);
+    let candidate = if specifier_path.is_absolute() {
+        normalize_path_lexical(specifier_path)
+    } else if specifier.starts_with("./") || specifier.starts_with("../") {
+        normalize_path_lexical(&project_root.join(specifier_path))
+    } else {
+        return None;
+    };
+    if is_inside_node_modules(&candidate) {
+        return None;
+    }
+    let found = probe_graph_candidate(&candidate, false)?;
+    let canonical_root = project_root.canonicalize().ok()?;
+    let canonical = found.canonicalize().ok()?;
+    if !canonical.starts_with(&canonical_root) || is_inside_node_modules(&canonical) {
+        return None;
+    }
+    let relative = canonical.strip_prefix(&canonical_root).ok()?;
+    let relative = relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    Some(format!("./{relative}"))
 }
 
 /// Collect statically analyzable runtime import/require specifiers from one
