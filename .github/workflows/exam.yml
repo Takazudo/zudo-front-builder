@@ -182,7 +182,7 @@ jobs:
           "$ESBUILD_SLOT" --version
           "$TAILWIND_SLOT" --version
 
-      # The reconciled manifest, env-gate + heavy tags only (27 tests — see
+      # The reconciled manifest, env-gate + heavy tags only (28 tests — see
       # CLAUDE.md's "`#[ignore]` manifest (Rust)" table for the authoritative
       # list). No pending-feature-tagged tests exist as of #1504's
       # reconciliation, so there is nothing left to deliberately exclude here
@@ -228,6 +228,7 @@ jobs:
               | test(=islands_shadow_expands_glob_and_executes)
               | test(=islands_shadow_preserve_symlinks_is_load_bearing)
               | test(=real_binary_build_and_dev_cover_client_bundling_contract)
+              | test(=wrangler_dry_run_attaches_runtime_wasm_as_compiled_module)
               | test(=subprocess_engine_against_real_binary)
               | test(=prod_asset_graph_with_real_tailwind_binary_against_fixture)
               | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild)
