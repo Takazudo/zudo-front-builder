@@ -1860,11 +1860,109 @@ pub fn bundle_with_session(
             );
         }
     }
+    let effective_virtual_context = mat_ctx
+        .worker_build_context
+        .clone()
+        .without_user_claimed_virtual_modules(&input.tsconfig_paths);
+    let mut plugin_preprocessing_files = BTreeSet::new();
+    let mut root_entry_dependency_seed_files = BTreeSet::new();
+    if mat_ctx.worker_build_context.has_plugin_resolver_inputs() {
+        let virtual_discovery = discover_registered_virtual_preprocessing_with_context(
+            &input.project_root,
+            &effective_virtual_context,
+        )
+        .context("bundler: validate registered virtual-module preprocessing syntax")?;
+        plugin_preprocessing_files.extend(virtual_discovery.files);
+        mat_ctx.raw_import_edges.borrow_mut().extend(
+            virtual_discovery
+                .raw_import_edges
+                .into_iter()
+                .map(|edge| RawImportEdge {
+                    importer: edge.importer,
+                    target: edge.target,
+                }),
+        );
+    }
+
+    // Discover preprocessing closure from every explicitly staged candidate,
+    // including user exact tsconfig targets. This catches relative imports
+    // escaping a hidden/package tree and prevents the isolated target from
+    // losing required allowed dependencies. Root-level exact entry files also
+    // seed the staged dependency view from their transitive first-party file
+    // closure; the walk root is the entry file, never the project root as a
+    // package. node_modules candidates keep the bounded containing-package copy
+    // instead of parsing vendor trees here.
+    for target in exact_target_staging_files.clone() {
+        if !target.is_file()
+            || bundle_exclude.is_excluded(&target, &project_root)
+            || node_modules_package_root(&target, &project_root).is_some()
+        {
+            continue;
+        }
+        let discovery = match discover_module_preprocessing_with_context(
+            &target,
+            &input.project_root,
+            &effective_virtual_context,
+        ) {
+            Ok(discovery) => discovery,
+            Err(error) => {
+                let message = format!("{error:#}");
+                if message.contains("zfb bundler: failed to parse ")
+                    || message.contains(" is not valid UTF-8")
+                {
+                    // A syntactically invalid plausible alternative may be
+                    // irrelevant in the actual CSS/JS/node_modules context.
+                    // Keep it raw so esbuild reports it only when selected.
+                    continue;
+                }
+                // Contract-specific preprocessing failures (unsupported
+                // SharedWorker/query forms, unsafe graph escapes, etc.) remain
+                // deterministic hard errors even for a registered alternate.
+                return Err(error).with_context(|| {
+                    format!(
+                        "bundler: discover exact-target preprocessing graph from {}",
+                        target.display()
+                    )
+                });
+            }
+        };
+        let root_level_entry = root_level_staged_entry_file(&target, &project_root).is_some();
+        let discovered_files = discovery.files;
+        plugin_preprocessing_files.insert(target.clone());
+        if root_level_entry && !bundle_exclude.is_empty() {
+            root_entry_dependency_seed_files.insert(target.clone());
+            root_entry_dependency_seed_files.extend(
+                discovered_files
+                    .iter()
+                    .filter(|path| {
+                        path.starts_with(&project_root)
+                            && path.is_file()
+                            && !project_path_is_inside_node_modules(path, &project_root)
+                            && !bundle_exclude.is_excluded(path, &project_root)
+                    })
+                    .cloned(),
+            );
+        }
+        plugin_preprocessing_files.extend(discovered_files);
+        mat_ctx
+            .raw_import_edges
+            .borrow_mut()
+            .extend(
+                discovery
+                    .raw_import_edges
+                    .into_iter()
+                    .map(|edge| RawImportEdge {
+                        importer: edge.importer,
+                        target: edge.target,
+                    }),
+            );
+    }
     extend_node_modules_dependency_staging(
         &project_root,
         input.node_modules_dir.as_deref(),
         &bundle_exclude,
         !esbuild_will_preserve_symlinks(&input),
+        &root_entry_dependency_seed_files,
         &mut exact_target_staging_dirs,
         &mut exact_target_staging_alias_dirs,
     );
@@ -1915,83 +2013,6 @@ pub fn bundle_with_session(
         .map(|root| ShadowWriter::new(root.to_path_buf(), None, true, None))
         .transpose()?;
 
-    let effective_virtual_context = mat_ctx
-        .worker_build_context
-        .clone()
-        .without_user_claimed_virtual_modules(&input.tsconfig_paths);
-    let mut plugin_preprocessing_files = BTreeSet::new();
-    if mat_ctx.worker_build_context.has_plugin_resolver_inputs() {
-        let virtual_discovery = discover_registered_virtual_preprocessing_with_context(
-            &input.project_root,
-            &effective_virtual_context,
-        )
-        .context("bundler: validate registered virtual-module preprocessing syntax")?;
-        plugin_preprocessing_files.extend(virtual_discovery.files);
-        mat_ctx.raw_import_edges.borrow_mut().extend(
-            virtual_discovery
-                .raw_import_edges
-                .into_iter()
-                .map(|edge| RawImportEdge {
-                    importer: edge.importer,
-                    target: edge.target,
-                }),
-        );
-    }
-
-    // Discover preprocessing closure from every explicitly staged candidate,
-    // including user exact tsconfig targets. This catches relative imports
-    // escaping a hidden/package tree and prevents the isolated target from
-    // losing required allowed dependencies. node_modules candidates keep the
-    // bounded containing-package copy instead of parsing vendor trees here.
-    for target in exact_target_staging_files.clone() {
-        if !target.is_file()
-            || bundle_exclude.is_excluded(&target, &project_root)
-            || node_modules_package_root(&target, &project_root).is_some()
-        {
-            continue;
-        }
-        let discovery = match discover_module_preprocessing_with_context(
-            &target,
-            &input.project_root,
-            &effective_virtual_context,
-        ) {
-            Ok(discovery) => discovery,
-            Err(error) => {
-                let message = format!("{error:#}");
-                if message.contains("zfb bundler: failed to parse ")
-                    || message.contains(" is not valid UTF-8")
-                {
-                    // A syntactically invalid plausible alternative may be
-                    // irrelevant in the actual CSS/JS/node_modules context.
-                    // Keep it raw so esbuild reports it only when selected.
-                    continue;
-                }
-                // Contract-specific preprocessing failures (unsupported
-                // SharedWorker/query forms, unsafe graph escapes, etc.) remain
-                // deterministic hard errors even for a registered alternate.
-                return Err(error).with_context(|| {
-                    format!(
-                        "bundler: discover exact-target preprocessing graph from {}",
-                        target.display()
-                    )
-                });
-            }
-        };
-        plugin_preprocessing_files.insert(target);
-        plugin_preprocessing_files.extend(discovery.files);
-        mat_ctx
-            .raw_import_edges
-            .borrow_mut()
-            .extend(
-                discovery
-                    .raw_import_edges
-                    .into_iter()
-                    .map(|edge| RawImportEdge {
-                        importer: edge.importer,
-                        target: edge.target,
-                    }),
-            );
-    }
     if let Some(src) = input.mdx_components_file.as_deref() {
         if !bundle_exclude.is_excluded(src, &input.project_root) {
             preflight_raw_file(src, src, &mat_ctx);
@@ -5759,6 +5780,7 @@ fn extend_node_modules_dependency_staging(
     node_modules_dir: Option<&Path>,
     bundle_exclude: &BundleExcludeMatcher,
     resolve_from_canonical_package: bool,
+    root_entry_dependency_seed_files: &BTreeSet<PathBuf>,
     staging_dirs: &mut BTreeSet<PathBuf>,
     staging_alias_dirs: &mut BTreeMap<PathBuf, PathBuf>,
 ) {
@@ -5785,6 +5807,47 @@ fn extend_node_modules_dependency_staging(
         .map(|path| (path.clone(), path.clone()))
         .collect::<BTreeMap<_, _>>();
     let mut visited = BTreeSet::new();
+
+    for seed in root_entry_dependency_seed_files {
+        if !seed.is_file() || bundle_exclude.is_excluded(seed, project_root) {
+            continue;
+        }
+        let Ok(specifiers) = collect_runtime_import_specifiers_from_file(seed) else {
+            // An unused invalid alternate must remain esbuild-contextual.
+            continue;
+        };
+        for package_name in specifiers
+            .iter()
+            .filter_map(|specifier| bare_package_name(specifier))
+        {
+            let (logical_dependency, source_dependency) = if let Some(dependency) =
+                resolve_installed_package_dir(seed, &package_name, project_root)
+            {
+                (dependency.clone(), dependency)
+            } else if let Some(dependency) =
+                resolve_vendored_package_dir(node_modules_dir, &package_name)
+            {
+                (
+                    project_root.join("node_modules").join(&package_name),
+                    dependency,
+                )
+            } else {
+                continue;
+            };
+            if bundle_exclude.is_excluded(&logical_dependency, project_root) {
+                continue;
+            }
+            if logical_dependency == source_dependency {
+                staging_dirs.insert(logical_dependency.clone());
+            } else {
+                staging_alias_dirs.insert(logical_dependency.clone(), source_dependency.clone());
+            }
+            if !visited.contains(&logical_dependency) {
+                pending.insert(logical_dependency, source_dependency);
+            }
+        }
+    }
+
     while let Some((logical_root, source_root)) = pending.pop_first() {
         if !visited.insert(logical_root.clone()) || !source_root.is_dir() {
             continue;
@@ -5915,6 +5978,23 @@ fn first_party_staged_package_root(path: &Path, project_root: &Path) -> Option<P
     }
     let root = containing_project_package_root(path, project_root)?;
     (root != project_root).then_some(root)
+}
+
+/// A concrete exact target that is a file under the project root but not under
+/// any first-party package below the root. These root-level entry files are
+/// closure-walk roots for dependency staging, but the project root itself is
+/// still not treated as a package root.
+fn root_level_staged_entry_file(path: &Path, project_root: &Path) -> Option<PathBuf> {
+    if !path.is_file() || !path.starts_with(project_root) {
+        return None;
+    }
+    if project_path_is_inside_node_modules(path, project_root) {
+        return None;
+    }
+    match containing_project_package_root(path, project_root) {
+        Some(package_root) if package_root != project_root => None,
+        _ => Some(path.to_path_buf()),
+    }
 }
 
 /// Resolve a bare package inside the configured external vendored node_modules
