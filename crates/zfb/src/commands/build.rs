@@ -5840,6 +5840,7 @@ mod tests {
                     }],
                 },
                 route_module_deps: Vec::new(),
+                emitted_wasm_assets: Vec::new(),
             })
         }
         fn eval_deferred_paths(
@@ -6504,6 +6505,7 @@ mod tests {
                         routes: vec![],
                     },
                     route_module_deps: Vec::new(),
+                    emitted_wasm_assets: Vec::new(),
                 })
             }
             fn eval_deferred_paths(

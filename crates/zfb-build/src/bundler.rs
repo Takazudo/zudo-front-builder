@@ -780,6 +780,13 @@ pub struct BundlerOutput {
     /// the watcher registers as extra targets for out-of-root (symlinked
     /// workspace) deps.
     pub route_module_deps: Vec<crate::metafile_deps::RouteModuleDeps>,
+    /// Wasm files emitted beside this bundle by esbuild's `.wasm=copy` loader.
+    ///
+    /// Every path is relative to [`Self::bundle_path`]'s parent directory,
+    /// sorted, deduplicated, and validated to exist under that directory before
+    /// this output is returned. Deployment adapters use this contract to carry
+    /// the copied modules through to the final Worker package.
+    pub emitted_wasm_assets: Vec<PathBuf>,
 }
 
 /// What the bundle exports, in a form a downstream tool can read without
@@ -902,11 +909,16 @@ const MDX_COMPONENTS_FILENAME: &str = "mdx-components.tsx";
 ///   `rewrite_css_modules_in_shadow` writes `export default {};` —
 ///   a graceful degradation: `styles.foo` evaluates to `undefined`
 ///   and the build succeeds rather than crashing with a parse error.
+/// - `.wasm=copy` — preserves a runtime ESM import while copying the Wasm
+///   module beside the Worker bundle. `--external:*.wasm` is intentionally not
+///   used: its relative path would be anchored to the ephemeral shadow tree,
+///   not the deployable bundle directory.
 pub const ESBUILD_LOADER_ARGS: &[&str] = &[
     "--loader:.mdx=jsx",
     "--loader:.md=jsx",
     "--loader:.css=empty",
     "--loader:.module.css=js",
+    "--loader:.wasm=copy",
 ];
 
 #[derive(Debug, Clone)]
@@ -3201,29 +3213,17 @@ pub fn bundle_with_session(
     let bundle_path = outdir.join(bundle_filename);
     let sourcemap_path = outdir.join(format!("{bundle_filename}.map"));
 
-    // Per-route transitive `Module` deps via esbuild's `--metafile` — dev only
-    // (#1284/#1287). The metafile is written inside the shadow tree and parsed
-    // BEFORE `owned_work` (the shadow) is dropped at the end of this fn; the
-    // resulting edges key on real `project_root` paths, which persist.
-    let want_metafile_deps =
-        matches!(input.mode, BundleMode::Development) && input.mock_subprocess_output.is_none();
-    // Also request the metafile whenever `bundle.exclude` is active, in ANY
-    // mode (not just dev): `audit_metafile_exclusions_at_path` below needs
-    // esbuild's own authoritative resolution record to fail-closed against a
-    // leaked exclusion in prod builds too (#1558). Without exclusions this
-    // stays exactly the dev-only gate it always was, so a plain prod build
-    // requests no metafile — see the byte-identical guarantee on
-    // `run_esbuild`.
+    // Per-route transitive `Module` deps use esbuild's metafile only in dev
+    // (#1284/#1287). The same metafile now also owns the Wasm deployment-asset
+    // manifest for every real bundle pass, including the production SSG and
+    // runtime-only passes. It must be read before `owned_work` (the shadow) is
+    // dropped at the end of this function.
+    let want_metafile_deps = matches!(input.mode, BundleMode::Development);
     let exclusions_active = !bundle_exclude.is_empty();
-    let want_metafile = want_metafile_deps || exclusions_active;
-    // Mock-subprocess builds (tests only) never invoke real esbuild, so no
-    // metafile is ever produced for them — `mock_subprocess_output.is_some()`
-    // forces `metafile_path` back to `None` even when exclusions are active.
-    // The audit below is unreachable on that path by construction; unit-scope
-    // coverage in `metafile_deps` exercises `audit_metafile_exclusions`
-    // directly against crafted metafiles instead of relying on a mock one.
-    let metafile_path: Option<PathBuf> = if want_metafile && input.mock_subprocess_output.is_none()
-    {
+    // Mock-subprocess builds bypass esbuild and therefore cannot produce a
+    // trustworthy metafile. Real invocations always request one so both bundle
+    // passes publish the exact Wasm assets their emitted ESM imports require.
+    let metafile_path: Option<PathBuf> = if input.mock_subprocess_output.is_none() {
         Some(shadow.join(".zfb-metafile.json"))
     } else {
         None
@@ -3272,35 +3272,50 @@ pub fn bundle_with_session(
         }
     }
 
+    // Read once while the shadow still exists. A malformed or missing metafile
+    // remains best-effort for the dev invalidation graph, but is fail-closed
+    // for an emitted bundle that references a copied Wasm module.
+    let metafile_bytes = metafile_path.as_ref().and_then(|path| fs::read(path).ok());
+    let emitted_wasm_assets = match metafile_path.as_deref() {
+        Some(meta_path) => emitted_wasm_assets_from_metafile(
+            meta_path,
+            metafile_bytes.as_deref(),
+            shadow,
+            &outdir,
+            &bundle_path,
+        )?,
+        None => Vec::new(),
+    };
+
     // Parse the metafile into per-route `Module` edges while the shadow tree
-    // still exists. A missing / malformed metafile yields an empty set (the
-    // dev path then falls back to its prior selection) — never a hard error.
-    let mut route_module_deps: Vec<crate::metafile_deps::RouteModuleDeps> =
-        match metafile_path.as_ref() {
-            Some(meta_path) => match fs::read(meta_path) {
-                Ok(bytes) => {
-                    let route_refs: Vec<crate::metafile_deps::RouteEntryRef> = routes
-                        .iter()
-                        .filter(|r| !r.static_html)
-                        .map(|r| crate::metafile_deps::RouteEntryRef {
-                            source_path: r.source_path.clone(),
-                            // The shadow mirrors the project tree by relative path,
-                            // so a route's metafile-input key equals its
-                            // project-relative source path in forward-slash form.
-                            metafile_key: rel_to_forward_slash(&r.source_path),
-                        })
-                        .collect();
-                    crate::metafile_deps::route_module_deps(
-                        &bytes,
-                        &route_refs,
-                        shadow,
-                        &input.project_root,
-                    )
-                }
-                Err(_) => Vec::new(),
-            },
+    // still exists. This remains development-only and best-effort: a missing
+    // or malformed metafile falls back to the previous empty dependency set.
+    let mut route_module_deps: Vec<crate::metafile_deps::RouteModuleDeps> = if want_metafile_deps {
+        match metafile_bytes.as_deref() {
+            Some(bytes) => {
+                let route_refs: Vec<crate::metafile_deps::RouteEntryRef> = routes
+                    .iter()
+                    .filter(|r| !r.static_html)
+                    .map(|r| crate::metafile_deps::RouteEntryRef {
+                        source_path: r.source_path.clone(),
+                        // The shadow mirrors the project tree by relative path,
+                        // so a route's metafile-input key equals its
+                        // project-relative source path in forward-slash form.
+                        metafile_key: rel_to_forward_slash(&r.source_path),
+                    })
+                    .collect();
+                crate::metafile_deps::route_module_deps(
+                    bytes,
+                    &route_refs,
+                    shadow,
+                    &input.project_root,
+                )
+            }
             None => Vec::new(),
-        };
+        }
+    } else {
+        Vec::new()
+    };
     augment_route_deps_with_raw_targets(
         &mut route_module_deps,
         &mat_ctx.raw_import_edges.borrow(),
@@ -3362,6 +3377,7 @@ pub fn bundle_with_session(
         sourcemap_path,
         manifest,
         route_module_deps,
+        emitted_wasm_assets,
     })
 }
 
@@ -3425,6 +3441,148 @@ fn augment_route_deps_with_worker_targets(
             }
         }
     }
+}
+
+/// The subset of esbuild's metafile needed to discover copied deployment
+/// assets. `outputs` is deliberately required: a missing section is not a
+/// valid manifest for a bundle that contains a Wasm import.
+#[derive(Debug, Deserialize)]
+struct EsbuildAssetMetafile {
+    outputs: BTreeMap<String, serde_json::Value>,
+}
+
+/// Build the strict, bundle-relative Wasm asset manifest from esbuild's
+/// metafile. A malformed or missing metafile remains non-fatal for a
+/// Wasm-free bundle to preserve the existing best-effort dev dependency graph,
+/// but it is a hard error once the emitted ESM references a copied `.wasm`
+/// file: deployment would otherwise silently omit a required Worker module.
+fn emitted_wasm_assets_from_metafile(
+    metafile_path: &Path,
+    metafile_bytes: Option<&[u8]>,
+    metafile_cwd: &Path,
+    outdir: &Path,
+    bundle_path: &Path,
+) -> Result<Vec<PathBuf>> {
+    let bundle_references_wasm = bundle_references_wasm(bundle_path)?;
+    let Some(metafile_bytes) = metafile_bytes else {
+        if bundle_references_wasm {
+            bail!(
+                "bundler: wasm asset manifest is unavailable: esbuild did not write {} for a bundle that imports Wasm",
+                metafile_path.display()
+            );
+        }
+        return Ok(Vec::new());
+    };
+
+    let wasm_output_keys = match wasm_output_keys_from_metafile(metafile_bytes) {
+        Ok(keys) => keys,
+        Err(error) if bundle_references_wasm => {
+            return Err(error.context(format!(
+                "bundler: wasm asset manifest is malformed at {} for a bundle that imports Wasm",
+                metafile_path.display()
+            )));
+        }
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    if wasm_output_keys.is_empty() {
+        if bundle_references_wasm {
+            bail!(
+                "bundler: wasm asset manifest at {} listed no .wasm output for a bundle that imports Wasm",
+                metafile_path.display()
+            );
+        }
+        return Ok(Vec::new());
+    }
+
+    validate_wasm_asset_output_paths(&wasm_output_keys, metafile_cwd, outdir)
+}
+
+fn bundle_references_wasm(bundle_path: &Path) -> Result<bool> {
+    let bundle = fs::read(bundle_path).with_context(|| {
+        format!(
+            "bundler: failed to read emitted bundle {}",
+            bundle_path.display()
+        )
+    })?;
+    Ok(bundle
+        .windows(b".wasm".len())
+        .any(|window| window == b".wasm"))
+}
+
+fn wasm_output_keys_from_metafile(metafile_bytes: &[u8]) -> Result<Vec<String>> {
+    let metafile: EsbuildAssetMetafile =
+        serde_json::from_slice(metafile_bytes).context("failed to parse esbuild metafile")?;
+    Ok(metafile
+        .outputs
+        .into_keys()
+        .filter(|key| Path::new(key).extension().is_some_and(|ext| ext == "wasm"))
+        .collect())
+}
+
+/// Validate each metafile output path before exposing it to deployment code.
+/// Esbuild normally writes output keys relative to its current working
+/// directory, but accepts absolute outfile paths too; support both spellings
+/// while requiring the resolved, existing asset to remain under `outdir`.
+fn validate_wasm_asset_output_paths(
+    output_keys: &[String],
+    metafile_cwd: &Path,
+    outdir: &Path,
+) -> Result<Vec<PathBuf>> {
+    let canonical_outdir = fs::canonicalize(outdir).with_context(|| {
+        format!(
+            "bundler: failed to canonicalize wasm asset output directory {}",
+            outdir.display()
+        )
+    })?;
+    let mut assets = BTreeSet::new();
+
+    for output_key in output_keys {
+        let output_path = resolve_metafile_output_path(output_key, metafile_cwd, outdir);
+        let canonical_output = fs::canonicalize(&output_path).with_context(|| {
+            format!(
+                "bundler: wasm asset listed by esbuild metafile does not exist: {}",
+                output_path.display()
+            )
+        })?;
+        let relative = canonical_output.strip_prefix(&canonical_outdir).map_err(|_| {
+            anyhow!(
+                "bundler: wasm asset listed by esbuild metafile escapes bundle output directory: {} (outdir {})",
+                canonical_output.display(),
+                canonical_outdir.display()
+            )
+        })?;
+        if relative.as_os_str().is_empty() {
+            bail!(
+                "bundler: wasm asset listed by esbuild metafile resolves to the bundle output directory itself"
+            );
+        }
+        assets.insert(relative.to_path_buf());
+    }
+
+    Ok(assets.into_iter().collect())
+}
+
+fn resolve_metafile_output_path(output_key: &str, metafile_cwd: &Path, outdir: &Path) -> PathBuf {
+    let output_key = Path::new(output_key);
+    if output_key.is_absolute() {
+        return normalize_path_lexical(output_key);
+    }
+
+    let from_metafile_cwd = normalize_path_lexical(&metafile_cwd.join(output_key));
+    if from_metafile_cwd.exists() {
+        return from_metafile_cwd;
+    }
+
+    // Some esbuild integrations record output keys relative to the outdir.
+    // The CLI normally uses the first spelling above, but accepting this form
+    // keeps the validation tied to containment rather than path presentation.
+    let from_outdir = normalize_path_lexical(&outdir.join(output_key));
+    if from_outdir.exists() {
+        return from_outdir;
+    }
+
+    from_metafile_cwd
 }
 
 // ---------------------------------------------------------------------------
@@ -7123,8 +7281,8 @@ fn effective_ssr_main_fields(input: &BundlerInput) -> Vec<&str> {
 /// When `metafile_path` is `Some`, esbuild also writes its `--metafile` JSON
 /// there. The metafile's `inputs` graph is the canonical *transitive* import
 /// graph esbuild itself resolved — the dev path parses it to populate per-route
-/// `DepKind::Module` edges (#1284/#1287). It is a free by-product of the bundle
-/// pass; the prod path passes `None` and is byte-identical to before.
+/// `DepKind::Module` edges (#1284/#1287), while every real bundle pass uses its
+/// `outputs` map to publish copied Wasm deployment assets.
 fn run_esbuild(
     input: &BundlerInput,
     shadow: &Path,
@@ -7147,6 +7305,10 @@ fn run_esbuild(
     cmd.arg("--tree-shaking=true");
     cmd.arg("--sourcemap=linked");
     cmd.arg("--log-level=warning");
+    // The `.wasm=copy` loader emits these beside the bundle. Pin the basename
+    // format so both production passes produce deterministic deployment asset
+    // paths that can be safely handed to an adapter.
+    cmd.arg("--asset-names=[name]-[hash]");
     for arg in esbuild_loader_args(input) {
         cmd.arg(arg);
     }
@@ -12261,6 +12423,21 @@ mod tests {
              continue to be parsed as JSX; got: {:?}",
             ESBUILD_LOADER_ARGS,
         );
+
+        assert!(
+            ESBUILD_LOADER_ARGS.contains(&"--loader:.wasm=copy"),
+            "Worker bundle must use `--loader:.wasm=copy` so deployable Wasm \
+             imports stay relative to the emitted bundle; got: {:?}",
+            ESBUILD_LOADER_ARGS,
+        );
+        assert!(
+            !ESBUILD_LOADER_ARGS
+                .iter()
+                .any(|arg| arg.contains("external:") && arg.contains(".wasm")),
+            "Worker bundle must NOT mark .wasm external because that leaves a \
+             shadow-relative runtime import. Use `--loader:.wasm=copy`; got: {:?}",
+            ESBUILD_LOADER_ARGS,
+        );
     }
 
     #[test]
@@ -12278,6 +12455,135 @@ mod tests {
             &args[ESBUILD_LOADER_ARGS.len()..],
             ["--loader:.bin=binary", "--loader:.txt=text"]
         );
+    }
+
+    #[test]
+    fn wasm_asset_manifest_is_sorted_deduped_and_bundle_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path().join("shadow");
+        let outdir = tmp.path().join("dist");
+        fs::create_dir_all(&shadow).unwrap();
+        fs::create_dir_all(&outdir).unwrap();
+        fs::write(outdir.join("a-111.wasm"), b"a").unwrap();
+        fs::write(outdir.join("z-222.wasm"), b"z").unwrap();
+        let bundle = outdir.join("bundle.mjs");
+        fs::write(&bundle, "import wasm from \"./a-111.wasm\";\n").unwrap();
+
+        let outputs = BTreeMap::from([
+            ("../dist/z-222.wasm".to_string(), serde_json::json!({})),
+            ("../dist/a-111.wasm".to_string(), serde_json::json!({})),
+            (
+                outdir.join("a-111.wasm").to_string_lossy().into_owned(),
+                serde_json::json!({}),
+            ),
+        ]);
+        let metafile = serde_json::json!({ "outputs": outputs });
+        let metafile_bytes = serde_json::to_vec(&metafile).unwrap();
+        let assets = emitted_wasm_assets_from_metafile(
+            &shadow.join(".zfb-metafile.json"),
+            Some(&metafile_bytes),
+            &shadow,
+            &outdir,
+            &bundle,
+        )
+        .unwrap();
+
+        assert_eq!(
+            assets,
+            vec![PathBuf::from("a-111.wasm"), PathBuf::from("z-222.wasm")]
+        );
+    }
+
+    #[test]
+    fn wasm_asset_manifest_fails_closed_for_missing_or_malformed_metafile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path().join("shadow");
+        let outdir = tmp.path().join("dist");
+        fs::create_dir_all(&shadow).unwrap();
+        fs::create_dir_all(&outdir).unwrap();
+        let bundle = outdir.join("bundle.mjs");
+        fs::write(&bundle, "import wasm from \"./x-123.wasm\";\n").unwrap();
+        let metafile_path = shadow.join(".zfb-metafile.json");
+
+        let missing =
+            emitted_wasm_assets_from_metafile(&metafile_path, None, &shadow, &outdir, &bundle)
+                .expect_err("a Wasm-importing bundle needs a metafile");
+        assert!(missing.to_string().contains("wasm asset manifest"));
+
+        let malformed = emitted_wasm_assets_from_metafile(
+            &metafile_path,
+            Some(b"not json"),
+            &shadow,
+            &outdir,
+            &bundle,
+        )
+        .expect_err("a malformed metafile must fail a Wasm-importing bundle");
+        assert!(malformed.to_string().contains("wasm asset manifest"));
+    }
+
+    #[test]
+    fn wasm_asset_manifest_rejects_missing_and_out_of_bundle_outputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path().join("shadow");
+        let outdir = tmp.path().join("dist");
+        fs::create_dir_all(&shadow).unwrap();
+        fs::create_dir_all(&outdir).unwrap();
+        let bundle = outdir.join("bundle.mjs");
+        fs::write(&bundle, "import wasm from \"./x-123.wasm\";\n").unwrap();
+        let metafile_path = shadow.join(".zfb-metafile.json");
+
+        let missing = serde_json::json!({ "outputs": { "../dist/x-123.wasm": {} } });
+        let missing_bytes = serde_json::to_vec(&missing).unwrap();
+        let missing = emitted_wasm_assets_from_metafile(
+            &metafile_path,
+            Some(&missing_bytes),
+            &shadow,
+            &outdir,
+            &bundle,
+        )
+        .expect_err("a manifest entry must name an existing asset");
+        assert!(missing.to_string().contains("does not exist"));
+
+        let outside = tmp.path().join("outside.wasm");
+        fs::write(&outside, b"outside").unwrap();
+        let outside_outputs = BTreeMap::from([(
+            outside.to_string_lossy().into_owned(),
+            serde_json::json!({}),
+        )]);
+        let outside_meta = serde_json::json!({ "outputs": outside_outputs });
+        let outside_bytes = serde_json::to_vec(&outside_meta).unwrap();
+        let outside = emitted_wasm_assets_from_metafile(
+            &metafile_path,
+            Some(&outside_bytes),
+            &shadow,
+            &outdir,
+            &bundle,
+        )
+        .expect_err("a manifest entry must stay under the bundle outdir");
+        assert!(outside
+            .to_string()
+            .contains("escapes bundle output directory"));
+    }
+
+    #[test]
+    fn malformed_metafile_stays_nonfatal_for_wasm_free_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path().join("shadow");
+        let outdir = tmp.path().join("dist");
+        fs::create_dir_all(&shadow).unwrap();
+        fs::create_dir_all(&outdir).unwrap();
+        let bundle = outdir.join("bundle.mjs");
+        fs::write(&bundle, "export default {};\n").unwrap();
+
+        let assets = emitted_wasm_assets_from_metafile(
+            &shadow.join(".zfb-metafile.json"),
+            Some(b"not json"),
+            &shadow,
+            &outdir,
+            &bundle,
+        )
+        .expect("Wasm-free bundles retain best-effort metafile behavior");
+        assert!(assets.is_empty());
     }
 
     #[test]
