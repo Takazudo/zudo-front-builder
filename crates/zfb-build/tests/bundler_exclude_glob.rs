@@ -302,7 +302,7 @@ fn bundle_exclude_audit_fails_build_on_leaked_metafile_input() {
     scaffold_project(root);
     fs::create_dir_all(root.join("node_modules")).unwrap();
 
-    let mut session = ShadowSession::new().expect("shadow session");
+    let mut session = ShadowSession::new(root).expect("shadow session");
 
     // Call 1: an ordinary PRODUCTION build, no `bundle.exclude`. This both
     // primes the session's `copy_mode`/dirty bookkeeping (so call 2 below

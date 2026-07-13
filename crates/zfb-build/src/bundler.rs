@@ -907,6 +907,196 @@ pub const ESBUILD_LOADER_ARGS: &[&str] = &[
     "--loader:.module.css=js",
 ];
 
+#[derive(Debug, Clone)]
+struct ShadowParentEnv {
+    temp_dir: PathBuf,
+    xdg_cache_home: Option<OsString>,
+    home: Option<OsString>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    local_app_data: Option<OsString>,
+}
+
+impl ShadowParentEnv {
+    fn from_process() -> Self {
+        Self {
+            temp_dir: std::env::temp_dir(),
+            xdg_cache_home: std::env::var_os("XDG_CACHE_HOME"),
+            home: std::env::var_os("HOME"),
+            local_app_data: std::env::var_os("LOCALAPPDATA"),
+        }
+    }
+}
+
+/// Return a tempdir parent that is guaranteed not to live inside the project.
+pub fn shadow_parent_dir(project_root: &Path) -> Result<PathBuf> {
+    shadow_parent_dir_with_env(project_root, &ShadowParentEnv::from_process())
+}
+
+fn shadow_parent_dir_with_env(project_root: &Path, env: &ShadowParentEnv) -> Result<PathBuf> {
+    let mut rejected = Vec::new();
+
+    if let Some(parent) = usable_shadow_parent_candidate(
+        project_root,
+        &env.temp_dir,
+        "system temp dir",
+        &mut rejected,
+    )? {
+        return Ok(parent);
+    }
+
+    match env.xdg_cache_home.as_ref().map(PathBuf::from) {
+        Some(xdg) if xdg.is_absolute() => {
+            let candidate = xdg.join("zfb");
+            if let Some(parent) = usable_shadow_parent_candidate(
+                project_root,
+                &candidate,
+                "XDG_CACHE_HOME/zfb",
+                &mut rejected,
+            )? {
+                return Ok(parent);
+            }
+        }
+        Some(xdg) => rejected.push(format!("XDG_CACHE_HOME is not absolute: {}", xdg.display())),
+        None => rejected.push("XDG_CACHE_HOME is unset".to_string()),
+    }
+
+    #[cfg(windows)]
+    {
+        match env.local_app_data.as_ref().map(PathBuf::from) {
+            Some(local_app_data) if local_app_data.is_absolute() => {
+                // Best effort: LOCALAPPDATA is the Windows per-user cache root
+                // closest to Unix's XDG/HOME cache locations.
+                let candidate = local_app_data.join("zfb");
+                if let Some(parent) = usable_shadow_parent_candidate(
+                    project_root,
+                    &candidate,
+                    "LOCALAPPDATA/zfb",
+                    &mut rejected,
+                )? {
+                    return Ok(parent);
+                }
+            }
+            Some(local_app_data) => rejected.push(format!(
+                "LOCALAPPDATA is not absolute: {}",
+                local_app_data.display()
+            )),
+            None => rejected.push("LOCALAPPDATA is unset".to_string()),
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        match env.home.as_ref().map(PathBuf::from) {
+            Some(home) if home.is_absolute() => {
+                let candidate = home.join(".cache").join("zfb");
+                if let Some(parent) = usable_shadow_parent_candidate(
+                    project_root,
+                    &candidate,
+                    "HOME/.cache/zfb",
+                    &mut rejected,
+                )? {
+                    return Ok(parent);
+                }
+            }
+            Some(home) => rejected.push(format!("HOME is not absolute: {}", home.display())),
+            None => rejected.push("HOME is unset".to_string()),
+        }
+    }
+
+    bail!(
+        "bundler: could not find a shadow tempdir parent outside project root {}. \
+         Tried: {}. Set TMPDIR/TEMP, XDG_CACHE_HOME, HOME, or LOCALAPPDATA to a \
+         directory outside the project tree.",
+        project_root.display(),
+        rejected.join("; ")
+    )
+}
+
+fn usable_shadow_parent_candidate(
+    project_root: &Path,
+    candidate: &Path,
+    label: &str,
+    rejected: &mut Vec<String>,
+) -> Result<Option<PathBuf>> {
+    if let Err(error) = fs::create_dir_all(candidate) {
+        rejected.push(format!(
+            "{label} {} could not be created: {error}",
+            candidate.display()
+        ));
+        return Ok(None);
+    }
+
+    match path_is_inside_project(project_root, candidate) {
+        Ok(true) => {
+            rejected.push(format!(
+                "{label} {} resolves inside project root {}",
+                candidate.display(),
+                project_root.display()
+            ));
+            Ok(None)
+        }
+        Ok(false) => Ok(Some(candidate.to_path_buf())),
+        Err(error) => {
+            rejected.push(format!(
+                "{label} {} could not be proven outside project root {}: {error}",
+                candidate.display(),
+                project_root.display()
+            ));
+            Ok(None)
+        }
+    }
+}
+
+fn path_is_inside_project(project_root: &Path, candidate: &Path) -> Result<bool> {
+    let project_canonical = fs::canonicalize(project_root);
+    let candidate_canonical = fs::canonicalize(candidate);
+    if let (Ok(project), Ok(candidate)) = (&project_canonical, &candidate_canonical) {
+        return Ok(candidate.starts_with(project));
+    }
+
+    let project_lexical = normalize_path_lexical(project_root);
+    let candidate_lexical = normalize_path_lexical(candidate);
+    if candidate_lexical.starts_with(&project_lexical) {
+        return Ok(true);
+    }
+
+    let project_error = project_canonical
+        .as_ref()
+        .err()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "ok".to_string());
+    let candidate_error = candidate_canonical
+        .as_ref()
+        .err()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "ok".to_string());
+    Err(anyhow!(
+        "canonicalization failed (project_root: {project_error}; candidate: {candidate_error})"
+    ))
+}
+
+fn ensure_shadow_path_outside_project(
+    project_root: &Path,
+    path: &Path,
+    invariant_name: &str,
+) -> Result<()> {
+    match path_is_inside_project(project_root, path) {
+        Ok(false) => Ok(()),
+        Ok(true) => bail!(
+            "bundler invariant violation: {invariant_name} must be outside project_root; \
+             got {} inside {}",
+            path.display(),
+            project_root.display()
+        ),
+        Err(error) => bail!(
+            "bundler invariant violation: {invariant_name} must be provably outside \
+             project_root; could not verify {} against {}: {error}",
+            path.display(),
+            project_root.display()
+        ),
+    }
+}
+
 fn esbuild_loader_args(input: &BundlerInput) -> impl Iterator<Item = &str> {
     ESBUILD_LOADER_ARGS
         .iter()
@@ -1095,10 +1285,11 @@ pub struct ShadowSession {
 
 impl ShadowSession {
     /// Allocate the persistent shadow tempdir for a dev session.
-    pub fn new() -> Result<Self> {
+    pub fn new(project_root: &Path) -> Result<Self> {
+        let parent = shadow_parent_dir(project_root)?;
         let work = tempfile::Builder::new()
             .prefix("zfb-shadow-session-")
-            .tempdir()
+            .tempdir_in(parent)
             .context("shadow session: failed to allocate persistent shadow tempdir")?;
         Ok(Self {
             work,
@@ -1735,15 +1926,17 @@ pub fn bundle_with_session(
     let (owned_work, shadow) = match &session {
         Some(s) => (None, canonical_shadow_root(s.work.path())?),
         None => {
+            let parent = shadow_parent_dir(&input.project_root)?;
             let work = tempfile::Builder::new()
                 .prefix("zfb-bundler-")
-                .tempdir()
+                .tempdir_in(parent)
                 .context("bundler: failed to allocate shadow tempdir")?;
             let path = canonical_shadow_root(work.path())?;
             (Some(work), path)
         }
     };
     let shadow: &Path = &shadow;
+    ensure_shadow_path_outside_project(&input.project_root, shadow, "bundler shadow root")?;
 
     // The effective `PipelineSpec` is the input spec with its
     // `resolve_source_map` knob ALWAYS rewritten from the derivation
@@ -1995,9 +2188,10 @@ pub fn bundle_with_session(
             .any(|path| project_path_is_inside_node_modules(path, &project_root));
     let node_modules_isolation = needs_tempdir_isolation
         .then(|| {
+            let parent = shadow_parent_dir(&input.project_root)?;
             tempfile::Builder::new()
                 .prefix("zfb-exact-node-modules-")
-                .tempdir()
+                .tempdir_in(parent)
                 .context("bundler: allocate exact node_modules isolation root")
         })
         .transpose()?;
@@ -2009,6 +2203,13 @@ pub fn bundle_with_session(
     } else {
         Some(shadow)
     };
+    if let Some(root) = node_modules_isolation_root {
+        ensure_shadow_path_outside_project(
+            &input.project_root,
+            root,
+            "exact-node-modules isolation root",
+        )?;
+    }
     let node_modules_isolation_writer = tempdir_isolation_root
         .map(|root| ShadowWriter::new(root.to_path_buf(), None, true, None))
         .transpose()?;
@@ -7492,6 +7693,151 @@ mod tests {
     use super::*;
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
 
+    fn shadow_env(
+        temp_dir: PathBuf,
+        xdg_cache_home: Option<PathBuf>,
+        home: Option<PathBuf>,
+        local_app_data: Option<PathBuf>,
+    ) -> ShadowParentEnv {
+        ShadowParentEnv {
+            temp_dir,
+            xdg_cache_home: xdg_cache_home.map(PathBuf::into_os_string),
+            home: home.map(PathBuf::into_os_string),
+            local_app_data: local_app_data.map(PathBuf::into_os_string),
+        }
+    }
+
+    #[test]
+    fn shadow_parent_uses_system_temp_when_outside_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let temp_dir = tmp.path().join("outside-temp");
+        fs::create_dir_all(&project).unwrap();
+
+        let parent =
+            shadow_parent_dir_with_env(&project, &shadow_env(temp_dir.clone(), None, None, None))
+                .unwrap();
+
+        assert_eq!(parent, temp_dir);
+    }
+
+    #[test]
+    fn shadow_parent_uses_xdg_when_temp_is_inside_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let temp_dir = project.join(".tmp");
+        let xdg = tmp.path().join("cache");
+        fs::create_dir_all(&project).unwrap();
+
+        let parent = shadow_parent_dir_with_env(
+            &project,
+            &shadow_env(temp_dir, Some(xdg.clone()), None, None),
+        )
+        .unwrap();
+
+        assert_eq!(parent, xdg.join("zfb"));
+        assert!(parent.is_dir(), "selected cache parent must be created");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn shadow_parent_uses_home_cache_when_temp_is_inside_and_xdg_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let temp_dir = project.join(".tmp");
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&project).unwrap();
+
+        let parent = shadow_parent_dir_with_env(
+            &project,
+            &shadow_env(temp_dir, None, Some(home.clone()), None),
+        )
+        .unwrap();
+
+        assert_eq!(parent, home.join(".cache").join("zfb"));
+        assert!(
+            parent.is_dir(),
+            "selected HOME cache parent must be created"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shadow_parent_uses_local_app_data_when_temp_is_inside_and_xdg_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let temp_dir = project.join(".tmp");
+        let local_app_data = tmp.path().join("LocalAppData");
+        fs::create_dir_all(&project).unwrap();
+
+        let parent = shadow_parent_dir_with_env(
+            &project,
+            &shadow_env(temp_dir, None, None, Some(local_app_data.clone())),
+        )
+        .unwrap();
+
+        assert_eq!(parent, local_app_data.join("zfb"));
+        assert!(
+            parent.is_dir(),
+            "selected LOCALAPPDATA cache parent must be created"
+        );
+    }
+
+    #[test]
+    fn shadow_parent_errors_when_all_candidates_are_project_local_or_unresolvable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        let temp_dir = project.join(".tmp");
+        let xdg = project.join(".xdg-cache");
+
+        #[cfg(not(windows))]
+        let env = shadow_env(temp_dir, Some(xdg), Some(project.join("home")), None);
+        #[cfg(windows)]
+        let env = shadow_env(
+            temp_dir,
+            Some(xdg),
+            None,
+            Some(project.join("LocalAppData")),
+        );
+
+        let err = shadow_parent_dir_with_env(&project, &env).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("outside project root"), "{msg}");
+        assert!(msg.contains("project root"), "{msg}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_parent_rejects_symlinked_cache_resolving_into_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        fs::create_dir_all(project.join("cache-target")).unwrap();
+        let temp_dir = project.join(".tmp");
+        let xdg_link = tmp.path().join("xdg-link");
+        std::os::unix::fs::symlink(project.join("cache-target"), &xdg_link).unwrap();
+
+        let err =
+            shadow_parent_dir_with_env(&project, &shadow_env(temp_dir, Some(xdg_link), None, None))
+                .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("resolves inside project root"), "{msg}");
+    }
+
+    #[test]
+    fn shadow_invariant_validation_rejects_project_local_shadow_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let shadow = project.join(".zfb-shadow");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let err = ensure_shadow_path_outside_project(&project, &shadow, "bundler shadow root")
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("bundler invariant violation"), "{msg}");
+        assert!(msg.contains("bundler shadow root"), "{msg}");
+    }
+
     #[test]
     fn rebase_tsconfig_paths_dual_target_under_root_passthrough_external() {
         let root = Path::new("/proj");
@@ -9186,7 +9532,7 @@ mod tests {
         // anchor check runs every tick and must still see this file).
         fs::write(src.join("intro.mdx"), "# Intro\n\nbody one\n").unwrap();
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         let out1 = run_collection_tick(
             &mut session,
             zfb_content::PipelineSpec::default(),
@@ -9298,7 +9644,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         let out1 = run_collection_tick(
             &mut session,
             link_validation_spec(tmp.path()),
@@ -9349,7 +9695,7 @@ mod tests {
         let file = src.join("intro.mdx");
         fs::write(&file, "# Intro\n\nbody one\n").unwrap();
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         let out1 = run_collection_tick(
             &mut session,
             zfb_content::PipelineSpec::default(),
@@ -9410,7 +9756,7 @@ mod tests {
         fs::create_dir_all(&src).unwrap();
         fs::write(src.join("intro.mdx"), "# Intro\n\nbody one\n").unwrap();
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         // Tick 1: full materialise, stores the skip entry (snapshot irrelevant
         // on the full path — entries are always stored).
         let out1 = run_collection_tick(
@@ -9476,7 +9822,7 @@ mod tests {
         fs::create_dir_all(&src).unwrap();
         fs::write(src.join("intro.mdx"), "# Intro\n\nbody one\n").unwrap();
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         let out1 = run_collection_tick(
             &mut session,
             zfb_content::PipelineSpec::default(),
@@ -9535,7 +9881,7 @@ mod tests {
         fs::create_dir_all(&src).unwrap();
         fs::write(src.join("intro.mdx"), "# Intro\n\nbody one\n").unwrap();
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         let _out1 = run_collection_tick(
             &mut session,
             zfb_content::PipelineSpec::default(),
@@ -9616,7 +9962,7 @@ mod tests {
         fs::write(&page, "# Page\n\n:::include{file=\"./snippet.md\"}\n").unwrap();
         fs::write(src.join("snippet.md"), "included body\n").unwrap();
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         let out1 = run_collection_tick(
             &mut session,
             transclude_spec(tmp.path()),
@@ -9687,7 +10033,7 @@ mod tests {
         fs::write(&page, "# Page\n\n:::include{file=\"./snippet.md\"}\n").unwrap();
         fs::write(&snippet, "v1\n").unwrap();
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         let out1 = run_collection_tick(
             &mut session,
             transclude_spec(tmp.path()),
@@ -9752,7 +10098,7 @@ mod tests {
         fs::create_dir_all(&src).unwrap();
         fs::write(src.join("a.mdx"), "# A\n\naye\n").unwrap();
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         run_collection_tick(
             &mut session,
             zfb_content::PipelineSpec::default(),
@@ -9829,7 +10175,7 @@ mod tests {
         let src_truth = tmp_truth.path().join("docs");
         fs::create_dir_all(&src_truth).unwrap();
         fs::write(src_truth.join("guide.en.mdx"), body).unwrap();
-        let mut truth_session = ShadowSession::new().unwrap();
+        let mut truth_session = ShadowSession::new(tmp_truth.path()).unwrap();
         let truth = run_collection_tick(
             &mut truth_session,
             zfb_content::PipelineSpec::default(),
@@ -9851,7 +10197,7 @@ mod tests {
         let src = tmp.path().join("docs");
         fs::create_dir_all(&src).unwrap();
         fs::write(src.join("guide.en.mdx"), body).unwrap();
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         run_collection_tick(
             &mut session,
             zfb_content::PipelineSpec::default(),
@@ -9958,7 +10304,7 @@ mod tests {
         fs::create_dir_all(&src).unwrap();
         fs::write(src.join("foo.mdx"), "# Foo\n\nbody\n").unwrap();
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         let imports1 = run_collection_and_shadow_tick(&mut session, &src, "docs", "src");
         // The collection pass produced the bridge import for foo.
         assert_eq!(imports1.len(), 1, "collection pass produces one import");
@@ -10059,7 +10405,7 @@ mod tests {
         .unwrap();
         let target_key = src.join("target.mdx");
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         // Tick 1: target maps to /docs/target/.
         let spec1 = resolve_links_spec(&target_key, "/docs/target/");
         let out1 = run_collection_tick(&mut session, spec1, &src, "docs", None, None);
@@ -10143,7 +10489,7 @@ mod tests {
         fs::write(&from, "export const x = 1;\n").unwrap();
         let dest_rel = "src/util.ts";
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         run_source_tick(&mut session, &[(&from, dest_rel)]);
         // Entry recorded, non-glob.
         let key = PathBuf::from(dest_rel);
@@ -10187,7 +10533,7 @@ mod tests {
         .unwrap();
         fs::write(&worker, "self.postMessage('a');\n").unwrap();
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(root).unwrap();
         let staged_rel = Path::new("src/Island.tsx");
         let run_tick = |session: &mut ShadowSession| {
             let shadow_root = session.shadow_root().to_path_buf();
@@ -10324,7 +10670,7 @@ mod tests {
         .unwrap();
         let dest_rel = "src/styleguide/barrel.ts";
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         run_source_tick(&mut session, &[(&from, dest_rel)]);
         let key = PathBuf::from(dest_rel);
         let entry = session
@@ -10368,7 +10714,7 @@ mod tests {
         .unwrap();
 
         let dest_rel = "src/shader.ts";
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         run_source_tick(&mut session, &[(&importer, dest_rel)]);
         let key = PathBuf::from(dest_rel);
         let entry = session
@@ -10408,7 +10754,7 @@ mod tests {
             "import text from './message.txt?raw';\nexport default text;\n",
         )
         .unwrap();
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         run_source_tick(&mut session, &[(&importer, "src/entry.ts")]);
         let generated = fs::read_dir(session.shadow_root().join("src"))
             .unwrap()
@@ -10830,7 +11176,7 @@ mod tests {
         fs::write(&from, "export const x = 1;\n").unwrap();
         let dest_rel = "src/util.ts";
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         run_source_tick(&mut session, &[(&from, dest_rel)]);
 
         // White-box: corrupt the dest + drop its written hash so a full
@@ -10865,7 +11211,7 @@ mod tests {
         fs::write(&from, [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]).unwrap();
         let dest_rel = "static/logo.png";
 
-        let mut session = ShadowSession::new().unwrap();
+        let mut session = ShadowSession::new(tmp.path()).unwrap();
         run_source_tick(&mut session, &[(&from, dest_rel)]);
         let key = PathBuf::from(dest_rel);
         let entry = session
