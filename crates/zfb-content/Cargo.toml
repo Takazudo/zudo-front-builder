@@ -20,11 +20,10 @@ default = ["syntect-onig"]
 # syntect itself fails to compile (cryptic unresolved `regex_impl` errors in
 # the syntect crate — cargo stops there, before this crate's units) — every
 # consumer must select exactly one backend, directly or via zfb-render's
-# forwarding features (zfb#1576). Note the zfb-render dev-dep below
-# depends back on this crate with default features, so `cargo test -p
-# zfb-content --no-default-features --features syntect-fancy` still unifies
-# to onig — a genuinely fancy-only build needs a graph without that
-# dev-dep cycle (`zfb-md-wasm` is exactly that consumer since zfb#1576).
+# forwarding features (zfb#1576). Keep the zfb-render dev-dep below on
+# `default-features = false`: the tests only need its SWC parse helper, and
+# inheriting zfb-render's defaults would pull `embed_v8` (`deno_core`/V8)
+# into this otherwise lightweight test graph.
 syntect-onig = ["syntect/regex-onig"]
 syntect-fancy = ["syntect/regex-fancy"]
 
@@ -72,7 +71,7 @@ swc_core = { workspace = true, features = [
 # Used by tests/mdx_jsx_emit.rs to pipe emitter output through SWC and
 # assert it parses as valid JS. Pure dev-only — keeps zfb-content's
 # runtime dependency surface minimal.
-zfb-render = { path = "../zfb-render" }
+zfb-render = { path = "../zfb-render", default-features = false }
 # Used by tests/walk_order_determinism.rs to create temp directories
 # for fake MDX file paths.
 tempfile = { workspace = true }
