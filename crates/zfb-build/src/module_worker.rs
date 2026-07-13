@@ -667,7 +667,7 @@ pub(crate) fn probe_graph_candidate(candidate: &Path, exact: bool) -> Option<Pat
         })
 }
 
-fn match_tsconfig_pattern(pattern: &str, specifier: &str) -> Option<Option<String>> {
+pub(crate) fn match_tsconfig_pattern(pattern: &str, specifier: &str) -> Option<Option<String>> {
     match pattern.matches('*').count() {
         0 => (pattern == specifier).then_some(None),
         1 => {
@@ -688,14 +688,14 @@ fn match_tsconfig_pattern(pattern: &str, specifier: &str) -> Option<Option<Strin
     }
 }
 
-fn tsconfig_pattern_specificity(pattern: &str) -> usize {
+pub(crate) fn tsconfig_pattern_specificity(pattern: &str) -> usize {
     pattern
         .find('*')
         .map(|star| star.max(pattern.len().saturating_sub(star + 1)))
         .unwrap_or(pattern.len())
 }
 
-fn substitute_tsconfig_target(target: &str, capture: Option<&str>) -> String {
+pub(crate) fn substitute_tsconfig_target(target: &str, capture: Option<&str>) -> String {
     match (target.find('*'), capture) {
         (Some(star), Some(capture)) => {
             let mut out = String::with_capacity(target.len() + capture.len());
@@ -711,6 +711,7 @@ fn substitute_tsconfig_target(target: &str, capture: Option<&str>) -> String {
 fn resolve_tsconfig_graph_alias(
     paths: Option<&TsConfigPaths>,
     specifier: &str,
+    exact: bool,
 ) -> Result<Option<Option<PathBuf>>> {
     let Some(paths) = paths else {
         return Ok(None);
@@ -731,7 +732,7 @@ fn resolve_tsconfig_graph_alias(
         for target in &alias.targets {
             let target = substitute_tsconfig_target(target, capture.as_deref());
             let candidate = normalize_path_lexical(&paths.base_dir.join(target));
-            if let Some(found) = probe_graph_candidate(&candidate, false) {
+            if let Some(found) = probe_graph_candidate(&candidate, exact) {
                 return Ok(Some(Some(found)));
             }
         }
@@ -739,9 +740,13 @@ fn resolve_tsconfig_graph_alias(
     Ok(Some(None))
 }
 
-fn resolve_tsconfig_base_url(paths: Option<&TsConfigPaths>, specifier: &str) -> Option<PathBuf> {
+fn resolve_tsconfig_base_url(
+    paths: Option<&TsConfigPaths>,
+    specifier: &str,
+    exact: bool,
+) -> Option<PathBuf> {
     let base_url = paths?.base_url.as_ref()?;
-    probe_graph_candidate(&normalize_path_lexical(&base_url.join(specifier)), false)
+    probe_graph_candidate(&normalize_path_lexical(&base_url.join(specifier)), exact)
 }
 
 fn bare_package_name(specifier: &str) -> Option<PathBuf> {
@@ -1090,7 +1095,7 @@ impl ProjectGraphResolver {
             }
 
             let alias_resolution =
-                resolve_tsconfig_graph_alias(self.tsconfig_paths.as_ref(), path_specifier)?;
+                resolve_tsconfig_graph_alias(self.tsconfig_paths.as_ref(), path_specifier, raw)?;
             if let Some(Some(found)) = alias_resolution.as_ref() {
                 found.clone()
             } else if alias_resolution.is_some() {
@@ -1099,7 +1104,7 @@ impl ProjectGraphResolver {
                     importer.display()
                 )
             } else if let Some(found) =
-                resolve_tsconfig_base_url(self.tsconfig_paths.as_ref(), path_specifier)
+                resolve_tsconfig_base_url(self.tsconfig_paths.as_ref(), path_specifier, raw)
             {
                 found
             } else if path_specifier.starts_with("node:")
@@ -2874,6 +2879,74 @@ mod tests {
                 importer: entry,
                 target: payload,
             }));
+    }
+
+    #[test]
+    fn module_worker_raw_import_resolves_tsconfig_alias_exact_file() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let importer = root.join("src/app.ts");
+        let worker = root.join("src/worker.ts");
+        let payload = root.join("src/payload.txt");
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        );
+        write(&importer, "placeholder");
+        write(
+            &worker,
+            "import payload from '@/payload.txt?raw'; self.postMessage(payload);",
+        );
+        write(&payload, "aliased worker raw");
+
+        let rewrite = rewrite_module_worker_urls(
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            &importer,
+            root,
+        )
+        .unwrap();
+
+        assert!(rewrite
+            .raw_import_edges
+            .contains(&ModuleWorkerRawImportEdge {
+                importer: worker,
+                target: payload.clone(),
+            }));
+        assert!(rewrite
+            .dependencies
+            .iter()
+            .any(|edge| edge.dependency == payload));
+    }
+
+    #[test]
+    fn module_worker_raw_alias_does_not_probe_extensions() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let importer = root.join("src/app.ts");
+        let worker = root.join("src/worker.ts");
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        );
+        write(&importer, "placeholder");
+        write(
+            &worker,
+            "import payload from '@/payload?raw'; self.postMessage(payload);",
+        );
+        write(&root.join("src/payload.txt"), "must not be probed");
+
+        let error = rewrite_module_worker_urls(
+            "new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });",
+            &importer,
+            root,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("matched a first-party mapping but no target resolved"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@
 //! as JavaScript (even when its filename ends in `.js`).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
@@ -55,6 +55,71 @@ pub struct RawImportExpansion {
     pub edges: Vec<RawImportEdge>,
 }
 
+/// First-party TypeScript path/baseUrl mappings available to terminal
+/// `?raw` target resolution.
+///
+/// Targets are stored in the same logical absolute shape as
+/// [`crate::bundler::BundlerInput::tsconfig_paths`]: under-project mappings
+/// point at the real project root, not a preprocessing shadow.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RawImportAliasContext {
+    paths: BTreeMap<String, Vec<String>>,
+    base_url: Option<PathBuf>,
+}
+
+impl RawImportAliasContext {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn from_paths(paths: &BTreeMap<String, Vec<String>>) -> Self {
+        Self::from_paths_and_base_url(paths, None)
+    }
+
+    pub fn from_paths_and_base_url(
+        paths: &BTreeMap<String, Vec<String>>,
+        base_url: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            paths: paths.clone(),
+            base_url: base_url.map(|path| normalize_path_lexical(&path)),
+        }
+    }
+
+    pub fn from_tsconfig_paths(paths: &zfb_plugin_resolver::TsConfigPaths) -> Self {
+        let mut map = BTreeMap::new();
+        for alias in &paths.aliases {
+            let targets = alias
+                .targets
+                .iter()
+                .map(|target| {
+                    zfb_plugin_resolver::resolve_tsconfig_path_target(&paths.base_dir, target)
+                })
+                .collect::<Vec<_>>();
+            if !targets.is_empty() {
+                map.insert(alias.pattern.clone(), targets);
+            }
+        }
+        Self::from_paths_and_base_url(&map, paths.base_url.clone())
+    }
+
+    pub fn from_project_root(project_root: &Path) -> Self {
+        zfb_plugin_resolver::read_tsconfig_paths(project_root)
+            .as_ref()
+            .map(Self::from_tsconfig_paths)
+            .unwrap_or_default()
+    }
+
+    pub fn from_paths_and_project_base_url(
+        paths: &BTreeMap<String, Vec<String>>,
+        project_root: &Path,
+    ) -> Self {
+        let base_url =
+            zfb_plugin_resolver::read_tsconfig_paths(project_root).and_then(|paths| paths.base_url);
+        Self::from_paths_and_base_url(paths, base_url)
+    }
+}
+
 #[derive(Debug)]
 struct RawOccurrence {
     lo: usize,
@@ -75,6 +140,20 @@ fn supported_form_error(reason: impl AsRef<str>) -> anyhow::Error {
          terminal text loading; dynamic imports, `?url`, named/namespace/side-effect \
          raw imports, and additional query parameters are not supported.",
         reason.as_ref()
+    )
+}
+
+fn is_relative_specifier(specifier: &str) -> bool {
+    specifier.starts_with("./") || specifier.starts_with("../")
+}
+
+fn unsupported_target_error(importer: &Path, specifier_without_query: &str) -> anyhow::Error {
+    anyhow!(
+        "zfb bundler: unsupported ?raw target {specifier_without_query:?} in {}. \
+         Only project-local relative targets in the form \
+         `import text from \"./file.ext?raw\"` or exact first-party \
+         tsconfig-alias/baseUrl targets are supported.",
+        importer.display()
     )
 }
 
@@ -292,27 +371,67 @@ pub fn supported_raw_import_specifier(source: &str) -> Result<Option<String>> {
     supported_raw_import_specifier_for_path(source, Path::new(".zfb-virtual-module.mjs"))
 }
 
-/// Resolve a raw target without routing the stripped path through the normal
-/// JavaScript module resolver.
-///
-/// The supported spelling is project-local and relative (`./` or `../`).  An
-/// exact file must exist; no JS extension probing or `index.*` resolution is
-/// performed because the edge is terminal and accepts any extension.
-pub fn resolve_raw_target(
+enum PathAliasResolution {
+    NoMatch,
+    Matched(Option<PathBuf>),
+}
+
+fn path_alias_candidate(
+    aliases: &RawImportAliasContext,
+    specifier_without_query: &str,
+) -> PathAliasResolution {
+    let mut matches = aliases
+        .paths
+        .iter()
+        .filter_map(|(pattern, targets)| {
+            crate::module_worker::match_tsconfig_pattern(pattern, specifier_without_query).map(
+                |capture| {
+                    (
+                        pattern.as_str(),
+                        targets,
+                        capture,
+                        crate::module_worker::tsconfig_pattern_specificity(pattern),
+                    )
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return PathAliasResolution::NoMatch;
+    }
+    matches.sort_by_key(|(_, _, _, specificity)| std::cmp::Reverse(*specificity));
+
+    let mut first_candidate = None;
+    for (_, targets, capture, _) in matches {
+        for target in targets {
+            let substituted =
+                crate::module_worker::substitute_tsconfig_target(target, capture.as_deref());
+            let candidate = normalize_path_lexical(Path::new(&substituted));
+            first_candidate.get_or_insert_with(|| candidate.clone());
+            if candidate.is_file() {
+                return PathAliasResolution::Matched(Some(candidate));
+            }
+        }
+    }
+    PathAliasResolution::Matched(first_candidate)
+}
+
+fn base_url_candidate(
+    aliases: &RawImportAliasContext,
+    specifier_without_query: &str,
+) -> Option<PathBuf> {
+    let base_url = aliases.base_url.as_ref()?;
+    Some(normalize_path_lexical(
+        &base_url.join(specifier_without_query),
+    ))
+}
+
+fn validate_raw_candidate(
     importer: &Path,
     specifier_without_query: &str,
     project_root: &Path,
+    candidate: PathBuf,
 ) -> Result<PathBuf> {
-    if !(specifier_without_query.starts_with("./") || specifier_without_query.starts_with("../")) {
-        bail!(
-            "zfb bundler: unsupported ?raw target {specifier_without_query:?} in {}. \
-             Only project-local relative targets in the form \
-             `import text from \"./file.ext?raw\"` are supported.",
-            importer.display()
-        );
-    }
-    let importer_dir = importer.parent().unwrap_or_else(|| Path::new("."));
-    let candidate = normalize_path_lexical(&importer_dir.join(specifier_without_query));
     let lexical_root = normalize_path_lexical(project_root);
     if !candidate.starts_with(&lexical_root) {
         bail!(
@@ -361,11 +480,113 @@ pub fn resolve_raw_target(
     Ok(candidate)
 }
 
+/// Resolve a raw target without routing the stripped path through the normal
+/// JavaScript module resolver.
+///
+/// Relative spellings (`./` or `../`) are unchanged. Non-relative spellings
+/// may resolve only through first-party TypeScript `paths`/`baseUrl`
+/// mappings. An exact file must exist; no JS extension probing or `index.*`
+/// resolution is performed because the edge is terminal and accepts any
+/// extension.
+pub fn resolve_raw_target_with_aliases(
+    importer: &Path,
+    specifier_without_query: &str,
+    project_root: &Path,
+    aliases: &RawImportAliasContext,
+) -> Result<PathBuf> {
+    if is_relative_specifier(specifier_without_query) {
+        let importer_dir = importer.parent().unwrap_or_else(|| Path::new("."));
+        let candidate = normalize_path_lexical(&importer_dir.join(specifier_without_query));
+        return validate_raw_candidate(importer, specifier_without_query, project_root, candidate);
+    }
+    if Path::new(specifier_without_query).is_absolute() {
+        return Err(unsupported_target_error(importer, specifier_without_query));
+    }
+
+    match path_alias_candidate(aliases, specifier_without_query) {
+        PathAliasResolution::Matched(Some(candidate)) => {
+            validate_raw_candidate(importer, specifier_without_query, project_root, candidate)
+        }
+        PathAliasResolution::Matched(None) => {
+            Err(unsupported_target_error(importer, specifier_without_query))
+        }
+        PathAliasResolution::NoMatch => {
+            if let Some(candidate) = base_url_candidate(aliases, specifier_without_query) {
+                validate_raw_candidate(importer, specifier_without_query, project_root, candidate)
+            } else {
+                Err(unsupported_target_error(importer, specifier_without_query))
+            }
+        }
+    }
+}
+
+/// Resolve a raw target using the nearest root TypeScript mappings, preserving
+/// backward compatibility for callers that do not thread an explicit context.
+pub fn resolve_raw_target(
+    importer: &Path,
+    specifier_without_query: &str,
+    project_root: &Path,
+) -> Result<PathBuf> {
+    let aliases = RawImportAliasContext::from_project_root(project_root);
+    resolve_raw_target_with_aliases(importer, specifier_without_query, project_root, &aliases)
+}
+
 fn generated_filename(specifier_without_query: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(specifier_without_query.as_bytes());
     let digest = hex::encode(hasher.finalize());
     format!(".zfb-raw-{}.mjs", &digest[..16])
+}
+
+fn lexical_relative_path(target: &Path, base: &Path) -> Option<PathBuf> {
+    let target = normalize_path_lexical(target);
+    let base = normalize_path_lexical(base);
+    let target_components = target.components().collect::<Vec<_>>();
+    let base_components = base.components().collect::<Vec<_>>();
+    if target_components.first() != base_components.first() {
+        return None;
+    }
+
+    let mut shared = 0;
+    while shared < target_components.len()
+        && shared < base_components.len()
+        && target_components[shared] == base_components[shared]
+    {
+        shared += 1;
+    }
+
+    let mut out = PathBuf::new();
+    for component in &base_components[shared..] {
+        match component {
+            Component::Normal(_) => out.push(".."),
+            Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) | Component::ParentDir => return None,
+        }
+    }
+    for component in &target_components[shared..] {
+        match component {
+            Component::Normal(value) => out.push(value),
+            Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) | Component::ParentDir => return None,
+        }
+    }
+    Some(out)
+}
+
+fn generated_key_for_target(target_specifier: &str, importer_dir: &Path, target: &Path) -> String {
+    if is_relative_specifier(target_specifier) {
+        return target_specifier.to_string();
+    }
+    let Some(relative) = lexical_relative_path(target, importer_dir) else {
+        return normalize_path_lexical(target)
+            .to_string_lossy()
+            .replace('\\', "/");
+    };
+    let mut key = relative.to_string_lossy().replace('\\', "/");
+    if !key.starts_with("../") {
+        key.insert_str(0, "./");
+    }
+    key
 }
 
 /// Expand supported terminal `?raw` imports in `source`.
@@ -381,6 +602,17 @@ pub fn expand_raw_imports(
     source: &str,
     importer: &Path,
     project_root: &Path,
+    is_excluded: &dyn Fn(&Path) -> bool,
+) -> Result<RawImportExpansion> {
+    let aliases = RawImportAliasContext::from_project_root(project_root);
+    expand_raw_imports_with_aliases(source, importer, project_root, &aliases, is_excluded)
+}
+
+pub fn expand_raw_imports_with_aliases(
+    source: &str,
+    importer: &Path,
+    project_root: &Path,
+    aliases: &RawImportAliasContext,
     is_excluded: &dyn Fn(&Path) -> bool,
 ) -> Result<RawImportExpansion> {
     let occurrences = collect_raw_occurrences(source, importer, RawScanMode::Tolerant)?;
@@ -402,7 +634,8 @@ pub fn expand_raw_imports(
             .specifier
             .strip_suffix("?raw")
             .expect("collector accepts only exact ?raw suffix");
-        let target = resolve_raw_target(importer, target_specifier, project_root)?;
+        let target =
+            resolve_raw_target_with_aliases(importer, target_specifier, project_root, aliases)?;
         if is_excluded(&target) {
             bail!(
                 "zfb bundler: raw import target {} (imported from {}) is excluded by \
@@ -413,7 +646,8 @@ pub fn expand_raw_imports(
             );
         }
 
-        let filename = generated_filename(target_specifier);
+        let filename_key = generated_key_for_target(target_specifier, importer_dir, &target);
+        let filename = generated_filename(&filename_key);
         let reserved_path = importer_dir.join(&filename);
         if reserved_path.exists() && reserved_path != target {
             bail!(
@@ -517,6 +751,19 @@ mod tests {
 
     fn no_exclude(_: &Path) -> bool {
         false
+    }
+
+    fn alias_context(
+        paths: impl IntoIterator<Item = (&'static str, Vec<String>)>,
+        base_url: Option<PathBuf>,
+    ) -> RawImportAliasContext {
+        RawImportAliasContext::from_paths_and_base_url(
+            &paths
+                .into_iter()
+                .map(|(pattern, targets)| (pattern.to_string(), targets))
+                .collect(),
+            base_url,
+        )
     }
 
     #[test]
@@ -733,5 +980,283 @@ mod tests {
 
         let expansion = expand_raw_imports(&source, &importer, &logical_root, &no_exclude).unwrap();
         assert_eq!(expansion.edges[0].target, logical_root.join("message.txt"));
+    }
+
+    #[test]
+    fn aliased_raw_import_expands_like_equivalent_relative_spelling() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        std::fs::create_dir_all(root.join("src/assets")).unwrap();
+        let importer = root.join("src/entry.ts");
+        let target = root.join("src/assets/icon.svg");
+        std::fs::write(&importer, "placeholder").unwrap();
+        std::fs::write(&target, "<svg>zfb</svg>").unwrap();
+        let aliases = alias_context(
+            [(
+                "@/*",
+                vec![root.join("src/*").to_string_lossy().into_owned()],
+            )],
+            None,
+        );
+        let aliased = "import text from '@/assets/icon.svg?raw';\nexport default text;\n";
+        let relative = "import text from './assets/icon.svg?raw';\nexport default text;\n";
+
+        let aliased =
+            expand_raw_imports_with_aliases(aliased, &importer, root, &aliases, &no_exclude)
+                .unwrap();
+        let relative =
+            expand_raw_imports_with_aliases(relative, &importer, root, &aliases, &no_exclude)
+                .unwrap();
+
+        assert_eq!(aliased.expanded_source, relative.expanded_source);
+        assert_eq!(aliased.generated_modules, relative.generated_modules);
+        assert_eq!(aliased.edges, relative.edges);
+        assert_eq!(aliased.edges, vec![RawImportEdge { importer, target }]);
+    }
+
+    #[test]
+    fn base_url_only_raw_import_resolves_exact_file() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        std::fs::create_dir_all(root.join("src/data")).unwrap();
+        let importer = root.join("entry.ts");
+        let target = root.join("src/data/payload.txt");
+        std::fs::write(&importer, "placeholder").unwrap();
+        std::fs::write(&target, "base-url raw").unwrap();
+        let aliases = alias_context(std::iter::empty(), Some(root.join("src")));
+        let source = "import text from 'data/payload.txt?raw';\nexport default text;\n";
+
+        let expansion =
+            expand_raw_imports_with_aliases(source, &importer, root, &aliases, &no_exclude)
+                .unwrap();
+
+        assert_eq!(expansion.generated_modules[0].target, target);
+        assert_eq!(expansion.edges[0].target, root.join("src/data/payload.txt"));
+    }
+
+    #[test]
+    fn paths_mapping_wins_over_base_url_raw_target() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        std::fs::create_dir_all(root.join("aliased/theme")).unwrap();
+        std::fs::create_dir_all(root.join("base/theme")).unwrap();
+        let importer = root.join("entry.ts");
+        let aliased = root.join("aliased/theme/palette.txt");
+        let base = root.join("base/theme/palette.txt");
+        std::fs::write(&importer, "placeholder").unwrap();
+        std::fs::write(&aliased, "paths").unwrap();
+        std::fs::write(&base, "base").unwrap();
+        let aliases = alias_context(
+            [(
+                "theme/*",
+                vec![root.join("aliased/theme/*").to_string_lossy().into_owned()],
+            )],
+            Some(root.join("base")),
+        );
+
+        let expansion = expand_raw_imports_with_aliases(
+            "import text from 'theme/palette.txt?raw';",
+            &importer,
+            root,
+            &aliases,
+            &no_exclude,
+        )
+        .unwrap();
+
+        assert_eq!(expansion.generated_modules[0].target, aliased);
+    }
+
+    #[test]
+    fn raw_alias_multi_target_uses_first_existing_exact_file() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        std::fs::create_dir_all(root.join("second/icons")).unwrap();
+        std::fs::create_dir_all(root.join("third/icons")).unwrap();
+        let importer = root.join("entry.ts");
+        let second = root.join("second/icons/logo.svg");
+        let third = root.join("third/icons/logo.svg");
+        std::fs::write(&importer, "placeholder").unwrap();
+        std::fs::write(&second, "second").unwrap();
+        std::fs::write(&third, "third").unwrap();
+        let aliases = alias_context(
+            [(
+                "@/*",
+                vec![
+                    root.join("missing/*").to_string_lossy().into_owned(),
+                    root.join("second/*").to_string_lossy().into_owned(),
+                    root.join("third/*").to_string_lossy().into_owned(),
+                ],
+            )],
+            None,
+        );
+
+        let expansion = expand_raw_imports_with_aliases(
+            "import text from '@/icons/logo.svg?raw';",
+            &importer,
+            root,
+            &aliases,
+            &no_exclude,
+        )
+        .unwrap();
+
+        assert_eq!(expansion.generated_modules[0].target, second);
+    }
+
+    #[test]
+    fn raw_alias_does_not_probe_extensions_or_index_files() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        std::fs::create_dir_all(root.join("src/payload")).unwrap();
+        let importer = root.join("entry.ts");
+        std::fs::write(&importer, "placeholder").unwrap();
+        std::fs::write(root.join("src/payload.txt"), "extension").unwrap();
+        std::fs::write(root.join("src/payload/index.txt"), "index").unwrap();
+        let aliases = alias_context(
+            [(
+                "@/*",
+                vec![root.join("src/*").to_string_lossy().into_owned()],
+            )],
+            None,
+        );
+
+        let error = expand_raw_imports_with_aliases(
+            "import text from '@/payload?raw';",
+            &importer,
+            root,
+            &aliases,
+            &no_exclude,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("does not resolve to an existing file"),
+            "{error}"
+        );
+        let expected = root.join("src/payload");
+        assert!(
+            error.contains(expected.to_string_lossy().as_ref()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn missing_raw_alias_reports_expanded_exact_path() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let importer = root.join("entry.ts");
+        std::fs::write(&importer, "placeholder").unwrap();
+        let missing = root.join("src/missing.txt");
+        let aliases = alias_context(
+            [(
+                "@/*",
+                vec![root.join("src/*").to_string_lossy().into_owned()],
+            )],
+            None,
+        );
+
+        let error = expand_raw_imports_with_aliases(
+            "import text from '@/missing.txt?raw';",
+            &importer,
+            root,
+            &aliases,
+            &no_exclude,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("does not resolve to an existing file"),
+            "{error}"
+        );
+        assert!(
+            error.contains(missing.to_string_lossy().as_ref()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn unmapped_bare_raw_specifier_mentions_tsconfig_alias_support() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let importer = root.join("entry.ts");
+        std::fs::write(&importer, "placeholder").unwrap();
+        let aliases = RawImportAliasContext::empty();
+
+        let error = expand_raw_imports_with_aliases(
+            "import text from 'pkg/payload.txt?raw';",
+            &importer,
+            root,
+            &aliases,
+            &no_exclude,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("unsupported ?raw target"), "{error}");
+        assert!(error.contains("tsconfig-alias"), "{error}");
+    }
+
+    #[test]
+    fn raw_alias_lexical_escape_is_rejected_before_read() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let importer = root.join("entry.ts");
+        let secret = outer.path().join("secret.txt");
+        std::fs::write(&importer, "placeholder").unwrap();
+        std::fs::write(&secret, "secret").unwrap();
+        let aliases = alias_context(
+            [("secret", vec![secret.to_string_lossy().into_owned()])],
+            None,
+        );
+
+        let error = expand_raw_imports_with_aliases(
+            "import text from 'secret?raw';",
+            &importer,
+            &root,
+            &aliases,
+            &no_exclude,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("escapes the logical project root"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_alias_symlink_escape_is_rejected_before_read() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let importer = root.join("entry.ts");
+        let outside_target = outside.path().join("secret.txt");
+        std::fs::write(&importer, "placeholder").unwrap();
+        std::fs::write(&outside_target, "secret").unwrap();
+        std::os::unix::fs::symlink(&outside_target, root.join("secret.txt")).unwrap();
+        let aliases = alias_context(
+            [(
+                "secret",
+                vec![root.join("secret.txt").to_string_lossy().into_owned()],
+            )],
+            None,
+        );
+
+        let error = expand_raw_imports_with_aliases(
+            "import text from 'secret?raw';",
+            &importer,
+            root,
+            &aliases,
+            &no_exclude,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("escapes the project root"), "{error}");
+        assert!(error.contains("through a symlink"), "{error}");
     }
 }
