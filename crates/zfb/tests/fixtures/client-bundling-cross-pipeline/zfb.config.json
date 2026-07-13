@@ -10,5 +10,6 @@
     "define": {
       "__CROSS_PIPELINE_DEFINE__": "\"ZFB_CONFIGURED_DEFINE_VALUE\""
     }
-  }
+  },
+  "plugins": [{ "name": "./preset.mjs" }]
 }
