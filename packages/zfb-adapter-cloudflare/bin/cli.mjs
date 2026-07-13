@@ -34,8 +34,13 @@ export { WORKER_WRAPPER_SOURCE };
 
 import { emitWorker as _emitWorker } from "../src/emit-worker.mjs";
 
-export async function emitWorker({ inputBundlePath, outdir }) {
-  return _emitWorker({ inputBundlePath, outdir, workerWrapperSource: WORKER_WRAPPER_SOURCE });
+export async function emitWorker({ inputBundlePath, outdir, assets = [] }) {
+  return _emitWorker({
+    inputBundlePath,
+    outdir,
+    assets,
+    workerWrapperSource: WORKER_WRAPPER_SOURCE,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +78,7 @@ function parseArgs(argv) {
 
   let input = null;
   let outdir = null;
+  const assets = [];
   let i = 1;
   while (i < args.length) {
     const arg = args[i];
@@ -85,6 +91,20 @@ function parseArgs(argv) {
     }
     if (arg.startsWith("--outdir=")) {
       outdir = arg.slice("--outdir=".length);
+      i += 1;
+      continue;
+    }
+    if (arg === "--asset") {
+      const next = args[i + 1];
+      if (!next) fail("--asset requires a path argument");
+      assets.push(next);
+      i += 2;
+      continue;
+    }
+    if (arg.startsWith("--asset=")) {
+      const asset = arg.slice("--asset=".length);
+      if (!asset) fail("--asset requires a path argument");
+      assets.push(asset);
       i += 1;
       continue;
     }
@@ -102,7 +122,7 @@ function parseArgs(argv) {
   if (!input) fail("missing required positional argument: <input>");
   if (!outdir) fail("missing required option: --outdir <dir>");
 
-  return { command: "bundle", input, outdir };
+  return { command: "bundle", input, outdir, assets };
 }
 
 async function main() {
@@ -140,6 +160,7 @@ async function main() {
   const out = await emitWorker({
     inputBundlePath: inputAbs,
     outdir: outdirAbs,
+    assets: parsed.assets,
   });
   process.stdout.write(
     `wrote ${out.workerPath}\nwrote ${out.innerBundlePath}\nwrote ${out.assetsIgnorePath}\n`,

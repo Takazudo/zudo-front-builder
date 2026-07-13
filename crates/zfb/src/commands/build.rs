@@ -4965,7 +4965,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         }
     }
 
-    // 3. Adapter dispatch.
+    // 3. Assemble the adapter input.
     //
     // When an adapter is configured, run a SECOND bundle pass narrowed to
     // SSR-only routes (zfb#283) and hand that smaller bundle to the
@@ -4983,7 +4983,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // is still needed by `render_all` above for SSG render. After this
     // function returns, both bundles live under `.zfb-build/` but only
     // the runtime-narrowed one reaches the adapter (and therefore `dist/`).
-    if !adapter.is_none() {
+    let adapter_input = if !adapter.is_none() {
         let mut runtime_bundler_input = bundler_input_for_runtime;
         runtime_bundler_input.worker_only_routes = Some(ssr_route_keys_for_runtime_bundle);
         runtime_bundler_input.bundle_basename = Some("bundle-runtime.mjs".to_string());
@@ -4991,29 +4991,15 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
             .bundle(runtime_bundler_input)
             .context("runtime-only bundler step (for deploy adapter) failed")?;
 
-        let adapter_in = AdapterBundleInput {
+        Some(AdapterBundleInput {
             project_root: project_root.to_path_buf(),
             input_bundle: runtime_bundler_out.bundle_path.clone(),
             outdir: outdir.to_path_buf(),
-        };
-        let adapter_out: AdapterBundleOutput =
-            run_adapter_bundle_with(&adapter, adapter_in, adapter_runner)
-                .context("adapter dispatch step failed")?;
-        if !adapter_out.stdout.trim().is_empty() {
-            output::info(format!(
-                "adapter `{}`:",
-                adapter.package_name().unwrap_or("(unknown)"),
-            ));
-            for line in adapter_out.stdout.lines() {
-                output::info(format!("  {line}"));
-            }
-        }
-        if !adapter_out.stderr.trim().is_empty() {
-            for line in adapter_out.stderr.lines() {
-                output::warn(format!("adapter stderr: {line}"));
-            }
-        }
-    }
+            emitted_wasm_assets: runtime_bundler_out.emitted_wasm_assets,
+        })
+    } else {
+        None
+    };
 
     // 4. Copy public/ into out_dir.
     //
@@ -5043,6 +5029,31 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // of `public/`, it must never end up under a base-path segment.
     copy_redirects_file(project_root, outdir, &config.public_dir)
         .context("_redirects copy step failed")?;
+
+    // 5. Adapter dispatch.
+    //
+    // Dispatch after public files land so adapters can preserve custom
+    // ignore entries and reject any public file that would overwrite a
+    // generated deploy module.
+    if let Some(adapter_in) = adapter_input {
+        let adapter_out: AdapterBundleOutput =
+            run_adapter_bundle_with(&adapter, adapter_in, adapter_runner)
+                .context("adapter dispatch step failed")?;
+        if !adapter_out.stdout.trim().is_empty() {
+            output::info(format!(
+                "adapter `{}`:",
+                adapter.package_name().unwrap_or("(unknown)"),
+            ));
+            for line in adapter_out.stdout.lines() {
+                output::info(format!("  {line}"));
+            }
+        }
+        if !adapter_out.stderr.trim().is_empty() {
+            for line in adapter_out.stderr.lines() {
+                output::warn(format!("adapter stderr: {line}"));
+            }
+        }
+    }
 
     // Build the postBuild route manifest (#262). Combines:
     // - static routes from the router scan (no params),
@@ -5779,6 +5790,8 @@ mod tests {
         /// `static_html_files_written`, so `render_all` joins these against the
         /// input `dist_dir`.
         static_html_output_paths: RefCell<Vec<PathBuf>>,
+        /// Bundle-relative Wasm assets returned from each fake bundle pass.
+        emitted_wasm_assets: RefCell<Vec<PathBuf>>,
     }
 
     impl FakeRunner {
@@ -5791,6 +5804,7 @@ mod tests {
                 prod_asset_inputs: RefCell::new(ProdAssetEmitterInputs::default()),
                 page_client_script_refs: RefCell::new(Vec::new()),
                 static_html_output_paths: RefCell::new(Vec::new()),
+                emitted_wasm_assets: RefCell::new(Vec::new()),
             }
         }
 
@@ -5816,6 +5830,11 @@ mod tests {
             *self.static_html_output_paths.borrow_mut() = paths;
             self
         }
+
+        fn with_emitted_wasm_assets(self, assets: Vec<PathBuf>) -> Self {
+            *self.emitted_wasm_assets.borrow_mut() = assets;
+            self
+        }
     }
 
     impl BuildRunner for FakeRunner {
@@ -5823,6 +5842,18 @@ mod tests {
             self.bundle_calls.borrow_mut().push(input.clone());
             std::fs::create_dir_all(self.mock_bundle_path.parent().unwrap()).ok();
             std::fs::write(&self.mock_bundle_path, "// mock\n").ok();
+            let emitted_wasm_assets = self.emitted_wasm_assets.borrow().clone();
+            for asset in &emitted_wasm_assets {
+                let asset_path = if asset.is_absolute() {
+                    asset.clone()
+                } else {
+                    self.mock_bundle_path.parent().unwrap().join(asset)
+                };
+                if let Some(parent) = asset_path.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                std::fs::write(asset_path, b"\0asm").ok();
+            }
             Ok(BundlerOutput {
                 bundle_path: self.mock_bundle_path.clone(),
                 sourcemap_path: self.mock_bundle_path.with_extension("mjs.map"),
@@ -5840,7 +5871,7 @@ mod tests {
                     }],
                 },
                 route_module_deps: Vec::new(),
-                emitted_wasm_assets: Vec::new(),
+                emitted_wasm_assets,
             })
         }
         fn eval_deferred_paths(
@@ -6016,6 +6047,28 @@ mod tests {
                 .push((package.to_string(), input.clone()));
             Ok(AdapterBundleOutput {
                 stdout: format!("fake adapter {package} ok\n"),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    /// Adapter seam used to pin ordering around the public-directory copy.
+    struct PublicCopyObservingAdapterRunner {
+        assets_ignore_before_dispatch: RefCell<Option<String>>,
+    }
+    impl PublicCopyObservingAdapterRunner {
+        fn new() -> Self {
+            Self {
+                assets_ignore_before_dispatch: RefCell::new(None),
+            }
+        }
+    }
+    impl AdapterRunner for PublicCopyObservingAdapterRunner {
+        fn run(&self, _package: &str, input: &AdapterBundleInput) -> Result<AdapterBundleOutput> {
+            *self.assets_ignore_before_dispatch.borrow_mut() =
+                std::fs::read_to_string(input.outdir.join(".assetsignore")).ok();
+            Ok(AdapterBundleOutput {
+                stdout: String::new(),
                 stderr: String::new(),
             })
         }
@@ -6708,7 +6761,8 @@ mod tests {
                 static_html: false,
             },
         ];
-        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_emitted_wasm_assets(vec![PathBuf::from("answer-1234abcd.wasm")]);
         let cfg = Config {
             adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
             ..Config::default()
@@ -6740,6 +6794,79 @@ mod tests {
             project_root.join(".zfb-build/bundle.mjs")
         );
         assert_eq!(calls[0].1.outdir, outdir);
+        assert_eq!(
+            calls[0].1.emitted_wasm_assets,
+            vec![PathBuf::from("answer-1234abcd.wasm")],
+            "the runtime bundle's bundle-relative Wasm assets must reach the adapter"
+        );
+    }
+
+    #[test]
+    fn run_build_dispatches_adapter_after_public_assetsignore_copy() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages/api")).unwrap();
+        std::fs::create_dir_all(project_root.join("public")).unwrap();
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "export default function() { return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project_root.join("pages/api/foo.tsx"),
+            "export const frontmatter = { title: \"Foo\" };\nexport const prerender = false;\nexport default function() { return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project_root.join("public/.assetsignore"),
+            "custom-public-entry\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            static_route(vec![], "pages/index.tsx"),
+            Route {
+                source_path: PathBuf::from("pages/api/foo.tsx"),
+                segments: vec![Segment::Static("api".into()), Segment::Static("foo".into())],
+                kind: RouteKind::Static,
+                specificity: 0,
+                output_extension: None,
+                static_html: false,
+            },
+        ];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
+        let adapter_runner = PublicCopyObservingAdapterRunner::new();
+
+        run_build(BuildArgsResolved {
+            project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &adapter_runner,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: false,
+        })
+        .unwrap();
+
+        assert_eq!(
+            adapter_runner
+                .assets_ignore_before_dispatch
+                .borrow()
+                .as_deref(),
+            Some("custom-public-entry\n"),
+            "adapter dispatch must see the public copy and merge its entries"
+        );
     }
 
     #[test]
