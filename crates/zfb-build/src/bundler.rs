@@ -1035,7 +1035,16 @@ fn usable_shadow_parent_candidate(
             ));
             Ok(None)
         }
-        Ok(false) => Ok(Some(candidate.to_path_buf())),
+        Ok(false) => {
+            let canonical = fs::canonicalize(candidate).with_context(|| {
+                format!(
+                    "{label} {} was proven outside project root {} but could not be canonicalized",
+                    candidate.display(),
+                    project_root.display()
+                )
+            })?;
+            Ok(Some(canonical))
+        }
         Err(error) => {
             rejected.push(format!(
                 "{label} {} could not be proven outside project root {}: {error}",
@@ -7718,7 +7727,7 @@ mod tests {
             shadow_parent_dir_with_env(&project, &shadow_env(temp_dir.clone(), None, None, None))
                 .unwrap();
 
-        assert_eq!(parent, temp_dir);
+        assert_eq!(parent, fs::canonicalize(temp_dir).unwrap());
     }
 
     #[test]
@@ -7735,7 +7744,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(parent, xdg.join("zfb"));
+        assert_eq!(parent, fs::canonicalize(xdg.join("zfb")).unwrap());
         assert!(parent.is_dir(), "selected cache parent must be created");
     }
 
@@ -7754,7 +7763,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(parent, home.join(".cache").join("zfb"));
+        assert_eq!(
+            parent,
+            fs::canonicalize(home.join(".cache").join("zfb")).unwrap()
+        );
         assert!(
             parent.is_dir(),
             "selected HOME cache parent must be created"
@@ -7776,7 +7788,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(parent, local_app_data.join("zfb"));
+        assert_eq!(
+            parent,
+            fs::canonicalize(local_app_data.join("zfb")).unwrap()
+        );
         assert!(
             parent.is_dir(),
             "selected LOCALAPPDATA cache parent must be created"
