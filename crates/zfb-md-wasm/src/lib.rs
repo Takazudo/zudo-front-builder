@@ -57,12 +57,13 @@
 //!
 //! ## Error / trap contract (correctness-critical — see README.md)
 //!
-//! Expected failures (parse errors, malformed options) come back as
+//! Expected failures (parse errors, malformed options, dependency-enforced
+//! input limits such as serde_yaml's recursion cap) come back as
 //! structured diagnostics — these functions do not intentionally panic
-//! on any input. A *bug*-level panic on `wasm32-unknown-unknown` traps
-//! and poisons the instance; the host wrapper must re-instantiate (the
-//! API is stateless per call, so re-init loses nothing). Full contract
-//! in this crate's README.
+//! on supported error paths. A *bug*-level panic on
+//! `wasm32-unknown-unknown` traps and poisons the instance; the host
+//! wrapper must re-instantiate (the API is stateless per call, so re-init
+//! loses nothing). Full contract in this crate's README.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
