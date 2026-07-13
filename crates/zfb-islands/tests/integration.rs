@@ -829,6 +829,89 @@ fn islands_shadow_raw_import_bundles_text() {
 #[test]
 #[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
             cargo test -p zfb-islands --test integration \
+            islands_shadow_alias_raw_import_bundles_text -- --ignored"]
+fn islands_shadow_alias_raw_import_bundles_text() {
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("components")).unwrap();
+    std::fs::create_dir_all(root.join("src/raw")).unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{
+          "compilerOptions": {
+            "baseUrl": ".",
+            "paths": { "@/*": ["src/*"] }
+          }
+        }"#,
+    )
+    .unwrap();
+
+    let importer = root.join("components/shader.tsx");
+    let raw_target = root.join("src/raw/demo.txt");
+    std::fs::write(
+        &importer,
+        "\"use client\";\nimport shader from '@/raw/demo.txt?raw';\n\
+         export function Shader() { return shader; }\n",
+    )
+    .unwrap();
+    std::fs::write(&raw_target, "ZFB_ALIAS_RAW_ISLAND_MARKER\nline-two\n").unwrap();
+
+    let resolver = FsResolver::new().with_project_root(root);
+    let (_islands, scan_meta) =
+        zfb_islands::scan_islands_with_meta(std::slice::from_ref(&importer), &resolver).unwrap();
+    assert_eq!(scan_meta.raw_import_edges_from_islands.len(), 1);
+    assert_eq!(
+        scan_meta.raw_import_edges_from_islands[0].importer,
+        importer.clone()
+    );
+    assert_eq!(
+        scan_meta.raw_import_edges_from_islands[0].target,
+        raw_target
+    );
+
+    let expansion = zfb_build::raw_import_expand::expand_raw_imports(
+        &std::fs::read_to_string(&importer).unwrap(),
+        &importer,
+        root,
+        &|_| false,
+    )
+    .unwrap();
+    let shadow = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(shadow.path().join("components")).unwrap();
+    shadow_link(
+        &root.join("node_modules"),
+        &shadow.path().join("node_modules"),
+    );
+    let shadow_importer = shadow.path().join("components/shader.tsx");
+    std::fs::write(&shadow_importer, expansion.expanded_source).unwrap();
+    for module in expansion.generated_modules {
+        std::fs::write(
+            shadow.path().join("components").join(module.filename),
+            module.source,
+        )
+        .unwrap();
+    }
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(root.to_path_buf()),
+    );
+    let config = BundleConfig::production()
+        .with_outdir(root.join("dist"))
+        .with_minify(false)
+        .with_preserve_symlinks(true);
+    let output = bundler
+        .bundle(&[Island::new("Shader", shadow_importer)], &config)
+        .expect("aliased raw island bundle");
+    let js = String::from_utf8(output.bytes).unwrap();
+    assert!(!js.contains("?raw"), "{js}");
+    assert!(js.contains("ZFB_ALIAS_RAW_ISLAND_MARKER"), "{js}");
+    assert!(js.contains("line-two"), "{js}");
+}
+
+#[test]
+#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb-islands --test integration \
             client_script_raw_import_bundles_text -- --ignored"]
 fn client_script_raw_import_bundles_text() {
     use zfb_islands::{build_production_client_scripts, ClientScriptEntry};

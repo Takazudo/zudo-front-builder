@@ -2369,7 +2369,7 @@ fn materialise_islands_shadow_with_worker_context(
     //     glob module's own directory subtree.
     if !matched_glob_targets.is_empty() {
         let target_roots: Vec<PathBuf> = matched_glob_targets.iter().cloned().collect();
-        let resolver = FsResolver::new();
+        let resolver = FsResolver::new().with_project_root(root);
         match scan_reachable_modules_with_meta(&target_roots, &resolver) {
             Ok(meta) => {
                 for m in meta.modules {
@@ -2873,7 +2873,9 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // its package-chrome closure), the same single hop a real `pages/`
     // entry gets. Entrypoints outside `node_modules` are ignored by the
     // resolver, so this is a no-op on the conventional-pages path.
-    let resolver = FsResolver::new().with_injected_route_roots(package_route_entrypoints);
+    let resolver = FsResolver::new()
+        .with_project_root(project_root)
+        .with_injected_route_roots(package_route_entrypoints);
     let (islands_set, scan_meta) = match scan_islands_with_meta(&entries, &resolver) {
         Ok(result) => result,
         Err(
@@ -3421,7 +3423,7 @@ fn stage_client_script_preprocessing_with_worker_context(
         .iter()
         .map(|entry| entry.source_path.clone())
         .collect();
-    let resolver = FsResolver::new();
+    let resolver = FsResolver::new().with_project_root(project_root);
     let graph = scan_reachable_modules_with_meta(&roots, &resolver)
         .context("scan client-script graph for ?raw and module-worker preprocessing")?;
     let mut plugin_preprocessing = discover_plugin_preprocessing(
@@ -9536,6 +9538,117 @@ mod tests {
         assert_eq!(
             shadow.raw_targets,
             std::collections::BTreeSet::from([raw_target.clone()])
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_tracks_aliased_raw_import_for_dev_invalidation() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::create_dir_all(project_root.join("components")).unwrap();
+        std::fs::create_dir_all(project_root.join("src/content")).unwrap();
+        std::fs::write(
+            project_root.join("tsconfig.json"),
+            r#"{
+              "compilerOptions": {
+                "baseUrl": ".",
+                "paths": { "@/*": ["src/*"] }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let page = project_root.join("pages/index.tsx");
+        let island_src = project_root.join("components/Shader.tsx");
+        let raw_target = project_root.join("src/content/shader.txt");
+        std::fs::write(
+            &page,
+            "import { Shader } from '../components/Shader';\nexport default Shader;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &island_src,
+            "\"use client\";\nimport source from '@/content/shader.txt?raw';\n\
+             export function Shader() { return source; }\n",
+        )
+        .unwrap();
+        std::fs::write(&raw_target, "aliased shader payload\n").unwrap();
+
+        let resolver = FsResolver::new().with_project_root(project_root);
+        let (islands, scan_meta) = scan_islands_with_meta(&[page], &resolver).unwrap();
+        assert_eq!(scan_meta.raw_import_edges_from_islands.len(), 1);
+        assert_eq!(
+            scan_meta.raw_import_edges_from_islands[0].importer,
+            island_src.canonicalize().unwrap()
+        );
+        assert_eq!(
+            scan_meta.raw_import_edges_from_islands[0].target,
+            raw_target
+        );
+
+        let shadow = match materialise_islands_shadow(project_root, &islands, &scan_meta).unwrap() {
+            IslandsShadowOutcome::Ready(shadow) => shadow,
+            IslandsShadowOutcome::KeepStopgap(offenders) => {
+                panic!("aliased terminal raw target must materialise: {offenders:?}")
+            }
+        };
+        assert_eq!(
+            shadow.raw_targets,
+            std::collections::BTreeSet::from([raw_target.clone()])
+        );
+
+        let invalidation = zfb_build::RawImportInvalidation::default();
+        invalidation.replace_islands(shadow.raw_targets.clone());
+        assert!(
+            invalidation.is_islands_target(&raw_target),
+            "aliased raw target must remain in dev invalidation inputs"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_rejects_node_modules_raw_importer_from_package_route() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        let package = root.join("node_modules/@scope/preset/dist");
+        let routes = package.join("routes");
+        std::fs::create_dir_all(&routes).unwrap();
+        let route = routes.join("_chrome.tsx");
+        let island = package.join("PresetIsland.tsx");
+        let raw_target = package.join("payload.txt");
+        std::fs::write(
+            &route,
+            "import { PresetIsland } from '../PresetIsland';\nexport default PresetIsland;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &island,
+            "\"use client\";\nimport payload from './payload.txt?raw';\n\
+             export function PresetIsland() { return payload; }\n",
+        )
+        .unwrap();
+        std::fs::write(&raw_target, "package raw payload\n").unwrap();
+
+        let resolver = FsResolver::new()
+            .with_project_root(root)
+            .with_injected_route_roots([&route]);
+        let (islands, scan_meta) =
+            scan_islands_with_meta(std::slice::from_ref(&route), &resolver).unwrap();
+        assert_eq!(scan_meta.raw_import_edges_from_islands.len(), 1);
+        assert_eq!(
+            scan_meta.raw_import_edges_from_islands[0].target,
+            raw_target.canonicalize().unwrap()
+        );
+
+        let outcome = materialise_islands_shadow(root, &islands, &scan_meta).unwrap();
+        let IslandsShadowOutcome::KeepStopgap(offenders) = outcome else {
+            panic!("node_modules raw importers must stay outside materialisation scope")
+        };
+        let message = offenders.join("\n");
+        assert!(message.contains("node_modules"), "{message}");
+        assert!(
+            message.contains("outside the mirrorable project tree"),
+            "{message}"
         );
     }
 

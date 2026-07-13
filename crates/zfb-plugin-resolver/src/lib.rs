@@ -51,6 +51,13 @@ use anyhow::{bail, Context, Result};
 use tempfile::NamedTempFile;
 use zfb_types::path_to_posix_string;
 
+mod raw_alias;
+
+pub use raw_alias::{
+    is_relative_specifier, resolve_raw_target, resolve_raw_target_with_aliases,
+    validate_raw_candidate, RawImportAliasContext,
+};
+
 fn normalize_lexical_path(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
