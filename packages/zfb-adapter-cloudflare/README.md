@@ -2,10 +2,10 @@
 
 > Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary.
 
-The Cloudflare adapter for [zfb][zfb-site], targeting **Workers Static
-Assets** (also deployable to Cloudflare Pages advanced mode). It wraps the
-`@takazudo/zfb-runtime` page router into a Worker entry (`_worker.js`),
-threading `(env, ctx)` through to user code via `AsyncLocalStorage`.
+The Cloudflare adapter for [zfb][zfb-site], verified on **Workers Static
+Assets**. It wraps the `@takazudo/zfb-runtime` page router into a Worker entry
+(`_worker.js`), threading `(env, ctx)` through to user code via
+`AsyncLocalStorage`. Cloudflare Pages advanced mode is unverified.
 
 This package is the Cloudflare half of the SSR adapter contract. Other
 targets (Node, Netlify, …) will land as sibling `@takazudo/zfb-adapter-*`
@@ -69,9 +69,9 @@ lifecycle (`wrangler d1 create`, migrations, preview-vs-prod).
 1. Render every SSG page (`prerender !== false`) into static HTML under
    `dist/`.
 2. Hand the SSR bundle to this adapter, which writes `dist/_worker.js`
-   (the wrapper), `dist/_zfb_inner.mjs` (the bundle), and
-   `dist/.assetsignore` (see below) — ready to deploy as a Worker with
-   Static Assets, or via Cloudflare Pages advanced mode.
+   (the wrapper), `dist/_zfb_inner.mjs` (the bundle), copied
+   `x-<hash>.wasm` modules, and `dist/.assetsignore` (see below) — ready
+   for Workers Static Assets.
 
 ## `wrangler.toml`
 
@@ -134,34 +134,47 @@ wrangler deploy  # ship it
 ## `.assetsignore`
 
 The adapter emits `dist/.assetsignore` alongside `_worker.js` and
-`_zfb_inner.mjs`:
+`_zfb_inner.mjs`. When zfb passes one or more `--asset` Wasm modules, it
+also adds every copied basename:
 
 ```
 _worker.js
 _zfb_inner.mjs
+index_bg-a1b2c3d4.wasm
 ```
 
-This excludes the wrapper and the inner SSR bundle from the asset
-upload, so they are reachable only through the Worker's own module
+This excludes the wrapper, inner SSR bundle, and compiled Wasm modules from
+the asset upload, so they are reachable only through the Worker's own module
 graph — never served as public static files. Without it, a request for
 `/_worker.js` or `/_zfb_inner.mjs` would serve your server code as a
 plain-text download.
 
-**Precedence:** zfb copies your project's `public/` directory into
-`dist/` _after_ running this adapter. If your `public/` directory
-contains its own `.assetsignore`, it overrides the one this adapter
-emits — the adapter's excludes are silently dropped. Only add a
-`public/.assetsignore` if you have additional paths to exclude and
-include the two lines above yourself.
+**Merge behavior:** zfb copies your project's `public/` directory into
+`dist/` _after_ running this adapter. If `public/.assetsignore` adds entries,
+zfb merges them with the generated entries; it does not drop the wrapper,
+inner-bundle, or Wasm exclusions.
 
-## Cloudflare Pages compatibility
+## CLI asset contract
 
-The same `dist/` output is still deployable to Cloudflare Pages
-advanced mode (a `_worker.js` at the root of the Pages output directory
-is Pages' equivalent convention). The `_worker.js` wrapper dispatches
-requests identically on both platforms; the only platform-visible
-difference is that trailing-slash asset redirects come back as `307`
-on Workers Static Assets versus `308` on Pages.
+zfb calls the package CLI with the SSR bundle plus one repeatable `--asset`
+path for every bundle-relative Wasm module:
+
+```sh
+zfb-adapter-cloudflare bundle ./bundle.mjs --outdir ./dist \
+  --asset index_bg-a1b2c3d4.wasm
+```
+
+Each asset path must be relative to the input bundle directory. The CLI copies
+it into `outdir` under its basename and records that basename in
+`.assetsignore`; paths that escape the input directory or collide with emitted
+output fail the build.
+
+## Cloudflare Pages advanced mode
+
+The root-level `_worker.js` follows the Cloudflare Pages advanced-mode
+convention, but this adapter is only verified on Workers Static Assets.
+Cloudflare Pages advanced mode remains unverified and should not be treated as
+a supported deployment target until it has a dedicated smoke test.
 
 ## Why two bundle files instead of one
 

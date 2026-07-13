@@ -97,15 +97,15 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
 
 - すべての SSG ページの静的 HTML、
 - `_worker.js` + `_zfb_inner.mjs` — `prerender = false` のルートを配信する Worker エントリ（薄いラッパーと、バンドルされた SSR ルート）、そして
-- `.assetsignore` — `_worker.js` と `_zfb_inner.mjs` を列挙し、アセットサーバーがサーバーコードを公開ファイルとして配信しないようにします（これがないと `/_worker.js` へのリクエストがそれをプレーンテキストとしてダウンロードさせてしまいます）。
+- SSR バンドルがインポートする Wasm モジュールごとの `x-<hash>.wasm` ファイルと `.assetsignore`。この ignore ファイルは `_worker.js`、`_zfb_inner.mjs`、生成された Wasm の basename をすべて列挙し、アセットサーバーがサーバーコードやコンパイル済みモジュールを公開ファイルとして配信しないようにします（これがないと `/_worker.js` へのリクエストがそれをプレーンテキストとしてダウンロードさせてしまいます）。
 
 この `dist/` は **Static Assets を備えた Cloudflare Worker** として `wrangler deploy` でデプロイします。デプロイはプロジェクトルートの `wrangler.toml` が駆動し、`main` を `dist/_worker.js` に向け、`dist/` の残りを組み込みのアセットサーバーに委ねます。Worker が動的ルートを処理し、アセットサーバーがそれ以外のすべてを処理します。
 
-<Note title="Cloudflare Pages にも引き続きデプロイ可能">
+<Warning title="Cloudflare Pages のアドバンストモードは未検証">
 
-同じ `dist/` 出力は **Cloudflare Pages のアドバンストモード**にも引き続きデプロイできます。ルート直下の `_worker.js` は Pages における同等の慣習であり、ラッパーは両プラットフォームで同一のディスパッチをします。Workers Static Assets が主たる推奨ターゲットであり、Pages のアドバンストモードは既存の Pages プロジェクトのためにサポートが継続されます。（プラットフォームで見える唯一の違いは末尾スラッシュのアセットリダイレクトで、Workers Static Assets では `307`、Pages では `308` になります。）
+このアダプターは **Workers Static Assets** 上で検証されています。生成されるルート直下の `_worker.js` は Pages のアドバンストモードの慣習に従いますが、このアダプターについて Cloudflare Pages のアドバンストモードは検証されていません。専用のスモークテストが追加されるまで、サポートされたデプロイターゲットとして扱わないでください。
 
-</Note>
+</Warning>
 
 ### `wrangler.toml`
 
@@ -147,6 +147,85 @@ compatibility_flags = ["nodejs_compat"]
 このフラグがないと、Worker は `node:async_hooks` を欠落モジュールとして示すエラーとともに起動に失敗します。より深い仕組みについては [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx#getcloudflarecontext-のトリック) を参照してください。
 
 </Warning>
+
+## SSR ルートで Wasm をインポートする
+
+SSR ルート（またはそこからインポートするヘルパー）は `.wasm` ファイルをデフォルトインポートできます。zfb はモジュールを SSR バンドル経由でコピーし、Worker にはコンパイル済み Wasm モジュールとして公開します。実用的なユースケースは、[`satori`](https://github.com/vercel/satori) と [`@resvg/resvg-wasm`](https://www.npmjs.com/package/@resvg/resvg-wasm) による OG 画像生成です。以下の例では、`loadOgFonts()` が Satori のフォント設定を返すアプリ側のヘルパーであると仮定します:
+
+```tsx
+// pages/api/og.tsx
+import satori from "satori";
+import { initWasm, Resvg } from "@resvg/resvg-wasm";
+import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
+
+export const prerender = false;
+
+let resvgReady: Promise<void> | undefined;
+
+function ensureResvgWasm(): Promise<void> {
+  return (resvgReady ??= initWasm(resvgWasm));
+}
+
+export default async function OgImage() {
+  await ensureResvgWasm();
+  const ogFonts = await loadOgFonts();
+  const svg = await satori(
+    <div style={{ color: "white", background: "black", padding: 48 }}>zfb</div>,
+    {
+      width: 1200,
+      height: 630,
+      fonts: ogFonts,
+    },
+  );
+  const png = new Resvg(svg).render().asPng();
+  return new Response(png, { headers: { "content-type": "image/png" } });
+}
+```
+
+SDK はデフォルトインポートを `WebAssembly.Module` として宣言します。これはインスタンス化済みモジュールでも型なしの URL 文字列でもありません。スターターのページファイルはすでに `@takazudo/zfb` をインポートしているため、そのアンビエント宣言は TypeScript プログラムの一部になります。プロジェクトが Wasm 専用ヘルパーをそのインポートグラフの外に置く場合は、モジュール宣言を複製するのではなく、include される宣言専用のブリッジを追加してください:
+
+```ts
+// src/zfb-wasm.d.ts
+import "@takazudo/zfb";
+```
+
+たとえば、`tsconfig.json` が `src/` 全体をすでに含めていない場合は、このファイルが `include` リストの対象になるようにしてください。
+
+### 生成される Wasm レイアウト
+
+アダプターは bundle-relative な Wasm アセットを Worker エントリの隣へコピーし、`.assetsignore` に記録します。Resvg をインポートするビルドは次のようになります:
+
+```text
+dist/
+  _worker.js
+  _zfb_inner.mjs
+  index_bg-a1b2c3d4.wasm
+  .assetsignore
+```
+
+```text
+_worker.js
+_zfb_inner.mjs
+index_bg-a1b2c3d4.wasm
+```
+
+最後のブロックは `dist/.assetsignore` の該当部分です。Wasm ファイルは Worker モジュールであり、公開静的アセットではありません。アダプターは既存の ignore ファイルを上書きせず、これらの必須エントリをマージします。
+
+### Wrangler のルールとサイズ制限
+
+zfb は Wrangler を **正確に `4.85.0`** に固定します。プロジェクトの lockfile にあるバージョン（たとえば `pnpm exec wrangler` 経由）を使い、`4.85.0` を最小バージョンの目安として扱わないでください。
+
+標準の経路にはカスタムの `[[rules]]` ブロックは不要です。Wrangler のデフォルトモジュールルールは、`main` をバンドルする間にインポートした `.wasm` ファイルを `CompiledWasm` として分類します。カスタムルールはデフォルトをグローバルに置き換えません。重要な例外は、同じ型で fallthrough しない `CompiledWasm` ルールです。そのルールはデフォルトの Wasm ルールを抑制するため、マッチング動作が意図的なときだけ追加してください。
+
+コンパイル済み Wasm は圧縮後の Worker パッケージ制限に含まれます。**Workers Free は 3 MiB、Workers Paid は 10 MiB** です。gzip サイズは `wrangler deploy --dry-run` で確認してください。画像レンダラーなどの Wasm 依存がそのパッケージを超える場合は、zfb Worker をこれ以上大きくするのではなく、別の Worker に移し、service binding を通して呼び出します:
+
+```toml
+[[services]]
+binding = "OG_IMAGE"
+service = "og-image"
+```
+
+その後 SSR ハンドラーは `env.OG_IMAGE.fetch(...)` を呼び出せます。重い Wasm モジュールは専用 Worker に置かれます。
 
 ## SSR ハンドラから Worker の `env` を読む
 

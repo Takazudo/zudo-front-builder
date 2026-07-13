@@ -4,13 +4,14 @@
 //
 // Subcommands:
 //
-//   bundle <input> --outdir <dir>
+//   bundle <input> --outdir <dir> [--asset <path>]...
 //
 //     Wrap the input ESM bundle into a Cloudflare Workers Static Assets
-//     (Pages-compatible) `_worker.js` placed under <dir>, alongside a
-//     `.assetsignore` that excludes the wrapper and inner bundle from
-//     the asset upload. The input bundle is the file `zfb_build`'s
-//     bundler emits; <dir> is typically the project's `dist/`.
+//     `_worker.js` placed under <dir>, alongside a `.assetsignore` that
+//     excludes the wrapper, inner bundle, and every copied --asset basename
+//     from the asset upload. The input bundle is the file `zfb_build`'s
+//     bundler emits; <dir> is typically the project's `dist/`. Cloudflare
+//     Pages advanced mode is unverified.
 //
 // The CLI is intentionally tiny and dependency-free. It imports the
 // wrapper string from the canonical `src/worker-wrapper.mjs` (plain JS,
@@ -54,14 +55,15 @@ function fail(message) {
 
 function printUsage() {
   process.stdout.write(`Usage:
-  zfb-adapter-cloudflare bundle <input> --outdir <dir>
+  zfb-adapter-cloudflare bundle <input> --outdir <dir> [--asset <path>]...
 
 Wrap an ESM bundle (the output of zfb-build's bundler) into a
 Cloudflare Workers Static Assets \`_worker.js\` placed under <dir>
-(also deployable to Cloudflare Pages advanced mode).
+with a protected \`.assetsignore\`. Cloudflare Pages advanced mode is unverified.
 
 Options:
   --outdir <dir>    Output directory. Required.
+  --asset <path>    Bundle-relative Wasm asset to copy. Repeatable.
   -h, --help        Show this help.
 `);
 }

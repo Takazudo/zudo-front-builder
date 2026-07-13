@@ -18,6 +18,10 @@ read [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx).
 This page is also specifically about zfb's emitted `dist/_worker.js`, not
 external Workers you deploy separately with wrangler.
 
+This model is verified on **Workers Static Assets**. Cloudflare Pages advanced
+mode has not been verified for this adapter, so its comparisons below are not a
+deployment-support claim.
+
 </Info>
 
 ## Your page is just a function
@@ -70,13 +74,14 @@ the build emits to make it possible.
 ## What the build actually emits
 
 Running `zfb build` with `@takazudo/zfb-adapter-cloudflare` configured produces
-two files under `dist/`:
+two generated JavaScript files under `dist/`, plus a compiled Wasm module for
+each `.wasm` import in the SSR graph:
 
 **`dist/_worker.js`** — a small auto-generated stub written by the adapter. This
 is the Worker entry referenced by your wrangler config's `main` field under
-Workers Static Assets — and it stays a valid Cloudflare Pages advanced-mode
-entry too, so the same emitted file deploys unchanged to either target
-(dual-compat). Its job is to set up an `AsyncLocalStorage` scope for
+Workers Static Assets. Its root-level shape follows the Cloudflare Pages
+advanced-mode convention, but that target is unverified. Its job is to set up
+an `AsyncLocalStorage` scope for
 `(env, ctx, request)` and then, for the requests it actually receives, dispatch
 each one — either to the static asset server via `env.ASSETS` or to the inner
 bundle. It does not contain your application code.
@@ -84,6 +89,14 @@ bundle. It does not contain your application code.
 **`dist/_zfb_inner.mjs`** — the real application bundle: every `pages/*.tsx` file,
 layouts, components, and lib helpers compiled into a single Hono-shaped ESM module.
 This is what actually renders your pages.
+
+### Compiled Wasm modules
+
+When an SSR route imports Wasm, zfb emits an `x-<hash>.wasm` file beside these
+two JavaScript files. `_zfb_inner.mjs` imports it as a compiled
+`WebAssembly.Module`, while `.assetsignore` prevents it from becoming a public
+asset. The [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#importing-wasm-in-an-ssr-route)
+has the Satori/Resvg setup, Wrangler rule, and package-size details.
 
 The two-file layout avoids a second esbuild pass inside the adapter. Workerd's
 module loader resolves relative ESM imports from the deployed worker directory,
