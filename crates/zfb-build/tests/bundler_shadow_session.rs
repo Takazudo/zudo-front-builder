@@ -140,7 +140,7 @@ fn shadow_session_bundle_bytes_match_fresh_bundle() {
     let root = tmp.path();
     write_fixture(root);
 
-    let mut session = ShadowSession::new().unwrap();
+    let mut session = ShadowSession::new(tmp.path()).unwrap();
 
     let mut assert_equal_bytes = |step: &str| {
         let session_out = bundle_with_session(
@@ -223,7 +223,7 @@ fn shadow_session_prunes_deleted_sources() {
     let root = tmp.path();
     write_fixture(root);
 
-    let mut session = ShadowSession::new().unwrap();
+    let mut session = ShadowSession::new(tmp.path()).unwrap();
     let input = BundlerInput {
         mock_subprocess_output: Some("export default {};".to_string()),
         ..make_input(root, None, "dist-session")
@@ -296,7 +296,7 @@ fn shadow_session_dirty_resets_after_error() {
         ..make_input(root, Some(&esbuild), outdir)
     };
 
-    let mut session = ShadowSession::new().unwrap();
+    let mut session = ShadowSession::new(tmp.path()).unwrap();
 
     // Induce a bundle error AFTER the materialise walks populated the
     // shadow (the broken-links gate runs post-walk), so the session is
@@ -364,7 +364,7 @@ fn shadow_session_survives_path_type_flips() {
     // Extensionless page-tree file that will flip into a directory later.
     fs::write(root.join("pages/sub"), "placeholder, not a module\n").unwrap();
 
-    let mut session = ShadowSession::new().unwrap();
+    let mut session = ShadowSession::new(tmp.path()).unwrap();
 
     let mut assert_equal_bytes = |step: &str| {
         let session_out = bundle_with_session(
@@ -454,7 +454,7 @@ fn shadow_session_path_type_flips_update_shadow_tree() {
         mock_subprocess_output: Some("export default {};".to_string()),
         ..make_input(root, None, "dist-session")
     };
-    let mut session = ShadowSession::new().unwrap();
+    let mut session = ShadowSession::new(tmp.path()).unwrap();
     bundle_with_session(mock_input(), Some(&mut session)).unwrap();
 
     let shadow = session.shadow_root().to_path_buf();
@@ -551,7 +551,7 @@ fn shadow_session_replays_diagnostics_on_unchanged_tick() {
         ..make_input(root, None, "dist-session")
     };
 
-    let mut session = ShadowSession::new().unwrap();
+    let mut session = ShadowSession::new(tmp.path()).unwrap();
 
     let err1 = bundle_with_session(broken_links_input(), Some(&mut session))
         .expect_err("first call must surface the broken link");
