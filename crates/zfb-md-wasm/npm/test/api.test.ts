@@ -142,9 +142,10 @@ describe("expected failures surface as structured diagnostics (never a throw)", 
 });
 
 describe("version()", () => {
-  it("returns the crate version string", async () => {
+  it("returns a package semver string", async () => {
     await init();
-    expect(await version()).toBeTypeOf("string");
+    const semverPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+    expect(await version()).toMatch(semverPattern);
   });
 });
 

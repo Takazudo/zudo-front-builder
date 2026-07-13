@@ -462,6 +462,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Resolve version
+        shell: bash
+        run: |
+          # Derive semver from packages/zfb/package.json (no leading "v").
+          # For real tag pushes this matches the tag; for dry-run workflow_dispatch
+          # on a branch it is the current dev version string.
+          ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
+          echo "ZFB_SEMVER=$ZFB_SEMVER" >> "$GITHUB_ENV"
+          echo "Resolved semver: $ZFB_SEMVER"
+
       # Must exactly match the wasm-bindgen crate version resolved in
       # Cargo.lock (pinned in crates/zfb-md-wasm/npm/scripts/build.mjs's
       # EXPECTED_WASM_BINDGEN_VERSION constant) — same pin as health.yml's
@@ -470,7 +480,28 @@ jobs:
         run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
 
       - name: Build @takazudo/zfb-md-wasm npm package
+        env:
+          ZFB_RELEASE_VERSION: ${{ env.ZFB_SEMVER }}
         run: pnpm --filter @takazudo/zfb-md-wasm build
+
+      - name: Assert @takazudo/zfb-md-wasm version stamp
+        shell: bash
+        run: |
+          node --input-type=module <<'EOF'
+          import { init, version } from "./crates/zfb-md-wasm/npm/dist/index.js";
+
+          await init();
+          const actual = await version();
+          const expected = process.env.ZFB_SEMVER;
+          console.log(`Expected: ${expected}`);
+          console.log(`Actual:   ${actual}`);
+          if (actual !== expected) {
+            console.error(
+              `::error::@takazudo/zfb-md-wasm version() mismatch: got '${actual}', want '${expected}'`,
+            );
+            process.exit(1);
+          }
+          EOF
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

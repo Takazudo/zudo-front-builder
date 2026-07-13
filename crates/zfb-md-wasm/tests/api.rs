@@ -16,7 +16,7 @@
 //!   contract for malformed MDX, malformed options JSON, unknown syntect
 //!   theme names, YAML frontmatter errors, and non-markdown filenames;
 //!   frontmatter-line-offset arithmetic on parse positions; the
-//!   `jsxRuntime` switch; `version()`.
+//!   `jsxRuntime` switch; `version()`'s dev-build manifest fallback.
 //! - **Blind spots** (explicitly NOT covered here): executing the
 //!   compiled wasm artifact (Node/browser instantiation is the npm
 //!   package's scope, zfb#1577); panic-freedom under adversarial fuzzed
@@ -298,6 +298,9 @@ fn non_markdown_filename_is_an_options_diagnostic() {
 // ── version ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn version_reports_cargo_pkg_version() {
+fn version_falls_back_to_cargo_pkg_version_in_dev_builds() {
+    // Release builds stamp the package semver with ZFB_RELEASE_VERSION at
+    // compile time. Native crate tests intentionally run with that env unset,
+    // so they verify the manifest fallback without spawning a heavy rebuild.
     assert_eq!(zfb_md_wasm::version(), env!("CARGO_PKG_VERSION"));
 }
