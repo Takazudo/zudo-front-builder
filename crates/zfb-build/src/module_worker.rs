@@ -1495,7 +1495,7 @@ fn stable_virtual_module_source(source: &str, project_root: &Path) -> String {
         return source.to_string();
     }
 
-    replacements.sort_by(|left, right| right.0.cmp(&left.0));
+    replacements.sort_by_key(|replacement| std::cmp::Reverse(replacement.0));
     let mut stable = source.to_string();
     for (lo, hi, replacement) in replacements {
         stable.replace_range(lo..hi, &replacement);
