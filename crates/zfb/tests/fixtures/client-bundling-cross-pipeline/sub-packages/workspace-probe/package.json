@@ -1,0 +1,5 @@
+{
+  "name": "@zfb-test/workspace-probe",
+  "private": true,
+  "type": "module"
+}

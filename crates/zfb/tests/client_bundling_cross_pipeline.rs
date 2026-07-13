@@ -26,10 +26,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 const BOOT_DEADLINE: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SSE_DEADLINE: Duration = Duration::from_secs(30);
+const CLIENT_RELATIVE_RAW_PATH: &str = "components/cross-pipeline-client/demo.frag";
+const CLIENT_ALIAS_RAW_PATH: &str = "components/cross-pipeline-client/alias.frag";
+const SUB_PACKAGES_DIR: &str = "sub-packages";
+const UPDATED_ALIAS_RAW_TEXT: &str = "\
+ZFB_CLIENT_ALIAS_RAW_PAYLOAD_V2
+alias raw payload refreshed through tsconfig paths
+";
+
+static SERIAL: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -58,6 +69,54 @@ fn copy_fixture(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 fn read_text(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
+
+fn raw_text_forms(text: &str) -> [String; 2] {
+    [
+        text.to_string(),
+        serde_json::to_string(text).expect("serialize raw payload as a JavaScript string literal"),
+    ]
+}
+
+fn assert_embeds_raw_text(body: &str, expected: &str, label: &str) {
+    let forms = raw_text_forms(expected);
+    assert!(
+        forms.iter().any(|form| body.contains(form)),
+        "{label} must embed the exact raw text; neither literal nor JS-string form was found\n\
+         --- expected text ---\n{expected}\n--- expected JS string ---\n{}\n--- body ---\n{}",
+        forms[1],
+        truncate(body, 4_000),
+    );
+}
+
+fn assert_does_not_embed_raw_text(body: &str, unexpected: &str, label: &str) {
+    let forms = raw_text_forms(unexpected);
+    assert!(
+        forms.iter().all(|form| !body.contains(form)),
+        "{label} unexpectedly still embeds the old raw text\n--- old text ---\n{unexpected}\n\
+         --- body ---\n{}",
+        truncate(body, 4_000),
+    );
+}
+
+fn assert_client_raw_texts_embedded(root: &Path, body: &str, label: &str) {
+    let relative = read_text(&root.join(CLIENT_RELATIVE_RAW_PATH));
+    let aliased = read_text(&root.join(CLIENT_ALIAS_RAW_PATH));
+    assert_embeds_raw_text(body, &relative, &format!("{label} relative ?raw"));
+    assert_embeds_raw_text(body, &aliased, &format!("{label} aliased ?raw"));
+}
+
+fn assert_text_omits_sub_packages(text: &str, label: &str) {
+    assert!(
+        !text.contains(SUB_PACKAGES_DIR),
+        "{label} must not mention {SUB_PACKAGES_DIR:?}\n--- text ---\n{}",
+        truncate(text, 4_000),
+    );
+}
+
+fn assert_build_output_omits_sub_packages(stdout: &str, stderr: &str, label: &str) {
+    assert_text_omits_sub_packages(stdout, &format!("{label} stdout"));
+    assert_text_omits_sub_packages(stderr, &format!("{label} stderr"));
 }
 
 fn assert_contains_all(body: &str, markers: &[&str], label: &str) {
@@ -349,6 +408,7 @@ fn assert_client_pipeline(
         &[
             "ZFB_CLIENT_ENTRY",
             "ZFB_CLIENT_RAW_PAYLOAD",
+            "ZFB_CLIENT_ALIAS_RAW_PAYLOAD_V1",
             "ZFB_CLIENT_CONFIGURED_LOADER",
             "ZFB_CONFIGURED_DEFINE_VALUE",
         ],
@@ -465,20 +525,26 @@ fn assert_client_pipeline(
     }
 }
 
-fn run_and_assert_production(root: &Path, esbuild: &Path) {
+fn run_zfb_build(root: &Path, esbuild: &Path, label: &str) -> (String, String) {
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
         .env("ZFB_ESBUILD_BIN", esbuild)
         .output()
         .expect("spawn `zfb build`");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
         output.status.success(),
-        "`zfb build` failed for the cross-pipeline fixture\nstatus: {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        "`zfb build` failed for {label}\nstatus: {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
         output.status,
     );
+    (stdout, stderr)
+}
+
+fn run_and_assert_production(root: &Path, esbuild: &Path) {
+    let (stdout, stderr) = run_zfb_build(root, esbuild, "the cross-pipeline fixture");
+    assert_build_output_omits_sub_packages(&stdout, &stderr, "cross-pipeline production build");
 
     let names = WorkerNames::for_root(root);
     let assets = root.join("dist/assets");
@@ -501,6 +567,7 @@ fn run_and_assert_production(root: &Path, esbuild: &Path) {
         "client-script worker companions must not leak into dist/assets/",
     );
     assert_client_pipeline(&client_entry, &client_worker, &client_nested, &names, false);
+    assert_client_raw_texts_embedded(root, &client_entry, "production client entry");
 
     for (label, body) in [
         ("production islands entry", island_entry.as_str()),
@@ -708,6 +775,66 @@ async fn poll_body(
     );
 }
 
+async fn subscribe_reload(
+    client: &reqwest::Client,
+    origin: &str,
+    session: &DevSession,
+) -> reqwest::Response {
+    let url = format!("{origin}/__zfb/reload");
+    let response = client.get(&url).send().await.unwrap_or_else(|error| {
+        panic!("subscribe to {url}: {error}\n{}", session.logs());
+    });
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "SSE endpoint {url} must answer 200\n{}",
+        session.logs(),
+    );
+    response
+}
+
+async fn assert_alias_raw_dev_invalidation(
+    root: &Path,
+    client: &reqwest::Client,
+    origin: &str,
+    session: &DevSession,
+) {
+    let old_alias = read_text(&root.join(CLIENT_ALIAS_RAW_PATH));
+    let client_url = format!("{origin}/assets/client/cross-pipeline.js");
+    let sse = subscribe_reload(client, origin, session).await;
+    fs::write(root.join(CLIENT_ALIAS_RAW_PATH), UPDATED_ALIAS_RAW_TEXT)
+        .expect("edit aliased raw target while zfb dev is running");
+
+    let event = next_sse_event_name(sse, SSE_DEADLINE)
+        .await
+        .expect("read SSE stream after aliased raw edit");
+    assert!(
+        event.is_some(),
+        "aliased ?raw edit must trigger a dev reload event within {}s\n{}",
+        SSE_DEADLINE.as_secs(),
+        session.logs(),
+    );
+
+    let refreshed = poll_body(
+        client,
+        &client_url,
+        "ZFB_CLIENT_ALIAS_RAW_PAYLOAD_V2",
+        "development client-script entry after aliased raw edit",
+        session,
+    )
+    .await;
+    assert_embeds_raw_text(
+        &refreshed,
+        UPDATED_ALIAS_RAW_TEXT,
+        "development client entry after aliased raw edit",
+    );
+    assert_does_not_embed_raw_text(
+        &refreshed,
+        &old_alias,
+        "development client entry after aliased raw edit",
+    );
+}
+
 async fn run_and_assert_development(root: &Path, esbuild: &Path) {
     let names = WorkerNames::for_root(root);
     let mut session = spawn_dev(root, esbuild);
@@ -820,6 +947,7 @@ async fn run_and_assert_development(root: &Path, esbuild: &Path) {
         "dev worker companions must remain in their owning assets namespace",
     );
     assert_client_pipeline(&client_entry, &client_worker, &client_nested, &names, true);
+    assert_client_raw_texts_embedded(root, &client_entry, "development client entry");
 
     for (label, body) in [
         ("development islands entry", island_entry.as_str()),
@@ -841,6 +969,53 @@ async fn run_and_assert_development(root: &Path, esbuild: &Path) {
             label,
         );
     }
+    assert_text_omits_sub_packages(&session.logs(), "cross-pipeline development output");
+}
+
+fn run_and_assert_workspace_shape_production(root: &Path, esbuild: &Path) {
+    let (stdout, stderr) = run_zfb_build(root, esbuild, "the pnpm-workspace raw-hardening fixture");
+    assert_build_output_omits_sub_packages(&stdout, &stderr, "pnpm-workspace raw-hardening build");
+
+    let client_dir = root.join("dist/assets/client");
+    let client_entry = read_text(&find_single_asset(&client_dir, "cross-pipeline-"));
+    assert_client_raw_texts_embedded(
+        root,
+        &client_entry,
+        "pnpm-workspace production client entry",
+    );
+    assert_contains_none(
+        &client_entry,
+        &["?raw"],
+        "pnpm-workspace production client entry",
+    );
+}
+
+async fn run_and_assert_workspace_shape_development(root: &Path, esbuild: &Path) {
+    let mut session = spawn_dev(root, esbuild);
+    let port = wait_for_ready(&mut session).await;
+    let origin = format!("http://localhost:{port}");
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build loopback HTTP client");
+
+    let client_entry = poll_body(
+        &client,
+        &format!("{origin}/assets/client/cross-pipeline.js"),
+        "ZFB_CLIENT_ALIAS_RAW_PAYLOAD_V1",
+        "pnpm-workspace development client entry",
+        &session,
+    )
+    .await;
+    assert_client_raw_texts_embedded(
+        root,
+        &client_entry,
+        "pnpm-workspace development client entry",
+    );
+
+    assert_alias_raw_dev_invalidation(root, &client, &origin, &session).await;
+    assert_text_omits_sub_packages(&session.logs(), "pnpm-workspace development output");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -848,6 +1023,7 @@ async fn run_and_assert_development(root: &Path, esbuild: &Path) {
             cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
 async fn real_binary_build_and_dev_cover_client_bundling_contract() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
     let esbuild = locate_esbuild().expect(
         "client-bundling cross-pipeline test requires the pinned esbuild binary; \
          set ZFB_ESBUILD_BIN to an absolute executable path",
@@ -865,4 +1041,31 @@ async fn real_binary_build_and_dev_cover_client_bundling_contract() {
     let development = tempfile::tempdir().expect("development fixture tempdir");
     copy_fixture(&fixture_dir(), development.path()).expect("copy development fixture");
     run_and_assert_development(development.path(), &esbuild).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
+async fn real_binary_build_and_dev_cover_pnpm_workspace_raw_hardening_contract() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let esbuild = locate_esbuild().expect(
+        "pnpm-workspace raw-hardening cross-pipeline test requires the pinned esbuild binary; \
+         set ZFB_ESBUILD_BIN to an absolute executable path",
+    );
+    assert!(
+        esbuild.is_absolute(),
+        "locate_esbuild must resolve an absolute binary path, got {}",
+        esbuild.display(),
+    );
+
+    let production = tempfile::tempdir().expect("pnpm-workspace production fixture tempdir");
+    copy_fixture(&fixture_dir(), production.path())
+        .expect("copy pnpm-workspace production fixture");
+    run_and_assert_workspace_shape_production(production.path(), &esbuild);
+
+    let development = tempfile::tempdir().expect("pnpm-workspace development fixture tempdir");
+    copy_fixture(&fixture_dir(), development.path())
+        .expect("copy pnpm-workspace development fixture");
+    run_and_assert_workspace_shape_development(development.path(), &esbuild).await;
 }
