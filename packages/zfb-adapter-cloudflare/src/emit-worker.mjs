@@ -9,8 +9,8 @@
 //
 // invariant: no runtime npm deps — see SECURITY-DEPS.md
 
-import { copyFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { copyFile, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 // `.assetsignore` tells the Workers Static Assets uploader (and Pages'
 // asset server) to skip these two files, so they are only ever reachable
@@ -18,12 +18,40 @@ import { basename, dirname, join, resolve } from "node:path";
 const ASSETS_IGNORE_BASE_ENTRIES = ["_worker.js", "_zfb_inner.mjs"];
 const RESERVED_OUTPUT_NAMES = new Set([...ASSETS_IGNORE_BASE_ENTRIES, ".assetsignore"]);
 
-function resolveAssets(inputBundlePath, assetPaths) {
-  const inputDir = dirname(inputBundlePath);
-  const names = new Set();
+function isPathWithin(parent, candidate) {
+  const pathFromParent = relative(parent, candidate);
+  return (
+    pathFromParent === "" ||
+    (!pathFromParent.startsWith(`..${sep}`) &&
+      pathFromParent !== ".." &&
+      !isAbsolute(pathFromParent))
+  );
+}
 
-  return assetPaths.map((assetPath) => {
+async function resolveAssets(inputBundlePath, assetPaths) {
+  const inputDir = dirname(inputBundlePath);
+  const canonicalInputDir = await realpath(inputDir);
+  const names = new Set();
+  const resolvedAssets = [];
+
+  for (const assetPath of assetPaths) {
+    if (typeof assetPath !== "string" || isAbsolute(assetPath)) {
+      throw new Error("asset path must be bundle-relative: " + String(assetPath));
+    }
     const sourcePath = resolve(inputDir, assetPath);
+    if (!isPathWithin(inputDir, sourcePath)) {
+      throw new Error("asset path escapes the input bundle directory: " + assetPath);
+    }
+
+    const sourceInfo = await stat(sourcePath);
+    if (!sourceInfo.isFile()) {
+      throw new Error("asset is not a file: " + sourcePath);
+    }
+    const canonicalSourcePath = await realpath(sourcePath);
+    if (!isPathWithin(canonicalInputDir, canonicalSourcePath)) {
+      throw new Error("asset path resolves outside the input bundle directory: " + assetPath);
+    }
+
     const outputName = basename(sourcePath);
     if (!outputName || outputName === "." || outputName === "..") {
       throw new Error("asset path has no valid basename: " + assetPath);
@@ -35,8 +63,10 @@ function resolveAssets(inputBundlePath, assetPaths) {
       throw new Error("asset basename collision: " + outputName);
     }
     names.add(outputName);
-    return { sourcePath, outputName };
-  });
+    resolvedAssets.push({ sourcePath: canonicalSourcePath, outputName });
+  }
+
+  return resolvedAssets;
 }
 
 async function pathExists(path) {
@@ -90,14 +120,10 @@ function mergeAssetsIgnore(existing, requiredEntries) {
 export async function emitWorker({ inputBundlePath, outdir, assets = [], workerWrapperSource }) {
   const outdirAbs = resolve(outdir);
   const inputAbs = resolve(inputBundlePath);
-  const resolvedAssets = resolveAssets(inputAbs, assets);
+  const resolvedAssets = await resolveAssets(inputAbs, assets);
 
   await mkdir(outdirAbs, { recursive: true });
   for (const asset of resolvedAssets) {
-    const sourceInfo = await lstat(asset.sourcePath);
-    if (!sourceInfo.isFile()) {
-      throw new Error("asset is not a file: " + asset.sourcePath);
-    }
     const destination = join(outdirAbs, asset.outputName);
     if (await pathExists(destination)) {
       throw new Error(

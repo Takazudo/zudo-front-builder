@@ -14,7 +14,7 @@
 //    asks for in lieu of a real wrangler dev run.
 
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -179,6 +179,73 @@ describe("CLI / emitWorker", () => {
       "custom-public-entry\n_worker.js\n_zfb_inner.mjs\nalpha-a1b2c3d4.wasm\nbeta-e5f6a7b8.wasm\n",
     );
   });
+
+  it("rejects asset paths that lexically escape the input bundle directory", async () => {
+    const dir = await scratch();
+    const bundleDir = join(dir, "runtime");
+    const inputPath = join(bundleDir, "bundle-runtime.mjs");
+    const outdir = join(dir, "dist");
+    await Promise.all([
+      mkdir(bundleDir, { recursive: true }),
+      writeFile(join(dir, "outside.wasm"), "outside", "utf8"),
+    ]);
+    await writeFile(inputPath, "export default {};\n", "utf8");
+
+    await expect(
+      emitWorker({
+        inputBundlePath: inputPath,
+        outdir,
+        assets: ["../outside.wasm"],
+      }),
+    ).rejects.toThrow(/asset path escapes the input bundle directory/);
+    await expect(readFile(join(outdir, "_zfb_inner.mjs"), "utf8")).rejects.toThrow();
+  });
+
+  it("rejects absolute asset paths", async () => {
+    const dir = await scratch();
+    const bundleDir = join(dir, "runtime");
+    const inputPath = join(bundleDir, "bundle-runtime.mjs");
+    const outdir = join(dir, "dist");
+    const outsideAsset = join(dir, "outside.wasm");
+    await Promise.all([
+      mkdir(bundleDir, { recursive: true }),
+      writeFile(outsideAsset, "outside", "utf8"),
+    ]);
+    await writeFile(inputPath, "export default {};\n", "utf8");
+
+    await expect(
+      emitWorker({
+        inputBundlePath: inputPath,
+        outdir,
+        assets: [outsideAsset],
+      }),
+    ).rejects.toThrow(/asset path must be bundle-relative/);
+    await expect(readFile(join(outdir, "_zfb_inner.mjs"), "utf8")).rejects.toThrow();
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects assets whose canonical path escapes the input bundle directory",
+    async () => {
+      const dir = await scratch();
+      const bundleDir = join(dir, "runtime");
+      const inputPath = join(bundleDir, "bundle-runtime.mjs");
+      const outsideAsset = join(dir, "outside.wasm");
+      await Promise.all([
+        mkdir(bundleDir, { recursive: true }),
+        writeFile(outsideAsset, "outside", "utf8"),
+      ]);
+      await writeFile(inputPath, "export default {};\n", "utf8");
+      await symlink(outsideAsset, join(bundleDir, "linked.wasm"));
+
+      await expect(
+        emitWorker({
+          inputBundlePath: inputPath,
+          outdir: join(dir, "dist"),
+          assets: ["linked.wasm"],
+        }),
+      ).rejects.toThrow(/asset path resolves outside the input bundle directory/);
+    },
+  );
 
   it("fails before emission when an asset basename would overwrite a public file", async () => {
     const dir = await scratch();
