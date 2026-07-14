@@ -1,4 +1,10 @@
-import type { CompileResult, RenderHtmlResult, ZfbMdWasmOptions } from "./types.js";
+import type {
+  CompileResult,
+  HighlightCodeOptions,
+  HighlightCodeResult,
+  RenderHtmlResult,
+  ZfbMdWasmOptions,
+} from "./types.js";
 
 // The wasm-bindgen-generated glue lives at ./wasm/zfb_md_wasm.{js,d.ts} plus
 // the ./wasm/zfb_md_wasm_bg.wasm binary, produced by `pnpm build`
@@ -227,6 +233,21 @@ export async function renderHtml(
 }
 
 /**
+ * Highlight arbitrary code into semantic class-mode HTML without wrapping it
+ * in a Markdown fence. Expected option failures resolve to structured
+ * diagnostics; an unknown non-empty language resolves to escaped fallback
+ * markup plus a warning. Trap recovery is shared with every package-root call.
+ */
+export async function highlightCode(
+  code: string,
+  options: HighlightCodeOptions,
+): Promise<HighlightCodeResult> {
+  const optionsJson = JSON.stringify(options);
+  const json = await callWasm(({ glue }) => glue.highlightCode(code, optionsJson));
+  return JSON.parse(json) as HighlightCodeResult;
+}
+
+/**
  * Package version for host-side compatibility checks.
  *
  * Release artifacts are stamped with the published package semver at build
@@ -291,4 +312,9 @@ export type {
   GfmOptions,
   MarkdownFeaturesConfig,
   JsxRuntime,
+  HighlightRole,
+  HighlightCodeOptions,
+  HighlightCodeResult,
+  HighlightDiagnostic,
+  HighlightDiagnosticSource,
 } from "./types.js";
