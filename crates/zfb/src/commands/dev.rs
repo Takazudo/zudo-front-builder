@@ -3068,10 +3068,18 @@ struct DevRebuildInputs {
     /// outlive every `bundle()` call; dropping it deletes the staging dir.
     /// The `PathBuf` is the staged `pages` dir the bundler walks.
     ///
-    /// NOTE: this does NOT copy the user's real `pages/` — `pages_dir` stays
-    /// the real `project_root/pages` for the router scan + watcher, so
-    /// user-page HMR / watch-path identity is untouched (sharp edge 1).
+    /// NOTE: this does NOT copy real user pages. Conventional sessions retain
+    /// `project_root/pages` for the router scan + watcher; #1518 zero-pages
+    /// sessions use `empty_user_pages_root` only because no such directory
+    /// exists, so no consumer-visible `pages/` directory is created.
     injected_pages_root: Option<(tempfile::TempDir, PathBuf)>,
+
+    /// A session-lifetime empty pages root used only when a consumer has no
+    /// real `project_root/pages` directory but package-route survivors make
+    /// the dev session runnable. It satisfies the router/bundler's existing
+    /// directory contract without creating a user-visible `pages/` directory
+    /// in the consumer project. `None` on every conventional-pages path.
+    empty_user_pages_root: Option<(tempfile::TempDir, PathBuf)>,
 }
 
 #[cfg(feature = "embed_v8")]
@@ -3089,6 +3097,15 @@ impl DevRebuildInputs {
     /// passes `build_pages_root = None`, byte-identical to today.
     fn injected_pages_root(&self) -> Option<&Path> {
         self.injected_pages_root
+            .as_ref()
+            .map(|(_, path)| path.as_path())
+    }
+
+    /// The internal empty user-pages root for a true zero-pages project, if
+    /// one was needed at boot. `None` means callers retain the conventional
+    /// `project_root/pages` path.
+    fn empty_user_pages_root(&self) -> Option<&Path> {
+        self.empty_user_pages_root
             .as_ref()
             .map(|(_, path)| path.as_path())
     }
@@ -3915,7 +3932,10 @@ impl DevRenderSession {
 
         // P0 — router re-scan + route-universe plan.
         let p0_start = tick_start.map(|_| std::time::Instant::now());
-        let pages_dir = project_root.join("pages");
+        let pages_dir = inputs
+            .empty_user_pages_root()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| project_root.join("pages"));
         // Re-scan the router. `Router::scan` is unchanged by adding a
         // CONTENT file (the dynamic `[slug].tsx` source is the same), but
         // re-running it is cheap and keeps boot and rebuild symmetrical —
@@ -3956,6 +3976,7 @@ impl DevRenderSession {
                 timing_enabled,
                 session_guard.as_mut(),
                 inputs.esbuild_path(),
+                inputs.empty_user_pages_root(),
                 // S2 (#1230) — re-include the injected modules on every tick
                 // from the SAME session-lifetime staging dir (not
                 // re-materialised). `None` on the parity path.
@@ -4109,7 +4130,8 @@ impl DevRenderSession {
             .context("dev refresh: route-table rebuild failed")?
         };
         // S3 (#1231) — the router scan rebuilds `routes_by_source` from the
-        // real `pages/` ONLY; it never walks the staged injected modules
+        // conventional real `pages/` root, or #1518's private empty root; it
+        // never walks the staged injected modules
         // (they live outside `pages/`, node_modules-natured). Re-merge the
         // static injected-route seeds into the freshly-built tables and
         // rebuild `url_index` so the seeded URLs keep resolving across the
@@ -4354,7 +4376,7 @@ struct AssembledBundleResult {
 /// into the returned [`BundleSubTiming`]. When `false`, no `Instant::now()`
 /// calls are made (zero overhead on the hot path).
 #[cfg(feature = "embed_v8")]
-#[allow(clippy::too_many_arguments)] // 8 params: #1230 added injected_pages_root; these mirror assemble_bundler_input's threaded inputs, a struct would just shuffle the same fields
+#[allow(clippy::too_many_arguments)] // 9 params: #1518 added empty_user_pages_root; these mirror assemble_bundler_input's threaded inputs, a struct would just shuffle the same fields
 fn assemble_and_bundle_dev(
     project_root: &Path,
     cfg: &config::Config,
@@ -4370,6 +4392,12 @@ fn assemble_and_bundle_dev(
     // [`DevRebuildInputs::esbuild`]. Both boot and refresh pass the same
     // path so every tick skips the per-call tempdir extraction.
     pre_resolved_esbuild: Option<&Path>,
+    // #1518 — a true zero-pages consumer has no real project-root `pages/`
+    // directory. When surviving injected routes make it runnable, boot creates
+    // a session-lifetime EMPTY internal root and passes it through this
+    // replacement seam so the bundler's primary pages walk remains valid.
+    // `None` preserves the conventional `project_root/pages` path.
+    empty_user_pages_root: Option<&Path>,
     // S2 (#1230) — the session-lifetime injected-route staging `pages` root
     // (see [`DevRebuildInputs::injected_pages_root`]). `Some(root)` points
     // the dev bundler at the staged injected-only modules via the existing
@@ -4426,18 +4454,19 @@ fn assemble_and_bundle_dev(
         plugin_alias_entries,
         plugin_virtual_modules,
         pre_resolved_esbuild,
-        // #1193's build-route overlay (which OVERRIDES `pages_dir` with a root
-        // that already contains a copy of the user pages) flows through
-        // `zfb build` only — dev keeps the default `pages/` root here.
-        None,
+        // #1518's internal empty root is the only dev-side replacement. It
+        // exists solely for a consumer that has no real user `pages/` tree;
+        // conventional dev sessions keep the default project-root path.
+        empty_user_pages_root,
         // S2 (#1230) — the injected-route staging root (B1 multi-root). When a
         // preset registered routes whose survivor set is non-empty, this is the
         // session-lifetime staged `pages` dir holding ONLY the synthesized
-        // injected modules. It is ADDITIVE: the bundler walks the real
-        // `pages/` AND this root into the same shadow tree, so user pages stay
-        // in the dev bundle (HMR intact) while the injected entrypoints + their
+        // injected modules. It is ADDITIVE: the bundler walks the primary
+        // user-pages root (the real tree, or #1518's private empty root) AND
+        // this root into the same shadow tree, so conventional user pages stay
+        // in the dev bundle (HMR intact) while injected entrypoints + their
         // `virtual:` imports are added. The user's real `pages/` is NOT copied
-        // here — the dev scan + watcher keep the real dir (sharp edge 1).
+        // here — conventional dev scan + watcher identity remains untouched.
         // `None` on the parity path is byte-identical to today (sharp edge 8).
         injected_pages_root,
     )?;
@@ -5040,6 +5069,58 @@ fn build_dev_route_tables_inner(
     ))
 }
 
+/// Resolve the root the dev router and primary bundler walk should use.
+///
+/// Conventional projects keep their real `project_root/pages` directory. A
+/// true zero-pages consumer is allowed only when at least one package route
+/// survived precedence: its session receives a private empty directory so the
+/// router/bundler can keep their directory-based contract without creating a
+/// `pages/` directory in the consumer. A project with neither source of routes
+/// retains the historical missing-pages error.
+#[cfg(feature = "embed_v8")]
+fn resolve_dev_user_pages_root(
+    project_root: &Path,
+    has_surviving_injected_routes: bool,
+) -> Result<(PathBuf, Option<tempfile::TempDir>)> {
+    let real_pages_dir = project_root.join("pages");
+    if real_pages_dir.is_dir() {
+        return Ok((real_pages_dir, None));
+    }
+    if !has_surviving_injected_routes {
+        return Err(anyhow::anyhow!(
+            "no pages/ directory under {}",
+            project_root.display()
+        ));
+    }
+
+    let guard = tempfile::Builder::new()
+        .prefix("zfb-empty-user-pages-")
+        .tempdir()
+        .context("creating internal empty pages root for injected routes")?;
+    let pages_dir = guard.path().join("pages");
+    std::fs::create_dir_all(&pages_dir)
+        .with_context(|| format!("creating internal empty pages dir {}", pages_dir.display()))?;
+    Ok((pages_dir, Some(guard)))
+}
+
+/// Keep the historical empty-project rejection while allowing package routes
+/// to be the sole source of a true zero-pages dev session.
+#[cfg(feature = "embed_v8")]
+fn ensure_dev_routes_available(
+    plan: &crate::render_pipeline::RouteUniversePlan,
+    injected_route_set: &InjectedRouteSet,
+) -> Result<()> {
+    if plan.static_routes.is_empty()
+        && plan.deferred_dynamic.is_empty()
+        && injected_route_set.is_empty()
+    {
+        return Err(anyhow::anyhow!(
+            "no routes to render — dev mode skips renderer boot"
+        ));
+    }
+    Ok(())
+}
+
 /// Bring up the renderer and the route map for the dev session.
 ///
 /// On any error, returns it unchanged so the caller decides whether to
@@ -5087,27 +5168,18 @@ fn boot_dev_renderer(
 ) -> Result<DevRenderSession> {
     check_runtime_installed(project_root)?;
 
-    let pages_dir = project_root.join("pages");
-    if !pages_dir.is_dir() {
-        return Err(anyhow::anyhow!(
-            "no pages/ directory under {}",
-            project_root.display()
-        ));
-    }
+    // Resolve package routes before deciding whether the user-facing pages
+    // directory is required. A true zero-pages consumer has no such directory
+    // but is still runnable when an injected route survives precedence.
+    let user_pages_dir = project_root.join("pages");
+    let resolution =
+        crate::commands::package_routes::resolve_dev_pages_root(&user_pages_dir, injected_routes)
+            .context("staging package-owned injected routes for the dev bundle")?;
+    let (pages_dir, empty_user_pages_guard) =
+        resolve_dev_user_pages_root(project_root, resolution.guard.is_some())?;
     let router = zfb_router::Router::scan(&pages_dir).map_err(anyhow::Error::from)?;
 
     let plan = build_route_universe(router.routes());
-    // Guardrail 2 (#507): an all-dynamic SSG project (only `paths()`-based
-    // routes, no static `/`) has an empty `static_routes` but a non-empty
-    // `deferred_dynamic`. Bailing on `static_routes.is_empty()` alone would
-    // skip renderer boot before the dynamic-route expansion below ever runs,
-    // so such a project would never serve any page. Only skip the boot when
-    // the project has neither static nor dynamic routes at all.
-    if plan.static_routes.is_empty() && plan.deferred_dynamic.is_empty() {
-        return Err(anyhow::anyhow!(
-            "no routes to render — dev mode skips renderer boot"
-        ));
-    }
 
     // S2 (#1230) — materialise the package-owned injected routes ONCE into a
     // session-lifetime staging dir (B1 multi-root). `resolve_dev_pages_root`
@@ -5115,9 +5187,11 @@ fn boot_dev_renderer(
     // (user-precedence drop, package-vs-package shape-key hard-error,
     // case-insensitive collision guard, `.client`/trailing-`index`
     // rejection), but stages ONLY the synthesized injected modules — it does
-    // NOT copy the user's real `pages/`, so the dev scan + watcher keep the
-    // real `pages/` identity (HMR untouched, sharp edge 1). On the empty /
-    // all-shadowed path `guard` is `None`, so no staging dir is held and the
+    // NOT copy the user's real `pages/`, so conventional dev sessions retain
+    // the real `pages/` scan + watcher identity (HMR untouched, sharp edge 1).
+    // #1518's zero-pages exception uses the separate private empty root only
+    // because no user directory exists. On the empty / all-shadowed path
+    // `guard` is `None`, so no staging dir is held and the
     // dev bundler gets no additive injected root — byte-identical to today
     // (sharp edge 8). A materialiser error (an invalid pattern, a
     // package-vs-package collision) is fatal here: the same error `zfb build`
@@ -5147,9 +5221,6 @@ fn boot_dev_renderer(
         Vec<RouteUniverseEntry>,
         InjectedRouteSet,
     ) = {
-        let resolution =
-            crate::commands::package_routes::resolve_dev_pages_root(&pages_dir, injected_routes)
-                .context("staging package-owned injected routes for the dev bundle")?;
         // Build the static seeds + the post-precedence survivor set from the
         // SAME `materialized` survivor list (sharp edges 4/7). Both are empty
         // / default on the parity path.
@@ -5194,6 +5265,13 @@ fn boot_dev_renderer(
         (pages_root, seeds, route_set)
     };
 
+    // Guardrail 2 (#507): an all-dynamic SSG project (only `paths()`-based
+    // routes, no static `/`) has an empty `static_routes` but a non-empty
+    // `deferred_dynamic`. A true zero-pages project also has an empty user
+    // router plan, but surviving injected routes provide the route universe
+    // and request-time fallback. Only skip boot when neither source exists.
+    ensure_dev_routes_available(&plan, &injected_route_set)?;
+
     // Assemble + run the dev bundle (#659: extracted into
     // `assemble_and_bundle_dev` so the watch-ADD rebuild reuses the exact
     // same bundler configuration). Recomputes the content snapshot from
@@ -5233,6 +5311,9 @@ fn boot_dev_renderer(
         // `None` on the parity path; `Some` holds the TempDir for the whole
         // session so the staged modules outlive every `bundle()` call.
         injected_pages_root,
+        // #1518 — retain the internal empty primary root when the real
+        // consumer project deliberately has no `pages/` directory.
+        empty_user_pages_root: empty_user_pages_guard.map(|guard| (guard, pages_dir.clone())),
     };
 
     // Persistent dev shadow-tree session (issue #993) — created once
@@ -5310,6 +5391,7 @@ fn boot_dev_renderer(
             false,
             Some(&mut shadow_session),
             rebuild_inputs.esbuild_path(),
+            rebuild_inputs.empty_user_pages_root(),
             // S2 (#1230) — include the injected modules in the BOOT bundle from
             // the staging dir materialised above. `None` on the parity path.
             rebuild_inputs.injected_pages_root(),
@@ -5355,9 +5437,10 @@ fn boot_dev_renderer(
 
         // S3 (#1231) — seed the STATIC injected routes into the boot tables so
         // `lookup_by_url` resolves their URLs (URL == pattern). The router scan
-        // above walks the real `pages/` only; the staged injected modules live
-        // outside it, so they must be merged in here (and on every swap, via
-        // `refresh_bundle_and_routes`). Rebuild `url_index` to cover the seeds.
+        // above walks the real user-pages tree (or #1518's private empty root)
+        // only; staged injected modules live outside it, so they must be merged
+        // here (and on every swap, via `refresh_bundle_and_routes`). Rebuild
+        // `url_index` to cover the seeds.
         // No-op on the parity path. (Boot stale-marking happens after the
         // session is constructed — see `mark_injected_seeds_stale` below.)
         if !injected_static_seeds.is_empty() {
@@ -6349,6 +6432,7 @@ pub(crate) fn stub_session_for_adapter_tests(
                 plugin_virtual_modules: Vec::new(),
                 esbuild: None,
                 injected_pages_root: None,
+                empty_user_pages_root: None,
             },
             // Default config carries no collections (#1550).
             collection_roots: Vec::new(),
@@ -6375,6 +6459,64 @@ pub(crate) fn stub_session_for_adapter_tests(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn zero_pages_without_injected_routes_keeps_missing_pages_error() {
+        let project = tempfile::tempdir().unwrap();
+        let err = resolve_dev_user_pages_root(project.path(), false).unwrap_err();
+
+        assert!(
+            err.to_string().contains("no pages/ directory"),
+            "a project with neither user nor injected routes must retain the historical error: {err:#}"
+        );
+        assert!(
+            !project.path().join("pages").exists(),
+            "the failing path must not create a consumer pages directory"
+        );
+    }
+
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn zero_pages_with_surviving_injected_routes_gets_internal_empty_root() {
+        let project = tempfile::tempdir().unwrap();
+        let (internal_pages, guard) = resolve_dev_user_pages_root(project.path(), true).unwrap();
+
+        assert!(
+            internal_pages.is_dir(),
+            "the router/bundler fallback root must be a usable directory"
+        );
+        assert!(
+            guard.is_some(),
+            "the internal root must stay alive for the dev session"
+        );
+        assert_ne!(
+            internal_pages,
+            project.path().join("pages"),
+            "the internal root must not alias the consumer's missing pages directory"
+        );
+        assert!(
+            !project.path().join("pages").exists(),
+            "zero-pages support must not create a user-visible pages directory"
+        );
+    }
+
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn conventional_empty_pages_without_injection_keeps_no_routes_error() {
+        let project = tempfile::tempdir().unwrap();
+        let pages = project.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        let router = zfb_router::Router::scan(&pages).unwrap();
+        let plan = build_route_universe(router.routes());
+
+        let err = ensure_dev_routes_available(&plan, &InjectedRouteSet::default()).unwrap_err();
+
+        assert!(
+            err.to_string().contains("no routes to render"),
+            "an existing but empty conventional pages directory must retain the historical error: {err:#}"
+        );
+    }
 
     // `resolve_host` / `resolve_addr` live in `crate::commands::resolve` (shared
     // with `preview`); their precedence and binding tests live there too.
@@ -6441,6 +6583,7 @@ mod tests {
                 plugin_virtual_modules: Vec::new(),
                 esbuild: None,
                 injected_pages_root: None,
+                empty_user_pages_root: None,
             },
             collection_roots,
             last_successful_skip_key: Mutex::new(None),
