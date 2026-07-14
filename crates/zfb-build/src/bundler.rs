@@ -865,6 +865,30 @@ pub struct RouteEntry {
 const SHADOW_HYDRATE_FILENAME: &str = "__zfb_internal_hydrate.jsx";
 const SHADOW_ENTRY_FILENAME: &str = "entry.mjs";
 const SHADOW_TSCONFIG_FILENAME: &str = "tsconfig.json";
+/// Server-only runtime subpath the generated `entry.mjs` imports `createPageRouter`
+/// from. Declared once so `write_entry_module`'s emitted import and the
+/// staged-dependency seed set (issue #1645) cannot drift: with `bundle.exclude`
+/// active this package is staged solely because it is seeded here, and it is
+/// seeded from the same constant the entry actually imports.
+const ZFB_RUNTIME_SERVER_SPECIFIER: &str = "@takazudo/zfb-runtime/server";
+/// Top-level directory names either handled by a dedicated materialise pass
+/// (`pages`/`content`/`components`/`layouts`) or that are never project source
+/// (`node_modules`, build output, VCS). Used both to enumerate the "extra"
+/// top-level source dirs and to bound the staged-dependency module-graph seed
+/// walk (issue #1645).
+const KNOWN_SOURCE_DIRS: &[&str] = &[
+    "pages",
+    "content",
+    "components",
+    "layouts",
+    "node_modules",
+    "dist",
+    ".git",
+    "target",
+    ".turbo",
+    ".next",
+    ".vercel",
+];
 /// Filename of the project-root global override map (sub-issue #616). Both
 /// the on-disk source convention and the materialised shadow copy use this
 /// exact name; it is the public file-convention contract relied on by #618.
@@ -2190,12 +2214,75 @@ pub fn bundle_with_session(
                     }),
             );
     }
+
+    // Seed the staged-dependency closure from the materialized project module
+    // graph and the framework packages the generated entry/hydration shim
+    // import (issue #1645). Only meaningful with `bundle.exclude` active: with
+    // no exclusions the live `<shadow>/node_modules` symlink resolves every bare
+    // import, so seeding here would needlessly stage copies — gate it off to
+    // keep the empty-exclude path byte-for-byte identical.
+    let mut synthetic_entry_import_specifiers = BTreeSet::new();
+    if !bundle_exclude.is_empty() {
+        let mut source_graph_roots =
+            vec![pages_dir.clone(), components_dir.clone(), layouts_dir.clone()];
+        if input.content_collections.is_empty() {
+            source_graph_roots.push(content_dir.clone());
+        } else {
+            for collection in &input.content_collections {
+                source_graph_roots.push(resolver.resolve(&collection.root));
+            }
+        }
+        if let Some(injected) = input.injected_pages_root.as_ref() {
+            source_graph_roots.push(resolver.resolve(injected));
+        }
+        source_graph_roots
+            .extend(enumerate_extra_top_level_dirs(&input.project_root, KNOWN_SOURCE_DIRS));
+        collect_project_source_module_graph_seed_files(
+            &source_graph_roots,
+            &project_root,
+            &bundle_exclude,
+            &mut root_entry_dependency_seed_files,
+        );
+
+        // The server runtime subpath (`createPageRouter`), the framework
+        // render-to-string module, and the JSX runtime source (which also
+        // covers the hydration shim's bare framework import) appear in NO
+        // project source file, so the file-driven seed above can never discover
+        // them.
+        synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
+        synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
+        synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
+    }
+
+    // Specifiers the alias system resolves (tsconfig `paths`, plugin aliases,
+    // plugin virtual modules). The source-graph seed must not stage a same-named
+    // installed package for these — see `specifier_is_alias_claimed` (#1557/#1645).
+    let alias_claimed_specifier_keys: BTreeSet<String> = input
+        .tsconfig_paths
+        .keys()
+        .cloned()
+        .chain(
+            input
+                .plugin_alias_entries
+                .iter()
+                .map(|(specifier, _)| specifier.clone()),
+        )
+        .chain(
+            input
+                .plugin_virtual_modules
+                .iter()
+                .map(|(specifier, _)| specifier.clone()),
+        )
+        .collect();
+
     extend_node_modules_dependency_staging(
         &project_root,
         input.node_modules_dir.as_deref(),
         &bundle_exclude,
         !esbuild_will_preserve_symlinks(&input),
         &root_entry_dependency_seed_files,
+        &synthetic_entry_import_specifiers,
+        &alias_claimed_specifier_keys,
         &mut exact_target_staging_dirs,
         &mut exact_target_staging_alias_dirs,
     );
@@ -2264,20 +2351,7 @@ pub fn bundle_with_session(
     let shadow_content = shadow.join("content");
     let shadow_components = shadow.join("components");
     let shadow_layouts = shadow.join("layouts");
-    let known_source_dirs: &[&str] = &[
-        "pages",
-        "content",
-        "components",
-        "layouts",
-        "node_modules",
-        "dist",
-        ".git",
-        "target",
-        ".turbo",
-        ".next",
-        ".vercel",
-    ];
-    let extra_source_dirs = enumerate_extra_top_level_dirs(&input.project_root, known_source_dirs);
+    let extra_source_dirs = enumerate_extra_top_level_dirs(&input.project_root, KNOWN_SOURCE_DIRS);
 
     // Preflight every source root before materialising any of them. An
     // importer under a later root may target a JS-looking file under an
@@ -6237,12 +6311,133 @@ fn staged_equivalent_dependency_is_reachable(
     false
 }
 
+/// Whether `specifier` is claimed by an alias key (a tsconfig `paths` key, a
+/// plugin alias, or a plugin virtual module). Wildcard keys (`foo/*`) match any
+/// specifier with the surrounding prefix/suffix; non-wildcard keys match exactly.
+fn specifier_matches_alias_key(specifier: &str, key: &str) -> bool {
+    match key.find('*') {
+        Some(star) => {
+            let prefix = &key[..star];
+            let suffix = &key[star + 1..];
+            specifier.len() >= prefix.len() + suffix.len()
+                && specifier.starts_with(prefix)
+                && specifier.ends_with(suffix)
+        }
+        None => specifier == key,
+    }
+}
+
+/// Whether `specifier` is resolved by the alias system rather than by
+/// `node_modules`. Such a specifier must NOT seed `node_modules` staging: the
+/// alias machinery owns its resolution, and when its target is excluded the
+/// correct outcome is a hard resolution failure — NOT a silent fall-back to a
+/// coincidentally same-named installed package (#1557, regression guarded by
+/// `excluded_exact_bare_alias_cannot_fall_back_to_same_named_package`). Without
+/// this the #1645 source-graph seed would re-stage that fall-back package.
+fn specifier_is_alias_claimed(specifier: &str, alias_claimed_keys: &BTreeSet<String>) -> bool {
+    alias_claimed_keys
+        .iter()
+        .any(|key| specifier_matches_alias_key(specifier, key))
+}
+
+/// Apply the exclusion filter and #1644's canonical/reachable cycle guard to a
+/// single resolved dependency candidate, record it in the staged view, and
+/// enqueue it for closure walking. Shared by the synthetic-entry seed, the
+/// file-seed loop, and the package closure walk so the three cannot drift — the
+/// drift between #1644's guard and an incomplete seed set was itself issue #1645.
+#[allow(clippy::too_many_arguments)]
+fn stage_dependency_candidate(
+    importer: &Path,
+    package_name: &str,
+    logical_dependency: PathBuf,
+    source_dependency: PathBuf,
+    project_root: &Path,
+    bundle_exclude: &BundleExcludeMatcher,
+    staging_dirs: &mut BTreeSet<PathBuf>,
+    staging_alias_dirs: &mut BTreeMap<PathBuf, PathBuf>,
+    staged_package_sources: &mut BTreeMap<PathBuf, PathBuf>,
+    visited: &BTreeSet<PathBuf>,
+    pending: &mut BTreeMap<PathBuf, PathBuf>,
+) {
+    if bundle_exclude.is_excluded(&logical_dependency, project_root) {
+        return;
+    }
+    if staged_equivalent_dependency_is_reachable(
+        importer,
+        package_name,
+        &source_dependency,
+        project_root,
+        staged_package_sources,
+    ) {
+        return;
+    }
+    if logical_dependency == source_dependency {
+        staging_dirs.insert(logical_dependency.clone());
+    } else {
+        staging_alias_dirs.insert(logical_dependency.clone(), source_dependency.clone());
+    }
+    if !visited.contains(&logical_dependency) {
+        staged_package_sources.insert(
+            logical_dependency.clone(),
+            package_source_identity(&source_dependency),
+        );
+        pending.insert(logical_dependency, source_dependency);
+    }
+}
+
+/// Collect staged-dependency seed files from the project's materialized module
+/// graph — every page/component/layout/content source (and extra top-level
+/// source dirs) esbuild will bundle. With `bundle.exclude` active the live
+/// `<shadow>/node_modules` symlink is never created, so a bare import reachable
+/// from these sources resolves ONLY if its package was staged as a real copy;
+/// seeding the sources here lets the closure discover those packages (issue
+/// #1645). Every source file is itself a seed, so no transitive first-party
+/// discovery is needed. `node_modules`, infra dirs, and excluded / out-of-root
+/// paths are skipped.
+fn collect_project_source_module_graph_seed_files(
+    roots: &[PathBuf],
+    project_root: &Path,
+    bundle_exclude: &BundleExcludeMatcher,
+    out: &mut BTreeSet<PathBuf>,
+) {
+    let is_seed_source = |path: &Path| {
+        raw_source_extension(path)
+            || path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("css"))
+    };
+    for root in roots {
+        for entry in WalkDir::new(root)
+            .follow_links(true)
+            .into_iter()
+            .filter_entry(|entry| !is_pruned_infra_dir(entry))
+            .filter_map(std::result::Result::ok)
+        {
+            let path = entry.path();
+            if !entry.file_type().is_file() || !is_seed_source(path) {
+                continue;
+            }
+            if !path.starts_with(project_root)
+                || project_path_is_inside_node_modules(path, project_root)
+                || bundle_exclude.is_excluded(path, project_root)
+            {
+                continue;
+            }
+            out.insert(path.to_path_buf());
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn extend_node_modules_dependency_staging(
     project_root: &Path,
     node_modules_dir: Option<&Path>,
     bundle_exclude: &BundleExcludeMatcher,
     resolve_from_canonical_package: bool,
     root_entry_dependency_seed_files: &BTreeSet<PathBuf>,
+    synthetic_entry_import_specifiers: &BTreeSet<String>,
+    alias_claimed_specifier_keys: &BTreeSet<String>,
     staging_dirs: &mut BTreeSet<PathBuf>,
     staging_alias_dirs: &mut BTreeMap<PathBuf, PathBuf>,
 ) {
@@ -6274,6 +6469,46 @@ fn extend_node_modules_dependency_staging(
         .collect::<BTreeMap<_, _>>();
     let mut visited = BTreeSet::new();
 
+    // Packages the generated `entry.mjs` and hydration shim import but which
+    // appear in no project source file (issue #1645). Resolve them from a
+    // synthetic project-root importer so the closure stages them like any other
+    // bare dependency; subpath specifiers collapse to their owning package via
+    // `bare_package_name`, so `@takazudo/zfb-runtime/server` also stages the
+    // `/client-router` subpath the islands runtime injects.
+    let synthetic_importer = project_root.join(SHADOW_ENTRY_FILENAME);
+    for package_name in synthetic_entry_import_specifiers
+        .iter()
+        .filter_map(|specifier| bare_package_name(specifier))
+    {
+        let (logical_dependency, source_dependency) = if let Some(dependency) =
+            resolve_installed_package_dir(&synthetic_importer, &package_name, project_root)
+        {
+            (dependency.clone(), dependency)
+        } else if let Some(dependency) =
+            resolve_vendored_package_dir(node_modules_dir, &package_name)
+        {
+            (
+                project_root.join("node_modules").join(&package_name),
+                dependency,
+            )
+        } else {
+            continue;
+        };
+        stage_dependency_candidate(
+            &synthetic_importer,
+            &package_name,
+            logical_dependency,
+            source_dependency,
+            project_root,
+            bundle_exclude,
+            staging_dirs,
+            staging_alias_dirs,
+            &mut staged_package_sources,
+            &visited,
+            &mut pending,
+        );
+    }
+
     for seed in root_entry_dependency_seed_files {
         if !seed.is_file() || bundle_exclude.is_excluded(seed, project_root) {
             continue;
@@ -6282,10 +6517,16 @@ fn extend_node_modules_dependency_staging(
             // An unused invalid alternate must remain esbuild-contextual.
             continue;
         };
-        for package_name in specifiers
-            .iter()
-            .filter_map(|specifier| bare_package_name(specifier))
-        {
+        for specifier in &specifiers {
+            // Alias-claimed specifiers are resolved by the alias system; staging
+            // a same-named installed package would resurrect the excluded-target
+            // fall-back #1557 forbids (issue #1645).
+            if specifier_is_alias_claimed(specifier, alias_claimed_specifier_keys) {
+                continue;
+            }
+            let Some(package_name) = bare_package_name(specifier) else {
+                continue;
+            };
             let (logical_dependency, source_dependency) = if let Some(dependency) =
                 resolve_installed_package_dir(seed, &package_name, project_root)
             {
@@ -6300,30 +6541,19 @@ fn extend_node_modules_dependency_staging(
             } else {
                 continue;
             };
-            if bundle_exclude.is_excluded(&logical_dependency, project_root) {
-                continue;
-            }
-            if staged_equivalent_dependency_is_reachable(
+            stage_dependency_candidate(
                 seed,
                 &package_name,
-                &source_dependency,
+                logical_dependency,
+                source_dependency,
                 project_root,
-                &staged_package_sources,
-            ) {
-                continue;
-            }
-            if logical_dependency == source_dependency {
-                staging_dirs.insert(logical_dependency.clone());
-            } else {
-                staging_alias_dirs.insert(logical_dependency.clone(), source_dependency.clone());
-            }
-            if !visited.contains(&logical_dependency) {
-                staged_package_sources.insert(
-                    logical_dependency.clone(),
-                    package_source_identity(&source_dependency),
-                );
-                pending.insert(logical_dependency, source_dependency);
-            }
+                bundle_exclude,
+                staging_dirs,
+                staging_alias_dirs,
+                &mut staged_package_sources,
+                &visited,
+                &mut pending,
+            );
         }
     }
 
@@ -6427,31 +6657,19 @@ fn extend_node_modules_dependency_staging(
                 } else {
                     continue;
                 };
-                if bundle_exclude.is_excluded(&logical_dependency, project_root) {
-                    continue;
-                }
-                if staged_equivalent_dependency_is_reachable(
+                stage_dependency_candidate(
                     &logical_importer,
                     &package_name,
-                    &source_dependency,
+                    logical_dependency,
+                    source_dependency,
                     project_root,
-                    &staged_package_sources,
-                ) {
-                    continue;
-                }
-                if logical_dependency == source_dependency {
-                    staging_dirs.insert(logical_dependency.clone());
-                } else {
-                    staging_alias_dirs
-                        .insert(logical_dependency.clone(), source_dependency.clone());
-                }
-                if !visited.contains(&logical_dependency) {
-                    staged_package_sources.insert(
-                        logical_dependency.clone(),
-                        package_source_identity(&source_dependency),
-                    );
-                    pending.insert(logical_dependency, source_dependency);
-                }
+                    bundle_exclude,
+                    staging_dirs,
+                    staging_alias_dirs,
+                    &mut staged_package_sources,
+                    &visited,
+                    &mut pending,
+                );
             }
         }
     }
@@ -6886,8 +7104,11 @@ fn write_entry_module(
     // `createPageRouter` lives at the server-only subpath so the client-safe
     // root barrel (`@takazudo/zfb-runtime`) never pulls Hono into an island's
     // `--platform=browser` bundle (issue #1298). This SSR entry runs on the
-    // Worker side, where resolving `hono` is expected and correct.
-    src.push_str("import { createPageRouter } from \"@takazudo/zfb-runtime/server\";\n");
+    // Worker side, where resolving `hono` is expected and correct. The literal
+    // is the shared `ZFB_RUNTIME_SERVER_SPECIFIER` so the staged-dependency seed
+    // (issue #1645) stays in lockstep with what the entry actually imports.
+    writeln!(&mut src, "import {{ createPageRouter }} from \"{ZFB_RUNTIME_SERVER_SPECIFIER}\";")
+        .unwrap();
     writeln!(
         &mut src,
         "import {{ renderToString as __zfb_renderToString }} from {spec};",
