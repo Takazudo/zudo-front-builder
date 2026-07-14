@@ -4574,18 +4574,12 @@ struct DevContentTraceEvent {
 /// Whether a trace event marks a route as having run, or records one
 /// `getCollection()` property access during that route's execution.
 #[cfg(feature = "embed_v8")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum DevContentTraceEventKind {
     Visit,
+    #[default]
     Read,
-}
-
-#[cfg(feature = "embed_v8")]
-impl Default for DevContentTraceEventKind {
-    fn default() -> Self {
-        Self::Read
-    }
 }
 
 /// The actual worker seam that performed the read.
