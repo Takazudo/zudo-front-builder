@@ -5756,6 +5756,7 @@ fn copy_redirects_file(
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
     use tempfile::tempdir;
     use zfb_build::bundler::{BundleManifest, BundlerOutput, RouteEntry};
@@ -8177,6 +8178,105 @@ mod tests {
                 "stylesheet must declare .hi-{suffix} selector for role {role:?}; got:\n{css}",
             );
         }
+    }
+
+    /// Parse only the line-anchored `CodeHighlightRole` alias and its bounded
+    /// union members. This deliberately stops at that declaration's semicolon
+    /// instead of scanning arbitrary TypeScript string literals elsewhere in
+    /// the file.
+    fn parse_code_highlight_role_union(
+        source: &str,
+    ) -> std::result::Result<BTreeSet<String>, String> {
+        const ALIAS: &str = "export type CodeHighlightRole =";
+
+        let mut lines = source.lines().enumerate();
+        let (alias_line, _) = lines
+            .find(|(_, line)| line.trim() == ALIAS)
+            .ok_or_else(|| format!("missing line-anchored `{ALIAS}` declaration"))?;
+
+        let mut roles = BTreeSet::new();
+        for (line_number, line) in lines {
+            let member = line.trim();
+            if member.is_empty() {
+                continue;
+            }
+
+            let (member, terminates_declaration) = match member.strip_suffix(';') {
+                Some(member) => (member.trim_end(), true),
+                None => (member, false),
+            };
+            let member = member.strip_prefix('|').map(str::trim).ok_or_else(|| {
+                format!(
+                    "expected a `| \"role\"` member in CodeHighlightRole at line {}",
+                    line_number + 1
+                )
+            })?;
+            let role = member
+                .strip_prefix('"')
+                .and_then(|role| role.strip_suffix('"'))
+                .filter(|role| !role.is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "expected a quoted role in CodeHighlightRole at line {}",
+                        line_number + 1
+                    )
+                })?;
+            if !roles.insert(role.to_string()) {
+                return Err(format!(
+                    "duplicate CodeHighlightRole member {role:?} at line {}",
+                    line_number + 1
+                ));
+            }
+            if terminates_declaration {
+                return Ok(roles);
+            }
+        }
+
+        Err(format!(
+            "CodeHighlightRole declaration starting at line {} is missing its terminating semicolon",
+            alias_line + 1
+        ))
+    }
+
+    /// The TypeScript config helper has a hand-authored public union, while
+    /// Rust owns the canonical config-validation names. Keep both legs in
+    /// lockstep without relying on the process working directory.
+    #[test]
+    fn typescript_code_highlight_role_union_matches_rust_canonical_roles() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .parent()
+            .and_then(|crates_dir| crates_dir.parent())
+            .expect("zfb crate must live under the workspace crates directory")
+            .to_path_buf();
+        let typescript_path = workspace_root.join("packages/zfb/src/config.ts");
+        let source = std::fs::read_to_string(&typescript_path).unwrap_or_else(|error| {
+            panic!(
+                "read TypeScript CodeHighlightRole at {}: {error}",
+                typescript_path.display()
+            )
+        });
+        let typescript_roles = parse_code_highlight_role_union(&source).unwrap_or_else(|error| {
+            panic!(
+                "parse TypeScript CodeHighlightRole at {}: {error}",
+                typescript_path.display()
+            )
+        });
+        let rust_roles: BTreeSet<String> = crate::config::CODE_HIGHLIGHT_ROLES
+            .iter()
+            .map(|role| (*role).to_string())
+            .collect();
+
+        let missing_from_typescript: Vec<&String> =
+            rust_roles.difference(&typescript_roles).collect();
+        let extra_in_typescript: Vec<&String> = typescript_roles.difference(&rust_roles).collect();
+        assert!(
+            missing_from_typescript.is_empty() && extra_in_typescript.is_empty(),
+            "TypeScript CodeHighlightRole in {} must match Rust CODE_HIGHLIGHT_ROLES; \
+             missing from TypeScript CodeHighlightRole: {missing_from_typescript:?}; \
+             extra in TypeScript CodeHighlightRole: {extra_in_typescript:?}",
+            typescript_path.display(),
+        );
     }
 
     /// Regression (zfb#1528 deep-review): a `codeHighlight.roleClasses`

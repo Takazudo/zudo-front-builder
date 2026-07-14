@@ -952,30 +952,10 @@ pub(crate) fn default_class_prefix() -> String {
 }
 
 /// The fixed 18-role semantic taxonomy for class-mode syntax highlighting
-/// (Highlight Tokens epic, zfb#1528). This is the config-validation-side
-/// copy of the list; the scope->role classifier (`hi_roles.rs`, zfb#1529)
-/// owns the authoritative list and the confirm sub (#1535) asserts the two
-/// stay in sync.
-pub const CODE_HIGHLIGHT_ROLES: &[&str] = &[
-    "escape",
-    "operator",
-    "comment",
-    "string",
-    "number",
-    "constant",
-    "keyword",
-    "function",
-    "type",
-    "namespace",
-    "property",
-    "variable",
-    "tag",
-    "attribute",
-    "punctuation",
-    "inserted",
-    "deleted",
-    "heading",
-];
+/// (Highlight Tokens epic, zfb#1528). The scope->role classifier
+/// (`hi_roles.rs`, zfb#1529) owns the canonical table; this retains the
+/// config validation API as a public const slice.
+pub const CODE_HIGHLIGHT_ROLES: &[&str] = &zfb_content::hi_roles::HiRole::FULL_NAMES;
 
 /// `classPrefix` / role-class-value token validation: non-empty, first
 /// char an ASCII letter, remaining chars ASCII alphanumeric, `_`, or `-`.
