@@ -47,12 +47,14 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Context, Result};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use zfb_types::json_string;
 
 use crate::bundler::{
-    bundle_link_href, island_link_href, BundleChunk, BundleConfig, BundleOutput, ClientBundler,
-    FrameworkKind, Island, IslandBundle, ModuleId, ModuleWorkerBundleEntry, PerIslandBundleOutput,
+    bundle_link_href, island_link_href, BundleChunk, BundleConfig, BundleOutput, BundleResource,
+    ClientBundler, FrameworkKind, Island, IslandBundle, ModuleId, ModuleWorkerBundleEntry,
+    PerIslandBundleOutput,
 };
 use crate::client_scripts::ClientScriptWorkerEntry;
 
@@ -118,6 +120,24 @@ pub(crate) const ESBUILD_CHUNK_FILENAME_PREFIX: &str = "islands-chunk-";
 /// explicit; aliasing the shared constant pins this layer to the #1500
 /// contract at compile time.
 pub(crate) const ESBUILD_WORKER_ENTRY_NAME_PREFIX: &str = zfb_types::MODULE_WORKER_FILENAME_PREFIX;
+
+/// esbuild `--asset-names` template for locked non-entry browser resources.
+///
+/// The template is flat and self-hashed so the copied resource can remain
+/// beside a production-hashed islands entry without a later writer having to
+/// rename (and therefore break) the URL that esbuild already emitted.
+pub(crate) const ESBUILD_RESOURCE_NAME_TEMPLATE: &str = "islands-resource-[name]-[hash]";
+
+/// Prefix every locked file-loader resource output must carry.
+pub(crate) const ESBUILD_RESOURCE_FILENAME_PREFIX: &str = "islands-resource-";
+
+/// Fixed metafile basename inside the private shared-islands staging outdir.
+/// It is an oracle used only during read-back and is never itself returned as
+/// a companion.
+const ESBUILD_RESOURCE_METAFILE_FILENAME: &str = "meta.json";
+
+const ZFB_RESOURCE_MJS_EXTENSION: &str = ".zfb-resource.mjs";
+const WASM_EXTENSION: &str = ".wasm";
 
 /// SHA-256 of the pinned esbuild binary for the current platform,
 /// lowercase hex.
@@ -916,6 +936,7 @@ impl EsbuildSubprocessBundler {
         islands: &[Island],
         config: &BundleConfig,
     ) -> Result<OneEntryOutput> {
+        validate_locked_resource_loader_overrides(&config.loaders)?;
         // Derive the mount-glue framework from `config.jsx_import_source`
         // — the single field the orchestrator already sets via
         // `with_jsx_import_source(config.framework…)`. This guarantees the
@@ -1384,7 +1405,15 @@ impl EsbuildSubprocessBundler {
         drop(resolver_inputs);
         drop(plugin_tsconfig);
 
-        read_back_outdir(out_dir.path())
+        if splitting {
+            read_back_shared_outdir(
+                out_dir.path(),
+                &out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME),
+                &self.config.working_dir,
+            )
+        } else {
+            read_back_outdir(out_dir.path())
+        }
     }
 }
 
@@ -1397,9 +1426,9 @@ fn validate_module_worker_entries(entries: &[ModuleWorkerBundleEntry]) -> Result
     for worker in entries {
         match validate_chunk_filename(worker.filename())? {
             OutputFilenameClass::Worker => {}
-            OutputFilenameClass::Chunk => {
+            OutputFilenameClass::Chunk | OutputFilenameClass::Resource => {
                 return Err(anyhow!(
-                    "module-worker entry unexpectedly used chunk filename {:?}",
+                    "module-worker entry unexpectedly used a non-worker filename {:?}",
                     worker.filename()
                 ));
             }
@@ -1436,6 +1465,7 @@ struct OneEntryOutput {
     js: String,
     chunks: Vec<BundleChunk>,
     workers: Vec<BundleChunk>,
+    resources: Vec<BundleResource>,
 }
 
 impl OneEntryOutput {
@@ -1446,6 +1476,7 @@ impl OneEntryOutput {
             js,
             chunks: Vec::new(),
             workers: Vec::new(),
+            resources: Vec::new(),
         }
     }
 }
@@ -1481,34 +1512,101 @@ fn redact_temp_path(stderr: &str, leak_path: &Path, cwd: &Path, label: &str) -> 
     out
 }
 
+/// Read every file esbuild staged into `out_dir` back into memory without a
+/// resource oracle. This is retained for the per-island/runtime path, whose
+/// output policy deliberately remains entry/chunk/worker-only.
+fn read_back_outdir(out_dir: &Path) -> Result<OneEntryOutput> {
+    read_back_outdir_with_resource_oracle(out_dir, None, None, None)
+}
+
+/// Read the shared browser-islands staging directory with its mandatory
+/// esbuild metafile. The metafile is an oracle for every accepted resource;
+/// it is not a published output and is skipped during output classification.
+fn read_back_shared_outdir(
+    out_dir: &Path,
+    metafile_path: &Path,
+    metafile_working_dir: &Path,
+) -> Result<OneEntryOutput> {
+    let metafile = read_resource_metafile(metafile_path)?;
+    read_back_outdir_with_resource_oracle(
+        out_dir,
+        Some(&metafile),
+        Some(metafile_path),
+        Some(metafile_working_dir),
+    )
+}
+
+/// Minimal strict view of the esbuild metafile needed to prove file-loader
+/// outputs. `outputs[output-path].inputs` maps source input paths to metadata;
+/// only its keys are material here, but requiring this structured shape makes
+/// malformed or missing metafiles fail closed.
+#[derive(Debug, Deserialize)]
+struct ResourceMetafile {
+    outputs: BTreeMap<String, ResourceMetafileOutput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResourceMetafileOutput {
+    #[serde(default)]
+    inputs: BTreeMap<String, serde_json::Value>,
+}
+
+fn read_resource_metafile(metafile_path: &Path) -> Result<ResourceMetafile> {
+    let bytes = std::fs::read(metafile_path).with_context(|| {
+        format!(
+            "esbuild resource discovery requires metafile {}",
+            metafile_path.display()
+        )
+    })?;
+    serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "esbuild resource discovery could not parse metafile {}",
+            metafile_path.display()
+        )
+    })
+}
+
 /// Read every file esbuild staged into `out_dir` back into memory, split into
-/// the stable entry (`islands.js`), self-hashed chunks, and stable module
-/// workers.
+/// the stable entry (`islands.js`), self-hashed chunks, stable module workers,
+/// and (for the shared pass only) metafile-backed resources.
 ///
 /// Contract enforced here (the read-back is the trust boundary for the
-/// `BundleOutput::chunks` shape downstream consumers rely on):
+/// `BundleOutput` companion shape downstream consumers rely on):
 ///
 /// - Exactly one entry named [`STABLE_ISLANDS_FILENAME`] must exist.
-/// - Every *other* `.js` file must be FLAT (the directory walk is
-///   non-recursive; we additionally reject any name containing a path
-///   separator or `..` as defence-in-depth) and belong to exactly one reserved
-///   class: [`ESBUILD_CHUNK_FILENAME_PREFIX`] or
-///   [`ESBUILD_WORKER_ENTRY_NAME_PREFIX`]. Anything else is rejected rather
-///   than silently shipped.
+/// - Every other output is a regular, flat file and belongs to exactly one
+///   reserved companion class: chunk, worker, or locked resource. Resources
+///   further require an exact metafile output key and a matching source suffix
+///   edge. Anything else is rejected rather than silently shipped.
 /// - Recognised sourcemap siblings (`*.js.map`) are ignored on read-back,
 ///   matching the pre-splitting behaviour (the old single-file path requested
 ///   `--sourcemap=linked` but only ever read the `.js` back). Keeping that
 ///   exact behaviour means enabling splitting introduces zero new bytes for
 ///   the non-splitting case.
-fn read_back_outdir(out_dir: &Path) -> Result<OneEntryOutput> {
+fn read_back_outdir_with_resource_oracle(
+    out_dir: &Path,
+    metafile: Option<&ResourceMetafile>,
+    metafile_path: Option<&Path>,
+    metafile_working_dir: Option<&Path>,
+) -> Result<OneEntryOutput> {
     let mut entry_js: Option<String> = None;
     let mut chunks: Vec<BundleChunk> = Vec::new();
     let mut workers: Vec<BundleChunk> = Vec::new();
+    let mut resources: Vec<BundleResource> = Vec::new();
+    let mut output_names = BTreeSet::new();
 
     for dirent in std::fs::read_dir(out_dir)
         .with_context(|| format!("failed to read esbuild outdir {}", out_dir.display()))?
     {
         let dirent = dirent.context("failed to read esbuild outdir entry")?;
+        if metafile_path
+            .map(|path| path == dirent.path().as_path())
+            .unwrap_or(false)
+        {
+            // `--metafile` writes this private read-back oracle beside the
+            // actual staging outputs. It must never enter the resource list.
+            continue;
+        }
         if !dirent.file_type().map(|t| t.is_file()).unwrap_or(false) {
             return Err(anyhow!(
                 "esbuild emitted an unexpected non-file output entry {:?} in {}",
@@ -1542,27 +1640,58 @@ fn read_back_outdir(out_dir: &Path) -> Result<OneEntryOutput> {
         }
 
         if name == zfb_types::STABLE_ISLANDS_FILENAME {
+            register_output_name(&mut output_names, name)?;
             let js = std::fs::read_to_string(dirent.path())
                 .context("failed to read esbuild entry output")?;
+            if entry_js.is_some() {
+                return Err(anyhow!(
+                    "esbuild emitted duplicate entry output {name:?} in {}",
+                    out_dir.display()
+                ));
+            }
             entry_js = Some(js);
             continue;
         }
 
-        // Everything else must belong to one of exactly two reserved
-        // companion classes: a self-hashed islands chunk or a stable module
-        // worker. Reject path separators / traversal and every unknown prefix
-        // before reading bytes so the read-back remains the trust boundary for
-        // downstream verbatim writes.
+        // Every companion is validated before its bytes are read or exposed to
+        // a downstream verbatim writer. `register_output_name` keeps all
+        // classes in one namespace even though the filesystem normally cannot
+        // present duplicate directory entries.
         let class = validate_chunk_filename(name)?;
+        register_output_name(&mut output_names, name)?;
         let bytes = std::fs::read(dirent.path())
             .with_context(|| format!("failed to read esbuild companion {name}"))?;
-        let companion = BundleChunk {
-            filename: name.to_string(),
-            bytes,
-        };
         match class {
-            OutputFilenameClass::Chunk => chunks.push(companion),
-            OutputFilenameClass::Worker => workers.push(companion),
+            OutputFilenameClass::Chunk => chunks.push(BundleChunk {
+                filename: name.to_string(),
+                bytes,
+            }),
+            OutputFilenameClass::Worker => workers.push(BundleChunk {
+                filename: name.to_string(),
+                bytes,
+            }),
+            OutputFilenameClass::Resource => {
+                let metafile = metafile.ok_or_else(|| {
+                    anyhow!(
+                        "esbuild emitted resource {name:?} without the shared-islands metafile oracle"
+                    )
+                })?;
+                let metafile_working_dir = metafile_working_dir.ok_or_else(|| {
+                    anyhow!(
+                        "esbuild emitted resource {name:?} without the shared-islands metafile working-directory context"
+                    )
+                })?;
+                validate_resource_metafile_edge(
+                    metafile,
+                    &dirent.path(),
+                    name,
+                    metafile_working_dir,
+                )?;
+                resources.push(BundleResource {
+                    filename: name.to_string(),
+                    bytes,
+                });
+            }
         }
     }
 
@@ -1580,11 +1709,96 @@ fn read_back_outdir(out_dir: &Path) -> Result<OneEntryOutput> {
     // Vec order stable too.
     chunks.sort_by(|a, b| a.filename.cmp(&b.filename));
     workers.sort_by(|a, b| a.filename.cmp(&b.filename));
+    resources.sort_by(|a, b| a.filename.cmp(&b.filename));
 
     Ok(OneEntryOutput {
         js,
         chunks,
         workers,
+        resources,
+    })
+}
+
+fn register_output_name(names: &mut BTreeSet<String>, name: &str) -> Result<()> {
+    if !names.insert(name.to_string()) {
+        return Err(anyhow!(
+            "esbuild emitted duplicate or cross-class-colliding output filename {name:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Prove that a resource read from the staging directory is the precise
+/// file-loader output esbuild recorded for a matching marked glue or wasm
+/// source. Filename validation establishes the expected final extension;
+/// this oracle then ties it to the matching source edge rather than accepting
+/// an arbitrary flat file merely because it has the reserved prefix.
+fn validate_resource_metafile_edge(
+    metafile: &ResourceMetafile,
+    resource_path: &Path,
+    resource_filename: &str,
+    metafile_working_dir: &Path,
+) -> Result<()> {
+    let expected_source_suffix = if resource_filename.ends_with(".mjs") {
+        ZFB_RESOURCE_MJS_EXTENSION
+    } else if resource_filename.ends_with(WASM_EXTENSION) {
+        WASM_EXTENSION
+    } else {
+        return Err(anyhow!(
+            "resource filename {resource_filename:?} has no supported final extension"
+        ));
+    };
+
+    let canonical_resource_path = std::fs::canonicalize(resource_path).with_context(|| {
+        format!(
+            "could not canonicalize staged resource output {}",
+            resource_path.display()
+        )
+    })?;
+    let output = metafile
+        .outputs
+        .iter()
+        .find_map(|(output_path, output)| {
+            metafile_output_path(output_path, metafile_working_dir)
+                .as_ref()
+                .is_ok_and(|path| path == &canonical_resource_path)
+                .then_some(output)
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "resource output {resource_filename:?} is not backed by an exact metafile output path {}",
+                resource_path.display()
+            )
+        })?;
+
+    if !output
+        .inputs
+        .keys()
+        .any(|input_path| input_path.ends_with(expected_source_suffix))
+    {
+        return Err(anyhow!(
+            "resource output {resource_filename:?} has no metafile file-loader edge from a source ending in {expected_source_suffix:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Metafile paths are relative to esbuild's configured working directory by
+/// default. Resolve and canonicalize each key before comparing it with the
+/// regular staging output we just read, so the comparison stays exact without
+/// relying on a non-contract `--abs-paths=metafile` flag.
+fn metafile_output_path(output_path: &str, working_dir: &Path) -> Result<PathBuf> {
+    let path = Path::new(output_path);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        working_dir.join(path)
+    };
+    std::fs::canonicalize(&resolved).with_context(|| {
+        format!(
+            "could not canonicalize esbuild metafile output path {output_path:?} resolved from {}",
+            working_dir.display()
+        )
     })
 }
 
@@ -1592,13 +1806,13 @@ fn read_back_outdir(out_dir: &Path) -> Result<OneEntryOutput> {
 enum OutputFilenameClass {
     Chunk,
     Worker,
+    Resource,
 }
 
 /// Validate a discovered companion filename against the strict output
 /// contract: it must be a flat basename (no path separators, no `..`
-/// traversal segment) and belong to either the chunk or worker reserved
-/// filename class. Returns the recognised class, or an error describing the
-/// rejected name.
+/// traversal segment) and belong to one reserved companion class. Returns the
+/// recognised class, or an error describing the rejected name.
 fn validate_chunk_filename(name: &str) -> Result<OutputFilenameClass> {
     if name.contains('/') || name.contains('\\') || name.contains(std::path::MAIN_SEPARATOR) {
         return Err(anyhow!(
@@ -1652,12 +1866,56 @@ fn validate_chunk_filename(name: &str) -> Result<OutputFilenameClass> {
             return Ok(OutputFilenameClass::Worker);
         }
     }
+    if let Some((resource_name, hash)) = resource_name_and_hash(name) {
+        if !resource_name.is_empty()
+            && resource_name
+                .chars()
+                .all(|ch| !ch.is_control() && ch != '/' && ch != '\\')
+            && !hash.is_empty()
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Ok(OutputFilenameClass::Resource);
+        }
+    }
     Err(anyhow!(
         "esbuild emitted an unexpected output file {name:?}; expected the entry `{}`, \
          a `{ESBUILD_CHUNK_FILENAME_PREFIX}*` chunk, or a \
-         `{ESBUILD_WORKER_ENTRY_NAME_PREFIX}*.js` module worker",
+         `{ESBUILD_WORKER_ENTRY_NAME_PREFIX}*.js` module worker, or a \
+         `{ESBUILD_RESOURCE_FILENAME_PREFIX}*-<hash>.mjs|.wasm` resource",
         zfb_types::STABLE_ISLANDS_FILENAME
     ))
+}
+
+/// Return the source-derived `[name]` and esbuild `[hash]` portions of a
+/// locked resource output, provided it has exactly one supported final
+/// extension and the reserved prefix. The caller performs character policy
+/// checks, so this helper stays narrowly about the naming template shape.
+fn resource_name_and_hash(name: &str) -> Option<(&str, &str)> {
+    let stem = name
+        .strip_prefix(ESBUILD_RESOURCE_FILENAME_PREFIX)?
+        .strip_suffix(".mjs")
+        .or_else(|| {
+            name.strip_prefix(ESBUILD_RESOURCE_FILENAME_PREFIX)?
+                .strip_suffix(WASM_EXTENSION)
+        })?;
+    stem.rsplit_once('-')
+}
+
+/// Reject attempts to override the two loader keys that make shared browser
+/// resources safely discoverable. The command layer normally rejects these
+/// too, but this crate owns the final `BundleConfig` boundary and therefore
+/// cannot rely on every direct Rust caller having passed through that layer.
+fn validate_locked_resource_loader_overrides(loaders: &BTreeMap<String, String>) -> Result<()> {
+    for extension in [ZFB_RESOURCE_MJS_EXTENSION, WASM_EXTENSION] {
+        if let Some(loader) = loaders.get(extension) {
+            return Err(anyhow!(
+                "shared browser-islands loader key {extension:?} is reserved by zfb-islands for the locked file resource contract and cannot be overridden (got {loader:?})"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Compose the esbuild CLI argument list for one entry-source bundle
@@ -1688,13 +1946,14 @@ pub(crate) fn build_esbuild_args(
         zfb_types::STABLE_ISLANDS_FILENAME,
         "entry-name template must match STABLE_ISLANDS_FILENAME stem"
     );
-    build_esbuild_args_with_entry_name(
+    build_esbuild_args_with_entry_name_and_resource_contract(
         config,
         extra_args,
         out_dir,
         entry_path,
         splitting,
         ESBUILD_ENTRY_NAME_TEMPLATE,
+        splitting,
     )
 }
 
@@ -1712,6 +1971,29 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     entry_path: &Path,
     splitting: bool,
     entry_name_template: &str,
+) -> Vec<OsString> {
+    build_esbuild_args_with_entry_name_and_resource_contract(
+        config,
+        extra_args,
+        out_dir,
+        entry_path,
+        splitting,
+        entry_name_template,
+        false,
+    )
+}
+
+/// Private variant that enables the locked resource contract only for the
+/// shared splitting islands pass. Per-island, worker, and client-script
+/// outputs deliberately keep their existing argv/read-back policy.
+fn build_esbuild_args_with_entry_name_and_resource_contract(
+    config: &BundleConfig,
+    extra_args: &[OsString],
+    out_dir: &Path,
+    entry_path: &Path,
+    splitting: bool,
+    entry_name_template: &str,
+    resource_contract: bool,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     args.push(OsString::from("--bundle"));
@@ -1879,6 +2161,24 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     }
     for extra in extra_args {
         args.push(extra.clone());
+    }
+    if resource_contract {
+        // These locked flags come after every operator-supplied argument so
+        // the shared browser-islands contract cannot be weakened by a later
+        // loader or asset-name override. The explicit `.zfb-resource.mjs`
+        // rule is more specific than `.mjs`, preserving the copied glue as
+        // JavaScript while ordinary `.mjs` modules remain bundle inputs.
+        args.push(OsString::from(format!(
+            "--loader:{ZFB_RESOURCE_MJS_EXTENSION}=file"
+        )));
+        args.push(OsString::from(format!("--loader:{WASM_EXTENSION}=file")));
+        args.push(OsString::from(format!(
+            "--asset-names={ESBUILD_RESOURCE_NAME_TEMPLATE}"
+        )));
+        args.push(OsString::from(format!(
+            "--metafile={}",
+            out_dir.join(ESBUILD_RESOURCE_METAFILE_FILENAME).display()
+        )));
     }
     args.push(OsString::from(entry_path.as_os_str()));
     args
@@ -2326,6 +2626,7 @@ impl ClientBundler for EsbuildSubprocessBundler {
             js,
             chunks,
             workers,
+            resources,
         } = self.produce_bundle_js(islands, config)?;
 
         // Carry the entry JS **in memory** — do NOT write `islands.js` to
@@ -2371,6 +2672,7 @@ impl ClientBundler for EsbuildSubprocessBundler {
             module_ids,
             chunks,
             workers,
+            resources,
         })
     }
 }
@@ -3550,6 +3852,26 @@ mod tests {
             .collect()
     }
 
+    fn write_resource_metafile(metafile_path: &Path, outputs: &[(PathBuf, &str)]) -> Result<()> {
+        let mut metafile_outputs = serde_json::Map::new();
+        for (output_path, source_path) in outputs {
+            let mut inputs = serde_json::Map::new();
+            inputs.insert(
+                (*source_path).to_string(),
+                serde_json::json!({ "bytesInOutput": 1 }),
+            );
+            metafile_outputs.insert(
+                output_path.to_string_lossy().into_owned(),
+                serde_json::json!({ "inputs": inputs }),
+            );
+        }
+        std::fs::write(
+            metafile_path,
+            serde_json::to_vec(&serde_json::json!({ "outputs": metafile_outputs }))?,
+        )?;
+        Ok(())
+    }
+
     /// Code-splitting contract (#806): the shared-bundle esbuild invocation
     /// must enable `--splitting=true`, write to a directory via `--outdir`
     /// (not `--outfile`), and pin the stable entry name + self-hashed flat
@@ -3586,6 +3908,78 @@ mod tests {
                 .any(|a| a == "--chunk-names=islands-chunk-[hash]"),
             "missing --chunk-names=islands-chunk-[hash] in args: {args:?}"
         );
+    }
+
+    /// The shared browser-islands pass alone owns the locked file-loader
+    /// contract. Its flags come after user loader arguments and include the
+    /// private metafile read-back oracle; the non-splitting per-island path
+    /// remains unchanged.
+    #[test]
+    fn shared_bundle_args_include_locked_resource_contract_only_when_splitting() {
+        let cfg = BundleConfig::default()
+            .with_loaders(BTreeMap::from([(".txt".to_string(), "text".to_string())]));
+        let shared = args_as_strings(&cfg, true);
+        let txt_index = shared
+            .iter()
+            .position(|arg| arg == "--loader:.txt=text")
+            .expect("user loader");
+        let glue_index = shared
+            .iter()
+            .position(|arg| arg == "--loader:.zfb-resource.mjs=file")
+            .expect("locked glue loader");
+        let wasm_index = shared
+            .iter()
+            .position(|arg| arg == "--loader:.wasm=file")
+            .expect("locked wasm loader");
+        assert!(
+            txt_index < glue_index && glue_index < wasm_index,
+            "{shared:?}"
+        );
+        assert!(
+            shared
+                .iter()
+                .any(|arg| arg == "--asset-names=islands-resource-[name]-[hash]"),
+            "missing locked resource naming: {shared:?}"
+        );
+        assert!(
+            shared
+                .iter()
+                .any(|arg| arg == "--metafile=/tmp/zfb-out/meta.json"),
+            "missing metafile oracle: {shared:?}"
+        );
+
+        let per_island = args_as_strings(&cfg, false);
+        assert!(
+            !per_island
+                .iter()
+                .any(|arg| arg.contains("zfb-resource.mjs") || arg == "--loader:.wasm=file"),
+            "per-island argv must not acquire the resource contract: {per_island:?}"
+        );
+        assert!(
+            !per_island
+                .iter()
+                .any(|arg| arg.starts_with("--asset-names=") || arg.starts_with("--metafile=")),
+            "per-island argv must not acquire resource output metadata: {per_island:?}"
+        );
+    }
+
+    #[test]
+    fn shared_bundle_rejects_reserved_resource_loader_overrides() {
+        for extension in [ZFB_RESOURCE_MJS_EXTENSION, WASM_EXTENSION] {
+            let bundler = EsbuildSubprocessBundler::new(
+                EsbuildSubprocessConfig::default().with_mock_output("export {};"),
+            );
+            let cfg = BundleConfig::default().with_loaders(BTreeMap::from([(
+                extension.to_string(),
+                "empty".to_string(),
+            )]));
+            let err = bundler
+                .bundle(&[Island::new("ResourceIsland", "/tmp/resource.tsx")], &cfg)
+                .expect_err("reserved shared resource loader must be rejected");
+            let message = err.to_string();
+            assert!(message.contains(extension), "{message}");
+            assert!(message.contains("reserved"), "{message}");
+        }
     }
 
     /// Per-island/runtime path contract (review-fix, codex finding 3):
@@ -3632,6 +4026,14 @@ mod tests {
             validate_chunk_filename("worker-src-s-search-d-worker-d-ts.js").unwrap(),
             OutputFilenameClass::Worker
         );
+        assert_eq!(
+            validate_chunk_filename("islands-resource-glue.zfb-resource-ABCDE.mjs").unwrap(),
+            OutputFilenameClass::Resource
+        );
+        assert_eq!(
+            validate_chunk_filename("islands-resource-payload-ABCDE.wasm").unwrap(),
+            OutputFilenameClass::Resource
+        );
 
         assert!(validate_chunk_filename("../islands-chunk-X.js").is_err());
         assert!(validate_chunk_filename("nested/islands-chunk-X.js").is_err());
@@ -3641,6 +4043,9 @@ mod tests {
         assert!(validate_chunk_filename("worker-.js").is_err());
         assert!(validate_chunk_filename("worker-bad.name.js").is_err());
         assert!(validate_chunk_filename("worker-valid-name.css").is_err());
+        assert!(validate_chunk_filename("islands-resource-nohash.wasm").is_err());
+        assert!(validate_chunk_filename("islands-resource-name-ABCDE.txt").is_err());
+        assert!(validate_chunk_filename("islands-resource-..-ABCDE.wasm").is_err());
         assert!(validate_chunk_filename("evil.js").is_err());
         assert!(validate_chunk_filename("islands.js").is_err());
     }
@@ -3795,6 +4200,151 @@ mod tests {
             out.chunks
         );
         assert!(out.workers.is_empty(), "no workers expected");
+        assert!(out.resources.is_empty(), "no resources expected");
+    }
+
+    #[test]
+    fn read_back_shared_outdir_keeps_zero_resource_output_compatible() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("islands.js"), b"export const x = 1;\n").unwrap();
+        write_resource_metafile(&dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME), &[]).unwrap();
+
+        let out = read_back_shared_outdir(
+            dir.path(),
+            &dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME),
+            dir.path(),
+        )
+        .expect("zero resources remain valid");
+        assert!(out.chunks.is_empty());
+        assert!(out.workers.is_empty());
+        assert!(out.resources.is_empty());
+    }
+
+    #[test]
+    fn read_back_shared_outdir_collects_metafile_backed_resources_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("islands.js"), b"entry\n").unwrap();
+        let wasm = dir.path().join("islands-resource-payload-ABCDE.wasm");
+        let glue = dir
+            .path()
+            .join("islands-resource-glue.zfb-resource-ABCDE.mjs");
+        // Write in reverse filename order to prove output ordering is not
+        // inherited from filesystem iteration order.
+        std::fs::write(&wasm, [0_u8, 97, 115, 109]).unwrap();
+        std::fs::write(&glue, b"export const glue = true;\n").unwrap();
+        let metafile = dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME);
+        write_resource_metafile(
+            &metafile,
+            &[
+                (wasm.clone(), "/fixture/payload.wasm"),
+                (glue.clone(), "/fixture/glue.zfb-resource.mjs"),
+            ],
+        )
+        .unwrap();
+
+        let out =
+            read_back_shared_outdir(dir.path(), &metafile, dir.path()).expect("read resources");
+        assert_eq!(
+            out.resources
+                .iter()
+                .map(|resource| resource.filename.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "islands-resource-glue.zfb-resource-ABCDE.mjs",
+                "islands-resource-payload-ABCDE.wasm",
+            ]
+        );
+        assert_eq!(out.resources[0].bytes, b"export const glue = true;\n");
+        assert_eq!(out.resources[1].bytes, [0_u8, 97, 115, 109]);
+    }
+
+    #[test]
+    fn read_back_shared_outdir_resolves_relative_metafile_output_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("islands.js"), b"entry\n").unwrap();
+        let resource = dir
+            .path()
+            .join("islands-resource-glue.zfb-resource-ABCDE.mjs");
+        std::fs::write(&resource, b"export {}\n").unwrap();
+        let metafile = dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME);
+        std::fs::write(
+            &metafile,
+            serde_json::to_vec(&serde_json::json!({
+                "outputs": {
+                    resource.file_name().unwrap().to_string_lossy().into_owned(): {
+                        "inputs": { "fixture-glue.zfb-resource.mjs": { "bytesInOutput": 1 } }
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let out = read_back_shared_outdir(dir.path(), &metafile, dir.path())
+            .expect("metafile output paths are relative to esbuild cwd by default");
+        assert_eq!(out.resources.len(), 1);
+        assert_eq!(
+            out.resources[0].filename,
+            resource.file_name().unwrap().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn read_back_shared_outdir_fails_closed_for_resource_oracle_and_name_violations() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("islands.js"), b"entry\n").unwrap();
+        let resource = dir.path().join("islands-resource-payload-ABCDE.wasm");
+        std::fs::write(&resource, b"wasm").unwrap();
+        let metafile = dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME);
+
+        write_resource_metafile(
+            &metafile,
+            &[(resource.clone(), "/fixture/not-a-resource.txt")],
+        )
+        .unwrap();
+        let err = read_back_shared_outdir(dir.path(), &metafile, dir.path())
+            .expect_err("wrong metafile source suffix must fail")
+            .to_string();
+        assert!(err.contains("file-loader edge"), "{err}");
+
+        write_resource_metafile(
+            &metafile,
+            &[(
+                dir.path()
+                    .join("other")
+                    .join("islands-resource-payload-ABCDE.wasm"),
+                "/fixture/payload.wasm",
+            )],
+        )
+        .unwrap();
+        let err = read_back_shared_outdir(dir.path(), &metafile, dir.path())
+            .expect_err("different output path with the same basename must fail")
+            .to_string();
+        assert!(err.contains("exact metafile output path"), "{err}");
+
+        std::fs::write(&metafile, b"{not json").unwrap();
+        let err = read_back_shared_outdir(dir.path(), &metafile, dir.path())
+            .expect_err("malformed metafile must fail")
+            .to_string();
+        assert!(err.contains("could not parse metafile"), "{err}");
+
+        std::fs::remove_file(&resource).unwrap();
+        std::fs::create_dir(&resource).unwrap();
+        std::fs::write(&metafile, b"{\"outputs\":{}}").unwrap();
+        let err = read_back_shared_outdir(dir.path(), &metafile, dir.path())
+            .expect_err("directory resource output must fail")
+            .to_string();
+        assert!(err.contains("unexpected non-file"), "{err}");
+    }
+
+    #[test]
+    fn output_names_reject_cross_class_collisions() {
+        let mut names = BTreeSet::new();
+        register_output_name(&mut names, "islands.js").unwrap();
+        let err = register_output_name(&mut names, "islands.js")
+            .expect_err("all output classes share one filename namespace")
+            .to_string();
+        assert!(err.contains("cross-class-colliding"), "{err}");
     }
 
     /// `read_back_outdir`: entry + chunks are split correctly, sourcemap

@@ -538,6 +538,94 @@ fn no_dynamic_import_yields_single_file() {
         "a zero-dynamic-import project must emit exactly the entry, no chunks: {:?}",
         out.chunks.iter().map(|c| &c.filename).collect::<Vec<_>>()
     );
+    assert!(
+        out.resources.is_empty(),
+        "a Wasm-free island must not gain resource companions: {:?}",
+        out.resources
+            .iter()
+            .map(|resource| &resource.filename)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Locked resource-contract integration: a synthetic marked glue module and
+/// wasm import are emitted as distinct, metafile-backed file-loader resources
+/// with their esbuild-owned names preserved in the entry. This deliberately
+/// uses only generic files; it does not depend on the md-wasm package build.
+#[test]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands --test integration \
+            shared_bundle_discovers_marked_glue_and_wasm_resources -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
+fn shared_bundle_discovers_marked_glue_and_wasm_resources() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    stage_minimal_node_modules(tmp.path());
+
+    let glue = tmp.path().join("fixture-glue.zfb-resource.mjs");
+    let wasm = tmp.path().join("fixture-payload.wasm");
+    let island = tmp.path().join("resource-island.tsx");
+    let glue_bytes = b"export const GLUE_RESOURCE_MARKER = 'glue';\n";
+    let wasm_bytes = [0_u8, 97, 115, 109, 1, 0, 0, 0];
+    std::fs::write(&glue, glue_bytes).expect("write marked glue");
+    std::fs::write(&wasm, wasm_bytes).expect("write wasm");
+    std::fs::write(
+        &island,
+        r#"
+import glueHref from "./fixture-glue.zfb-resource.mjs";
+import wasmHref from "./fixture-payload.wasm";
+
+export default function ResourceIsland() {
+  return glueHref + wasmHref;
+}
+"#,
+    )
+    .expect("write resource island");
+
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default().with_working_dir(tmp.path()),
+    );
+    let cfg = BundleConfig::production()
+        .with_outdir(tmp.path().join("dist"))
+        .with_minify(false);
+    let out = bundler
+        .bundle(&[Island::new("ResourceIsland", island)], &cfg)
+        .expect("bundle synthetic resources");
+
+    assert_eq!(out.resources.len(), 2, "resources: {:#?}", out.resources);
+    let glue_resource = out
+        .resources
+        .iter()
+        .find(|resource| resource.filename.ends_with(".mjs"))
+        .expect("marked glue resource");
+    let wasm_resource = out
+        .resources
+        .iter()
+        .find(|resource| resource.filename.ends_with(".wasm"))
+        .expect("wasm resource");
+    for resource in &out.resources {
+        assert!(
+            resource.filename.starts_with("islands-resource-"),
+            "resource must use the locked flat prefix: {}",
+            resource.filename
+        );
+        assert!(
+            !resource.filename.contains('/') && !resource.filename.contains('\\'),
+            "resource name must be flat: {}",
+            resource.filename
+        );
+    }
+    assert_eq!(glue_resource.bytes, glue_bytes);
+    assert_eq!(wasm_resource.bytes, wasm_bytes);
+
+    let entry = String::from_utf8(out.bytes).expect("entry is UTF-8 JavaScript");
+    assert!(
+        entry.contains(&glue_resource.filename) && entry.contains(&wasm_resource.filename),
+        "entry must retain both esbuild-generated resource references:\n{entry}"
+    );
+    assert!(
+        entry.contains("./islands-resource-"),
+        "resource URLs must stay relative to the entry:\n{entry}"
+    );
 }
 
 // -----------------------------------------------------------------------------
