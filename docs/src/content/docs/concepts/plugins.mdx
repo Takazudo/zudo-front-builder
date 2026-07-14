@@ -15,7 +15,7 @@ Reach for a plugin when you need one of the four capabilities that `setup` provi
 
 - **Virtual module backing a synthetic data source.** If your pages need to `import` from a specifier that has no real file on disk — a metadata DB, a content index, a generated config blob — `addVirtualModule` is the only way to inject that source into the module graph. Example: `import metadata from "virtual:metadata-db"` across every page.
 - **Alias rewrite that must apply across all bundlers.** `addAlias` registers an exact-match import rewrite that is honored by all three consumers: the embedded V8 host, the main page/layout bundler, and the islands esbuild bundler. A `tsconfig.json` `paths` entry only reaches the type-checker. If the alias has to work at runtime in all three bundlers, it belongs in a plugin.
-- **Injected page route that lives outside `pages/`.** `injectRoute` registers a TSX/TS file under a URL pattern. In build mode, package-owned routes are materialised into the normal page pipeline; in dev mode, the dev server renders matching static and dynamic injected routes. Gate the call on `command === "dev"` only when the route is truly dev-only.
+- **Injected page route that lives outside `pages/`.** `injectRoute` registers an ESM page module under a URL pattern. Entrypoints can be source TSX/TS modules or compiled ESM `.js` modules published by a package. In build and dev, the page pipeline renders matching static and dynamic injected routes. Gate the call on `command === "dev"` only when the route is truly dev-only.
 - **Package-owned client entry.** `addClientEntry` registers a `*.client.{ts,tsx,js,jsx}` side-effect entry that should be bundled with the project's client scripts.
 
 For responses that are not pages, use the separate `devMiddleware` hook (or its preview counterpart, `previewMiddleware` — see below): a JSON API endpoint, a hot-reload bridge, an upload handler. No JSX pipeline, no page renderer — just a function returning `{ status, headers, body }`.
@@ -100,17 +100,20 @@ There is **one** loader contract. There is no alternate "loader returns JSON and
 
 ### `injectRoute(pattern, entrypoint, opts?)` — synthetic page routes
 
-Registers a TSX/TS file under a URL pattern routed through the same page-rendering pipeline as `pages/<...>.tsx`. The pattern follows the `pages/` filename grammar (`/blog/[slug]`, `/api/dev/x`, `/docs/[...rest]`); `entrypoint` is resolved relative to the project root.
+Registers an ESM page module under a URL pattern routed through the same page-rendering pipeline as `pages/<...>.tsx`. An entrypoint may be source TSX/TS or a compiled ESM `.js` module. A package can inject its published `dist/` route directly; the consuming project does not need a copied original route source. The pattern follows the `pages/` filename grammar (`/blog/[slug]`, `/api/dev/x`, `/docs/[...rest]`); relative `entrypoint` values resolve from the project root.
 
 ```ts
 injectRoute("/preset-page", "./preset/page.tsx");
+injectRoute("/package-docs/[slug]", "./node_modules/@acme/docs/dist/routes/page.js");
 injectRoute("/docs/[slug]", "./preset/doc.tsx", { prerender: true });
 injectRoute("/account", "./preset/account.tsx", { prerender: false });
 ```
 
-In **build** mode, injected routes are materialised into a per-build overlay pages root and go through the normal scan -> bundle -> render pipeline. `opts.prerender` controls the build shape: omitted or `true` means the route is prerendered; `false` marks an SSR-shaped route, which `output: "static"` rejects. User-authored `pages/` routes with the same URL shape win over package routes.
+In **build** mode, injected routes are materialised into a per-build overlay pages root and go through the normal scan -> bundle -> render pipeline. `opts.prerender` controls the build shape: omitted or `true` means the route is prerendered; `false` marks an SSR-shaped route, which `output: "static"` rejects.
 
 In **dev** mode, static and dynamic injected routes are rendered by `zfb dev`. Static routes are seeded into the dev route universe at boot; dynamic routes are rendered on first request. `opts.prerender` is build-only metadata and is ignored in dev.
+
+`injectRoute("/", entrypoint)` is valid in both build and dev. It supplies the site root when the project has no `pages/index`; a user-authored route with the same URL shape, including `pages/index` for `/`, always wins in both modes.
 
 If a route is intended only for local development, gate that registration yourself:
 
@@ -142,10 +145,10 @@ Both can add URLs during `zfb dev`, but they aim at different problems:
 
 | Hook | Returns | Use when |
 | --- | --- | --- |
-| `injectRoute(pattern, entrypoint, opts?)` | a TSX/TS module that the page renderer evaluates and rasterises to HTML | you want a real, JSX-shaped page that lives outside the on-disk `pages/` tree, including package-owned build routes. |
+| `injectRoute(pattern, entrypoint, opts?)` | an ESM page module (source TSX/TS or compiled `.js`) that the page renderer evaluates and rasterises to HTML | you want a real, JSX-shaped page that lives outside the on-disk `pages/` tree, including package-owned build routes. |
 | `devMiddleware(ctx)` → `ctx.register(path, handler)` | a JS function that returns `{ status, headers, body }` per request | you want an HTTP handler — JSON API, a hot-reload bridge, an upload endpoint. No page pipeline, no JSX. |
 
-`devMiddleware` is the right answer when the response is not a page; `injectRoute` is the right answer when you want a synthetic `pages/foo.tsx` that lives outside the on-disk `pages/` tree.
+`devMiddleware` is the right answer when the response is not a page; `injectRoute` is the right answer when you want a synthetic page module that lives outside the on-disk `pages/` tree.
 
 The same choice applies to `zfb preview` via `previewMiddleware` — it is `devMiddleware`'s exact per-request-handler counterpart, just gated to preview's static mode instead of dev (see [`previewMiddleware(ctx)`](#previewmiddleware-ctx) below). `injectRoute` has no preview equivalent: preview never re-renders, so a synthetic route registered via `injectRoute` is inert there (see the `setup` section above).
 
