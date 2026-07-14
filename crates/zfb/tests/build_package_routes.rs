@@ -292,7 +292,7 @@ export default function Page() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Empty/absent pages/ + a "/" package route → dist/index.html.
+// 2. Root package routes and user-page precedence.
 // ---------------------------------------------------------------------------
 
 /// A project with NO `pages/` dir at all builds when a preset owns the root
@@ -315,7 +315,8 @@ fn empty_pages_with_root_package_route_builds() {
     fs::create_dir_all(root.join("pkg")).unwrap();
     fs::write(root.join("pkg/home.tsx"), page_module("PKG_ROOT_MARKER")).unwrap();
 
-    // `"/"` is allowed in BUILD mode (dev-only rejection scoped in #1193).
+    // Root injection is accepted in both build and dev; with no user index it
+    // materializes as the package-owned root page.
     fs::write(
         root.join("preset.mjs"),
         r#"export default {
@@ -349,6 +350,66 @@ fn empty_pages_with_root_package_route_builds() {
     assert!(
         body.contains("PKG_ROOT_MARKER"),
         "root package route HTML must contain the marker; got: {body}"
+    );
+}
+
+/// A user `pages/index.tsx` wins over an injected `/` in the build route
+/// selection, so the package root cannot replace the project's home page.
+#[test]
+fn user_index_wins_over_root_package_route_in_build() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[user_index_root_precedence] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[user_index_root_precedence] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let _nm = link_embedded_node_modules(root);
+
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(
+        root.join("pages/index.tsx"),
+        page_module("USER_ROOT_MARKER"),
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("pkg")).unwrap();
+    fs::write(root.join("pkg/home.tsx"), page_module("PKG_ROOT_MARKER")).unwrap();
+    fs::write(
+        root.join("preset.mjs"),
+        r#"export default {
+  name: "root-precedence-preset",
+  setup({ injectRoute }) {
+    injectRoute("/", "./pkg/home.tsx");
+  },
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+"#,
+    )
+    .unwrap();
+
+    let Some(dist) = build_or_skip(root, &esbuild, "user_index_root_precedence") else {
+        return;
+    };
+
+    let index_html = dist.join("index.html");
+    assert!(index_html.is_file(), "expected user dist/index.html");
+    let body = fs::read_to_string(&index_html).unwrap();
+    assert!(
+        body.contains("USER_ROOT_MARKER"),
+        "user pages/index.tsx must win over injected `/`; got: {body}"
+    );
+    assert!(
+        !body.contains("PKG_ROOT_MARKER"),
+        "the injected root must not replace the user page; got: {body}"
     );
 }
 
