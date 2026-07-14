@@ -6319,7 +6319,11 @@ fn specifier_matches_alias_key(specifier: &str, key: &str) -> bool {
         Some(star) => {
             let prefix = &key[..star];
             let suffix = &key[star + 1..];
-            specifier.len() >= prefix.len() + suffix.len()
+            // A universal catch-all (`*`) is a fallback alias — node_modules
+            // resolution is still expected under it — so it must NOT suppress
+            // staging. Only prefix/suffix-anchored wildcards claim a specifier.
+            (!prefix.is_empty() || !suffix.is_empty())
+                && specifier.len() >= prefix.len() + suffix.len()
                 && specifier.starts_with(prefix)
                 && specifier.ends_with(suffix)
         }

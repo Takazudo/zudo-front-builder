@@ -3135,3 +3135,42 @@ fn generated_entry_framework_imports_are_staged_under_bundle_exclude() {
     // The server runtime resolved and linked (its subpath export was staged).
     assert!(body.contains("createPageRouter"), "{body}");
 }
+
+/// A universal catch-all tsconfig path (`"*"`) is a fallback alias, not a
+/// specific claim: a bare package imported under it must still stage from
+/// `node_modules` (issue #1645). Guards `specifier_matches_alias_key`'s
+/// catch-all carve-out — without it the alias filter would treat every specifier
+/// as alias-claimed and suppress the entire source-graph seed.
+#[test]
+fn catch_all_tsconfig_path_does_not_suppress_page_bare_import_staging() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "@scope/catchall-dependency", "unused.tsx");
+    write_bare_package_in(
+        &root.join("node_modules"),
+        "@scope/catchall-dependency",
+        "STAGED_UNDER_CATCH_ALL_PATH",
+    );
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-catchall-path",
+        // A catch-all path: `foo` maps to `src/foo`, and anything not found there
+        // falls back to node_modules — exactly what must stay stageable.
+        BTreeMap::from([("*".to_string(), vec![format!("{}/src/*", root.display())])]),
+        vec![],
+        vec![],
+    );
+    input.bundle_exclude = vec!["src/unused.tsx".to_string()];
+
+    bundle(input)
+        .expect("a catch-all tsconfig path must not suppress node_modules staging under exclude");
+    let body = fs::read_to_string(root.join("dist-catchall-path/bundle.mjs")).unwrap();
+    assert!(body.contains("STAGED_UNDER_CATCH_ALL_PATH"), "{body}");
+}
