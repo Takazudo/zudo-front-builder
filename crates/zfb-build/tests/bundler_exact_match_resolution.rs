@@ -1114,6 +1114,71 @@ fn node_modules_symlinked_package_stages_non_hoisted_canonical_dependency_only_w
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn cyclic_pnpm_dependencies_reach_a_fixed_point_with_bundle_exclude() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "project:cycle", "unused.tsx");
+    write_value_page(&root, "project:cycle");
+
+    let store = root.join("node_modules/.pnpm");
+    let package_a = store.join("cycle-a@1/node_modules/cycle-a");
+    let package_b = store.join("cycle-b@1/node_modules/cycle-b");
+    fs::create_dir_all(package_a.join("node_modules")).unwrap();
+    fs::create_dir_all(package_b.join("node_modules")).unwrap();
+    fs::write(
+        package_a.join("package.json"),
+        r#"{"name":"cycle-a","type":"module","exports":"./index.js"}"#,
+    )
+    .unwrap();
+    fs::write(
+        package_a.join("index.js"),
+        "import { marker } from 'cycle-b'; export default `CYCLE_A_${marker}`;\n",
+    )
+    .unwrap();
+    fs::write(
+        package_b.join("package.json"),
+        r#"{"name":"cycle-b","type":"module","exports":"./index.js"}"#,
+    )
+    .unwrap();
+    fs::write(
+        package_b.join("index.js"),
+        "import 'cycle-a'; export const marker = 'CYCLE_B';\n",
+    )
+    .unwrap();
+
+    std::os::unix::fs::symlink(&package_b, package_a.join("node_modules/cycle-b")).unwrap();
+    std::os::unix::fs::symlink(&package_a, package_b.join("node_modules/cycle-a")).unwrap();
+    fs::create_dir_all(root.join("node_modules")).unwrap();
+    std::os::unix::fs::symlink(&package_a, root.join("node_modules/cycle-a")).unwrap();
+
+    let target = root.join("node_modules/cycle-a/index.js");
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-pnpm-cycle",
+        BTreeMap::from([(
+            "project:cycle".to_string(),
+            vec![target.to_string_lossy().into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec!["does-not-exist/**".to_string()];
+
+    bundle(input).expect("cyclic pnpm dependencies must reach a finite staged shadow view");
+    let body = fs::read_to_string(root.join("dist-pnpm-cycle/bundle.mjs")).unwrap();
+    assert!(body.contains("CYCLE_A_"), "{body}");
+    assert!(body.contains("CYCLE_B"), "{body}");
+}
+
 // --- #1555 wave-1: allowed-closure POSITIVES for first-party closure seeding ---
 //
 // These guard against OVER-suppression: a non-excluded bare dependency reachable
