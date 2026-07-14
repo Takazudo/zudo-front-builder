@@ -2283,6 +2283,7 @@ pub fn bundle_with_session(
         &root_entry_dependency_seed_files,
         &synthetic_entry_import_specifiers,
         &alias_claimed_specifier_keys,
+        &input.external,
         &mut exact_target_staging_dirs,
         &mut exact_target_staging_alias_dirs,
     );
@@ -6344,6 +6345,18 @@ fn specifier_is_alias_claimed(specifier: &str, alias_claimed_keys: &BTreeSet<Str
         .any(|key| specifier_matches_alias_key(specifier, key))
 }
 
+/// Whether the WHOLE package `package_name` is marked external. esbuild resolves
+/// nothing for a fully-external package, so staging + closure-walking + copying
+/// its tree into the shadow is pure waste (issue #1645). An external entry uses
+/// esbuild's own `foo`/`foo/*`/`@scope/*` matching (reused via
+/// `specifier_matches_alias_key`); a subpath-only external (`foo/bar`) does NOT
+/// make the whole `foo` package external, so it correctly does not match here.
+fn package_is_external(package_name: &str, external_specifiers: &[String]) -> bool {
+    external_specifiers
+        .iter()
+        .any(|entry| specifier_matches_alias_key(package_name, entry))
+}
+
 /// Apply the exclusion filter and #1644's canonical/reachable cycle guard to a
 /// single resolved dependency candidate, record it in the staged view, and
 /// enqueue it for closure walking. Shared by the synthetic-entry seed, the
@@ -6442,6 +6455,7 @@ fn extend_node_modules_dependency_staging(
     root_entry_dependency_seed_files: &BTreeSet<PathBuf>,
     synthetic_entry_import_specifiers: &BTreeSet<String>,
     alias_claimed_specifier_keys: &BTreeSet<String>,
+    external_specifiers: &[String],
     staging_dirs: &mut BTreeSet<PathBuf>,
     staging_alias_dirs: &mut BTreeMap<PathBuf, PathBuf>,
 ) {
@@ -6480,10 +6494,19 @@ fn extend_node_modules_dependency_staging(
     // `bare_package_name`, so `@takazudo/zfb-runtime/server` also stages the
     // `/client-router` subpath the islands runtime injects.
     let synthetic_importer = project_root.join(SHADOW_ENTRY_FILENAME);
-    for package_name in synthetic_entry_import_specifiers
-        .iter()
-        .filter_map(|specifier| bare_package_name(specifier))
-    {
+    for specifier in synthetic_entry_import_specifiers {
+        // Even a generated import must not resurrect an excluded alias target's
+        // same-named installed package (#1557), and an externalized framework
+        // is never staged (#1645).
+        if specifier_is_alias_claimed(specifier, alias_claimed_specifier_keys) {
+            continue;
+        }
+        let Some(package_name) = bare_package_name(specifier) else {
+            continue;
+        };
+        if package_is_external(&package_name, external_specifiers) {
+            continue;
+        }
         let (logical_dependency, source_dependency) = if let Some(dependency) =
             resolve_installed_package_dir(&synthetic_importer, &package_name, project_root)
         {
@@ -6531,6 +6554,9 @@ fn extend_node_modules_dependency_staging(
             let Some(package_name) = bare_package_name(specifier) else {
                 continue;
             };
+            if package_is_external(&package_name, external_specifiers) {
+                continue;
+            }
             let (logical_dependency, source_dependency) = if let Some(dependency) =
                 resolve_installed_package_dir(seed, &package_name, project_root)
             {
@@ -6623,6 +6649,11 @@ fn extend_node_modules_dependency_staging(
                 .iter()
                 .filter_map(|specifier| bare_package_name(specifier))
             {
+                // A fully-external dependency is never resolved by esbuild, so
+                // there is nothing to stage or closure-walk (#1645).
+                if package_is_external(&package_name, external_specifiers) {
+                    continue;
+                }
                 let canonical_dependency = (resolve_from_canonical_package
                     && package_was_symlinked)
                     .then(|| {
@@ -8213,6 +8244,78 @@ where
 mod tests {
     use super::*;
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
+
+    // --- #1645 staged-dependency-view seed predicates ---
+
+    #[test]
+    fn specifier_matches_alias_key_exact_and_anchored_wildcard() {
+        assert!(specifier_matches_alias_key(
+            "collision-alias",
+            "collision-alias"
+        ));
+        // A non-wildcard key matches exactly, never as a prefix.
+        assert!(!specifier_matches_alias_key(
+            "collision-alias/x",
+            "collision-alias"
+        ));
+        // Prefix/suffix-anchored wildcards.
+        assert!(specifier_matches_alias_key(
+            "collision-wildcard/secret",
+            "collision-wildcard/*"
+        ));
+        assert!(!specifier_matches_alias_key(
+            "other/secret",
+            "collision-wildcard/*"
+        ));
+        assert!(specifier_matches_alias_key("@/foo", "@/*"));
+        // `@/*` must NOT claim an unrelated scoped package.
+        assert!(!specifier_matches_alias_key("@takazudo/zfb-runtime", "@/*"));
+    }
+
+    #[test]
+    fn specifier_matches_alias_key_universal_catch_all_never_claims() {
+        // A bare `*` is a fall-back alias, not a specific claim (#1645): it must
+        // never suppress node_modules staging.
+        assert!(!specifier_matches_alias_key(
+            "@takazudo/zfb-adapter-cloudflare",
+            "*"
+        ));
+        assert!(!specifier_matches_alias_key("anything/at/all", "*"));
+    }
+
+    #[test]
+    fn specifier_is_alias_claimed_over_key_set() {
+        let keys: BTreeSet<String> = [
+            "@/*".to_string(),
+            "collision-alias".to_string(),
+            "*".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        assert!(specifier_is_alias_claimed("@/foo", &keys));
+        assert!(specifier_is_alias_claimed("collision-alias", &keys));
+        // The catch-all `*` in the set must not make an ordinary package claimed.
+        assert!(!specifier_is_alias_claimed(
+            "@takazudo/zfb-adapter-cloudflare",
+            &keys
+        ));
+    }
+
+    #[test]
+    fn package_is_external_matches_whole_package_only() {
+        let external = vec![
+            "preact".to_string(),
+            "@takazudo/zfb-runtime".to_string(),
+            "@scope/*".to_string(),
+        ];
+        assert!(package_is_external("preact", &external));
+        assert!(package_is_external("@takazudo/zfb-runtime", &external));
+        // A namespace wildcard external matches every package in the namespace.
+        assert!(package_is_external("@scope/anything", &external));
+        assert!(!package_is_external("not-external", &external));
+        // `--external:preact` must NOT externalize the distinct `preact-*` package.
+        assert!(!package_is_external("preact-render-to-string", &external));
+    }
 
     fn shadow_env(
         temp_dir: PathBuf,
