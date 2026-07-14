@@ -10,7 +10,7 @@
 # doctests. Do not assume a green nextest run covers doctest examples.
 
 # ── Cross-binary serialization of the heavy V8/esbuild e2e binaries ──────────
-# These 20 integration-test binaries (all in package `zfb`) each spawn a real
+# These 21 integration-test binaries (all in package `zfb`) each spawn a real
 # `zfb dev` / `zfb build` / `zfb preview` process that embeds a V8 host and/or
 # shells out to esbuild. Booting two at once starves CPU/memory and turns
 # their generous boot-deadline watchdogs flaky. `cargo test` serialized these
@@ -18,10 +18,10 @@
 # binaries concurrently by default — so without this group these heavy
 # processes race each other for CPU/memory. The group makes the serialization
 # explicit at the runner level: at most ONE test from this group runs at a
-# time across all 20 binaries.
+# time across all 21 binaries.
 #
 # The set is two sub-groups sharing one test-group:
-#   • 11 flock-adopting binaries (client_bundling_cross_pipeline,
+#   • 12 flock-adopting binaries (client_bundling_cross_pipeline,
 #     build_terminates, preview_cross_mode_e2e, the dev_*_e2e set, and
 #     wasm_ssr_dev_smoke_e2e) — spawn
 #     `zfb dev` and/or `zfb build` and/or `zfb preview`. These ALSO hold
@@ -32,8 +32,10 @@
 #     `zfb preview` (static) against the same build output, so it needs the
 #     same serialization as its dev/build siblings. `dev_out_of_root_collection_e2e`
 #     (issue #1552, epic #1548) covers an out-of-root collection's live
-#     edit→serve loop. `wasm_ssr_dev_smoke_e2e` (issue #1511) is the newest
-#     member: it serves a `prerender=false` Wasm-importing route through a
+#     edit→serve loop. `dev_content_aggregate_cold_boot_e2e` (issue #1598)
+#     starts a fresh content fixture and proves an edit reaches its entry,
+#     index, tag, and paginated aggregate routes. `wasm_ssr_dev_smoke_e2e`
+#     (issue #1511) serves a `prerender=false` Wasm-importing route through a
 #     real `zfb dev` session.
 #   • 9 build-command binaries (build_cleans_outdir, build_package_routes,
 #     build_package_routes_consumer, client_router_autoinclude_build,
@@ -58,14 +60,14 @@
 [test-groups.e2e-heavy]
 max-threads = 1
 
-# The override that assigns the 20 heavy binaries to the e2e-heavy group AND
+# The override that assigns the 21 heavy binaries to the e2e-heavy group AND
 # grants them a long per-test timeout lives in the `default` profile so BOTH
 # local (default profile) and CI (`ci` profile, which inherits default's
 # overrides) get identical serialization + timeout treatment. Exact binary
 # matches (`=name`) keep the set explicit; it is a SUPERSET of #1339's
-# 11-binary flock adoption set (8 original + `preview_cross_mode_e2e` +
-# `dev_out_of_root_collection_e2e` + `wasm_ssr_dev_smoke_e2e`, issues #1547 /
-# #1552 / #1511) — the 9
+# 12-binary flock adoption set (8 original + `preview_cross_mode_e2e` +
+# `dev_out_of_root_collection_e2e` + `dev_content_aggregate_cold_boot_e2e` +
+# `wasm_ssr_dev_smoke_e2e`, issues #1547 / #1552 / #1598 / #1511) — the 9
 # build-command binaries have no flock and rely on this group alone.
 #
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the same OR:
@@ -92,7 +94,7 @@ max-threads = 1
 # for consistency with the render_pipeline entry and to stay exact-name-scoped
 # if the file ever grows a second test.
 [[profile.default.overrides]]
-filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=end_to_end_basic_blog_build) | binary(=html_minify_build) | binary(=preview_cross_mode_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env))'
+filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=end_to_end_basic_blog_build) | binary(=html_minify_build) | binary(=preview_cross_mode_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env))'
 test-group = 'e2e-heavy'
 # The longest LEGITIMATE e2e watchdog is 280s (dev_serve_e2e's lazy scenario
 # and dev_serve_injected_routes_e2e), 300s for the #[ignore]d heavy

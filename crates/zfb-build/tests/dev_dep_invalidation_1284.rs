@@ -36,7 +36,9 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use zfb_build::{BuildOrchestrator, DevAssetPipeline, OrchestratorConfig, PageSelection};
+use zfb_build::{
+    BuildOrchestrator, DevAssetPipeline, GranularityPolicy, OrchestratorConfig, PageSelection,
+};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
 
 fn pid(p: PathBuf) -> PageId {
@@ -71,6 +73,36 @@ fn current_component_edit_selects_all_pages_imprecisely() {
     assert!(
         plan.pages.is_all(),
         "today the Page|Module arm falls back to All when the dev graph has no Module edges"
+    );
+}
+
+/// An event can arrive for a content-shaped path that has not made it into the
+/// dependency graph yet (for example, a just-created entry before discovery
+/// publishes its provenance). It must retain the conservative all-pages
+/// fallback rather than becoming an empty no-op selection.
+#[test]
+fn unknown_content_path_selects_all_pages() {
+    let project = PathBuf::from("/proj");
+    let mut graph = DependencyGraph::new();
+    graph.upsert(PageDeps::new(pid(project.join("pages/index.tsx")), vec![]));
+    graph.upsert(PageDeps::new(pid(project.join("pages/about.tsx")), vec![]));
+    let unknown = project.join("content/posts/not-yet-discovered.md");
+    let orch = BuildOrchestrator::new(
+        OrchestratorConfig::new(&project, vec![PathBuf::from("content")]).with_policy(
+            GranularityPolicy::default().with_content_roots([PathBuf::from("content/posts")]),
+        ),
+        Arc::new(Mutex::new(graph)),
+        DevAssetPipeline::new(),
+    );
+
+    assert!(
+        !orch.graph().lock().unwrap().knows(&unknown),
+        "the test path must remain absent from the graph to exercise the unknown-path fallback",
+    );
+    let plan = orch.plan_for_changes(vec![unknown]);
+    assert!(
+        plan.pages.is_all(),
+        "an unknown Content-classified path must use PageSelection::All rather than silently selecting no pages",
     );
 }
 

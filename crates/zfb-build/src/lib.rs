@@ -51,6 +51,7 @@
 pub mod adapter;
 pub mod atomic;
 pub mod bundler;
+pub mod content_provenance;
 pub mod glob_expand;
 pub mod head_inject;
 pub mod link_base_rewrite;
@@ -74,6 +75,10 @@ pub use bundler::{
     bundle, bundle_with_session, resolve_esbuild_binary_with_env, BundleManifest, BundleMode,
     BundlerInput, BundlerOutput, ContentCollectionSpec, OnBrokenLinks, ResolveMarkdownLinksRoute,
     ResolveMarkdownLinksSpec, RouteEntry, ShadowSession, DEFAULT_ESBUILD_SLOT,
+};
+pub use content_provenance::{
+    ContentCollectionId, ContentCollectionMembership, ContentEdgeGroup, ContentProvenance,
+    ContentProvenanceError, TrackedContentRead,
 };
 pub use head_inject::{
     css_link_tag, inject_prod_head_assets, island_module_script_tag, needs_html5_doctype,
