@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "preact/hooks";
+import { loadMdWasm } from "@zfb-fixture/md-wasm-loader";
 
 const EXAMPLES = [
   ["html", '<main data-x="a & b">hello</main>'],
@@ -37,10 +38,10 @@ export function MdWasmHighlighter() {
   async function runHighlights(): Promise<void> {
     setStatus("Loading the packed browser package…");
 
-    // This exact root import is the browser-condition contract. zfb's islands
-    // bundler must emit the package's glue and wasm resources, but neither is
-    // requested until this click invokes one of the public API calls.
-    const wasm = await import("@takazudo/zfb-md-wasm");
+    // The installed fixture adapter performs the exact package-root lazy
+    // import. zfb's islands bundler must emit the package's glue and wasm
+    // resources, but neither is requested until this click invokes it.
+    const wasm = await loadMdWasm();
     const rendered: RenderedHighlights = {};
     for (const [language, code] of EXAMPLES) {
       const result = await wasm.highlightCode(code, { language });
@@ -77,7 +78,7 @@ export function MdWasmHighlighter() {
 
   async function forceTrapAndRecover(): Promise<void> {
     setStatus("Forcing the test-only trap and waiting for recovery…");
-    const wasm = await import("@takazudo/zfb-md-wasm");
+    const wasm = await loadMdWasm();
     const before = wasm.__getTrapRecoveryStateForTests();
     let trapName = "";
     try {

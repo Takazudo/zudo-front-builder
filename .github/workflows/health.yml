@@ -660,6 +660,7 @@ jobs:
       - name: Stage asserted packed md-wasm package
         run: |
           pnpm --dir tests/md-wasm-browser-smoke install --ignore-workspace --lockfile=false
+          node tests/md-wasm-browser-smoke/stage-fixture-node-modules.mjs
           node tests/md-wasm-browser-smoke/assert-staged-tarball.mjs
 
       - name: Build md-wasm browser fixture with zfb

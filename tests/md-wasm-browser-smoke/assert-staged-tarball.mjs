@@ -18,6 +18,13 @@ const testRoot = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testRoot, "..", "..");
 const archive = resolve(repoRoot, "wasm-md-artifact", "zfb-md-wasm.tgz");
 const installedPackage = resolve(testRoot, "node_modules", "@takazudo", "zfb-md-wasm");
+const fixturePackage = resolve(
+  testRoot,
+  "fixture-site",
+  "node_modules",
+  "@takazudo",
+  "zfb-md-wasm",
+);
 
 if (!existsSync(archive)) {
   throw new Error(`packed archive is missing: ${archive}`);
@@ -51,6 +58,43 @@ for (const relativePath of [
 const sourcePackage = resolve(repoRoot, "crates", "zfb-md-wasm", "npm");
 if (realpathSync(installedPackage) === realpathSync(sourcePackage)) {
   throw new Error("browser fixture resolved the source package instead of the packed tarball");
+}
+if (!existsSync(fixturePackage)) {
+  throw new Error(`fixture project node_modules does not expose packed md-wasm: ${fixturePackage}`);
+}
+if (realpathSync(fixturePackage) !== realpathSync(installedPackage)) {
+  throw new Error(
+    "fixture project node_modules does not resolve md-wasm from the asserted lane package",
+  );
+}
+for (const relativePath of [
+  "@takazudo/zfb/package.json",
+  "@takazudo/zfb-runtime/package.json",
+  "preact/package.json",
+  "preact-render-to-string/package.json",
+  "hono/package.json",
+]) {
+  const frameworkPackage = resolve(testRoot, "fixture-site", "node_modules", relativePath);
+  if (!existsSync(frameworkPackage)) {
+    throw new Error(
+      `fixture project node_modules is missing required zfb framework plumbing: ${relativePath}`,
+    );
+  }
+}
+const loaderSource = resolve(
+  testRoot,
+  "fixture-site",
+  "node_modules",
+  "@zfb-fixture",
+  "md-wasm-loader",
+  "index.js",
+);
+if (
+  !existsSync(loaderSource) ||
+  readFileSync(loaderSource, "utf8") !==
+    'export const loadMdWasm = () => import("@takazudo/zfb-md-wasm");\n'
+) {
+  throw new Error("fixture is missing the installed user-triggered packed md-wasm root importer");
 }
 
 console.log("md-wasm browser fixture is staged from the asserted packed tarball");
