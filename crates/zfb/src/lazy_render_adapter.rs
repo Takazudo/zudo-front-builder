@@ -91,6 +91,7 @@
 //! next request retries. The server treats `render_if_stale` as
 //! best-effort either way and falls through to its disk legs.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -238,7 +239,14 @@ impl LazyRenderAdapter {
                 // request URL. Swapping these breaks the prerender-map join.
                 // Sharp edge 4: `self.injected_routes` is the POST-precedence
                 // set — user-shadowed patterns are already absent.
-                match self.injected_routes.find_match(url_path) {
+                // `lookup_by_url` above already normalizes ordinary concrete
+                // routes. Dynamic injected routes arrive here only after that
+                // index miss, so canonicalize at this seam before Hono sees a
+                // synthetic entry: decode first, then remove trailing slashes
+                // while preserving `/` (issue #1513). Keeping this local to
+                // the fallback avoids double-decoding normal index lookups.
+                let canonical_url = canonicalize_dynamic_injected_url(url_path);
+                match self.injected_routes.find_match(canonical_url.as_ref()) {
                     Some(rec) => {
                         // SSR-only injected routes (`prerender: false`) are
                         // NOT SSG-rendered/cached in dev — mirror S3's
@@ -257,7 +265,8 @@ impl LazyRenderAdapter {
                         // parity is automatic (design record §3/§5).
                         // Injected routes are always HTML pages → extension
                         // `None` (defaults to "html").
-                        let output_path = build_output_path_for_resolved_url(url_path, None);
+                        let output_path =
+                            build_output_path_for_resolved_url(canonical_url.as_ref(), None);
                         // Record this as a known dynamic injected output so a
                         // later content-edit tick can re-stale it (epic #1228,
                         // S5 #1233 / #1227 item (h)). Done UNCONDITIONALLY —
@@ -295,7 +304,7 @@ impl LazyRenderAdapter {
                             true // file exists; normal pre-check determines freshness
                         };
                         let entry = RouteUniverseEntry {
-                            url_path: url_path.to_string(),
+                            url_path: canonical_url.into_owned(),
                             output_path,
                             route_key: rec.pattern.clone(),
                             static_html: false,
@@ -432,6 +441,63 @@ impl LazyRenderAdapter {
         let bytes = std::fs::read(&written)
             .with_context(|| format!("failed to read rendered page {}", written.display()))?;
         Ok(RenderUnderLock::Rendered { claim, bytes })
+    }
+}
+
+/// Canonicalize an injected dynamic-route request before synthesizing its
+/// [`RouteUniverseEntry`]. This mirrors the decode-then-trailing-slash lookup
+/// convention used by the dev URL index, but stays local because the index
+/// helper is intentionally private to `commands::dev` (issue #1513).
+fn canonicalize_dynamic_injected_url(url_path: &str) -> Cow<'_, str> {
+    let decoded = percent_decode_url(url_path);
+    let trimmed = decoded.trim_end_matches('/');
+    if trimmed.is_empty() {
+        // Keep root as `/`; an empty URL is not a valid route value.
+        Cow::Borrowed("/")
+    } else if trimmed.len() == decoded.len() {
+        decoded
+    } else {
+        Cow::Owned(trimmed.to_string())
+    }
+}
+
+/// Decode percent-encoded bytes when the result is valid UTF-8. Malformed
+/// input remains raw, matching the dev URL index's graceful-degradation rule.
+fn percent_decode_url(path: &str) -> Cow<'_, str> {
+    if !path.contains('%') {
+        return Cow::Borrowed(path);
+    }
+
+    let bytes = percent_decode_bytes(path.as_bytes());
+    match String::from_utf8(bytes) {
+        Ok(decoded) => Cow::Owned(decoded),
+        Err(_) => Cow::Borrowed(path),
+    }
+}
+
+fn percent_decode_bytes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'%' && i + 2 < input.len() {
+            if let (Some(high), Some(low)) = (hex_digit(input[i + 1]), hex_digit(input[i + 2])) {
+                out.push((high << 4) | low);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(input[i]);
+        i += 1;
+    }
+    out
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -1116,6 +1182,29 @@ mod tests {
         }
     }
 
+    /// An injected-route harness whose stub records the URL dispatched to the
+    /// renderer. This pins the synthetic entry's canonical `url_path`, not
+    /// merely whether the fallback found a pattern.
+    fn dispatched_url_harness(pattern: &str) -> (Harness, Arc<Mutex<Vec<String>>>) {
+        let dispatched = Arc::new(Mutex::new(Vec::new()));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let dispatched_for_handler = Arc::clone(&dispatched);
+        let hits_for_handler = Arc::clone(&hits);
+        let handler: Arc<dyn Fn(&str) -> HttpResponseLike + Send + Sync> = Arc::new(move |url| {
+            hits_for_handler.fetch_add(1, Ordering::SeqCst);
+            dispatched_for_handler.lock().unwrap().push(url.to_string());
+            html_response("<html><body>canonical</body></html>")
+        });
+        let harness = harness_from_handler_with_injected(
+            vec![],
+            handler,
+            hits,
+            true,
+            InjectedRouteSet::new(vec![injected_rec(pattern)]),
+        );
+        (harness, dispatched)
+    }
+
     /// Synthetic `RouteUniverseEntry` contract (S4 design record §2 /
     /// sharp edges 3 & 4):
     /// - `url_path` = the CONCRETE request URL,
@@ -1209,9 +1298,9 @@ mod tests {
 
     /// Optional catch-all `[[...slug]]` — zero or more segments.
     ///
-    /// Bare prefix matches (the zero-segment case); nested paths match;
-    /// trailing-slash form does NOT (Hono `:rest{.+}?` parity, per the
-    /// `injected_routes::pattern_matches` spec).
+    /// Bare prefix and nested paths match. Direct pattern matching still
+    /// rejects the trailing-slash zero-segment form for Hono parity, but the
+    /// adapter canonicalizes it before this fallback (issue #1513).
     #[test]
     fn dynamic_fallback_matches_optional_catchall() {
         let s = InjectedRouteSet::new(vec![injected_rec("/guide/[[...slug]]")]);
@@ -1234,12 +1323,63 @@ mod tests {
             LazyRenderOutcome::NoRoute,
             "/guide/a/b/c must match /guide/[[...slug]]"
         );
-        // Trailing-slash form does NOT match.
-        assert_eq!(
+        // #1513: direct `pattern_matches` intentionally rejects `/guide/`,
+        // but this adapter canonicalizes it to `/guide` before the fallback.
+        assert_ne!(
             h.adapter.render_stale_route("/guide/"),
             LazyRenderOutcome::NoRoute,
-            "/guide/ (trailing-slash) must NOT match /guide/[[...slug]] (Hono parity)"
+            "/guide/ must be canonicalized before matching /guide/[[...slug]]"
         );
+    }
+
+    /// #1513: canonicalizing before the dynamic fallback must feed the same
+    /// URL to Hono and output-path derivation for both zero- and multi-segment
+    /// optional-catchall requests.
+    #[tokio::test]
+    async fn dynamic_fallback_canonicalizes_trailing_slashes_for_dispatch_and_output() {
+        let (h, dispatched) = dispatched_url_harness("/guide/[[...slug]]");
+
+        h.adapter.render_if_stale("/guide/").await;
+        h.adapter.render_if_stale("/guide/a/b/").await;
+
+        assert_eq!(
+            dispatched.lock().unwrap().clone(),
+            vec!["/guide".to_string(), "/guide/a/b".to_string()],
+            "the synthetic entry must dispatch canonical URLs into the renderer"
+        );
+        assert!(
+            h.html_root.path().join("guide/index.html").is_file(),
+            "the canonical zero-segment URL must write guide/index.html"
+        );
+        assert!(
+            h.html_root.path().join("guide/a/b/index.html").is_file(),
+            "the canonical nested URL must write guide/a/b/index.html"
+        );
+    }
+
+    /// Decode before trimming: an encoded terminal slash must not become part
+    /// of a dynamic `paths()` parameter or an emitted directory name (#1513).
+    #[tokio::test]
+    async fn dynamic_fallback_decodes_encoded_terminal_slash_before_dispatch() {
+        let (h, dispatched) = dispatched_url_harness("/encoded/[...rest]");
+
+        h.adapter.render_if_stale("/encoded/a%2Fb%2F").await;
+
+        assert_eq!(
+            dispatched.lock().unwrap().clone(),
+            vec!["/encoded/a/b".to_string()],
+            "percent-decoding must precede trailing-slash canonicalization"
+        );
+        assert!(
+            h.html_root.path().join("encoded/a/b/index.html").is_file(),
+            "the decoded canonical URL must determine the output path"
+        );
+    }
+
+    #[test]
+    fn dynamic_fallback_canonicalization_preserves_root() {
+        assert_eq!(canonicalize_dynamic_injected_url("/").as_ref(), "/");
+        assert_eq!(canonicalize_dynamic_injected_url("////").as_ref(), "/");
     }
 
     /// Parity path: with an empty `InjectedRouteSet` and a url_index
