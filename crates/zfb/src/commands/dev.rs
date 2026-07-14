@@ -3554,7 +3554,7 @@ impl DevRenderSession {
     #[cfg(feature = "embed_v8")]
     fn clear_boot_content_provenance(&self) {
         if let Ok(mut state) = self.inner.content_trace.lock() {
-            state.reads_by_consumer.clear();
+            state.reads_by_observation.clear();
             state.boot_complete = false;
         }
         self.clear_content_edges();
@@ -3701,12 +3701,12 @@ impl DevRenderSession {
                 return Ok(());
             }
             apply_content_trace_observations(
-                &mut state.reads_by_consumer,
+                &mut state.reads_by_observation,
                 current_trace.observed,
                 current_trace.reads,
             );
             let reads: Vec<TrackedContentRead> = state
-                .reads_by_consumer
+                .reads_by_observation
                 .values()
                 .flatten()
                 .cloned()
@@ -4590,7 +4590,7 @@ impl Default for DevContentTraceEventKind {
 
 /// The actual worker seam that performed the read.
 #[cfg(feature = "embed_v8")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum DevContentTracePhase {
     /// The synthetic `/__paths__/…` evaluation of a dynamic route.
@@ -4598,6 +4598,17 @@ enum DevContentTracePhase {
     /// A normal route render (including static `getStaticProps` / layout
     /// reads). Those are always aggregate collection readers.
     Render,
+}
+
+/// One independent observation slot in the current worker. A dynamic page can
+/// call `getCollection()` while evaluating `paths()` yet make no collection
+/// read during its ordinary render; those two executions must not erase one
+/// another's provenance.
+#[cfg(feature = "embed_v8")]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DevContentTraceObservation {
+    consumer: PageId,
+    phase: DevContentTracePhase,
 }
 
 /// JSON payload returned by [`DEV_CONTENT_TRACE_ENDPOINT`].
@@ -4615,15 +4626,15 @@ struct DevContentTracePayload {
 ///
 /// A cold boot always clears this state after restoring the persisted graph,
 /// then repopulates it from the live worker. Later host swaps retain prior
-/// observations only until the corresponding route is visited by the new
-/// worker. A visit with no tracked read removes its old provenance; an
-/// unvisited route remains conservative until the new worker can establish
-/// its current behavior.
+/// observations only until the corresponding route phase is visited by the
+/// new worker. A visit with no tracked read removes that phase's old
+/// provenance; an unvisited phase remains conservative until the new worker
+/// can establish its current behavior.
 #[cfg(feature = "embed_v8")]
 #[derive(Default)]
 struct DevContentTraceState {
     token: Option<String>,
-    reads_by_consumer: BTreeMap<PageId, Vec<TrackedContentRead>>,
+    reads_by_observation: BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>>,
     boot_complete: bool,
 }
 
@@ -6064,7 +6075,7 @@ fn boot_dev_renderer(
             dep_graph: Mutex::new(None),
             content_trace: Mutex::new(DevContentTraceState {
                 token: content_trace_token,
-                reads_by_consumer: BTreeMap::new(),
+                reads_by_observation: BTreeMap::new(),
                 boot_complete: false,
             }),
             out_of_root_watch_targets: Mutex::new(std::collections::BTreeSet::new()),
@@ -6301,13 +6312,13 @@ fn add_content_slug_candidate(candidates: &mut BTreeSet<String>, value: &str) {
 /// aggregate edge is safe; a guessed direct edge can under-render.
 #[cfg(feature = "embed_v8")]
 struct ClassifiedContentTrace {
-    observed: BTreeSet<PageId>,
-    reads: Vec<TrackedContentRead>,
+    observed: BTreeSet<DevContentTraceObservation>,
+    reads: BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>>,
 }
 
 /// Convert worker trace events into route observations and pure provenance
 /// reads. A visit is meaningful even when it made no `getCollection()` call:
-/// it is the positive evidence needed to drop that route's prior worker
+/// it is the positive evidence needed to drop that route phase's prior worker
 /// generation observations.
 #[cfg(feature = "embed_v8")]
 fn classify_content_trace_events(
@@ -6317,12 +6328,16 @@ fn classify_content_trace_events(
     project_root: &Path,
 ) -> Result<ClassifiedContentTrace> {
     let mut observed = BTreeSet::new();
-    let mut reads = Vec::new();
+    let mut reads = BTreeMap::new();
     for event in events {
         let (consumer, entries) =
             resolve_content_trace_consumer(&event.source, routes_by_source, project_root)?;
+        let observation = DevContentTraceObservation {
+            consumer: consumer.clone(),
+            phase: event.phase,
+        };
         if event.kind == DevContentTraceEventKind::Visit {
-            observed.insert(consumer);
+            observed.insert(observation);
             continue;
         }
         let collection = ContentCollectionId::new(event.collection.ok_or_else(|| {
@@ -6331,19 +6346,21 @@ fn classify_content_trace_events(
                 event.source
             )
         })?);
+        let reads_for_observation = reads.entry(observation).or_insert_with(Vec::new);
         match event.phase {
             DevContentTracePhase::Render => {
-                reads.push(TrackedContentRead::collection(consumer, collection));
+                reads_for_observation.push(TrackedContentRead::collection(consumer, collection));
             }
             DevContentTracePhase::Paths => {
                 if let Some(entry_paths) =
                     verified_paths_entry_reads(entries, &collection, membership)
                 {
-                    reads.extend(entry_paths.into_iter().map(|entry| {
+                    reads_for_observation.extend(entry_paths.into_iter().map(|entry| {
                         TrackedContentRead::entry(consumer.clone(), collection.clone(), entry)
                     }));
                 } else {
-                    reads.push(TrackedContentRead::collection(consumer, collection));
+                    reads_for_observation
+                        .push(TrackedContentRead::collection(consumer, collection));
                 }
             }
         }
@@ -6392,29 +6409,20 @@ fn resolve_content_trace_consumer<'a>(
     Ok((PageId::new(source), entries))
 }
 
-/// Apply one current-worker drain to the retained observations. Sources that
-/// the worker actually visited are replaced wholesale; all others remain as a
-/// conservative bridge until this worker has executed them too.
+/// Apply one current-worker drain to the retained observations. Route phases
+/// that the worker actually visited are replaced wholesale; all others remain
+/// as a conservative bridge until this worker has executed them too.
 #[cfg(feature = "embed_v8")]
 fn apply_content_trace_observations(
-    reads_by_consumer: &mut BTreeMap<PageId, Vec<TrackedContentRead>>,
-    observed: impl IntoIterator<Item = PageId>,
-    reads: impl IntoIterator<Item = TrackedContentRead>,
+    reads_by_observation: &mut BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>>,
+    observed: impl IntoIterator<Item = DevContentTraceObservation>,
+    reads: impl IntoIterator<Item = (DevContentTraceObservation, Vec<TrackedContentRead>)>,
 ) {
-    for consumer in observed {
-        reads_by_consumer.remove(&consumer);
+    for observation in observed {
+        reads_by_observation.remove(&observation);
     }
-    for read in reads {
-        let consumer = tracked_content_read_consumer(&read).clone();
-        reads_by_consumer.entry(consumer).or_default().push(read);
-    }
-}
-
-#[cfg(feature = "embed_v8")]
-fn tracked_content_read_consumer(read: &TrackedContentRead) -> &PageId {
-    match read {
-        TrackedContentRead::Entry { consumer, .. }
-        | TrackedContentRead::Collection { consumer, .. } => consumer,
+    for (observation, reads) in reads {
+        reads_by_observation.insert(observation, reads);
     }
 }
 
@@ -9813,7 +9821,7 @@ mod tests {
         ) {
             let classified =
                 classify_content_trace_events(events, routes, membership, root).unwrap();
-            let groups = ContentProvenance::from_reads(classified.reads)
+            let groups = ContentProvenance::from_reads(classified.reads.into_values().flatten())
                 .edge_groups(&membership.membership)
                 .unwrap();
             replace_content_edges(graph, groups);
@@ -10018,17 +10026,18 @@ mod tests {
                 classified.reads.is_empty(),
                 "the visit made no collection read"
             );
+            let render_observation = DevContentTraceObservation {
+                consumer: PageId::new(source.clone()),
+                phase: DevContentTracePhase::Render,
+            };
             assert_eq!(
                 classified.observed,
-                BTreeSet::from([PageId::new(source.clone())])
+                BTreeSet::from([render_observation.clone()])
             );
 
             let mut retained = BTreeMap::from([(
-                PageId::new(source),
-                vec![TrackedContentRead::collection(
-                    PageId::new(root.join("pages/posts/index.tsx")),
-                    "posts",
-                )],
+                render_observation,
+                vec![TrackedContentRead::collection(PageId::new(source), "posts")],
             )]);
             apply_content_trace_observations(&mut retained, classified.observed, classified.reads);
             assert!(
@@ -10047,6 +10056,34 @@ mod tests {
                 graph.consumers_of(&alpha),
                 None,
                 "the stale collection reader must no longer leave a content edge"
+            );
+        }
+
+        #[test]
+        fn render_visit_preserves_paths_provenance_for_the_same_dynamic_route() {
+            let consumer = PageId::new("pages/posts/[slug].tsx");
+            let paths_observation = DevContentTraceObservation {
+                consumer: consumer.clone(),
+                phase: DevContentTracePhase::Paths,
+            };
+            let render_observation = DevContentTraceObservation {
+                consumer: consumer.clone(),
+                phase: DevContentTracePhase::Render,
+            };
+            let mut retained = BTreeMap::from([(
+                paths_observation.clone(),
+                vec![TrackedContentRead::collection(consumer, "posts")],
+            )]);
+
+            apply_content_trace_observations(
+                &mut retained,
+                BTreeSet::from([render_observation]),
+                BTreeMap::new(),
+            );
+
+            assert!(
+                retained.contains_key(&paths_observation),
+                "a render that makes no collection read must not erase the route's prior paths() evidence",
             );
         }
 
