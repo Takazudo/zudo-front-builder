@@ -57,7 +57,8 @@
 //! [`super::AssetPipeline`] trait so neither command sprouts an
 //! `if mode == Production` conditional.
 
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
@@ -104,6 +105,56 @@ pub struct CompanionFile {
 
     /// Raw bytes to write verbatim — never rewritten or hashed.
     pub bytes: Vec<u8>,
+}
+
+/// Validate the complete filename namespace for one entry and its verbatim
+/// companions before any caller writes it to disk.
+///
+/// The islands bundler already validates each individual chunk, worker, and
+/// resource class. This is the final writer-side check that their *union*
+/// remains safe: every companion is a flat basename and no companion can
+/// collide with another companion or with the entry itself.
+///
+/// This is also used by the dev writer, which publishes the same stable entry
+/// and companion namespace without production's entry hash.
+pub fn validate_companion_file_set(
+    entry_filename: &str,
+    companions: &[CompanionFile],
+) -> Result<()> {
+    if entry_filename.is_empty()
+        || entry_filename.contains('/')
+        || entry_filename.contains('\\')
+        || entry_filename.contains("..")
+    {
+        anyhow::bail!(
+            "asset entry filename {entry_filename:?} must be a non-empty flat basename \
+             (no path separator or `..`)"
+        );
+    }
+
+    let mut filenames = BTreeSet::new();
+    filenames.insert(entry_filename);
+    for companion in companions {
+        if companion.filename.is_empty()
+            || companion.filename.contains('/')
+            || companion.filename.contains('\\')
+            || companion.filename.contains("..")
+        {
+            anyhow::bail!(
+                "companion filename {:?} must be a non-empty flat basename \
+                 (no path separator or `..`)",
+                companion.filename
+            );
+        }
+        if !filenames.insert(companion.filename.as_str()) {
+            anyhow::bail!(
+                "companion filename {:?} collides with the entry or another companion",
+                companion.filename
+            );
+        }
+    }
+
+    Ok(())
 }
 
 /// One asset the production pipeline is asked to ship.
@@ -457,8 +508,9 @@ fn is_url_boundary_byte(b: Option<u8>) -> bool {
 
 /// Hash, write, and record the URL for a single emitted asset.
 ///
-/// Writes the entry under a content-hashed filename, then writes each
-/// [`CompanionFile`] verbatim in the same directory with no renaming.
+/// Validates the complete entry/companion namespace, writes each
+/// [`CompanionFile`] verbatim in the same directory with no renaming, then
+/// publishes the entry under its content-hashed filename.
 ///
 /// Returns the hashed public URL the pipeline will rewrite into HTML.
 fn ship_asset(
@@ -479,38 +531,24 @@ fn ship_asset(
         )
     })?;
 
-    atomic_write(&dest, &asset.bytes).with_context(|| {
-        format!(
-            "production: failed to write hashed asset {}",
-            dest.display()
-        )
-    })?;
+    let entry_filename = hashed_relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("production: hashed asset has no UTF-8 filename"))?;
+    validate_companion_file_set(entry_filename, &asset.companions)
+        .context("production: invalid entry/companion filename set")?;
 
-    // Write each companion verbatim to the same directory as the entry.
-    // Companions must be FLAT basenames (no path separators / `..` / empty)
-    // so they land beside the entry without escaping the asset directory —
-    // a separator means esbuild's chunk contract was violated upstream, so
-    // we reject loudly rather than ship it. The hashed entry's relative
-    // directory is then re-joined and run through the same symlink-aware
-    // `validate_output_path` the entry used, so a planted symlink inside
-    // dist cannot redirect the write outside dist_root.
-    if !asset.companions.is_empty() {
-        let entry_rel_dir = hashed_relative
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
-        for companion in &asset.companions {
-            if companion.filename.is_empty()
-                || companion.filename.contains('/')
-                || companion.filename.contains('\\')
-                || companion.filename.contains("..")
-            {
-                return Err(anyhow::anyhow!(
-                    "production: companion filename {:?} must be a non-empty flat basename \
-                     (no path separator or `..`)",
-                    companion.filename
-                ));
-            }
+    // Validate every final destination before writing any part of the asset
+    // generation. This catches traversal, symlink escapes, and cross-class
+    // filename collisions before an entry or resource becomes visible.
+    let entry_rel_dir = hashed_relative
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let companion_dests: Vec<_> = asset
+        .companions
+        .iter()
+        .map(|companion| {
             let companion_rel = entry_rel_dir.join(&companion.filename);
             let companion_dest = validate_output_path(&ctx.dist_root, &companion_rel)
                 .with_context(|| {
@@ -519,14 +557,27 @@ fn ship_asset(
                         companion_rel.display()
                     )
                 })?;
-            atomic_write(&companion_dest, &companion.bytes).with_context(|| {
-                format!(
-                    "production: failed to write companion file {}",
-                    companion_dest.display()
-                )
-            })?;
-        }
+            Ok((companion, companion_dest))
+        })
+        .collect::<Result<_>>()?;
+
+    // The entry may contain relative references to all three companion
+    // classes (chunks, workers, and file-loader resources), so write every
+    // companion first and make the hashed entry the final publish step.
+    for (companion, companion_dest) in companion_dests {
+        atomic_write(&companion_dest, &companion.bytes).with_context(|| {
+            format!(
+                "production: failed to write companion file {}",
+                companion_dest.display()
+            )
+        })?;
     }
+    atomic_write(&dest, &asset.bytes).with_context(|| {
+        format!(
+            "production: failed to write hashed asset {}",
+            dest.display()
+        )
+    })?;
 
     let hashed_url = if let Some(ref stable) = asset.stable_url {
         rewrite_url(stable, &asset.relative_path, &hashed_relative)
@@ -1072,16 +1123,32 @@ mod tests {
     fn prod_pipeline_ships_companions_verbatim() {
         let dir = tempdir().unwrap();
         let chunk_bytes = b"import(\"./other.js\");export const x=1;".to_vec();
+        let glue_bytes = b"export function initSync() {}".to_vec();
+        let wasm_bytes = vec![0, 97, 115, 109];
         let chunk_for_emitter = chunk_bytes.clone();
+        let glue_for_emitter = glue_bytes.clone();
+        let wasm_for_emitter = wasm_bytes.clone();
         let islands_emitter = move || {
             Ok(Some(EmittedAsset {
-                bytes: b"// entry\nimport(\"./islands-chunk-AAAA1111.js\");".to_vec(),
+                bytes: b"// entry\nimport(\"./islands-chunk-AAAA1111.js\");\n\
+                    import \"./islands-resource-glue-BBBB.mjs\";"
+                    .to_vec(),
                 relative_path: PathBuf::from("assets/islands.js"),
                 stable_url: Some("/assets/islands.js".into()),
-                companions: vec![CompanionFile {
-                    filename: "islands-chunk-AAAA1111.js".to_string(),
-                    bytes: chunk_for_emitter.clone(),
-                }],
+                companions: vec![
+                    CompanionFile {
+                        filename: "islands-chunk-AAAA1111.js".to_string(),
+                        bytes: chunk_for_emitter.clone(),
+                    },
+                    CompanionFile {
+                        filename: "islands-resource-glue-BBBB.mjs".to_string(),
+                        bytes: glue_for_emitter.clone(),
+                    },
+                    CompanionFile {
+                        filename: "islands-resource-wasm-CCCC.wasm".to_string(),
+                        bytes: wasm_for_emitter.clone(),
+                    },
+                ],
             }))
         };
         let pipeline = ProductionAssetPipeline::new(ProductionEmitters {
@@ -1093,18 +1160,18 @@ mod tests {
         let plan = plan_full(vec![]);
         let outcome = pipeline.apply(&plan, &ctx).unwrap();
 
-        // Only the entry is reported as a hashed asset URL; the chunk is not.
+        // Only the entry is reported as a hashed asset URL; companions are not.
         assert_eq!(outcome.hashed_asset_urls.len(), 1);
 
         let assets: Vec<String> = std::fs::read_dir(dir.path().join("assets"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        // Hashed entry + verbatim chunk.
+        // Hashed entry + verbatim chunk and two typed resources.
         assert_eq!(
             assets.len(),
-            2,
-            "expected hashed entry + chunk; got {assets:?}"
+            4,
+            "expected hashed entry + three companions; got {assets:?}"
         );
         assert!(
             assets
@@ -1120,6 +1187,26 @@ mod tests {
         let on_disk =
             std::fs::read(dir.path().join("assets").join("islands-chunk-AAAA1111.js")).unwrap();
         assert_eq!(on_disk, chunk_bytes);
+        assert_eq!(
+            std::fs::read(
+                dir.path()
+                    .join("assets")
+                    .join("islands-resource-glue-BBBB.mjs")
+            )
+            .unwrap(),
+            glue_bytes,
+            "resource glue bytes must never be rewritten"
+        );
+        assert_eq!(
+            std::fs::read(
+                dir.path()
+                    .join("assets")
+                    .join("islands-resource-wasm-CCCC.wasm")
+            )
+            .unwrap(),
+            wasm_bytes,
+            "resource wasm bytes must never be rewritten"
+        );
     }
 
     /// A companion with a non-flat filename (path separator / `..` /
@@ -1153,7 +1240,38 @@ mod tests {
                 pipeline.apply(&plan, &ctx).is_err(),
                 "non-flat companion filename must be rejected",
             );
+            assert!(
+                !dir.path().join("assets").exists(),
+                "the invalid final namespace must fail before publishing the entry"
+            );
         }
+    }
+
+    #[test]
+    fn final_companion_namespace_rejects_entry_and_cross_class_collisions() {
+        let duplicate_resource_name = vec![
+            CompanionFile {
+                filename: "islands-resource-glue-AAAA.mjs".to_string(),
+                bytes: b"glue".to_vec(),
+            },
+            // The writer has no class-specific semantics at this boundary;
+            // a worker/resource collision must fail exactly like two chunks.
+            CompanionFile {
+                filename: "islands-resource-glue-AAAA.mjs".to_string(),
+                bytes: b"different bytes".to_vec(),
+            },
+        ];
+        let err = validate_companion_file_set("islands-deadbeef.js", &duplicate_resource_name)
+            .expect_err("duplicate companion names must be rejected");
+        assert!(err.to_string().contains("collides"));
+
+        let entry_collision = vec![CompanionFile {
+            filename: "islands-deadbeef.js".to_string(),
+            bytes: b"not the entry".to_vec(),
+        }];
+        let err = validate_companion_file_set("islands-deadbeef.js", &entry_collision)
+            .expect_err("a companion must not overwrite the entry");
+        assert!(err.to_string().contains("collides"));
     }
 
     /// Production never relies on the dev-style bool runners. Even

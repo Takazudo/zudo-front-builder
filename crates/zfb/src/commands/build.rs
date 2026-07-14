@@ -3290,27 +3290,39 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // shadow tree during `bundle()`. It drops at end of function, after the
     // bundle bytes are in memory.
     match build_production_islands_asset(&bundler, &bundle_islands, &bundle_cfg)? {
-        Some(asset) => {
-            let companions = asset
-                .chunks
-                .into_iter()
-                .chain(asset.workers)
-                .map(|c| CompanionFile {
-                    filename: c.filename,
-                    bytes: c.bytes,
-                })
-                .collect();
-            Ok((
-                Some(AssetEmitterPayload {
-                    bytes: asset.bytes,
-                    relative_path: asset.relative_path,
-                    stable_url: asset.stable_url,
-                    companions,
-                }),
-                registered_marker_names,
-            ))
-        }
+        Some(asset) => Ok((
+            Some(production_islands_asset_to_payload(asset)),
+            registered_marker_names,
+        )),
         None => Ok((None, registered_marker_names)),
+    }
+}
+
+/// Convert the islands crate's typed production output into the generic
+/// writer payload without erasing its companion lifecycle. Chunks, workers,
+/// and file-loader resources remain independently typed until this final
+/// writer boundary, where all three must be copied verbatim beside the entry.
+fn production_islands_asset_to_payload(
+    asset: zfb_islands::ProductionIslandsAsset,
+) -> AssetEmitterPayload {
+    let companions = asset
+        .chunks
+        .into_iter()
+        .chain(asset.workers)
+        .map(|chunk| CompanionFile {
+            filename: chunk.filename,
+            bytes: chunk.bytes,
+        })
+        .chain(asset.resources.into_iter().map(|resource| CompanionFile {
+            filename: resource.filename,
+            bytes: resource.bytes,
+        }))
+        .collect();
+    AssetEmitterPayload {
+        bytes: asset.bytes,
+        relative_path: asset.relative_path,
+        stable_url: asset.stable_url,
+        companions,
     }
 }
 
@@ -5756,12 +5768,59 @@ fn copy_redirects_file(
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
     use tempfile::tempdir;
     use zfb_build::bundler::{BundleManifest, BundlerOutput, RouteEntry};
     use zfb_build::renderer::{HttpResponseLike, RendererOutput, SsrManifest};
     use zfb_router::{Route, RouteKind, Segment};
+
+    #[test]
+    fn production_islands_payload_keeps_resource_companions_verbatim() {
+        let payload = production_islands_asset_to_payload(zfb_islands::ProductionIslandsAsset {
+            bytes: b"import './islands-resource-zfb_md_wasm_glue-AAAA.mjs';".to_vec(),
+            relative_path: PathBuf::from("assets/islands.js"),
+            stable_url: "/assets/islands.js".to_string(),
+            chunks: vec![zfb_islands::IslandsChunk {
+                filename: "islands-chunk-BBBB.js".to_string(),
+                bytes: b"chunk".to_vec(),
+            }],
+            workers: vec![zfb_islands::IslandsChunk {
+                filename: "worker-src-s-search-d-worker-d-ts.js".to_string(),
+                bytes: b"worker".to_vec(),
+            }],
+            resources: vec![
+                zfb_islands::IslandsResource {
+                    filename: "islands-resource-zfb_md_wasm_glue-AAAA.mjs".to_string(),
+                    bytes: b"glue bytes".to_vec(),
+                },
+                zfb_islands::IslandsResource {
+                    filename: "islands-resource-zfb_md_wasm_bg-CCCC.wasm".to_string(),
+                    bytes: vec![0, 97, 115, 109],
+                },
+            ],
+        });
+
+        let companions = payload
+            .companions
+            .into_iter()
+            .map(|companion| (companion.filename, companion.bytes))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(companions.len(), 4);
+        assert_eq!(
+            companions["islands-resource-zfb_md_wasm_glue-AAAA.mjs"],
+            b"glue bytes"
+        );
+        assert_eq!(
+            companions["islands-resource-zfb_md_wasm_bg-CCCC.wasm"],
+            [0, 97, 115, 109]
+        );
+        assert_eq!(companions["islands-chunk-BBBB.js"], b"chunk");
+        assert_eq!(
+            companions["worker-src-s-search-d-worker-d-ts.js"],
+            b"worker"
+        );
+    }
 
     /// Fake [`BuildRunner`] that records the inputs it received and
     /// returns canned outputs. `RefCell` so multiple methods can mutate
@@ -7174,7 +7233,16 @@ mod tests {
                     bytes: b"// js".to_vec(),
                     relative_path: PathBuf::from("assets/islands.js"),
                     stable_url: "/assets/islands.js".to_string(),
-                    companions: Vec::new(),
+                    companions: vec![
+                        CompanionFile {
+                            filename: "islands-resource-zfb_md_wasm_glue-AAAA.mjs".to_string(),
+                            bytes: b"glue".to_vec(),
+                        },
+                        CompanionFile {
+                            filename: "islands-resource-zfb_md_wasm_bg-BBBB.wasm".to_string(),
+                            bytes: vec![0, 97, 115, 109],
+                        },
+                    ],
                 }),
                 client_scripts: vec![zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b"// widget".to_vec(),
@@ -7239,6 +7307,25 @@ mod tests {
         assert_eq!(
             inputs.client_scripts[0].stable_url,
             "/pj/zudo-doc/assets/client/search-widget.js"
+        );
+        // Companions remain file-relative to the hashed entry; base changes
+        // only the entry's public URL and must never rewrite their emitted
+        // names or bytes.
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().companions[0].filename,
+            "islands-resource-zfb_md_wasm_glue-AAAA.mjs"
+        );
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().companions[0].bytes,
+            b"glue"
+        );
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().companions[1].filename,
+            "islands-resource-zfb_md_wasm_bg-BBBB.wasm"
+        );
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().companions[1].bytes,
+            [0, 97, 115, 109]
         );
 
         // "/pj/zudo-doc" (no trailing slash) ⇒ same prefix.
