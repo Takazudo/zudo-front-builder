@@ -219,8 +219,7 @@ export type ZfbVirtualModuleLoader = () => string | Promise<string>;
  *
  * ```ts
  * setup({ command, injectRoute }) {
- *   // package-owned page route (prerendered at BUILD; see injectRoute for
- *   // the dev caveat)
+ *   // package-owned page route (rendered in build and dev)
  *   injectRoute("/preset-page", "./pages/preset-page.tsx");
  *   // dev-only mock endpoint
  *   if (command === "dev") {
@@ -237,10 +236,11 @@ export type ZfbVirtualModuleLoader = () => string | Promise<string>;
 export type ZfbSetupContext = {
   /**
    * Active zfb command. `"build"` during `zfb build`; `"dev"` during
-   * `zfb dev`; `"preview"` during `zfb preview` (#1542). Affects
-   * `injectRoute`: in `"dev"`, `"/"` is reserved for the devMiddleware
-   * catch-all and is rejected; in `"build"`, a `"/"` package route is
-   * allowed (see [`injectRoute`](#injectRoute)).
+   * `zfb dev`; `"preview"` during `zfb preview` (#1542). It can guide
+   * lifecycle-specific plugin behavior. `injectRoute` registrations are
+   * accepted in both `"dev"` and `"build"`; user `pages/` routes retain
+   * precedence over matching injected routes (see
+   * [`injectRoute`](#injectRoute)).
    *
    * Under `"preview"`, `setup` still fires (Rust-side via the minimal
    * non-V8 `run_preview_setup` path) so plugin-side state
@@ -296,10 +296,10 @@ export type ZfbSetupContext = {
    *   into a per-build overlay pages root and **prerendered** through
    *   the normal scan → bundle → render pipeline, so a preset can own a
    *   route without the project shipping a `pages/` stub file. A `"/"`
-   *   package route is allowed (it becomes the project's root page,
-   *   enabling a truly empty/absent user `pages/`). A package route
-   *   whose URL shape collides with a user `pages/` route is dropped
-   *   (user `pages/` wins). This is the supported, complete path.
+   *   package route becomes the project's root page when no user
+   *   `pages/index` exists, enabling a truly empty/absent user `pages/`.
+   *   A package route whose URL shape collides with a user `pages/` route
+   *   is dropped (user `pages/` wins). This is the supported, complete path.
    * - In **dev**, both static and dynamic injected routes are rendered
    *   by `zfb dev`. Static routes (where the URL equals the pattern,
    *   e.g. `/preset-about`) are seeded into the dev route universe at
@@ -307,8 +307,9 @@ export type ZfbSetupContext = {
    *   on first request via a request-time synthetic entry — params are
    *   extracted from the URL by the Hono router inside the live bundle.
    *   User `pages/` files take precedence over any injected route of
-   *   the same shape (including the dev-only `"/"` reservation, which
-   *   is still rejected at registration in dev). **HMR:** content the
+   *   the same shape, including `pages/index` over an injected `"/"`.
+   *   Without a user index, an injected root is staged, seeded, and served
+   *   like any other static injected route. **HMR:** content the
    *   route reads from watched collections live-refreshes normally.
    *   Editing the package's **compiled entrypoint under `node_modules`**
    *   is NOT watched and requires a `zfb dev` restart (restart-only

@@ -272,7 +272,7 @@ pub enum SetupRegistryError {
     /// Retained for a future genuinely-unsupported `injectRoute` shape
     /// during a build. As of #1193 the build path ACCEPTS prerenderable
     /// package routes, so this is no longer constructed by `ingest` — the
-    /// old unconditional dev-only rejection is gone. Kept (allowed dead)
+    /// old unconditional command-mode rejection is gone. Kept (allowed dead)
     /// rather than removed so a later wave can reintroduce a scoped
     /// rejection without re-plumbing the error surface.
     #[allow(dead_code)]
@@ -411,11 +411,11 @@ pub(crate) struct RawPluginSetupOutput {
 /// checked for a clash, and on first conflict the whole commit
 /// aborts with the offending pair named.
 ///
-/// As of #1193 `injectRoute` is accepted in both commands, so the
-/// accumulator no longer needs the active [`SetupCommand`] — the only
-/// command-dependent validation left (the dev-scoped `"/"` rejection)
-/// runs JS-side in `plugin-host.mjs`. `new` still takes the command for
-/// call-site symmetry with `run_setup`; it is intentionally unused here.
+/// `injectRoute` is accepted in both build and dev, so the accumulator has no
+/// command-dependent route validation. User-page precedence, including a
+/// `pages/index` collision with an injected `/`, is applied downstream. `new`
+/// still takes the command for call-site symmetry with `run_setup`; it is
+/// intentionally unused here.
 pub(crate) struct PluginSetupAccumulator<'a> {
     project_root: &'a Path,
     alias_origin: HashMap<String, (String, PathBuf)>, // from -> (plugin, target)
@@ -428,8 +428,8 @@ pub(crate) struct PluginSetupAccumulator<'a> {
     client_entries: ClientEntryList,
 }
 
-/// The active `zfb` command for this run — `setup` ctx exposes it
-/// on the JS side and `injectRoute` is rejected during builds.
+/// The active `zfb` command for this run. `setup` exposes it on the JS side;
+/// `injectRoute` registrations are accepted and handled downstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupCommand {
     Build,
@@ -453,8 +453,8 @@ impl SetupCommand {
 
 impl<'a> PluginSetupAccumulator<'a> {
     // `_command` is retained for call-site symmetry with `run_setup` and
-    // future command-scoped validation; conflict detection no longer
-    // branches on it (#1193 — the dev-scoped `"/"` rejection runs JS-side).
+    // possible future command-scoped validation; conflict detection does not
+    // branch on it today.
     pub(crate) fn new(project_root: &'a Path, _command: SetupCommand) -> Self {
         Self {
             project_root,

@@ -47,6 +47,27 @@ export function paths(): PathEntry[] | Promise<PathEntry[]>;
 - `props` is optional, opaque to the engine, and forwarded verbatim to
   the page component as the `props` prop. The engine never inspects it.
 
+### Source and compiled entrypoints
+
+A dynamic route needs an ESM `paths` export whether its entrypoint is a
+project page or a compiled `.js` module registered with `injectRoute`.
+Compiled output often keeps the local binding and exports it with a clause:
+
+```js
+function paths() {
+  return [{ params: { slug: "intro" } }];
+}
+export { paths };
+```
+
+zfb recognizes this local export-clause form. When its result is statically
+literal, zfb can enumerate it directly. When `paths()` depends on imports,
+collections, async work, or other nonliteral code, zfb evaluates the runtime
+export during route enumeration. A package can therefore inject its built
+`dist/` route directly; it does not need a parallel source `.tsx` entrypoint.
+This does not change file-system discovery: a `.js` file placed under `pages/`
+is not scanned as a user page.
+
 ## A blog post page
 
 The canonical use of `paths()` is enumerating slugs from a content
@@ -153,10 +174,11 @@ this when it builds the route table — see
   synchronous; Promise-returning `paths()` exports are also supported. Keep
   the result pure-data and deterministic — the router calls it during route
   enumeration, well before render.
-- `paths()` is **evaluated once per route per build** — the result is
-  memoised and reused for every page rendered from the same route
-  template. Per-entry work inside `paths()` (such as mapping a
-  collection) is safe and will not be repeated for each output URL.
+- Route enumeration happens once per route per build. A statically literal
+  `paths` result can be read without running the module; a runtime `paths()`
+  result is evaluated once, then memoised and reused for every page rendered
+  from the same route template. Per-entry work inside `paths()` (such as
+  mapping a collection) is safe and will not be repeated for each output URL.
 - Two routes that resolve to the same template raise
   `RouterError::AmbiguousRoute` at build time. The router also raises
   `RouterError::AmbiguousShape` when two routes differ only in

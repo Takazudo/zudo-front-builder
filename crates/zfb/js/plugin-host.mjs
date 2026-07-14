@@ -286,19 +286,12 @@ async function handleSetup(id, msg) {
         // and empty bracket segments ([] / [...]) are not valid in the
         // pages/ grammar.
         //
-        // DEV "/" RESERVATION (#1193, #1262): a preset's setup() runs in
-        // BOTH `zfb dev` and `zfb build`, so a package that owns the site
-        // index calls injectRoute("/") in both modes. The host ACCEPTS the
-        // "/" registration in either mode — the pre-#1262 dev-only throw
-        // here crashed any such preset's dev server, which was the bug. The
-        // reservation still holds: in dev, "/" is owned by the user
-        // `pages/index` (if present) or by devMiddleware's catch-all, NEVER
-        // by a plugin. The Rust dev route resolution (`resolve_dev_pages_root`)
-        // drops an injected "/" unconditionally, so a plugin's injected "/"
-        // is accepted here but is NOT rendered in dev. In a BUILD the "/"
-        // package route IS rendered — it materialises as the overlay
-        // `pages/index.tsx` (the project root page), enabling a truly
-        // empty/absent user `pages/`.
+        // A preset may register "/" in both `zfb dev` and `zfb build`. The
+        // downstream route resolver gives a matching user `pages/` route
+        // precedence, including `pages/index` over an injected root. Without
+        // a user index, the injected root is staged and rendered in either
+        // mode. Dev request dispatch also leaves devMiddleware ahead of the
+        // injected fallback for user-owned routes.
         if (pattern.includes("//")) {
           throw new Error(
             `injectRoute: \`pattern\` must not contain consecutive slashes (got ${JSON.stringify(pattern)})`,

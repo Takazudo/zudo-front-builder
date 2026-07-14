@@ -14,6 +14,10 @@
 //! export const paths = () => { return [/* literal */]; };
 //! export const paths = function () { return [/* literal */]; };
 //! export const paths = async () => [/* literal */];
+//! function paths() { return [/* literal */]; }
+//! export { paths };
+//! const localPaths = () => [/* literal */];
+//! export { localPaths as paths };
 //! ```
 //!
 //! ## Result
@@ -52,8 +56,9 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceMap};
 use swc_core::ecma::ast::{
-    BlockStmtOrExpr, Decl, EsVersion, Expr, FnExpr, Lit, ModuleDecl, ModuleItem, ObjectLit, Pat,
-    Prop, PropName, PropOrSpread, ReturnStmt, Stmt, UnaryOp, VarDeclKind,
+    BlockStmtOrExpr, Decl, EsVersion, ExportSpecifier, Expr, FnExpr, Lit, ModuleDecl,
+    ModuleExportName, ModuleItem, ObjectLit, Pat, Prop, PropName, PropOrSpread, ReturnStmt, Stmt,
+    UnaryOp, VarDeclKind,
 };
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use thiserror::Error;
@@ -90,6 +95,10 @@ pub enum PathsExtractError {
 ///
 /// Never executes the source. Walks the SWC AST. Parser failures are
 /// surfaced as [`PathsExtractError::Parse`] rather than panics.
+///
+/// Only ESM declarations and local ESM export clauses are considered.
+/// CommonJS assignments such as `exports.paths = ...` intentionally remain
+/// [`PathsExtraction::Missing`], because zfb page routes are ESM-only.
 pub fn extract_paths(source: &str, file_name: &str) -> Result<PathsExtraction, PathsExtractError> {
     let cm: Lrc<SourceMap> = Default::default();
     let fm = cm.new_source_file(FileName::Real(file_name.into()).into(), source.to_string());
@@ -115,46 +124,167 @@ pub fn extract_paths(source: &str, file_name: &str) -> Result<PathsExtraction, P
             message: format!("{e:?}"),
         })?;
 
-    // Walk top-level items looking for either:
+    // Direct exported declarations retain the existing fast path:
     //   `export function paths() { … }`
     //   `export async function paths() { … }`
     //   `export const paths = <expr>;`
     for item in &module.body {
-        let export_decl = match item {
-            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(e)) => e,
-            _ => continue,
+        let ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) = item else {
+            continue;
         };
-        match &export_decl.decl {
-            // export function paths() { return [...] }
-            Decl::Fn(fn_decl) if fn_decl.ident.sym.as_ref() == "paths" => {
-                return Ok(extract_from_block_stmt(fn_decl.function.body.as_ref()));
+        if let Some(extraction) = extract_exported_paths_declaration(&export_decl.decl) {
+            return Ok(extraction);
+        }
+    }
+
+    // Bundlers commonly lower a source declaration into a local binding plus
+    // a trailing ESM export clause, for example:
+    //
+    //   function paths() { return [...] }
+    //   export { DocsPage as default, paths };
+    //
+    // Treat a runtime export whose *exported* name is `paths` as the route
+    // export. Local bindings may be found anywhere in the module body, so the
+    // clause can precede or follow the declaration. External re-exports are
+    // intentionally not chased: the runtime worker can evaluate them later.
+    for item in &module.body {
+        let ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) = item else {
+            continue;
+        };
+        if named.type_only {
+            continue;
+        }
+        for specifier in &named.specifiers {
+            let ExportSpecifier::Named(specifier) = specifier else {
+                continue;
+            };
+            if specifier.is_type_only {
+                continue;
             }
-            // export const paths = <init>;
-            Decl::Var(var_decl) if matches!(var_decl.kind, VarDeclKind::Const) => {
-                for declarator in &var_decl.decls {
-                    let ident = match &declarator.name {
-                        Pat::Ident(bi) => bi,
-                        _ => continue,
-                    };
-                    if ident.id.sym.as_ref() != "paths" {
-                        continue;
-                    }
-                    let init = match &declarator.init {
-                        Some(e) => e,
-                        None => {
-                            return Ok(PathsExtraction::NonLiteral {
-                                reason: "`export const paths` has no initializer".to_string(),
-                            });
-                        }
-                    };
-                    return Ok(extract_from_paths_initializer(init));
-                }
+            let exported_name = specifier.exported.as_ref().unwrap_or(&specifier.orig);
+            if module_export_name(exported_name) != "paths" {
+                continue;
             }
-            _ => continue,
+
+            if named.src.is_some() {
+                return Ok(export_clause_non_literal());
+            }
+
+            return Ok(extract_local_export_clause_paths(
+                &module.body,
+                &module_export_name(&specifier.orig),
+            ));
         }
     }
 
     Ok(PathsExtraction::Missing)
+}
+
+/// Extract a direct `export function paths` / `export const paths` declaration.
+fn extract_exported_paths_declaration(decl: &Decl) -> Option<PathsExtraction> {
+    match decl {
+        // export function paths() { return [...] }
+        Decl::Fn(fn_decl) if fn_decl.ident.sym.as_ref() == "paths" => {
+            Some(extract_from_block_stmt(fn_decl.function.body.as_ref()))
+        }
+        // export const paths = <init>;
+        Decl::Var(var_decl) if matches!(var_decl.kind, VarDeclKind::Const) => {
+            for declarator in &var_decl.decls {
+                let Pat::Ident(ident) = &declarator.name else {
+                    continue;
+                };
+                if ident.id.sym.as_ref() != "paths" {
+                    continue;
+                }
+                let extraction = match &declarator.init {
+                    Some(init) => extract_from_paths_initializer(init),
+                    None => PathsExtraction::NonLiteral {
+                        reason: "`export const paths` has no initializer".to_string(),
+                    },
+                };
+                return Some(extraction);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a local `export { local as paths }` clause to its module-level
+/// declaration. Only functions and immutable `const` initializers can use the
+/// literal fast path; mutable bindings must defer to the runtime worker.
+fn extract_local_export_clause_paths(
+    module_items: &[ModuleItem],
+    local_name: &str,
+) -> PathsExtraction {
+    for item in module_items {
+        let declaration = match item {
+            ModuleItem::Stmt(Stmt::Decl(declaration)) => declaration,
+            ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) => &export_decl.decl,
+            _ => continue,
+        };
+        if let Some(extraction) = extract_local_paths_binding(declaration, local_name) {
+            return normalize_export_clause_extraction(extraction);
+        }
+    }
+
+    export_clause_non_literal()
+}
+
+/// Find one named local binding and classify it with the existing function /
+/// initializer extractors. `None` means this declaration does not bind the
+/// export-clause local name.
+fn extract_local_paths_binding(decl: &Decl, local_name: &str) -> Option<PathsExtraction> {
+    match decl {
+        Decl::Fn(fn_decl) if fn_decl.ident.sym.as_ref() == local_name => {
+            Some(extract_from_block_stmt(fn_decl.function.body.as_ref()))
+        }
+        Decl::Var(var_decl) => {
+            for declarator in &var_decl.decls {
+                let Pat::Ident(ident) = &declarator.name else {
+                    continue;
+                };
+                if ident.id.sym.as_ref() != local_name {
+                    continue;
+                }
+
+                if !matches!(var_decl.kind, VarDeclKind::Const) {
+                    return Some(export_clause_non_literal());
+                }
+                return Some(match &declarator.init {
+                    Some(init) => extract_from_paths_initializer(init),
+                    None => export_clause_non_literal(),
+                });
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Export clauses only preserve a literal result when the local binding is a
+/// proven static function / const. Everything else must reach the runtime
+/// worker, with a stable reason used by diagnostics and tests.
+fn normalize_export_clause_extraction(extraction: PathsExtraction) -> PathsExtraction {
+    match extraction {
+        PathsExtraction::Literal(_) => extraction,
+        PathsExtraction::NonLiteral { .. } | PathsExtraction::Missing => {
+            export_clause_non_literal()
+        }
+    }
+}
+
+fn export_clause_non_literal() -> PathsExtraction {
+    PathsExtraction::NonLiteral {
+        reason: "exported via export clause; not statically literal".to_string(),
+    }
+}
+
+fn module_export_name(name: &ModuleExportName) -> String {
+    match name {
+        ModuleExportName::Ident(ident) => ident.sym.to_string(),
+        ModuleExportName::Str(value) => wtf8_to_string(&value.value),
+    }
 }
 
 /// Walk the initializer of `export const paths = <init>` and pull a
@@ -605,6 +735,129 @@ mod tests {
             export default function Page() { return null; }
         "#;
         assert!(matches!(extract_ok(src), PathsExtraction::Missing));
+    }
+
+    fn assert_export_clause_non_literal(extraction: PathsExtraction) {
+        match extraction {
+            PathsExtraction::NonLiteral { reason } => {
+                assert_eq!(reason, "exported via export clause; not statically literal");
+            }
+            other => unreachable!("expected NonLiteral, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_function_exported_via_clause_is_extracted() {
+        let src = r#"
+            function paths() {
+                return [{ params: { slug: "compiled" } }];
+            }
+            export { paths };
+        "#;
+        match extract_ok(src) {
+            PathsExtraction::Literal(value) => {
+                assert_eq!(value, json!([{ "params": { "slug": "compiled" } }]));
+            }
+            other => unreachable!("expected Literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_function_exported_via_clause_defers_when_non_literal() {
+        let src = r#"
+            function paths() { return buildPaths(); }
+            export { paths };
+        "#;
+        assert_export_clause_non_literal(extract_ok(src));
+    }
+
+    #[test]
+    fn local_const_exported_via_clause_is_extracted() {
+        let src = r#"
+            const paths = () => [{ params: { slug: "const" } }];
+            export { paths };
+        "#;
+        match extract_ok(src) {
+            PathsExtraction::Literal(value) => {
+                assert_eq!(value, json!([{ "params": { "slug": "const" } }]));
+            }
+            other => unreachable!("expected Literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutable_local_exported_via_clause_defers() {
+        let src = r#"
+            let paths = () => [{ params: { slug: "mutable" } }];
+            export { paths };
+        "#;
+        assert_export_clause_non_literal(extract_ok(src));
+    }
+
+    #[test]
+    fn var_local_exported_via_clause_defers() {
+        let src = r#"
+            var paths = () => [{ params: { slug: "var" } }];
+            export { paths };
+        "#;
+        assert_export_clause_non_literal(extract_ok(src));
+    }
+
+    #[test]
+    fn aliased_local_exported_as_paths_is_extracted() {
+        let src = r#"
+            function p() { return [{ params: { slug: "alias" } }]; }
+            export { p as paths };
+        "#;
+        match extract_ok(src) {
+            PathsExtraction::Literal(value) => {
+                assert_eq!(value, json!([{ "params": { "slug": "alias" } }]));
+            }
+            other => unreachable!("expected Literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn external_paths_reexport_defers_without_chasing_source() {
+        assert_export_clause_non_literal(extract_ok(
+            r#"
+            export { paths } from "./other.js";
+        "#,
+        ));
+    }
+
+    #[test]
+    fn type_only_paths_export_remains_missing() {
+        for source in [
+            r#"function paths() { return []; } export type { paths };"#,
+            r#"function paths() { return []; } export { type paths };"#,
+        ] {
+            assert!(
+                matches!(extract_ok(source), PathsExtraction::Missing),
+                "type-only export must not count as a runtime paths export: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_clause_with_other_exported_name_remains_missing() {
+        assert!(matches!(
+            extract_ok(
+                r#"
+                function paths() { return []; }
+                export { paths as other };
+            "#
+            ),
+            PathsExtraction::Missing
+        ));
+    }
+
+    #[test]
+    fn commonjs_paths_assignment_remains_missing() {
+        assert!(matches!(
+            extract_ok("exports.paths = () => [];"),
+            PathsExtraction::Missing
+        ));
     }
 
     #[test]

@@ -286,11 +286,13 @@ pub struct BundlerInput {
     /// **injected** routes (epic #1228, S2 #1230 — the B1 multi-root
     /// mechanism). When `Some`, the bundler materialises this root into the
     /// SAME shadow `pages/` tree as [`Self::pages_dir`] (a second
-    /// `materialise_shadow` call), so the bundle contains BOTH the user's
-    /// pages AND the synthesized injected modules. It holds ONLY the injected
-    /// modules — no user-page copy — so `zfb dev` keeps `pages_dir` = the real
-    /// `project_root/pages` for the router scan + watcher (user-page
-    /// `source_path` identity / HMR untouched).
+    /// `materialise_shadow` call). Conventional dev sessions therefore contain
+    /// both the user's pages and the synthesized injected modules. It holds
+    /// ONLY the injected modules -- no user-page copy -- so conventional `zfb
+    /// dev` keeps `pages_dir` = the real `project_root/pages` for the router
+    /// scan + watcher (user-page `source_path` identity / HMR untouched).
+    /// #1518 true-zero-pages dev instead uses a private empty primary
+    /// `pages_dir` alongside this additive root.
     ///
     /// Distinct from the `zfb build` overlay, which instead OVERRIDES
     /// `pages_dir` with a root that already contains a copy of the user pages.
@@ -848,8 +850,9 @@ pub struct RouteEntry {
     /// import (`import … "./pages/<rel>"`, forward-slashed at the emit):
     /// it is carried straight from the walk so the import is correct
     /// regardless of where `pages_dir` physically lives (the real
-    /// `project_root/pages` OR a per-build overlay temp dir under
-    /// package-owned routes). Deriving it instead from `source_path` via
+    /// `project_root/pages`, #1518's private empty dev root, OR a per-build
+    /// overlay temp dir under package-owned routes). Deriving it instead from
+    /// `source_path` via
     /// a literal `pages/`-prefix strip silently collapsed nested overlay
     /// routes to a bare filename (issue #1193) — that path is retired.
     /// `#[serde(default)]` keeps older manifests deserialisable; an empty
@@ -2334,14 +2337,15 @@ pub fn bundle_with_session(
 
     // S2 (#1230) — ADDITIVE injected-route root for `zfb dev` (B1 multi-root).
     // When `injected_pages_root` is set, walk it into the SAME shadow `pages/`
-    // tree as the real `pages_dir` above, appending the synthesized injected
-    // modules to `routes`. This makes the dev bundle contain BOTH the user's
-    // pages and the injected entrypoints (and resolves their `virtual:`
-    // imports) without copying the user's `pages/` (the command layer staged
-    // ONLY the injected modules there). The staging root holds no user pages,
-    // so there is no file collision with the main walk. `None` (every `zfb
-    // build`, and `zfb dev` with no injected routes) skips this entirely —
-    // byte-identical to a bundle that never knew the field.
+    // tree as the primary `pages_dir` above, appending the synthesized injected
+    // modules to `routes`. Conventional dev bundles contain user pages plus
+    // injected entrypoints (and resolve their `virtual:` imports) without
+    // copying the user's `pages/` (the command layer staged ONLY the injected
+    // modules there). #1518 zero-pages dev uses a private empty primary root,
+    // so this remains the additive injected-only walk. The staging root holds
+    // no user pages, so there is no file collision with the main walk. `None`
+    // (every `zfb build`, and `zfb dev` with no injected routes) skips this
+    // entirely — byte-identical to a bundle that never knew the field.
     if let Some(injected_root) = input.injected_pages_root.as_ref() {
         let injected_root = resolver.resolve(injected_root);
         // A missing/empty staging root is a no-op (the same defensive bias as
@@ -6822,8 +6826,9 @@ fn write_entry_module(
         // Import the shadow page module by its path **under `pages_dir`**.
         // `rel_under_pages` is carried straight from the materialise walk
         // (#1193), so the import stays correct no matter where `pages_dir`
-        // physically is — the real `project_root/pages` OR a per-build
-        // overlay temp dir (package-owned routes). The old derivation
+        // physically is — the real `project_root/pages`, #1518's private empty
+        // dev root, OR a per-build overlay temp dir (package-owned routes). The
+        // old derivation
         // (`route_path_under_pages(source_path)`, a literal `pages/`-prefix
         // strip) collapsed nested overlay routes to a bare filename; that
         // path is retired. The `source_path` fallback only fires for an

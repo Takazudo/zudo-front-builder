@@ -311,26 +311,10 @@ pub(crate) fn resolve_dev_pages_root(
     real_pages_dir: &Path,
     injected_routes: &[InjectedRoute],
 ) -> Result<OverlayResolution> {
-    // DEV "/" RESERVATION (#1262): in dev, "/" is owned by the user
-    // `pages/index` (if present) or by devMiddleware's catch-all — never by a
-    // plugin. A preset whose `setup()` runs in both `zfb dev` and `zfb build`
-    // may call `injectRoute("/")` (the host accepts it — see plugin-host.mjs),
-    // but the dev server must NOT render it. Drop an injected "/" here
-    // UNCONDITIONALLY — regardless of whether a user `pages/index` exists — so
-    // the reservation holds even for a project with no user home page. Because
-    // the dev static seed ([`static_injected_seeds`]) and the survivor
-    // [`InjectedRouteSet`] ([`surviving_injected_routes`]) are both built from
-    // `materialized` (which never contains "/" after this drop), the injected
-    // "/" is neither staged into the dev bundle, SSG-seeded into the route
-    // universe, nor matched at request time. Build precedence is UNCHANGED:
-    // [`resolve_build_pages_root`] still materialises an injected "/" as the
-    // overlay `pages/index.tsx` (the project root page).
-    let dev_routes: Vec<InjectedRoute> = injected_routes
-        .iter()
-        .filter(|route| route.pattern.as_str() != "/")
-        .cloned()
-        .collect();
-    resolve_pages_root(real_pages_dir, &dev_routes, false)
+    // Keep route selection identical to build. `resolve_pages_root` scans the
+    // user's real pages first, so `pages/index` shadows an injected `/`; when
+    // no user index exists, the injected root is staged and seeded normally.
+    resolve_pages_root(real_pages_dir, injected_routes, false)
 }
 
 /// Shared survivor-selection + synthesis for the build overlay
@@ -790,13 +774,15 @@ fn is_dynamic_pattern(pattern: &str) -> bool {
 /// Synthesize the overlay module source for a **dynamic** package route
 /// (`[param]` / `[...catchall]`). #1194, epic #1191.
 ///
-/// A dynamic route requires a TOP-LEVEL `paths` export the syntactic
-/// extractor (`zfb_render::paths_extract`) can see, or it classifies the
+/// A dynamic route requires a runtime ESM `paths` export the syntactic
+/// extractor (`zfb_render::paths_extract`) can resolve, or it classifies the
 /// overlay module `Missing` → the `render_pipeline` hard error fires (the
 /// same parity invariant as a `pages/` dynamic route with no `paths()`).
-/// A re-export (`export { paths } from "<pkg>"`) is invisible to the
-/// extractor (it matches only top-level `ExportDecl`), so the `paths` must
-/// be PHYSICALLY top-level here.
+/// Local export clauses are recognized, while external re-exports such as
+/// `export { paths } from "<pkg>"` deliberately defer to runtime rather than
+/// chasing another source file. This overlay still declares its own wrapper
+/// so literal paths can take the static fast path and runtime paths retain a
+/// direct worker entrypoint.
 ///
 /// We classify the package entrypoint's own `paths` with the **same**
 /// extractor the build pipeline uses, so the literal-vs-runtime decision
@@ -1847,74 +1833,57 @@ export default function Page() { return null; }
     }
 
     #[test]
-    fn dev_drops_injected_root_even_without_user_index() {
-        // DEV "/" RESERVATION (#1262): in dev, "/" belongs to the user
-        // `pages/index` or to devMiddleware — NEVER to a plugin. An injected
-        // "/" is dropped UNCONDITIONALLY in dev, even when the project has no
-        // user index page, so the host accepts the registration but the dev
-        // server never stages or seeds it. (Pre-#1262 this test asserted the
-        // OPPOSITE: that with no user index the injected "/" survived and
-        // seeded `index.html` — that dev behaviour is exactly what #1262
-        // changes. Build precedence is unchanged: see
-        // `empty_pages_with_root_package_route`, which still materialises the
-        // injected "/" as the overlay `index.tsx`.)
+    fn dev_stages_injected_root_without_user_index() {
+        // An injected root is a normal static dev route when the project does
+        // not define `pages/index`.
         let tmp = tempfile::tempdir().unwrap();
         let pages = tmp.path().join("pages");
         std::fs::create_dir_all(&pages).unwrap();
 
-        // No user index.tsx — yet the injected "/" must STILL be dropped in dev.
         let routes = vec![route("/", "/pkg/root.tsx")];
         let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+        assert!(res.guard.is_some(), "the injected root needs a staging dir");
+        assert_ne!(res.build_pages_root, pages);
         assert!(
-            res.materialized.is_empty(),
-            "dev must drop the injected `/` so it is never staged (the reservation)"
+            res.build_pages_root.join("index.tsx").is_file(),
+            "the injected root must be synthesized as pages/index.tsx"
         );
-        assert!(
-            res.guard.is_none(),
-            "dropping the only injected route leaves no dev staging dir (parity path)"
-        );
-        assert_eq!(res.build_pages_root, pages);
-
-        // No static seed → the injected `/` is never rendered/SSG'd in dev.
-        let seeds = static_injected_seeds(&routes, &res.materialized);
-        assert!(
-            seeds.is_empty(),
-            "the dropped injected `/` must not seed the dev route universe"
-        );
-
-        // And it never reaches the request-time survivor `InjectedRouteSet`.
-        let survivors = surviving_injected_routes(&routes, &res.materialized);
-        assert!(
-            survivors.is_empty(),
-            "the dropped injected `/` must not appear in the survivor set"
-        );
-    }
-
-    #[test]
-    fn dev_drops_injected_root_but_keeps_other_injected_routes() {
-        // The dev "/" drop is surgical: only "/" is reserved. Other injected
-        // routes registered alongside it survive and stage/seed as usual.
-        let tmp = tempfile::tempdir().unwrap();
-        let pages = tmp.path().join("pages");
-        std::fs::create_dir_all(&pages).unwrap();
-
-        let routes = vec![
-            route("/", "/pkg/root.tsx"),
-            route("/preset-about", "/pkg/about.tsx"),
-        ];
-        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
-
-        // Only the non-root route is materialized (`/` was dropped).
-        assert_eq!(
-            res.materialized.len(),
-            1,
-            "dev keeps non-root injected routes and drops only `/`"
-        );
-        assert_eq!(res.materialized[0].pattern, "/preset-about");
+        assert_eq!(res.materialized.len(), 1);
+        assert_eq!(res.materialized[0].pattern, "/");
+        assert_eq!(res.materialized[0].pages_rel, Path::new("index.tsx"));
 
         let seeds = static_injected_seeds(&routes, &res.materialized);
         assert_eq!(seeds.len(), 1);
-        assert_eq!(seeds[0].pattern, "/preset-about");
+        assert_eq!(seeds[0].pattern, "/");
+        assert_eq!(seeds[0].seed_entry.url_path, "/");
+        assert_eq!(seeds[0].output_path(), Path::new("index.html"));
+
+        let survivors = surviving_injected_routes(&routes, &res.materialized);
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(survivors[0].pattern, "/");
+    }
+
+    #[test]
+    fn dev_user_index_wins_over_injected_root() {
+        // User routes retain precedence over an injected route with the same
+        // shape key, including the root `pages/index` collision.
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(pages.join("index.tsx"), "export default () => null;").unwrap();
+
+        let routes = vec![route("/", "/pkg/root.tsx")];
+        let res = resolve_dev_pages_root(&pages, &routes).unwrap();
+
+        assert!(res.guard.is_none(), "a shadowed route needs no staging dir");
+        assert_eq!(res.build_pages_root, pages);
+        assert!(res.materialized.is_empty());
+
+        let seeds = static_injected_seeds(&routes, &res.materialized);
+        assert!(seeds.is_empty());
+
+        let survivors = surviving_injected_routes(&routes, &res.materialized);
+        assert!(survivors.is_empty());
     }
 
     #[test]

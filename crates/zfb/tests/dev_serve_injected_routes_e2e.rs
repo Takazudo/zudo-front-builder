@@ -6,24 +6,30 @@
 //!
 //! | Test | Wave | Contract |
 //! |---|---|---|
-//! | `dev_e2e_static_injected_route_renders` | S3 #1231 | Static `/preset-about` serves HTML + relative-import content; `virtual:` entrypoint renders; user `pages/` wins on collision; dev `"/"` reservation holds |
-//! | `dev_e2e_dynamic_injected_route_renders` | S4 #1232 | `[slug]` renders two concrete URLs; `[...rest]` renders multi-segment; `[[...section]]` bare prefix AND nested AND deeply nested; root not hijacked |
+//! | `dev_e2e_static_injected_route_renders` | S3 #1231 | Static `/preset-about` serves HTML + relative-import content; `virtual:` entrypoint renders; user `pages/` wins on collision; fixture root remains a user page when no plugin owns `/` |
+//! | `dev_e2e_dynamic_injected_route_renders` | S4 #1232 | `[slug]` renders two concrete URLs; `[...rest]` renders multi-segment; `[[...section]]` bare prefix AND nested AND deeply nested; root remains a user page when no root route is injected |
 //! | `dev_e2e_injected_route_hmr_content_edit_refreshes` | S5 #1233 | Content edit under a watched collection re-renders a DYNAMIC injected route whose `paths()` reads the collection (HMR positive, #1227 item (h)); node_modules restart-only contract held at unit level |
 //! | `dev_e2e_trailing_slash_parity` | S6 #1234 | `/preset-about` and `/preset-about/` resolve identically (static); `/preset-docs/getting-started` and `/preset-docs/getting-started/` resolve identically (dynamic) |
-//! | `dev_e2e_injected_root_boots_and_reservation_holds` | #1262 | A preset injecting `"/"` boots dev without crashing; `GET /` serves the user home, never the injected root; a sibling injected route still renders |
+//! | `dev_e2e_injected_root_renders_without_user_index` | #1515 | An injected `/` renders when the fixture has no `pages/index.tsx`; a sibling injected route still renders |
+//! | `dev_e2e_user_root_wins_over_injected_root` | #1515 | A user `pages/index.tsx` wins over an injected `/` in dev |
+//! | `dev_and_build_e2e_confirm_zero_pages_compiled_node_modules_routes` | #1518 | A true zero-pages consumer resolves compiled root + docs routes from real pnpm-shaped node_modules, virtual `paths()`, slash-first dev, and build |
 //!
 //! ## Design decision — fixture reuse
 //!
-//! All tests run over the `package-routes-consumer` fixture (the same
-//! fixture used by `build_package_routes_consumer.rs` for the build half).
+//! All tests except the #1518 zero-pages confirmation run over the
+//! `package-routes-consumer` fixture (the same fixture used by
+//! `build_package_routes_consumer.rs` for the build half).
 //! The spec (#1234) mentions a possible `dev-loop-with-preset/` sibling, but
 //! `package-routes-consumer` already carries static + dynamic + optional-
 //! catchall patterns, a colliding user page (`pages/guide.tsx`), and a user
-//! home (`pages/index.tsx`) — everything the confirm bullets need.  Creating
+//! home (`pages/index.tsx`) for the precedence case. The injected-root case
+//! removes that index at runtime when it needs an unclaimed root. Creating
 //! a separate fixture would duplicate the fixture without adding coverage, so
 //! the existing one is kept (minimal change, no churn).  Each test writes its
 //! own `preset.mjs` (and any supporting `pkg/*.tsx`) at runtime into a fresh
-//! `tempdir` copy of the fixture, so the tests are fully isolated.
+//! `tempdir` copy of the fixture, so the tests are fully isolated. #1518
+//! intentionally creates its consumer roots from scratch: its contract is
+//! that no `pages/` directory exists at all.
 //!
 //! ## Determinism / spawn discipline
 //!
@@ -42,11 +48,11 @@
 //! ## Concurrency
 //!
 //! Unlike `dev_serve_e2e.rs` and friends, this file has no file-local
-//! `SERIAL` mutex — its 5 spawning tests were not previously serialized
+//! `SERIAL` mutex — its 7 spawning tests were not previously serialized
 //! against EACH OTHER within this binary at all. Each now acquires
 //! `zfb_test_utils::CrossBinaryE2eLock` (issue #1339), which — being a
 //! real OS-level advisory file lock rather than an in-process mutex —
-//! incidentally also serializes these 5 tests against each other (every
+//! incidentally also serializes these 7 tests against each other (every
 //! `acquire()` call opens its own fd on the shared lock file, and
 //! `flock`/`LockFileEx` exclusion applies per open file description,
 //! not per process), in addition to its primary purpose of serializing
@@ -536,7 +542,8 @@ async fn dev_e2e_static_injected_route_renders() {
             );
         }
 
-        // --- Dev "/" reservation unchanged: root is the USER home ---
+        // The fixture's user home remains available because this preset does
+        // not inject a root route.
 
         {
             let body = client
@@ -549,8 +556,7 @@ async fn dev_e2e_static_injected_route_renders() {
                 .unwrap_or_default();
             assert!(
                 body.contains("CONSUMER_USER_HOME_MARKER"),
-                "GET / must serve the user's home page (dev `/` reservation unchanged); \
-                 no injected route may claim root in dev.\nbody:\n{body}\n{}",
+                "GET / must serve the fixture's user home page.\nbody:\n{body}\n{}",
                 session.logs(),
             );
         }
@@ -581,7 +587,8 @@ async fn dev_e2e_static_injected_route_renders() {
 ///
 /// - `/preset-docs/[slug]` — single-segment param (the primary test case).
 /// - `/archive/[...rest]` — required catch-all (one or more segments).
-/// - `/help/[[...section]]` — optional catch-all (zero or more segments).
+/// - `/help/[[...section]]` — optional catch-all (zero or more segments)
+///   with literal `paths()` entries, including the zero-segment case.
 ///   `/help` has no user `pages/` file, so the bare-prefix zero-segment
 ///   case is reachable through the injected fallback.
 ///
@@ -604,8 +611,9 @@ export default {
     injectRoute("/preset-docs/[slug]", "./pkg/docs.tsx");
     // [...rest] — required catch-all
     injectRoute("/archive/[...rest]", "./pkg/archive.tsx");
-    // [[...section]] — optional catch-all, bare prefix + nested
-    // (/help has no user pages/ file so the zero-segment case is reachable)
+    // [[...section]] — optional catch-all with `paths()`, bare prefix +
+    // nested. (/help has no user pages/ file so the zero-segment case is
+    // reachable.)
     injectRoute("/help/[[...section]]", "./pkg/help-optional.tsx");
   },
 };
@@ -627,14 +635,25 @@ export default function ArchivePage() {
 "#;
     fs::write(root.join("pkg").join("archive.tsx"), archive).expect("write pkg/archive.tsx");
 
-    // [[...section]] entrypoint: optional catch-all.
+    // [[...section]] entrypoint: optional catch-all with literal paths().
+    // The slash-first requests below must match these exact path entries;
+    // a trailing slash accidentally captured as part of `section` produces
+    // no paths() match and therefore a real 404.
     let help_optional = r#"
-export default function HelpOptional() {
+export function paths() {
+  return [
+    { params: { section: [] }, props: { label: "root" } },
+    { params: { section: ["intro"] }, props: { label: "intro" } },
+    { params: { section: ["a", "b"] }, props: { label: "a-b" } },
+  ];
+}
+
+export default function HelpOptional({ label }: { label: string }) {
   return (
     <html lang="en">
       <head><title>Help</title></head>
       <body>
-        <h1>DYNAMIC_HELP_OPTIONAL_MARKER</h1>
+        <h1>DYNAMIC_HELP_OPTIONAL_MARKER_{label}</h1>
       </body>
     </html>
   );
@@ -835,15 +854,28 @@ async fn dev_e2e_dynamic_injected_route_renders() {
 
         // --- [[...section]] optional catch-all: /help/[[...section]] ---
 
-        // Bare prefix (zero-segment case): /help.
-        // `/help` has no user pages/ file, so this exercises the true
-        // zero-segment match through the dynamic fallback.
+        // Request the trailing-slash form first, while no canonical output
+        // exists on disk. This is the #1513 reproducer: the raw `/help/`
+        // fallback input does not match the optional catch-all zero-segment
+        // shape, whereas canonical `/help` must reach its `paths()` entry.
+        poll_until_contains(
+            &client,
+            &format!("{base}/help/"),
+            "DYNAMIC_HELP_OPTIONAL_MARKER_root",
+            ROUTE_DEADLINE,
+            "[[...section]] slash-first /help/ renders (zero-segment paths() case)",
+            &session,
+        )
+        .await;
+
+        // Bare prefix (zero-segment case): /help. `/help` has no user pages/
+        // file, so this exercises the true zero-segment fallback match.
         poll_until_contains(
             &client,
             &format!("{base}/help"),
-            "DYNAMIC_HELP_OPTIONAL_MARKER",
+            "DYNAMIC_HELP_OPTIONAL_MARKER_root",
             ROUTE_DEADLINE,
-            "[[...section]] bare-prefix /help renders (zero-segment case)",
+            "[[...section]] bare-prefix /help renders (zero-segment paths() case)",
             &session,
         )
         .await;
@@ -852,29 +884,36 @@ async fn dev_e2e_dynamic_injected_route_renders() {
         poll_until_contains(
             &client,
             &format!("{base}/help/intro"),
-            "DYNAMIC_HELP_OPTIONAL_MARKER",
+            "DYNAMIC_HELP_OPTIONAL_MARKER_intro",
             ROUTE_DEADLINE,
             "[[...section]] nested /help/intro renders",
             &session,
         )
         .await;
 
-        // Deeply nested (multiple segments).
+        // Slash-first deeply nested (multiple segments). The trailing slash
+        // must be removed before the Hono paths() lookup sees `a/b`.
         poll_until_contains(
             &client,
-            &format!("{base}/help/a/b/c"),
-            "DYNAMIC_HELP_OPTIONAL_MARKER",
+            &format!("{base}/help/a/b/"),
+            "DYNAMIC_HELP_OPTIONAL_MARKER_a-b",
             ROUTE_DEADLINE,
-            "[[...section]] deeply nested /help/a/b/c renders",
+            "[[...section]] slash-first nested /help/a/b/ renders",
+            &session,
+        )
+        .await;
+        poll_until_contains(
+            &client,
+            &format!("{base}/help/a/b"),
+            "DYNAMIC_HELP_OPTIONAL_MARKER_a-b",
+            ROUTE_DEADLINE,
+            "[[...section]] nested /help/a/b renders",
             &session,
         )
         .await;
 
-        // --- Dev "/" reservation unchanged: root is the USER home ---
-        // A root-scoped optional catchall `/[[...catch]]` would be able to
-        // match `/`, but that pattern is not injected here. We verify the
-        // user's home page is still served — belt-and-suspenders check that
-        // our dynamic fallback does not accidentally capture `/`.
+        // This preset has no root-scoped route. Verify its dynamic fallback
+        // does not capture the fixture's user home.
         {
             let body = client
                 .get(format!("{base}/"))
@@ -1378,15 +1417,14 @@ async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
 // ## Contract being tested
 //
 // The render-on-request hook receives a **prefix-stripped, query-stripped**
-// path (`render_hook.rs:99-104`).  `lookup_by_url` normalizes trailing slash,
-// `index.html` duality, and percent-encoding before consulting `url_index`
-// (`dev.rs:2703-2722`), and `output_path` is derived from the already-
-// normalized URL, so `/preset-about` and `/preset-about/` resolve to the same
-// `preset-about/index.html` — matching a normal static page.  For dynamic
-// injected routes the same normalization runs inside `pattern_matches` /
-// `render_stale_route`'s fallback, so `/preset-docs/a` and `/preset-docs/a/`
-// also resolve identically.  No new normalization code is needed — this test
-// proves the existing paths carry it correctly.
+// path (`render_hook.rs:99-104`). `lookup_by_url` normalizes trailing slash,
+// `index.html` duality, and percent-encoding before consulting `url_index`, so
+// static `/preset-about` and `/preset-about/` resolve to one output. Dynamic
+// injected routes have no boot-time `url_index` entry: `pattern_matches` keeps
+// Hono's raw grammar and intentionally does NOT normalize them. Since #1513,
+// the lazy-render adapter percent-decodes and trims trailing slashes before
+// dynamic matching, dispatch, and output-path derivation. This is internal
+// canonicalization only; neither route is redirected.
 //
 // ## Why a separate test
 //
@@ -1415,23 +1453,23 @@ export default {
 /// S6 CONFIRM gate: trailing-slash parity for both static and dynamic
 /// injected routes under a real `zfb dev` (epic #1228, S6 #1234).
 ///
-/// Asserts that a trailing slash is transparent:
+/// Asserts that a trailing slash is transparent, with the trailing-slash form
+/// requested first so no pre-existing disk artifact can mask the fallback:
 ///
 /// - `GET /preset-about` and `GET /preset-about/` both return 200 with
 ///   `CONSUMER_PRESET_ABOUT_MARKER` — the static injected route is served
 ///   from the same `html_root/preset-about/index.html` for both URL forms.
 /// - `GET /preset-docs/getting-started` and
 ///   `GET /preset-docs/getting-started/` both return 200 with the docs
-///   marker — the dynamic injected route's `output_path` derivation runs on
-///   the already-normalized URL, so the trailing-slash variant hits the same
-///   cached render.
+///   marker — the dynamic injected route is canonicalized before its first
+///   render, then the slashless form serves the same output.
 ///
 /// ## Test level
 ///
 /// Level 4 — real `zfb dev` process, real HTTP requests. Required because
-/// trailing-slash normalization spans the HTTP layer (`lookup_by_url`,
-/// `url_index_lookup_keys`, `output_path` derivation) in a way no lower
-/// level can exercise end-to-end.
+/// trailing-slash normalization spans HTTP dispatch, the lazy injected-route
+/// adapter, and the V8 `paths()` lookup in a way no lower level can exercise
+/// end-to-end.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_trailing_slash_parity() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
@@ -1563,18 +1601,7 @@ async fn dev_e2e_trailing_slash_parity() {
 
         // --- Trailing-slash parity: STATIC injected route ---
 
-        // Without trailing slash (canonical form).
-        poll_until_contains(
-            &client,
-            &format!("{base}/preset-about"),
-            "CONSUMER_PRESET_ABOUT_MARKER",
-            ROUTE_DEADLINE,
-            "static injected /preset-about (no trailing slash) renders",
-            &session,
-        )
-        .await;
-
-        // With trailing slash — must serve the same marker, not redirect.
+        // With trailing slash FIRST — must render directly, not redirect.
         // `lookup_by_url` normalizes trailing slash before consulting
         // `url_index` (`dev.rs:2703-2722`), so this must be a 200 with
         // the same content, not a 301/308.  The no-redirect `client` makes
@@ -1590,29 +1617,40 @@ async fn dev_e2e_trailing_slash_parity() {
         )
         .await;
 
-        // --- Trailing-slash parity: DYNAMIC injected route ---
-
-        // Without trailing slash.
+        // Without trailing slash (canonical form) serves the same output.
         poll_until_contains(
             &client,
-            &format!("{base}/preset-docs/getting-started"),
-            "CONSUMER_PRESET_DOCS_MARKER_getting-started",
+            &format!("{base}/preset-about"),
+            "CONSUMER_PRESET_ABOUT_MARKER",
             ROUTE_DEADLINE,
-            "dynamic injected /preset-docs/getting-started (no trailing slash) renders",
+            "static injected /preset-about (no trailing slash) renders",
             &session,
         )
         .await;
 
-        // With trailing slash — the dynamic fallback derives `output_path`
-        // from the normalized URL (`build_output_path_for_resolved_url` runs
-        // on the already-stripped path), so both variants produce the same
-        // `preset-docs/getting-started/index.html` and serve the same HTML.
+        // --- Trailing-slash parity: DYNAMIC injected route ---
+
+        // With trailing slash FIRST — #1513 canonicalizes the fallback URL
+        // before Hono's paths() lookup, so this creates the canonical output
+        // instead of falling through to a 404.
         poll_until_200_not_redirect(
             &client,
             &format!("{base}/preset-docs/getting-started/"),
             "CONSUMER_PRESET_DOCS_MARKER_getting-started",
             ROUTE_DEADLINE,
             "dynamic injected /preset-docs/getting-started/ (trailing slash)",
+            &session,
+        )
+        .await;
+
+        // Without trailing slash serves the output created by the same
+        // canonical dynamic entry.
+        poll_until_contains(
+            &client,
+            &format!("{base}/preset-docs/getting-started"),
+            "CONSUMER_PRESET_DOCS_MARKER_getting-started",
+            ROUTE_DEADLINE,
+            "dynamic injected /preset-docs/getting-started (no trailing slash) renders",
             &session,
         )
         .await;
@@ -1639,43 +1677,29 @@ async fn dev_e2e_trailing_slash_parity() {
 }
 
 // ---------------------------------------------------------------------------
-// #1262 — a preset injecting "/" must boot dev (no crash); dev "/" reservation
+// #1515 - injected root routes obey the same dev precedence as build
 // ---------------------------------------------------------------------------
 
-/// Write a preset that injects the site root `/` — the #1262 regression case.
+/// Write a preset that injects the site root `/` and a sibling static route.
 ///
-/// A real preset's `setup()` runs in BOTH `zfb dev` and `zfb build`, so a
-/// package that owns the site index calls `injectRoute("/")` in both modes.
-/// Pre-#1262 the JS host THREW on a dev `injectRoute("/")`, crashing the dev
-/// server during plugin setup. The host must now ACCEPT the registration; the
-/// Rust dev route resolution drops the injected `/` so the user `pages/index`
-/// (or devMiddleware) keeps the dev catch-all and the injected `/` is never
-/// rendered in dev.
-///
-/// The preset ALSO injects `/preset-about` (a normal static route backed by
-/// the fixture's existing `pkg/about.tsx`) to prove the dev server booted and
-/// still registers + renders other injected routes after accepting the `/`
-/// registration — i.e. the `/` acceptance did not break the rest of setup.
+/// The host accepts root registration in both modes. Route selection then
+/// follows the normal user-page precedence: a real `pages/index` shadows the
+/// injected root, while an unclaimed root renders the package entrypoint.
 fn write_root_injecting_preset(root: &Path) {
     let preset = r#"
 export default {
   name: "consumer-preset-root-inject",
   setup({ injectRoute }) {
-    // #1262: a preset owning the site index injects "/" unconditionally.
-    // This used to CRASH `zfb dev` during setup. The host must accept it;
-    // the dev route resolution drops it so the user home / devMiddleware
-    // keeps "/".
+    // Root registration is accepted in dev and build. A user pages/index
+    // shadows it when present.
     injectRoute("/", "./pkg/root-shadow.tsx");
-    // A normal injected route — proof the dev server booted and still renders
-    // injected routes after accepting the "/" registration.
+    // A sibling route verifies the rest of setup still renders normally.
     injectRoute("/preset-about", "./pkg/about.tsx");
   },
 };
 "#;
     fs::write(root.join("preset.mjs"), preset).expect("write root-injecting preset.mjs");
 
-    // The injected root page. In dev it is DROPPED (never staged/rendered), so
-    // its marker must never appear; in build it would become the overlay index.
     let root_shadow = r#"
 export default function RootShadow() {
   return (
@@ -1690,24 +1714,10 @@ export default function RootShadow() {
         .expect("write pkg/root-shadow.tsx");
 }
 
-/// #1262: a preset that calls `injectRoute("/")` in `setup()` must NOT crash
-/// `zfb dev`, and the dev `/` reservation must hold — `GET /` serves the user
-/// home page (`pages/index.tsx`), never the injected root page.
-///
-/// This is the E2E counterpart to the dev-route-resolution unit test
-/// (`commands::package_routes::tests::dev_drops_injected_root_even_without_user_index`)
-/// and the host-acceptance unit test
-/// (`zfb_build::plugin_runner::tests::setup_hook_accepts_root_inject_route_in_dev_and_build`).
-/// It proves the whole chain end-to-end against a real `zfb dev`:
-///
-/// - The dev server BOOTS (a crash on `injectRoute("/")` would exit before the
-///   ready banner → Phase A panics rather than completing).
-/// - `GET /` serves `CONSUMER_USER_HOME_MARKER` and NOT
-///   `INJECTED_ROOT_SHADOW_MARKER` — the injected `/` is never rendered.
-/// - A sibling injected route (`/preset-about`) still renders — accepting `/`
-///   did not break the rest of plugin setup.
-#[tokio::test(flavor = "multi_thread")]
-async fn dev_e2e_injected_root_boots_and_reservation_holds() {
+/// Exercise the two root-precedence cases against a real `zfb dev` process.
+/// The no-user-index case proves the injected root stages and renders; the
+/// user-index case proves the existing shape-key precedence remains intact.
+async fn run_root_injecting_dev_case(with_user_index: bool) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -1721,14 +1731,21 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
         return;
     }
 
+    let scenario = if with_user_index {
+        "user pages/index shadows injected root"
+    } else {
+        "injected root renders without user pages/index"
+    };
     let tmp = tempfile::tempdir().expect("create tempdir for consumer fixture");
-
-    // Boot with the root-injecting preset.
     let root = tmp
         .path()
         .canonicalize()
         .expect("canonicalize fixture root");
     copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
+    if !with_user_index {
+        fs::remove_file(root.join("pages").join("index.tsx"))
+            .expect("remove fixture pages/index.tsx");
+    }
     write_root_injecting_preset(&root);
 
     let (nm_handle, embedded_nm_path) =
@@ -1736,8 +1753,8 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
     std::os::unix::fs::symlink(&embedded_nm_path, root.join("node_modules"))
         .expect("symlink node_modules");
 
-    let stdout_path = root.join(".zfb-dev-stdout-1262.log");
-    let stderr_path = root.join(".zfb-dev-stderr-1262.log");
+    let stdout_path = root.join(".zfb-dev-root-stdout.log");
+    let stderr_path = root.join(".zfb-dev-root-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
     let stderr_file = fs::File::create(&stderr_path).expect("create stderr log");
 
@@ -1766,10 +1783,8 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
     let _nm = nm_handle;
 
     let body = async {
-        // Phase A: discover the port from the ready banner. A crash on the dev
-        // `injectRoute("/")` (the pre-#1262 bug) would exit the process before
-        // the banner with a NON-skip message → this loop panics, which is the
-        // core "dev boots without crashing" assertion.
+        // Phase A: a root registration must not crash plugin setup before the
+        // ready banner is emitted.
         let boot_start = Instant::now();
         let port = loop {
             if let Some(status) = session.guard.try_exit_status() {
@@ -1787,8 +1802,8 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
                     return Outcome::Skipped;
                 }
                 panic!(
-                    "`zfb dev` exited prematurely (status {status:?}) before the ready banner — \
-                     a preset's injectRoute(\"/\") must NOT crash dev (#1262).\n{}",
+                    "`zfb dev` exited prematurely (status {status:?}) before the ready banner \
+                     for {scenario}.\n{}",
                     session.logs(),
                 );
             }
@@ -1810,7 +1825,7 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
             .build()
             .expect("build reqwest client");
 
-        // Phase B: readiness — GET / answers 200.
+        // Phase B: readiness - GET / answers 200 in both precedence cases.
         {
             let start = Instant::now();
             loop {
@@ -1829,42 +1844,51 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
             }
         }
 
-        // --- A sibling injected route still renders (host accepted "/" and
-        //     continued setup normally) ---
+        let (expected_marker, forbidden_marker, root_phase) = if with_user_index {
+            (
+                "CONSUMER_USER_HOME_MARKER",
+                "INJECTED_ROOT_SHADOW_MARKER",
+                "user pages/index wins over injected root",
+            )
+        } else {
+            (
+                "INJECTED_ROOT_SHADOW_MARKER",
+                "CONSUMER_USER_HOME_MARKER",
+                "injected root renders without user pages/index",
+            )
+        };
+        poll_until_contains(
+            &client,
+            &format!("{base}/"),
+            expected_marker,
+            ROUTE_DEADLINE,
+            root_phase,
+            &session,
+        )
+        .await;
+        let root_body = client
+            .get(format!("{base}/"))
+            .send()
+            .await
+            .expect("GET /")
+            .text()
+            .await
+            .unwrap_or_default();
+        assert!(
+            !root_body.contains(forbidden_marker),
+            "GET / unexpectedly rendered {forbidden_marker:?} for {scenario}.\nbody:\n{root_body}\n{}",
+            session.logs(),
+        );
+
         poll_until_contains(
             &client,
             &format!("{base}/preset-about"),
             "CONSUMER_PRESET_ABOUT_MARKER",
             ROUTE_DEADLINE,
-            "sibling injected /preset-about renders after accepting injected /",
+            "sibling injected /preset-about renders after root registration",
             &session,
         )
         .await;
-
-        // --- Dev "/" reservation: root is the USER home, never the injected
-        //     root page ---
-        {
-            let body = client
-                .get(format!("{base}/"))
-                .send()
-                .await
-                .expect("GET /")
-                .text()
-                .await
-                .unwrap_or_default();
-            assert!(
-                body.contains("CONSUMER_USER_HOME_MARKER"),
-                "GET / must serve the user's home page — a preset's injected `/` must never \
-                 claim root in dev (#1262).\nbody:\n{body}\n{}",
-                session.logs(),
-            );
-            assert!(
-                !body.contains("INJECTED_ROOT_SHADOW_MARKER"),
-                "the injected `/` page must NEVER be rendered in dev (dev `/` reservation, \
-                 #1262).\nbody:\n{body}\n{}",
-                session.logs(),
-            );
-        }
 
         Outcome::Completed
     };
@@ -1874,13 +1898,413 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
         Ok(Outcome::Completed) | Ok(Outcome::Skipped) => {}
         Err(_) => {
             panic!(
-                "[watchdog] injected-`/` dev E2E did not finish within {}s — a hang, or dev \
-                 failed to boot with an injected `/`. Process group {pgid} will be killed.\n\
-                 --- stdout ---\n{}\n--- stderr ---\n{}",
+                "[watchdog] injected-root dev E2E ({scenario}) did not finish within {}s. \
+                 Process group {pgid} will be killed.\n--- stdout ---\n{}\n--- stderr ---\n{}",
                 OVERALL_DEADLINE.as_secs(),
                 read_log(&stdout_path),
                 read_log(&stderr_path),
             );
         }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_e2e_injected_root_renders_without_user_index() {
+    run_root_injecting_dev_case(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_e2e_user_root_wins_over_injected_root() {
+    run_root_injecting_dev_case(true).await;
+}
+
+// ---------------------------------------------------------------------------
+// #1518 - composed confirmation for zudolab/zudo-doc's true zero-pages goal
+// ---------------------------------------------------------------------------
+
+/// Create one fresh consumer root with no `pages/` directory. Its two
+/// entrypoints are tsup-style compiled ESM files installed in a real local
+/// pnpm-shaped `node_modules` store, rather than in the external directory
+/// symlink used by the older consumer fixture harness.
+fn write_zero_pages_consumer_fixture(root: &Path) {
+    fs::create_dir_all(root).expect("create zero-pages consumer root");
+    assert!(
+        !root.join("pages").exists(),
+        "the zero-pages consumer fixture must never create a pages directory"
+    );
+
+    let (_node_modules_handle, embedded_node_modules) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    let node_modules = root.join("node_modules");
+    copy_dir(&embedded_node_modules, &node_modules).expect("copy embedded node_modules locally");
+    let node_modules_metadata = fs::symlink_metadata(&node_modules).expect("node_modules metadata");
+    assert!(
+        node_modules_metadata.file_type().is_dir() && !node_modules_metadata.file_type().is_symlink(),
+        "the zero-pages consumer must use a real local node_modules directory, not an external whole-directory symlink"
+    );
+
+    // This is the package's real canonical path under pnpm, not merely its
+    // consumer-facing `node_modules/@takazudo/zudo-doc` symlink.
+    let package_root = node_modules
+        .join(".pnpm")
+        .join("@takazudo+zudo-doc@0.0.0")
+        .join("node_modules")
+        .join("@takazudo")
+        .join("zudo-doc");
+    let routes_dir = package_root.join("dist/routes");
+    fs::create_dir_all(&routes_dir).expect("create pnpm package routes directory");
+    fs::write(
+        package_root.join("package.json"),
+        r#"{ "name": "@takazudo/zudo-doc", "version": "0.0.0", "type": "module" }"#,
+    )
+    .expect("write pnpm package manifest");
+
+    let root_entrypoint = routes_dir.join("index.js");
+    fs::write(
+        &root_entrypoint,
+        r#"import { jsx as _jsx } from "preact/jsx-runtime";
+function IndexPage() {
+  return _jsx("html", {
+    children: _jsx("body", {
+      children: _jsx("p", { children: "ZERO_PAGES_ROOT_MARKER" }),
+    }),
+  });
+}
+export { IndexPage as default };
+"#,
+    )
+    .expect("write compiled root entrypoint");
+
+    let docs_entrypoint = routes_dir.join("docs-slug.js");
+    fs::write(
+        &docs_entrypoint,
+        r#"import { jsx as _jsx } from "preact/jsx-runtime";
+import { docSlugs } from "virtual:zudo-doc-route-slugs";
+function paths() {
+  return docSlugs.map((slug) => ({
+    params: { slug: slug.split("/") },
+    props: { slug },
+  }));
+}
+function DocsPage({ slug }) {
+  return _jsx("html", {
+    children: _jsx("body", {
+      children: _jsx("p", { children: "ZERO_PAGES_DOCS_MARKER_" + slug }),
+    }),
+  });
+}
+export { DocsPage as default, paths };
+"#,
+    )
+    .expect("write compiled dynamic entrypoint");
+
+    let package_link = node_modules.join("@takazudo/zudo-doc");
+    fs::create_dir_all(package_link.parent().expect("scoped package parent"))
+        .expect("create scoped package parent");
+    std::os::unix::fs::symlink(&package_root, &package_link).expect("create pnpm package link");
+
+    let canonical_node_modules = node_modules.canonicalize().expect("canonical node_modules");
+    let canonical_root_entrypoint = root_entrypoint
+        .canonicalize()
+        .expect("canonical root entrypoint");
+    let canonical_docs_entrypoint = docs_entrypoint
+        .canonicalize()
+        .expect("canonical docs entrypoint");
+    for (route_name, entrypoint) in [
+        ("root", &canonical_root_entrypoint),
+        ("docs", &canonical_docs_entrypoint),
+    ] {
+        assert!(
+            entrypoint.starts_with(&canonical_node_modules),
+            "the injected {route_name} entrypoint must canonically remain under the consumer's real node_modules: {}",
+            entrypoint.display()
+        );
+    }
+    let pnpm_package_suffix = Path::new(".pnpm")
+        .join("@takazudo+zudo-doc@0.0.0")
+        .join("node_modules")
+        .join("@takazudo")
+        .join("zudo-doc")
+        .join("dist/routes");
+    assert!(
+        canonical_root_entrypoint.ends_with(pnpm_package_suffix.join("index.js")),
+        "the root entrypoint must use the pnpm store layout: {}",
+        canonical_root_entrypoint.display()
+    );
+    assert!(
+        canonical_docs_entrypoint.ends_with(pnpm_package_suffix.join("docs-slug.js")),
+        "the docs entrypoint must use the pnpm store layout: {}",
+        canonical_docs_entrypoint.display()
+    );
+    assert_eq!(
+        package_link
+            .canonicalize()
+            .expect("canonical pnpm package link"),
+        package_root
+            .canonicalize()
+            .expect("canonical pnpm package root"),
+        "the consumer-facing package link must resolve to the pnpm store directory"
+    );
+
+    let root_entrypoint_json = serde_json::to_string(&canonical_root_entrypoint.to_string_lossy())
+        .expect("serialize root entrypoint");
+    let docs_entrypoint_json = serde_json::to_string(&canonical_docs_entrypoint.to_string_lossy())
+        .expect("serialize docs entrypoint");
+    fs::write(
+        root.join("preset.mjs"),
+        format!(
+            r#"export default {{
+  name: "zero-pages-zudo-doc-certification",
+  setup({{ injectRoute, addVirtualModule }}) {{
+    addVirtualModule(
+      "virtual:zudo-doc-route-slugs",
+      () => "export const docSlugs = ['getting-started'];",
+    );
+    injectRoute("/", {root_entrypoint_json});
+    injectRoute("/docs/[[...slug]]", {docs_entrypoint_json});
+  }},
+}};
+"#
+        ),
+    )
+    .expect("write zero-pages preset");
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+"#,
+    )
+    .expect("write zero-pages config");
+    assert!(
+        !root.join("pages").exists(),
+        "the prepared zero-pages consumer fixture must have no pages directory"
+    );
+    assert!(
+        !root.join("routes-src").exists() && !root.join(".zudo-doc").exists(),
+        "the certification fixture must not rely on zudo-doc's routes-src or staging workarounds"
+    );
+}
+
+/// Spawn the prepared #1518 fixture with the same process-group discipline as
+/// the other real-dev tests in this binary. `CrossBinaryE2eLock` is acquired by
+/// the caller before this process starts.
+fn spawn_zero_pages_dev(root: &Path, esbuild: &Path) -> DevSession {
+    let stdout_path = root.join(".zfb-dev-zero-pages-stdout.log");
+    let stderr_path = root.join(".zfb-dev-zero-pages-stderr.log");
+    let stdout_file = fs::File::create(&stdout_path).expect("create zero-pages stdout log");
+    let stderr_file = fs::File::create(&stderr_path).expect("create zero-pages stderr log");
+
+    let mut cmd = Command::new(zfb_binary!());
+    cmd.arg("dev")
+        .arg("--port")
+        .arg("0")
+        .current_dir(root)
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
+    cmd.env_remove("ZFB_DEV_EAGER")
+        .env_remove("ZFB_LAZY_DEV_RENDER")
+        .env_remove("ZFB_DEV_DEFER_BUNDLE")
+        .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS");
+    cmd.process_group(0);
+
+    let child = cmd.spawn().expect("spawn zero-pages `zfb dev`");
+    let pgid = child.id() as libc::pid_t;
+    DevSession {
+        guard: DevServerGuard { child, pgid },
+        stdout_path,
+        stderr_path,
+    }
+}
+
+/// Run the build half of the confirmation. A missing local V8/esbuild setup
+/// follows the existing binary's explicit skip convention; every other build
+/// failure is a test failure with captured output.
+fn run_zero_pages_build(root: &Path, esbuild: &Path) -> bool {
+    let output = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(root)
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .output()
+        .expect("run zero-pages `zfb build`");
+    if output.status.success() {
+        return true;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}\n{stderr}");
+    if combined.contains("embed_v8") || combined.contains("no esbuild") {
+        eprintln!(
+            "[zero_pages_e2e] `zfb build` exited with a known-skip indicator; skipping.\n{combined}"
+        );
+        return false;
+    }
+    panic!(
+        "zero-pages `zfb build` failed with {}.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        output.status
+    );
+}
+
+/// zudolab/zudo-doc #2670 confirmation: a consumer with genuinely zero user
+/// pages can own `/` and `/docs/[[...slug]]` entirely through compiled package
+/// routes under real local node_modules. This proves both the package's
+/// `routes-src` and `.zudo-doc` staging workarounds can be removed together.
+///
+/// Level 4: a real `zfb dev` process exercises lazy route dispatch, V8 path
+/// evaluation, virtual-module resolution, and HTTP serving; a separate real
+/// `zfb build` process verifies the emitted output. The existing test binary
+/// is already serialized by the `e2e-heavy` nextest group and its flock. This
+/// remains CI-capable coverage, not an ignored or quarantined verification.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_and_build_e2e_confirm_zero_pages_compiled_node_modules_routes() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[zero_pages_e2e] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+    if !node_available() {
+        eprintln!("[zero_pages_e2e] node not on PATH; skipping.");
+        return;
+    }
+
+    // Materialize twice, rather than reusing a root after dev has lazily
+    // written HTML. The build assertions therefore cannot be satisfied by
+    // output created during the slash-first dev request.
+    let dev_tmp = tempfile::tempdir().expect("create zero-pages dev tempdir");
+    let dev_root = dev_tmp.path().join("zero-pages-consumer");
+    write_zero_pages_consumer_fixture(&dev_root);
+    let build_tmp = tempfile::tempdir().expect("create zero-pages build tempdir");
+    let build_root = build_tmp.path().join("zero-pages-consumer");
+    write_zero_pages_consumer_fixture(&build_root);
+    assert_ne!(
+        dev_root.canonicalize().expect("canonical dev root"),
+        build_root.canonicalize().expect("canonical build root"),
+        "dev and build must use separate fresh consumer fixture copies"
+    );
+
+    let dev_completed = {
+        let mut session = spawn_zero_pages_dev(&dev_root, &esbuild);
+        let pgid = session.guard.pgid;
+        let stdout_path = session.stdout_path.clone();
+        let stderr_path = session.stderr_path.clone();
+        let body = async {
+            // The ready banner is intentionally the only readiness signal
+            // before the first HTTP request. The first route request below is
+            // `/docs/getting-started/`, so a prior disk write cannot mask a
+            // dynamic trailing-slash fallback failure.
+            let boot_start = Instant::now();
+            let port = loop {
+                if let Some(status) = session.guard.try_exit_status() {
+                    let combined = format!(
+                        "{}{}",
+                        read_log(&session.stdout_path),
+                        read_log(&session.stderr_path)
+                    );
+                    if combined.contains("embed_v8") || combined.contains("no esbuild") {
+                        eprintln!(
+                            "[zero_pages_e2e] `zfb dev` exited with a known-skip indicator; \
+                             skipping.\n{}",
+                            session.logs(),
+                        );
+                        return Outcome::Skipped;
+                    }
+                    panic!(
+                        "zero-pages `zfb dev` exited prematurely (status {status:?}) before \
+                         the ready banner.\n{}",
+                        session.logs(),
+                    );
+                }
+                if let Some(port) = parse_ready_port(&read_log(&session.stdout_path)) {
+                    break port;
+                }
+                assert!(
+                    boot_start.elapsed() < BOOT_DEADLINE,
+                    "zero-pages `zfb dev` did not print a ready banner within {}s.\n{}",
+                    BOOT_DEADLINE.as_secs(),
+                    session.logs(),
+                );
+                tokio::time::sleep(POLL_INTERVAL).await;
+            };
+            let base = format!("http://localhost:{port}");
+            let client = reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("build zero-pages reqwest client");
+
+            // First HTTP request: the trailing-slash dynamic route has no
+            // canonical output on disk yet. It must render directly with no
+            // redirect, proving #1513's canonicalization reaches the nonliteral
+            // compiled `paths()` function and its virtual-module input.
+            poll_until_200_not_redirect(
+                &client,
+                &format!("{base}/docs/getting-started/"),
+                "ZERO_PAGES_DOCS_MARKER_getting-started",
+                ROUTE_DEADLINE,
+                "zero-pages slash-first /docs/getting-started/ renders",
+                &session,
+            )
+            .await;
+            poll_until_contains(
+                &client,
+                &format!("{base}/docs/getting-started"),
+                "ZERO_PAGES_DOCS_MARKER_getting-started",
+                ROUTE_DEADLINE,
+                "zero-pages /docs/getting-started renders",
+                &session,
+            )
+            .await;
+            poll_until_contains(
+                &client,
+                &format!("{base}/"),
+                "ZERO_PAGES_ROOT_MARKER",
+                ROUTE_DEADLINE,
+                "zero-pages injected root renders",
+                &session,
+            )
+            .await;
+
+            Outcome::Completed
+        };
+
+        match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+            Ok(Outcome::Completed) => true,
+            Ok(Outcome::Skipped) => false,
+            Err(_) => {
+                panic!(
+                    "[watchdog] zero-pages dev E2E did not finish within {}s. Process group \
+                     {pgid} will be killed.\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                    OVERALL_DEADLINE.as_secs(),
+                    read_log(&stdout_path),
+                    read_log(&stderr_path),
+                );
+            }
+        }
+    };
+    if !dev_completed {
+        return;
+    }
+
+    if !run_zero_pages_build(&build_root, &esbuild) {
+        return;
+    }
+    for (relative_path, marker) in [
+        ("dist/index.html", "ZERO_PAGES_ROOT_MARKER"),
+        (
+            "dist/docs/getting-started/index.html",
+            "ZERO_PAGES_DOCS_MARKER_getting-started",
+        ),
+    ] {
+        let page = build_root.join(relative_path);
+        assert!(page.is_file(), "zero-pages build must emit {relative_path}");
+        let body = fs::read_to_string(&page).expect("read zero-pages built page");
+        assert!(
+            body.contains(marker),
+            "zero-pages build output {relative_path} must contain {marker:?}; got: {body}"
+        );
     }
 }

@@ -211,26 +211,30 @@ pub(crate) fn assemble_bundler_input(
     plugin_alias_entries: Vec<(String, String)>,
     plugin_virtual_modules: Vec<(String, String)>,
     pre_resolved_esbuild: Option<&Path>,
-    // #1193 — the pages root the bundler should walk. `Some(root)` points
-    // the bundle at that root (the package-owned-routes overlay when
-    // build routes are present, or `project_root/pages` when not — passing
-    // the absolute `project_root/pages` is byte-identical to the default
-    // relative `"pages"`). `None` keeps the default (`zfb dev` passes
-    // `None` — package-owned BUILD routes are a build-time concern). This is
-    // a REPLACEMENT seam (it overrides `pages_dir`); the build overlay it
-    // points at already contains a copy of the user pages.
+    // #1193 — the primary pages root the bundler should walk. `Some(root)`
+    // points the bundle at that root (the package-owned-routes overlay when
+    // build routes are present, or `project_root/pages` when not; passing the
+    // absolute `project_root/pages` is byte-identical to the default relative
+    // `"pages"`). `None` keeps the default: conventional `zfb dev` passes
+    // `None` because package-owned BUILD routes are a build-time concern. This
+    // is a REPLACEMENT seam (it overrides `pages_dir`); the build overlay it
+    // points at already contains a copy of the user pages. #1518 true
+    // zero-pages dev intentionally supplies a private empty primary root here
+    // alongside its additive injected root below.
     build_pages_root: Option<&Path>,
     // S2 (#1230) — an ADDITIVE second pages root for the dev server's
     // package-owned **injected** routes (B1 multi-root). Unlike
     // `build_pages_root`, this does NOT override `pages_dir`: the bundler
-    // walks the real `pages/` AND this root into the same shadow tree, so
-    // user pages stay in the bundle (HMR intact) while the injected
+    // walks the primary root (real user pages, or #1518's private empty root)
+    // AND this root into the same shadow tree, so conventional user pages stay
+    // in the bundle (HMR intact) while the injected
     // entrypoints + their `virtual:` imports are added. It holds ONLY the
-    // synthesized injected modules — no user-page copy (the dev scan +
-    // watcher keep the real `pages/`). `None` (build, and dev with no
-    // injected routes) is byte-identical to today. Mutually compatible with
-    // `build_pages_root` in principle, but in practice exactly one of the two
-    // is ever `Some` (build sets the former, dev the latter).
+    // synthesized injected modules — no user-page copy (the conventional dev
+    // scan + watcher keep the real `pages/`). `None` (build, and dev with no
+    // injected routes) is byte-identical to today. #1518 intentionally passes
+    // both roots: `build_pages_root` is the private empty primary root and
+    // this remains the additive injected-only root. Other paths preserve the
+    // existing single-root behavior.
     injected_pages_root: Option<&Path>,
 ) -> Result<AssembledBundlerInput> {
     let mut bundler_input = BundlerInput::for_project(
@@ -251,10 +255,11 @@ pub(crate) fn assemble_bundler_input(
     }
 
     // S2 (#1230) — additive injected-route root for `zfb dev`. The bundler
-    // walks this root into the SAME shadow `pages/` tree as the real
-    // `pages_dir`, so the dev bundle contains BOTH user pages and the
-    // synthesized injected modules (B1 multi-root). `None` for `zfb build`
-    // and for dev with no injected routes — byte-identical to today.
+    // walks this root into the SAME shadow `pages/` tree as the primary
+    // `pages_dir` (real user pages, or #1518's private empty root), so the dev
+    // bundle contains conventional user pages when present plus the synthesized
+    // injected modules (B1 multi-root). `None` for `zfb build` and for dev
+    // with no injected routes — byte-identical to today.
     bundler_input.injected_pages_root = injected_pages_root.map(|p| p.to_path_buf());
 
     // Discover the Next-style root `mdx-components.tsx` convention (#616):
