@@ -2223,8 +2223,11 @@ pub fn bundle_with_session(
     // keep the empty-exclude path byte-for-byte identical.
     let mut synthetic_entry_import_specifiers = BTreeSet::new();
     if !bundle_exclude.is_empty() {
-        let mut source_graph_roots =
-            vec![pages_dir.clone(), components_dir.clone(), layouts_dir.clone()];
+        let mut source_graph_roots = vec![
+            pages_dir.clone(),
+            components_dir.clone(),
+            layouts_dir.clone(),
+        ];
         if input.content_collections.is_empty() {
             source_graph_roots.push(content_dir.clone());
         } else {
@@ -2235,8 +2238,10 @@ pub fn bundle_with_session(
         if let Some(injected) = input.injected_pages_root.as_ref() {
             source_graph_roots.push(resolver.resolve(injected));
         }
-        source_graph_roots
-            .extend(enumerate_extra_top_level_dirs(&input.project_root, KNOWN_SOURCE_DIRS));
+        source_graph_roots.extend(enumerate_extra_top_level_dirs(
+            &input.project_root,
+            KNOWN_SOURCE_DIRS,
+        ));
         collect_project_source_module_graph_seed_files(
             &source_graph_roots,
             &project_root,
@@ -7142,8 +7147,11 @@ fn write_entry_module(
     // Worker side, where resolving `hono` is expected and correct. The literal
     // is the shared `ZFB_RUNTIME_SERVER_SPECIFIER` so the staged-dependency seed
     // (issue #1645) stays in lockstep with what the entry actually imports.
-    writeln!(&mut src, "import {{ createPageRouter }} from \"{ZFB_RUNTIME_SERVER_SPECIFIER}\";")
-        .unwrap();
+    writeln!(
+        &mut src,
+        "import {{ createPageRouter }} from \"{ZFB_RUNTIME_SERVER_SPECIFIER}\";"
+    )
+    .unwrap();
     writeln!(
         &mut src,
         "import {{ renderToString as __zfb_renderToString }} from {spec};",
