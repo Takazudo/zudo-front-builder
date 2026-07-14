@@ -1,0 +1,5 @@
+{
+  "name": "wasm-ssr-dev-smoke-fixture",
+  "private": true,
+  "type": "module"
+}
