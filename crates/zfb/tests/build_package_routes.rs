@@ -1136,6 +1136,146 @@ export default function Page({ slug }: { slug: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// 10a. Compiled-JS paths() export clauses — literal + V8-deferred paths.
+// ---------------------------------------------------------------------------
+
+/// tsup/esbuild-style JavaScript route entries commonly keep `paths` as a
+/// local function and end with `export { Page as default, paths }`. Both a
+/// literal function (the static fast path) and a content-backed function (the
+/// deferred V8 path) must build from that compiled `.js` form, without a
+/// parallel routes-source copy.
+#[test]
+fn compiled_js_package_routes_export_clause_enumerate_literal_and_runtime_paths() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[compiled_js_export_clause] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[compiled_js_export_clause] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let _nm = link_embedded_node_modules(root);
+
+    fs::create_dir_all(root.join("content/docs")).unwrap();
+    fs::write(
+        root.join("content/docs/intro.md"),
+        "---\ntitle: Intro\n---\n\nintro body.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("content/docs/setup.md"),
+        "---\ntitle: Setup\n---\n\nsetup body.\n",
+    )
+    .unwrap();
+
+    fs::create_dir_all(root.join("pkg")).unwrap();
+    fs::write(
+        root.join("pkg/compiled-literal.js"),
+        r#"import { jsx as _jsx, jsxs as _jsxs } from "preact/jsx-runtime";
+function paths() {
+  return [
+    { params: { slug: "alpha" }, props: { title: "alpha" } },
+    { params: { slug: "beta" }, props: { title: "beta" } },
+  ];
+}
+function CompiledLiteralPage({ title }) {
+  return _jsxs("html", {
+    children: [
+      _jsx("head", { children: _jsx("title", { children: title }) }),
+      _jsx("body", { children: _jsx("p", { children: "COMPILED_LITERAL_" + title }) }),
+    ],
+  });
+}
+export { CompiledLiteralPage as default, paths };
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("pkg/compiled-runtime.js"),
+        r#"import { jsx as _jsx, jsxs as _jsxs } from "preact/jsx-runtime";
+async function paths() {
+  const { getCollection } = await import("@takazudo/zfb/content");
+  const docs = await getCollection("docs");
+  return docs.map((doc) => ({
+    params: { slug: doc.slug },
+    props: { slug: doc.slug },
+  }));
+}
+function CompiledRuntimePage({ slug }) {
+  return _jsxs("html", {
+    children: [
+      _jsx("head", { children: _jsx("title", { children: slug }) }),
+      _jsx("body", { children: _jsx("p", { children: "COMPILED_RUNTIME_" + slug }) }),
+    ],
+  });
+}
+export { CompiledRuntimePage as default, paths };
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("preset.mjs"),
+        r#"export default {
+  name: "compiled-js-export-clause-preset",
+  setup({ injectRoute }) {
+    injectRoute("/compiled-literal/[slug]", "./pkg/compiled-literal.js");
+    injectRoute("/compiled-runtime/[slug]", "./pkg/compiled-runtime.js");
+  },
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{
+  "framework": "preact",
+  "collections": [{ "name": "docs", "path": "content/docs" }],
+  "plugins": [{ "name": "./preset.mjs" }]
+}
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(root.join("pages/index.tsx"), page_module("HOME")).unwrap();
+
+    let Some(dist) = build_or_skip(root, &esbuild, "compiled_js_export_clause") else {
+        return;
+    };
+
+    for slug in ["alpha", "beta"] {
+        let html = dist.join(format!("compiled-literal/{slug}/index.html"));
+        assert!(
+            html.is_file(),
+            "compiled literal paths() must emit {html:?}; dist html: {:#?}",
+            collect_files(&dist, "html")
+        );
+        assert!(
+            fs::read_to_string(&html)
+                .unwrap()
+                .contains(&format!("COMPILED_LITERAL_{slug}")),
+            "compiled literal page for `{slug}` must render its marker"
+        );
+    }
+    for slug in ["intro", "setup"] {
+        let html = dist.join(format!("compiled-runtime/{slug}/index.html"));
+        assert!(
+            html.is_file(),
+            "compiled runtime paths() must emit {html:?}; dist html: {:#?}",
+            collect_files(&dist, "html")
+        );
+        assert!(
+            fs::read_to_string(&html)
+                .unwrap()
+                .contains(&format!("COMPILED_RUNTIME_{slug}")),
+            "compiled runtime page for `{slug}` must render its marker"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 11. Catchall [...slug] package route — enumerates + route_key round-trips.
 // ---------------------------------------------------------------------------
 
