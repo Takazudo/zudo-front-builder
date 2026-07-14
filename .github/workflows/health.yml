@@ -659,7 +659,9 @@ jobs:
       # the packaged browser dependency normally from its parent directory.
       - name: Stage asserted packed md-wasm package
         run: |
-          pnpm --dir tests/md-wasm-browser-smoke install --ignore-workspace --lockfile=false
+          # `--dir` isolates this file-tarball fixture from the workspace config,
+          # so carry forward its deterministic CI release-age policy explicitly.
+          pnpm --dir tests/md-wasm-browser-smoke install --ignore-workspace --lockfile=false --config.minimumReleaseAge=0
           node tests/md-wasm-browser-smoke/stage-fixture-node-modules.mjs
           node tests/md-wasm-browser-smoke/assert-staged-tarball.mjs
 
