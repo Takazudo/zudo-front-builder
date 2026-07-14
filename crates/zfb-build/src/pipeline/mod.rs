@@ -80,8 +80,8 @@ pub use orchestrator::{
     ProdAssetEmitterInputs, ProdRenderedFile,
 };
 pub use prod::{
-    AssetEmitter, AssetKind, CompanionFile, EmittedAsset, ProductionAssetPipeline,
-    ProductionEmitters,
+    validate_companion_file_set, AssetEmitter, AssetKind, CompanionFile, EmittedAsset,
+    ProductionAssetPipeline, ProductionEmitters,
 };
 
 /// A validated relative path under the dist root.

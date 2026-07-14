@@ -82,7 +82,8 @@ use zfb_build::renderer::{
     render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
 };
 use zfb_build::{
-    BuildContext, BuildOrchestrator, BuildOutcome, ClientScriptsRunner, ContentCollectionId,
+    atomic_write, validate_companion_file_set, validate_output_path, BuildContext,
+    BuildOrchestrator, BuildOutcome, ClientScriptsRunner, ContentCollectionId,
     ContentCollectionMembership, ContentProvenance, CssRunner, DevAssetPipeline, DiscoveryOutcome,
     IslandsBundleInfo, IslandsRunner, OrchestratorConfig, PageRenderer, RefreshOutcome,
     RelDistPath, RenderedPage, RendererReloader, TrackedContentRead,
@@ -2087,10 +2088,11 @@ fn rebundle_islands(
             crate::commands::build::IslandsGlobPolicy::WarnAndSkip,
             Some(raw_invalidation),
         )?;
-    // Rewrite the shared handle so the next initial GET (a fresh browser
-    // tab, or a page that has not yet hydrated) sees the current bundle URL.
-    // The dev server holds the same Arc, so this is visible without
-    // re-routing through ServeOpts.
+    // Serialize the complete generation replacement — companions, entry,
+    // stale cleanup, then the visible URL — under the existing URL lock. A
+    // request therefore observes either the prior published generation or the
+    // new one, never a URL that points at an entry whose companions are still
+    // being written.
     //
     // Treat lock poisoning as a soft event: a writer panic should not abort
     // the watcher loop. Recover the inner and continue.
@@ -2109,7 +2111,8 @@ fn rebundle_islands(
         // bundle URL visible on every page until the dev server restarts.
         *guard = None;
         // Also prune companions from the last bundle — with no islands bundle
-        // at all, neither chunks nor module workers should remain served.
+        // at all, neither chunks, module workers, nor file resources should
+        // remain served.
         {
             let mut prev = companion_names.lock().unwrap_or_else(|p| {
                 tracing::warn!(
@@ -2129,27 +2132,14 @@ fn rebundle_islands(
         }
         return Ok(None);
     };
-    // Write the stable `islands.js` bytes to disk so ServeDir can serve
-    // `GET /assets/islands.js`. The bundler carries bytes in memory only —
-    // the dev caller owns the disk write (same pattern as the CSS path).
-    {
-        let assets_dir = assets_root.join(zfb_types::DIST_ASSETS_DIR);
-        let islands_out_path = assets_dir.join(zfb_types::STABLE_ISLANDS_FILENAME);
-        if let Some(parent) = islands_out_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::write(&islands_out_path, &payload.bytes) {
-            return Err(anyhow::anyhow!(
-                "dev islands: failed to write islands.js to disk: {e:#}"
-            ));
-        }
-    }
     let bundle_url = if url_prefix.is_empty() {
         payload.stable_url
     } else {
         format!("{url_prefix}{}", payload.stable_url)
     };
-    // Write / prune chunk and worker companions for this generation.
+    // Validate and write the complete companion generation before publishing
+    // the stable entry. This includes chunks, module workers, and typed
+    // file-loader resources in one collision-checked namespace.
     {
         let mut prev = companion_names.lock().unwrap_or_else(|p| {
             tracing::warn!(
@@ -2159,12 +2149,29 @@ fn rebundle_islands(
             p.into_inner()
         });
         let assets_dir = assets_root.join(zfb_types::DIST_ASSETS_DIR);
-        match refresh_dev_island_chunks(&assets_dir, &payload.companions, &prev) {
-            Ok(names) => *prev = names,
-            Err(e) => {
-                return Err(e.context("dev islands: failed to refresh companion files"));
-            }
-        }
+        let entry_relative =
+            Path::new(zfb_types::DIST_ASSETS_DIR).join(zfb_types::STABLE_ISLANDS_FILENAME);
+        let islands_out_path =
+            validate_output_path(assets_root, &entry_relative).with_context(|| {
+                format!(
+                    "dev islands: refused to write stable entry relative path {}",
+                    entry_relative.display()
+                )
+            })?;
+        let (names, companion_writes) =
+            prepare_dev_island_companion_writes(&assets_dir, &payload.companions)
+                .context("dev islands: invalid entry/companion filename set")?;
+        write_prepared_dev_island_companions(companion_writes)
+            .context("dev islands: failed to write companion files")?;
+        atomic_write(&islands_out_path, &payload.bytes).with_context(|| {
+            format!(
+                "dev islands: failed to write islands.js to disk at {}",
+                islands_out_path.display()
+            )
+        })?;
+
+        prune_dev_island_companions(&assets_dir, &prev, &names);
+        *prev = names;
     }
     // The bundler does not currently surface a "bytes-changed" bit back
     // through `build_default_islands_payload` — the URL stays stable
@@ -2449,15 +2456,18 @@ fn resolve_css_import_watch_targets(project_root: &Path) -> Vec<PathBuf> {
 // Dev islands companion helpers
 // ---------------------------------------------------------------------------
 
+type PreparedDevIslandCompanion<'a> = (&'a zfb_build::pipeline::CompanionFile, PathBuf);
+type PreparedDevIslandCompanionSet<'a> = (HashSet<String>, Vec<PreparedDevIslandCompanion<'a>>);
+
 /// Write new companion files into `assets_dir`, delete companions from the
 /// previous generation that are no longer in the new set, and return the new
 /// filename set.
 ///
 /// `assets_dir` is the on-disk `<dist_root>/assets/` directory that the dev
 /// server already serves via ServeDir. Because companions land in that directory
-/// under flat contract basenames (self-hashed `islands-chunk-*.js` chunks and
-/// stable `worker-*.js` module workers), the entry's baked-in relative URLs
-/// resolve without any additional routing code.
+/// under flat contract basenames (self-hashed chunks/resources and stable
+/// module workers), the entry's baked-in relative URLs resolve without any
+/// additional routing code.
 ///
 /// Errors writing a companion are returned immediately (callers treat them as
 /// non-fatal at the boot path, fatal at the watcher tick path).  Errors
@@ -2468,33 +2478,77 @@ fn refresh_dev_island_chunks(
     companions: &[zfb_build::pipeline::CompanionFile],
     prev_filenames: &HashSet<String>,
 ) -> anyhow::Result<HashSet<String>> {
-    let new_filenames: HashSet<String> = companions.iter().map(|c| c.filename.clone()).collect();
+    let (new_filenames, companion_writes) =
+        prepare_dev_island_companion_writes(assets_dir, companions)?;
+    write_prepared_dev_island_companions(companion_writes)?;
+    prune_dev_island_companions(assets_dir, prev_filenames, &new_filenames);
+    Ok(new_filenames)
+}
 
-    // Write each new companion file beside the entry.
-    for companion in companions {
-        if companion.filename.is_empty()
-            || companion.filename.contains('/')
-            || companion.filename.contains('\\')
-            || companion.filename.contains("..")
-        {
-            anyhow::bail!(
-                "dev islands: companion filename {:?} must be a flat basename \
-                 (no path separator or `..`)",
-                companion.filename
-            );
-        }
-        let dest = assets_dir.join(&companion.filename);
-        std::fs::write(&dest, &companion.bytes).with_context(|| {
+/// Validate the complete stable-entry companion namespace before any dev
+/// write. This mirrors production's final writer check: chunks, workers, and
+/// file-loader resources may be typed separately upstream, but they share one
+/// assets directory on disk.
+fn prepare_dev_island_companion_writes<'a>(
+    assets_dir: &Path,
+    companions: &'a [zfb_build::pipeline::CompanionFile],
+) -> anyhow::Result<PreparedDevIslandCompanionSet<'a>> {
+    validate_companion_file_set(zfb_types::STABLE_ISLANDS_FILENAME, companions)?;
+    let names = companions.iter().map(|c| c.filename.clone()).collect();
+    let writes = companions
+        .iter()
+        .map(|companion| {
+            let dest = validate_output_path(assets_dir, Path::new(&companion.filename))
+                .with_context(|| {
+                    format!(
+                        "dev islands: refused to write companion relative path {:?}",
+                        companion.filename
+                    )
+                })?;
+            Ok((companion, dest))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok((names, writes))
+}
+
+/// Atomically write a pre-validated generation's companions beside the stable
+/// islands entry. Their destinations were validated against the assets root
+/// before this function is called, so a planted symlink cannot redirect an
+/// otherwise-flat basename.
+fn write_prepared_dev_island_companions(
+    companion_writes: Vec<PreparedDevIslandCompanion<'_>>,
+) -> anyhow::Result<()> {
+    for (companion, dest) in companion_writes {
+        atomic_write(&dest, &companion.bytes).with_context(|| {
             format!(
                 "dev islands: failed to write companion file {}",
                 dest.display()
             )
         })?;
     }
+    Ok(())
+}
 
-    // Prune stale companion files from the previous generation.
-    for stale in prev_filenames.difference(&new_filenames) {
-        let path = assets_dir.join(stale);
+/// Prune only stale names from the prior successful generation. A deletion
+/// failure remains non-fatal (and visible through tracing); the next served
+/// entry is already backed by the complete new companion set.
+fn prune_dev_island_companions(
+    assets_dir: &Path,
+    prev_filenames: &HashSet<String>,
+    new_filenames: &HashSet<String>,
+) {
+    for stale in prev_filenames.difference(new_filenames) {
+        let path = match validate_output_path(assets_dir, Path::new(stale)) {
+            Ok(path) => path,
+            Err(e) => {
+                tracing::warn!(
+                    stale = %stale,
+                    error = %e,
+                    "dev islands: refused unsafe stale companion deletion (ignored)"
+                );
+                continue;
+            }
+        };
         if let Err(e) = std::fs::remove_file(&path) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 tracing::warn!(
@@ -2505,8 +2559,6 @@ fn refresh_dev_island_chunks(
             }
         }
     }
-
-    Ok(new_filenames)
 }
 
 // ---------------------------------------------------------------------------
@@ -10224,7 +10276,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_chunk_and_worker_companions_to_assets_dir() {
+    fn writes_chunks_workers_and_resources_to_assets_dir() {
         let dir = tempfile::tempdir().unwrap();
         let assets = dir.path().to_path_buf();
 
@@ -10232,13 +10284,20 @@ mod tests {
             make_companion("islands-chunk-AAAAAAAA.js", b"chunk-a"),
             make_companion("islands-chunk-BBBBBBBB.js", b"chunk-b"),
             make_companion("worker-src-s-search-d-worker-d-ts.js", b"worker"),
+            make_companion("islands-resource-zfb_md_wasm_glue-CCCC.mjs", b"glue bytes"),
+            make_companion(
+                "islands-resource-zfb_md_wasm_bg-DDDD.wasm",
+                &[0, 97, 115, 109],
+            ),
         ];
         let result = refresh_dev_island_chunks(&assets, &companions, &HashSet::new()).unwrap();
 
-        assert_eq!(result.len(), 3);
+        assert_eq!(result.len(), 5);
         assert!(result.contains("islands-chunk-AAAAAAAA.js"));
         assert!(result.contains("islands-chunk-BBBBBBBB.js"));
         assert!(result.contains("worker-src-s-search-d-worker-d-ts.js"));
+        assert!(result.contains("islands-resource-zfb_md_wasm_glue-CCCC.mjs"));
+        assert!(result.contains("islands-resource-zfb_md_wasm_bg-DDDD.wasm"));
         assert_eq!(
             std::fs::read(assets.join("islands-chunk-AAAAAAAA.js")).unwrap(),
             b"chunk-a"
@@ -10250,6 +10309,14 @@ mod tests {
         assert_eq!(
             std::fs::read(assets.join("worker-src-s-search-d-worker-d-ts.js")).unwrap(),
             b"worker"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("islands-resource-zfb_md_wasm_glue-CCCC.mjs")).unwrap(),
+            b"glue bytes"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("islands-resource-zfb_md_wasm_bg-DDDD.wasm")).unwrap(),
+            [0, 97, 115, 109]
         );
     }
 
@@ -10263,11 +10330,15 @@ mod tests {
             make_companion("islands-chunk-GEN1AAAA.js", b"gen1-a"),
             make_companion("islands-chunk-GEN1BBBB.js", b"gen1-b"),
             make_companion("worker-src-s-old-d-ts.js", b"old-worker"),
+            make_companion("islands-resource-old-AAAA.mjs", b"old-glue"),
+            make_companion("islands-resource-old-BBBB.wasm", &[0, 97, 115, 109]),
         ];
         let prev = refresh_dev_island_chunks(&assets, &gen1, &HashSet::new()).unwrap();
         assert!(assets.join("islands-chunk-GEN1AAAA.js").exists());
         assert!(assets.join("islands-chunk-GEN1BBBB.js").exists());
         assert!(assets.join("worker-src-s-old-d-ts.js").exists());
+        assert!(assets.join("islands-resource-old-AAAA.mjs").exists());
+        assert!(assets.join("islands-resource-old-BBBB.wasm").exists());
 
         // Generation 2: different chunks (simulates a dynamically-imported
         // module change so esbuild emits a new content hash).
@@ -10288,6 +10359,14 @@ mod tests {
         assert!(
             !assets.join("worker-src-s-old-d-ts.js").exists(),
             "stale worker must be pruned"
+        );
+        assert!(
+            !assets.join("islands-resource-old-AAAA.mjs").exists(),
+            "stale glue resource must be pruned"
+        );
+        assert!(
+            !assets.join("islands-resource-old-BBBB.wasm").exists(),
+            "stale wasm resource must be pruned"
         );
         assert_eq!(next.len(), 1);
         assert!(next.contains("islands-chunk-GEN2CCCC.js"));
@@ -10360,12 +10439,35 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let assets = dir.path().to_path_buf();
 
-        let bad_names = ["../escape.js", "subdir/chunk.js", "subdir\\chunk.js", ""];
+        let bad_names = [
+            "../escape.js",
+            "subdir/chunk.js",
+            "subdir\\chunk.js",
+            "",
+            zfb_types::STABLE_ISLANDS_FILENAME,
+        ];
         for name in bad_names {
             let companion = make_companion(name, b"bytes");
             let result = refresh_dev_island_chunks(&assets, &[companion], &HashSet::new());
             assert!(result.is_err(), "should reject unsafe filename {:?}", name);
         }
+    }
+
+    #[test]
+    fn rejects_duplicate_companion_filenames_before_writing_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+        let companions = vec![
+            make_companion("islands-resource-duplicate-AAAA.mjs", b"first"),
+            make_companion("islands-resource-duplicate-AAAA.mjs", b"second"),
+        ];
+
+        assert!(refresh_dev_island_chunks(&assets, &companions, &HashSet::new()).is_err());
+        assert_eq!(
+            std::fs::read_dir(&assets).unwrap().count(),
+            0,
+            "the complete filename set must validate before any companion write"
+        );
     }
 
     // ── Phase B skip-key tests (issue #940) ─────────────────────────────────
