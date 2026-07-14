@@ -9,11 +9,12 @@ Two API tiers live in one cdylib (the tier split buys a smaller runtime
 working set, not a smaller download — SWC is in the bytes either way; a slim
 renderHtml-only artifact is a documented possible follow-up):
 
-| Export (JS name) | Pipeline | Returns (JSON string) |
-|---|---|---|
-| `compile(source, optionsJson)` | mdx → JSX → SWC → ES-module JS | `{ code, frontmatter, diagnostics }` |
-| `renderHtml(source, optionsJson)` | md → mdast → visitors → hast → HTML | `{ html, frontmatter, diagnostics }` |
-| `version()` | — | release-stamped package version string |
+| Export (JS name)                   | Pipeline                               | Returns (JSON string)                  |
+| ---------------------------------- | -------------------------------------- | -------------------------------------- |
+| `compile(source, optionsJson)`     | mdx → JSX → SWC → ES-module JS         | `{ code, frontmatter, diagnostics }`   |
+| `renderHtml(source, optionsJson)`  | md → mdast → visitors → hast → HTML    | `{ html, frontmatter, diagnostics }`   |
+| `highlightCode(code, optionsJson)` | arbitrary source → semantic class HTML | `{ html, diagnostics }`                |
+| `version()`                        | —                                      | release-stamped package version string |
 
 The whole boundary is JSON-in/JSON-out strings; the authoritative shape
 documentation is the crate rustdoc (`src/lib.rs`) plus
@@ -30,8 +31,13 @@ local development builds fall back to the Rust manifest version placeholder.
   "development": false,
   "pipeline": {
     "theme": null,
-    "gfm": { "strikethrough": true, "table": true, "autolinkLiteral": false,
-             "taskListItem": false, "footnoteDefinition": false },
+    "gfm": {
+      "strikethrough": true,
+      "table": true,
+      "autolinkLiteral": false,
+      "taskListItem": false,
+      "footnoteDefinition": false
+    },
     "cjkFriendly": true,
     "hardBreaks": false,
     "features": {}
@@ -58,12 +64,16 @@ local development builds fall back to the Rust manifest version placeholder.
 `code` / `html` is a string on success and `null` on failure. `frontmatter`
 is the parsed YAML frontmatter as JSON (`null` when the source has none);
 frontmatter values that were successfully extracted are returned even when a
-*later* stage fails. `diagnostics` is empty on success, otherwise:
+_later_ stage fails. `diagnostics` is empty on success, otherwise:
 
 ```json
-{ "severity": "error", "source": "markdown",
+{
+  "severity": "error",
+  "source": "markdown",
   "message": "Expected a closing tag for `<Card>` (1:1) (markdown-rs:end-tag-mismatch)",
-  "line": 7, "column": 1 }
+  "line": 7,
+  "column": 1
+}
 ```
 
 - `source` ∈ `"options"` | `"frontmatter"` | `"markdown"` | `"compile"`.
@@ -77,6 +87,53 @@ frontmatter values that were successfully extracted are returned even when a
   markdown-rs, YAML-relative for serde_yaml). The **structured fields** are
   the contract; the message is display-only.
 
+## Direct semantic code highlighting
+
+`highlightCode` is a third, closed class-mode API for syntax-highlighting an
+arbitrary source string without wrapping it in a Markdown fence. At the raw
+wasm boundary it receives an options JSON string; the published npm root
+exports the typed convenience form:
+
+```ts
+import {
+  highlightCode,
+  type HighlightCodeOptions,
+  type HighlightCodeResult,
+} from "@takazudo/zfb-md-wasm";
+
+const result: HighlightCodeResult = await highlightCode("const answer = 42;", {
+  language: "javascript",
+  mode: "class", // optional; this is the only supported mode
+  classPrefix: "hi-", // optional; the default
+  roleClasses: { keyword: "text-violet-600 dark:text-violet-400" },
+} satisfies HighlightCodeOptions);
+```
+
+`language` is required. `mode` can only be `"class"`; `classPrefix` changes
+both the root (`${classPrefix}root`) and default token classes. The output is
+escaped semantic markup, not inline-colour/Shiki output:
+
+```html
+<pre class="hi-root"><code><span class="line"><span class="hi-kw">const</span> …</span></code></pre>
+```
+
+The fixed taxonomy uses full names as `roleClasses` override keys and the
+following default class suffixes: `escape` → `hi-esc`, `operator` → `hi-op`,
+`comment` → `hi-com`, `string` → `hi-str`, `number` → `hi-num`, `constant` →
+`hi-const`, `keyword` → `hi-kw`, `function` → `hi-fn`, `type` → `hi-ty`,
+`namespace` → `hi-ns`, `property` → `hi-prop`, `variable` → `hi-var`, `tag` →
+`hi-tag`, `attribute` → `hi-attr`, `punctuation` → `hi-punct`, `inserted` →
+`hi-ins`, `deleted` → `hi-del`, and `heading` → `hi-hd`. An override replaces
+that role's default class; use `keyword`, not the suffix `kw`, as the key.
+
+Invalid JSON/options (including a missing/empty language, another `mode`, a
+bad prefix, unknown role key, or extra fields) return `{ html: null,
+diagnostics: [{ severity: "error", source: "options", … }] }`. An unknown
+non-empty language is different: it succeeds with escaped fallback wrapper
+markup and a `{ severity: "warning", source: "highlight", line: null,
+column: null }` diagnostic. Incomplete editor input is valid input and may
+highlight without a diagnostic.
+
 ## Error / trap / re-init contract (correctness-critical)
 
 The npm wrapper (zfb#1577) implements auto-reinit-on-trap against exactly
@@ -85,7 +142,7 @@ this contract:
 1. **Expected failures never trap.** Markdown parse errors, malformed
    options JSON, unknown syntect theme names, YAML frontmatter errors, and
    non-markdown filenames all return a result document with `code`/`html:
-   null` and a structured diagnostic. The call path was audited for
+null` and a structured diagnostic. The call path was audited for
    user-input-reachable `unwrap`/`expect` (zfb#1576) — notably
    `facade::build_pipeline` was made fallible because theme-name validation
    (zfb#1067/zfb#1070) fires at pipeline construction with names straight
@@ -104,20 +161,44 @@ this contract:
    recursion limits); that risk is exactly what rule 2 covers. Fuzzing the
    boundary is a noted follow-up, out of scope for zfb#1576.
 
+The npm wrapper applies this rule to all three calls, including
+`highlightCode`: it throws `ZfbMdWasmTrapError` for the trapped call, eagerly
+starts one fresh instance from its cached compiled `WebAssembly.Module`, and
+the next public call uses that replacement. Browser recovery deliberately
+loads a fresh glue module URL with `?zfbMdWasmGen=N`; the `.wasm` bytes are not
+downloaded or compiled again. Repeated traps are bounded (16 recoveries) to
+avoid unbounded browser module records.
+
+## Browser resource delivery
+
+The published package's `browser` export statically declares exactly two
+runtime resources: `zfb_md_wasm_glue.zfb-resource.mjs` and
+`zfb_md_wasm_bg.wasm`. A zfb production build emits them as hashed sibling
+assets named `islands-resource-zfb_md_wasm_glue.zfb-resource-<hash>.mjs` and
+`islands-resource-zfb_md_wasm_bg-<hash>.wasm`. Put the package behind a
+user-triggered `import("@takazudo/zfb-md-wasm")` when lazy loading matters:
+the glue and wasm are then fetched only on the first public API call.
+
+The static server must return the emitted glue as JavaScript
+(`application/javascript`) and the wasm as `application/wasm`, with ordinary
+HTTP success responses. Do not copy those resources manually or import the
+package source path; consume the packed browser entry so the generated URLs
+stay correct under a hashed island bundle.
+
 ## Wasm-target blockers and their resolutions
 
 Every blocker met on the way to `wasm32-unknown-unknown`, and what resolved
 it (details: `SPIKE-FINDINGS.md` in this directory for the swc half):
 
-| Blocker | Resolution |
-|---|---|
-| `onig_sys` (C oniguruma) via syntect's default `regex-onig` backend | zfb-content grew `syntect-onig`/`syntect-fancy` backend features (zfb#1573); this crate selects `syntect-fancy` (pure Rust). Native builds keep onig — when feature unification enables both, syntect gives regex-onig precedence, so native output stays byte-identical. |
-| `zfb-render → zfb-content` edge re-unified `syntect-onig` into every downstream graph (dependency default features cannot be subtracted) | zfb#1576 made that edge `default-features = false` and added forwarding features `syntect-onig` (in zfb-render's default set — native builds unchanged) / `syntect-fancy` to zfb-render. Consequence: syntect does not compile with NO backend selected, so health.yml's `cargo test --no-default-features -p zfb-render` step now pins `--features syntect-onig` (that step tests the V8-off toggle, not the backend choice). |
-| `deno_core` + `tokio` (embedded V8 host) | Behind zfb-render's default-on `embed_v8` feature; this crate depends on zfb-render with `default-features = false` (a CI-tested configuration — the `build (no-v8)` job). |
-| swc_core on wasm (the historical unknown) | The zfb#1575 spike proved swc_core `=64.0.0` with zfb-render's exact feature set compiles AND executes on `wasm32-unknown-unknown` with zero special configuration — no rustflags, no `.cargo/config.toml`, no version pins. See `SPIKE-FINDINGS.md`. |
-| `getrandom` (usual wasm suspect) | **Not in the graph** (all three majors in the workspace lock are pulled only by native-only tooling; wasm-bindgen adds none). Do not add workarounds preemptively — if a future dep drags getrandom ≥0.3 in, the known-good target-scoped cfg is documented in `SPIKE-FINDINGS.md`. |
-| `clippy::needless_return` in `zfb-types::module_workers` fired only under the wasm cfg (a `return` whose following `#[cfg(windows)]` block compiles away on non-unix non-windows targets) | Restructured to `let … else` so the diverging `return` is required on every target (zfb#1576). |
-| `std::time::Instant` (panics at runtime on wasm32 if called) | Not called on the exercised parse→transform→codegen path (execution-proven by the spike). Compile-green everywhere; unexercised swc branches remain a rule-4 residual risk. |
+| Blocker                                                                                                                                                                                   | Resolution                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `onig_sys` (C oniguruma) via syntect's default `regex-onig` backend                                                                                                                       | zfb-content grew `syntect-onig`/`syntect-fancy` backend features (zfb#1573); this crate selects `syntect-fancy` (pure Rust). Native builds keep onig — when feature unification enables both, syntect gives regex-onig precedence, so native output stays byte-identical.                                                                                                                                                      |
+| `zfb-render → zfb-content` edge re-unified `syntect-onig` into every downstream graph (dependency default features cannot be subtracted)                                                  | zfb#1576 made that edge `default-features = false` and added forwarding features `syntect-onig` (in zfb-render's default set — native builds unchanged) / `syntect-fancy` to zfb-render. Consequence: syntect does not compile with NO backend selected, so health.yml's `cargo test --no-default-features -p zfb-render` step now pins `--features syntect-onig` (that step tests the V8-off toggle, not the backend choice). |
+| `deno_core` + `tokio` (embedded V8 host)                                                                                                                                                  | Behind zfb-render's default-on `embed_v8` feature; this crate depends on zfb-render with `default-features = false` (a CI-tested configuration — the `build (no-v8)` job).                                                                                                                                                                                                                                                     |
+| swc_core on wasm (the historical unknown)                                                                                                                                                 | The zfb#1575 spike proved swc_core `=64.0.0` with zfb-render's exact feature set compiles AND executes on `wasm32-unknown-unknown` with zero special configuration — no rustflags, no `.cargo/config.toml`, no version pins. See `SPIKE-FINDINGS.md`.                                                                                                                                                                          |
+| `getrandom` (usual wasm suspect)                                                                                                                                                          | **Not in the graph** (all three majors in the workspace lock are pulled only by native-only tooling; wasm-bindgen adds none). Do not add workarounds preemptively — if a future dep drags getrandom ≥0.3 in, the known-good target-scoped cfg is documented in `SPIKE-FINDINGS.md`.                                                                                                                                            |
+| `clippy::needless_return` in `zfb-types::module_workers` fired only under the wasm cfg (a `return` whose following `#[cfg(windows)]` block compiles away on non-unix non-windows targets) | Restructured to `let … else` so the diverging `return` is required on every target (zfb#1576).                                                                                                                                                                                                                                                                                                                                 |
+| `std::time::Instant` (panics at runtime on wasm32 if called)                                                                                                                              | Not called on the exercised parse→transform→codegen path (execution-proven by the spike). Compile-green everywhere; unexercised swc branches remain a rule-4 residual risk.                                                                                                                                                                                                                                                    |
 
 The graph stays clean by assertion, not eyeballing:
 `scripts/assert-zfb-md-wasm-graph.sh` greps
@@ -158,3 +239,5 @@ cargo test -p zfb-md-wasm                  # native rlib tests: both tiers + dia
 - Optional `console_error_panic_hook` (or equivalent) behind a feature for
   debuggable trap messages during development.
 - A slim renderHtml-only artifact without SWC in the bytes.
+- A slim `highlightCode`-only artifact. The current package always carries the
+  same wasm payload, even when callers use only direct highlighting.
