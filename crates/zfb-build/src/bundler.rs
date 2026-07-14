@@ -6192,6 +6192,51 @@ fn resolve_installed_package_dir(
     None
 }
 
+fn package_source_identity(path: &Path) -> PathBuf {
+    path.canonicalize()
+        .unwrap_or_else(|_| normalize_path_lexical(path))
+}
+
+/// Return whether `package_name` already has an equivalent staged package at
+/// one of the locations Node resolution will search from `importer`.
+///
+/// pnpm represents dependency cycles with symlinks in each package's physical
+/// `node_modules`. Following that graph while constructing the shadow view can
+/// otherwise turn `a -> b -> a` into an unbounded sequence of logical paths:
+/// `a/node_modules/b/node_modules/a/...`. Once the same physical package is
+/// already staged at a reachable ancestor, another nested copy is redundant.
+/// Comparing the canonical source as well as the logical search location keeps
+/// distinct versions and genuinely non-hoisted placements intact.
+fn staged_equivalent_dependency_is_reachable(
+    importer: &Path,
+    package_name: &str,
+    source_dependency: &Path,
+    project_root: &Path,
+    staged_package_sources: &BTreeMap<PathBuf, PathBuf>,
+) -> bool {
+    let source_identity = package_source_identity(source_dependency);
+    let Some(mut directory) = importer.parent() else {
+        return false;
+    };
+    while directory.starts_with(project_root) {
+        let candidate = normalize_path_lexical(&directory.join("node_modules").join(package_name));
+        if staged_package_sources
+            .get(&candidate)
+            .is_some_and(|staged_source| *staged_source == source_identity)
+        {
+            return true;
+        }
+        if directory == project_root {
+            break;
+        }
+        let Some(parent) = directory.parent() else {
+            break;
+        };
+        directory = parent;
+    }
+    false
+}
+
 fn extend_node_modules_dependency_staging(
     project_root: &Path,
     node_modules_dir: Option<&Path>,
@@ -6222,6 +6267,10 @@ fn extend_node_modules_dependency_staging(
     let mut pending = initial
         .iter()
         .map(|path| (path.clone(), path.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut staged_package_sources = initial
+        .iter()
+        .map(|path| (path.clone(), package_source_identity(path)))
         .collect::<BTreeMap<_, _>>();
     let mut visited = BTreeSet::new();
 
@@ -6254,12 +6303,25 @@ fn extend_node_modules_dependency_staging(
             if bundle_exclude.is_excluded(&logical_dependency, project_root) {
                 continue;
             }
+            if staged_equivalent_dependency_is_reachable(
+                seed,
+                &package_name,
+                &source_dependency,
+                project_root,
+                &staged_package_sources,
+            ) {
+                continue;
+            }
             if logical_dependency == source_dependency {
                 staging_dirs.insert(logical_dependency.clone());
             } else {
                 staging_alias_dirs.insert(logical_dependency.clone(), source_dependency.clone());
             }
             if !visited.contains(&logical_dependency) {
+                staged_package_sources.insert(
+                    logical_dependency.clone(),
+                    package_source_identity(&source_dependency),
+                );
                 pending.insert(logical_dependency, source_dependency);
             }
         }
@@ -6368,6 +6430,15 @@ fn extend_node_modules_dependency_staging(
                 if bundle_exclude.is_excluded(&logical_dependency, project_root) {
                     continue;
                 }
+                if staged_equivalent_dependency_is_reachable(
+                    &logical_importer,
+                    &package_name,
+                    &source_dependency,
+                    project_root,
+                    &staged_package_sources,
+                ) {
+                    continue;
+                }
                 if logical_dependency == source_dependency {
                     staging_dirs.insert(logical_dependency.clone());
                 } else {
@@ -6375,6 +6446,10 @@ fn extend_node_modules_dependency_staging(
                         .insert(logical_dependency.clone(), source_dependency.clone());
                 }
                 if !visited.contains(&logical_dependency) {
+                    staged_package_sources.insert(
+                        logical_dependency.clone(),
+                        package_source_identity(&source_dependency),
+                    );
                     pending.insert(logical_dependency, source_dependency);
                 }
             }
