@@ -334,6 +334,18 @@ impl LazyRenderAdapter {
         let rendered = self.render_claimed_entry(&entry);
         let render_ms = render_started.elapsed().as_millis();
 
+        // `render_claimed_entry` has released the V8 mutex by this point.
+        // Drain the worker-side content trace before taking the request-write
+        // exclusion lock, preserving the adapter's renderer -> writer lock
+        // ordering while allowing lazy aggregate readers to refresh their
+        // provenance on the first request after a content edit.
+        if let Err(error) = self.session.reconcile_content_provenance() {
+            output::warn(format!(
+                "content provenance unavailable after lazy request render; \
+                 content edits will conservatively rebuild all pages: {error:#}"
+            ));
+        }
+
         let (claim, bytes) = match rendered {
             Ok(RenderUnderLock::Rendered { claim, bytes }) => (claim, bytes),
             Ok(RenderUnderLock::RendererUnavailable) => {

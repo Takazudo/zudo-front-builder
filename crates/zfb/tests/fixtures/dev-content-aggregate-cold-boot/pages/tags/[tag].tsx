@@ -1,6 +1,15 @@
+import type { ContentProps } from "@takazudo/zfb/content";
+
+type ContentElement = {
+  readonly type: string | ((...args: unknown[]) => unknown);
+  readonly props: Readonly<Record<string, unknown>>;
+  readonly key: unknown;
+};
+
 type Post = {
   slug: string;
   data: { title: string; date: string; tags?: string[] };
+  Content: (props: ContentProps) => ContentElement;
 };
 
 export async function paths() {
@@ -31,7 +40,10 @@ export default function TagPage({ tag, posts }: { tag: string; posts: Post[] }) 
         <h1>{tag}</h1>
         <ul>
           {posts.map((post) => (
-            <li key={post.slug}>{post.data.title}</li>
+            <li key={post.slug}>
+              <h2>{post.data.title}</h2>
+              <post.Content components={{}} />
+            </li>
           ))}
         </ul>
       </body>

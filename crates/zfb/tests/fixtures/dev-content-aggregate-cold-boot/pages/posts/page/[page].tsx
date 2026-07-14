@@ -1,6 +1,15 @@
+import type { ContentProps } from "@takazudo/zfb/content";
+
+type ContentElement = {
+  readonly type: string | ((...args: unknown[]) => unknown);
+  readonly props: Readonly<Record<string, unknown>>;
+  readonly key: unknown;
+};
+
 type Post = {
   slug: string;
   data: { title: string; date: string };
+  Content: (props: ContentProps) => ContentElement;
 };
 
 type Page = {
@@ -31,7 +40,10 @@ export default function PaginatedPosts({ page }: { page: Page }) {
         <h1>Paginated posts</h1>
         <ul>
           {page.data.map((post) => (
-            <li key={post.slug}>{post.data.title}</li>
+            <li key={post.slug}>
+              <h2>{post.data.title}</h2>
+              <post.Content components={{}} />
+            </li>
           ))}
         </ul>
       </body>
