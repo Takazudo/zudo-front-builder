@@ -14,108 +14,75 @@ use std::sync::LazyLock;
 
 use syntect::parsing::Scope;
 
-/// One of the 18 semantic roles a highlighted token can carry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HiRole {
-    Escape,
-    Operator,
-    Comment,
-    String,
-    Number,
-    Constant,
-    Keyword,
-    Function,
-    Type,
-    Namespace,
-    Property,
-    Variable,
-    Tag,
-    Attribute,
-    Punctuation,
-    Inserted,
-    Deleted,
-    Heading,
+/// Declare the fixed semantic-role taxonomy once, then derive every public
+/// Rust representation from it. The fixed-size arrays intentionally enforce
+/// the 18-role contract at compile time.
+macro_rules! define_hi_roles {
+    ($( $variant:ident => ($short:literal, $full:literal) ),+ $(,)?) => {
+        /// One of the 18 semantic roles a highlighted token can carry.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum HiRole {
+            $( $variant, )+
+        }
+
+        impl HiRole {
+            /// Every role, in taxonomy order (matches the #1529 table).
+            pub const ALL: [HiRole; 18] = [
+                $( HiRole::$variant, )+
+            ];
+
+            /// Full role names in taxonomy order, for const consumers such as
+            /// `zfb::config::CODE_HIGHLIGHT_ROLES`.
+            pub const FULL_NAMES: [&str; 18] = [
+                $( $full, )+
+            ];
+
+            /// The class suffix for this role: the emitted class is
+            /// `<prefix>-<suffix>` and the CSS custom property is
+            /// `--zfb-hi-<suffix>`. Must stay unique and must never be
+            /// `"line"` — the code-enrichment wrapper already uses a `line`
+            /// class, so a collision would fuse token and line styling.
+            pub fn short_name(self) -> &'static str {
+                match self {
+                    $( HiRole::$variant => $short, )+
+                }
+            }
+
+            /// The full role name — the user-facing `codeHighlight.roleClasses`
+            /// key (e.g. `"keyword"`) and the config-validation name in
+            /// `CODE_HIGHLIGHT_ROLES` (`crates/zfb/src/config.rs`). The
+            /// class-mode emitter resolves `roleClasses` overrides by THIS
+            /// name; the default class uses [`Self::short_name`] (`hi-kw`).
+            /// The two must not be conflated — user config keys by full name,
+            /// so looking overrides up by `short_name` silently drops them.
+            pub fn full_name(self) -> &'static str {
+                match self {
+                    $( HiRole::$variant => $full, )+
+                }
+            }
+        }
+    };
 }
 
-impl HiRole {
-    /// Every role, in taxonomy order (matches the #1529 table).
-    pub const ALL: [HiRole; 18] = [
-        HiRole::Escape,
-        HiRole::Operator,
-        HiRole::Comment,
-        HiRole::String,
-        HiRole::Number,
-        HiRole::Constant,
-        HiRole::Keyword,
-        HiRole::Function,
-        HiRole::Type,
-        HiRole::Namespace,
-        HiRole::Property,
-        HiRole::Variable,
-        HiRole::Tag,
-        HiRole::Attribute,
-        HiRole::Punctuation,
-        HiRole::Inserted,
-        HiRole::Deleted,
-        HiRole::Heading,
-    ];
-
-    /// The class suffix for this role: the emitted class is `<prefix>-<suffix>`
-    /// and the CSS custom property is `--zfb-hi-<suffix>`. Must stay unique and
-    /// must never be `"line"` — the code-enrichment wrapper already uses a
-    /// `line` class, so a collision would fuse token and line styling.
-    pub fn short_name(self) -> &'static str {
-        match self {
-            HiRole::Escape => "esc",
-            HiRole::Operator => "op",
-            HiRole::Comment => "com",
-            HiRole::String => "str",
-            HiRole::Number => "num",
-            HiRole::Constant => "const",
-            HiRole::Keyword => "kw",
-            HiRole::Function => "fn",
-            HiRole::Type => "ty",
-            HiRole::Namespace => "ns",
-            HiRole::Property => "prop",
-            HiRole::Variable => "var",
-            HiRole::Tag => "tag",
-            HiRole::Attribute => "attr",
-            HiRole::Punctuation => "punct",
-            HiRole::Inserted => "ins",
-            HiRole::Deleted => "del",
-            HiRole::Heading => "hd",
-        }
-    }
-
-    /// The full role name — the user-facing `codeHighlight.roleClasses` key
-    /// (e.g. `"keyword"`) and the config-validation name in
-    /// `CODE_HIGHLIGHT_ROLES` (`crates/zfb/src/config.rs`). This is the enum
-    /// variant name lowercased. The class-mode emitter resolves `roleClasses`
-    /// overrides by THIS name; the default class uses [`Self::short_name`]
-    /// (`hi-kw`). The two must not be conflated — user config keys by full
-    /// name, so looking overrides up by `short_name` silently drops them.
-    pub fn full_name(self) -> &'static str {
-        match self {
-            HiRole::Escape => "escape",
-            HiRole::Operator => "operator",
-            HiRole::Comment => "comment",
-            HiRole::String => "string",
-            HiRole::Number => "number",
-            HiRole::Constant => "constant",
-            HiRole::Keyword => "keyword",
-            HiRole::Function => "function",
-            HiRole::Type => "type",
-            HiRole::Namespace => "namespace",
-            HiRole::Property => "property",
-            HiRole::Variable => "variable",
-            HiRole::Tag => "tag",
-            HiRole::Attribute => "attribute",
-            HiRole::Punctuation => "punctuation",
-            HiRole::Inserted => "inserted",
-            HiRole::Deleted => "deleted",
-            HiRole::Heading => "heading",
-        }
-    }
+define_hi_roles! {
+    Escape => ("esc", "escape"),
+    Operator => ("op", "operator"),
+    Comment => ("com", "comment"),
+    String => ("str", "string"),
+    Number => ("num", "number"),
+    Constant => ("const", "constant"),
+    Keyword => ("kw", "keyword"),
+    Function => ("fn", "function"),
+    Type => ("ty", "type"),
+    Namespace => ("ns", "namespace"),
+    Property => ("prop", "property"),
+    Variable => ("var", "variable"),
+    Tag => ("tag", "tag"),
+    Attribute => ("attr", "attribute"),
+    Punctuation => ("punct", "punctuation"),
+    Inserted => ("ins", "inserted"),
+    Deleted => ("del", "deleted"),
+    Heading => ("hd", "heading"),
 }
 
 /// Scope-prefix → role rules, kept as plain strings so the mapping is
@@ -301,14 +268,41 @@ mod tests {
                 "short name must not collide with `line` wrapper class"
             );
         }
+    }
 
-        let expected: HashSet<&str> = [
-            "esc", "op", "com", "str", "num", "const", "kw", "fn", "ty", "ns", "prop", "var",
-            "tag", "attr", "punct", "ins", "del", "hd",
-        ]
-        .into_iter()
-        .collect();
-        assert_eq!(unique, expected, "suffixes must match the #1529 table");
+    #[test]
+    fn taxonomy_role_names_match_fixed_public_mapping_and_order() {
+        let expected = [
+            ("esc", "escape"),
+            ("op", "operator"),
+            ("com", "comment"),
+            ("str", "string"),
+            ("num", "number"),
+            ("const", "constant"),
+            ("kw", "keyword"),
+            ("fn", "function"),
+            ("ty", "type"),
+            ("ns", "namespace"),
+            ("prop", "property"),
+            ("var", "variable"),
+            ("tag", "tag"),
+            ("attr", "attribute"),
+            ("punct", "punctuation"),
+            ("ins", "inserted"),
+            ("del", "deleted"),
+            ("hd", "heading"),
+        ];
+
+        assert_eq!(
+            HiRole::ALL.map(|role| (role.short_name(), role.full_name())),
+            expected,
+            "enum accessors must retain the canonical mapping and order"
+        );
+        assert_eq!(
+            HiRole::FULL_NAMES,
+            expected.map(|(_, full_name)| full_name),
+            "const full-name array must retain the canonical taxonomy order"
+        );
     }
 
     #[test]
