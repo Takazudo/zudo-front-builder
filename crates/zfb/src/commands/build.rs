@@ -3290,27 +3290,39 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // shadow tree during `bundle()`. It drops at end of function, after the
     // bundle bytes are in memory.
     match build_production_islands_asset(&bundler, &bundle_islands, &bundle_cfg)? {
-        Some(asset) => {
-            let companions = asset
-                .chunks
-                .into_iter()
-                .chain(asset.workers)
-                .map(|c| CompanionFile {
-                    filename: c.filename,
-                    bytes: c.bytes,
-                })
-                .collect();
-            Ok((
-                Some(AssetEmitterPayload {
-                    bytes: asset.bytes,
-                    relative_path: asset.relative_path,
-                    stable_url: asset.stable_url,
-                    companions,
-                }),
-                registered_marker_names,
-            ))
-        }
+        Some(asset) => Ok((
+            Some(production_islands_asset_to_payload(asset)),
+            registered_marker_names,
+        )),
         None => Ok((None, registered_marker_names)),
+    }
+}
+
+/// Convert the islands crate's typed production output into the generic
+/// writer payload without erasing its companion lifecycle. Chunks, workers,
+/// and file-loader resources remain independently typed until this final
+/// writer boundary, where all three must be copied verbatim beside the entry.
+fn production_islands_asset_to_payload(
+    asset: zfb_islands::ProductionIslandsAsset,
+) -> AssetEmitterPayload {
+    let companions = asset
+        .chunks
+        .into_iter()
+        .chain(asset.workers)
+        .map(|chunk| CompanionFile {
+            filename: chunk.filename,
+            bytes: chunk.bytes,
+        })
+        .chain(asset.resources.into_iter().map(|resource| CompanionFile {
+            filename: resource.filename,
+            bytes: resource.bytes,
+        }))
+        .collect();
+    AssetEmitterPayload {
+        bytes: asset.bytes,
+        relative_path: asset.relative_path,
+        stable_url: asset.stable_url,
+        companions,
     }
 }
 
@@ -5756,12 +5768,59 @@ fn copy_redirects_file(
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
     use tempfile::tempdir;
     use zfb_build::bundler::{BundleManifest, BundlerOutput, RouteEntry};
     use zfb_build::renderer::{HttpResponseLike, RendererOutput, SsrManifest};
     use zfb_router::{Route, RouteKind, Segment};
+
+    #[test]
+    fn production_islands_payload_keeps_resource_companions_verbatim() {
+        let payload = production_islands_asset_to_payload(zfb_islands::ProductionIslandsAsset {
+            bytes: b"import './islands-resource-zfb_md_wasm_glue-AAAA.mjs';".to_vec(),
+            relative_path: PathBuf::from("assets/islands.js"),
+            stable_url: "/assets/islands.js".to_string(),
+            chunks: vec![zfb_islands::IslandsChunk {
+                filename: "islands-chunk-BBBB.js".to_string(),
+                bytes: b"chunk".to_vec(),
+            }],
+            workers: vec![zfb_islands::IslandsChunk {
+                filename: "worker-src-s-search-d-worker-d-ts.js".to_string(),
+                bytes: b"worker".to_vec(),
+            }],
+            resources: vec![
+                zfb_islands::IslandsResource {
+                    filename: "islands-resource-zfb_md_wasm_glue-AAAA.mjs".to_string(),
+                    bytes: b"glue bytes".to_vec(),
+                },
+                zfb_islands::IslandsResource {
+                    filename: "islands-resource-zfb_md_wasm_bg-CCCC.wasm".to_string(),
+                    bytes: vec![0, 97, 115, 109],
+                },
+            ],
+        });
+
+        let companions = payload
+            .companions
+            .into_iter()
+            .map(|companion| (companion.filename, companion.bytes))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(companions.len(), 4);
+        assert_eq!(
+            companions["islands-resource-zfb_md_wasm_glue-AAAA.mjs"],
+            b"glue bytes"
+        );
+        assert_eq!(
+            companions["islands-resource-zfb_md_wasm_bg-CCCC.wasm"],
+            [0, 97, 115, 109]
+        );
+        assert_eq!(companions["islands-chunk-BBBB.js"], b"chunk");
+        assert_eq!(
+            companions["worker-src-s-search-d-worker-d-ts.js"],
+            b"worker"
+        );
+    }
 
     /// Fake [`BuildRunner`] that records the inputs it received and
     /// returns canned outputs. `RefCell` so multiple methods can mutate
@@ -7174,7 +7233,16 @@ mod tests {
                     bytes: b"// js".to_vec(),
                     relative_path: PathBuf::from("assets/islands.js"),
                     stable_url: "/assets/islands.js".to_string(),
-                    companions: Vec::new(),
+                    companions: vec![
+                        CompanionFile {
+                            filename: "islands-resource-zfb_md_wasm_glue-AAAA.mjs".to_string(),
+                            bytes: b"glue".to_vec(),
+                        },
+                        CompanionFile {
+                            filename: "islands-resource-zfb_md_wasm_bg-BBBB.wasm".to_string(),
+                            bytes: vec![0, 97, 115, 109],
+                        },
+                    ],
                 }),
                 client_scripts: vec![zfb_build::pipeline::AssetEmitterPayload {
                     bytes: b"// widget".to_vec(),
@@ -7239,6 +7307,25 @@ mod tests {
         assert_eq!(
             inputs.client_scripts[0].stable_url,
             "/pj/zudo-doc/assets/client/search-widget.js"
+        );
+        // Companions remain file-relative to the hashed entry; base changes
+        // only the entry's public URL and must never rewrite their emitted
+        // names or bytes.
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().companions[0].filename,
+            "islands-resource-zfb_md_wasm_glue-AAAA.mjs"
+        );
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().companions[0].bytes,
+            b"glue"
+        );
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().companions[1].filename,
+            "islands-resource-zfb_md_wasm_bg-BBBB.wasm"
+        );
+        assert_eq!(
+            inputs.islands.as_ref().unwrap().companions[1].bytes,
+            [0, 97, 115, 109]
         );
 
         // "/pj/zudo-doc" (no trailing slash) ⇒ same prefix.
@@ -8180,19 +8267,18 @@ mod tests {
         }
     }
 
-    /// Parse only the line-anchored `CodeHighlightRole` alias and its bounded
-    /// union members. This deliberately stops at that declaration's semicolon
+    /// Parse only a line-anchored semantic-role alias and its bounded union
+    /// members. This deliberately stops at that declaration's semicolon
     /// instead of scanning arbitrary TypeScript string literals elsewhere in
     /// the file.
-    fn parse_code_highlight_role_union(
+    fn parse_highlight_role_union(
         source: &str,
+        alias: &str,
     ) -> std::result::Result<BTreeSet<String>, String> {
-        const ALIAS: &str = "export type CodeHighlightRole =";
-
         let mut lines = source.lines().enumerate();
         let (alias_line, _) = lines
-            .find(|(_, line)| line.trim() == ALIAS)
-            .ok_or_else(|| format!("missing line-anchored `{ALIAS}` declaration"))?;
+            .find(|(_, line)| line.trim() == alias)
+            .ok_or_else(|| format!("missing line-anchored `{alias}` declaration"))?;
 
         let mut roles = BTreeSet::new();
         for (line_number, line) in lines {
@@ -8207,7 +8293,7 @@ mod tests {
             };
             let member = member.strip_prefix('|').map(str::trim).ok_or_else(|| {
                 format!(
-                    "expected a `| \"role\"` member in CodeHighlightRole at line {}",
+                    "expected a `| \"role\"` member in {alias} at line {}",
                     line_number + 1
                 )
             })?;
@@ -8217,13 +8303,13 @@ mod tests {
                 .filter(|role| !role.is_empty())
                 .ok_or_else(|| {
                     format!(
-                        "expected a quoted role in CodeHighlightRole at line {}",
+                        "expected a quoted role in {alias} at line {}",
                         line_number + 1
                     )
                 })?;
             if !roles.insert(role.to_string()) {
                 return Err(format!(
-                    "duplicate CodeHighlightRole member {role:?} at line {}",
+                    "duplicate {alias} member {role:?} at line {}",
                     line_number + 1
                 ));
             }
@@ -8233,7 +8319,7 @@ mod tests {
         }
 
         Err(format!(
-            "CodeHighlightRole declaration starting at line {} is missing its terminating semicolon",
+            "{alias} declaration starting at line {} is missing its terminating semicolon",
             alias_line + 1
         ))
     }
@@ -8256,12 +8342,15 @@ mod tests {
                 typescript_path.display()
             )
         });
-        let typescript_roles = parse_code_highlight_role_union(&source).unwrap_or_else(|error| {
-            panic!(
-                "parse TypeScript CodeHighlightRole at {}: {error}",
-                typescript_path.display()
-            )
-        });
+        let typescript_roles =
+            parse_highlight_role_union(&source, "export type CodeHighlightRole =").unwrap_or_else(
+                |error| {
+                    panic!(
+                        "parse TypeScript CodeHighlightRole at {}: {error}",
+                        typescript_path.display()
+                    )
+                },
+            );
         let rust_roles: BTreeSet<String> = crate::config::CODE_HIGHLIGHT_ROLES
             .iter()
             .map(|role| (*role).to_string())
@@ -8275,6 +8364,49 @@ mod tests {
             "TypeScript CodeHighlightRole in {} must match Rust CODE_HIGHLIGHT_ROLES; \
              missing from TypeScript CodeHighlightRole: {missing_from_typescript:?}; \
              extra in TypeScript CodeHighlightRole: {extra_in_typescript:?}",
+            typescript_path.display(),
+        );
+    }
+
+    /// The published `@takazudo/zfb-md-wasm` direct API has its own exported
+    /// `HighlightRole` union. It necessarily spells out the public TypeScript
+    /// literals, so guard it against Rust's canonical taxonomy just as we do
+    /// the config helper rather than allowing a second untracked role list.
+    #[test]
+    fn typescript_wasm_highlight_role_union_matches_rust_canonical_roles() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .parent()
+            .and_then(|crates_dir| crates_dir.parent())
+            .expect("zfb crate must live under the workspace crates directory")
+            .to_path_buf();
+        let typescript_path = workspace_root.join("crates/zfb-md-wasm/npm/src/types.ts");
+        let source = std::fs::read_to_string(&typescript_path).unwrap_or_else(|error| {
+            panic!(
+                "read TypeScript HighlightRole at {}: {error}",
+                typescript_path.display()
+            )
+        });
+        let typescript_roles = parse_highlight_role_union(&source, "export type HighlightRole =")
+            .unwrap_or_else(|error| {
+                panic!(
+                    "parse TypeScript HighlightRole at {}: {error}",
+                    typescript_path.display()
+                )
+            });
+        let rust_roles: BTreeSet<String> = crate::config::CODE_HIGHLIGHT_ROLES
+            .iter()
+            .map(|role| (*role).to_string())
+            .collect();
+
+        let missing_from_typescript: Vec<&String> =
+            rust_roles.difference(&typescript_roles).collect();
+        let extra_in_typescript: Vec<&String> = typescript_roles.difference(&rust_roles).collect();
+        assert!(
+            missing_from_typescript.is_empty() && extra_in_typescript.is_empty(),
+            "TypeScript HighlightRole in {} must match Rust CODE_HIGHLIGHT_ROLES; \
+             missing from TypeScript HighlightRole: {missing_from_typescript:?}; \
+             extra in TypeScript HighlightRole: {extra_in_typescript:?}",
             typescript_path.display(),
         );
     }

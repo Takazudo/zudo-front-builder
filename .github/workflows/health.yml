@@ -391,6 +391,17 @@ jobs:
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: scripts/report-flaky-tests.sh target/nextest/ci/junit-workspace.xml target/nextest/ci/junit.xml
 
+      # The md-wasm browser confirmation consumes this exact V8-enabled
+      # production binary. Keeping it an artifact avoids a second expensive
+      # native/V8 compilation in the browser-only job below.
+      - name: Upload native zfb binary for md-wasm browser smoke
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zfb-debug-linux-x64
+          path: target/debug/zfb
+          if-no-files-found: error
+          retention-days: 7
+
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #
   # Without this job the cfg(feature = "embed_v8") gates can rot
@@ -552,6 +563,19 @@ jobs:
       - name: Test @takazudo/zfb-md-wasm npm package
         run: pnpm --filter @takazudo/zfb-md-wasm test
 
+      # Produce exactly the archive a consumer receives. The browser job must
+      # install this artifact; it may not resolve the source package or copy
+      # glue/wasm files out of the working tree.
+      - name: Pack and assert @takazudo/zfb-md-wasm published artifact
+        shell: bash
+        run: |
+          ARTIFACT_DIR="$GITHUB_WORKSPACE/wasm-md-artifact"
+          mkdir -p "$ARTIFACT_DIR"
+          TARBALL="$(cd crates/zfb-md-wasm/npm && pnpm pack --pack-destination "$ARTIFACT_DIR" | tail -1)"
+          test -f "$TARBALL" || { echo "::error::packed tarball missing: $TARBALL"; exit 1; }
+          mv "$TARBALL" "$ARTIFACT_DIR/zfb-md-wasm.tgz"
+          node crates/zfb-md-wasm/npm/scripts/assert-packed.mjs "$ARTIFACT_DIR/zfb-md-wasm.tgz"
+
       # Informational only (no size budget enforced here). The package
       # README's "Artifact size" section and the docs page (#1580) point
       # back at this job's log as the authoritative, freshly-measured
@@ -577,3 +601,85 @@ jobs:
             process.stdout.write(String(gzipSync(readFileSync(process.argv[1]), { level: 9 }).length));
           " "$WASM_FILE")
           echo "zfb-md-wasm .wasm size: raw=${RAW_BYTES} bytes, gzip-9=${GZIP_BYTES} bytes"
+
+      - name: Upload asserted @takazudo/zfb-md-wasm tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zfb-md-wasm-packed-tarball
+          path: wasm-md-artifact/zfb-md-wasm.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  # Browser-level confirmation for issue #1642. This is intentionally a
+  # separate lane from tests/built-site-smoke: its fixture has one purpose,
+  # consuming the packed md-wasm browser entry through a real zfb build.
+  wasm-md-browser:
+    name: wasm-md browser
+    needs: [health, wasm-md]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # @playwright/test is a root devDependency. The fixture's package is
+      # installed separately below from the downloaded tarball, never from a
+      # workspace/source dependency.
+      - name: Install project dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Download native zfb binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: zfb-debug-linux-x64
+          path: wasm-md-browser-artifacts/zfb
+
+      - name: Download asserted @takazudo/zfb-md-wasm tarball
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: zfb-md-wasm-packed-tarball
+          path: wasm-md-artifact
+
+      # Artifact upload/download does not preserve the executable bit.
+      - name: Fix permissions on downloaded zfb binary
+        run: chmod 0755 wasm-md-browser-artifacts/zfb/zfb
+
+      # This creates tests/md-wasm-browser-smoke/node_modules, a parent of the
+      # fixture site rather than its own node_modules. zfb therefore retains
+      # its embedded-client vendor fallback while the emitted island resolves
+      # the packaged browser dependency normally from its parent directory.
+      - name: Stage asserted packed md-wasm package
+        run: |
+          # `--dir` isolates this file-tarball fixture from the workspace config,
+          # so carry forward its deterministic CI release-age policy explicitly.
+          pnpm --dir tests/md-wasm-browser-smoke install --ignore-workspace --lockfile=false --config.minimumReleaseAge=0
+          node tests/md-wasm-browser-smoke/stage-fixture-node-modules.mjs
+          node tests/md-wasm-browser-smoke/assert-staged-tarball.mjs
+
+      - name: Build md-wasm browser fixture with zfb
+        working-directory: tests/md-wasm-browser-smoke/fixture-site
+        run: ${{ github.workspace }}/wasm-md-browser-artifacts/zfb/zfb build
+
+      - name: Assert emitted md-wasm browser resources
+        run: node tests/md-wasm-browser-smoke/assert-build-output.mjs
+
+      - name: Run md-wasm browser Playwright suite
+        run: pnpm exec playwright test --config tests/md-wasm-browser-smoke/playwright.config.mjs
+
+      - name: Upload md-wasm browser Playwright traces
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wasm-md-browser-traces
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore

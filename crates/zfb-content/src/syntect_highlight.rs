@@ -40,6 +40,12 @@ use zfb_types::escape_html;
 
 use crate::hi_roles::classify;
 
+/// Default prefix for semantic class-mode code highlighting.
+///
+/// Kept beside the renderer so native config and direct consumers (including
+/// the WASM facade) cannot grow independent defaults.
+pub const DEFAULT_CLASS_HIGHLIGHT_PREFIX: &str = "hi-";
+
 /// Bundled `SyntaxSet` loaded once per process.
 ///
 /// `SyntaxSet::load_defaults_newlines()` deserializes a binary blob embedded
@@ -423,10 +429,11 @@ impl Highlighter {
     /// * `lang` - language identifier from the markdown fence.
     /// * `prefix` - class-name prefix (e.g. `"hi-"`); the default class for a
     ///   role is `{prefix}{short_name}` (e.g. `hi-kw`).
-    /// * `role_classes` - per-role class overrides keyed by role short name
-    ///   (e.g. `"kw"` → `"text-violet-600 dark:text-violet-400"`); when a role
-    ///   has an override its value is emitted verbatim (attribute-escaped)
-    ///   instead of `{prefix}{short_name}`.
+    /// * `role_classes` - per-role class overrides keyed by the canonical full
+    ///   role name (e.g. `"keyword"` → `"text-violet-600
+    ///   dark:text-violet-400"`); when a role has an override its value is
+    ///   emitted verbatim (attribute-escaped) instead of
+    ///   `{prefix}{short_name}`.
     ///
     /// ## Cross-line scope state
     ///
@@ -458,7 +465,10 @@ impl Highlighter {
         let syntax = self.resolve_syntax(lang);
 
         let Some(syntax) = syntax else {
-            return Ok(class_fallback_lines(code));
+            return Ok(class_fallback_lines(
+                code,
+                ClassHighlightFallbackReason::UnknownLanguage,
+            ));
         };
 
         // ONE ParseState + ONE ScopeStack across ALL lines — cross-line
@@ -472,7 +482,12 @@ impl Highlighter {
                 Ok(ops) => ops,
                 // Degrade to escaped fallback instead of bubbling Err so
                 // callers never see a bare unclassified block.
-                Err(_) => return Ok(class_fallback_lines(code)),
+                Err(_) => {
+                    return Ok(class_fallback_lines(
+                        code,
+                        ClassHighlightFallbackReason::Tokenization,
+                    ));
+                }
             };
             // Per-line run buffer: consecutive tokens with the same resolved
             // class are merged into a single span. A run's class is
@@ -481,7 +496,10 @@ impl Highlighter {
             let mut runs: Vec<(Option<String>, String)> = Vec::new();
             for (tok, op) in ScopeRegionIterator::new(&ops, line) {
                 if stack.apply(op).is_err() {
-                    return Ok(class_fallback_lines(code));
+                    return Ok(class_fallback_lines(
+                        code,
+                        ClassHighlightFallbackReason::Tokenization,
+                    ));
                 }
                 if tok.is_empty() {
                     continue;
@@ -522,6 +540,40 @@ impl Highlighter {
         Ok(ClassHighlightedLines {
             lines,
             fallback: false,
+            fallback_reason: None,
+        })
+    }
+
+    /// Render arbitrary source in semantic class mode without constructing a
+    /// Markdown fence.
+    ///
+    /// This is the shared facade for direct consumers and the native Markdown
+    /// class-mode plugin. It validates the direct-call options, calls
+    /// [`Self::highlight_lines_classes`] exactly once, then owns the canonical
+    /// `<pre> → <code> → <span class="line">` wrapper markup. Unknown
+    /// languages and tokenizer failures are successful, escaped fallback
+    /// outcomes whose typed reason is exposed on [`ClassHighlightOutcome`].
+    pub fn render_class_highlight(
+        &self,
+        code: &str,
+        language: &str,
+        class_prefix: &str,
+        role_classes: &BTreeMap<String, String>,
+    ) -> Result<ClassHighlightOutcome, ClassHighlightRenderError> {
+        validate_class_highlight_options(language, class_prefix, role_classes)
+            .map_err(ClassHighlightRenderError::Validation)?;
+
+        let highlighted = self
+            .highlight_lines_classes(code, Some(language), class_prefix, role_classes)
+            .map_err(ClassHighlightRenderError::Highlight)?;
+        let root_class = format!("{class_prefix}root");
+        let html = render_class_highlight_markup(&root_class, &highlighted.lines);
+
+        Ok(ClassHighlightOutcome {
+            html,
+            fallback_reason: highlighted.fallback_reason,
+            root_class,
+            lines: highlighted.lines,
         })
     }
 }
@@ -582,6 +634,152 @@ pub struct ClassHighlightedLines {
     /// `true` when the output used the escaped-fallback path (unknown lang or a
     /// parse/apply error) rather than per-token class highlighting.
     pub fallback: bool,
+    /// The exact escaped-fallback cause, when [`Self::fallback`] is true.
+    ///
+    /// This supplements the legacy boolean so direct consumers can distinguish
+    /// an unsupported language from a tokenizer failure without attempting to
+    /// inspect the generated HTML.
+    pub fallback_reason: Option<ClassHighlightFallbackReason>,
+}
+
+/// Why a class-highlight operation produced escaped source instead of role
+/// spans. These are expected outcomes, not traps or validation errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassHighlightFallbackReason {
+    /// No bundled syntax or supported alias matched the supplied non-empty
+    /// language token.
+    UnknownLanguage,
+    /// Syntect could not parse a line or apply its scope operations.
+    Tokenization,
+}
+
+/// Result of [`Highlighter::render_class_highlight`].
+///
+/// `html` is the ready-to-emit semantic wrapper used by direct consumers. The
+/// native Markdown plugin uses the crate-private line and root-class accessors
+/// to preserve its structured HAST nodes for downstream code enrichment while
+/// sharing this renderer's tokenization, validation, fallback, and wrapper
+/// contract.
+#[derive(Debug, Clone)]
+pub struct ClassHighlightOutcome {
+    /// Complete escaped HTML:
+    /// `<pre class="{prefix}root"><code><span class="line">…`.
+    pub html: String,
+    /// `None` for tokenized output; otherwise the expected fallback cause.
+    pub fallback_reason: Option<ClassHighlightFallbackReason>,
+    root_class: String,
+    lines: Vec<String>,
+}
+
+impl ClassHighlightOutcome {
+    /// Root `<pre>` class for the native structured-HAST adapter.
+    #[must_use]
+    pub(crate) fn root_class(&self) -> &str {
+        &self.root_class
+    }
+
+    /// Per-source-line HTML fragments for the native structured-HAST adapter.
+    #[must_use]
+    pub(crate) fn into_lines(self) -> Vec<String> {
+        self.lines
+    }
+}
+
+/// Invalid direct class-highlight options.
+///
+/// Native `zfb` config prefixes these field-oriented messages with
+/// `codeHighlight.` while retaining theme mutual-exclusion and Tailwind policy
+/// validation in its own layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClassHighlightValidationError {
+    /// The direct facade requires a language; Markdown blocks without a
+    /// language remain outside the syntect plugin as before.
+    EmptyLanguage,
+    /// The prefix would not be a valid semantic class-name prefix.
+    InvalidClassPrefix { prefix: String },
+    /// A role override did not use a canonical full role name.
+    UnknownRole { role: String },
+    /// An override would collide with the Markdown line-wrapper class.
+    LineClassCollision { role: String, class: String },
+}
+
+impl std::fmt::Display for ClassHighlightValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyLanguage => write!(f, "language must be non-empty"),
+            Self::InvalidClassPrefix { prefix } => write!(
+                f,
+                "classPrefix {prefix:?} must be non-empty and match /^[A-Za-z][A-Za-z0-9_-]*$/"
+            ),
+            Self::UnknownRole { role } => write!(
+                f,
+                "roleClasses key {role:?} is not a known role; valid roles are: {}",
+                crate::hi_roles::HiRole::FULL_NAMES.join(", ")
+            ),
+            Self::LineClassCollision { role, class } => write!(
+                f,
+                "roleClasses[{role:?}] value {class:?} must not contain the token \"line\" (collides with the code-enrichment line wrapper class)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ClassHighlightValidationError {}
+
+/// Error from [`Highlighter::render_class_highlight`].
+#[derive(Debug, thiserror::Error)]
+pub enum ClassHighlightRenderError {
+    /// The caller supplied invalid class-highlight options.
+    #[error(transparent)]
+    Validation(#[from] ClassHighlightValidationError),
+    /// An unexpected highlighter-level error. Normal unknown-language and
+    /// tokenization cases are represented by [`ClassHighlightOutcome`], not
+    /// this error.
+    #[error(transparent)]
+    Highlight(#[from] HighlightError),
+}
+
+/// Validate class-prefix and role-override values shared by native config and
+/// the direct arbitrary-code facade.
+pub fn validate_class_highlight_classes(
+    class_prefix: &str,
+    role_classes: &BTreeMap<String, String>,
+) -> Result<(), ClassHighlightValidationError> {
+    if !is_valid_class_prefix(class_prefix) {
+        return Err(ClassHighlightValidationError::InvalidClassPrefix {
+            prefix: class_prefix.to_string(),
+        });
+    }
+    for key in role_classes.keys() {
+        if !crate::hi_roles::HiRole::FULL_NAMES.contains(&key.as_str()) {
+            return Err(ClassHighlightValidationError::UnknownRole { role: key.clone() });
+        }
+    }
+    for (role, class) in role_classes {
+        if class.split_whitespace().any(|token| token == "line") {
+            return Err(ClassHighlightValidationError::LineClassCollision {
+                role: role.clone(),
+                class: class.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Validate direct arbitrary-code class-highlight options.
+///
+/// Unlike fenced Markdown, a direct call has no meaningful no-language mode,
+/// so an empty language is rejected instead of being silently treated as
+/// unhighlighted text.
+pub fn validate_class_highlight_options(
+    language: &str,
+    class_prefix: &str,
+    role_classes: &BTreeMap<String, String>,
+) -> Result<(), ClassHighlightValidationError> {
+    if language.is_empty() {
+        return Err(ClassHighlightValidationError::EmptyLanguage);
+    }
+    validate_class_highlight_classes(class_prefix, role_classes)
 }
 
 impl Default for Highlighter {
@@ -687,12 +885,48 @@ fn dual_fallback_lines(
 /// lang or a parse/apply error). Splits `code` on `LinesWithEndings` so the
 /// per-line vector matches the normal path's granularity; each line is
 /// HTML-escaped with no token spans.
-fn class_fallback_lines(code: &str) -> ClassHighlightedLines {
+fn class_fallback_lines(code: &str, reason: ClassHighlightFallbackReason) -> ClassHighlightedLines {
     let lines: Vec<String> = LinesWithEndings::from(code).map(escape_html).collect();
     ClassHighlightedLines {
         lines,
         fallback: true,
+        fallback_reason: Some(reason),
     }
+}
+
+/// Render the class-mode wrapper around already escaped per-line fragments.
+///
+/// This is intentionally separate from syntax tokenization: direct callers
+/// receive its exact HTML, while the Markdown plugin receives the same line
+/// fragments to retain structured HAST nodes for code-enrichment visitors.
+fn render_class_highlight_markup(root_class: &str, lines: &[String]) -> String {
+    let mut html = String::with_capacity(
+        root_class.len()
+            + lines.iter().map(String::len).sum::<usize>()
+            + lines.len() * "<span class=\"line\"></span>".len()
+            + "<pre class=\"\"><code></code></pre>".len(),
+    );
+    html.push_str("<pre class=\"");
+    html.push_str(&escape_html(root_class));
+    html.push_str("\"><code>");
+    for line in lines {
+        html.push_str("<span class=\"line\">");
+        html.push_str(line);
+        html.push_str("</span>");
+    }
+    html.push_str("</code></pre>");
+    html
+}
+
+/// `classPrefix` validation: non-empty, first char an ASCII letter, remaining
+/// chars ASCII alphanumeric, `_`, or `-`.
+fn is_valid_class_prefix(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Errors returned by the highlighter.
@@ -1583,6 +1817,11 @@ mod tests {
             )
             .expect("fallback ok");
         assert!(result.fallback, "unknown lang must set fallback = true");
+        assert_eq!(
+            result.fallback_reason,
+            Some(ClassHighlightFallbackReason::UnknownLanguage),
+            "unknown-language fallback must retain its typed cause"
+        );
         let html = result.lines.concat();
         assert!(
             !html.contains("<span"),

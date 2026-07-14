@@ -8,8 +8,9 @@ sidebar_position: 7.5
 
 `@takazudo/zfb-md-wasm`, a WebAssembly build of zfb's md/mdx → JS/HTML pipeline
 for **browser-side dynamic conversion**. The two API tiers (`compile()` and
-`renderHtml()`), how to evaluate a compiled module in a browser, Node usage
-for tests and tooling, and the parity guarantee's explicit limitations.
+`renderHtml()`), direct semantic `highlightCode()`, how to evaluate a compiled
+module in a browser, Node usage for tests and tooling, and the parity
+guarantee's explicit limitations.
 
 </Info>
 
@@ -23,7 +24,7 @@ The headline use case is **CMS live preview**: as an editor types Markdown or
 MDX into a CMS, the preview pane should show exactly what `zfb build` would
 eventually produce — not an approximation. Running
 [`@mdx-js/mdx`](https://mdxjs.com/) in the browser for this would use a
-*different* pipeline, with its own parsing, plugin, and JSX-emission
+_different_ pipeline, with its own parsing, plugin, and JSX-emission
 behavior, so its preview can drift from zfb's real build output.
 `zfb-md-wasm` avoids that drift by compiling the **same Rust pipeline** zfb
 itself uses at build time, so a preview stays faithful to what actually
@@ -79,7 +80,7 @@ in-content reference to it would throw `ReferenceError` when the module runs.
 
 ### Evaluating the compiled module in a browser
 
-`compile()` hands back ES-module *source text*, not a runnable module. Turn
+`compile()` hands back ES-module _source text_, not a runnable module. Turn
 it into one with a blob URL and a dynamic `import()`:
 
 ```ts
@@ -109,7 +110,7 @@ or your bundler. `zfb-md-wasm` does not ship or bundle either runtime.
 
 <Warning title="The Fragment quirk — preact consumers need one alias">
 
-zfb's emitter takes the JSX *factory* from your chosen `jsxRuntime`, but it
+zfb's emitter takes the JSX _factory_ from your chosen `jsxRuntime`, but it
 **always imports `Fragment` from `react/jsx-runtime`**, regardless of which
 runtime you picked. This is zfb's production emitter shape — parity-correct,
 not a bug — but it means a **preact** consumer must alias
@@ -141,22 +142,123 @@ component module.
 ```ts
 import { renderHtml } from "@takazudo/zfb-md-wasm";
 
-const { html, frontmatter, diagnostics } = await renderHtml(
-  "# Heading\n\nSome **bold** text.\n",
-  { filename: "post.md" },
-);
+const { html, frontmatter, diagnostics } = await renderHtml("# Heading\n\nSome **bold** text.\n", {
+  filename: "post.md",
+});
 // html -> "<h1>Heading</h1><p>Some <strong>bold</strong> text.</p>"
 ```
 
 `renderHtml` accepts and ignores `jsxRuntime` / `development`, so one
 options object can serve both tiers if you build it dynamically.
 
+## Direct semantic code highlighting
+
+`highlightCode()` is the direct root API for arbitrary HTML, CSS, JavaScript,
+or another bundled syntax. It does not need a Markdown fence and never emits
+inline colours or Shiki classes; it returns escaped, semantic class-mode HTML.
+
+```ts
+import {
+  highlightCode,
+  type HighlightCodeOptions,
+  type HighlightCodeResult,
+} from "@takazudo/zfb-md-wasm";
+
+const output: HighlightCodeResult = await highlightCode("const answer = 42;", {
+  language: "javascript", // required
+  mode: "class", // optional; the only accepted mode
+  classPrefix: "hi-", // optional; defaults to "hi-"
+  roleClasses: { keyword: "text-violet-600 dark:text-violet-400" },
+} satisfies HighlightCodeOptions);
+```
+
+```ts
+type HighlightRole =
+  | "escape"
+  | "operator"
+  | "comment"
+  | "string"
+  | "number"
+  | "constant"
+  | "keyword"
+  | "function"
+  | "type"
+  | "namespace"
+  | "property"
+  | "variable"
+  | "tag"
+  | "attribute"
+  | "punctuation"
+  | "inserted"
+  | "deleted"
+  | "heading";
+
+interface HighlightCodeOptions {
+  language: string;
+  mode?: "class";
+  classPrefix?: string;
+  roleClasses?: Partial<Record<HighlightRole, string>>;
+}
+interface HighlightCodeResult {
+  html: string | null;
+  diagnostics: HighlightDiagnostic[];
+}
+```
+
+The default output is `<pre class="hi-root"><code>…</code></pre>`, with a
+`<span class="line">` for every non-empty line. The fixed full-name role keys
+and default `hi-` classes are: `escape` → `hi-esc`, `operator` → `hi-op`,
+`comment` → `hi-com`, `string` → `hi-str`, `number` → `hi-num`, `constant` →
+`hi-const`, `keyword` → `hi-kw`, `function` → `hi-fn`, `type` → `hi-ty`,
+`namespace` → `hi-ns`, `property` → `hi-prop`, `variable` → `hi-var`, `tag` →
+`hi-tag`, `attribute` → `hi-attr`, `punctuation` → `hi-punct`, `inserted` →
+`hi-ins`, `deleted` → `hi-del`, and `heading` → `hi-hd`.
+
+`roleClasses` keys are the full names in that list. For example,
+`{ keyword: "my-keyword" }` replaces `hi-kw`; `kw` is not a valid override
+key. A `classPrefix` changes both the root (`token-root` for `"token-"`) and
+all unoverridden token classes.
+
+Invalid options (for example a missing language, unsupported mode, invalid
+prefix, unrecognised role key, or extra property) return `html: null` with an
+`error` diagnostic from `source: "options"`; they do not throw. An unknown
+non-empty language is a successful escaped fallback with one `warning`
+diagnostic from `source: "highlight"` and null location fields. Incomplete
+editor input is accepted and can return normal markup without a diagnostic.
+
+### Lazy browser resources and server MIME
+
+The package's browser export declares two static resources:
+`zfb_md_wasm_glue.zfb-resource.mjs` and `zfb_md_wasm_bg.wasm`. A zfb production
+build emits hashed island assets named:
+
+```text
+assets/islands-resource-zfb_md_wasm_glue.zfb-resource-<hash>.mjs
+assets/islands-resource-zfb_md_wasm_bg-<hash>.wasm
+```
+
+To keep them out of the initial page load, dynamically import the root only
+from a user action. The first public API call then fetches the glue and wasm:
+
+```ts
+button.addEventListener("click", async () => {
+  const { highlightCode } = await import("@takazudo/zfb-md-wasm");
+  const result = await highlightCode(editor.value, { language: "javascript" });
+  preview.innerHTML = result.html ?? "";
+});
+```
+
+Serve emitted `.mjs` as `application/javascript` and `.wasm` as
+`application/wasm`. Do not manually copy the resources or import a package
+source path: use the packed browser entry so zfb can maintain the hashed URL
+graph.
+
 ## Node usage (tests and tooling)
 
-The same `compile` / `renderHtml` / `version` API runs under Node ≥ 20 with
-no extra setup — this is exactly how the package's own vitest suite
-exercises the wasm build. Useful for snapshot-testing preview output, or for
-tooling that wants parity checks without shelling out to the `zfb` binary.
+The same `compile` / `renderHtml` / `highlightCode` / `version` API runs under
+Node ≥ 20 with no extra setup — this is exactly how the package's own vitest
+suite exercises the wasm build. Useful for snapshot-testing preview output, or
+for tooling that wants parity checks without shelling out to the `zfb` binary.
 
 ```ts
 import { renderHtml } from "@takazudo/zfb-md-wasm";
@@ -188,6 +290,9 @@ limitations for the browser build:
   single cdylib can't tree-shake SWC out of the download just because a
   consumer only ever calls `renderHtml`. A slim `renderHtml`-only artifact
   is a documented possible follow-up, not implemented here.
+- **There is no slim `highlightCode`-only artifact.** Direct highlighting uses
+  the same current wasm download as `compile` and `renderHtml`; it avoids
+  pipeline work, not artifact bytes.
 - **Syntax highlighting uses syntect's `fancy-regex` backend**, not native
   zfb's `oniguruma` backend (`oniguruma` can't compile to wasm). See
   [Syntax Highlighting](./syntax-highlighting.mdx) for the native-side
@@ -204,6 +309,18 @@ specific number here; it drifts release to release. The CI `wasm-md` job
 prints the authoritative gzipped size on every run — check that job's size
 line for the current figure rather than trusting a number written into this
 page.
+
+## Trap recovery
+
+Expected `highlightCode` option errors and unknown-language fallbacks are
+normal result diagnostics. A real wasm trap is different: the affected call
+throws `ZfbMdWasmTrapError`, because that instance is poisoned. The wrapper
+immediately starts a fresh instance from its cached compiled wasm module, so
+the next `compile`, `renderHtml`, `highlightCode`, or `version` call uses the
+replacement without a second wasm fetch/compile. Browser recovery imports a
+new glue-module generation (`?zfbMdWasmGen=N`) and is capped at 16 recoveries
+to avoid unbounded module records. A trap is always a package bug; report the
+input that triggered it.
 
 ## See also
 

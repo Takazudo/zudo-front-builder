@@ -1,7 +1,7 @@
 //! `zfb-md-wasm` — zfb's md/mdx conversion pipeline as a WebAssembly module
 //! (epic zfb#1572, sub-issue zfb#1576).
 //!
-//! Two API tiers over one cdylib, both JSON-in/JSON-out strings so the
+//! Three API tiers over one cdylib, all JSON-in/JSON-out strings so the
 //! wasm boundary stays trivially serializable:
 //!
 //! 1. [`compile`] — full mdx → JSX → SWC → ES-module JS. Returns
@@ -9,6 +9,8 @@
 //! 2. [`render_html`] — md → mdast → pipeline visitors → hast → HTML
 //!    string, no SWC at runtime. Returns `{ html, frontmatter,
 //!    diagnostics }`.
+//! 3. [`highlight_code`] — arbitrary source → semantic class-highlighted HTML
+//!    (without a Markdown fence). Returns `{ html, diagnostics }`.
 //!
 //! Plus [`version`] for host-side compatibility checks.
 //!
@@ -65,12 +67,18 @@
 //! wrapper must re-instantiate (the API is stateless per call, so re-init
 //! loses nothing). Full contract in this crate's README.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 use zfb_content::facade::{self, PipelineOptions};
 use zfb_content::frontmatter::{extract_from_filename, FrontmatterError};
 use zfb_content::pipeline::{Pipeline, PipelineError};
+use zfb_content::syntect_highlight::{
+    ClassHighlightFallbackReason, ClassHighlightRenderError, Highlighter,
+    DEFAULT_CLASS_HIGHLIGHT_PREFIX,
+};
 use zfb_render::swc_pipeline::{CompileOptions, JsxRuntime, SwcPipeline};
 
 /// `jsxRuntime` option values, mirroring
@@ -104,6 +112,37 @@ struct WasmOptions {
     pipeline: PipelineOptions,
 }
 
+/// The only direct-code output mode currently supported by the public API.
+/// Keeping this a closed enum means a future mode must be deliberately
+/// designed instead of being silently accepted and ignored.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum HighlightCodeMode {
+    #[default]
+    Class,
+}
+
+/// Options for [`highlight_code`]. This is intentionally not the Markdown
+/// pipeline's options document: arbitrary code has no filename/frontmatter or
+/// theme configuration, and always emits semantic classes.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HighlightCodeOptions {
+    /// Required so a missing language is distinct from an unknown non-empty
+    /// language, which is an escaped successful fallback.
+    language: String,
+    #[serde(default)]
+    mode: HighlightCodeMode,
+    #[serde(default = "default_class_highlight_prefix")]
+    class_prefix: String,
+    #[serde(default)]
+    role_classes: BTreeMap<String, String>,
+}
+
+fn default_class_highlight_prefix() -> String {
+    DEFAULT_CLASS_HIGHLIGHT_PREFIX.to_string()
+}
+
 /// One diagnostic entry — see the crate docs for field semantics.
 #[derive(Debug, Serialize)]
 struct Diagnostic {
@@ -118,6 +157,16 @@ impl Diagnostic {
     fn error(source: &'static str, message: impl Into<String>) -> Self {
         Self {
             severity: "error",
+            source,
+            message: message.into(),
+            line: None,
+            column: None,
+        }
+    }
+
+    fn warning(source: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            severity: "warning",
             source,
             message: message.into(),
             line: None,
@@ -145,6 +194,15 @@ struct CompileResult {
 struct RenderHtmlResult {
     html: Option<String>,
     frontmatter: JsonValue,
+    diagnostics: Vec<Diagnostic>,
+}
+
+/// Result document of [`highlight_code`]. Unlike the Markdown APIs, direct
+/// highlighting has no frontmatter and can succeed with an escaped fallback
+/// plus a warning diagnostic.
+#[derive(Debug, Serialize)]
+struct HighlightCodeResult {
+    html: Option<String>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -377,6 +435,64 @@ fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
     }
 }
 
+fn highlight_code_impl(code: &str, options_json: &str) -> HighlightCodeResult {
+    let options: HighlightCodeOptions = match serde_json::from_str(options_json) {
+        Ok(options) => options,
+        Err(error) => {
+            return HighlightCodeResult {
+                html: None,
+                diagnostics: vec![Diagnostic::error(
+                    "options",
+                    format!("invalid highlight options JSON: {error}"),
+                )
+                .at(Some(error.line() as u64), Some(error.column() as u64))],
+            }
+        }
+    };
+
+    // There is currently one intentionally closed direct-output mode. Binding
+    // it in the pattern makes accepting another serialized variant a source
+    // change at this boundary, rather than an accidental no-op.
+    let HighlightCodeOptions {
+        language,
+        mode: HighlightCodeMode::Class,
+        class_prefix,
+        role_classes,
+    } = options;
+
+    match Highlighter::new().render_class_highlight(code, &language, &class_prefix, &role_classes) {
+        Ok(outcome) => {
+            let diagnostics = match outcome.fallback_reason {
+                None => vec![],
+                Some(ClassHighlightFallbackReason::UnknownLanguage) => vec![Diagnostic::warning(
+                    "highlight",
+                    format!(
+                        "no bundled syntax matches language {language:?}; emitted escaped fallback markup"
+                    ),
+                )],
+                Some(ClassHighlightFallbackReason::Tokenization) => vec![Diagnostic::warning(
+                    "highlight",
+                    format!(
+                        "could not tokenize language {language:?}; emitted escaped fallback markup"
+                    ),
+                )],
+            };
+            HighlightCodeResult {
+                html: Some(outcome.html),
+                diagnostics,
+            }
+        }
+        Err(ClassHighlightRenderError::Validation(error)) => HighlightCodeResult {
+            html: None,
+            diagnostics: vec![Diagnostic::error("options", error.to_string())],
+        },
+        Err(ClassHighlightRenderError::Highlight(error)) => HighlightCodeResult {
+            html: None,
+            diagnostics: vec![Diagnostic::error("internal", error.to_string())],
+        },
+    }
+}
+
 fn to_json<T: Serialize>(value: &T) -> String {
     // Serialization of these result shapes cannot fail in practice, but a
     // panic here would trap the wasm instance — degrade to a hand-built
@@ -385,6 +501,18 @@ fn to_json<T: Serialize>(value: &T) -> String {
         format!(
             r#"{{"code":null,"html":null,"frontmatter":null,"diagnostics":[{{"severity":"error","source":"internal","message":{},"line":null,"column":null}}]}}"#,
             JsonValue::String(format!("result serialization failed: {e}"))
+        )
+    })
+}
+
+fn highlight_to_json(value: &HighlightCodeResult) -> String {
+    // Keep this fallback on the direct API's exact result shape. A serde
+    // serialization failure is an internal bug, but must still be a normal
+    // JSON response rather than a wasm trap that poisons the cached instance.
+    serde_json::to_string(value).unwrap_or_else(|error| {
+        format!(
+            r#"{{"html":null,"diagnostics":[{{"severity":"error","source":"internal","message":{},"line":null,"column":null}}]}}"#,
+            JsonValue::String(format!("result serialization failed: {error}"))
         )
     })
 }
@@ -411,6 +539,18 @@ pub fn render_html(source: &str, options_json: &str) -> String {
     to_json(&render_html_impl(source, options_json))
 }
 
+/// Highlight arbitrary source into semantic class-mode HTML without requiring
+/// a Markdown fence. Exported to JavaScript as `highlightCode`.
+///
+/// Returns `{ "html": string|null, "diagnostics": HighlightDiagnostic[] }`.
+/// Invalid options are structured errors; an unknown non-empty language or a
+/// tokenizer fallback returns escaped wrapper markup plus a warning.
+#[wasm_bindgen(js_name = highlightCode)]
+#[must_use]
+pub fn highlight_code(code: &str, options_json: &str) -> String {
+    highlight_to_json(&highlight_code_impl(code, options_json))
+}
+
 /// This package's release version, stamped by CI at compile time.
 ///
 /// Development builds without `ZFB_RELEASE_VERSION` fall back to this crate's
@@ -421,6 +561,20 @@ pub fn version() -> String {
     option_env!("ZFB_RELEASE_VERSION")
         .unwrap_or(env!("CARGO_PKG_VERSION"))
         .to_string()
+}
+
+/// Deliberately trap the current WebAssembly instance for wrapper recovery
+/// tests. This is not part of the typed package API; the JavaScript wrapper
+/// exposes it only through its internal test hook.
+///
+/// A Rust panic is the reliable cross-engine representation of the real
+/// failure this hook needs to exercise. Calling a generated raw C-ABI export
+/// with fabricated pointers could instead enter undefined Rust-level work and
+/// hang Chromium before reaching the wasm trap boundary.
+#[doc(hidden)]
+#[wasm_bindgen(js_name = __forceTrapForTests)]
+pub fn force_trap_for_tests() {
+    panic!("zfb-md-wasm test-only forced trap");
 }
 
 #[cfg(test)]

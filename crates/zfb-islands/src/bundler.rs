@@ -464,6 +464,25 @@ pub struct BundleChunk {
     pub bytes: Vec<u8>,
 }
 
+/// One non-entry resource emitted by esbuild's locked browser-islands file
+/// loaders.
+///
+/// Resources are deliberately distinct from code-split chunks and module
+/// workers. They are opaque `.zfb-resource.mjs` glue or `.wasm` payloads that
+/// esbuild has already named and whose relative URLs have already been baked
+/// into the islands entry. Downstream writers must therefore place them beside
+/// the entry verbatim and must not re-hash, rename, or inspect their bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleResource {
+    /// Flat, self-hashed resource basename, e.g.
+    /// `islands-resource-zfb_md_wasm_bg-ABCDE.wasm`.
+    pub filename: String,
+
+    /// Raw file-loader output bytes, read back verbatim from esbuild's
+    /// staging directory.
+    pub bytes: Vec<u8>,
+}
+
 /// Result of a successful [`ClientBundler::bundle`] call.
 #[derive(Debug, Clone)]
 pub struct BundleOutput {
@@ -534,6 +553,14 @@ pub struct BundleOutput {
     /// the islands entry in production and development; only their `?v=` URL
     /// query changes when the first-party worker graph changes.
     pub workers: Vec<BundleChunk>,
+
+    /// File-loader resources emitted by the shared browser-islands pass.
+    ///
+    /// This is empty unless a reachable island statically imports a
+    /// `.zfb-resource.mjs` or `.wasm` file. Resource filenames are flat,
+    /// self-hashed, metafile-backed names owned by esbuild and are sorted
+    /// deterministically before they reach this field.
+    pub resources: Vec<BundleResource>,
 }
 
 /// Abstraction over "bundle this islands set into a single browser-ready
@@ -717,6 +744,20 @@ pub struct IslandsChunk {
     pub bytes: Vec<u8>,
 }
 
+/// One production islands resource companion to ship verbatim beside the
+/// entry.
+///
+/// Kept as a separate public type from [`IslandsChunk`] so callers cannot
+/// accidentally treat opaque file-loader outputs as JavaScript chunks or
+/// workers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IslandsResource {
+    /// Flat file-loader output basename.
+    pub filename: String,
+    /// Opaque resource bytes, never rewritten or renamed downstream.
+    pub bytes: Vec<u8>,
+}
+
 /// Bytes-only payload describing the islands client bundle as a single
 /// hashable production asset, ready for plugging into
 /// `zfb_build::pipeline::prod::ProductionAssetPipeline` (S4 wiring).
@@ -735,7 +776,8 @@ pub struct IslandsChunk {
 /// - `stable_url` is the unhashed public URL the renderer embeds
 ///   (`/assets/islands.js`); the pipeline rewrites every match in the
 ///   rendered HTML to the hashed form.
-/// - `chunks` and `workers` carry their two verbatim companion classes.
+/// - `chunks`, `workers`, and `resources` carry three distinct verbatim
+///   companion classes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductionIslandsAsset {
     /// Bundled JS bytes — already minified per `BundleConfig::production`
@@ -764,6 +806,12 @@ pub struct ProductionIslandsAsset {
     /// Stable module-worker companions emitted alongside the islands entry.
     /// These are shipped verbatim, never renamed or content-hashed.
     pub workers: Vec<IslandsChunk>,
+
+    /// File-loader resource companions emitted alongside the islands entry.
+    /// These are shipped verbatim under their esbuild-owned names so relative
+    /// resource URLs in the entry continue to resolve after the entry itself
+    /// receives its production hash.
+    pub resources: Vec<IslandsResource>,
 }
 
 /// Run `bundler` over `islands` and return a bytes-only adapter payload
@@ -829,12 +877,22 @@ pub fn build_production_islands_asset(
         })
         .collect();
 
+    let resources = output
+        .resources
+        .into_iter()
+        .map(|resource| IslandsResource {
+            filename: resource.filename,
+            bytes: resource.bytes,
+        })
+        .collect();
+
     Ok(Some(ProductionIslandsAsset {
         bytes,
         relative_path,
         stable_url: STABLE_ISLANDS_URL.to_string(),
         chunks,
         workers,
+        resources,
     }))
 }
 
@@ -995,6 +1053,7 @@ mod tests {
         payload: Vec<u8>,
         chunks: Vec<BundleChunk>,
         workers: Vec<BundleChunk>,
+        resources: Vec<BundleResource>,
         calls: std::cell::Cell<usize>,
     }
 
@@ -1004,13 +1063,20 @@ mod tests {
                 payload: payload.into(),
                 chunks: Vec::new(),
                 workers: Vec::new(),
+                resources: Vec::new(),
                 calls: std::cell::Cell::new(0),
             }
         }
 
-        fn with_companions(mut self, chunks: Vec<BundleChunk>, workers: Vec<BundleChunk>) -> Self {
+        fn with_companions(
+            mut self,
+            chunks: Vec<BundleChunk>,
+            workers: Vec<BundleChunk>,
+            resources: Vec<BundleResource>,
+        ) -> Self {
             self.chunks = chunks;
             self.workers = workers;
+            self.resources = resources;
             self
         }
 
@@ -1036,6 +1102,7 @@ mod tests {
                 module_ids,
                 chunks: self.chunks.clone(),
                 workers: self.workers.clone(),
+                resources: self.resources.clone(),
             })
         }
     }
@@ -1123,7 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn build_production_islands_asset_keeps_workers_separate_from_chunks() {
+    fn build_production_islands_asset_keeps_companion_classes_separate() {
         let dir = tempfile::tempdir().unwrap();
         let bundler = RecordingBundler::new(b"entry".to_vec()).with_companions(
             vec![BundleChunk {
@@ -1133,6 +1200,10 @@ mod tests {
             vec![BundleChunk {
                 filename: "worker-src-s-search-d-ts.js".into(),
                 bytes: b"worker".to_vec(),
+            }],
+            vec![BundleResource {
+                filename: "islands-resource-zfb_md_wasm_bg-AAAA.wasm".into(),
+                bytes: b"wasm".to_vec(),
             }],
         );
         let cfg = BundleConfig::production().with_outdir(dir.path());
@@ -1149,6 +1220,12 @@ mod tests {
         assert_eq!(asset.workers.len(), 1);
         assert_eq!(asset.workers[0].filename, "worker-src-s-search-d-ts.js");
         assert_eq!(asset.workers[0].bytes, b"worker");
+        assert_eq!(asset.resources.len(), 1);
+        assert_eq!(
+            asset.resources[0].filename,
+            "islands-resource-zfb_md_wasm_bg-AAAA.wasm"
+        );
+        assert_eq!(asset.resources[0].bytes, b"wasm");
     }
 
     #[test]

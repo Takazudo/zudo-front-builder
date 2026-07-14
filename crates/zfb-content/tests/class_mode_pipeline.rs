@@ -17,6 +17,10 @@
 use std::collections::BTreeMap;
 
 use zfb_content::pipeline::{HastNode, Pipeline, ResolvedGfmConstructs};
+use zfb_content::syntect_highlight::{
+    ClassHighlightFallbackReason, ClassHighlightRenderError, ClassHighlightValidationError,
+    Highlighter,
+};
 use zfb_content::{CodeHighlightMode, PipelineSpec};
 
 const RUST_CODE: &str = "```rust\nfn main() {}\n```\n";
@@ -89,6 +93,157 @@ fn class_pipeline_emits_role_classes_and_root_class() {
     assert!(
         !html.contains("class=\"syntect-"),
         "class mode must NOT carry a syntect-* class: {html}"
+    );
+}
+
+/// Direct arbitrary-code rendering shares the native class-mode wrapper. This
+/// deliberately compares complete output (rather than token substrings) for
+/// the languages promised by the future browser-facing facade, proving that
+/// neither path synthesizes a divergent Markdown-only wrapper.
+#[test]
+fn direct_class_renderer_matches_markdown_class_mode_for_html_css_and_javascript() {
+    let highlighter = Highlighter::new();
+    for (language, code) in [
+        ("html", "<main data-x=\"a & b\">hello</main>"),
+        ("css", ".button { color: red; }"),
+        ("javascript", "const value = '<tag>';"),
+    ] {
+        let direct = highlighter
+            .render_class_highlight(code, language, "hi-", &BTreeMap::new())
+            .expect("valid direct class highlight");
+        assert_eq!(direct.fallback_reason, None, "{language} must resolve");
+
+        let mut pipeline = Pipeline::with_defaults_and_full_config_class(
+            ResolvedGfmConstructs::CONSERVATIVE,
+            None,
+            true,
+            false,
+            None,
+            "hi-",
+            &BTreeMap::new(),
+        )
+        .expect("no themes_dir — cannot fail");
+        // markdown-rs normalizes the source line ending immediately before a
+        // closing fence, so the equivalent direct source intentionally has no
+        // trailing newline.
+        let markdown = format!("```{language}\n{code}\n```\n");
+        assert_eq!(
+            run_markdown(&mut pipeline, &markdown),
+            direct.html,
+            "direct and Markdown class markup diverged for {language}"
+        );
+    }
+}
+
+/// Custom prefixes and canonical full-name role overrides pass through the
+/// same direct/native renderer contract as the defaults.
+#[test]
+fn direct_class_renderer_matches_markdown_with_custom_prefix_and_role_override() {
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "keyword".to_string(),
+        "text-violet-600 dark:text-violet-400".to_string(),
+    );
+    let direct = Highlighter::new()
+        .render_class_highlight("const answer = 42;", "javascript", "token-", &roles)
+        .expect("valid direct custom class highlight");
+
+    let mut pipeline = Pipeline::with_defaults_and_full_config_class(
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        None,
+        "token-",
+        &roles,
+    )
+    .expect("no themes_dir — cannot fail");
+    assert_eq!(
+        run_markdown(&mut pipeline, "```javascript\nconst answer = 42;\n```\n"),
+        direct.html
+    );
+    assert!(direct.html.contains("class=\"token-root\""));
+    assert!(direct
+        .html
+        .contains("class=\"text-violet-600 dark:text-violet-400\""));
+}
+
+/// Direct rendering has an explicit no-language error rather than pretending
+/// that a missing language was an unknown-language fallback. Empty source,
+/// however, remains valid and uses the ordinary semantic wrapper.
+#[test]
+fn direct_class_renderer_validates_language_but_accepts_empty_source() {
+    let highlighter = Highlighter::new();
+    let error = highlighter
+        .render_class_highlight("", "", "hi-", &BTreeMap::new())
+        .expect_err("direct empty language must be rejected");
+    assert!(matches!(
+        error,
+        ClassHighlightRenderError::Validation(ClassHighlightValidationError::EmptyLanguage)
+    ));
+
+    let rendered = highlighter
+        .render_class_highlight("", "rust", "hi-", &BTreeMap::new())
+        .expect("empty source is valid");
+    assert_eq!(rendered.fallback_reason, None);
+    assert_eq!(rendered.html, r#"<pre class="hi-root"><code></code></pre>"#);
+}
+
+/// Prefix and full-name role validation is shared with native `zfb` config;
+/// this direct surface pins the same three rejection cases for the future WASM
+/// caller without introducing a second role taxonomy.
+#[test]
+fn direct_class_renderer_validates_prefix_and_role_overrides() {
+    let highlighter = Highlighter::new();
+    let bad_prefix = highlighter
+        .render_class_highlight("let x = 1;", "rust", "1hi-", &BTreeMap::new())
+        .expect_err("invalid prefix must be rejected");
+    assert!(matches!(
+        bad_prefix,
+        ClassHighlightRenderError::Validation(
+            ClassHighlightValidationError::InvalidClassPrefix { .. }
+        )
+    ));
+
+    let mut unknown_role = BTreeMap::new();
+    unknown_role.insert("kw".to_string(), "text-blue-600".to_string());
+    let bad_role = highlighter
+        .render_class_highlight("let x = 1;", "rust", "hi-", &unknown_role)
+        .expect_err("short role names must not be accepted as public keys");
+    assert!(matches!(
+        bad_role,
+        ClassHighlightRenderError::Validation(ClassHighlightValidationError::UnknownRole { .. })
+    ));
+
+    let mut line_collision = BTreeMap::new();
+    line_collision.insert("keyword".to_string(), "hi-kw line".to_string());
+    let collision = highlighter
+        .render_class_highlight("let x = 1;", "rust", "hi-", &line_collision)
+        .expect_err("line wrapper collision must be rejected");
+    assert!(matches!(
+        collision,
+        ClassHighlightRenderError::Validation(
+            ClassHighlightValidationError::LineClassCollision { .. }
+        )
+    ));
+}
+
+/// Unknown non-empty languages are usable escaped output with a precise typed
+/// fallback reason; callers do not need to infer it from absent token spans.
+#[test]
+fn direct_class_renderer_reports_unknown_language_fallback_without_token_spans() {
+    let rendered = Highlighter::new()
+        .render_class_highlight("<hello> & world\n", "klingon", "hi-", &BTreeMap::new())
+        .expect("unknown language is an escaped fallback, not an error");
+    assert_eq!(
+        rendered.fallback_reason,
+        Some(ClassHighlightFallbackReason::UnknownLanguage)
+    );
+    assert!(rendered.html.contains("&lt;hello&gt; &amp; world"));
+    assert!(
+        !rendered.html.contains("<span class=\"hi-"),
+        "fallback must not manufacture token spans: {}",
+        rendered.html
     );
 }
 

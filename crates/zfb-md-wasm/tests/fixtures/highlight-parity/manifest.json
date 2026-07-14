@@ -1,0 +1,43 @@
+{
+  "fixtures": [
+    {
+      "slug": "html-semantic",
+      "code": "<main data-x=\"a & b\">hello</main>",
+      "options": { "language": "html" }
+    },
+    {
+      "slug": "css-semantic",
+      "code": ".button { color: red; }",
+      "options": { "language": "css" }
+    },
+    {
+      "slug": "javascript-semantic",
+      "code": "const value = '<tag>';",
+      "options": { "language": "javascript" }
+    },
+    {
+      "slug": "custom-prefix-role-override",
+      "code": "const answer = 42;",
+      "options": {
+        "language": "javascript",
+        "classPrefix": "token-",
+        "roleClasses": { "keyword": "text-violet-600 dark:text-violet-400" }
+      }
+    },
+    {
+      "slug": "unknown-language-escaped-fallback",
+      "code": "<tag>&",
+      "options": { "language": "not-a-bundled-syntax" }
+    },
+    {
+      "slug": "empty-rust",
+      "code": "",
+      "options": { "language": "rust" }
+    },
+    {
+      "slug": "incomplete-javascript",
+      "code": "const answer =",
+      "options": { "language": "javascript" }
+    }
+  ]
+}

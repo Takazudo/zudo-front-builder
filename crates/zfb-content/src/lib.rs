@@ -29,6 +29,11 @@ pub use pipeline::{
     ResolvedGfmConstructs,
 };
 pub use plugins::{ExternalLinksConfig, ExternalLinksPlugin};
+pub use syntect_highlight::{
+    validate_class_highlight_classes, validate_class_highlight_options,
+    ClassHighlightFallbackReason, ClassHighlightOutcome, ClassHighlightRenderError,
+    ClassHighlightValidationError, DEFAULT_CLASS_HIGHLIGHT_PREFIX,
+};
 
 // Wasm-safe facade (zfb#1574): config-JSON -> Pipeline -> { jsx module |
 // html }, with no filesystem coupling. See `facade` module docs for the

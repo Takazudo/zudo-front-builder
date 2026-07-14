@@ -1,0 +1,4 @@
+{
+  "html": "<pre class=\"hi-root\"><code><span class=\"line\"><span class=\"hi-kw\">const</span> <span class=\"hi-var\">value</span> <span class=\"hi-op\">=</span> <span class=\"hi-str\">&#39;&lt;tag&gt;&#39;</span><span class=\"hi-punct\">;</span></span></code></pre>",
+  "diagnostics": []
+}

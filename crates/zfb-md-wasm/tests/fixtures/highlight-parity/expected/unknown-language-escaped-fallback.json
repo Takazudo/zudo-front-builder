@@ -1,0 +1,12 @@
+{
+  "html": "<pre class=\"hi-root\"><code><span class=\"line\">&lt;tag&gt;&amp;</span></code></pre>",
+  "diagnostics": [
+    {
+      "severity": "warning",
+      "source": "highlight",
+      "message": "no bundled syntax matches language \"not-a-bundled-syntax\"; emitted escaped fallback markup",
+      "line": null,
+      "column": null
+    }
+  ]
+}
