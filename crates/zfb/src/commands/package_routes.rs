@@ -790,13 +790,15 @@ fn is_dynamic_pattern(pattern: &str) -> bool {
 /// Synthesize the overlay module source for a **dynamic** package route
 /// (`[param]` / `[...catchall]`). #1194, epic #1191.
 ///
-/// A dynamic route requires a TOP-LEVEL `paths` export the syntactic
-/// extractor (`zfb_render::paths_extract`) can see, or it classifies the
+/// A dynamic route requires a runtime ESM `paths` export the syntactic
+/// extractor (`zfb_render::paths_extract`) can resolve, or it classifies the
 /// overlay module `Missing` → the `render_pipeline` hard error fires (the
 /// same parity invariant as a `pages/` dynamic route with no `paths()`).
-/// A re-export (`export { paths } from "<pkg>"`) is invisible to the
-/// extractor (it matches only top-level `ExportDecl`), so the `paths` must
-/// be PHYSICALLY top-level here.
+/// Local export clauses are recognized, while external re-exports such as
+/// `export { paths } from "<pkg>"` deliberately defer to runtime rather than
+/// chasing another source file. This overlay still declares its own wrapper
+/// so literal paths can take the static fast path and runtime paths retain a
+/// direct worker entrypoint.
 ///
 /// We classify the package entrypoint's own `paths` with the **same**
 /// extractor the build pipeline uses, so the literal-vs-runtime decision
