@@ -15,7 +15,7 @@ zfb プラグインは、デフォルトエクスポートが `ZfbPlugin` オブ
 
 - **合成データソースを裏付ける仮想モジュール。** ページがディスク上に実ファイルを持たない specifier から `import` する必要がある場合 — メタデータ DB、コンテンツインデックス、生成された設定ブロブなど — そのソースをモジュールグラフに注入する唯一の手段が `addVirtualModule` です。例: 全ページにわたる `import metadata from "virtual:metadata-db"`。
 - **すべてのバンドラに適用しなければならないエイリアス書き換え。** `addAlias` は完全一致のインポート書き換えを登録し、これは 3 つすべての利用者（組み込み V8 ホスト、メインのページ／レイアウトバンドラ、islands esbuild バンドラ）が尊重します。`tsconfig.json` の `paths` エントリは型チェッカにしか届きません。エイリアスを 3 つすべてのバンドラで実行時に効かせる必要があるなら、それはプラグインの領域です。
-- **`pages/` の外に存在する注入ページルート。** `injectRoute` は、URL パターンの下に TSX/TS ファイルを登録します。build モードでは package-owned route が通常のページパイプラインに materialize されます。dev モードでは、dev サーバーが一致する静的 / 動的な注入ルートをレンダリングします。そのルートが本当に dev 専用のときだけ、`command === "dev"` で呼び出しをガードしてください。
+- **`pages/` の外に存在する注入ページルート。** `injectRoute` は、URL パターンの下に ESM ページモジュールを登録します。entrypoint はソース TSX/TS モジュールでも、パッケージが公開するコンパイル済み ESM `.js` モジュールでも構いません。build と dev のどちらでも、ページパイプラインが一致する静的 / 動的な注入ルートをレンダリングします。そのルートが本当に dev 専用のときだけ、`command === "dev"` で呼び出しをガードしてください。
 - **Package-owned client entry。** `addClientEntry` は、プロジェクトの client scripts と一緒にバンドルされる `*.client.{ts,tsx,js,jsx}` の side-effect entry を登録します。
 
 ページではないレスポンスには、別の `devMiddleware` フック（または preview 版の `previewMiddleware` — 後述）を使ってください。JSON API エンドポイント、ホットリロードのブリッジ、アップロードハンドラなどです。JSX パイプラインもページレンダラもなく、ただ `{ status, headers, body }` を返す関数です。
@@ -100,17 +100,20 @@ loader のコントラクトは **1 つ** だけです。「loader が JSON を�
 
 ### `injectRoute(pattern, entrypoint, opts?)` — 合成ページルート
 
-`pages/<...>.tsx` と同じページレンダリングパイプラインを通る URL パターンの下に TSX/TS ファイルを登録します。パターンは `pages/` のファイル名文法（`/blog/[slug]`、`/api/dev/x`、`/docs/[...rest]`）に従い、`entrypoint` はプロジェクトルートを基準に解決されます。
+`pages/<...>.tsx` と同じページレンダリングパイプラインを通る URL パターンの下に ESM ページモジュールを登録します。entrypoint はソース TSX/TS でも、コンパイル済み ESM `.js` モジュールでも構いません。パッケージは公開済みの `dist/` 内ルートを直接注入でき、利用側プロジェクトに元のルートソースをコピーする必要はありません。パターンは `pages/` のファイル名文法（`/blog/[slug]`、`/api/dev/x`、`/docs/[...rest]`）に従い、相対 `entrypoint` はプロジェクトルートを基準に解決されます。
 
 ```ts
 injectRoute("/preset-page", "./preset/page.tsx");
+injectRoute("/package-docs/[slug]", "./node_modules/@acme/docs/dist/routes/page.js");
 injectRoute("/docs/[slug]", "./preset/doc.tsx", { prerender: true });
 injectRoute("/account", "./preset/account.tsx", { prerender: false });
 ```
 
-**build** モードでは、注入ルートはビルドごとの overlay pages root に materialize され、通常の scan -> bundle -> render パイプラインを通ります。`opts.prerender` はビルド形状を制御します。省略または `true` はルートを prerender し、`false` は SSR 形状のルートとしてマークします。`output: "static"` はそれを拒否します。同じ URL 形状を持つユーザー作成の `pages/` ルートは、package route より優先されます。
+**build** モードでは、注入ルートはビルドごとの overlay pages root に materialize され、通常の scan -> bundle -> render パイプラインを通ります。`opts.prerender` はビルド形状を制御します。省略または `true` はルートを prerender し、`false` は SSR 形状のルートとしてマークします。`output: "static"` はそれを拒否します。
 
 **dev** モードでは、静的および動的な注入ルートは `zfb dev` によってレンダリングされます。静的ルートは起動時に dev route universe へ seed され、動的ルートは最初のリクエスト時にレンダリングされます。`opts.prerender` は build 専用メタデータであり、dev では無視されます。
+
+`injectRoute("/", entrypoint)` は build と dev のどちらでも有効です。プロジェクトに `pages/index` がなければサイトの root を提供します。同じ URL 形状を持つユーザー作成ルートは、`/` に対する `pages/index` を含め、どちらのモードでも常に優先されます。
 
 ルートがローカル開発だけを目的とする場合は、登録を自分でガードしてください。
 
@@ -142,10 +145,10 @@ addClientEntry("./client/analytics.client.ts");
 
 | Hook | Returns | Use when |
 | --- | --- | --- |
-| `injectRoute(pattern, entrypoint, opts?)` | ページレンダラが評価して HTML にラスタライズする TSX/TS モジュール | ディスク上の `pages/` ツリーの外に存在する実在する JSX 形状のページが欲しいとき。package-owned build route も含みます。 |
+| `injectRoute(pattern, entrypoint, opts?)` | ページレンダラが評価して HTML にラスタライズする ESM ページモジュール（ソース TSX/TS またはコンパイル済み `.js`） | ディスク上の `pages/` ツリーの外に存在する実在する JSX 形状のページが欲しいとき。package-owned build route も含みます。 |
 | `devMiddleware(ctx)` → `ctx.register(path, handler)` | リクエストごとに `{ status, headers, body }` を返す JS 関数 | HTTP ハンドラが欲しいとき — JSON API、ホットリロードブリッジ、アップロードエンドポイントなど。ページパイプラインも JSX もなし。 |
 
-応答がページでないときは `devMiddleware` が正解、ディスク上の `pages/` ツリーの外に存在する合成的な `pages/foo.tsx` が欲しいときは `injectRoute` が正解です。
+応答がページでないときは `devMiddleware` が正解、ディスク上の `pages/` ツリーの外に存在する合成ページモジュールが欲しいときは `injectRoute` が正解です。
 
 同じ選択は `previewMiddleware` を通じて `zfb preview` にも当てはまります — これは `devMiddleware` のリクエストごとのハンドラを寸分たがわず継承したもので、dev ではなく preview の静的モードに紐づけられているだけです（後述の [`previewMiddleware(ctx)`](#previewmiddleware-ctx) を参照）。`injectRoute` には preview 相当の仕組みはありません — preview は再レンダリングを一切行わないため、`injectRoute` で登録した合成ルートはそこでは無効です（前述の `setup` セクションを参照）。
 

@@ -21,6 +21,11 @@ zfb uses **file-system routing** under the `pages/` directory. The router scans 
 | `pages/docs/[[...slug]].tsx` | `/docs/:slug{.+}?` (optional catchall) | also matches the bare `/docs` |
 | `pages/[lang]/[slug].tsx` | `/:lang/:slug` | |
 
+This table describes user-authored files scanned from `pages/`. Plugins can
+inject routes from outside that tree, including compiled ESM `.js` modules,
+with the same URL-pattern grammar. A matching user page always takes
+precedence; see [Plugins](./plugins.mdx) for injected-route details.
+
 A few rules worth knowing up front:
 
 - Files starting with `_` (for example `_app.tsx`) are ignored. Use this prefix for shared helpers that live next to your routes but should not be exposed.
@@ -67,4 +72,10 @@ export default function BlogPost({ params }: { params: { slug: string } }) {
 }
 ```
 
-`paths()` is evaluated by the embedded V8 host during the build. `zfb build` discovers static, dynamic, and catchall routes and evaluates `paths()` for each dynamic and catchall route to enumerate the concrete URLs to render. Static routes require no `paths()` export. `paths()` is evaluated once per route per build — per-entry work inside it is safe and will not be repeated for each output URL.
+`zfb build` discovers static, dynamic, and catchall routes and uses `paths()`
+to enumerate the concrete URLs for dynamic and catchall routes. A statically
+literal result can be recognized directly, including when a local ESM export
+clause exposes `paths`; nonliteral `paths()` implementations use their runtime
+ESM export during enumeration. Static routes require no `paths()` export. Route
+enumeration happens once per route per build, and the result is reused for each
+output URL. See [Dynamic Routes](./dynamic-routes.mdx) for the full contract.
