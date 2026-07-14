@@ -6,20 +6,18 @@ import type {
   ZfbMdWasmOptions,
 } from "./types.js";
 
-// Keep this deliberately structural instead of importing the generated glue's
-// declaration file. The browser entry imports that file as a *URL resource*,
-// while the direct entry imports it dynamically. Both paths nevertheless use
-// the same wasm-bindgen surface and recovery implementation below.
-interface WasmRawExports {
-  compile(retptr: number, a: number, b: number, c: number, d: number): void;
-}
-
 interface WasmGlueModule {
-  initSync(input?: { module: WebAssembly.Module }): WasmRawExports;
+  // Keep this deliberately structural instead of importing the generated
+  // glue's declaration file. The browser entry imports that file as a *URL
+  // resource*, while the direct entry imports it dynamically. Both paths
+  // nevertheless use the same wasm-bindgen surface and recovery
+  // implementation below.
+  initSync(input?: { module: WebAssembly.Module }): unknown;
   compile(source: string, optionsJson: string): string;
   renderHtml(source: string, optionsJson: string): string;
   highlightCode(code: string, optionsJson: string): string;
   version(): string;
+  __forceTrapForTests(): void;
 }
 
 export interface WasmResourceConfig {
@@ -74,7 +72,6 @@ export function createWasmApi({ glueUrl, loadWasmBytes }: WasmResourceConfig) {
   interface Instance {
     generation: number;
     glue: WasmGlueModule;
-    raw: WasmRawExports;
   }
 
   /**
@@ -90,8 +87,8 @@ export function createWasmApi({ glueUrl, loadWasmBytes }: WasmResourceConfig) {
         /* @vite-ignore */ `${glueUrl.href}?zfbMdWasmGen=${generation}`
       ) as Promise<WasmGlueModule>,
     ]);
-    const raw = glue.initSync({ module });
-    return { generation, glue, raw };
+    glue.initSync({ module });
+    return { generation, glue };
   }
 
   let instancePromise: Promise<Instance> | undefined;
@@ -179,9 +176,7 @@ export function createWasmApi({ glueUrl, loadWasmBytes }: WasmResourceConfig) {
 
   /** @internal Test-only hook that forces the current instance to trap. */
   async function __forceTrapForTests(): Promise<void> {
-    await callWasm(({ raw }) => {
-      raw.compile(0xfffffff0, 0, 0, 0, 0);
-    });
+    await callWasm(({ glue }) => glue.__forceTrapForTests());
   }
 
   /** @internal Test-only observability for the bounded recovery contract. */

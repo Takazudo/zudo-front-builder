@@ -563,6 +563,20 @@ pub fn version() -> String {
         .to_string()
 }
 
+/// Deliberately trap the current WebAssembly instance for wrapper recovery
+/// tests. This is not part of the typed package API; the JavaScript wrapper
+/// exposes it only through its internal test hook.
+///
+/// A Rust panic is the reliable cross-engine representation of the real
+/// failure this hook needs to exercise. Calling a generated raw C-ABI export
+/// with fabricated pointers could instead enter undefined Rust-level work and
+/// hang Chromium before reaching the wasm trap boundary.
+#[doc(hidden)]
+#[wasm_bindgen(js_name = __forceTrapForTests)]
+pub fn force_trap_for_tests() {
+    panic!("zfb-md-wasm test-only forced trap");
+}
+
 #[cfg(test)]
 mod tests {
     use super::split_place;

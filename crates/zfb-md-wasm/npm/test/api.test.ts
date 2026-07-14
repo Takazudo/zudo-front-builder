@@ -207,9 +207,9 @@ describe("version()", () => {
 describe("trap / auto-re-init contract", () => {
   it("a wasm trap throws ZfbMdWasmTrapError and the next call transparently recovers", async () => {
     await init();
-    // Force a genuine wasm RuntimeError (memory access out of bounds) via the
-    // internal test hook -- the same exception class a real Rust panic->trap
-    // produces, which is what the wrapper's catch clause keys on.
+    // Force a genuine wasm RuntimeError through the internal Rust panic hook
+    // -- the same exception class a real Rust panic->trap produces, which is
+    // what the wrapper's catch clause keys on.
     await expect(__forceTrapForTests()).rejects.toBeInstanceOf(ZfbMdWasmTrapError);
 
     // The poisoned instance was dropped and re-instantiated in the background;
