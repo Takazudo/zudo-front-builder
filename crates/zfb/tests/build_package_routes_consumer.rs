@@ -77,6 +77,16 @@ fn link_embedded_node_modules(root: &Path) -> tempfile::TempDir {
     nm_handle
 }
 
+/// Copy the embedded runtime packages into a real, consumer-local
+/// `node_modules/` directory. This is intentionally distinct from
+/// [`link_embedded_node_modules`]: the #1516 certification needs the route
+/// entrypoint's canonical path to remain inside the temporary consumer project.
+fn materialize_embedded_node_modules(root: &Path) {
+    let (_nm_handle, embedded_nm_path) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    copy_dir(&embedded_nm_path, &root.join("node_modules"));
+}
+
 /// Run `zfb build` in `root` with the supplied esbuild binary.
 fn run_zfb_build(root: &Path, esbuild: &Path) -> std::process::Output {
     Command::new(zfb_binary!())
@@ -380,4 +390,155 @@ fn write_control_project(root: &Path) {
 "#,
     )
     .unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Test 3 — Compiled node_modules route + virtual paths() certification
+// ---------------------------------------------------------------------------
+
+/// A tsup-style compiled `.js` dynamic entrypoint physically installed under
+/// the consumer's pnpm-shaped `node_modules/.pnpm/.../node_modules/...` store
+/// imports a plugin-provided `virtual:` module and returns its slugs from a
+/// non-literal local `paths()` function exported through a trailing clause.
+///
+/// This certifies that zudo-doc can delete both its `routes-src` workaround
+/// and `.zudo-doc/` staging: its compiled package route can resolve virtual
+/// data from real node_modules, defer `paths()` to V8, and emit the exact
+/// pages selected by that virtual data in a full `zfb build`.
+#[test]
+fn compiled_node_modules_virtual_paths_certify_zudo_doc_can_drop_staging() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[node_modules_virtual_paths] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[node_modules_virtual_paths] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    materialize_embedded_node_modules(root);
+    let node_modules = root.join("node_modules");
+    let node_modules_metadata = fs::symlink_metadata(&node_modules).expect("node_modules metadata");
+    assert!(
+        node_modules_metadata.file_type().is_dir() && !node_modules_metadata.file_type().is_symlink(),
+        "the consumer fixture must use a real local node_modules directory, not the harness's external whole-directory symlink"
+    );
+
+    // Model pnpm's published-package realpath. The usual consumer-facing
+    // `node_modules/@takazudo/zudo-doc` symlink points at this actual store
+    // directory, so canonicalizing the injected entrypoint stays under the
+    // temporary project's real node_modules tree.
+    let package_root = node_modules
+        .join(".pnpm")
+        .join("@takazudo+zudo-doc@0.0.0")
+        .join("node_modules")
+        .join("@takazudo")
+        .join("zudo-doc");
+    let routes_dir = package_root.join("dist/routes");
+    fs::create_dir_all(&routes_dir).unwrap();
+    fs::write(
+        package_root.join("package.json"),
+        r#"{ "name": "@takazudo/zudo-doc", "version": "0.0.0", "type": "module" }"#,
+    )
+    .unwrap();
+    let entrypoint = routes_dir.join("docs-slug.js");
+    fs::write(
+        &entrypoint,
+        r#"import { jsx as _jsx, jsxs as _jsxs } from "preact/jsx-runtime";
+import { virtualSlugs } from "virtual:zudo-doc-route-slugs";
+function paths() {
+  return virtualSlugs.map((slug) => ({ params: { slug }, props: { slug } }));
+}
+function DocsPage({ slug }) {
+  return _jsxs("html", {
+    children: [
+      _jsx("head", { children: _jsx("title", { children: slug }) }),
+      _jsx("body", { children: _jsx("p", { children: "NODE_MODULES_VIRTUAL_ROUTE_" + slug }) }),
+    ],
+  });
+}
+export { DocsPage as default, paths };
+"#,
+    )
+    .unwrap();
+    let package_link = node_modules.join("@takazudo/zudo-doc");
+    fs::create_dir_all(package_link.parent().expect("scoped package parent")).unwrap();
+    std::os::unix::fs::symlink(&package_root, &package_link).expect("pnpm package symlink");
+
+    let canonical_node_modules = node_modules.canonicalize().expect("canonical node_modules");
+    let canonical_entrypoint = entrypoint.canonicalize().expect("canonical entrypoint");
+    assert!(
+        canonical_entrypoint.starts_with(&canonical_node_modules),
+        "the injected entrypoint's canonical path must stay under the temporary consumer's real node_modules: {}",
+        canonical_entrypoint.display()
+    );
+    assert!(
+        canonical_entrypoint.ends_with(
+            Path::new(".pnpm/@takazudo+zudo-doc@0.0.0/node_modules/@takazudo/zudo-doc/dist/routes/docs-slug.js")
+        ),
+        "the canonical entrypoint must use the pnpm store layout; got {}",
+        canonical_entrypoint.display()
+    );
+    assert_eq!(
+        package_link
+            .canonicalize()
+            .expect("canonical pnpm package link"),
+        package_root
+            .canonicalize()
+            .expect("canonical pnpm package root"),
+        "the consumer-facing package link must resolve to the pnpm store directory"
+    );
+
+    let entrypoint_json = serde_json::to_string(&canonical_entrypoint.to_string_lossy()).unwrap();
+    fs::write(
+        root.join("preset.mjs"),
+        format!(
+            r#"export default {{
+  name: "node-modules-virtual-paths-certification",
+  setup({{ injectRoute, addVirtualModule }}) {{
+    addVirtualModule(
+      "virtual:zudo-doc-route-slugs",
+      () => "export const virtualSlugs = ['from-virtual-install', 'from-virtual-api'];",
+    );
+    injectRoute("/zudo-doc/[slug]", {entrypoint_json});
+  }},
+}};
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{ "framework": "preact", "plugins": [{ "name": "./preset.mjs" }] }
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"export default function Home() {
+  return <html><body><p>NODE_MODULES_VIRTUAL_HOME</p></body></html>;
+}
+"#,
+    )
+    .unwrap();
+
+    let Some(dist) = build_and_collect(root, &esbuild, "node_modules_virtual_paths") else {
+        return;
+    };
+
+    for slug in ["from-virtual-install", "from-virtual-api"] {
+        let page = root.join(format!("dist/zudo-doc/{slug}/index.html"));
+        assert!(
+            page.is_file(),
+            "the virtual module's `{slug}` value must produce {page:?}; dist: {dist:#?}"
+        );
+        let body = fs::read_to_string(&page).unwrap();
+        assert!(
+            body.contains(&format!("NODE_MODULES_VIRTUAL_ROUTE_{slug}")),
+            "the route selected by virtual data must render its marker; got: {body}"
+        );
+    }
 }
