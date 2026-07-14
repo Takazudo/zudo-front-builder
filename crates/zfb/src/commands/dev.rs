@@ -8963,6 +8963,7 @@ mod tests {
                 routes: Vec::new(),
             },
             route_module_deps: Vec::new(),
+            emitted_wasm_assets: Vec::new(),
         }
     }
 

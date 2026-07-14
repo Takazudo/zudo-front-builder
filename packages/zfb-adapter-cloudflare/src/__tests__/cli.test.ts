@@ -14,7 +14,7 @@
 //    asks for in lieu of a real wrangler dev run.
 
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -37,6 +37,7 @@ const MJS_WRAPPER: string = MJS_WRAPPER_RAW as string;
 const CLI_EMIT_WORKER: (input: {
   inputBundlePath: string;
   outdir: string;
+  assets?: readonly string[];
 }) => Promise<{ workerPath: string; innerBundlePath: string; assetsIgnorePath: string }> =
   cliEmitWorker as typeof CLI_EMIT_WORKER;
 
@@ -147,6 +148,146 @@ describe("CLI / emitWorker", () => {
     // Byte-exact: excludes the wrapper and inner bundle from the asset
     // upload so only the Worker's module graph can reach them.
     expect(assetsIgnoreBody).toBe("_worker.js\n_zfb_inner.mjs\n");
+  });
+
+  it("copies bundle-relative Wasm assets and merges an existing .assetsignore", async () => {
+    const dir = await scratch();
+    const bundleDir = join(dir, "runtime");
+    await mkdir(join(bundleDir, "nested"), { recursive: true });
+    const inputPath = join(bundleDir, "bundle-runtime.mjs");
+    const alphaAsset = join(bundleDir, "alpha-a1b2c3d4.wasm");
+    const betaAsset = join(bundleDir, "nested", "beta-e5f6a7b8.wasm");
+    await Promise.all([
+      writeFile(inputPath, "export default {};\n", "utf8"),
+      writeFile(alphaAsset, "alpha-wasm", "utf8"),
+      writeFile(betaAsset, "beta-wasm", "utf8"),
+    ]);
+
+    const outdir = join(dir, "dist");
+    await mkdir(outdir, { recursive: true });
+    await writeFile(join(outdir, ".assetsignore"), "custom-public-entry\n", "utf8");
+
+    const out = await emitWorker({
+      inputBundlePath: inputPath,
+      outdir,
+      assets: ["alpha-a1b2c3d4.wasm", "nested/beta-e5f6a7b8.wasm"],
+    });
+
+    expect(await readFile(join(outdir, "alpha-a1b2c3d4.wasm"), "utf8")).toBe("alpha-wasm");
+    expect(await readFile(join(outdir, "beta-e5f6a7b8.wasm"), "utf8")).toBe("beta-wasm");
+    expect(await readFile(out.assetsIgnorePath, "utf8")).toBe(
+      "custom-public-entry\n_worker.js\n_zfb_inner.mjs\nalpha-a1b2c3d4.wasm\nbeta-e5f6a7b8.wasm\n",
+    );
+  });
+
+  it("rejects asset paths that lexically escape the input bundle directory", async () => {
+    const dir = await scratch();
+    const bundleDir = join(dir, "runtime");
+    const inputPath = join(bundleDir, "bundle-runtime.mjs");
+    const outdir = join(dir, "dist");
+    await Promise.all([
+      mkdir(bundleDir, { recursive: true }),
+      writeFile(join(dir, "outside.wasm"), "outside", "utf8"),
+    ]);
+    await writeFile(inputPath, "export default {};\n", "utf8");
+
+    await expect(
+      emitWorker({
+        inputBundlePath: inputPath,
+        outdir,
+        assets: ["../outside.wasm"],
+      }),
+    ).rejects.toThrow(/asset path escapes the input bundle directory/);
+    await expect(readFile(join(outdir, "_zfb_inner.mjs"), "utf8")).rejects.toThrow();
+  });
+
+  it("rejects absolute asset paths", async () => {
+    const dir = await scratch();
+    const bundleDir = join(dir, "runtime");
+    const inputPath = join(bundleDir, "bundle-runtime.mjs");
+    const outdir = join(dir, "dist");
+    const outsideAsset = join(dir, "outside.wasm");
+    await Promise.all([
+      mkdir(bundleDir, { recursive: true }),
+      writeFile(outsideAsset, "outside", "utf8"),
+    ]);
+    await writeFile(inputPath, "export default {};\n", "utf8");
+
+    await expect(
+      emitWorker({
+        inputBundlePath: inputPath,
+        outdir,
+        assets: [outsideAsset],
+      }),
+    ).rejects.toThrow(/asset path must be bundle-relative/);
+    await expect(readFile(join(outdir, "_zfb_inner.mjs"), "utf8")).rejects.toThrow();
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects assets whose canonical path escapes the input bundle directory",
+    async () => {
+      const dir = await scratch();
+      const bundleDir = join(dir, "runtime");
+      const inputPath = join(bundleDir, "bundle-runtime.mjs");
+      const outsideAsset = join(dir, "outside.wasm");
+      await Promise.all([
+        mkdir(bundleDir, { recursive: true }),
+        writeFile(outsideAsset, "outside", "utf8"),
+      ]);
+      await writeFile(inputPath, "export default {};\n", "utf8");
+      await symlink(outsideAsset, join(bundleDir, "linked.wasm"));
+
+      await expect(
+        emitWorker({
+          inputBundlePath: inputPath,
+          outdir: join(dir, "dist"),
+          assets: ["linked.wasm"],
+        }),
+      ).rejects.toThrow(/asset path resolves outside the input bundle directory/);
+    },
+  );
+
+  it("fails before emission when an asset basename would overwrite a public file", async () => {
+    const dir = await scratch();
+    const inputPath = join(dir, "bundle-runtime.mjs");
+    const assetPath = join(dir, "answer-1234abcd.wasm");
+    const outdir = join(dir, "dist");
+    await Promise.all([
+      writeFile(inputPath, "export default {};\n", "utf8"),
+      writeFile(assetPath, "generated-wasm", "utf8"),
+      mkdir(outdir, { recursive: true }),
+    ]);
+    await writeFile(join(outdir, "answer-1234abcd.wasm"), "public-wasm", "utf8");
+
+    await expect(
+      emitWorker({
+        inputBundlePath: inputPath,
+        outdir,
+        assets: ["answer-1234abcd.wasm"],
+      }),
+    ).rejects.toThrow(/asset basename collision: answer-1234abcd\.wasm/);
+    expect(await readFile(join(outdir, "answer-1234abcd.wasm"), "utf8")).toBe("public-wasm");
+    await expect(readFile(join(outdir, "_zfb_inner.mjs"), "utf8")).rejects.toThrow();
+  });
+
+  it("rejects assets that would collapse to the same output basename", async () => {
+    const dir = await scratch();
+    const inputPath = join(dir, "bundle-runtime.mjs");
+    await mkdir(join(dir, "first"), { recursive: true });
+    await mkdir(join(dir, "second"), { recursive: true });
+    await Promise.all([
+      writeFile(inputPath, "export default {};\n", "utf8"),
+      writeFile(join(dir, "first", "same.wasm"), "first", "utf8"),
+      writeFile(join(dir, "second", "same.wasm"), "second", "utf8"),
+    ]);
+
+    await expect(
+      emitWorker({
+        inputBundlePath: inputPath,
+        outdir: join(dir, "dist"),
+        assets: ["first/same.wasm", "second/same.wasm"],
+      }),
+    ).rejects.toThrow(/asset basename collision: same\.wasm/);
   });
 
   it("threads env/ctx from the wrapper into the inner bundle's request scope", async () => {
@@ -793,6 +934,10 @@ export default {
       "utf8",
     );
     const outdir = join(dir, "dist");
+    await Promise.all([
+      writeFile(join(dir, "alpha-a1b2c3d4.wasm"), "alpha-wasm", "utf8"),
+      writeFile(join(dir, "beta-e5f6a7b8.wasm"), "beta-wasm", "utf8"),
+    ]);
 
     const { stdout } = await execFileAsync("node", [
       CLI_BIN_PATH,
@@ -800,6 +945,9 @@ export default {
       inputPath,
       "--outdir",
       outdir,
+      "--asset",
+      "alpha-a1b2c3d4.wasm",
+      "--asset=beta-e5f6a7b8.wasm",
     ]);
     const lines = stdout.trim().split("\n");
 
@@ -809,6 +957,10 @@ export default {
     expect(lines[2]).toBe(`wrote ${join(outdir, ".assetsignore")}`);
 
     const assetsIgnoreBody = await readFile(join(outdir, ".assetsignore"), "utf8");
-    expect(assetsIgnoreBody).toBe("_worker.js\n_zfb_inner.mjs\n");
+    expect(assetsIgnoreBody).toBe(
+      "_worker.js\n_zfb_inner.mjs\nalpha-a1b2c3d4.wasm\nbeta-e5f6a7b8.wasm\n",
+    );
+    expect(await readFile(join(outdir, "alpha-a1b2c3d4.wasm"), "utf8")).toBe("alpha-wasm");
+    expect(await readFile(join(outdir, "beta-e5f6a7b8.wasm"), "utf8")).toBe("beta-wasm");
   });
 });

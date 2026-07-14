@@ -5,6 +5,10 @@
 // `import { scheduleHydrate } from "@takazudo/zfb/runtime"` (or by inlining the
 // same logic; coordinated separately).
 
+// Keep the global Wasm declaration reachable from this package's emitted
+// root declaration. The compiled module is intentionally empty at runtime.
+import "./wasm.js";
+
 export {
   ANONYMOUS_COMPONENT_NAME,
   HYDRATE_MARKER_ATTR,

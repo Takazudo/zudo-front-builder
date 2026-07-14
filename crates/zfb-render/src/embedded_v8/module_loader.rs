@@ -1,6 +1,6 @@
 //! Custom `deno_core::ModuleLoader` for the embedded V8 host.
 //!
-//! Resolves four families of specifier:
+//! Resolves five families of specifier:
 //!
 //! 1. The bundle's main entry — registered up front via
 //!    [`BundleModuleLoader::with_main`] and served from an in-memory
@@ -21,6 +21,10 @@
 //!      `load()` serves the cached source string directly so the
 //!      loader closure is invoked exactly once per build regardless of
 //!      how many pages import the same virtual specifier.
+//! 5. Copied `.wasm` assets imported relatively from the synthetic bundle
+//!    URL. Their bytes are read only from the bundle's asset root and exposed
+//!    as `export default new WebAssembly.Module(...)`, matching workerd's
+//!    module-export shape rather than Deno's Wasm-ESM instance exports.
 //!
 //! ## Why pre-resolved virtual modules (not async invocation)
 //!
@@ -69,7 +73,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use deno_core::error::ModuleLoaderError;
 use deno_core::{
@@ -189,6 +193,12 @@ pub struct BundleModuleLoader {
     /// Optional plugin-registry hooks (aliases + virtual modules).
     /// `None` when no plugins registered any contributions.
     hooks: Option<PluginRegistryHooks>,
+    /// Directory that contains the emitted bundle and its copied Wasm assets.
+    ///
+    /// This is deliberately opt-in: only the production threaded host has an
+    /// on-disk bundle root. The synthetic `file:///zfb/...` URLs used by
+    /// ordinary in-memory tests remain incapable of reading arbitrary files.
+    bundle_asset_root: Option<PathBuf>,
 }
 
 impl BundleModuleLoader {
@@ -212,6 +222,18 @@ impl BundleModuleLoader {
     /// hooks. Returns `self` for chaining.
     pub fn with_plugin_hooks(mut self, hooks: PluginRegistryHooks) -> Self {
         self.hooks = Some(hooks);
+        self
+    }
+
+    /// Allow relative `.wasm` imports from the synthetic bundle URL to read
+    /// copied assets under `bundle_asset_root`.
+    ///
+    /// The loader URL-decodes the synthetic module path, rejects traversal and
+    /// absolute-path forms, then canonicalizes both this root and the selected
+    /// asset before reading. It never grants this authority to arbitrary
+    /// `file://` specifiers.
+    pub fn with_bundle_asset_root(mut self, bundle_asset_root: impl Into<PathBuf>) -> Self {
+        self.bundle_asset_root = Some(bundle_asset_root.into());
         self
     }
 
@@ -248,6 +270,77 @@ impl BundleModuleLoader {
     fn find_virtual_module(&self, spec_str: &str) -> Option<&VirtualModuleHook> {
         let hooks = self.hooks.as_ref()?;
         hooks.virtual_modules.get(spec_str)
+    }
+
+    /// Resolve a synthetic bundle-relative `.wasm` specifier to an on-disk
+    /// asset path. Returns `Ok(None)` unless this is exactly the narrowly
+    /// allowed Wasm-import path.
+    fn resolve_bundle_wasm_asset(
+        &self,
+        module_specifier: &ModuleSpecifier,
+    ) -> Result<Option<PathBuf>, ModuleLoaderError> {
+        const SYNTHETIC_BUNDLE_PATH_PREFIX: &str = "/zfb/";
+        const SYNTHETIC_BUNDLE_URL_PREFIX: &str = "file:///zfb/";
+
+        let Some(bundle_asset_root) = self.bundle_asset_root.as_deref() else {
+            return Ok(None);
+        };
+        if !module_specifier
+            .as_str()
+            .starts_with(SYNTHETIC_BUNDLE_URL_PREFIX)
+        {
+            return Ok(None);
+        }
+        let Some(encoded_relative_path) = module_specifier
+            .path()
+            .strip_prefix(SYNTHETIC_BUNDLE_PATH_PREFIX)
+        else {
+            // Do not turn general file URLs into a disk-read capability.
+            return Ok(None);
+        };
+
+        // `Url::path()` preserves percent escapes. Decode before looking at
+        // components: `%2e%2e%2fsecret.wasm` must be rejected as traversal,
+        // not treated as an ordinary filename.
+        let decoded_relative_path = percent_decode_path(encoded_relative_path)?;
+        let relative_path = Path::new(&decoded_relative_path);
+        if relative_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            != Some("wasm")
+        {
+            return Ok(None);
+        }
+        if !is_safe_bundle_asset_relative_path(relative_path) {
+            return Err(ModuleLoaderError::generic(format!(
+                "embedded V8 host: Wasm import `{}` escapes the bundle asset root `{}`",
+                module_specifier,
+                bundle_asset_root.display()
+            )));
+        }
+
+        let expected_path = bundle_asset_root.join(relative_path);
+        let canonical_root = std::fs::canonicalize(bundle_asset_root).map_err(|error| {
+            ModuleLoaderError::generic(format!(
+                "embedded V8 host: could not resolve bundle asset root `{}`: {error}",
+                bundle_asset_root.display()
+            ))
+        })?;
+        let canonical_path = std::fs::canonicalize(&expected_path).map_err(|error| {
+            ModuleLoaderError::generic(format!(
+                "embedded V8 host: Wasm asset expected at `{}` could not be read: {error}",
+                expected_path.display()
+            ))
+        })?;
+        if !canonical_path.starts_with(&canonical_root) {
+            return Err(ModuleLoaderError::generic(format!(
+                "embedded V8 host: Wasm asset `{}` escapes the bundle asset root `{}`",
+                expected_path.display(),
+                canonical_root.display()
+            )));
+        }
+
+        Ok(Some(canonical_path))
     }
 }
 
@@ -319,7 +412,38 @@ impl ModuleLoader for BundleModuleLoader {
         if let Some(vm) = self.find_virtual_module(spec_str) {
             return ok_js(module_specifier, &vm.source);
         }
-        // 4. Alias-resolved file URL (plugin-registered)?
+        // Explicitly registered in-memory modules always win over disk-backed
+        // sources. Besides preserving the existing loader contract, this keeps
+        // tests and callers able to inject a synthetic `.wasm` module without
+        // granting a filesystem read.
+        if spec_str.starts_with("file://") {
+            let modules = self.modules.borrow();
+            if let Some(src) = modules.get(spec_str) {
+                return ok_js(module_specifier, src.as_str());
+            }
+        }
+        // 4. Copied `.wasm` asset imported from the synthetic bundle URL?
+        // This is intentionally before the generic file:// alias branch: the
+        // asset authority is separate from, and narrower than, plugin aliases.
+        match self.resolve_bundle_wasm_asset(module_specifier) {
+            Ok(Some(asset_path)) => {
+                let bytes = match std::fs::read(&asset_path) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
+                            format!(
+                                "embedded V8 host: Wasm asset expected at `{}` could not be read: {error}",
+                                asset_path.display()
+                            ),
+                        )));
+                    }
+                };
+                return ok_wasm_module(module_specifier, &bytes);
+            }
+            Ok(None) => {}
+            Err(error) => return ModuleLoadResponse::Sync(Err(error)),
+        }
+        // 5. Alias-resolved file URL (plugin-registered)?
         //    `resolve()` rewrote the bare alias to a `file://` URL; the
         //    URL's path component is the absolute filesystem path.
         //
@@ -391,7 +515,7 @@ impl ModuleLoader for BundleModuleLoader {
             // file:// URL that is neither in-memory nor reachable from
             // an alias target — fall through to the catch-all below.
         }
-        // 5. In-memory module (the main bundle, etc.)?
+        // 6. In-memory module (the main bundle, etc.)?
         let modules = self.modules.borrow();
         if let Some(src) = modules.get(spec_str) {
             return ok_js(module_specifier, src.as_str());
@@ -425,6 +549,86 @@ fn ok_js(specifier: &ModuleSpecifier, src: &str) -> ModuleLoadResponse {
         specifier,
         None,
     )))
+}
+
+/// Build the workerd-parity ESM wrapper for a copied Wasm binary.
+///
+/// Deno's native `ModuleType::Wasm` exports an instance's exports, which is a
+/// different contract. The Worker module-loader contract is the compiled,
+/// uninstantiated `WebAssembly.Module` itself, so keep the generated source
+/// explicitly shaped as `export default new WebAssembly.Module(...)`.
+fn ok_wasm_module(specifier: &ModuleSpecifier, bytes: &[u8]) -> ModuleLoadResponse {
+    let encoded = super::base64_encode(bytes);
+    let encoded_json = serde_json::to_string(&encoded).expect("base64 is valid JSON text");
+    let source = format!(
+        "export default new WebAssembly.Module(Uint8Array.from(atob({encoded_json}), byte => byte.charCodeAt(0)));\n"
+    );
+    ok_js(specifier, &source)
+}
+
+/// Decode percent escapes in a URL path, rejecting malformed escapes and
+/// non-UTF-8 output. Bundle asset names originate from esbuild's UTF-8 output;
+/// rejecting malformed forms is safer than giving them ambiguous path meaning.
+fn percent_decode_path(input: &str) -> Result<String, ModuleLoaderError> {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let Some(high) = bytes.get(index + 1).and_then(|byte| hex_value(*byte)) else {
+                return Err(ModuleLoaderError::generic(format!(
+                    "embedded V8 host: malformed percent escape in Wasm import path `{input}`"
+                )));
+            };
+            let Some(low) = bytes.get(index + 2).and_then(|byte| hex_value(*byte)) else {
+                return Err(ModuleLoaderError::generic(format!(
+                    "embedded V8 host: malformed percent escape in Wasm import path `{input}`"
+                )));
+            };
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| {
+        ModuleLoaderError::generic(format!(
+            "embedded V8 host: Wasm import path `{input}` is not valid UTF-8 after percent decoding"
+        ))
+    })
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Reject encoded path escapes before joining an import onto the asset root.
+/// Backslashes are rejected even on Unix because they become path separators
+/// on Windows and would otherwise make this loader platform-dependent.
+fn is_safe_bundle_asset_relative_path(path: &Path) -> bool {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return false;
+    }
+    for component in path.components() {
+        match component {
+            Component::Normal(segment) => {
+                if segment.to_string_lossy().contains('\\')
+                    || segment.to_string_lossy().contains('\0')
+                {
+                    return false;
+                }
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 /// Convert an absolute [`PathBuf`] to a `file://` URL string.
@@ -473,4 +677,163 @@ fn alias_disk_read_authority(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use tempfile::TempDir;
+
+    use super::BundleModuleLoader;
+    use crate::{EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
+
+    // A valid, empty Wasm module: magic, version, and no sections.
+    const EMPTY_WASM_MODULE: &[u8] = b"\0asm\x01\0\0\0";
+
+    fn write_wasm_asset(dir: &TempDir, name: &str) -> std::path::PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, EMPTY_WASM_MODULE).expect("write Wasm fixture");
+        path
+    }
+
+    fn bundle_importing_wasm(specifier: &str) -> String {
+        format!(
+            r#"
+            import wasm from "{specifier}";
+            export default {{
+              fetch() {{
+                return new Response(
+                  wasm instanceof WebAssembly.Module ? "module" : "not-module",
+                  {{ status: 200 }},
+                );
+              }},
+            }};
+            "#
+        )
+    }
+
+    fn host_for_asset_root(asset_root: &Path) -> EmbeddedV8RenderHost {
+        let loader = BundleModuleLoader::new().with_bundle_asset_root(asset_root);
+        EmbeddedV8RenderHost::with_loader(loader).expect("host boot")
+    }
+
+    async fn load_failure(asset_root: &Path, source: &str) -> String {
+        let mut host = host_for_asset_root(asset_root);
+        host.execute_module("bundle.mjs", source)
+            .await
+            .expect_err("untrusted Wasm import must fail")
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn bundle_wasm_import_exports_a_webassembly_module() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_wasm_asset(&dir, "tiny.wasm");
+        let mut host = host_for_asset_root(dir.path());
+
+        host.execute_module("bundle.mjs", &bundle_importing_wasm("./tiny.wasm"))
+            .await
+            .expect("bundle should load its copied Wasm asset");
+        let response = host
+            .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+            .await
+            .expect("dispatch");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body_utf8(), Some("module"));
+    }
+
+    #[tokio::test]
+    async fn bundle_wasm_import_percent_decodes_asset_filename() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_wasm_asset(&dir, "tiny module.wasm");
+        let mut host = host_for_asset_root(dir.path());
+
+        host.execute_module("bundle.mjs", &bundle_importing_wasm("./tiny%20module.wasm"))
+            .await
+            .expect("URL-escaped asset filename should load");
+        let response = host
+            .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+            .await
+            .expect("dispatch");
+
+        assert_eq!(response.body_utf8(), Some("module"));
+    }
+
+    #[tokio::test]
+    async fn in_memory_wasm_module_takes_precedence_over_bundle_assets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let loader = BundleModuleLoader::new().with_bundle_asset_root(dir.path());
+        loader.register_module("file:///zfb/in-memory.wasm", r#"export default "memory";"#);
+        let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+        let bundle = r#"
+            import wasm from "./in-memory.wasm";
+            export default {
+              fetch() {
+                return new Response(wasm, { status: 200 });
+              },
+            };
+            "#;
+
+        host.execute_module("bundle.mjs", bundle)
+            .await
+            .expect("in-memory Wasm module should load before a disk lookup");
+        let response = host
+            .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+            .await
+            .expect("dispatch");
+
+        assert_eq!(response.body_utf8(), Some("memory"));
+    }
+
+    #[tokio::test]
+    async fn bundle_wasm_import_rejects_encoded_traversal_and_absolute_file_urls() {
+        let fixture = tempfile::tempdir().expect("tempdir");
+        let asset_root = fixture.path().join("assets");
+        std::fs::create_dir(&asset_root).expect("asset root");
+        let outside = write_wasm_asset(&fixture, "outside.wasm");
+
+        let traversal_error =
+            load_failure(&asset_root, &bundle_importing_wasm("./..%2Foutside.wasm")).await;
+        assert!(
+            traversal_error.contains("escapes the bundle asset root"),
+            "percent-decoded traversal must hit the containment guard: {traversal_error}"
+        );
+
+        let absolute_specifier = deno_core::ModuleSpecifier::from_file_path(&outside)
+            .expect("absolute file URL")
+            .to_string();
+        let absolute_error =
+            load_failure(&asset_root, &bundle_importing_wasm(&absolute_specifier)).await;
+        assert!(
+            absolute_error.contains("no in-memory source"),
+            "absolute file URL must retain the no-arbitrary-file-read failure: {absolute_error}"
+        );
+
+        let hosted_file_url =
+            deno_core::ModuleSpecifier::parse("file://asset-host/zfb/outside.wasm")
+                .expect("hosted file URL");
+        let loader = BundleModuleLoader::new().with_bundle_asset_root(&asset_root);
+        assert!(
+            loader
+                .resolve_bundle_wasm_asset(&hosted_file_url)
+                .expect("hosted file URL is not malformed")
+                .is_none(),
+            "only the exact synthetic file:///zfb/ namespace may load copied Wasm assets"
+        );
+    }
+
+    #[tokio::test]
+    async fn bundle_wasm_import_missing_asset_names_expected_disk_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let expected = dir.path().join("missing.wasm");
+
+        let error = load_failure(dir.path(), &bundle_importing_wasm("./missing.wasm")).await;
+        assert!(
+            error.contains(&expected.display().to_string()),
+            "missing asset error must name the expected disk path `{}`: {error}",
+            expected.display()
+        );
+    }
 }

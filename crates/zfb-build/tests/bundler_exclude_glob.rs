@@ -277,9 +277,9 @@ fn bundle_exclude_glob_composition_fails_without_exclude_passes_with() {
 
 /// #1558 wiring: the fail-closed `audit_metafile_exclusions_at_path` call now
 /// wired into `bundle()` must actually fire when esbuild's real `--metafile`
-/// records an excluded-matching input, and a plain prod build with an EMPTY
-/// `bundle.exclude` must request no `--metafile` at all (the byte-identical
-/// guarantee documented on `run_esbuild`).
+/// records an excluded-matching input. The Wasm deployment-asset contract now
+/// makes every real bundle pass request a metafile, including a plain
+/// production build with an empty `bundle.exclude`.
 ///
 /// Every other test in this file only ever lets `bundle.exclude` correctly
 /// keep a file OUT of the shadow, so none of them can exercise the audit
@@ -308,15 +308,14 @@ fn bundle_exclude_audit_fails_build_on_leaked_metafile_input() {
     // primes the session's `copy_mode`/dirty bookkeeping (so call 2 below
     // does not wipe the whole shadow tree per `ShadowWriter::new`'s
     // wipe-on-mode-flip rule, which would erase the leaked file staged
-    // between the two calls) and doubles as the "no exclusions -> no
-    // `--metafile` flag" assertion: esbuild only ever writes
-    // `.zfb-metafile.json` into its shadow cwd when the flag is passed.
+    // between the two calls). The Wasm asset-manifest contract requests a
+    // metafile for every real bundle pass, so verify this baseline has one
+    // before manufacturing the exclusion leak below.
     let priming_input = make_input(root, esbuild.clone(), Vec::new());
     bundle_with_session(priming_input, Some(&mut session)).expect("priming build must succeed");
     assert!(
-        !session.shadow_root().join(".zfb-metafile.json").exists(),
-        "a prod build with an empty bundle.exclude must request no --metafile \
-         at all — this is the byte-identical guarantee for non-exclude users"
+        session.shadow_root().join(".zfb-metafile.json").exists(),
+        "every real bundle pass must request a metafile for the Wasm asset manifest"
     );
 
     // Manufacture the leak: write a file DIRECTLY into the persistent shadow

@@ -134,6 +134,11 @@ impl ThreadedV8Host {
         let (boot_tx, boot_rx) = mpsc::sync_channel::<Result<(), String>>(0);
 
         let bundle_path_owned = bundle_path.to_path_buf();
+        let bundle_asset_root = bundle_path_owned
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
 
         let thread_handle = thread::Builder::new()
             .name("zfb-v8-host".into())
@@ -158,7 +163,9 @@ impl ThreadedV8Host {
                     // the V8 snapshot — the most expensive part of boot.
                     // Wire plugin hooks (sub-issue #260) so the loader can
                     // resolve registered aliases + virtual modules.
-                    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+                    let loader = BundleModuleLoader::new()
+                        .with_plugin_hooks(hooks)
+                        .with_bundle_asset_root(bundle_asset_root);
                     let mut host = match EmbeddedV8RenderHost::with_loader(loader) {
                         Ok(h) => h,
                         Err(e) => {
@@ -460,6 +467,33 @@ mod tests {
         let path = dir.path().join("bundle.mjs");
         std::fs::write(&path, source).expect("write bundle");
         path
+    }
+
+    #[test]
+    fn threaded_host_loads_wasm_beside_the_bundle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("tiny.wasm"), b"\0asm\x01\0\0\0")
+            .expect("write Wasm fixture");
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            import wasm from "./tiny.wasm";
+            export default {
+              fetch() {
+                return new Response(
+                  wasm instanceof WebAssembly.Module ? "module" : "not-module",
+                  { status: 200 },
+                );
+              },
+            };
+            "#,
+        );
+
+        let mut host = ThreadedV8Host::new(&bundle_path).expect("host boot");
+        let response = host.dispatch_fetch("/").expect("dispatch");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"module");
     }
 
     /// End-to-end check of the drain request kind (issue #700): worker
