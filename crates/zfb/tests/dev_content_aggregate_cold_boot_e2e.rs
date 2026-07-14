@@ -17,6 +17,7 @@
 
 #![cfg(unix)]
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
+use zfb_graph::{DepKind, DependencyGraph, PageDeps, PageId};
 use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -33,7 +36,20 @@ const OVERALL_DEADLINE: Duration = Duration::from_secs(300);
 const BOOT_DEADLINE: Duration = Duration::from_secs(90);
 const SCENARIO_DEADLINE: Duration = Duration::from_secs(60);
 const SSE_DEADLINE: Duration = Duration::from_secs(30);
+const GRACEFUL_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+const FIXTURE_WATCH_ROOTS: &[&str] = &[
+    "pages",
+    "content",
+    "components",
+    "layouts",
+    "styles",
+    "data",
+    "src",
+    "zfb.config.json",
+    "zfb.config.ts",
+];
 
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -97,6 +113,36 @@ impl DevSession {
     fn html_root(&self) -> PathBuf {
         self.root.join(".zfb-build").join("dev-pages")
     }
+
+    fn graph_cache_path(&self) -> PathBuf {
+        self.root.join(".zfb").join("graph.bin")
+    }
+
+    async fn stop_gracefully(&mut self) {
+        unsafe { libc::kill(-self.guard.pgid, libc::SIGINT) };
+
+        let start = Instant::now();
+        loop {
+            if let Some(status) = self.guard.try_exit_status() {
+                assert!(
+                    status.success(),
+                    "`zfb dev` exited unsuccessfully after SIGINT ({status:?}).\n{}",
+                    self.logs(),
+                );
+                return;
+            }
+            if start.elapsed() >= GRACEFUL_SHUTDOWN_DEADLINE {
+                unsafe { libc::kill(-self.guard.pgid, libc::SIGKILL) };
+                let _ = self.guard.child.wait();
+                panic!(
+                    "`zfb dev` did not exit within {}s after SIGINT.\n{}",
+                    GRACEFUL_SHUTDOWN_DEADLINE.as_secs(),
+                    self.logs(),
+                );
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    }
 }
 
 fn parse_ready_port(log: &str) -> Option<u16> {
@@ -118,7 +164,13 @@ fn parse_ready_port(log: &str) -> Option<u16> {
     None
 }
 
-fn spawn_dev(root: PathBuf, esbuild: &Path) -> DevSession {
+#[derive(Clone, Copy)]
+enum DevMode {
+    Eager,
+    Lazy,
+}
+
+fn spawn_dev(root: PathBuf, esbuild: &Path, mode: DevMode) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
@@ -131,12 +183,16 @@ fn spawn_dev(root: PathBuf, esbuild: &Path) -> DevSession {
         .arg("0")
         .current_dir(&root)
         .env("ZFB_ESBUILD_BIN", esbuild)
-        .env("ZFB_DEV_EAGER", "1")
+        .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
+        .env_remove("ZFB_DEV_BOOT_LAZY")
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
         .env_remove("ZFB_DEV_TEST_SLOW_BOOT_RENDER_MS")
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
+    if matches!(mode, DevMode::Eager) {
+        command.env("ZFB_DEV_EAGER", "1");
+    }
     command.process_group(0);
 
     let child = command.spawn().expect("spawn `zfb dev`");
@@ -146,6 +202,132 @@ fn spawn_dev(root: PathBuf, esbuild: &Path) -> DevSession {
         guard: DevServerGuard { child, pgid },
         stdout_path,
         stderr_path,
+    }
+}
+
+fn fixture_manifest_digest(root: &Path) -> ManifestDigest {
+    ManifestDigest::compute(
+        root,
+        &FIXTURE_WATCH_ROOTS
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>(),
+        &[
+            PathBuf::from("zfb.config.json"),
+            PathBuf::from("zfb.config.ts"),
+        ],
+    )
+    .expect("compute aggregate fixture manifest digest")
+}
+
+fn graph_cache_digest(path: &Path) -> ManifestDigest {
+    let bytes = fs::read(path)
+        .unwrap_or_else(|error| panic!("read persisted graph {}: {error}", path.display()));
+    assert!(
+        bytes.len() >= 38 && &bytes[..4] == b"ZFBG",
+        "{} is not a zfb persisted graph cache",
+        path.display(),
+    );
+    ManifestDigest::from_bytes(
+        bytes[6..38]
+            .try_into()
+            .expect("persisted graph cache has a complete digest header"),
+    )
+}
+
+fn load_cached_graph(path: &Path) -> DependencyGraph {
+    let digest = graph_cache_digest(path);
+    load_from_disk(path, &digest)
+        .unwrap_or_else(|error| panic!("load persisted graph {}: {error}", path.display()))
+        .unwrap_or_else(|| {
+            panic!(
+                "persisted graph {} was unexpectedly rejected",
+                path.display()
+            )
+        })
+}
+
+fn replace_page_without_content(graph: &mut DependencyGraph, page: PageId) {
+    let deps = graph
+        .deps_of(&page)
+        .into_iter()
+        .filter(|(_, kind)| *kind != DepKind::Content)
+        .collect();
+    graph.upsert(PageDeps::new(page, deps));
+}
+
+/// Retag the cache after adding gamma, then make its Content edges deliberately
+/// wrong. The restart must load this valid cache but replace every Content edge
+/// from the fresh worker's observations before it handles an edit.
+fn prepare_stale_persisted_content_graph(root: &Path) {
+    let cache_path = root.join(".zfb").join("graph.bin");
+    let mut graph = load_cached_graph(&cache_path);
+    let gamma = root.join("content/posts/gamma.md");
+
+    for source in [
+        "pages/posts/index.tsx",
+        "pages/tags/[tag].tsx",
+        "pages/posts/page/[page].tsx",
+    ] {
+        replace_page_without_content(&mut graph, PageId::new(root.join(source)));
+    }
+
+    // A stale extra Content edge must disappear too. Adding it twice makes the
+    // final saved-cache assertion prove that reconciliation leaves no duplicate
+    // evidence behind.
+    let home = PageId::new(root.join("pages/index.tsx"));
+    let data_probe = root.join("data/restart-probe.json");
+    let mut home_deps = graph
+        .deps_of(&home)
+        .into_iter()
+        .filter(|(_, kind)| *kind != DepKind::Content)
+        .collect::<Vec<_>>();
+    home_deps.push((gamma.clone(), DepKind::Content));
+    home_deps.push((gamma, DepKind::Content));
+    // This non-Content cache edge proves the second process actually loaded the
+    // retagged cache: without it, the Data edit below takes the All fallback and
+    // the unrelated beta entry is marked stale.
+    home_deps.push((data_probe, DepKind::Data));
+    graph.upsert(PageDeps::new(home, home_deps));
+
+    let current_digest = fixture_manifest_digest(root);
+    save_to_disk(&graph, &current_digest, &cache_path)
+        .unwrap_or_else(|error| panic!("retag persisted graph {}: {error}", cache_path.display()));
+}
+
+fn assert_final_reseeded_content_graph(root: &Path) {
+    let graph = load_cached_graph(&root.join(".zfb").join("graph.bin"));
+    let gamma = root.join("content/posts/gamma.md");
+    let home = PageId::new(root.join("pages/index.tsx"));
+    assert!(
+        graph
+            .deps_of(&home)
+            .iter()
+            .all(|(_, kind)| *kind != DepKind::Content),
+        "the stale persisted Content edge for the home page survived live reseeding",
+    );
+
+    for source in [
+        "pages/posts/[slug].tsx",
+        "pages/posts/index.tsx",
+        "pages/tags/[tag].tsx",
+        "pages/posts/page/[page].tsx",
+    ] {
+        let content = graph
+            .deps_of(&PageId::new(root.join(source)))
+            .into_iter()
+            .filter_map(|(path, kind)| (kind == DepKind::Content).then_some(path))
+            .collect::<Vec<_>>();
+        let unique = content.iter().collect::<BTreeSet<_>>();
+        assert_eq!(
+            content.len(),
+            unique.len(),
+            "{source} retained duplicate Content edges after restart reseeding: {content:?}",
+        );
+        assert!(
+            unique.contains(&gamma),
+            "{source} lost the post-create gamma Content edge after restart reseeding: {content:?}",
+        );
     }
 }
 
@@ -168,6 +350,51 @@ async fn poll_until_file_contains(path: &Path, marker: &str, phase: &str, sessio
         path.display(),
         SCENARIO_DEADLINE.as_secs(),
         fs::read_to_string(path).unwrap_or_default(),
+        session.logs(),
+    );
+}
+
+/// Poll a served route until it returns the marker. In lazy mode this is the
+/// deliberate request-time refresh observable; use the disk-only helper above
+/// when a test needs to prove that a watcher tick wrote output eagerly.
+async fn poll_until_response_contains(
+    client: &reqwest::Client,
+    url: &str,
+    marker: &str,
+    phase: &str,
+    session: &DevSession,
+) {
+    let start = Instant::now();
+    let mut last_observation = String::from("(no response yet)");
+    while start.elapsed() < SCENARIO_DEADLINE {
+        match client.get(url).send().await {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let body = response.text().await.unwrap_or_default();
+                if status == 200 && body.contains(marker) {
+                    return;
+                }
+                last_observation = format!("status {status}, body:\n{body}");
+            }
+            Err(error) => last_observation = format!("request error: {error}"),
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "[{phase}] GET {url} did not serve {marker:?} within {}s. Last observation:\n\
+         {last_observation}\n{}",
+        SCENARIO_DEADLINE.as_secs(),
+        session.logs(),
+    );
+}
+
+fn assert_file_lacks(path: &Path, marker: &str, phase: &str, session: &DevSession) {
+    let content = fs::read_to_string(path).unwrap_or_default();
+    assert!(
+        !content.contains(marker),
+        "[{phase}] {} already contains {marker:?} before a request. The lazy tick must mark this \
+         aggregate route stale rather than render it eagerly.\n{}",
+        path.display(),
         session.logs(),
     );
 }
@@ -369,7 +596,7 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
         "fixture must have no persisted dev graph or prior render output before cold boot"
     );
 
-    let mut session = spawn_dev(root, &esbuild);
+    let mut session = spawn_dev(root, &esbuild, DevMode::Eager);
     let pgid = session.guard.pgid;
     let body = async {
         let Some((base, client)) = boot_and_handshake(&mut session).await else {
@@ -620,6 +847,247 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
              {pgid} will be killed.\n{}",
             OVERALL_DEADLINE.as_secs(),
             session.logs(),
+        ),
+    }
+}
+
+/// A restart must load the persisted graph for non-Content data edges, then
+/// discard its stale Content evidence and rebuild it from the new worker. The
+/// cache is intentionally retagged after gamma is created, with every aggregate
+/// Content edge removed and a duplicate bogus home-page edge inserted. On the
+/// second lazy session, gamma's body edit must still refresh every aggregate on
+/// request, while beta and home remain untouched.
+#[tokio::test(flavor = "multi_thread")]
+async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[content_aggregate_cold_boot_e2e] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let temp = tempfile::tempdir().expect("create tempdir for restart fixture");
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize restart fixture root");
+    copy_dir(&fixture_dir(), &root).expect("copy restart fixture");
+    fs::create_dir_all(root.join("data")).expect("create data fixture directory");
+    fs::write(root.join("data/restart-probe.json"), "{\"revision\":1}\n")
+        .expect("write initial data cache probe");
+
+    let body = async {
+        let mut first = spawn_dev(root.clone(), &esbuild, DevMode::Lazy);
+        let Some((first_base, first_client)) = boot_and_handshake(&mut first).await else {
+            return ScenarioOutcome::Skipped;
+        };
+
+        // Create gamma before persistence. Requesting the new direct route and
+        // each aggregate makes the first session's cache contain a complete
+        // post-create provenance snapshot before the deliberate corruption.
+        drain_ticks_until_quiescent(&first_client, &first_base).await;
+        let sse = subscribe_sse(&first_client, &first_base).await;
+        fs::write(
+            root.join("content/posts/gamma.md"),
+            "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV1-BODY-GAMMA created before restart.\n",
+        )
+        .expect("create gamma before persisting graph");
+        let event = next_sse_event_name(sse, SSE_DEADLINE)
+            .await
+            .expect("read SSE after gamma create")
+            .expect("gamma create must emit a page SSE event");
+        assert_eq!(
+            event, "page",
+            "gamma create emitted an unexpected SSE event"
+        );
+        poll_until_response_contains(
+            &first_client,
+            &format!("{first_base}/posts/gamma/"),
+            "V1-BODY-GAMMA",
+            "first-session gamma entry after discovery",
+            &first,
+        )
+        .await;
+        for (url, phase) in [
+            ("/posts/", "first-session post index includes gamma"),
+            ("/tags/guide/", "first-session tag page includes gamma"),
+            ("/posts/page/1/", "first-session pagination includes gamma"),
+        ] {
+            poll_until_response_contains(
+                &first_client,
+                &format!("{first_base}{url}"),
+                "V1-BODY-GAMMA",
+                phase,
+                &first,
+            )
+            .await;
+        }
+        drain_ticks_until_quiescent(&first_client, &first_base).await;
+
+        first.stop_gracefully().await;
+        let first_cache = first.graph_cache_path();
+        assert!(
+            first_cache.exists(),
+            "first session did not persist {} after graceful shutdown.\n{}",
+            first_cache.display(),
+            first.logs(),
+        );
+        let first_graph = load_cached_graph(&first_cache);
+        assert!(
+            first_graph
+                .consumers_of(&root.join("content/posts/gamma.md"))
+                .is_some_and(|consumers| !consumers.is_empty()),
+            "the first session did not persist gamma's discovered Content edges",
+        );
+
+        // The created gamma changes the manifest since initial boot. Retag the
+        // valid cache to the current fixture digest, then make only its Content
+        // edges stale. The next session must load the cache but derive Content
+        // provenance from its fresh worker rather than trusting it.
+        prepare_stale_persisted_content_graph(&root);
+
+        let mut second = spawn_dev(root.clone(), &esbuild, DevMode::Lazy);
+        let Some((second_base, second_client)) = boot_and_handshake(&mut second).await else {
+            return ScenarioOutcome::Skipped;
+        };
+        drain_ticks_until_quiescent(&second_client, &second_base).await;
+
+        let html_root = second.html_root();
+        let home = html_root.join("index.html");
+        let beta = html_root.join("posts/beta/index.html");
+        let gamma = html_root.join("posts/gamma/index.html");
+        let post_index = html_root.join("posts/index.html");
+        let tag_page = html_root.join("tags/guide/index.html");
+        let pagination = html_root.join("posts/page/1/index.html");
+        poll_until_file_contains(&beta, "V1-BODY-BETA", "restart beta entry boot", &second).await;
+
+        // This data edit proves the retagged cache actually loaded: its cached
+        // Data edge selects only home. A cache miss would choose All, mark beta
+        // stale, and the beta request below would rewrite its file.
+        let beta_before_data = snapshot_file(&beta);
+        let sse = subscribe_sse(&second_client, &second_base).await;
+        fs::write(root.join("data/restart-probe.json"), "{\"revision\":2}\n")
+            .expect("edit persisted data cache probe");
+        let event = next_sse_event_name(sse, SSE_DEADLINE)
+            .await
+            .expect("read SSE after data cache probe edit")
+            .expect("data cache probe edit must emit a page SSE event");
+        assert_eq!(
+            event, "page",
+            "data cache probe emitted an unexpected SSE event"
+        );
+        poll_until_response_contains(
+            &second_client,
+            &format!("{second_base}/posts/beta/"),
+            "V1-BODY-BETA",
+            "cache-hit data edit leaves beta fresh",
+            &second,
+        )
+        .await;
+        assert_snapshot_unchanged(
+            &beta,
+            &beta_before_data,
+            "cache-hit data edit must not stale beta",
+            &second,
+        );
+        // The precise data edge deliberately staled home; make it fresh before
+        // the Content-edge check so a later home rewrite can only be caused by
+        // the stale persisted Content edge we injected above.
+        poll_until_response_contains(
+            &second_client,
+            &format!("{second_base}/"),
+            "Posts",
+            "cache-hit data edit refreshes selected home route",
+            &second,
+        )
+        .await;
+
+        drain_ticks_until_quiescent(&second_client, &second_base).await;
+        let home_before_gamma = snapshot_file(&home);
+        let beta_before_gamma = snapshot_file(&beta);
+        let sse = subscribe_sse(&second_client, &second_base).await;
+        fs::write(
+            root.join("content/posts/gamma.md"),
+            "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV2-BODY-GAMMA body edit after warm restart.\n",
+        )
+        .expect("edit post-create gamma after restart");
+        let event = next_sse_event_name(sse, SSE_DEADLINE)
+            .await
+            .expect("read SSE after restarted gamma edit")
+            .expect("restarted gamma edit must emit a page SSE event");
+        assert_eq!(
+            event, "page",
+            "restarted gamma edit emitted an unexpected SSE event"
+        );
+
+        // The direct entry remains in the lazy eager set, but aggregate routes
+        // must wait for their first request. A stale persisted graph missing the
+        // aggregate edges would leave these responses on their V1 body marker.
+        poll_until_file_contains(
+            &gamma,
+            "V2-BODY-GAMMA",
+            "restarted gamma direct entry stays eagerly refreshed",
+            &second,
+        )
+        .await;
+        for (path, phase) in [
+            (&post_index, "post index remains stale before lazy request"),
+            (&tag_page, "tag page remains stale before lazy request"),
+            (&pagination, "pagination remains stale before lazy request"),
+        ] {
+            assert_file_lacks(path, "V2-BODY-GAMMA", phase, &second);
+        }
+        for (url, phase) in [
+            ("/posts/", "restarted post index refreshes on request"),
+            ("/tags/guide/", "restarted tag page refreshes on request"),
+            (
+                "/posts/page/1/",
+                "restarted pagination refreshes on request",
+            ),
+        ] {
+            poll_until_response_contains(
+                &second_client,
+                &format!("{second_base}{url}"),
+                "V2-BODY-GAMMA",
+                phase,
+                &second,
+            )
+            .await;
+        }
+        assert_snapshot_unchanged(
+            &beta,
+            &beta_before_gamma,
+            "lazy gamma edit leaves unrelated beta entry untouched",
+            &second,
+        );
+        poll_until_response_contains(
+            &second_client,
+            &format!("{second_base}/"),
+            "Posts",
+            "unrelated home remains servable after restarted gamma edit",
+            &second,
+        )
+        .await;
+        assert_snapshot_unchanged(
+            &home,
+            &home_before_gamma,
+            "live provenance must remove stale persisted home Content edge",
+            &second,
+        );
+
+        second.stop_gracefully().await;
+        assert_final_reseeded_content_graph(&root);
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] warm-restart content provenance dev E2E did not finish within {}s",
+            OVERALL_DEADLINE.as_secs(),
         ),
     }
 }
