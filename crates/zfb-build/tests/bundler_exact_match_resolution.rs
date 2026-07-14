@@ -3174,3 +3174,114 @@ fn catch_all_tsconfig_path_does_not_suppress_page_bare_import_staging() {
     let body = fs::read_to_string(root.join("dist-catchall-path/bundle.mjs")).unwrap();
     assert!(body.contains("STAGED_UNDER_CATCH_ALL_PATH"), "{body}");
 }
+
+/// A transitive dependency whose package name is owned by an excluded alias
+/// must remain reachable from its importer without being hoisted into the
+/// shadow root, where a first-party import could fall back to it (#1646).
+#[test]
+fn alias_colliding_transitive_dependency_is_nested_under_its_importer() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "transitive-importer", "excluded-collision.ts");
+    let importer = write_root_bare_package(
+        &root,
+        "transitive-importer",
+        "UNUSED_TRANSITIVE_IMPORTER_MARKER",
+    );
+    fs::write(
+        importer.join("index.js"),
+        "import value from 'collision-alias';\n\
+         export default `NESTED_IMPORTER_${value}`;\n",
+    )
+    .unwrap();
+    write_root_bare_package(&root, "collision-alias", "NESTED_TRANSITIVE_DEPENDENCY");
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-nested-transitive-collision",
+        BTreeMap::from([(
+            "collision-alias".to_string(),
+            vec![root
+                .join("src/excluded-collision.ts")
+                .to_string_lossy()
+                .into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec!["src/excluded-collision.ts".to_string()];
+
+    bundle(input).expect("the importer must resolve its nested alias-colliding dependency");
+    let body = fs::read_to_string(root.join("dist-nested-transitive-collision/bundle.mjs"))
+        .expect("read bundle");
+    assert!(body.contains("NESTED_IMPORTER_"), "{body}");
+    assert!(body.contains("NESTED_TRANSITIVE_DEPENDENCY"), "{body}");
+}
+
+/// The same transitive dependency must not become a project-level fallback for
+/// a page import whose first-party alias target was excluded (#1646).
+#[test]
+fn excluded_alias_cannot_fall_back_to_transitively_staged_package() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "collision-alias", "excluded-collision.ts");
+    fs::write(
+        root.join("pages/index.tsx"),
+        "import aliasValue from 'collision-alias';\n\
+         import importerValue from 'transitive-importer';\n\
+         export default function Page() { return <div>{aliasValue}{importerValue}</div>; }\n",
+    )
+    .unwrap();
+    let importer = write_root_bare_package(
+        &root,
+        "transitive-importer",
+        "UNUSED_TRANSITIVE_IMPORTER_MARKER",
+    );
+    fs::write(
+        importer.join("index.js"),
+        "import value from 'collision-alias';\n\
+         export default `TRANSITIVE_IMPORTER_${value}`;\n",
+    )
+    .unwrap();
+    write_root_bare_package(&root, "collision-alias", "TRANSITIVE_LIVE_BARE_FALLBACK");
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-transitive-bare-collision",
+        BTreeMap::from([(
+            "collision-alias".to_string(),
+            vec![root
+                .join("src/excluded-collision.ts")
+                .to_string_lossy()
+                .into_owned()],
+        )]),
+        vec![],
+        vec![],
+    );
+    input.node_modules_dir = Some(root.join("node_modules"));
+    input.bundle_exclude = vec!["src/excluded-collision.ts".to_string()];
+
+    let error = bundle(input).expect_err(
+        "an excluded alias must not fall back to a transitively staged same-named package",
+    );
+    let message = format!("{error:#}");
+    assert!(message.contains("collision-alias"), "{message}");
+    let bundle_path = root.join("dist-transitive-bare-collision/bundle.mjs");
+    if bundle_path.exists() {
+        let body = fs::read_to_string(bundle_path).unwrap();
+        assert!(!body.contains("TRANSITIVE_LIVE_BARE_FALLBACK"), "{body}");
+    }
+}
