@@ -60,10 +60,9 @@ plain-markdown preview when you don't need to evaluate a component module.
 ```ts
 import { renderHtml } from "@takazudo/zfb-md-wasm";
 
-const { html, frontmatter, diagnostics } = await renderHtml(
-  "# Heading\n\nSome **bold** text.\n",
-  { filename: "post.md" },
-);
+const { html, frontmatter, diagnostics } = await renderHtml("# Heading\n\nSome **bold** text.\n", {
+  filename: "post.md",
+});
 // html -> "<h1>Heading</h1><p>Some <strong>bold</strong> text.</p>"
 ```
 
@@ -79,18 +78,138 @@ development builds fall back to the Rust manifest placeholder.
 call instantiates on first use) but useful to front-load the one-time
 fetch/compile cost at app startup.
 
+## `highlightCode(code, options)` — direct semantic HTML
+
+`highlightCode()` highlights arbitrary source directly; it does **not** need a
+Markdown fence or run the MDX/SWC pipeline. It is intentionally closed to
+semantic class mode, so the returned HTML never carries inline colours or
+Shiki classes.
+
+```ts
+import {
+  highlightCode,
+  type HighlightCodeOptions,
+  type HighlightCodeResult,
+} from "@takazudo/zfb-md-wasm";
+
+const output: HighlightCodeResult = await highlightCode("const answer = 42;", {
+  language: "javascript", // required
+  mode: "class", // optional; the only accepted mode
+  classPrefix: "hi-", // optional; the default
+  roleClasses: { keyword: "text-violet-600 dark:text-violet-400" },
+} satisfies HighlightCodeOptions);
+
+// output.html:
+// <pre class="hi-root"><code><span class="line"><span class="text-violet-600 dark:text-violet-400">const</span> …</span></code></pre>
+```
+
+The direct types are:
+
+```ts
+type HighlightRole =
+  | "escape"
+  | "operator"
+  | "comment"
+  | "string"
+  | "number"
+  | "constant"
+  | "keyword"
+  | "function"
+  | "type"
+  | "namespace"
+  | "property"
+  | "variable"
+  | "tag"
+  | "attribute"
+  | "punctuation"
+  | "inserted"
+  | "deleted"
+  | "heading";
+
+interface HighlightCodeOptions {
+  language: string;
+  mode?: "class";
+  classPrefix?: string;
+  roleClasses?: Partial<Record<HighlightRole, string>>;
+}
+interface HighlightCodeResult {
+  html: string | null;
+  diagnostics: HighlightDiagnostic[];
+}
+interface HighlightDiagnostic {
+  severity: "error" | "warning";
+  source: "options" | "highlight" | "internal";
+  message: string;
+  line: number | null;
+  column: number | null;
+}
+```
+
+The canonical default wrapper is `<pre class="hi-root"><code>…</code></pre>`;
+each non-empty source line is a `<span class="line">`. With the default
+`classPrefix: "hi-"`, the full-name role keys map to classes: `escape` →
+`hi-esc`, `operator` → `hi-op`, `comment` → `hi-com`, `string` → `hi-str`,
+`number` → `hi-num`, `constant` → `hi-const`, `keyword` → `hi-kw`, `function`
+→ `hi-fn`, `type` → `hi-ty`, `namespace` → `hi-ns`, `property` → `hi-prop`,
+`variable` → `hi-var`, `tag` → `hi-tag`, `attribute` → `hi-attr`,
+`punctuation` → `hi-punct`, `inserted` → `hi-ins`, `deleted` → `hi-del`, and
+`heading` → `hi-hd`. `roleClasses` uses those **full names**, not suffixes:
+`{ keyword: "my-keyword" }` replaces `hi-kw`; `{ kw: "…" }` is an option
+error. A custom `classPrefix: "token-"` makes the root `token-root` and the
+unoverridden keyword class `token-kw`.
+
+Malformed/directly invalid options — missing or empty `language`, unsupported
+`mode`, invalid prefix, invalid role key, or extra fields — return `html:
+null` with an `error` diagnostic from `source: "options"`; they do not throw.
+An unknown non-empty language instead returns escaped fallback markup and one
+`warning` diagnostic from `source: "highlight"` with `line`/`column` `null`.
+This lets an editor show literal `<tag>&` safely while retaining a useful
+warning. Empty and incomplete HTML/CSS/JavaScript editor input are accepted
+and can produce normal class markup without a diagnostic.
+
+## Browser loading and emitted resources
+
+The package root has a `browser` export condition. A browser-aware bundler
+uses static resource edges for exactly `zfb_md_wasm_glue.zfb-resource.mjs` and
+`zfb_md_wasm_bg.wasm`; a zfb production build emits them under hashed names:
+
+```text
+assets/islands-resource-zfb_md_wasm_glue.zfb-resource-<hash>.mjs
+assets/islands-resource-zfb_md_wasm_bg-<hash>.wasm
+```
+
+Keep the package import in a user action when first-load cost matters:
+
+```ts
+button.addEventListener("click", async () => {
+  const { highlightCode } = await import("@takazudo/zfb-md-wasm");
+  const result = await highlightCode(editor.value, { language: "javascript" });
+  preview.innerHTML = result.html ?? "";
+});
+```
+
+That import/call boundary keeps both resources unloaded before the action;
+the first public API call fetches the glue and wasm. Your production server
+must serve the generated `.mjs` with `application/javascript` and `.wasm`
+with `application/wasm`. Consume the packed package/browser entry — do not
+replace the static imports with source paths or manually copied resource
+files, which breaks zfb's emitted URL graph.
+
 ## Options shape
 
 ```ts
 interface ZfbMdWasmOptions {
-  filename?: string;              // must end .md/.mdx; drives frontmatter dispatch + diagnostics
+  filename?: string; // must end .md/.mdx; drives frontmatter dispatch + diagnostics
   jsxRuntime?: "preact" | "react"; // compile only; default "preact"
-  development?: boolean;          // compile only; default false
+  development?: boolean; // compile only; default false
   pipeline?: {
-    theme?: string | null;        // a syntect theme name, or null for no highlighting
+    theme?: string | null; // a syntect theme name, or null for no highlighting
     gfm?: {
-      strikethrough?: boolean; table?: boolean; autolinkLiteral?: boolean;
-      taskListItem?: boolean; footnoteDefinition?: boolean;
+      strikethrough?: boolean;
+      table?: boolean;
+      autolinkLiteral?: boolean;
+      taskListItem?: boolean;
+      footnoteDefinition?: boolean;
     };
     cjkFriendly?: boolean;
     hardBreaks?: boolean;
@@ -176,6 +295,9 @@ suite gates exact-match). Deliberate limitations of the browser build:
 - **The single artifact carries SWC even for `renderHtml`-only use.** One
   cdylib can't tree-shake SWC away when only `renderHtml` is called; a slim
   `renderHtml`-only artifact is a documented possible follow-up.
+- **There is no slim `highlightCode`-only artifact.** Direct highlighting
+  currently uses the same packaged wasm payload as `compile` and
+  `renderHtml`; choosing it saves pipeline work, not download bytes.
 - **Syntax highlighting uses syntect's `fancy-regex` backend** (native zfb uses
   `oniguruma`, which can't compile to wasm). The two are byte-identical on
   zfb's fixture corpus; any grammar-level divergences are tracked in the
@@ -205,8 +327,12 @@ as the source of truth rather than this figure, which can drift.
   `WebAssembly.RuntimeError`, **drops the poisoned instance and re-instantiates
   a fresh one in the background** (from the cached compiled module, so no
   recompile), and throws a `ZfbMdWasmTrapError` for that one call. The next
-  `compile` / `renderHtml` / `version` call transparently uses the fresh
-  instance. The API is stateless per call, so re-init is lossless.
+  `compile` / `renderHtml` / `highlightCode` / `version` call transparently
+  uses the fresh instance. The API is stateless per call, so re-init is
+  lossless. In a browser the wrapper keeps the compiled `WebAssembly.Module`,
+  imports a fresh glue URL with `?zfbMdWasmGen=N`, and re-instantiates without
+  a second wasm download/compile; recovery is bounded to 16 attempts to avoid
+  unbounded ES module records.
 
   If you ever see a `ZfbMdWasmTrapError`, please report it with the input that
   triggered it — the crate is designed never to trap on structured input.

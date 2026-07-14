@@ -1,0 +1,9 @@
+{
+  "name": "zfb-md-wasm-browser-smoke",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Isolated packed-tarball dependency root for the md-wasm Chromium fixture.",
+  "dependencies": {
+    "@takazudo/zfb-md-wasm": "file:../../wasm-md-artifact/zfb-md-wasm.tgz"
+  }
+}
