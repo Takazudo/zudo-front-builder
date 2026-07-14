@@ -1,0 +1,160 @@
+import { execFileSync } from "node:child_process";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { afterAll, describe, expect, it } from "vitest";
+
+import { assertPackedContents, packedPaths } from "../scripts/assert-packed.mjs";
+
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const tempRoot = mkdtempSync(join(tmpdir(), "zfb-md-wasm-package-"));
+let packedArchive: string | undefined;
+
+function packPackage(): string {
+  const packDir = join(tempRoot, "pack");
+  execFileSync("pnpm", ["pack", "--pack-destination", packDir], {
+    cwd: packageRoot,
+    stdio: "pipe",
+  });
+  const archive = readdirSync(packDir).find((name) => name.endsWith(".tgz"));
+  if (!archive) {
+    throw new Error("pnpm pack did not create a tarball");
+  }
+  return join(packDir, archive);
+}
+
+function unpackForConsumer(archivePath: string): string {
+  const unpackRoot = join(tempRoot, "unpacked");
+  mkdirSync(unpackRoot, { recursive: true });
+  execFileSync("tar", ["-xzf", archivePath, "-C", unpackRoot], { stdio: "pipe" });
+
+  const fixtureRoot = join(tempRoot, "browser-fixture");
+  const packageDestination = join(fixtureRoot, "node_modules", "@takazudo", "zfb-md-wasm");
+  cpSync(join(unpackRoot, "package"), packageDestination, { recursive: true });
+  return fixtureRoot;
+}
+
+function esbuildBin(): string {
+  return resolve(packageRoot, "node_modules", ".bin", "esbuild");
+}
+
+function packedPackage(): string {
+  packedArchive ??= packPackage();
+  return packedArchive;
+}
+
+describe("packed browser conditional entry", () => {
+  afterAll(() => {
+    rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it("contains exactly the required generated resources in its tarball", () => {
+    const archive = packedPackage();
+    assertPackedContents(packedPaths(archive));
+  });
+
+  it("selects browser.js and keeps relative glue/wasm resources through generic esbuild", async () => {
+    const archive = packedPackage();
+    const fixtureRoot = unpackForConsumer(archive);
+    const nodeConsumerPath = join(fixtureRoot, "node-consumer.mjs");
+    writeFileSync(
+      nodeConsumerPath,
+      [
+        'import { init, version } from "@takazudo/zfb-md-wasm";',
+        "await init();",
+        "console.log(await version());",
+      ].join("\n"),
+    );
+    const nodeVersion = execFileSync(process.execPath, [nodeConsumerPath], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+    }).trim();
+    expect(nodeVersion).toMatch(/^\d+\.\d+\.\d+/);
+
+    const entryPath = join(fixtureRoot, "entry.mjs");
+    const outDir = join(fixtureRoot, "out");
+    const metafilePath = join(outDir, "meta.json");
+    writeFileSync(
+      entryPath,
+      [
+        'export { __forceTrapForTests, __getTrapRecoveryStateForTests, highlightCode, init } from "@takazudo/zfb-md-wasm";',
+      ].join("\n"),
+    );
+
+    execFileSync(
+      esbuildBin(),
+      [
+        entryPath,
+        "--bundle",
+        "--format=esm",
+        "--platform=browser",
+        "--outdir=" + outDir,
+        "--metafile=" + metafilePath,
+        "--loader:.zfb-resource.mjs=file",
+        "--loader:.wasm=file",
+        "--asset-names=islands-resource-[name]-[hash]",
+      ],
+      { cwd: fixtureRoot, stdio: "pipe" },
+    );
+
+    const metafile = JSON.parse(readFileSync(metafilePath, "utf8")) as {
+      inputs: Record<string, unknown>;
+    };
+    const inputNames = Object.keys(metafile.inputs);
+    expect(inputNames.some((path) => path.endsWith("/dist/browser.js"))).toBe(true);
+    expect(inputNames.some((path) => path.endsWith("/dist/index.js"))).toBe(false);
+
+    const outputFiles = readdirSync(outDir);
+    const resources = outputFiles.filter((name) => name.startsWith("islands-resource-"));
+    expect(resources).toHaveLength(2);
+    expect(resources.some((name) => name.endsWith(".mjs"))).toBe(true);
+    expect(resources.some((name) => name.endsWith(".wasm"))).toBe(true);
+
+    const entryOutput = join(outDir, "entry.js");
+    const entryText = readFileSync(entryOutput, "utf8");
+    for (const resource of resources) {
+      expect(entryText).toContain(`./${resource}`);
+    }
+    expect(entryText).toContain("?zfbMdWasmGen=");
+
+    // Exercise the emitted browser branch without a browser: its fetch only
+    // needs a file: adapter in Node. The dynamic glue import remains exactly
+    // the emitted URL with a query, which Node treats as a fresh ESM record.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.protocol !== "file:") {
+        return originalFetch(input);
+      }
+      return new Response(readFileSync(fileURLToPath(url)), { status: 200 });
+    };
+    try {
+      const bundled = await import(pathToFileURL(entryOutput).href);
+      const before = bundled.__getTrapRecoveryStateForTests();
+      await bundled.init();
+      await expect(bundled.__forceTrapForTests()).rejects.toMatchObject({
+        name: "ZfbMdWasmTrapError",
+      });
+      const highlighted = await bundled.highlightCode("const recovered = true;", {
+        language: "javascript",
+      });
+      const after = bundled.__getTrapRecoveryStateForTests();
+
+      expect(highlighted.diagnostics).toEqual([]);
+      expect(after.currentGeneration).toBe(before.currentGeneration + 1);
+      expect(after.freshInstanceStarts).toBe(before.freshInstanceStarts + 2);
+      expect(after.compiledModuleLoads).toBe(before.compiledModuleLoads + 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
