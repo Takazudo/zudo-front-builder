@@ -948,7 +948,7 @@ pub enum CodeHighlightMode {
 }
 
 pub(crate) fn default_class_prefix() -> String {
-    "hi-".to_string()
+    zfb_content::syntect_highlight::DEFAULT_CLASS_HIGHLIGHT_PREFIX.to_string()
 }
 
 /// The fixed 18-role semantic taxonomy for class-mode syntax highlighting
@@ -956,18 +956,6 @@ pub(crate) fn default_class_prefix() -> String {
 /// (`hi_roles.rs`, zfb#1529) owns the canonical table; this retains the
 /// config validation API as a public const slice.
 pub const CODE_HIGHLIGHT_ROLES: &[&str] = &zfb_content::hi_roles::HiRole::FULL_NAMES;
-
-/// `classPrefix` / role-class-value token validation: non-empty, first
-/// char an ASCII letter, remaining chars ASCII alphanumeric, `_`, or `-`.
-/// Mirrors the documented `/^[A-Za-z][A-Za-z0-9_-]*$/` pattern.
-fn is_valid_class_prefix(s: &str) -> bool {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
 
 /// What to do when a `.md`/`.mdx` link cannot be found in the source map.
 ///
@@ -2239,33 +2227,14 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
         if ch.theme.is_some() && (ch.theme_light.is_some() || ch.theme_dark.is_some()) {
             bail!("codeHighlight.theme is mutually exclusive with themeLight/themeDark");
         }
-        if !is_valid_class_prefix(&ch.class_prefix) {
-            bail!(
-                "codeHighlight.classPrefix {:?} must be non-empty and match \
-                 /^[A-Za-z][A-Za-z0-9_-]*$/",
-                ch.class_prefix
-            );
-        }
+        let empty_role_classes = BTreeMap::new();
+        let role_classes = ch.role_classes.as_ref().unwrap_or(&empty_role_classes);
+        zfb_content::syntect_highlight::validate_class_highlight_classes(
+            &ch.class_prefix,
+            role_classes,
+        )
+        .map_err(|error| anyhow::anyhow!("codeHighlight.{error}"))?;
         if let Some(role_classes) = &ch.role_classes {
-            for key in role_classes.keys() {
-                if !CODE_HIGHLIGHT_ROLES.contains(&key.as_str()) {
-                    bail!(
-                        "codeHighlight.roleClasses key {:?} is not a known role; valid roles \
-                         are: {}",
-                        key,
-                        CODE_HIGHLIGHT_ROLES.join(", ")
-                    );
-                }
-            }
-            for (key, value) in role_classes {
-                if value.split_whitespace().any(|token| token == "line") {
-                    bail!(
-                        "codeHighlight.roleClasses[{key:?}] value {value:?} must not contain \
-                         the token \"line\" (collides with the code-enrichment line wrapper \
-                         class)"
-                    );
-                }
-            }
             // Authored-CSS path (`tailwind.enabled=false`): allowed, but no
             // safelist can be generated for these classes on that path, so
             // the mapped utilities must already exist in user-authored CSS.

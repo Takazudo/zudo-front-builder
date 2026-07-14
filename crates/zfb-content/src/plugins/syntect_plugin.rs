@@ -67,7 +67,8 @@ enum SyntectMode {
         /// Class-name prefix for role classes (e.g. `"hi-"`); the default
         /// class for a role is `{prefix}{short_name}`.
         prefix: String,
-        /// Per-role class overrides keyed by role short name (e.g. `"kw"`).
+        /// Per-role class overrides keyed by canonical full role name (e.g.
+        /// `"keyword"`).
         role_classes: BTreeMap<String, String>,
     },
 }
@@ -283,7 +284,9 @@ fn rewrite_dual(
 
 /// Rewrite `child` using the class-emission path.
 ///
-/// Calls [`Highlighter::highlight_lines_classes`] and emits:
+/// Calls [`Highlighter::render_class_highlight`] and adapts its shared
+/// line-level result into the structured HAST needed by downstream
+/// code-enrichment visitors:
 /// ```html
 /// <pre class="{prefix}root">
 ///   <code>
@@ -293,10 +296,10 @@ fn rewrite_dual(
 /// ```
 ///
 /// Per-token spans carry role classes (`{prefix}{short_name}` or the
-/// `role_classes` override) with NO inline colour. The `<pre>` element is
-/// classed `{prefix}root` (default `hi-root`). The `<pre> → <code>[data-meta]
-/// → <span class="line"> → Raw` shape is byte-identical to the single/dual
-/// paths — `build_line_spans` / `build_code_el` are reused verbatim.
+/// `role_classes` override) with NO inline colour. The shared renderer owns
+/// the direct HTML wrapper; this adapter preserves the equivalent
+/// `<pre> → <code>[data-meta] → <span class="line"> → Raw` HAST shape so
+/// existing post-syntect visitors continue to work.
 fn rewrite_classes(
     child: &mut HastNode,
     highlighter: &Highlighter,
@@ -306,13 +309,13 @@ fn rewrite_classes(
     meta: Option<String>,
     code: &str,
 ) {
-    if let Ok(result) = highlighter.highlight_lines_classes(code, Some(lang), prefix, role_classes)
-    {
-        let line_spans = build_line_spans(result.lines);
+    if let Ok(result) = highlighter.render_class_highlight(code, lang, prefix, role_classes) {
+        let root_class = result.root_class().to_string();
+        let line_spans = build_line_spans(result.into_lines());
         let code_el = build_code_el(line_spans, meta);
         *child = HastNode::Element {
             tag: "pre".to_string(),
-            attrs: vec![("class".to_string(), format!("{prefix}root"))],
+            attrs: vec![("class".to_string(), root_class)],
             children: vec![code_el],
             void: false,
         };
