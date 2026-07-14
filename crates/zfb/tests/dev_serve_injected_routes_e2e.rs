@@ -6,11 +6,12 @@
 //!
 //! | Test | Wave | Contract |
 //! |---|---|---|
-//! | `dev_e2e_static_injected_route_renders` | S3 #1231 | Static `/preset-about` serves HTML + relative-import content; `virtual:` entrypoint renders; user `pages/` wins on collision; dev `"/"` reservation holds |
-//! | `dev_e2e_dynamic_injected_route_renders` | S4 #1232 | `[slug]` renders two concrete URLs; `[...rest]` renders multi-segment; `[[...section]]` bare prefix AND nested AND deeply nested; root not hijacked |
+//! | `dev_e2e_static_injected_route_renders` | S3 #1231 | Static `/preset-about` serves HTML + relative-import content; `virtual:` entrypoint renders; user `pages/` wins on collision; fixture root remains a user page when no plugin owns `/` |
+//! | `dev_e2e_dynamic_injected_route_renders` | S4 #1232 | `[slug]` renders two concrete URLs; `[...rest]` renders multi-segment; `[[...section]]` bare prefix AND nested AND deeply nested; root remains a user page when no root route is injected |
 //! | `dev_e2e_injected_route_hmr_content_edit_refreshes` | S5 #1233 | Content edit under a watched collection re-renders a DYNAMIC injected route whose `paths()` reads the collection (HMR positive, #1227 item (h)); node_modules restart-only contract held at unit level |
 //! | `dev_e2e_trailing_slash_parity` | S6 #1234 | `/preset-about` and `/preset-about/` resolve identically (static); `/preset-docs/getting-started` and `/preset-docs/getting-started/` resolve identically (dynamic) |
-//! | `dev_e2e_injected_root_boots_and_reservation_holds` | #1262 | A preset injecting `"/"` boots dev without crashing; `GET /` serves the user home, never the injected root; a sibling injected route still renders |
+//! | `dev_e2e_injected_root_renders_without_user_index` | #1515 | An injected `/` renders when the fixture has no `pages/index.tsx`; a sibling injected route still renders |
+//! | `dev_e2e_user_root_wins_over_injected_root` | #1515 | A user `pages/index.tsx` wins over an injected `/` in dev |
 //!
 //! ## Design decision — fixture reuse
 //!
@@ -19,7 +20,8 @@
 //! The spec (#1234) mentions a possible `dev-loop-with-preset/` sibling, but
 //! `package-routes-consumer` already carries static + dynamic + optional-
 //! catchall patterns, a colliding user page (`pages/guide.tsx`), and a user
-//! home (`pages/index.tsx`) — everything the confirm bullets need.  Creating
+//! home (`pages/index.tsx`) for the precedence case. The injected-root case
+//! removes that index at runtime when it needs an unclaimed root. Creating
 //! a separate fixture would duplicate the fixture without adding coverage, so
 //! the existing one is kept (minimal change, no churn).  Each test writes its
 //! own `preset.mjs` (and any supporting `pkg/*.tsx`) at runtime into a fresh
@@ -42,11 +44,11 @@
 //! ## Concurrency
 //!
 //! Unlike `dev_serve_e2e.rs` and friends, this file has no file-local
-//! `SERIAL` mutex — its 5 spawning tests were not previously serialized
+//! `SERIAL` mutex — its 6 spawning tests were not previously serialized
 //! against EACH OTHER within this binary at all. Each now acquires
 //! `zfb_test_utils::CrossBinaryE2eLock` (issue #1339), which — being a
 //! real OS-level advisory file lock rather than an in-process mutex —
-//! incidentally also serializes these 5 tests against each other (every
+//! incidentally also serializes these 6 tests against each other (every
 //! `acquire()` call opens its own fd on the shared lock file, and
 //! `flock`/`LockFileEx` exclusion applies per open file description,
 //! not per process), in addition to its primary purpose of serializing
@@ -536,7 +538,8 @@ async fn dev_e2e_static_injected_route_renders() {
             );
         }
 
-        // --- Dev "/" reservation unchanged: root is the USER home ---
+        // The fixture's user home remains available because this preset does
+        // not inject a root route.
 
         {
             let body = client
@@ -549,8 +552,7 @@ async fn dev_e2e_static_injected_route_renders() {
                 .unwrap_or_default();
             assert!(
                 body.contains("CONSUMER_USER_HOME_MARKER"),
-                "GET / must serve the user's home page (dev `/` reservation unchanged); \
-                 no injected route may claim root in dev.\nbody:\n{body}\n{}",
+                "GET / must serve the fixture's user home page.\nbody:\n{body}\n{}",
                 session.logs(),
             );
         }
@@ -906,11 +908,8 @@ async fn dev_e2e_dynamic_injected_route_renders() {
         )
         .await;
 
-        // --- Dev "/" reservation unchanged: root is the USER home ---
-        // A root-scoped optional catchall `/[[...catch]]` would be able to
-        // match `/`, but that pattern is not injected here. We verify the
-        // user's home page is still served — belt-and-suspenders check that
-        // our dynamic fallback does not accidentally capture `/`.
+        // This preset has no root-scoped route. Verify its dynamic fallback
+        // does not capture the fixture's user home.
         {
             let body = client
                 .get(format!("{base}/"))
@@ -1674,43 +1673,29 @@ async fn dev_e2e_trailing_slash_parity() {
 }
 
 // ---------------------------------------------------------------------------
-// #1262 — a preset injecting "/" must boot dev (no crash); dev "/" reservation
+// #1515 - injected root routes obey the same dev precedence as build
 // ---------------------------------------------------------------------------
 
-/// Write a preset that injects the site root `/` — the #1262 regression case.
+/// Write a preset that injects the site root `/` and a sibling static route.
 ///
-/// A real preset's `setup()` runs in BOTH `zfb dev` and `zfb build`, so a
-/// package that owns the site index calls `injectRoute("/")` in both modes.
-/// Pre-#1262 the JS host THREW on a dev `injectRoute("/")`, crashing the dev
-/// server during plugin setup. The host must now ACCEPT the registration; the
-/// Rust dev route resolution drops the injected `/` so the user `pages/index`
-/// (or devMiddleware) keeps the dev catch-all and the injected `/` is never
-/// rendered in dev.
-///
-/// The preset ALSO injects `/preset-about` (a normal static route backed by
-/// the fixture's existing `pkg/about.tsx`) to prove the dev server booted and
-/// still registers + renders other injected routes after accepting the `/`
-/// registration — i.e. the `/` acceptance did not break the rest of setup.
+/// The host accepts root registration in both modes. Route selection then
+/// follows the normal user-page precedence: a real `pages/index` shadows the
+/// injected root, while an unclaimed root renders the package entrypoint.
 fn write_root_injecting_preset(root: &Path) {
     let preset = r#"
 export default {
   name: "consumer-preset-root-inject",
   setup({ injectRoute }) {
-    // #1262: a preset owning the site index injects "/" unconditionally.
-    // This used to CRASH `zfb dev` during setup. The host must accept it;
-    // the dev route resolution drops it so the user home / devMiddleware
-    // keeps "/".
+    // Root registration is accepted in dev and build. A user pages/index
+    // shadows it when present.
     injectRoute("/", "./pkg/root-shadow.tsx");
-    // A normal injected route — proof the dev server booted and still renders
-    // injected routes after accepting the "/" registration.
+    // A sibling route verifies the rest of setup still renders normally.
     injectRoute("/preset-about", "./pkg/about.tsx");
   },
 };
 "#;
     fs::write(root.join("preset.mjs"), preset).expect("write root-injecting preset.mjs");
 
-    // The injected root page. In dev it is DROPPED (never staged/rendered), so
-    // its marker must never appear; in build it would become the overlay index.
     let root_shadow = r#"
 export default function RootShadow() {
   return (
@@ -1725,24 +1710,10 @@ export default function RootShadow() {
         .expect("write pkg/root-shadow.tsx");
 }
 
-/// #1262: a preset that calls `injectRoute("/")` in `setup()` must NOT crash
-/// `zfb dev`, and the dev `/` reservation must hold — `GET /` serves the user
-/// home page (`pages/index.tsx`), never the injected root page.
-///
-/// This is the E2E counterpart to the dev-route-resolution unit test
-/// (`commands::package_routes::tests::dev_drops_injected_root_even_without_user_index`)
-/// and the host-acceptance unit test
-/// (`zfb_build::plugin_runner::tests::setup_hook_accepts_root_inject_route_in_dev_and_build`).
-/// It proves the whole chain end-to-end against a real `zfb dev`:
-///
-/// - The dev server BOOTS (a crash on `injectRoute("/")` would exit before the
-///   ready banner → Phase A panics rather than completing).
-/// - `GET /` serves `CONSUMER_USER_HOME_MARKER` and NOT
-///   `INJECTED_ROOT_SHADOW_MARKER` — the injected `/` is never rendered.
-/// - A sibling injected route (`/preset-about`) still renders — accepting `/`
-///   did not break the rest of plugin setup.
-#[tokio::test(flavor = "multi_thread")]
-async fn dev_e2e_injected_root_boots_and_reservation_holds() {
+/// Exercise the two root-precedence cases against a real `zfb dev` process.
+/// The no-user-index case proves the injected root stages and renders; the
+/// user-index case proves the existing shape-key precedence remains intact.
+async fn run_root_injecting_dev_case(with_user_index: bool) {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
@@ -1756,14 +1727,21 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
         return;
     }
 
+    let scenario = if with_user_index {
+        "user pages/index shadows injected root"
+    } else {
+        "injected root renders without user pages/index"
+    };
     let tmp = tempfile::tempdir().expect("create tempdir for consumer fixture");
-
-    // Boot with the root-injecting preset.
     let root = tmp
         .path()
         .canonicalize()
         .expect("canonicalize fixture root");
     copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
+    if !with_user_index {
+        fs::remove_file(root.join("pages").join("index.tsx"))
+            .expect("remove fixture pages/index.tsx");
+    }
     write_root_injecting_preset(&root);
 
     let (nm_handle, embedded_nm_path) =
@@ -1771,8 +1749,8 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
     std::os::unix::fs::symlink(&embedded_nm_path, root.join("node_modules"))
         .expect("symlink node_modules");
 
-    let stdout_path = root.join(".zfb-dev-stdout-1262.log");
-    let stderr_path = root.join(".zfb-dev-stderr-1262.log");
+    let stdout_path = root.join(".zfb-dev-root-stdout.log");
+    let stderr_path = root.join(".zfb-dev-root-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
     let stderr_file = fs::File::create(&stderr_path).expect("create stderr log");
 
@@ -1801,10 +1779,8 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
     let _nm = nm_handle;
 
     let body = async {
-        // Phase A: discover the port from the ready banner. A crash on the dev
-        // `injectRoute("/")` (the pre-#1262 bug) would exit the process before
-        // the banner with a NON-skip message → this loop panics, which is the
-        // core "dev boots without crashing" assertion.
+        // Phase A: a root registration must not crash plugin setup before the
+        // ready banner is emitted.
         let boot_start = Instant::now();
         let port = loop {
             if let Some(status) = session.guard.try_exit_status() {
@@ -1822,8 +1798,8 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
                     return Outcome::Skipped;
                 }
                 panic!(
-                    "`zfb dev` exited prematurely (status {status:?}) before the ready banner — \
-                     a preset's injectRoute(\"/\") must NOT crash dev (#1262).\n{}",
+                    "`zfb dev` exited prematurely (status {status:?}) before the ready banner \
+                     for {scenario}.\n{}",
                     session.logs(),
                 );
             }
@@ -1845,7 +1821,7 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
             .build()
             .expect("build reqwest client");
 
-        // Phase B: readiness — GET / answers 200.
+        // Phase B: readiness - GET / answers 200 in both precedence cases.
         {
             let start = Instant::now();
             loop {
@@ -1864,42 +1840,51 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
             }
         }
 
-        // --- A sibling injected route still renders (host accepted "/" and
-        //     continued setup normally) ---
+        let (expected_marker, forbidden_marker, root_phase) = if with_user_index {
+            (
+                "CONSUMER_USER_HOME_MARKER",
+                "INJECTED_ROOT_SHADOW_MARKER",
+                "user pages/index wins over injected root",
+            )
+        } else {
+            (
+                "INJECTED_ROOT_SHADOW_MARKER",
+                "CONSUMER_USER_HOME_MARKER",
+                "injected root renders without user pages/index",
+            )
+        };
+        poll_until_contains(
+            &client,
+            &format!("{base}/"),
+            expected_marker,
+            ROUTE_DEADLINE,
+            root_phase,
+            &session,
+        )
+        .await;
+        let root_body = client
+            .get(format!("{base}/"))
+            .send()
+            .await
+            .expect("GET /")
+            .text()
+            .await
+            .unwrap_or_default();
+        assert!(
+            !root_body.contains(forbidden_marker),
+            "GET / unexpectedly rendered {forbidden_marker:?} for {scenario}.\nbody:\n{root_body}\n{}",
+            session.logs(),
+        );
+
         poll_until_contains(
             &client,
             &format!("{base}/preset-about"),
             "CONSUMER_PRESET_ABOUT_MARKER",
             ROUTE_DEADLINE,
-            "sibling injected /preset-about renders after accepting injected /",
+            "sibling injected /preset-about renders after root registration",
             &session,
         )
         .await;
-
-        // --- Dev "/" reservation: root is the USER home, never the injected
-        //     root page ---
-        {
-            let body = client
-                .get(format!("{base}/"))
-                .send()
-                .await
-                .expect("GET /")
-                .text()
-                .await
-                .unwrap_or_default();
-            assert!(
-                body.contains("CONSUMER_USER_HOME_MARKER"),
-                "GET / must serve the user's home page — a preset's injected `/` must never \
-                 claim root in dev (#1262).\nbody:\n{body}\n{}",
-                session.logs(),
-            );
-            assert!(
-                !body.contains("INJECTED_ROOT_SHADOW_MARKER"),
-                "the injected `/` page must NEVER be rendered in dev (dev `/` reservation, \
-                 #1262).\nbody:\n{body}\n{}",
-                session.logs(),
-            );
-        }
 
         Outcome::Completed
     };
@@ -1909,13 +1894,22 @@ async fn dev_e2e_injected_root_boots_and_reservation_holds() {
         Ok(Outcome::Completed) | Ok(Outcome::Skipped) => {}
         Err(_) => {
             panic!(
-                "[watchdog] injected-`/` dev E2E did not finish within {}s — a hang, or dev \
-                 failed to boot with an injected `/`. Process group {pgid} will be killed.\n\
-                 --- stdout ---\n{}\n--- stderr ---\n{}",
+                "[watchdog] injected-root dev E2E ({scenario}) did not finish within {}s. \
+                 Process group {pgid} will be killed.\n--- stdout ---\n{}\n--- stderr ---\n{}",
                 OVERALL_DEADLINE.as_secs(),
                 read_log(&stdout_path),
                 read_log(&stderr_path),
             );
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_e2e_injected_root_renders_without_user_index() {
+    run_root_injecting_dev_case(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_e2e_user_root_wins_over_injected_root() {
+    run_root_injecting_dev_case(true).await;
 }
