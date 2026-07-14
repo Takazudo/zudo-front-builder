@@ -581,7 +581,8 @@ async fn dev_e2e_static_injected_route_renders() {
 ///
 /// - `/preset-docs/[slug]` — single-segment param (the primary test case).
 /// - `/archive/[...rest]` — required catch-all (one or more segments).
-/// - `/help/[[...section]]` — optional catch-all (zero or more segments).
+/// - `/help/[[...section]]` — optional catch-all (zero or more segments)
+///   with literal `paths()` entries, including the zero-segment case.
 ///   `/help` has no user `pages/` file, so the bare-prefix zero-segment
 ///   case is reachable through the injected fallback.
 ///
@@ -604,8 +605,9 @@ export default {
     injectRoute("/preset-docs/[slug]", "./pkg/docs.tsx");
     // [...rest] — required catch-all
     injectRoute("/archive/[...rest]", "./pkg/archive.tsx");
-    // [[...section]] — optional catch-all, bare prefix + nested
-    // (/help has no user pages/ file so the zero-segment case is reachable)
+    // [[...section]] — optional catch-all with `paths()`, bare prefix +
+    // nested. (/help has no user pages/ file so the zero-segment case is
+    // reachable.)
     injectRoute("/help/[[...section]]", "./pkg/help-optional.tsx");
   },
 };
@@ -627,14 +629,25 @@ export default function ArchivePage() {
 "#;
     fs::write(root.join("pkg").join("archive.tsx"), archive).expect("write pkg/archive.tsx");
 
-    // [[...section]] entrypoint: optional catch-all.
+    // [[...section]] entrypoint: optional catch-all with literal paths().
+    // The slash-first requests below must match these exact path entries;
+    // a trailing slash accidentally captured as part of `section` produces
+    // no paths() match and therefore a real 404.
     let help_optional = r#"
-export default function HelpOptional() {
+export function paths() {
+  return [
+    { params: { section: [] }, props: { label: "root" } },
+    { params: { section: ["intro"] }, props: { label: "intro" } },
+    { params: { section: ["a", "b"] }, props: { label: "a-b" } },
+  ];
+}
+
+export default function HelpOptional({ label }: { label: string }) {
   return (
     <html lang="en">
       <head><title>Help</title></head>
       <body>
-        <h1>DYNAMIC_HELP_OPTIONAL_MARKER</h1>
+        <h1>DYNAMIC_HELP_OPTIONAL_MARKER_{label}</h1>
       </body>
     </html>
   );
@@ -835,15 +848,28 @@ async fn dev_e2e_dynamic_injected_route_renders() {
 
         // --- [[...section]] optional catch-all: /help/[[...section]] ---
 
-        // Bare prefix (zero-segment case): /help.
-        // `/help` has no user pages/ file, so this exercises the true
-        // zero-segment match through the dynamic fallback.
+        // Request the trailing-slash form first, while no canonical output
+        // exists on disk. This is the #1513 reproducer: the raw `/help/`
+        // fallback input does not match the optional catch-all zero-segment
+        // shape, whereas canonical `/help` must reach its `paths()` entry.
+        poll_until_contains(
+            &client,
+            &format!("{base}/help/"),
+            "DYNAMIC_HELP_OPTIONAL_MARKER_root",
+            ROUTE_DEADLINE,
+            "[[...section]] slash-first /help/ renders (zero-segment paths() case)",
+            &session,
+        )
+        .await;
+
+        // Bare prefix (zero-segment case): /help. `/help` has no user pages/
+        // file, so this exercises the true zero-segment fallback match.
         poll_until_contains(
             &client,
             &format!("{base}/help"),
-            "DYNAMIC_HELP_OPTIONAL_MARKER",
+            "DYNAMIC_HELP_OPTIONAL_MARKER_root",
             ROUTE_DEADLINE,
-            "[[...section]] bare-prefix /help renders (zero-segment case)",
+            "[[...section]] bare-prefix /help renders (zero-segment paths() case)",
             &session,
         )
         .await;
@@ -852,20 +878,30 @@ async fn dev_e2e_dynamic_injected_route_renders() {
         poll_until_contains(
             &client,
             &format!("{base}/help/intro"),
-            "DYNAMIC_HELP_OPTIONAL_MARKER",
+            "DYNAMIC_HELP_OPTIONAL_MARKER_intro",
             ROUTE_DEADLINE,
             "[[...section]] nested /help/intro renders",
             &session,
         )
         .await;
 
-        // Deeply nested (multiple segments).
+        // Slash-first deeply nested (multiple segments). The trailing slash
+        // must be removed before the Hono paths() lookup sees `a/b`.
         poll_until_contains(
             &client,
-            &format!("{base}/help/a/b/c"),
-            "DYNAMIC_HELP_OPTIONAL_MARKER",
+            &format!("{base}/help/a/b/"),
+            "DYNAMIC_HELP_OPTIONAL_MARKER_a-b",
             ROUTE_DEADLINE,
-            "[[...section]] deeply nested /help/a/b/c renders",
+            "[[...section]] slash-first nested /help/a/b/ renders",
+            &session,
+        )
+        .await;
+        poll_until_contains(
+            &client,
+            &format!("{base}/help/a/b"),
+            "DYNAMIC_HELP_OPTIONAL_MARKER_a-b",
+            ROUTE_DEADLINE,
+            "[[...section]] nested /help/a/b renders",
             &session,
         )
         .await;
@@ -1378,15 +1414,14 @@ async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
 // ## Contract being tested
 //
 // The render-on-request hook receives a **prefix-stripped, query-stripped**
-// path (`render_hook.rs:99-104`).  `lookup_by_url` normalizes trailing slash,
-// `index.html` duality, and percent-encoding before consulting `url_index`
-// (`dev.rs:2703-2722`), and `output_path` is derived from the already-
-// normalized URL, so `/preset-about` and `/preset-about/` resolve to the same
-// `preset-about/index.html` — matching a normal static page.  For dynamic
-// injected routes the same normalization runs inside `pattern_matches` /
-// `render_stale_route`'s fallback, so `/preset-docs/a` and `/preset-docs/a/`
-// also resolve identically.  No new normalization code is needed — this test
-// proves the existing paths carry it correctly.
+// path (`render_hook.rs:99-104`). `lookup_by_url` normalizes trailing slash,
+// `index.html` duality, and percent-encoding before consulting `url_index`, so
+// static `/preset-about` and `/preset-about/` resolve to one output. Dynamic
+// injected routes have no boot-time `url_index` entry: `pattern_matches` keeps
+// Hono's raw grammar and intentionally does NOT normalize them. Since #1513,
+// the lazy-render adapter percent-decodes and trims trailing slashes before
+// dynamic matching, dispatch, and output-path derivation. This is internal
+// canonicalization only; neither route is redirected.
 //
 // ## Why a separate test
 //
@@ -1415,23 +1450,23 @@ export default {
 /// S6 CONFIRM gate: trailing-slash parity for both static and dynamic
 /// injected routes under a real `zfb dev` (epic #1228, S6 #1234).
 ///
-/// Asserts that a trailing slash is transparent:
+/// Asserts that a trailing slash is transparent, with the trailing-slash form
+/// requested first so no pre-existing disk artifact can mask the fallback:
 ///
 /// - `GET /preset-about` and `GET /preset-about/` both return 200 with
 ///   `CONSUMER_PRESET_ABOUT_MARKER` — the static injected route is served
 ///   from the same `html_root/preset-about/index.html` for both URL forms.
 /// - `GET /preset-docs/getting-started` and
 ///   `GET /preset-docs/getting-started/` both return 200 with the docs
-///   marker — the dynamic injected route's `output_path` derivation runs on
-///   the already-normalized URL, so the trailing-slash variant hits the same
-///   cached render.
+///   marker — the dynamic injected route is canonicalized before its first
+///   render, then the slashless form serves the same output.
 ///
 /// ## Test level
 ///
 /// Level 4 — real `zfb dev` process, real HTTP requests. Required because
-/// trailing-slash normalization spans the HTTP layer (`lookup_by_url`,
-/// `url_index_lookup_keys`, `output_path` derivation) in a way no lower
-/// level can exercise end-to-end.
+/// trailing-slash normalization spans HTTP dispatch, the lazy injected-route
+/// adapter, and the V8 `paths()` lookup in a way no lower level can exercise
+/// end-to-end.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_e2e_trailing_slash_parity() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
@@ -1563,18 +1598,7 @@ async fn dev_e2e_trailing_slash_parity() {
 
         // --- Trailing-slash parity: STATIC injected route ---
 
-        // Without trailing slash (canonical form).
-        poll_until_contains(
-            &client,
-            &format!("{base}/preset-about"),
-            "CONSUMER_PRESET_ABOUT_MARKER",
-            ROUTE_DEADLINE,
-            "static injected /preset-about (no trailing slash) renders",
-            &session,
-        )
-        .await;
-
-        // With trailing slash — must serve the same marker, not redirect.
+        // With trailing slash FIRST — must render directly, not redirect.
         // `lookup_by_url` normalizes trailing slash before consulting
         // `url_index` (`dev.rs:2703-2722`), so this must be a 200 with
         // the same content, not a 301/308.  The no-redirect `client` makes
@@ -1590,29 +1614,40 @@ async fn dev_e2e_trailing_slash_parity() {
         )
         .await;
 
-        // --- Trailing-slash parity: DYNAMIC injected route ---
-
-        // Without trailing slash.
+        // Without trailing slash (canonical form) serves the same output.
         poll_until_contains(
             &client,
-            &format!("{base}/preset-docs/getting-started"),
-            "CONSUMER_PRESET_DOCS_MARKER_getting-started",
+            &format!("{base}/preset-about"),
+            "CONSUMER_PRESET_ABOUT_MARKER",
             ROUTE_DEADLINE,
-            "dynamic injected /preset-docs/getting-started (no trailing slash) renders",
+            "static injected /preset-about (no trailing slash) renders",
             &session,
         )
         .await;
 
-        // With trailing slash — the dynamic fallback derives `output_path`
-        // from the normalized URL (`build_output_path_for_resolved_url` runs
-        // on the already-stripped path), so both variants produce the same
-        // `preset-docs/getting-started/index.html` and serve the same HTML.
+        // --- Trailing-slash parity: DYNAMIC injected route ---
+
+        // With trailing slash FIRST — #1513 canonicalizes the fallback URL
+        // before Hono's paths() lookup, so this creates the canonical output
+        // instead of falling through to a 404.
         poll_until_200_not_redirect(
             &client,
             &format!("{base}/preset-docs/getting-started/"),
             "CONSUMER_PRESET_DOCS_MARKER_getting-started",
             ROUTE_DEADLINE,
             "dynamic injected /preset-docs/getting-started/ (trailing slash)",
+            &session,
+        )
+        .await;
+
+        // Without trailing slash serves the output created by the same
+        // canonical dynamic entry.
+        poll_until_contains(
+            &client,
+            &format!("{base}/preset-docs/getting-started"),
+            "CONSUMER_PRESET_DOCS_MARKER_getting-started",
+            ROUTE_DEADLINE,
+            "dynamic injected /preset-docs/getting-started (no trailing slash) renders",
             &session,
         )
         .await;
