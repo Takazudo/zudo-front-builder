@@ -95,7 +95,7 @@ describe("highlightCode (arbitrary source -> semantic class markup)", () => {
       ["javascript", "const value = '<tag>';"],
     ] as const) {
       const out = await highlightCode(code, { language });
-      expect(out.html).toStartWith('<pre class="hi-root"><code>');
+      expect(out.html).toMatch(/^<pre class="hi-root"><code>/);
       expect(out.html).toContain('<span class="line">');
       expect(out.diagnostics).toEqual([]);
     }
@@ -107,7 +107,7 @@ describe("highlightCode (arbitrary source -> semantic class markup)", () => {
       classPrefix: "token-",
       roleClasses: { keyword: "text-violet-600 dark:text-violet-400" },
     });
-    expect(out.html).toStartWith('<pre class="token-root"><code>');
+    expect(out.html).toMatch(/^<pre class="token-root"><code>/);
     expect(out.html).toContain('class="text-violet-600 dark:text-violet-400">const</span>');
     expect(out.html).not.toContain("token-kw");
     expect(out.diagnostics).toEqual([]);

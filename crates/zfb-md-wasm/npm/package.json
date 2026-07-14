@@ -30,6 +30,7 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
+      "browser": "./src/browser.ts",
       "default": "./src/index.ts"
     }
   },
@@ -45,6 +46,7 @@
     "exports": {
       ".": {
         "types": "./dist/index.d.ts",
+        "browser": "./dist/browser.js",
         "default": "./dist/index.js"
       }
     }
@@ -64,6 +66,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "binaryen": "130.0.0",
+    "esbuild": "0.27.7",
     "typescript": "^5.9.0",
     "vitest": "^2.1.9"
   }

@@ -12,7 +12,8 @@
  *   2. wasm-bindgen --target web                (ESM glue, browser + Node)
  *   3. wasm-opt -O1 (binaryen, pinned via the `binaryen` devDependency)
  *   4. tsc                                       (src/*.ts -> dist/*.js)
- *   5. copy the wasm-bindgen output into dist/wasm/ alongside it
+ *   5. mark the generated glue as a zfb file-loader resource, then copy the
+ *      glue, declaration sidecar, and wasm into dist/wasm/
  *
  * Prints the raw + gzip size of the final wasm binary (epic #1572's
  * download-size concern; #1579's CI size-report line and #1580's docs page
@@ -23,7 +24,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readdirSync, existsSync, mkdirSync, rmSync, cpSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, cpSync, renameSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -64,19 +65,22 @@ function run(cmd, args, opts = {}) {
 // Local-machine quirk (not a CI concern, see crates/zfb-md-wasm/SPIKE-FINDINGS.md
 // "Local-machine quirk"): on some Macs, Homebrew's rustc shadows the
 // rustup-managed toolchain on PATH even under `rustup run`, breaking wasm
-// target resolution. Prepending the rustup toolchain's own bin dir (when
-// present) fixes this without affecting CI, where no such shadowing exists.
+// target resolution. Prepending the active rustup toolchain's own bin dir
+// (when present) fixes this without affecting CI. Ask rustup which toolchain
+// is active; directory enumeration can select an older installed toolchain.
 function envWithRustupPathFix() {
   const env = { ...process.env };
-  const toolchainsDir = resolve(process.env.HOME ?? "", ".rustup/toolchains");
-  if (existsSync(toolchainsDir)) {
-    const entries = readdirSync(toolchainsDir).filter((name) =>
-      existsSync(resolve(toolchainsDir, name, "bin")),
-    );
-    if (entries.length > 0) {
-      const binDir = resolve(toolchainsDir, entries[0], "bin");
+  try {
+    const rustcPath = execFileSync("rustup", ["which", "rustc"], {
+      encoding: "utf8",
+      env,
+    }).trim();
+    const binDir = dirname(rustcPath);
+    if (existsSync(resolve(binDir, "rustc"))) {
       env.PATH = `${binDir}:${env.PATH ?? ""}`;
     }
+  } catch {
+    // A plain rustc installation remains usable without rustup.
   }
   return env;
 }
@@ -101,6 +105,20 @@ function checkWasmBindgenVersion(env) {
     );
   }
   log(`wasm-bindgen ${found} OK`);
+}
+
+function cargoTargetDirectory(env) {
+  const metadata = JSON.parse(
+    execFileSync("cargo", ["metadata", "--no-deps", "--format-version", "1"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env,
+    }),
+  );
+  if (typeof metadata.target_directory !== "string") {
+    throw new Error("cargo metadata did not report a target_directory");
+  }
+  return metadata.target_directory;
 }
 
 function resolveWasmOptBin() {
@@ -152,8 +170,8 @@ function main() {
     },
   );
   const cdylibPath = resolve(
-    repoRoot,
-    "target/wasm32-unknown-unknown/wasm-release/zfb_md_wasm.wasm",
+    cargoTargetDirectory(env),
+    "wasm32-unknown-unknown/wasm-release/zfb_md_wasm.wasm",
   );
   const cdylibSize = readFileSync(cdylibPath).length;
   log(`cdylib (pre wasm-bindgen): ${fmtBytes(cdylibSize)}`);
@@ -167,6 +185,16 @@ function main() {
     },
   );
   const bgWasmPath = resolve(srcWasmDir, "zfb_md_wasm_bg.wasm");
+  const gluePath = resolve(srcWasmDir, "zfb_md_wasm.js");
+  const glueDeclarationPath = resolve(srcWasmDir, "zfb_md_wasm.d.ts");
+  const resourceGluePath = resolve(srcWasmDir, "zfb_md_wasm_glue.zfb-resource.mjs");
+  const resourceGlueDeclarationPath = resolve(srcWasmDir, "zfb_md_wasm_glue.zfb-resource.d.mts");
+
+  // One canonical generated runtime serves both entries. The marker turns the
+  // browser entry's static import into an esbuild file resource, while the
+  // direct entry dynamically imports this exact same module.
+  renameSync(gluePath, resourceGluePath);
+  renameSync(glueDeclarationPath, resourceGlueDeclarationPath);
   const bindgenSize = readFileSync(bgWasmPath).length;
   log(`wasm-bindgen output: ${fmtBytes(bindgenSize)}`);
 
