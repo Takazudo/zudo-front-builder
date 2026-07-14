@@ -2986,3 +2986,191 @@ fn session_transition_removes_and_restores_node_modules_symlink_under_exclusions
         "tick 3 must resolve the bare dep again after symlink restoration: {third_body}"
     );
 }
+
+// --- #1645: page/source-graph and generated-entry seeds under bundle.exclude ---
+//
+// With a non-empty `bundle.exclude` the live `<shadow>/node_modules` symlink is
+// never created, so every bare import reachable from the bundle graph resolves
+// ONLY if its package was staged as a real copy. #1644 bounded the staging
+// closure but left its SEED set incomplete: ordinary page/source imports and the
+// generated `entry.mjs` / hydration-shim framework imports were never seeded, so
+// a real workload failed to resolve `@takazudo/zfb-runtime/server`,
+// `preact-render-to-string`, and page-imported packages (issue #1645). These two
+// tests pin both seed sources — the project module graph and the synthetic entry.
+
+/// A page imports a bare package that is NOT an exact tsconfig / plugin-alias
+/// target — the "page/source root" import class from #1645. Its only route into
+/// the staged view is the project-source-graph seed, so with `bundle.exclude`
+/// active (live symlink removed) the build must still resolve it.
+#[test]
+fn page_bare_import_is_staged_under_bundle_exclude() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "@scope/page-dependency", "unused.tsx");
+    write_bare_package_in(
+        &root.join("node_modules"),
+        "@scope/page-dependency",
+        "STAGED_PAGE_BARE_DEPENDENCY",
+    );
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-page-bare-dep",
+        BTreeMap::new(),
+        vec![],
+        vec![],
+    );
+    // Non-empty exclusion removes the live symlink; without the source-graph
+    // seed the page's bare import is unresolvable.
+    input.bundle_exclude = vec!["src/unused.tsx".to_string()];
+
+    bundle(input)
+        .expect("a page's bare import must stage into the isolated view under bundle.exclude");
+    let body = fs::read_to_string(root.join("dist-page-bare-dep/bundle.mjs")).unwrap();
+    assert!(body.contains("STAGED_PAGE_BARE_DEPENDENCY"), "{body}");
+}
+
+/// The generated `entry.mjs` imports `@takazudo/zfb-runtime/server` and the
+/// framework render-to-string module, and the hydration shim imports the JSX
+/// runtime — none of which appears in any project source file. With
+/// `bundle.exclude` active (live symlink removed) these resolve ONLY via the
+/// synthetic-entry seed, so a project whose sole route to them is the generated
+/// infra must still build. Regressing the seed reintroduces the #1645
+/// "Could not resolve @takazudo/zfb-runtime/server" failure.
+#[test]
+fn generated_entry_framework_imports_are_staged_under_bundle_exclude() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    for d in ["pages", "content", "components", "layouts", "src"] {
+        fs::create_dir_all(root.join(d)).unwrap();
+    }
+    fs::write(
+        root.join("layouts/default.tsx"),
+        "export default function L({ children }) { return children; }\n",
+    )
+    .unwrap();
+    // A page with NO bare imports of its own: the only bare specifiers left in
+    // the bundle graph are the generated entry.mjs / hydration-shim framework
+    // imports (`@takazudo/zfb-runtime/server`, `preact-render-to-string`,
+    // `preact` / `preact/jsx-runtime`).
+    fs::write(
+        root.join("pages/index.tsx"),
+        "export default function Page() { return <div>hi</div>; }\n",
+    )
+    .unwrap();
+    fs::write(root.join("src/unused.ts"), "export default 'unused';\n").unwrap();
+
+    // Minimal real (non-external) framework stubs the generated infra resolves
+    // against. Bundling only resolves + links them; nothing runs.
+    let runtime = root.join("node_modules/@takazudo/zfb-runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    fs::write(
+        runtime.join("package.json"),
+        r#"{"name":"@takazudo/zfb-runtime","type":"module","exports":{"./server":"./server.js"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        runtime.join("server.js"),
+        "export function createPageRouter() {\n  return { fetch() { return 'ZFB_RUNTIME_SERVER_STUB'; } };\n}\n",
+    )
+    .unwrap();
+    let render = root.join("node_modules/preact-render-to-string");
+    fs::create_dir_all(&render).unwrap();
+    fs::write(
+        render.join("package.json"),
+        r#"{"name":"preact-render-to-string","type":"module","exports":"./index.js"}"#,
+    )
+    .unwrap();
+    fs::write(
+        render.join("index.js"),
+        "export function renderToString() { return 'PREACT_RTS_STUB'; }\n",
+    )
+    .unwrap();
+    let preact = root.join("node_modules/preact");
+    fs::create_dir_all(&preact).unwrap();
+    fs::write(
+        preact.join("package.json"),
+        r#"{"name":"preact","type":"module","exports":{".":"./index.js","./jsx-runtime":"./jsx-runtime.js"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        preact.join("index.js"),
+        "export function h() {} export function hydrate() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        preact.join("jsx-runtime.js"),
+        "export function jsx() {} export function jsxs() {} export const Fragment = {};\n",
+    )
+    .unwrap();
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-entry-infra",
+        BTreeMap::new(),
+        vec![],
+        vec![],
+    );
+    // The framework packages must resolve from the STAGED view, not be
+    // externalized away — that is exactly what #1645 broke.
+    input.external = vec![];
+    input.bundle_exclude = vec!["src/unused.ts".to_string()];
+
+    bundle(input).expect(
+        "generated entry.mjs / hydration-shim framework imports must stage under bundle.exclude",
+    );
+    let body = fs::read_to_string(root.join("dist-entry-infra/bundle.mjs")).unwrap();
+    // The server runtime resolved and linked (its subpath export was staged).
+    assert!(body.contains("createPageRouter"), "{body}");
+}
+
+/// A universal catch-all tsconfig path (`"*"`) is a fallback alias, not a
+/// specific claim: a bare package imported under it must still stage from
+/// `node_modules` (issue #1645). Guards `specifier_matches_alias_key`'s
+/// catch-all carve-out — without it the alias filter would treat every specifier
+/// as alias-claimed and suppress the entire source-graph seed.
+#[test]
+fn catch_all_tsconfig_path_does_not_suppress_page_bare_import_staging() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "@scope/catchall-dependency", "unused.tsx");
+    write_bare_package_in(
+        &root.join("node_modules"),
+        "@scope/catchall-dependency",
+        "STAGED_UNDER_CATCH_ALL_PATH",
+    );
+
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-catchall-path",
+        // A catch-all path: `foo` maps to `src/foo`, and anything not found there
+        // falls back to node_modules — exactly what must stay stageable.
+        BTreeMap::from([("*".to_string(), vec![format!("{}/src/*", root.display())])]),
+        vec![],
+        vec![],
+    );
+    input.bundle_exclude = vec!["src/unused.tsx".to_string()];
+
+    bundle(input)
+        .expect("a catch-all tsconfig path must not suppress node_modules staging under exclude");
+    let body = fs::read_to_string(root.join("dist-catchall-path/bundle.mjs")).unwrap();
+    assert!(body.contains("STAGED_UNDER_CATCH_ALL_PATH"), "{body}");
+}
