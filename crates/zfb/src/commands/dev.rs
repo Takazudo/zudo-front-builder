@@ -66,8 +66,10 @@
 // continues to surface real unused-item warnings.
 #![cfg_attr(not(feature = "embed_v8"), allow(unused_imports, dead_code))]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+#[cfg(feature = "embed_v8")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -80,9 +82,10 @@ use zfb_build::renderer::{
     render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
 };
 use zfb_build::{
-    BuildContext, BuildOrchestrator, BuildOutcome, ClientScriptsRunner, CssRunner,
-    DevAssetPipeline, DiscoveryOutcome, IslandsBundleInfo, IslandsRunner, OrchestratorConfig,
-    PageRenderer, RefreshOutcome, RelDistPath, RenderedPage, RendererReloader,
+    BuildContext, BuildOrchestrator, BuildOutcome, ClientScriptsRunner, ContentCollectionId,
+    ContentCollectionMembership, ContentProvenance, CssRunner, DevAssetPipeline, DiscoveryOutcome,
+    IslandsBundleInfo, IslandsRunner, OrchestratorConfig, PageRenderer, RefreshOutcome,
+    RelDistPath, RenderedPage, RendererReloader, TrackedContentRead,
 };
 use zfb_graph::persist::{load_from_disk, save_to_disk, ManifestDigest};
 use zfb_graph::{DependencyGraph, PageDeps, PageId};
@@ -1434,7 +1437,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let discover_hook: Option<zfb_build::DiscoveryHook> = dev_session.as_ref().map(|session| {
         make_discovery_hook(
             session.clone(),
-            Arc::clone(&graph_for_save),
             dev_html_root.clone(),
             // Issue #807 — clone the live handle so the discovery hook can
             // rewrite it on a watch-ADD tick (the pipeline skips
@@ -1792,6 +1794,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 if let Ok(mut g) = graph_for_seed.lock() {
                     assemble_boot_graph(&mut g, persisted, page_ids);
                 }
+            }
+
+            // A persisted graph is reconciliation input only. Drop its Content
+            // edges after the merge, then rebuild them from the live worker's
+            // boot-time `paths()` and render observations below.
+            if let Some(session) = dev_session_for_boot.as_ref() {
+                session.clear_boot_content_provenance();
             }
 
             // Publish the digest so the shutdown path can persist the graph
@@ -2249,8 +2258,16 @@ fn run_boot_render(
                 output::error(format!(
                     "dev initial render produced 0 pages for {expected_routes} known route(s) — \
                      every route will 404. This usually means the renderer failed silently; \
-                     check the bundler / runtime output above."
+                    check the bundler / runtime output above."
                 ));
+            }
+            if let Some(session) = dev_session {
+                if let Err(error) = session.complete_boot_content_provenance() {
+                    output::warn(format!(
+                        "content provenance unavailable after boot render; \
+                         content edits will conservatively rebuild all pages: {error:#}"
+                    ));
+                }
             }
             // Return the eager outcome so the caller broadcasts a reload
             // through the same `outcome_to_events` path a watcher tick uses
@@ -3197,6 +3214,12 @@ struct DevRenderInner {
     #[cfg(feature = "embed_v8")]
     dep_graph: Mutex<Option<Arc<Mutex<DependencyGraph>>>>,
 
+    /// Current worker's actual content-read observations (issue #1600).
+    /// Reset after every successful bundle/route-table swap; a fresh worker
+    /// must not inherit observations captured against an older snapshot.
+    #[cfg(feature = "embed_v8")]
+    content_trace: Mutex<DevContentTraceState>,
+
     /// Real on-disk module-dep paths that live OUTSIDE `project_root` —
     /// canonicalised symlink targets of workspace `.tsx` deps esbuild resolved
     /// through `node_modules` (#1284/#1287, D4). `notify` does not follow
@@ -3523,6 +3546,188 @@ impl DevRenderSession {
     pub(crate) fn seed_boot_module_edges(&self) {
         let deps = self.inner.boot_route_module_deps.clone();
         self.populate_module_edges(&deps);
+    }
+
+    /// The persisted graph is only a cache. Once the boot graph has been
+    /// assembled, discard its Content edges and rebuild them from observations
+    /// made by the live worker during the eager boot render.
+    #[cfg(feature = "embed_v8")]
+    fn clear_boot_content_provenance(&self) {
+        if let Ok(mut state) = self.inner.content_trace.lock() {
+            state.reads_by_consumer.clear();
+            state.boot_complete = false;
+        }
+        self.clear_content_edges();
+    }
+
+    /// Adopt a fresh worker's private trace endpoint. In-memory observations
+    /// remain as a conservative bridge until the new worker visits each route;
+    /// that visit replaces the route's prior read set, including with an empty
+    /// set when it no longer reads a collection. Persisted observations are
+    /// never used at cold boot.
+    #[cfg(feature = "embed_v8")]
+    fn begin_content_trace(&self, token: String) {
+        if let Ok(mut state) = self.inner.content_trace.lock() {
+            state.token = Some(token);
+        }
+    }
+
+    /// Enable provenance only after the eager boot render has had a chance to
+    /// execute both `paths()` and ordinary page reads.
+    #[cfg(feature = "embed_v8")]
+    fn complete_boot_content_provenance(&self) -> Result<()> {
+        if let Ok(mut state) = self.inner.content_trace.lock() {
+            state.boot_complete = true;
+        }
+        self.reconcile_content_provenance()
+    }
+
+    #[cfg(feature = "embed_v8")]
+    fn content_graph(&self) -> Option<Arc<Mutex<DependencyGraph>>> {
+        self.inner
+            .dep_graph
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().cloned())
+    }
+
+    /// Remove only Content edges, preserving every other dependency kind and
+    /// allowing the planner's unknown-path fallback to select all pages.
+    #[cfg(feature = "embed_v8")]
+    fn clear_content_edges(&self) {
+        let Some(graph) = self.content_graph() else {
+            return;
+        };
+        if let Ok(mut graph) = graph.lock() {
+            replace_content_edges(
+                &mut graph,
+                std::iter::empty::<zfb_build::ContentEdgeGroup>(),
+            );
+        };
+    }
+
+    #[cfg(feature = "embed_v8")]
+    fn clear_content_edges_if_current(&self, token: &str) {
+        let Ok(state) = self.inner.content_trace.lock() else {
+            return;
+        };
+        if state.token.as_deref() != Some(token) {
+            return;
+        }
+        let Some(graph) = self.content_graph() else {
+            return;
+        };
+        if let Ok(mut graph) = graph.lock() {
+            replace_content_edges(
+                &mut graph,
+                std::iter::empty::<zfb_build::ContentEdgeGroup>(),
+            );
+        };
+    }
+
+    /// Drain actual `getCollection()` observations from the current worker and
+    /// reconcile the graph atomically. Any failure removes Content edges for
+    /// this worker generation so the existing unknown-path fallback remains
+    /// conservative.
+    #[cfg(feature = "embed_v8")]
+    pub(crate) fn reconcile_content_provenance(&self) -> Result<()> {
+        let token = {
+            let state = self
+                .inner
+                .content_trace
+                .lock()
+                .map_err(|_| anyhow::anyhow!("content provenance state mutex poisoned"))?;
+            if !state.boot_complete {
+                return Ok(());
+            }
+            state.token.clone()
+        };
+        let Some(token) = token else {
+            return Ok(());
+        };
+
+        let result = (|| {
+            let mut headers = BTreeMap::new();
+            headers.insert(DEV_CONTENT_TRACE_HEADER.to_string(), token.clone());
+            let response = {
+                let mut renderer = self.inner.renderer.lock().map_err(|_| {
+                    anyhow::anyhow!("renderer mutex poisoned while draining content trace")
+                })?;
+                let renderer = renderer.as_mut().ok_or_else(|| {
+                    anyhow::anyhow!("renderer is unavailable while draining content trace")
+                })?;
+                let host = renderer.embedded_v8_host_mut().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "renderer is not backed by embedded V8 while draining content trace"
+                    )
+                })?;
+                host.dispatch_fetch_full(DEV_CONTENT_TRACE_ENDPOINT, "GET", &headers, &[])
+                    .map_err(anyhow::Error::from)?
+            };
+            if response.status != 200 {
+                anyhow::bail!("content provenance drain returned HTTP {}", response.status);
+            }
+            let payload: DevContentTracePayload = serde_json::from_slice(&response.body)
+                .context("decoding content provenance trace payload")?;
+            if !payload.ready {
+                anyhow::bail!("content provenance trace wrapper is not ready");
+            }
+            if let Some(error) = payload.error {
+                anyhow::bail!("content provenance trace wrapper failed: {error}");
+            }
+
+            let membership = collect_content_provenance_membership(
+                &self.inner.rebuild_inputs.cfg,
+                &self.inner.collection_roots,
+            )?;
+            let current_trace = {
+                let tables = self.inner.routes.read().map_err(|_| {
+                    anyhow::anyhow!("route table lock poisoned while classifying content trace")
+                })?;
+                classify_content_trace_events(
+                    payload.events,
+                    &tables.routes_by_source,
+                    &membership,
+                    &self.inner.project_root,
+                )?
+            };
+
+            let mut state = self
+                .inner
+                .content_trace
+                .lock()
+                .map_err(|_| anyhow::anyhow!("content provenance state mutex poisoned"))?;
+            if !state.boot_complete || state.token.as_deref() != Some(token.as_str()) {
+                return Ok(());
+            }
+            apply_content_trace_observations(
+                &mut state.reads_by_consumer,
+                current_trace.observed,
+                current_trace.reads,
+            );
+            let reads: Vec<TrackedContentRead> = state
+                .reads_by_consumer
+                .values()
+                .flatten()
+                .cloned()
+                .collect();
+            let groups = ContentProvenance::from_reads(reads)
+                .edge_groups(&membership.membership)
+                .map_err(anyhow::Error::from)
+                .context("expanding content provenance membership")?;
+            if let Some(graph) = self.content_graph() {
+                let mut graph = graph
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("dependency graph mutex poisoned"))?;
+                replace_content_edges(&mut graph, groups);
+            }
+            Ok(())
+        })();
+
+        if result.is_err() {
+            self.clear_content_edges_if_current(&token);
+        }
+        result
     }
 
     /// Upsert each route's transitive module deps (from esbuild's metafile)
@@ -3990,7 +4195,7 @@ impl DevRenderSession {
         let p1_snapshot_ms = bundle_result.sub_timing.as_ref().map(|t| t.snapshot_ms);
         let p1_assemble_ms = bundle_result.sub_timing.as_ref().map(|t| t.assemble_ms);
         let p1_bundle_ms = bundle_result.sub_timing.as_ref().map(|t| t.bundle_ms);
-        let bundler_out = bundle_result.output;
+        let mut bundler_out = bundle_result.output;
 
         // #1284/#1287 — populate per-route `DepKind::Module` edges from the
         // bundle's metafile so a component edit (direct or transitive, incl. a
@@ -4037,6 +4242,12 @@ impl DevRenderSession {
             return Ok(BundleRefresh::Skipped);
         }
 
+        // Keep the skip key over esbuild's real output. The dev-only wrapper
+        // carries a fresh private trace nonce, so hashing it would turn every
+        // otherwise-identical refresh into a false miss.
+        let trace_token = wrap_dev_bundle_with_content_trace(&mut bundler_out, router.routes())
+            .context("dev refresh: install content-provenance worker wrapper failed")?;
+
         // P2 — V8 host boot, mutex swap, old-host shutdown (three separate
         //      sub-timers: boot vs eval vs teardown; split matters for the
         //      host-reuse decision).
@@ -4071,6 +4282,11 @@ impl DevRenderSession {
             });
             lock.replace(started)
         };
+        // The new worker is live before its route table is rebuilt. Switch the
+        // trace token now so the ensuing `/__paths__/` calls are attributed to
+        // this host; prior in-memory observations remain conservative until
+        // the new worker has re-observed their routes.
+        self.begin_content_trace(trace_token);
         let p2_swap_ms = p2_swap_start.map(|t| t.elapsed().as_millis());
 
         let p2_shutdown_start = tick_start.map(|_| std::time::Instant::now());
@@ -4308,6 +4524,369 @@ impl Drop for DevRenderInner {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Dev-only content-read tracing (issue #1600)
+// ---------------------------------------------------------------------------
+
+/// Private worker endpoint used only by the Rust dev session to drain actual
+/// `getCollection()` reads from the current embedded worker.
+///
+/// The generated wrapper rejects requests without the per-bundle nonce, so a
+/// normal browser request cannot read or alter the trace state.
+#[cfg(feature = "embed_v8")]
+const DEV_CONTENT_TRACE_ENDPOINT: &str = "/__zfb_internal/content-provenance";
+#[cfg(feature = "embed_v8")]
+const DEV_CONTENT_TRACE_HEADER: &str = "x-zfb-content-provenance-token";
+
+/// Each generated wrapper receives a fresh nonce. It is not a public API or
+/// an authentication mechanism; it prevents an ordinary dev-server request
+/// from reaching the trace drain endpoint.
+#[cfg(feature = "embed_v8")]
+static DEV_CONTENT_TRACE_NONCE: AtomicU64 = AtomicU64::new(0);
+
+/// One route descriptor embedded into the private tracing wrapper.
+///
+/// `source` is deliberately project-relative: it is emitted from the router
+/// scan and validated against the live route table before it becomes a graph
+/// consumer. That keeps worker-side strings from becoming graph authority.
+#[cfg(feature = "embed_v8")]
+#[derive(Debug, Clone, serde::Serialize)]
+struct DevContentTraceRoute {
+    template: String,
+    source: String,
+    specificity: u32,
+}
+
+/// One route visit or tracked read emitted by the generated worker wrapper.
+#[cfg(feature = "embed_v8")]
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DevContentTraceEvent {
+    source: String,
+    #[serde(default)]
+    collection: Option<String>,
+    phase: DevContentTracePhase,
+    #[serde(default)]
+    kind: DevContentTraceEventKind,
+}
+
+/// Whether a trace event marks a route as having run, or records one
+/// `getCollection()` property access during that route's execution.
+#[cfg(feature = "embed_v8")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum DevContentTraceEventKind {
+    Visit,
+    Read,
+}
+
+#[cfg(feature = "embed_v8")]
+impl Default for DevContentTraceEventKind {
+    fn default() -> Self {
+        Self::Read
+    }
+}
+
+/// The actual worker seam that performed the read.
+#[cfg(feature = "embed_v8")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum DevContentTracePhase {
+    /// The synthetic `/__paths__/…` evaluation of a dynamic route.
+    Paths,
+    /// A normal route render (including static `getStaticProps` / layout
+    /// reads). Those are always aggregate collection readers.
+    Render,
+}
+
+/// JSON payload returned by [`DEV_CONTENT_TRACE_ENDPOINT`].
+#[cfg(feature = "embed_v8")]
+#[derive(Debug, serde::Deserialize)]
+struct DevContentTracePayload {
+    ready: bool,
+    #[serde(default)]
+    events: Vec<DevContentTraceEvent>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// Provenance observations retained by the dev session.
+///
+/// A cold boot always clears this state after restoring the persisted graph,
+/// then repopulates it from the live worker. Later host swaps retain prior
+/// observations only until the corresponding route is visited by the new
+/// worker. A visit with no tracked read removes its old provenance; an
+/// unvisited route remains conservative until the new worker can establish
+/// its current behavior.
+#[cfg(feature = "embed_v8")]
+#[derive(Default)]
+struct DevContentTraceState {
+    token: Option<String>,
+    reads_by_consumer: BTreeMap<PageId, Vec<TrackedContentRead>>,
+    boot_complete: bool,
+}
+
+/// Generate a fresh opaque nonce for the worker trace-drain endpoint.
+#[cfg(feature = "embed_v8")]
+fn make_dev_content_trace_token(bundle_path: &Path) -> String {
+    let serial = DEV_CONTENT_TRACE_NONCE.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(bundle_path.to_string_lossy().as_bytes());
+    hasher.update(std::process::id().to_le_bytes());
+    hasher.update(serial.to_le_bytes());
+    hasher.update(nanos.to_le_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Wrap a dev worker bundle with a private, transparent `getCollection()`
+/// observer.
+///
+/// The runtime content package already resolves reads through
+/// `globalThis.__zfb.contentSnapshot.collections`. The embedded V8 host only
+/// loads its configured source string, so the observer is appended to that
+/// self-contained bundle rather than importing it from a sidecar module. For
+/// ordinary requests it returns the inner worker response unchanged. The
+/// wrapper is dev-only and exists solely to feed the dependency graph with
+/// observations made by the running worker.
+#[cfg(feature = "embed_v8")]
+fn wrap_dev_bundle_with_content_trace(
+    output: &mut BundlerOutput,
+    routes: &[zfb_router::Route],
+) -> Result<String> {
+    let bundle_path = output.bundle_path.clone();
+    let original_source = std::fs::read_to_string(&bundle_path)
+        .with_context(|| format!("reading dev worker bundle {}", bundle_path.display()))?;
+    let (mut source, inner_worker_binding) = rewrite_dev_bundle_default_export(&original_source)
+        .with_context(|| {
+            format!(
+                "rewriting default export in dev worker bundle {}",
+                bundle_path.display()
+            )
+        })?;
+    let token = make_dev_content_trace_token(&bundle_path);
+    let descriptors: Vec<DevContentTraceRoute> = routes
+        .iter()
+        .filter(|route| !route.static_html)
+        .map(|route| DevContentTraceRoute {
+            template: route.template(),
+            source: route.source_path.to_string_lossy().into_owned(),
+            specificity: route.specificity,
+        })
+        .collect();
+    let routes_json = serde_json::to_string(&descriptors)
+        .context("serializing dev content-trace route descriptors")?;
+    let token_json =
+        serde_json::to_string(&token).context("serializing dev content-trace nonce")?;
+    let endpoint_json = serde_json::to_string(DEV_CONTENT_TRACE_ENDPOINT)
+        .context("serializing dev content-trace endpoint")?;
+    let header_json = serde_json::to_string(DEV_CONTENT_TRACE_HEADER)
+        .context("serializing dev content-trace header")?;
+
+    source.push_str(&format!(
+        r#"
+// Generated by zfb dev. Private content-provenance observer.
+const __zfb_inner_worker = {inner_worker_binding};
+const __zfb_trace_routes = {routes_json};
+const __zfb_trace_token = {token_json};
+const __zfb_trace_endpoint = {endpoint_json};
+const __zfb_trace_header = {header_json};
+const __zfb_trace_state = {{ ready: false, events: [], current: undefined, error: undefined }};
+
+function __zfb_normalize_path(path) {{
+  if (path.length > 1 && path.endsWith("/")) return path.slice(0, -1);
+  return path || "/";
+}}
+
+function __zfb_matches_route(template, requestPath) {{
+  const routeParts = template.split("/").filter(Boolean);
+  const requestParts = requestPath.split("/").filter(Boolean);
+  let requestIndex = 0;
+  for (let routeIndex = 0; routeIndex < routeParts.length; routeIndex += 1) {{
+    const part = routeParts[routeIndex];
+    if (part.startsWith(":")) {{
+      const optionalCatchall = part.endsWith("{{.+}}?");
+      const catchall = optionalCatchall || part.endsWith("{{.+}}");
+      if (catchall) {{
+        if (!optionalCatchall && requestIndex >= requestParts.length) return false;
+        return routeIndex === routeParts.length - 1;
+      }}
+      if (requestIndex >= requestParts.length) return false;
+      requestIndex += 1;
+      continue;
+    }}
+    if (requestParts[requestIndex] !== part) return false;
+    requestIndex += 1;
+  }}
+  return requestIndex === requestParts.length;
+}}
+
+function __zfb_pick_render_route(pathname) {{
+  const path = __zfb_normalize_path(pathname);
+  const exact = __zfb_trace_routes.filter((route) => route.template === path);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return undefined;
+  const matches = __zfb_trace_routes.filter((route) => __zfb_matches_route(route.template, path));
+  if (matches.length === 0) return undefined;
+  const maxSpecificity = Math.max(...matches.map((route) => route.specificity));
+  const winners = matches.filter((route) => route.specificity === maxSpecificity);
+  return winners.length === 1 ? winners[0] : undefined;
+}}
+
+function __zfb_trace_context(request) {{
+  const url = new URL(request.url);
+  const pathname = __zfb_normalize_path(url.pathname);
+  const pathsPrefix = "/__paths__/";
+  if (pathname.startsWith(pathsPrefix)) {{
+    let template;
+    try {{
+      template = decodeURIComponent(pathname.slice(pathsPrefix.length));
+    }} catch (_) {{
+      return undefined;
+    }}
+    const route = __zfb_trace_routes.find((candidate) => candidate.template === template);
+    return route ? {{ source: route.source, phase: "paths" }} : undefined;
+  }}
+  const route = __zfb_pick_render_route(pathname);
+  return route ? {{ source: route.source, phase: "render" }} : undefined;
+}}
+
+try {{
+  const snapshot = globalThis.__zfb?.contentSnapshot;
+  if (!snapshot || !snapshot.collections || typeof snapshot.collections !== "object") {{
+    __zfb_trace_state.error = "content snapshot is unavailable";
+  }} else {{
+    const collections = snapshot.collections;
+    snapshot.collections = new Proxy(collections, {{
+      get(target, property, receiver) {{
+        const current = __zfb_trace_state.current;
+        if (current && typeof property === "string") {{
+          __zfb_trace_state.events.push({{
+            source: current.source,
+            collection: property,
+            phase: current.phase,
+            kind: "read",
+          }});
+        }}
+        return Reflect.get(target, property, receiver);
+      }},
+    }});
+    __zfb_trace_state.ready = true;
+  }}
+}} catch (error) {{
+  __zfb_trace_state.error = String(error);
+}}
+
+export default {{
+  async fetch(request) {{
+    const pathname = new URL(request.url).pathname;
+    if (pathname === __zfb_trace_endpoint) {{
+      if (request.headers.get(__zfb_trace_header) !== __zfb_trace_token) {{
+        return new Response("Not Found", {{ status: 404 }});
+      }}
+      const events = __zfb_trace_state.events.splice(0);
+      return new Response(JSON.stringify({{
+        ready: __zfb_trace_state.ready,
+        events,
+        error: __zfb_trace_state.error,
+      }}), {{
+        status: 200,
+        headers: {{ "Content-Type": "application/json; charset=utf-8" }},
+      }});
+    }}
+
+    const current = __zfb_trace_context(request);
+    if (!current) return __zfb_inner_worker.fetch(request);
+    const previous = __zfb_trace_state.current;
+    __zfb_trace_state.current = current;
+    try {{
+      const response = await __zfb_inner_worker.fetch(request);
+      __zfb_trace_state.events.push({{
+        source: current.source,
+        phase: current.phase,
+        kind: "visit",
+      }});
+      return response;
+    }} finally {{
+      __zfb_trace_state.current = previous;
+    }}
+  }},
+}};
+"#,
+    ));
+
+    std::fs::write(&bundle_path, source).with_context(|| {
+        format!(
+            "writing self-contained dev content-trace bundle {}",
+            bundle_path.display()
+        )
+    })?;
+    Ok(token)
+}
+
+/// Replace the final Workers default export so a dev-only wrapper can expose
+/// it under a private local binding in the same ESM source string.
+///
+/// esbuild normally emits `export { worker as default }`, while unbundled
+/// test seams can retain `export default ...`; supporting both keeps this
+/// boundary independent of an emitter implementation detail.
+#[cfg(feature = "embed_v8")]
+fn rewrite_dev_bundle_default_export(source: &str) -> Result<(String, String)> {
+    const PRIVATE_EXPORT: &str = "__zfb_content_trace_inner_default";
+
+    if let Some(export_start) = source.rfind("export default") {
+        let export_end = export_start + "export default".len();
+        let mut rewritten = String::with_capacity(source.len() + PRIVATE_EXPORT.len());
+        rewritten.push_str(&source[..export_start]);
+        rewritten.push_str("const ");
+        rewritten.push_str(PRIVATE_EXPORT);
+        rewritten.push_str(" =");
+        rewritten.push_str(&source[export_end..]);
+        return Ok((rewritten, PRIVATE_EXPORT.to_string()));
+    }
+
+    const DEFAULT_ALIAS: &str = " as default";
+    let alias_start = source
+        .rfind(DEFAULT_ALIAS)
+        .ok_or_else(|| anyhow::anyhow!("worker bundle has no default export"))?;
+    let alias_end = alias_start + DEFAULT_ALIAS.len();
+    let export_start = source[..alias_start]
+        .rfind("export {")
+        .ok_or_else(|| anyhow::anyhow!("default export is not an ESM export list"))?;
+    if source[export_start..alias_start].contains('}') {
+        anyhow::bail!("default export is outside its ESM export list");
+    }
+    match source[alias_end..].trim_start().chars().next() {
+        Some(',' | '}') => {}
+        _ => anyhow::bail!("default export alias has an unsupported ESM shape"),
+    }
+
+    let binding_end = alias_start;
+    let mut binding_start = binding_end;
+    let bytes = source.as_bytes();
+    while binding_start > 0
+        && matches!(
+            bytes[binding_start - 1],
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'$'
+        )
+    {
+        binding_start -= 1;
+    }
+    if binding_start == binding_end {
+        anyhow::bail!("default export alias has no local worker binding");
+    }
+
+    let binding = source[binding_start..binding_end].to_string();
+    let mut rewritten = String::with_capacity(source.len() + PRIVATE_EXPORT.len());
+    rewritten.push_str(&source[..alias_start]);
+    rewritten.push_str(" as ");
+    rewritten.push_str(PRIVATE_EXPORT);
+    rewritten.push_str(&source[alias_end..]);
+    Ok((rewritten, binding))
 }
 
 // ---------------------------------------------------------------------------
@@ -5348,7 +5927,7 @@ fn boot_dev_renderer(
     // path this stays empty; the deferred `refresh_bundle_and_routes` seeds the
     // edges itself.
     let mut boot_route_module_deps: Vec<zfb_build::RouteModuleDeps> = Vec::new();
-    let (renderer, routes_by_source, ssr_routes, url_index) = if defer_bundle {
+    let (renderer, routes_by_source, ssr_routes, url_index, content_trace_token) = if defer_bundle {
         (
             // Scaffold renderer slot — the deferred `refresh_bundle_and_routes`
             // swaps the first live host into this same `Arc` (which the render
@@ -5358,6 +5937,7 @@ fn boot_dev_renderer(
             HashMap::new(),
             Vec::new(),
             HashMap::new(),
+            None,
         )
     } else {
         // Test-only slow-step injection (issue #1182 falsifiability guard,
@@ -5383,7 +5963,7 @@ fn boot_dev_renderer(
 
         // Boot path — timing not collected here (one-shot at startup, not a
         // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
-        let bundler_out: BundlerOutput = assemble_and_bundle_dev(
+        let mut bundler_out: BundlerOutput = assemble_and_bundle_dev(
             project_root,
             cfg,
             plugin_alias_entries,
@@ -5397,6 +5977,7 @@ fn boot_dev_renderer(
             rebuild_inputs.injected_pages_root(),
         )?
         .output;
+        let trace_token = wrap_dev_bundle_with_content_trace(&mut bundler_out, router.routes())?;
         // #1284/#1287 — capture the boot bundle's per-route Module deps for
         // post-graph seeding (the graph does not exist yet at this point).
         boot_route_module_deps = bundler_out.route_module_deps.clone();
@@ -5448,7 +6029,13 @@ fn boot_dev_renderer(
             url_index = build_url_index(&routes_by_source);
         }
 
-        (renderer, routes_by_source, ssr_routes, url_index)
+        (
+            renderer,
+            routes_by_source,
+            ssr_routes,
+            url_index,
+            Some(trace_token),
+        )
     };
 
     // Issue #958 — seed the frontmatter gate cache so the FIRST body-only
@@ -5475,6 +6062,11 @@ fn boot_dev_renderer(
             fm_hashes: Mutex::new(fm_hashes),
             shadow_session: Mutex::new(Some(shadow_session)),
             dep_graph: Mutex::new(None),
+            content_trace: Mutex::new(DevContentTraceState {
+                token: content_trace_token,
+                reads_by_consumer: BTreeMap::new(),
+                boot_complete: false,
+            }),
             out_of_root_watch_targets: Mutex::new(std::collections::BTreeSet::new()),
             boot_route_module_deps,
             paths_cache: Mutex::new(paths_cache),
@@ -5563,6 +6155,340 @@ fn collect_collection_entries(cfg: &config::Config, collection_roots: &[PathBuf]
         }
     }
     entries
+}
+
+/// Complete current membership plus the route-param candidates that can prove
+/// a dynamic `paths()` source is truly one-entry-per-content-entry.
+///
+/// This is intentionally separate from [`collect_collection_entries`]. The
+/// latter keeps its tolerant historical contract for `KnownContentEntries`;
+/// provenance must instead fail closed when a configured collection cannot be
+/// walked or its filter cannot be compiled.
+#[cfg(feature = "embed_v8")]
+#[derive(Debug, Clone)]
+struct DevContentMembershipSnapshot {
+    membership: ContentCollectionMembership,
+    slug_candidates: BTreeMap<ContentCollectionId, BTreeMap<PathBuf, BTreeSet<String>>>,
+}
+
+/// Re-walk configured collections into a complete provenance membership
+/// snapshot. A missing collection root is a known empty collection; any other
+/// walk/filter failure makes provenance unavailable so graph callers retain
+/// their conservative `All` fallback.
+#[cfg(feature = "embed_v8")]
+fn collect_content_provenance_membership(
+    cfg: &config::Config,
+    collection_roots: &[PathBuf],
+) -> Result<DevContentMembershipSnapshot> {
+    if cfg.collections.len() != collection_roots.len() {
+        anyhow::bail!(
+            "content collection roots are incomplete ({} configured collections, {} roots)",
+            cfg.collections.len(),
+            collection_roots.len()
+        );
+    }
+
+    let mut membership = ContentCollectionMembership::new();
+    let mut slug_candidates: BTreeMap<ContentCollectionId, BTreeMap<PathBuf, BTreeSet<String>>> =
+        BTreeMap::new();
+
+    for (collection, root) in cfg.collections.iter().zip(collection_roots) {
+        let collection_id = ContentCollectionId::new(collection.name.clone());
+        let filter = zfb_content::collection::CollectionFilter::new(
+            collection.include.as_deref(),
+            collection.exclude.as_deref(),
+            collection.id_strip_suffix.as_deref(),
+        )
+        .map_err(anyhow::Error::from)
+        .with_context(|| {
+            format!(
+                "compile collection filter for `{}` while collecting content provenance",
+                collection.name
+            )
+        })?;
+
+        match std::fs::metadata(root) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                membership.insert(collection_id.clone(), std::iter::empty::<PathBuf>());
+                slug_candidates.insert(collection_id, BTreeMap::new());
+                continue;
+            }
+            Err(error) => {
+                return Err(anyhow::Error::from(error)).with_context(|| {
+                    format!(
+                        "stat collection root {} while collecting content provenance",
+                        root.display()
+                    )
+                });
+            }
+        }
+
+        let mut entries = BTreeSet::new();
+        let mut candidates_for_collection = BTreeMap::new();
+        for entry in walkdir::WalkDir::new(root).follow_links(false) {
+            let entry = entry.map_err(anyhow::Error::from).with_context(|| {
+                format!(
+                    "walk collection root {} while collecting content provenance",
+                    root.display()
+                )
+            })?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let Some(slug) = zfb_content::collection::derive_slug_for_file(root, path, &filter)
+            else {
+                continue;
+            };
+            let path = path.to_path_buf();
+            candidates_for_collection
+                .insert(path.clone(), content_entry_slug_candidates(&path, &slug));
+            entries.insert(path);
+        }
+        membership.insert(collection_id.clone(), entries);
+        slug_candidates.insert(collection_id, candidates_for_collection);
+    }
+
+    Ok(DevContentMembershipSnapshot {
+        membership,
+        slug_candidates,
+    })
+}
+
+/// Route values that can identify a collection entry without guessing from
+/// source text. The collection filter supplies the canonical slug; a valid
+/// frontmatter `slug` override is also an actual runtime path candidate.
+#[cfg(feature = "embed_v8")]
+fn content_entry_slug_candidates(path: &Path, slug: &str) -> BTreeSet<String> {
+    let mut candidates = BTreeSet::new();
+    add_content_slug_candidate(&mut candidates, slug);
+    if let Ok(source) = std::fs::read_to_string(path) {
+        if let Ok(frontmatter) = zfb_content::frontmatter::extract(path, &source) {
+            if let Some(value) = frontmatter
+                .value
+                .get("slug")
+                .and_then(|value| value.as_str())
+            {
+                add_content_slug_candidate(&mut candidates, value);
+            }
+        }
+    }
+    candidates
+}
+
+#[cfg(feature = "embed_v8")]
+fn add_content_slug_candidate(candidates: &mut BTreeSet<String>, value: &str) {
+    candidates.insert(value.to_string());
+    if let Some(stripped) = value.strip_prefix('/') {
+        candidates.insert(stripped.to_string());
+    }
+    if value == "index" {
+        candidates.insert(String::new());
+    }
+    if let Some(stripped) = value.strip_suffix("/index") {
+        candidates.insert(stripped.to_string());
+    }
+}
+
+/// The classified worker trace input for one reconciliation drain.
+///
+/// Runtime `paths()` reads qualify as entry reads only when every resolved
+/// output has exactly one current member matched by its actual `slug` param,
+/// every member is represented exactly once, and no route entry lacked params.
+/// Tag/pagination routes, subsets, aliases, and ambiguous output all become
+/// aggregate collection reads. This is deliberately narrow: an over-broad
+/// aggregate edge is safe; a guessed direct edge can under-render.
+#[cfg(feature = "embed_v8")]
+struct ClassifiedContentTrace {
+    observed: BTreeSet<PageId>,
+    reads: Vec<TrackedContentRead>,
+}
+
+/// Convert worker trace events into route observations and pure provenance
+/// reads. A visit is meaningful even when it made no `getCollection()` call:
+/// it is the positive evidence needed to drop that route's prior worker
+/// generation observations.
+#[cfg(feature = "embed_v8")]
+fn classify_content_trace_events(
+    events: impl IntoIterator<Item = DevContentTraceEvent>,
+    routes_by_source: &HashMap<PathBuf, Vec<DevRouteEntry>>,
+    membership: &DevContentMembershipSnapshot,
+    project_root: &Path,
+) -> Result<ClassifiedContentTrace> {
+    let mut observed = BTreeSet::new();
+    let mut reads = Vec::new();
+    for event in events {
+        let (consumer, entries) =
+            resolve_content_trace_consumer(&event.source, routes_by_source, project_root)?;
+        if event.kind == DevContentTraceEventKind::Visit {
+            observed.insert(consumer);
+            continue;
+        }
+        let collection = ContentCollectionId::new(event.collection.ok_or_else(|| {
+            anyhow::anyhow!(
+                "worker content read from {} omitted its collection name",
+                event.source
+            )
+        })?);
+        match event.phase {
+            DevContentTracePhase::Render => {
+                reads.push(TrackedContentRead::collection(consumer, collection));
+            }
+            DevContentTracePhase::Paths => {
+                if let Some(entry_paths) =
+                    verified_paths_entry_reads(entries, &collection, membership)
+                {
+                    reads.extend(entry_paths.into_iter().map(|entry| {
+                        TrackedContentRead::entry(consumer.clone(), collection.clone(), entry)
+                    }));
+                } else {
+                    reads.push(TrackedContentRead::collection(consumer, collection));
+                }
+            }
+        }
+    }
+    Ok(ClassifiedContentTrace { observed, reads })
+}
+
+/// Validate a worker-emitted route source and resolve it to the graph's page
+/// key plus the current route-table entries that prove a `paths()` read.
+#[cfg(feature = "embed_v8")]
+fn resolve_content_trace_consumer<'a>(
+    raw_source: &str,
+    routes_by_source: &'a HashMap<PathBuf, Vec<DevRouteEntry>>,
+    project_root: &Path,
+) -> Result<(PageId, &'a [DevRouteEntry])> {
+    let raw_source = PathBuf::from(raw_source);
+    let source = if raw_source.is_absolute() {
+        if !raw_source.starts_with(project_root) {
+            anyhow::bail!(
+                "worker content trace source {} escapes project root {}",
+                raw_source.display(),
+                project_root.display()
+            );
+        }
+        raw_source
+    } else {
+        if raw_source.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
+            anyhow::bail!(
+                "worker content trace source {} is not a project-relative route path",
+                raw_source.display()
+            );
+        }
+        project_root.join(raw_source)
+    };
+    let entries = routes_by_source.get(&source).ok_or_else(|| {
+        anyhow::anyhow!(
+            "worker content trace source {} is absent from the current route table",
+            source.display()
+        )
+    })?;
+    Ok((PageId::new(source), entries))
+}
+
+/// Apply one current-worker drain to the retained observations. Sources that
+/// the worker actually visited are replaced wholesale; all others remain as a
+/// conservative bridge until this worker has executed them too.
+#[cfg(feature = "embed_v8")]
+fn apply_content_trace_observations(
+    reads_by_consumer: &mut BTreeMap<PageId, Vec<TrackedContentRead>>,
+    observed: impl IntoIterator<Item = PageId>,
+    reads: impl IntoIterator<Item = TrackedContentRead>,
+) {
+    for consumer in observed {
+        reads_by_consumer.remove(&consumer);
+    }
+    for read in reads {
+        let consumer = tracked_content_read_consumer(&read).clone();
+        reads_by_consumer.entry(consumer).or_default().push(read);
+    }
+}
+
+#[cfg(feature = "embed_v8")]
+fn tracked_content_read_consumer(read: &TrackedContentRead) -> &PageId {
+    match read {
+        TrackedContentRead::Entry { consumer, .. }
+        | TrackedContentRead::Collection { consumer, .. } => consumer,
+    }
+}
+
+/// Return a complete direct-entry mapping for one dynamic route source, or
+/// `None` when the route is an aggregate/ambiguous consumer.
+#[cfg(feature = "embed_v8")]
+fn verified_paths_entry_reads(
+    entries: &[DevRouteEntry],
+    collection: &ContentCollectionId,
+    membership: &DevContentMembershipSnapshot,
+) -> Option<BTreeSet<PathBuf>> {
+    let members = membership.slug_candidates.get(collection)?;
+    if entries.is_empty() || entries.len() != members.len() {
+        return None;
+    }
+
+    let mut selected = BTreeSet::new();
+    for entry in entries {
+        let params = entry.params.as_ref()?;
+        // A `slug` param is the runtime collection API's entry identity. Other
+        // params (tag/page/date/etc.) are deliberately not inferred to be
+        // entry IDs, even if they happen to equal a slug in a singleton set.
+        let slug = params
+            .scalars
+            .get("slug")
+            .cloned()
+            .or_else(|| params.arrays.get("slug").map(|parts| parts.join("/")))?;
+        let matches: Vec<&PathBuf> = members
+            .iter()
+            .filter_map(|(path, candidates)| candidates.contains(&slug).then_some(path))
+            .collect();
+        if matches.len() != 1 || !selected.insert(matches[0].clone()) {
+            return None;
+        }
+    }
+
+    (selected.len() == members.len()).then_some(selected)
+}
+
+/// Replace every graph `Content` edge with the current successful trace
+/// groups, preserving all other dependency kinds. This is used for both
+/// persisted-graph cleanup and a fresh worker/table generation; no stale
+/// `Content` edge can survive a failed current derivation.
+#[cfg(feature = "embed_v8")]
+fn replace_content_edges(
+    graph: &mut DependencyGraph,
+    groups: impl IntoIterator<Item = zfb_build::ContentEdgeGroup>,
+) {
+    let mut desired: BTreeMap<PageId, BTreeSet<PathBuf>> = BTreeMap::new();
+    for group in groups {
+        desired
+            .entry(group.consumer)
+            .or_default()
+            .extend(group.entries);
+    }
+
+    let mut pages: BTreeSet<PageId> = graph.pages().into_iter().collect();
+    pages.extend(desired.keys().cloned());
+    for page in pages {
+        let mut deps: Vec<(PathBuf, zfb_graph::DepKind)> = graph
+            .deps_of(&page)
+            .into_iter()
+            .filter(|(dep, kind)| *kind != zfb_graph::DepKind::Content && dep != page.path())
+            .collect();
+        if let Some(entries) = desired.get(&page) {
+            deps.extend(
+                entries
+                    .iter()
+                    .cloned()
+                    .map(|entry| (entry, zfb_graph::DepKind::Content)),
+            );
+        }
+        graph.upsert(PageDeps::new(page, deps));
+    }
 }
 
 /// Boot-seed the frontmatter gate cache (issue #958): hash every
@@ -6059,7 +6985,14 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
         // lazy boot would 404 every route (review finding on #1025).
         #[cfg(feature = "embed_v8")]
         if session.inner.lazy_render && !session.inner.take_boot_render_pending() {
-            return lazy_render_tick(&session, &dist_dir, pages, narrowing);
+            let result = lazy_render_tick(&session, &dist_dir, pages, narrowing);
+            if let Err(error) = session.reconcile_content_provenance() {
+                output::warn(format!(
+                    "content provenance unavailable after lazy render; \
+                     content edits will conservatively rebuild all pages: {error:#}"
+                ));
+            }
+            return result;
         }
         // Issue #958 — one narrowing decision per tick; per-page filters
         // fall out of the per-source map. The V8-off path has no
@@ -6106,6 +7039,13 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
                 }
             }
         }
+        #[cfg(feature = "embed_v8")]
+        if let Err(error) = session.reconcile_content_provenance() {
+            output::warn(format!(
+                "content provenance unavailable after render; \
+                 content edits will conservatively rebuild all pages: {error:#}"
+            ));
+        }
         Ok(out)
     })
 }
@@ -6123,10 +7063,9 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
 ///
 /// On a relevant create we delegate to
 /// [`DevRenderSession::discover_created`] (re-bundle → swap in a fresh
-/// host → rebuild route tables) and then upsert the new file into the
-/// dependency graph as a content dep of each rediscovered source page, so
-/// a LATER edit of that same file hot-reloads its consumer exactly like a
-/// pre-existing post does.
+/// host → rebuild route tables). The render batch then drains the new
+/// worker's actual reads and reconciles the complete collection membership,
+/// giving a new entry both its direct and aggregate consumer edges.
 ///
 /// The returned [`DiscoveryOutcome`] reports `renderer_reloaded: true`
 /// whenever the refresh ran, so the pipeline's per-tick
@@ -6139,7 +7078,6 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
 #[cfg(feature = "embed_v8")]
 fn make_discovery_hook(
     session: DevRenderSession,
-    graph: Arc<Mutex<DependencyGraph>>,
     html_root: PathBuf,
     // Issue #807 — the live SSR routes handle. The discovery refresh marks
     // the renderer fresh, so the pipeline skips `reload_renderer`; we must
@@ -6213,36 +7151,10 @@ fn make_discovery_hook(
             refresh_live_ssr_routes(&session, handle);
         }
 
-        // Upsert each newly-created content file as a content dep of the
-        // rediscovered source pages, so subsequent EDITs of the new file
-        // map to their consumer page in the graph (matching how a
-        // pre-existing post behaves). `upsert` REPLACES a page's dep set,
-        // so MERGE: preserve the page's existing non-`Content` deps — in
-        // particular the `DepKind::Module` edges #1287 populates from the
-        // metafile — and re-assert the Content edges alongside them. (The
-        // self-edge is re-added by `upsert`.) Without this merge, a content-
-        // file creation would silently drop a route's component edges until
-        // the next full bundle refresh re-derived them (#1284/#1287).
-        if !changed.is_empty() {
-            if let Ok(mut g) = graph.lock() {
-                for page in &changed {
-                    let mut deps: Vec<(PathBuf, zfb_graph::DepKind)> = g
-                        .deps_of(page)
-                        .into_iter()
-                        .filter(|(dep, kind)| {
-                            *kind != zfb_graph::DepKind::Content && dep != page.path()
-                        })
-                        .collect();
-                    deps.extend(
-                        relevant
-                            .iter()
-                            .map(|c| (c.clone(), zfb_graph::DepKind::Content)),
-                    );
-                    g.upsert(PageDeps::new(page.clone(), deps));
-                }
-            }
-        }
-
+        // Content edges are reconciled from actual worker reads after this
+        // tick's render batch. Do not infer them from raw watcher paths here:
+        // a create can add a collection member for every aggregate reader,
+        // while an arbitrary `pages/` create may not be content at all.
         // Map relative vanished output paths to absolute dist paths so the
         // orchestrator can forward them to the pipeline's prune loop.
         let vanished_abs: Vec<PathBuf> = vanished_rel
@@ -6440,6 +7352,7 @@ pub(crate) fn stub_session_for_adapter_tests(
             fm_hashes: Mutex::new(HashMap::new()),
             shadow_session: Mutex::new(None),
             dep_graph: Mutex::new(None),
+            content_trace: Mutex::new(DevContentTraceState::default()),
             out_of_root_watch_targets: Mutex::new(std::collections::BTreeSet::new()),
             boot_route_module_deps: Vec::new(),
             paths_cache: Mutex::new(PathsCache::new()),
@@ -6590,6 +7503,7 @@ mod tests {
             fm_hashes: Mutex::new(HashMap::new()),
             shadow_session: Mutex::new(None),
             dep_graph: Mutex::new(None),
+            content_trace: Mutex::new(DevContentTraceState::default()),
             out_of_root_watch_targets: Mutex::new(std::collections::BTreeSet::new()),
             boot_route_module_deps: Vec::new(),
             paths_cache: Mutex::new(PathsCache::new()),
@@ -8807,6 +9721,351 @@ mod tests {
                     "switch OFF must never announce stale routes"
                 );
             }
+        }
+    }
+
+    /// Content provenance boundary tests (issue #1600).
+    ///
+    /// These model the event sequence produced by a cold worker boot and a
+    /// watch-ADD refresh, then inspect the dependency graph directly. The
+    /// real dev E2E complements them by proving the generated worker wrapper
+    /// emits those events in a live V8 process.
+    #[cfg(feature = "embed_v8")]
+    mod content_provenance {
+        use super::*;
+        use crate::render_pipeline::ResolvedRouteParams;
+
+        fn posts_config() -> config::Config {
+            config::Config {
+                collections: vec![config::CollectionDef {
+                    name: "posts".into(),
+                    path: PathBuf::from("content/posts"),
+                    schema: None,
+                    include: None,
+                    exclude: None,
+                    id_strip_suffix: None,
+                    allow_outside_root: false,
+                }],
+                ..config::Config::default()
+            }
+        }
+
+        fn write_post(root: &Path, name: &str) -> PathBuf {
+            let path = root.join("content/posts").join(format!("{name}.md"));
+            std::fs::create_dir_all(path.parent().expect("post has a parent")).unwrap();
+            std::fs::write(&path, format!("---\ntitle: {name}\n---\n\n{name} body\n")).unwrap();
+            path
+        }
+
+        fn content_membership(root: &Path, cfg: &config::Config) -> DevContentMembershipSnapshot {
+            let roots = resolve_roots(root, cfg).collection_roots().to_vec();
+            collect_content_provenance_membership(cfg, &roots).unwrap()
+        }
+
+        fn route_entry(
+            url: &str,
+            output: &str,
+            route_key: &str,
+            params: Option<&[(&str, &str)]>,
+        ) -> DevRouteEntry {
+            DevRouteEntry {
+                entry: RouteUniverseEntry {
+                    url_path: url.into(),
+                    output_path: PathBuf::from(output),
+                    route_key: route_key.into(),
+                    static_html: false,
+                    source_path: None,
+                },
+                params: params.map(|pairs| ResolvedRouteParams {
+                    scalars: pairs
+                        .iter()
+                        .map(|(key, value)| (key.to_string(), value.to_string()))
+                        .collect(),
+                    arrays: BTreeMap::new(),
+                }),
+            }
+        }
+
+        fn trace(source: &str, phase: DevContentTracePhase) -> DevContentTraceEvent {
+            DevContentTraceEvent {
+                source: source.into(),
+                collection: Some("posts".into()),
+                phase,
+                kind: DevContentTraceEventKind::Read,
+            }
+        }
+
+        fn visit(source: &str, phase: DevContentTracePhase) -> DevContentTraceEvent {
+            DevContentTraceEvent {
+                source: source.into(),
+                collection: None,
+                phase,
+                kind: DevContentTraceEventKind::Visit,
+            }
+        }
+
+        fn install_trace_edges(
+            graph: &mut DependencyGraph,
+            routes: &HashMap<PathBuf, Vec<DevRouteEntry>>,
+            membership: &DevContentMembershipSnapshot,
+            root: &Path,
+            events: Vec<DevContentTraceEvent>,
+        ) {
+            let classified =
+                classify_content_trace_events(events, routes, membership, root).unwrap();
+            let groups = ContentProvenance::from_reads(classified.reads)
+                .edge_groups(&membership.membership)
+                .unwrap();
+            replace_content_edges(graph, groups);
+        }
+
+        #[test]
+        fn cold_boot_trace_seeds_direct_and_all_aggregate_consumers() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let cfg = posts_config();
+            let alpha = write_post(root, "alpha");
+            let _beta = write_post(root, "beta");
+
+            let entry_source = root.join("pages/posts/[slug].tsx");
+            let index_source = root.join("pages/posts/index.tsx");
+            let tag_source = root.join("pages/tags/[tag].tsx");
+            let pagination_source = root.join("pages/posts/page/[page].tsx");
+            let routes = HashMap::from([
+                (
+                    entry_source.clone(),
+                    vec![
+                        route_entry(
+                            "/posts/alpha",
+                            "posts/alpha/index.html",
+                            "/posts/:slug",
+                            Some(&[("slug", "alpha")]),
+                        ),
+                        route_entry(
+                            "/posts/beta",
+                            "posts/beta/index.html",
+                            "/posts/:slug",
+                            Some(&[("slug", "beta")]),
+                        ),
+                    ],
+                ),
+                (
+                    index_source.clone(),
+                    vec![route_entry("/posts", "posts/index.html", "/posts", None)],
+                ),
+                (
+                    tag_source.clone(),
+                    vec![
+                        route_entry(
+                            "/tags/guide",
+                            "tags/guide/index.html",
+                            "/tags/:tag",
+                            Some(&[("tag", "guide")]),
+                        ),
+                        route_entry(
+                            "/tags/other",
+                            "tags/other/index.html",
+                            "/tags/:tag",
+                            Some(&[("tag", "other")]),
+                        ),
+                    ],
+                ),
+                (
+                    pagination_source.clone(),
+                    vec![
+                        route_entry(
+                            "/posts/page/1",
+                            "posts/page/1/index.html",
+                            "/posts/page/:page",
+                            Some(&[("page", "1")]),
+                        ),
+                        route_entry(
+                            "/posts/page/2",
+                            "posts/page/2/index.html",
+                            "/posts/page/:page",
+                            Some(&[("page", "2")]),
+                        ),
+                    ],
+                ),
+            ]);
+            let membership = content_membership(root, &cfg);
+            let mut graph = DependencyGraph::new();
+
+            install_trace_edges(
+                &mut graph,
+                &routes,
+                &membership,
+                root,
+                vec![
+                    trace("pages/posts/[slug].tsx", DevContentTracePhase::Paths),
+                    trace("pages/posts/index.tsx", DevContentTracePhase::Render),
+                    trace("pages/tags/[tag].tsx", DevContentTracePhase::Paths),
+                    trace("pages/posts/page/[page].tsx", DevContentTracePhase::Paths),
+                ],
+            );
+
+            let mut expected = vec![
+                PageId::new(entry_source),
+                PageId::new(index_source),
+                PageId::new(tag_source),
+                PageId::new(pagination_source),
+            ];
+            expected.sort();
+            assert_eq!(
+                graph.consumers_of(&alpha),
+                Some(expected),
+                "a cold boot must seed alpha's direct route plus every aggregate reader"
+            );
+        }
+
+        #[test]
+        fn discovery_rewalk_gives_new_entry_direct_and_aggregate_consumers() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let cfg = posts_config();
+            let _alpha = write_post(root, "alpha");
+            let _beta = write_post(root, "beta");
+
+            let entry_source = root.join("pages/posts/[slug].tsx");
+            let index_source = root.join("pages/posts/index.tsx");
+            let mut routes = HashMap::from([
+                (
+                    entry_source.clone(),
+                    vec![
+                        route_entry(
+                            "/posts/alpha",
+                            "posts/alpha/index.html",
+                            "/posts/:slug",
+                            Some(&[("slug", "alpha")]),
+                        ),
+                        route_entry(
+                            "/posts/beta",
+                            "posts/beta/index.html",
+                            "/posts/:slug",
+                            Some(&[("slug", "beta")]),
+                        ),
+                    ],
+                ),
+                (
+                    index_source.clone(),
+                    vec![route_entry("/posts", "posts/index.html", "/posts", None)],
+                ),
+            ]);
+            let mut graph = DependencyGraph::new();
+            let initial_membership = content_membership(root, &cfg);
+            install_trace_edges(
+                &mut graph,
+                &routes,
+                &initial_membership,
+                root,
+                vec![
+                    trace("pages/posts/[slug].tsx", DevContentTracePhase::Paths),
+                    trace("pages/posts/index.tsx", DevContentTracePhase::Render),
+                ],
+            );
+
+            let gamma = write_post(root, "gamma");
+            routes
+                .get_mut(&entry_source)
+                .expect("entry route source exists")
+                .push(route_entry(
+                    "/posts/gamma",
+                    "posts/gamma/index.html",
+                    "/posts/:slug",
+                    Some(&[("slug", "gamma")]),
+                ));
+            let refreshed_membership = content_membership(root, &cfg);
+            install_trace_edges(
+                &mut graph,
+                &routes,
+                &refreshed_membership,
+                root,
+                vec![
+                    trace("pages/posts/[slug].tsx", DevContentTracePhase::Paths),
+                    trace("pages/posts/index.tsx", DevContentTracePhase::Render),
+                ],
+            );
+
+            let mut expected = vec![PageId::new(entry_source), PageId::new(index_source)];
+            expected.sort();
+            assert_eq!(
+                graph.consumers_of(&gamma),
+                Some(expected),
+                "the post-discovery membership rewalk must add both the new entry route and the aggregate reader"
+            );
+        }
+
+        #[test]
+        fn current_worker_visit_without_read_replaces_stale_route_provenance() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let cfg = posts_config();
+            let alpha = write_post(root, "alpha");
+            let source = root.join("pages/posts/index.tsx");
+            let routes = HashMap::from([(
+                source.clone(),
+                vec![route_entry("/posts", "posts/index.html", "/posts", None)],
+            )]);
+            let membership = content_membership(root, &cfg);
+            let classified = classify_content_trace_events(
+                vec![visit("pages/posts/index.tsx", DevContentTracePhase::Render)],
+                &routes,
+                &membership,
+                root,
+            )
+            .unwrap();
+            assert!(
+                classified.reads.is_empty(),
+                "the visit made no collection read"
+            );
+            assert_eq!(
+                classified.observed,
+                BTreeSet::from([PageId::new(source.clone())])
+            );
+
+            let mut retained = BTreeMap::from([(
+                PageId::new(source),
+                vec![TrackedContentRead::collection(
+                    PageId::new(root.join("pages/posts/index.tsx")),
+                    "posts",
+                )],
+            )]);
+            apply_content_trace_observations(&mut retained, classified.observed, classified.reads);
+            assert!(
+                retained.is_empty(),
+                "a current-worker visit with no read must remove that route's stale edge evidence"
+            );
+
+            let mut graph = DependencyGraph::new();
+            replace_content_edges(
+                &mut graph,
+                ContentProvenance::from_reads(retained.into_values().flatten())
+                    .edge_groups(&membership.membership)
+                    .unwrap(),
+            );
+            assert_eq!(
+                graph.consumers_of(&alpha),
+                None,
+                "the stale collection reader must no longer leave a content edge"
+            );
+        }
+
+        #[test]
+        fn self_contained_wrapper_rewrites_both_supported_default_export_shapes() {
+            let named_export = "const worker = { fetch() {} };\nexport { worker as default };\n";
+            let (rewritten_named, named_binding) =
+                rewrite_dev_bundle_default_export(named_export).unwrap();
+            assert_eq!(named_binding, "worker");
+            assert!(rewritten_named.contains("worker as __zfb_content_trace_inner_default"));
+            assert!(!rewritten_named.contains(" as default"));
+
+            let direct_export = "const value = 1;\nexport default { fetch() {} };\n";
+            let (rewritten_direct, direct_binding) =
+                rewrite_dev_bundle_default_export(direct_export).unwrap();
+            assert_eq!(direct_binding, "__zfb_content_trace_inner_default");
+            assert!(rewritten_direct
+                .contains("const __zfb_content_trace_inner_default = { fetch() {} };"));
+            assert!(!rewritten_direct.contains("export default"));
         }
     }
 

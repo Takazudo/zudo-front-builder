@@ -5,11 +5,12 @@
 //! copied fixture: no `.zfb-build` directory, persisted graph, or test-seeded
 //! `DepKind::Content` edge exists before the real `zfb dev` process boots.
 //!
-//! An edit changes both alpha's markdown body and frontmatter title. With
-//! `ZFB_DEV_EAGER=1`, the test can prove the watcher tick itself rewrote all
-//! expected output files without an HTTP request making a stale route fresh.
-//! Today's conservative `PageSelection::All` fallback passes this test. Later
-//! Content-edge narrowing must retain the aggregate edges for it to stay green.
+//! A frontmatter edit first proves every aggregate reader receives the new
+//! title. A second, body-only edit then proves content provenance narrows past
+//! beta's unrelated entry route while still rewriting every aggregate reader.
+//! Finally it creates gamma mid-session and repeats that narrow body-only
+//! assertion after discovery. With `ZFB_DEV_EAGER=1`, every check is an
+//! on-disk watcher-tick write; no HTTP request can make a stale route fresh.
 //!
 //! This is a real V8/esbuild dev E2E and therefore adopts both the in-process
 //! serial mutex and the cross-binary lock used by sibling dev tests.
@@ -22,13 +23,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-const OVERALL_DEADLINE: Duration = Duration::from_secs(240);
+const OVERALL_DEADLINE: Duration = Duration::from_secs(300);
 const BOOT_DEADLINE: Duration = Duration::from_secs(90);
 const SCENARIO_DEADLINE: Duration = Duration::from_secs(60);
 const SSE_DEADLINE: Duration = Duration::from_secs(30);
@@ -171,6 +172,48 @@ async fn poll_until_file_contains(path: &Path, marker: &str, phase: &str, sessio
     );
 }
 
+/// Content and modification time of one eager-rendered output. The mtime
+/// catches a broad fallback even when re-rendering happens to produce the
+/// same bytes for the unrelated sibling route.
+struct DiskSnapshot {
+    content: String,
+    mtime: SystemTime,
+}
+
+fn snapshot_file(path: &Path) -> DiskSnapshot {
+    let content = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("read {} for disk snapshot: {error}", path.display()));
+    let mtime = fs::metadata(path)
+        .unwrap_or_else(|error| panic!("stat {} for disk snapshot: {error}", path.display()))
+        .modified()
+        .expect("output filesystem must expose modification times");
+    DiskSnapshot { content, mtime }
+}
+
+fn assert_snapshot_unchanged(
+    path: &Path,
+    before: &DiskSnapshot,
+    phase: &str,
+    session: &DevSession,
+) {
+    let after = snapshot_file(path);
+    assert_eq!(
+        after.mtime,
+        before.mtime,
+        "[{phase}] {} was rewritten even though it is an unrelated entry route. \
+         A full content fallback re-stamps this file even when its rendered bytes are unchanged.\n{}",
+        path.display(),
+        session.logs(),
+    );
+    assert_eq!(
+        after.content,
+        before.content,
+        "[{phase}] {} changed despite being an unrelated entry route.\n{}",
+        path.display(),
+        session.logs(),
+    );
+}
+
 async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
     let response = client
         .get(format!("{base}/__zfb/reload"))
@@ -298,10 +341,11 @@ enum ScenarioOutcome {
     Skipped,
 }
 
-/// Falsifiability: temporarily suppressing aggregate re-render after the
-/// alpha edit leaves the index, tag, or pagination output on its V1 title and
-/// makes a marker poll time out. The entry route's V2 body proves the edit was
-/// observed; the aggregate title checks prove frontmatter reached all readers.
+/// Falsifiability: suppressing aggregate re-render after either alpha edit
+/// leaves the index, tag, or pagination output stale. Reverting provenance
+/// seeding makes the body-only edit take the graph's `All` fallback and
+/// re-stamps beta; the sibling mtime assertion catches that even if beta's
+/// rendered bytes happen to remain identical.
 #[tokio::test(flavor = "multi_thread")]
 async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
@@ -334,6 +378,8 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
 
         let html_root = session.html_root();
         let entry = html_root.join("posts/alpha/index.html");
+        let sibling_entry = html_root.join("posts/beta/index.html");
+        let discovered_entry = html_root.join("posts/gamma/index.html");
         let post_index = html_root.join("posts/index.html");
         let tag_page = html_root.join("tags/guide/index.html");
         let pagination = html_root.join("posts/page/1/index.html");
@@ -341,6 +387,13 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
         // Boot materialises every route from a real fixture, without any
         // test-side graph setup or inspection.
         poll_until_file_contains(&entry, "V1-BODY-ALPHA", "boot entry route", &session).await;
+        poll_until_file_contains(
+            &sibling_entry,
+            "V1-BODY-BETA",
+            "boot sibling entry route",
+            &session,
+        )
+        .await;
         for (path, phase) in [
             (&post_index, "boot post index"),
             (&tag_page, "boot tag page"),
@@ -350,7 +403,7 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
         }
 
         // A handshake can leave its final tick in flight. Settle before the
-        // one edit this test evaluates.
+        // frontmatter edit this test evaluates first.
         drain_ticks_until_quiescent(&client, &base).await;
 
         let sse = subscribe_sse(&client, &base).await;
@@ -402,6 +455,160 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
         ] {
             poll_until_file_contains(path, "Alpha V2 Frontmatter", phase, &session).await;
         }
+
+        // Frontmatter intentionally makes the legacy per-source narrowing
+        // gate conservative. After its aggregate regression is proven above,
+        // hold frontmatter stable and make a body-only edit: this is the
+        // precise graph-narrowing case where beta must remain untouched.
+        drain_ticks_until_quiescent(&client, &base).await;
+        let sibling_before = snapshot_file(&sibling_entry);
+        let sse = subscribe_sse(&client, &base).await;
+        fs::write(
+            session.root.join("content/posts/alpha.md"),
+            "---\ntitle: Alpha V2 Frontmatter\ndate: 2026-01-02\ntags:\n  - guide\n---\n\nV3-BODY-ALPHA body-only narrowed markdown edit.\n",
+        )
+        .expect("make a body-only edit to existing alpha entry");
+
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(name)) => assert_eq!(
+                name.as_str(),
+                "page",
+                "alpha body-only edit broadcast an unexpected SSE event.\n{}",
+                session.logs(),
+            ),
+            Ok(None) | Err(_) => eprintln!(
+                "[content_aggregate_cold_boot_e2e] no SSE page event observed for the \
+                 body-only edit; relying on the authoritative eager on-disk output checks."
+            ),
+        }
+
+        poll_until_file_contains(
+            &entry,
+            "V3-BODY-ALPHA",
+            "entry body rerender after alpha body-only edit",
+            &session,
+        )
+        .await;
+        for (path, phase) in [
+            (
+                &post_index,
+                "post index rerender after alpha body-only edit",
+            ),
+            (&tag_page, "tag page rerender after alpha body-only edit"),
+            (
+                &pagination,
+                "paginated listing rerender after alpha body-only edit",
+            ),
+        ] {
+            poll_until_file_contains(path, "V3-BODY-ALPHA", phase, &session).await;
+        }
+        assert_snapshot_unchanged(
+            &sibling_entry,
+            &sibling_before,
+            "alpha body-only edit narrows past the unrelated beta entry route",
+            &session,
+        );
+
+        // A newly created entry must re-bundle, re-walk membership, and gain
+        // both its dynamic entry route and all aggregate readers. The first
+        // subsequent body edit intentionally primes the existing frontmatter
+        // gate; the second is the narrow-after-discovery assertion.
+        drain_ticks_until_quiescent(&client, &base).await;
+        let sse = subscribe_sse(&client, &base).await;
+        fs::write(
+            session.root.join("content/posts/gamma.md"),
+            "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV1-BODY-GAMMA discovered markdown body.\n",
+        )
+        .expect("create a new gamma entry mid-session");
+        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        poll_until_file_contains(
+            &discovered_entry,
+            "V1-BODY-GAMMA",
+            "new gamma entry is rendered after discovery",
+            &session,
+        )
+        .await;
+        for (path, phase) in [
+            (&post_index, "post index includes discovered gamma"),
+            (&tag_page, "tag page includes discovered gamma"),
+            (&pagination, "pagination includes discovered gamma"),
+        ] {
+            poll_until_file_contains(path, "V1-BODY-GAMMA", phase, &session).await;
+        }
+
+        drain_ticks_until_quiescent(&client, &base).await;
+        let sse = subscribe_sse(&client, &base).await;
+        fs::write(
+            session.root.join("content/posts/gamma.md"),
+            "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV2-BODY-GAMMA first body-only edit seeds the frontmatter gate.\n",
+        )
+        .expect("prime the gamma frontmatter gate after discovery");
+        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        poll_until_file_contains(
+            &discovered_entry,
+            "V2-BODY-GAMMA",
+            "first gamma body-only edit completes after discovery",
+            &session,
+        )
+        .await;
+
+        drain_ticks_until_quiescent(&client, &base).await;
+        let entry_before_gamma_edit = snapshot_file(&entry);
+        let sibling_before_gamma_edit = snapshot_file(&sibling_entry);
+        let sse = subscribe_sse(&client, &base).await;
+        fs::write(
+            session.root.join("content/posts/gamma.md"),
+            "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV3-BODY-GAMMA second body-only edit narrows after discovery.\n",
+        )
+        .expect("make a narrowed gamma body-only edit after discovery");
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(name)) => assert_eq!(
+                name.as_str(),
+                "page",
+                "gamma body-only edit broadcast an unexpected SSE event.\n{}",
+                session.logs(),
+            ),
+            Ok(None) | Err(_) => eprintln!(
+                "[content_aggregate_cold_boot_e2e] no SSE page event observed for the \
+                 post-discovery body-only edit; relying on the authoritative eager on-disk \
+                 output checks."
+            ),
+        }
+        poll_until_file_contains(
+            &discovered_entry,
+            "V3-BODY-GAMMA",
+            "gamma entry rerender after narrowed body-only edit",
+            &session,
+        )
+        .await;
+        for (path, phase) in [
+            (
+                &post_index,
+                "post index rerender after narrowed gamma body-only edit",
+            ),
+            (
+                &tag_page,
+                "tag page rerender after narrowed gamma body-only edit",
+            ),
+            (
+                &pagination,
+                "pagination rerender after narrowed gamma body-only edit",
+            ),
+        ] {
+            poll_until_file_contains(path, "V3-BODY-GAMMA", phase, &session).await;
+        }
+        assert_snapshot_unchanged(
+            &entry,
+            &entry_before_gamma_edit,
+            "post-discovery gamma edit narrows past alpha entry route",
+            &session,
+        );
+        assert_snapshot_unchanged(
+            &sibling_entry,
+            &sibling_before_gamma_edit,
+            "post-discovery gamma edit narrows past beta entry route",
+            &session,
+        );
 
         ScenarioOutcome::Completed
     };
