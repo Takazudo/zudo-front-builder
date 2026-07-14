@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 // as it does for a real consumer under Node -- no bundler in the middle.
 import {
   compile,
+  highlightCode,
   renderHtml,
   version,
   init,
@@ -86,6 +87,60 @@ describe("compile (mdx -> ES-module JS via SWC)", () => {
   });
 });
 
+describe("highlightCode (arbitrary source -> semantic class markup)", () => {
+  it("renders HTML, CSS, and JavaScript without Markdown fencing", async () => {
+    for (const [language, code] of [
+      ["html", '<main data-x="a & b">hello</main>'],
+      ["css", ".button { color: red; }"],
+      ["javascript", "const value = '<tag>';"],
+    ] as const) {
+      const out = await highlightCode(code, { language });
+      expect(out.html).toStartWith('<pre class="hi-root"><code>');
+      expect(out.html).toContain('<span class="line">');
+      expect(out.diagnostics).toEqual([]);
+    }
+  });
+
+  it("maps full-name role overrides and custom prefixes", async () => {
+    const out = await highlightCode("const answer = 42;", {
+      language: "javascript",
+      classPrefix: "token-",
+      roleClasses: { keyword: "text-violet-600 dark:text-violet-400" },
+    });
+    expect(out.html).toStartWith('<pre class="token-root"><code>');
+    expect(out.html).toContain('class="text-violet-600 dark:text-violet-400">const</span>');
+    expect(out.html).not.toContain("token-kw");
+    expect(out.diagnostics).toEqual([]);
+  });
+
+  it("returns escaped fallback markup plus a warning for an unknown language", async () => {
+    const out = await highlightCode("<tag>&", { language: "not-a-bundled-syntax" });
+    expect(out.html).toBe(
+      '<pre class="hi-root"><code><span class="line">&lt;tag&gt;&amp;</span></code></pre>',
+    );
+    expect(out.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: "warning",
+        source: "highlight",
+        line: null,
+        column: null,
+      }),
+    ]);
+  });
+
+  it("returns structured option errors rather than throwing", async () => {
+    // @ts-expect-error deliberately omit the required direct language option
+    const missing = await highlightCode("const x = 1;", {});
+    expect(missing.html).toBeNull();
+    expect(missing.diagnostics[0]).toMatchObject({ severity: "error", source: "options" });
+
+    // @ts-expect-error deliberately exercise the Rust deny_unknown_fields boundary
+    const unknown = await highlightCode("const x = 1;", { language: "javascript", bogus: true });
+    expect(unknown.html).toBeNull();
+    expect(unknown.diagnostics[0]).toMatchObject({ severity: "error", source: "options" });
+  });
+});
+
 describe("expected failures surface as structured diagnostics (never a throw)", () => {
   it("malformed MDX -> markdown diagnostic, code null, frontmatter still extracted", async () => {
     const out = await compile("---\ntitle: x\n---\n<Card>\n\nsome text\n", { filename: "bad.mdx" });
@@ -162,6 +217,12 @@ describe("trap / auto-re-init contract", () => {
     const out = await renderHtml("# recovered\n");
     expect(out.html).toBe("<h1>recovered</h1>");
     expect(out.diagnostics).toHaveLength(0);
+
+    // `highlightCode` uses the same generic call path and therefore the same
+    // recovered instance rather than a separate initialization/cache layer.
+    const highlighted = await highlightCode("const recovered = true;", { language: "javascript" });
+    expect(highlighted.html).toContain("hi-kw");
+    expect(highlighted.diagnostics).toEqual([]);
   });
 
   it("single-flights concurrent trap recovery to one fresh instantiation", async () => {

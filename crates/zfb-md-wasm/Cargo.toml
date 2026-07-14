@@ -29,6 +29,10 @@ crate-type = ["rlib"]
 # optional dependency, it only exists so `required-features` below can gate
 # the bin target.
 parity-oracle = []
+# Gates the focused arbitrary-code highlighting oracle generator out of the
+# wasm package build for the same reason as `parity-oracle` above: it is a
+# native filesystem tool, not a wasm entry point.
+highlight-parity-oracle = []
 
 [[bin]]
 # Regenerates the wasm-vs-native parity oracle fixtures (zfb#1578, epic
@@ -41,6 +45,14 @@ parity-oracle = []
 name = "generate_parity_oracle"
 path = "tests/bin/generate_parity_oracle.rs"
 required-features = ["parity-oracle"]
+
+[[bin]]
+# Regenerates the direct `highlightCode` native oracle fixture corpus. Kept
+# separate from the frozen compile/render corpus because it exercises a new,
+# intentionally narrower API contract.
+name = "generate_highlight_parity_oracle"
+path = "tests/bin/generate_highlight_parity_oracle.rs"
+required-features = ["highlight-parity-oracle"]
 
 [dependencies]
 # Wasm-safe pipeline facade (zfb#1574) + unified frontmatter extraction.

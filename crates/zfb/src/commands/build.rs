@@ -8180,19 +8180,18 @@ mod tests {
         }
     }
 
-    /// Parse only the line-anchored `CodeHighlightRole` alias and its bounded
-    /// union members. This deliberately stops at that declaration's semicolon
+    /// Parse only a line-anchored semantic-role alias and its bounded union
+    /// members. This deliberately stops at that declaration's semicolon
     /// instead of scanning arbitrary TypeScript string literals elsewhere in
     /// the file.
-    fn parse_code_highlight_role_union(
+    fn parse_highlight_role_union(
         source: &str,
+        alias: &str,
     ) -> std::result::Result<BTreeSet<String>, String> {
-        const ALIAS: &str = "export type CodeHighlightRole =";
-
         let mut lines = source.lines().enumerate();
         let (alias_line, _) = lines
-            .find(|(_, line)| line.trim() == ALIAS)
-            .ok_or_else(|| format!("missing line-anchored `{ALIAS}` declaration"))?;
+            .find(|(_, line)| line.trim() == alias)
+            .ok_or_else(|| format!("missing line-anchored `{alias}` declaration"))?;
 
         let mut roles = BTreeSet::new();
         for (line_number, line) in lines {
@@ -8207,7 +8206,7 @@ mod tests {
             };
             let member = member.strip_prefix('|').map(str::trim).ok_or_else(|| {
                 format!(
-                    "expected a `| \"role\"` member in CodeHighlightRole at line {}",
+                    "expected a `| \"role\"` member in {alias} at line {}",
                     line_number + 1
                 )
             })?;
@@ -8217,13 +8216,13 @@ mod tests {
                 .filter(|role| !role.is_empty())
                 .ok_or_else(|| {
                     format!(
-                        "expected a quoted role in CodeHighlightRole at line {}",
+                        "expected a quoted role in {alias} at line {}",
                         line_number + 1
                     )
                 })?;
             if !roles.insert(role.to_string()) {
                 return Err(format!(
-                    "duplicate CodeHighlightRole member {role:?} at line {}",
+                    "duplicate {alias} member {role:?} at line {}",
                     line_number + 1
                 ));
             }
@@ -8233,7 +8232,7 @@ mod tests {
         }
 
         Err(format!(
-            "CodeHighlightRole declaration starting at line {} is missing its terminating semicolon",
+            "{alias} declaration starting at line {} is missing its terminating semicolon",
             alias_line + 1
         ))
     }
@@ -8256,12 +8255,15 @@ mod tests {
                 typescript_path.display()
             )
         });
-        let typescript_roles = parse_code_highlight_role_union(&source).unwrap_or_else(|error| {
-            panic!(
-                "parse TypeScript CodeHighlightRole at {}: {error}",
-                typescript_path.display()
-            )
-        });
+        let typescript_roles =
+            parse_highlight_role_union(&source, "export type CodeHighlightRole =").unwrap_or_else(
+                |error| {
+                    panic!(
+                        "parse TypeScript CodeHighlightRole at {}: {error}",
+                        typescript_path.display()
+                    )
+                },
+            );
         let rust_roles: BTreeSet<String> = crate::config::CODE_HIGHLIGHT_ROLES
             .iter()
             .map(|role| (*role).to_string())
@@ -8275,6 +8277,49 @@ mod tests {
             "TypeScript CodeHighlightRole in {} must match Rust CODE_HIGHLIGHT_ROLES; \
              missing from TypeScript CodeHighlightRole: {missing_from_typescript:?}; \
              extra in TypeScript CodeHighlightRole: {extra_in_typescript:?}",
+            typescript_path.display(),
+        );
+    }
+
+    /// The published `@takazudo/zfb-md-wasm` direct API has its own exported
+    /// `HighlightRole` union. It necessarily spells out the public TypeScript
+    /// literals, so guard it against Rust's canonical taxonomy just as we do
+    /// the config helper rather than allowing a second untracked role list.
+    #[test]
+    fn typescript_wasm_highlight_role_union_matches_rust_canonical_roles() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .parent()
+            .and_then(|crates_dir| crates_dir.parent())
+            .expect("zfb crate must live under the workspace crates directory")
+            .to_path_buf();
+        let typescript_path = workspace_root.join("crates/zfb-md-wasm/npm/src/types.ts");
+        let source = std::fs::read_to_string(&typescript_path).unwrap_or_else(|error| {
+            panic!(
+                "read TypeScript HighlightRole at {}: {error}",
+                typescript_path.display()
+            )
+        });
+        let typescript_roles = parse_highlight_role_union(&source, "export type HighlightRole =")
+            .unwrap_or_else(|error| {
+                panic!(
+                    "parse TypeScript HighlightRole at {}: {error}",
+                    typescript_path.display()
+                )
+            });
+        let rust_roles: BTreeSet<String> = crate::config::CODE_HIGHLIGHT_ROLES
+            .iter()
+            .map(|role| (*role).to_string())
+            .collect();
+
+        let missing_from_typescript: Vec<&String> =
+            rust_roles.difference(&typescript_roles).collect();
+        let extra_in_typescript: Vec<&String> = typescript_roles.difference(&rust_roles).collect();
+        assert!(
+            missing_from_typescript.is_empty() && extra_in_typescript.is_empty(),
+            "TypeScript HighlightRole in {} must match Rust CODE_HIGHLIGHT_ROLES; \
+             missing from TypeScript HighlightRole: {missing_from_typescript:?}; \
+             extra in TypeScript HighlightRole: {extra_in_typescript:?}",
             typescript_path.display(),
         );
     }

@@ -23,7 +23,10 @@
 //!   input (follow-up noted in README); runtime behaviour of the emitted
 //!   JS (zfb-render's own tests cover the SWC pipeline).
 
+use std::collections::BTreeMap;
+
 use serde_json::Value;
+use zfb_content::syntect_highlight::Highlighter;
 
 fn parse(result: String) -> Value {
     serde_json::from_str(&result).expect("API output is always a JSON document")
@@ -293,6 +296,116 @@ fn non_markdown_filename_is_an_options_diagnostic() {
             .is_some_and(|m| m.contains(".md") && m.contains("page.tsx")),
         "message must name the offending filename and the accepted extensions: {diag}"
     );
+}
+
+// ── direct highlightCode tier ──────────────────────────────────────────────
+
+#[test]
+fn highlight_code_matches_the_native_semantic_renderer_for_promised_languages() {
+    for (language, code) in [
+        ("html", "<main data-x=\"a & b\">hello</main>"),
+        ("css", ".button { color: red; }"),
+        ("javascript", "const value = '<tag>';"),
+    ] {
+        let actual = parse(zfb_md_wasm::highlight_code(
+            code,
+            &format!(r#"{{"language":{language:?}}}"#),
+        ));
+        let expected = Highlighter::new()
+            .render_class_highlight(code, language, "hi-", &BTreeMap::new())
+            .expect("promised language is a valid native direct render")
+            .html;
+
+        assert_eq!(
+            actual["html"], expected,
+            "{language} must be byte-compatible"
+        );
+        assert_eq!(actual["diagnostics"], Value::Array(vec![]));
+        assert!(
+            actual["html"]
+                .as_str()
+                .is_some_and(|html| html.starts_with("<pre class=\"hi-root\"><code>")),
+            "direct code must receive the class renderer wrapper, never Markdown fencing: {actual}"
+        );
+    }
+}
+
+#[test]
+fn highlight_code_applies_prefix_and_full_name_role_overrides() {
+    let out = parse(zfb_md_wasm::highlight_code(
+        "const answer = 42;",
+        r#"{"language":"javascript","classPrefix":"token-","roleClasses":{"keyword":"text-violet-600 dark:text-violet-400"}}"#,
+    ));
+
+    let html = out["html"].as_str().expect("valid direct highlight html");
+    assert!(html.starts_with("<pre class=\"token-root\"><code>"));
+    assert!(html.contains("class=\"text-violet-600 dark:text-violet-400\">const</span>"));
+    assert!(
+        !html.contains("token-kw"),
+        "the canonical full-name role override must replace the default class: {html}"
+    );
+    assert_eq!(out["diagnostics"], Value::Array(vec![]));
+}
+
+#[test]
+fn highlight_code_unknown_language_is_escaped_markup_plus_warning() {
+    let out = parse(zfb_md_wasm::highlight_code(
+        "<tag>&",
+        r#"{"language":"not-a-bundled-syntax"}"#,
+    ));
+
+    assert_eq!(
+        out["html"],
+        r#"<pre class="hi-root"><code><span class="line">&lt;tag&gt;&amp;</span></code></pre>"#
+    );
+    let diagnostic = &out["diagnostics"][0];
+    assert_eq!(diagnostic["severity"], "warning");
+    assert_eq!(diagnostic["source"], "highlight");
+    assert!(
+        diagnostic["message"].as_str().is_some_and(|message| message
+            .contains("not-a-bundled-syntax")
+            && message.contains("fallback")),
+        "warning must name the fallback language and behavior: {diagnostic}"
+    );
+    assert_eq!(diagnostic["line"], Value::Null);
+    assert_eq!(diagnostic["column"], Value::Null);
+}
+
+#[test]
+fn highlight_code_accepts_empty_and_incomplete_source() {
+    let empty = parse(zfb_md_wasm::highlight_code("", r#"{"language":"rust"}"#));
+    assert_eq!(empty["html"], r#"<pre class="hi-root"><code></code></pre>"#);
+    assert_eq!(empty["diagnostics"], Value::Array(vec![]));
+
+    let incomplete = parse(zfb_md_wasm::highlight_code(
+        "const answer =",
+        r#"{"language":"javascript"}"#,
+    ));
+    assert!(incomplete["html"].is_string());
+    assert_eq!(incomplete["diagnostics"], Value::Array(vec![]));
+}
+
+#[test]
+fn highlight_code_invalid_options_are_structured_and_non_trapping() {
+    for options in [
+        "not json",
+        r#"{}"#,
+        r#"{"language":""}"#,
+        r#"{"language":"rust","mode":"inline"}"#,
+        r#"{"language":"rust","classPrefix":"1hi-"}"#,
+        r#"{"language":"rust","roleClasses":{"kw":"text-blue-600"}}"#,
+        r#"{"language":"rust","unexpected":true}"#,
+    ] {
+        let out = parse(zfb_md_wasm::highlight_code("let value = 1;", options));
+        assert_eq!(out["html"], Value::Null, "options {options:?}");
+        let diagnostic = &out["diagnostics"][0];
+        assert_eq!(diagnostic["severity"], "error", "options {options:?}");
+        assert_eq!(diagnostic["source"], "options", "options {options:?}");
+    }
+
+    let malformed = parse(zfb_md_wasm::highlight_code("x", "not json"));
+    assert_eq!(malformed["diagnostics"][0]["line"], 1);
+    assert!(malformed["diagnostics"][0]["column"].is_u64());
 }
 
 // ── version ─────────────────────────────────────────────────────────────────

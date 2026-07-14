@@ -85,3 +85,61 @@ export interface RenderHtmlResult {
   frontmatter: unknown;
   diagnostics: Diagnostic[];
 }
+
+/**
+ * The fixed 18-role semantic taxonomy emitted by `highlightCode`. This union
+ * is mechanically checked against Rust's canonical `HiRole::FULL_NAMES` by
+ * `zfb`'s role-drift guard; do not add a second unguarded role list.
+ */
+export type HighlightRole =
+  | "escape"
+  | "operator"
+  | "comment"
+  | "string"
+  | "number"
+  | "constant"
+  | "keyword"
+  | "function"
+  | "type"
+  | "namespace"
+  | "property"
+  | "variable"
+  | "tag"
+  | "attribute"
+  | "punctuation"
+  | "inserted"
+  | "deleted"
+  | "heading";
+
+/** Options for direct arbitrary-code semantic class highlighting. */
+export interface HighlightCodeOptions {
+  /** Required syntax token, for example `"html"`, `"css"`, or `"javascript"`. */
+  language: string;
+  /** The only supported direct output mode. Defaults to `"class"`. */
+  mode?: "class";
+  /** Semantic role class prefix. Defaults to `"hi-"`. */
+  classPrefix?: string;
+  /** Full-name role overrides, for example `{ keyword: "text-violet-600" }`. */
+  roleClasses?: Partial<Record<HighlightRole, string>>;
+}
+
+/** Sources used by direct `highlightCode` diagnostics. */
+export type HighlightDiagnosticSource = "options" | "highlight" | "internal";
+
+/** A structured direct-highlighting diagnostic. */
+export interface HighlightDiagnostic {
+  severity: "error" | "warning";
+  source: HighlightDiagnosticSource;
+  message: string;
+  /** Always `null` for semantic/highlight diagnostics; JSON option parse locations are 1-based. */
+  line: number | null;
+  /** Always `null` for semantic/highlight diagnostics; JSON option parse locations are 1-based. */
+  column: number | null;
+}
+
+/** Result document returned by {@link highlightCode}. */
+export interface HighlightCodeResult {
+  /** Complete semantic `<pre><code>` wrapper, or `null` for invalid options/internal errors. */
+  html: string | null;
+  diagnostics: HighlightDiagnostic[];
+}

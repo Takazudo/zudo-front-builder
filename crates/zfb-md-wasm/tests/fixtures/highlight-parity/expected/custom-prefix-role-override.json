@@ -1,0 +1,4 @@
+{
+  "html": "<pre class=\"token-root\"><code><span class=\"line\"><span class=\"text-violet-600 dark:text-violet-400\">const</span> <span class=\"token-var\">answer</span> <span class=\"token-op\">=</span> <span class=\"token-num\">42</span><span class=\"token-punct\">;</span></span></code></pre>",
+  "diagnostics": []
+}
