@@ -559,6 +559,8 @@ fn resolve_pages_root(
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating overlay route dir {}", parent.display()))?;
         }
+        let entrypoint_import_specifier =
+            package_route_entrypoint_import_specifier(real_pages_dir, pages_rel, &route.entrypoint);
         let module_src = if is_dynamic_pattern(&route.pattern) {
             // Dynamic package route (`[param]` / `[...catchall]`): the
             // overlay must surface a TOP-LEVEL `paths` the syntactic
@@ -566,16 +568,22 @@ fn resolve_pages_root(
             // (#1194). We read + classify the package entrypoint with the
             // SAME extractor the pipeline uses so literal vs runtime is
             // decided once, here.
-            synthesize_dynamic_overlay_module(&route.entrypoint, route.prerender).with_context(
-                || {
-                    format!(
-                        "synthesizing dynamic overlay module for package route `{}` (from plugin `{}`)",
-                        route.pattern, route.plugin
-                    )
-                },
-            )?
+            synthesize_dynamic_overlay_module_with_specifier(
+                &route.entrypoint,
+                &entrypoint_import_specifier,
+                route.prerender,
+            )
+            .with_context(|| {
+                format!(
+                    "synthesizing dynamic overlay module for package route `{}` (from plugin `{}`)",
+                    route.pattern, route.plugin
+                )
+            })?
         } else {
-            synthesize_static_overlay_module(&route.entrypoint, route.prerender)
+            synthesize_static_overlay_module_with_specifier(
+                &entrypoint_import_specifier,
+                route.prerender,
+            )
         };
         std::fs::write(&dest, module_src.as_bytes())
             .with_context(|| format!("writing overlay route module {}", dest.display()))?;
@@ -592,6 +600,117 @@ fn resolve_pages_root(
         guard: Some(guard),
         materialized,
     })
+}
+
+/// Resolve a package-route entrypoint through the consumer's logical installed
+/// package when that relationship can be proven. The synthesized route module
+/// is copied from `<overlay>/pages/<route>` to `<shadow>/pages/<route>`, so a
+/// relative import of `../node_modules/<package>/<entry>` resolves inside the
+/// staged dependency view in both locations without embedding the ephemeral
+/// shadow path.
+///
+/// This is deliberately fail-open to the historical absolute entrypoint: local
+/// plugin routes, unlinked packages, malformed manifests, and links whose
+/// canonical target does not own the entrypoint keep their existing behavior.
+/// Only a package whose `node_modules/<name>` link canonicalizes to the nearest
+/// named package containing the entrypoint is rewritten.
+fn package_route_entrypoint_import_specifier(
+    real_pages_dir: &Path,
+    pages_rel: &Path,
+    entrypoint: &Path,
+) -> String {
+    staged_package_route_entrypoint_import_specifier(real_pages_dir, pages_rel, entrypoint)
+        .unwrap_or_else(|| entrypoint.to_string_lossy().into_owned())
+}
+
+fn staged_package_route_entrypoint_import_specifier(
+    real_pages_dir: &Path,
+    pages_rel: &Path,
+    entrypoint: &Path,
+) -> Option<String> {
+    let project_root = real_pages_dir.parent()?;
+    let canonical_entrypoint = entrypoint.canonicalize().ok()?;
+    let mut package_root = canonical_entrypoint.parent()?;
+    let (canonical_package_root, package_name) = loop {
+        let package_json = package_root.join("package.json");
+        if let Ok(bytes) = std::fs::read(&package_json) {
+            if let Ok(package) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(name) = package.get("name").and_then(serde_json::Value::as_str) {
+                    if valid_package_name(name) {
+                        break (package_root.to_path_buf(), name.to_string());
+                    }
+                }
+            }
+        }
+        package_root = package_root.parent()?;
+    };
+
+    let installed_package_root = project_root.join("node_modules").join(&package_name);
+    if installed_package_root.canonicalize().ok()? != canonical_package_root {
+        return None;
+    }
+    let entrypoint_rel = canonical_entrypoint
+        .strip_prefix(&canonical_package_root)
+        .ok()?;
+    let logical_entrypoint = Path::new("node_modules")
+        .join(&package_name)
+        .join(entrypoint_rel);
+    let logical_importer = Path::new("pages").join(pages_rel);
+    let importer_dir = logical_importer.parent()?;
+    let relative = lexical_relative_path(importer_dir, &logical_entrypoint)?;
+    let mut specifier = relative.to_string_lossy().replace('\\', "/");
+    if !specifier.starts_with('.') {
+        specifier.insert_str(0, "./");
+    }
+    Some(specifier)
+}
+
+fn valid_package_name(name: &str) -> bool {
+    let parts = name.split('/').collect::<Vec<_>>();
+    let valid_part = |part: &str| {
+        part.chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphanumeric())
+            && part
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
+    };
+    match parts.as_slice() {
+        [plain] => !plain.starts_with('@') && valid_part(plain),
+        [scope, package] => {
+            scope.starts_with('@') && valid_part(&scope[1..]) && valid_part(package)
+        }
+        _ => false,
+    }
+}
+
+/// Compute a relative path between two project-relative paths without touching
+/// the filesystem. Both paths are logical locations that will later be rooted
+/// under the bundler shadow, so canonicalization would be incorrect here.
+fn lexical_relative_path(from_dir: &Path, to: &Path) -> Option<PathBuf> {
+    let normal_components = |path: &Path| {
+        path.components()
+            .map(|component| match component {
+                std::path::Component::Normal(value) => Some(value.to_os_string()),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+    };
+    let from = normal_components(from_dir)?;
+    let to = normal_components(to)?;
+    let common = from
+        .iter()
+        .zip(&to)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut relative = PathBuf::new();
+    for _ in common..from.len() {
+        relative.push("..");
+    }
+    for component in &to[common..] {
+        relative.push(component);
+    }
+    (!relative.as_os_str().is_empty()).then_some(relative)
 }
 
 /// Walk the real `pages/` (if it exists) and collect the set of route
@@ -704,35 +823,38 @@ pub(crate) fn pattern_to_pages_rel(pattern: &str) -> Result<PathBuf> {
 /// page shape. With no hint, both are omitted → SSG default (the desired
 /// default for package routes).
 ///
-/// The entrypoint is imported by its absolute path; esbuild resolves an
-/// absolute specifier as-is, so this is independent of where the overlay
-/// physically lives.
+/// During route materialization, a linked installed package is imported
+/// through its logical `node_modules` location. That keeps the page and its
+/// dependencies inside the bundler's staged graph. Entrypoints that cannot be
+/// proven to belong to an installed package retain the historical absolute
+/// import fallback.
 ///
 /// ## Known limitations (Z1a scope; Z1b sharp edges)
 ///
-/// Because the entrypoint is imported by absolute path (re-export of the
-/// default), the package page module itself is bundled from OUTSIDE the
-/// bundler's shadow tree. Two consequences, both edge cases for v1 and
-/// flagged for Z1b to resolve when it makes the overlay a true namespace
-/// proxy:
+/// Two edge cases remain for v1 and are flagged for Z1b to resolve when it
+/// makes the overlay a true namespace proxy:
 ///
-/// - **zfb shadow source transforms are skipped for the package page.**
-///   A package page importing a `*.module.css` (CSS-Modules scoping) or
-///   using `import.meta.glob(...)` does NOT get those zfb-specific
-///   rewrites (they run only on files materialised into the shadow). Plain
-///   TSX + relative TS imports + node_modules deps work (verified by the
-///   integration tests); CSS-Modules/glob in a package page do not.
+/// - **zfb source transforms are skipped for the package page.** Installed
+///   package routes are copied into the shadow as dependency files, while
+///   unlinked routes keep the absolute fallback; neither path runs the
+///   page-source `*.module.css` / `import.meta.glob(...)` rewrites. Plain TSX
+///   + relative TS imports + node_modules deps work.
 /// - **Named page exports other than `default` are not proxied.** A
 ///   package page's own `export const frontmatter` / `getStaticProps` /
 ///   (Z1b) `export const paths` are not re-exported — the overlay owns
 ///   `prerender`/`frontmatter` via the `injectRoute` hint instead. Z1b,
 ///   which must surface a top-level `paths`, will replace this default-only
 ///   re-export with a namespace-preserving proxy.
-pub(crate) fn synthesize_static_overlay_module(
-    entrypoint: &Path,
+#[cfg(test)]
+fn synthesize_static_overlay_module(entrypoint: &Path, prerender: Option<bool>) -> String {
+    synthesize_static_overlay_module_with_specifier(&entrypoint.to_string_lossy(), prerender)
+}
+
+fn synthesize_static_overlay_module_with_specifier(
+    entrypoint_specifier: &str,
     prerender: Option<bool>,
 ) -> String {
-    let spec = json_string(&entrypoint.to_string_lossy());
+    let spec = json_string(entrypoint_specifier);
     let mut out = String::new();
     out.push_str("// AUTO-GENERATED by zfb (package-owned routes, #1193). Do not edit.\n");
     out.push_str("// Re-exports the package entrypoint's default page component;\n");
@@ -814,22 +936,31 @@ fn is_dynamic_pattern(pattern: &str) -> bool {
 ///   rather than synthesizing a wrapper that would fail later/worse.
 ///
 /// The default page component is re-exported (a re-export is fine for the
-/// `default` — it doesn't pass through a syntactic extractor) and the
-/// entrypoint is imported by absolute path (esbuild resolves it as-is, so
-/// this is independent of where the overlay physically lives).
+/// `default` — it doesn't pass through a syntactic extractor). Linked
+/// installed packages use their logical staged `node_modules` location;
+/// unlinked/local entrypoints retain the absolute-path fallback.
 ///
 /// ## Known limitations (shared with the static synthesizer)
 ///
-/// The package page is bundled from OUTSIDE the bundler's shadow tree
-/// (imported by absolute path), so zfb's shadow source transforms
-/// (CSS-Modules scoping, `import.meta.glob`) are NOT applied to it. Plain
-/// TSX + relative TS imports + node_modules deps work. This is a Z1a-noted
-/// v1 limitation; do not author CSS-Modules/glob in a package route page.
-pub(crate) fn synthesize_dynamic_overlay_module(
+/// Installed package routes are staged as dependency files and unlinked routes
+/// retain the absolute fallback, so zfb's page-source transforms (CSS-Modules
+/// scoping, `import.meta.glob`) are not applied to either kind of entrypoint.
+/// This is a Z1a-noted v1 limitation.
+#[cfg(test)]
+fn synthesize_dynamic_overlay_module(entrypoint: &Path, prerender: Option<bool>) -> Result<String> {
+    synthesize_dynamic_overlay_module_with_specifier(
+        entrypoint,
+        &entrypoint.to_string_lossy(),
+        prerender,
+    )
+}
+
+fn synthesize_dynamic_overlay_module_with_specifier(
     entrypoint: &Path,
+    entrypoint_specifier: &str,
     prerender: Option<bool>,
 ) -> Result<String> {
-    let spec = json_string(&entrypoint.to_string_lossy());
+    let spec = json_string(entrypoint_specifier);
 
     // Read + classify the package entrypoint's `paths` with the canonical
     // extractor. An unreadable entrypoint is a hard error here (the build
@@ -1039,6 +1170,48 @@ mod tests {
         assert_eq!(
             pattern_to_pages_rel("/index/x").unwrap(),
             PathBuf::from("index/x.tsx")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_package_entrypoint_uses_nested_route_staged_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().join("apps/site");
+        let pages = project_root.join("pages");
+        let package_root = tmp.path().join("packages/routes");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::create_dir_all(package_root.join("src")).unwrap();
+        std::fs::write(
+            package_root.join("package.json"),
+            r#"{ "name": "@fixture/routes" }"#,
+        )
+        .unwrap();
+        let entrypoint = package_root.join("src/page.tsx");
+        std::fs::write(&entrypoint, "export default function Page() {}\n").unwrap();
+        let installed = project_root.join("node_modules/@fixture/routes");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&package_root, &installed).unwrap();
+
+        let specifier = package_route_entrypoint_import_specifier(
+            &pages,
+            Path::new("docs/reference.tsx"),
+            &entrypoint,
+        );
+        assert_eq!(specifier, "../../node_modules/@fixture/routes/src/page.tsx");
+    }
+
+    #[test]
+    fn unlinked_entrypoint_keeps_absolute_import() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        let entrypoint = tmp.path().join("local-route.tsx");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(&entrypoint, "export default function Page() {}\n").unwrap();
+
+        assert_eq!(
+            package_route_entrypoint_import_specifier(&pages, Path::new("local.tsx"), &entrypoint,),
+            entrypoint.to_string_lossy()
         );
     }
 

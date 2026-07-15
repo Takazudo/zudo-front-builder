@@ -2113,6 +2113,7 @@ pub fn bundle_with_session(
         .without_user_claimed_virtual_modules(&input.tsconfig_paths);
     let mut plugin_preprocessing_files = BTreeSet::new();
     let mut root_entry_dependency_seed_files = BTreeSet::new();
+    let mut root_entry_dependency_logical_importers = BTreeMap::new();
     if mat_ctx.worker_build_context.has_plugin_resolver_inputs() {
         let virtual_discovery = discover_registered_virtual_preprocessing_with_context(
             &input.project_root,
@@ -2228,6 +2229,11 @@ pub fn bundle_with_session(
             components_dir.clone(),
             layouts_dir.clone(),
         ];
+        // A package-route overlay is physically outside the project but is
+        // copied to `<shadow>/pages`. Preserve that logical importer location
+        // so a synthesized relative `../node_modules/<package>/...` import can
+        // seed the package at the same staged location esbuild will resolve.
+        let mut logical_source_roots = vec![(pages_dir.clone(), project_root.join("pages"))];
         if input.content_collections.is_empty() {
             source_graph_roots.push(content_dir.clone());
         } else {
@@ -2236,7 +2242,9 @@ pub fn bundle_with_session(
             }
         }
         if let Some(injected) = input.injected_pages_root.as_ref() {
-            source_graph_roots.push(resolver.resolve(injected));
+            let injected = resolver.resolve(injected);
+            source_graph_roots.push(injected.clone());
+            logical_source_roots.push((injected, project_root.join("pages")));
         }
         source_graph_roots.extend(enumerate_extra_top_level_dirs(
             &input.project_root,
@@ -2246,7 +2254,9 @@ pub fn bundle_with_session(
             &source_graph_roots,
             &project_root,
             &bundle_exclude,
+            &logical_source_roots,
             &mut root_entry_dependency_seed_files,
+            &mut root_entry_dependency_logical_importers,
         );
 
         // The server runtime subpath (`createPageRouter`), the framework
@@ -2286,6 +2296,7 @@ pub fn bundle_with_session(
         &bundle_exclude,
         !esbuild_will_preserve_symlinks(&input),
         &root_entry_dependency_seed_files,
+        &root_entry_dependency_logical_importers,
         &synthetic_entry_import_specifiers,
         &alias_claimed_specifier_keys,
         &input.external,
@@ -6255,6 +6266,53 @@ fn bare_package_name(specifier: &str) -> Option<String> {
     }
 }
 
+fn node_modules_package_name(package_root: &Path, project_root: &Path) -> Option<String> {
+    let relative = package_root.strip_prefix(project_root).ok()?;
+    let components = relative.components().collect::<Vec<_>>();
+    let node_modules_index = components
+        .iter()
+        .rposition(|component| component.as_os_str() == std::ffi::OsStr::new("node_modules"))?;
+    let first = components
+        .get(node_modules_index + 1)?
+        .as_os_str()
+        .to_str()?;
+    if first.starts_with('@') {
+        let second = components
+            .get(node_modules_index + 2)?
+            .as_os_str()
+            .to_str()?;
+        Some(format!("{first}/{second}"))
+    } else {
+        Some(first.to_string())
+    }
+}
+
+/// Resolve a relative/absolute source import that explicitly enters the
+/// project's logical `node_modules` tree. Package-route overlay modules use
+/// this shape so their entrypoint is loaded from the staged dependency view
+/// without relying on package `exports` to expose the private route source.
+fn node_modules_dependency_from_path_specifier(
+    specifier: &str,
+    importer: &Path,
+    project_root: &Path,
+) -> Option<(String, PathBuf)> {
+    let specifier = specifier.split(['?', '#']).next().unwrap_or(specifier);
+    let specifier_path = Path::new(specifier);
+    let target = if specifier_path.is_absolute() {
+        normalize_path_lexical(specifier_path)
+    } else if specifier.starts_with("./") || specifier.starts_with("../") {
+        normalize_path_lexical(&importer.parent()?.join(specifier_path))
+    } else {
+        return None;
+    };
+    let package_root = node_modules_package_root(&target, project_root)?;
+    if !package_root.is_dir() {
+        return None;
+    }
+    let package_name = node_modules_package_name(&package_root, project_root)?;
+    Some((package_name, package_root))
+}
+
 fn resolve_installed_package_dir(
     importer: &Path,
     package_name: &str,
@@ -6452,7 +6510,9 @@ fn collect_project_source_module_graph_seed_files(
     roots: &[PathBuf],
     project_root: &Path,
     bundle_exclude: &BundleExcludeMatcher,
+    logical_source_roots: &[(PathBuf, PathBuf)],
     out: &mut BTreeSet<PathBuf>,
+    logical_importers: &mut BTreeMap<PathBuf, PathBuf>,
 ) {
     let is_seed_source = |path: &Path| {
         raw_source_extension(path)
@@ -6476,6 +6536,19 @@ fn collect_project_source_module_graph_seed_files(
                 continue;
             }
             out.insert(path.to_path_buf());
+            if !path.starts_with(project_root) {
+                if let Some(logical_importer) =
+                    logical_source_roots
+                        .iter()
+                        .find_map(|(physical_root, logical_root)| {
+                            path.strip_prefix(physical_root)
+                                .ok()
+                                .map(|relative| logical_root.join(relative))
+                        })
+                {
+                    logical_importers.insert(path.to_path_buf(), logical_importer);
+                }
+            }
         }
     }
 }
@@ -6487,6 +6560,7 @@ fn extend_node_modules_dependency_staging(
     bundle_exclude: &BundleExcludeMatcher,
     resolve_from_canonical_package: bool,
     root_entry_dependency_seed_files: &BTreeSet<PathBuf>,
+    root_entry_dependency_logical_importers: &BTreeMap<PathBuf, PathBuf>,
     synthetic_entry_import_specifiers: &BTreeSet<String>,
     alias_claimed_specifier_keys: &BTreeSet<String>,
     external_specifiers: &[String],
@@ -6579,11 +6653,15 @@ fn extend_node_modules_dependency_staging(
             continue;
         };
         // Overlay pages are physical copies under a per-build temp directory,
-        // but their imports retain project-page semantics. Resolve their bare
-        // dependencies from the synthetic project entry rather than from the
-        // temp directory, which has no project `node_modules` ancestors.
+        // but their imports retain project-page semantics. Package-route
+        // overlays have an exact logical `project/pages/<rel>` importer so
+        // their staged relative node_modules import resolves correctly. Other
+        // out-of-root sources keep the synthetic project entry fallback used
+        // for ordinary bare dependency discovery.
         let logical_importer = if seed.starts_with(project_root) {
             seed.as_path()
+        } else if let Some(importer) = root_entry_dependency_logical_importers.get(seed) {
+            importer.as_path()
         } else {
             synthetic_importer.as_path()
         };
@@ -6594,26 +6672,37 @@ fn extend_node_modules_dependency_staging(
             if specifier_is_alias_claimed(specifier, alias_claimed_specifier_keys) {
                 continue;
             }
-            let Some(package_name) = bare_package_name(specifier) else {
-                continue;
-            };
-            if package_is_external(&package_name, external_specifiers) {
-                continue;
-            }
-            let (logical_dependency, source_dependency) = if let Some(dependency) =
-                resolve_installed_package_dir(logical_importer, &package_name, project_root)
-            {
-                (dependency.clone(), dependency)
-            } else if let Some(dependency) =
-                resolve_vendored_package_dir(node_modules_dir, &package_name)
-            {
-                (
-                    project_root.join("node_modules").join(&package_name),
-                    dependency,
-                )
-            } else {
-                continue;
-            };
+            let (package_name, logical_dependency, source_dependency) =
+                if let Some(package_name) = bare_package_name(specifier) {
+                    if package_is_external(&package_name, external_specifiers) {
+                        continue;
+                    }
+                    let (logical_dependency, source_dependency) = if let Some(dependency) =
+                        resolve_installed_package_dir(logical_importer, &package_name, project_root)
+                    {
+                        (dependency.clone(), dependency)
+                    } else if let Some(dependency) =
+                        resolve_vendored_package_dir(node_modules_dir, &package_name)
+                    {
+                        (
+                            project_root.join("node_modules").join(&package_name),
+                            dependency,
+                        )
+                    } else {
+                        continue;
+                    };
+                    (package_name, logical_dependency, source_dependency)
+                } else if let Some((package_name, dependency)) =
+                    node_modules_dependency_from_path_specifier(
+                        specifier,
+                        logical_importer,
+                        project_root,
+                    )
+                {
+                    (package_name, dependency.clone(), dependency)
+                } else {
+                    continue;
+                };
             stage_dependency_candidate(
                 logical_importer,
                 &package_name,
@@ -8334,6 +8423,25 @@ mod tests {
         assert!(specifier_matches_alias_key("@/foo", "@/*"));
         // `@/*` must NOT claim an unrelated scoped package.
         assert!(!specifier_matches_alias_key("@takazudo/zfb-runtime", "@/*"));
+    }
+
+    #[test]
+    fn relative_node_modules_specifier_resolves_owning_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let package_root = root.join("node_modules/@fixture/routes");
+        std::fs::create_dir_all(package_root.join("src")).unwrap();
+        let importer = root.join("pages/docs/reference.tsx");
+
+        let resolved = node_modules_dependency_from_path_specifier(
+            "../../node_modules/@fixture/routes/src/page.tsx",
+            &importer,
+            root,
+        );
+        assert_eq!(
+            resolved,
+            Some(("@fixture/routes".to_string(), package_root))
+        );
     }
 
     #[test]
