@@ -45,8 +45,12 @@ for (const resource of [...glue, ...wasm]) {
     );
   }
 }
-if (!emittedJavaScript.includes("?zfbMdWasmGen=")) {
-  throw new Error("emitted browser JavaScript is missing the query-versioned trap recovery import");
+for (const queryKey of ["zfbMdWasmGen", "zfbMdWasmAttempt"]) {
+  if (!emittedJavaScript.includes(queryKey)) {
+    throw new Error(
+      `emitted browser JavaScript is missing the query-versioned glue import key ${queryKey}`,
+    );
+  }
 }
 
 console.log(`md-wasm browser build resources are ready: ${glue[0]}, ${wasm[0]}`);
