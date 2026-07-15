@@ -23,6 +23,10 @@ interface WasmGlueModule {
 export interface WasmResourceConfig {
   glueUrl: URL;
   loadWasmBytes(): Promise<ArrayBuffer>;
+  /** @internal Deterministic test seam; production uses WebAssembly.compile. */
+  compileWasm?(bytes: ArrayBuffer): Promise<WebAssembly.Module>;
+  /** @internal Deterministic test seam; production dynamically imports the glue URL. */
+  importGlue?(specifier: string): Promise<WasmGlueModule>;
 }
 
 export class ZfbMdWasmTrapError extends Error {
@@ -50,14 +54,27 @@ export class ZfbMdWasmTrapRecoveryLimitError extends Error {
   }
 }
 
-export function createWasmApi({ glueUrl, loadWasmBytes }: WasmResourceConfig) {
+export function createWasmApi({
+  glueUrl,
+  loadWasmBytes,
+  compileWasm = (bytes) => WebAssembly.compile(bytes),
+  importGlue = (specifier) => import(/* @vite-ignore */ specifier) as Promise<WasmGlueModule>,
+}: WasmResourceConfig) {
   let compiledModulePromise: Promise<WebAssembly.Module> | undefined;
   let compiledModuleLoads = 0;
 
   function getCompiledModule(): Promise<WebAssembly.Module> {
     if (!compiledModulePromise) {
       compiledModuleLoads += 1;
-      compiledModulePromise = loadWasmBytes().then((bytes) => WebAssembly.compile(bytes));
+      const attempt = Promise.resolve().then(loadWasmBytes).then(compileWasm);
+      compiledModulePromise = attempt;
+      void attempt.catch(() => {
+        // A rejected attempt must be retryable, but it must not erase a newer
+        // attempt if its rejection cleanup runs late.
+        if (compiledModulePromise === attempt) {
+          compiledModulePromise = undefined;
+        }
+      });
     }
     return compiledModulePromise;
   }
@@ -67,6 +84,7 @@ export function createWasmApi({ glueUrl, loadWasmBytes }: WasmResourceConfig) {
   let currentGeneration = 0;
   let trapRecoveriesStarted = 0;
   let freshInstanceStarts = 0;
+  let glueImportAttempts = 0;
   let terminalTrapRecoveryError: ZfbMdWasmTrapRecoveryLimitError | undefined;
 
   interface Instance {
@@ -75,17 +93,22 @@ export function createWasmApi({ glueUrl, loadWasmBytes }: WasmResourceConfig) {
   }
 
   /**
-   * A fresh query creates a new wasm-bindgen glue module record after a real
-   * trap. The compiled WebAssembly.Module remains cached, so recovery only
-   * re-instantiates it. `generation` is wrapper-private and bounded below.
+   * Every fresh instance attempt creates a new wasm-bindgen glue module
+   * record. The import-attempt nonce is deliberately independent of the trap
+   * generation: transient import/initSync failures need a new module record
+   * without consuming the bounded trap-recovery budget.
    */
   async function freshInstance(generation: number): Promise<Instance> {
     freshInstanceStarts += 1;
+    glueImportAttempts += 1;
+    const glueSpecifier = new URL(glueUrl.href);
+    glueSpecifier.searchParams.set("zfbMdWasmGen", String(generation));
+    glueSpecifier.searchParams.set("zfbMdWasmAttempt", String(glueImportAttempts));
     const [module, glue] = await Promise.all([
       getCompiledModule(),
-      import(
-        /* @vite-ignore */ `${glueUrl.href}?zfbMdWasmGen=${generation}`
-      ) as Promise<WasmGlueModule>,
+      // Deferring the injected function also converts a synchronous test-seam
+      // throw into the rejection handled by the retryable instance cache.
+      Promise.resolve().then(() => importGlue(glueSpecifier.href)),
     ]);
     glue.initSync({ module });
     return { generation, glue };
@@ -93,11 +116,26 @@ export function createWasmApi({ glueUrl, loadWasmBytes }: WasmResourceConfig) {
 
   let instancePromise: Promise<Instance> | undefined;
 
+  function startInstance(generation: number): Promise<Instance> {
+    const attempt = freshInstance(generation);
+    instancePromise = attempt;
+    void attempt.catch(() => {
+      // Trap recovery can replace the installed instance promise. Never let a
+      // stale initialization rejection clear that newer attempt.
+      if (instancePromise === attempt) {
+        instancePromise = undefined;
+      }
+    });
+    return attempt;
+  }
+
   function getInstance(): Promise<Instance> {
     if (terminalTrapRecoveryError) {
       return Promise.reject(terminalTrapRecoveryError);
     }
-    instancePromise ??= freshInstance(currentGeneration);
+    if (!instancePromise) {
+      return startInstance(currentGeneration);
+    }
     return instancePromise;
   }
 
@@ -125,8 +163,7 @@ export function createWasmApi({ glueUrl, loadWasmBytes }: WasmResourceConfig) {
 
     trapRecoveriesStarted += 1;
     currentGeneration += 1;
-    instancePromise = freshInstance(currentGeneration);
-    await instancePromise;
+    await startInstance(currentGeneration);
   }
 
   async function callWasm<T>(fn: (instance: Instance) => T): Promise<T> {
@@ -184,6 +221,7 @@ export function createWasmApi({ glueUrl, loadWasmBytes }: WasmResourceConfig) {
     compiledModuleLoads: number;
     currentGeneration: number;
     freshInstanceStarts: number;
+    glueImportAttempts: number;
     maxTrapRecoveries: number;
     trapRecoveriesStarted: number;
     terminal: boolean;
@@ -192,6 +230,7 @@ export function createWasmApi({ glueUrl, loadWasmBytes }: WasmResourceConfig) {
       compiledModuleLoads,
       currentGeneration,
       freshInstanceStarts,
+      glueImportAttempts,
       maxTrapRecoveries: MAX_TRAP_RECOVERIES,
       trapRecoveriesStarted,
       terminal: !!terminalTrapRecoveryError,
