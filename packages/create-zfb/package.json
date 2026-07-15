@@ -1,6 +1,6 @@
 {
   "name": "create-zfb",
-  "version": "0.1.0-next.82",
+  "version": "0.1.0-next.83",
   "private": false,
   "type": "module",
   "description": "Scaffold a new zfb static-site project: `npm create zfb@latest my-site`",
@@ -40,7 +40,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@takazudo/zfb": "workspace:0.1.0-next.82"
+    "@takazudo/zfb": "workspace:0.1.0-next.83"
   },
   "devDependencies": {
     "vitest": "^2.1.9"

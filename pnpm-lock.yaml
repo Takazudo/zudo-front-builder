@@ -129,7 +129,7 @@ importers:
   packages/create-zfb:
     dependencies:
       '@takazudo/zfb':
-        specifier: workspace:0.1.0-next.82
+        specifier: workspace:0.1.0-next.83
         version: link:../zfb
     devDependencies:
       vitest:
@@ -161,19 +161,19 @@ importers:
         version: 2.1.9(@types/node@22.19.17)(happy-dom@15.11.7)(lightningcss@1.32.0)
     optionalDependencies:
       '@takazudo/zfb-darwin-arm64':
-        specifier: workspace:0.1.0-next.82
+        specifier: workspace:0.1.0-next.83
         version: link:../zfb-darwin-arm64
       '@takazudo/zfb-darwin-x64':
-        specifier: workspace:0.1.0-next.82
+        specifier: workspace:0.1.0-next.83
         version: link:../zfb-darwin-x64
       '@takazudo/zfb-linux-arm64-gnu':
-        specifier: workspace:0.1.0-next.82
+        specifier: workspace:0.1.0-next.83
         version: link:../zfb-linux-arm64-gnu
       '@takazudo/zfb-linux-x64-gnu':
-        specifier: workspace:0.1.0-next.82
+        specifier: workspace:0.1.0-next.83
         version: link:../zfb-linux-x64-gnu
       '@takazudo/zfb-win32-x64-msvc':
-        specifier: workspace:0.1.0-next.82
+        specifier: workspace:0.1.0-next.83
         version: link:../zfb-win32-x64-msvc
 
   packages/zfb-adapter-cloudflare:
