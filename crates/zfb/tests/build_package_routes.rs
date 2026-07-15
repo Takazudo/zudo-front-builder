@@ -291,6 +291,79 @@ export default function Page() {
     );
 }
 
+/// A user page copied into the package-route overlay keeps project dependency
+/// resolution when a non-empty `bundle.exclude` removes the live shadow
+/// `node_modules` link. The page's bare import must seed the staged dependency
+/// view even though the copied source file physically lives outside the project
+/// root (#1645 release follow-up).
+#[test]
+fn user_page_bare_import_is_staged_from_package_route_overlay() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[overlay_bare_import] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[overlay_bare_import] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let _nm = link_embedded_node_modules(root);
+
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+export default function Page() {
+  const marker = typeof getCloudflareContext === "function"
+    ? "OVERLAY_BARE_IMPORT_STAGED"
+    : "OVERLAY_BARE_IMPORT_MISSING";
+  return <html lang="en"><body><p>{marker}</p></body></html>;
+}
+"#,
+    )
+    .unwrap();
+
+    // An unrelated package route forces the user page into the external
+    // per-build overlay.
+    fs::create_dir_all(root.join("pkg")).unwrap();
+    fs::write(root.join("pkg/preset.tsx"), page_module("PRESET")).unwrap();
+    fs::write(
+        root.join("preset.mjs"),
+        r#"export default {
+  name: "overlay-bare-import-preset",
+  setup({ injectRoute }) {
+    injectRoute("/preset-page", "./pkg/preset.tsx");
+  },
+};
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{
+  "framework": "preact",
+  "plugins": [{ "name": "./preset.mjs" }],
+  "bundle": { "exclude": ["does-not-exist/**"] }
+}
+"#,
+    )
+    .unwrap();
+
+    let Some(dist) = build_or_skip(root, &esbuild, "overlay_bare_import") else {
+        return;
+    };
+    let home = dist.join("index.html");
+    assert!(home.is_file(), "expected dist/index.html");
+    let body = fs::read_to_string(&home).unwrap();
+    assert!(
+        body.contains("OVERLAY_BARE_IMPORT_STAGED"),
+        "the overlay user page's project dependency must resolve from the staged view; got: {body}"
+    );
+    assert!(!body.contains("OVERLAY_BARE_IMPORT_MISSING"), "{body}");
+}
+
 // ---------------------------------------------------------------------------
 // 2. Root package routes and user-page precedence.
 // ---------------------------------------------------------------------------

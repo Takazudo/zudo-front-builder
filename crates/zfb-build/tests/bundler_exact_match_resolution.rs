@@ -3036,6 +3036,54 @@ fn page_bare_import_is_staged_under_bundle_exclude() {
     assert!(body.contains("STAGED_PAGE_BARE_DEPENDENCY"), "{body}");
 }
 
+/// A build overlay may place the configured pages root outside `project_root`.
+/// Those explicit source files still have project-page dependency semantics:
+/// their bare imports resolve from project `node_modules` and seed the isolated
+/// staged view when `bundle.exclude` is active (#1645 release follow-up).
+#[test]
+fn external_pages_root_bare_import_is_staged_under_bundle_exclude() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_exact_match_resolution] no esbuild binary available; skipping.");
+        return;
+    };
+    let esbuild = fs::canonicalize(esbuild).expect("absolute esbuild path");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    write_fixture_project(&root, "overlay-page-dependency", "unused.tsx");
+    write_bare_package_in(
+        &root.join("node_modules"),
+        "overlay-page-dependency",
+        "STAGED_EXTERNAL_PAGE_BARE_DEPENDENCY",
+    );
+
+    let overlay = tempfile::tempdir().expect("overlay tempdir");
+    fs::copy(
+        root.join("pages/index.tsx"),
+        overlay.path().join("index.tsx"),
+    )
+    .unwrap();
+    let mut input = make_input(
+        &root,
+        &esbuild,
+        "dist-external-page-bare-dep",
+        BTreeMap::new(),
+        vec![],
+        vec![],
+    );
+    input.pages_dir = overlay.path().to_path_buf();
+    input.node_modules_dir = None;
+    input.bundle_exclude = vec!["src/unused.tsx".to_string()];
+
+    bundle(input).expect(
+        "an external pages root's bare import must stage from project dependency resolution",
+    );
+    let body = fs::read_to_string(root.join("dist-external-page-bare-dep/bundle.mjs")).unwrap();
+    assert!(
+        body.contains("STAGED_EXTERNAL_PAGE_BARE_DEPENDENCY"),
+        "{body}"
+    );
+}
+
 /// The generated `entry.mjs` imports `@takazudo/zfb-runtime/server` and the
 /// framework render-to-string module, and the hydration shim imports the JSX
 /// runtime — none of which appears in any project source file. With
