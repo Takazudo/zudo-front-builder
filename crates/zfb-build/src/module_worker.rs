@@ -1552,6 +1552,39 @@ fn stable_virtual_module_source(source: &str, project_root: &Path) -> String {
     stable
 }
 
+/// Remap literal absolute imports that resolve inside the project to the
+/// project-relative spelling used by a virtual module materialized at the
+/// bundler shadow root. Bare packages and paths outside the project stay
+/// untouched, so only the live-project escape hatch is closed.
+pub(crate) fn remap_virtual_module_project_imports_to_shadow(
+    source: &str,
+    project_root: &Path,
+) -> String {
+    let virtual_path = project_root.join(".zfb-worker-virtual-module.mjs");
+    let Ok((module, base, unresolved_ctxt)) = parse_module(&virtual_path, source) else {
+        return source.to_string();
+    };
+    let mut replacements = collect_import_specifier_occurrences(&module, base, unresolved_ctxt)
+        .into_iter()
+        .filter(|occurrence| Path::new(&occurrence.specifier).is_absolute())
+        .filter_map(|occurrence| {
+            let remapped = stable_project_virtual_specifier(&occurrence.specifier, project_root)?;
+            let replacement = serde_json::to_string(&remapped).ok()?;
+            Some((occurrence.lo, occurrence.hi, replacement))
+        })
+        .collect::<Vec<_>>();
+    if replacements.is_empty() {
+        return source.to_string();
+    }
+
+    replacements.sort_by_key(|replacement| std::cmp::Reverse(replacement.0));
+    let mut remapped = source.to_string();
+    for (lo, hi, replacement) in replacements {
+        remapped.replace_range(lo..hi, &replacement);
+    }
+    remapped
+}
+
 fn stable_project_virtual_specifier(specifier: &str, project_root: &Path) -> Option<String> {
     if specifier.contains('?') || specifier.contains('#') {
         return None;
@@ -3098,6 +3131,31 @@ mod tests {
             message.contains(".zfb-worker-virtual-module.mjs"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_is_remapped_to_shadow_root() {
+        let project = tempfile::tempdir().unwrap();
+        let host = project.path().join("src/host-bindings.tsx");
+        write(&host, "export const bindings = {};\n");
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let source = format!(
+            "export {{ bindings }} from {};\nexport {{ external }} from {};\nexport {{ value }} from \"fixture-package\";\n",
+            serde_json::to_string(&host.to_string_lossy()).unwrap(),
+            serde_json::to_string(&outside.path().to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(&source, project.path());
+
+        assert!(
+            remapped.contains("export { bindings } from \"./src/host-bindings.tsx\";"),
+            "{remapped}"
+        );
+        assert!(
+            remapped.contains(&serde_json::to_string(&outside.path().to_string_lossy()).unwrap()),
+            "{remapped}"
+        );
+        assert!(remapped.contains("from \"fixture-package\""), "{remapped}");
     }
 
     #[test]

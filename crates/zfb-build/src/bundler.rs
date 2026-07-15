@@ -144,7 +144,8 @@ use crate::glob_expand::expand_import_meta_glob;
 use crate::module_worker::{
     collect_runtime_import_specifiers_from_file, discover_module_preprocessing_with_context,
     discover_registered_virtual_preprocessing_with_context,
-    rewrite_module_worker_urls_with_context, ModuleWorkerBuildContext, ModuleWorkerDependency,
+    remap_virtual_module_project_imports_to_shadow, rewrite_module_worker_urls_with_context,
+    ModuleWorkerBuildContext, ModuleWorkerDependency,
 };
 use crate::raw_import_expand::{
     expand_raw_imports_with_aliases, RawImportAliasContext, RawImportEdge,
@@ -7986,9 +7987,19 @@ fn run_esbuild(
             )
         })
         .collect::<Vec<_>>();
+    let effective_plugin_virtual_modules = input
+        .plugin_virtual_modules
+        .iter()
+        .map(|(specifier, source)| {
+            (
+                specifier.clone(),
+                remap_virtual_module_project_imports_to_shadow(source, &input.project_root),
+            )
+        })
+        .collect::<Vec<_>>();
     let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
         &effective_plugin_aliases,
-        &input.plugin_virtual_modules,
+        &effective_plugin_virtual_modules,
         shadow,
         &input.tsconfig_paths,
     )

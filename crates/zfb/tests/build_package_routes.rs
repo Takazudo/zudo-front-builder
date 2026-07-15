@@ -383,12 +383,13 @@ export default function Page() {
     );
 }
 
-/// A workspace-linked package route must execute against the same staged
-/// Preact singleton as the generated renderer when `bundle.exclude` disables
-/// the live shadow `node_modules` link. The package page self-imports a sibling
-/// component that calls `useState`, reproducing issue #1650's split graph.
+/// Workspace-linked package routes must execute against the same staged Preact
+/// singleton as the generated renderer when `bundle.exclude` disables the live
+/// shadow `node_modules` link. The direct route covers issue #1650. The second
+/// route reaches the same hook component through a virtual module that
+/// absolutely re-exports an in-project host binding, covering issue #1652.
 #[test]
-fn workspace_package_route_hooks_share_staged_preact_identity() {
+fn workspace_package_routes_and_virtual_host_hooks_share_staged_preact_identity() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[workspace_route_hooks] no esbuild; skipping.");
         return;
@@ -442,20 +443,51 @@ export default function Page() {
 "#,
     )
     .unwrap();
+    let virtual_entrypoint = package_root.join("src/virtual-page.tsx");
+    fs::write(
+        &virtual_entrypoint,
+        r#"import { bindings } from "virtual:host-bindings";
+export default function Page() {
+  const SidebarToggle = bindings.SidebarToggle;
+  return <html lang="en"><body><SidebarToggle /></body></html>;
+}
+"#,
+    )
+    .unwrap();
 
     let package_link = workspace.join("node_modules/@fixture/route-package");
     fs::create_dir_all(package_link.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&package_root, &package_link)
         .expect("link workspace route package into node_modules");
 
+    fs::create_dir_all(root.join("src")).unwrap();
+    let host_bindings = root.join("src/host-bindings.tsx");
+    fs::write(
+        &host_bindings,
+        r#"import { SidebarToggle } from "@fixture/route-package/sidebar-toggle";
+export const bindings = { SidebarToggle };
+"#,
+    )
+    .unwrap();
+
     let entrypoint_json = serde_json::to_string(&entrypoint.to_string_lossy()).unwrap();
+    let virtual_entrypoint_json =
+        serde_json::to_string(&virtual_entrypoint.to_string_lossy()).unwrap();
+    let virtual_module_source = format!(
+        "export {{ bindings }} from {};\n",
+        serde_json::to_string(&host_bindings.to_string_lossy()).unwrap()
+    );
+    let virtual_module_source_json = serde_json::to_string(&virtual_module_source).unwrap();
     fs::write(
         root.join("preset.mjs"),
         format!(
-            r#"export default {{
+            r#"const virtualModuleSource = {virtual_module_source_json};
+export default {{
   name: "workspace-route-hooks",
-  setup({{ injectRoute }}) {{
+  setup({{ injectRoute, addVirtualModule }}) {{
+    addVirtualModule("virtual:host-bindings", () => virtualModuleSource);
     injectRoute("/package-hooks", {entrypoint_json});
+    injectRoute("/virtual-host-hooks", {virtual_entrypoint_json});
   }},
 }};
 "#,
@@ -485,6 +517,11 @@ export default function Page() {
     assert!(
         body.contains("WORKSPACE_ROUTE_HOOK_SINGLETON"),
         "the linked package route hook must render through the shared staged Preact identity; got: {body}"
+    );
+    let body = fs::read_to_string(dist.join("virtual-host-hooks/index.html")).unwrap();
+    assert!(
+        body.contains("WORKSPACE_ROUTE_HOOK_SINGLETON"),
+        "the virtual absolute host binding must render through the shared staged Preact identity; got: {body}"
     );
 }
 
