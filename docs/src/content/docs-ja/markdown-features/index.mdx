@@ -75,7 +75,7 @@ Boolean shorthand は**普遍ではありません**。値の形に `boolean` �
 | [GitHub アラート](./github-alerts.mdx) | Opt-in | `markdown.features.githubAlerts` | `boolean \| {}` | 省略または `false` で off。 |
 | [読了時間](./reading-time.mdx) | Opt-in | `markdown.features.readingTime` | `boolean \| { wpm?: number }` | 省略または `false` で off。`export const readingTimeMinutes` を出力。 |
 | [GitHub オートリンク](./github-autolinks.mdx) | Opt-in | `markdown.features.githubAutolinks` | `{ repo: string }` | 省略時は off。`repo` 欠落は build-blocking config error。 |
-| [コードブロックのエンリッチメント](./code-enrichment.mdx) | Opt-in | `markdown.features.codeEnrichment` | `{ diffMarkers?: boolean; lineHighlight?: boolean }` | 省略時は off。object form で有効化され、両 subfeature はデフォルトで on。 |
+| [コードブロックのエンリッチメント](./code-enrichment.mdx) | Opt-in | `markdown.features.codeEnrichment` | `{ diffMarkers?: boolean; lineHighlight?: boolean; wordHighlight?: boolean }` | 省略時は off。object form で有効化され、すべての subfeature はデフォルトで on。 |
 | [コードタブ](./code-tabs.mdx) | Opt-in | `markdown.features.codeTabs` | `boolean \| {}` | 省略または `false` で off。 |
 | [ルビ注釈](./ruby.mdx) | Opt-in | `markdown.features.ruby` | `boolean \| {}` | 省略または `false` で off。 |
 | [TOC エクスポート](./toc-export.mdx) | Opt-in | `markdown.features.tocExport` | `{ maxDepth?: number }` | 省略時は off。デフォルト `maxDepth` は `3`。 |

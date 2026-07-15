@@ -1,7 +1,8 @@
-//! Code-block enrichment — diff markers and per-line line highlighting.
+//! Code-block enrichment — diff markers, per-line highlighting, and
+//! visible-text word emphasis.
 //!
 //! Rust port of [rehype-pretty-code](https://rehype-pretty-code.netlify.app/)'s
-//! diff-marker and `{1,3-5}` line-highlight behaviours.
+//! diff-marker, `{1,3-5}` line-highlight, and `/word/` emphasis behaviours.
 //!
 //! # Phase
 //!
@@ -49,13 +50,14 @@
 //!
 //! # Configuration
 //!
-//! Both behaviours are on by default (`None` means enabled). Each can be
+//! All three behaviours are on by default (`None` means enabled). Each can be
 //! disabled independently via [`CodeEnrichmentConfig`]:
 //!
 //! ```toml
 //! [markdown.features.code_enrichment]
 //! diff_markers = false
 //! line_highlight = true
+//! word_highlight = true
 //! ```
 
 use zfb_md_ast::{CodeEnrichmentConfig, HastNode, HastVisitor};
@@ -120,6 +122,408 @@ fn extract_highlight_range(meta: &str, max_lines: usize) -> Option<Vec<usize>> {
     } else {
         Some(lines)
     }
+}
+
+// ── Word-highlight metadata and visible-HTML rewriting ───────────────────────
+
+/// Metadata and fragment limits keep this optional presentation pass linear
+/// with a small, fixed multiplier even for crafted fence info strings.
+const MAX_WORD_META_BYTES: usize = 16 * 1024;
+const MAX_WORD_EXPRESSIONS: usize = 32;
+const MAX_WORD_PATTERN_BYTES: usize = 256;
+const MAX_TOTAL_WORD_PATTERN_BYTES: usize = 4 * 1024;
+const MAX_WORD_MATCHES_PER_LINE: usize = 16 * 1024;
+const MAX_WORD_OUTPUT_AMPLIFICATION: usize = 16;
+const MAX_WORD_OUTPUT_EXTRA_BYTES: usize = 4 * 1024;
+const MAX_SYNTAX_SPAN_DEPTH: usize = 32;
+const MAX_SYNTAX_TAG_BYTES: usize = 4 * 1024;
+
+/// Extract whitespace-delimited `/literal phrase/` tokens from fence metadata.
+///
+/// Expressions inside quoted title metadata or brace-delimited line ranges are
+/// ignored. `\/` represents a literal slash. Empty, malformed, unterminated,
+/// overlong, and excess expressions are silently ignored; unrelated metadata
+/// is never mutated.
+fn extract_word_phrases(meta: &str) -> Vec<String> {
+    let capped_len = floor_char_boundary(meta, meta.len().min(MAX_WORD_META_BYTES));
+    let meta = &meta[..capped_len];
+    let bytes = meta.as_bytes();
+    let mut phrases = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut brace_depth = 0usize;
+    let mut i = 0usize;
+
+    while i < bytes.len() && phrases.len() < MAX_WORD_EXPRESSIONS {
+        let byte = bytes[i];
+        if let Some(delimiter) = quote {
+            if byte == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+            } else {
+                if byte == delimiter {
+                    quote = None;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        match byte {
+            b'\'' | b'"' => {
+                quote = Some(byte);
+                i += 1;
+            }
+            b'{' => {
+                brace_depth = brace_depth.saturating_add(1);
+                i += 1;
+            }
+            b'}' => {
+                brace_depth = brace_depth.saturating_sub(1);
+                i += 1;
+            }
+            b'/' if brace_depth == 0 && is_word_token_start(bytes, i) => {
+                let Some((end, phrase)) = parse_word_expression(meta, i) else {
+                    i += 1;
+                    continue;
+                };
+                i = end;
+                if phrase.is_empty()
+                    || phrase.len() > MAX_WORD_PATTERN_BYTES
+                    || total_bytes.saturating_add(phrase.len()) > MAX_TOTAL_WORD_PATTERN_BYTES
+                {
+                    continue;
+                }
+                total_bytes += phrase.len();
+                phrases.push(phrase);
+            }
+            _ => i += 1,
+        }
+    }
+
+    phrases
+}
+
+fn floor_char_boundary(value: &str, mut index: usize) -> usize {
+    while index > 0 && !value.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn is_word_token_start(bytes: &[u8], index: usize) -> bool {
+    index == 0 || bytes[index - 1].is_ascii_whitespace() || bytes[index - 1] == b'}'
+}
+
+fn is_word_token_end(bytes: &[u8], index: usize) -> bool {
+    index == bytes.len() || bytes[index].is_ascii_whitespace() || bytes[index] == b'{'
+}
+
+/// Parse one expression beginning at `opening`, returning the byte position
+/// immediately after its closing slash and the unescaped literal phrase.
+fn parse_word_expression(meta: &str, opening: usize) -> Option<(usize, String)> {
+    let bytes = meta.as_bytes();
+    let mut phrase = String::new();
+    let mut segment_start = opening + 1;
+    let mut i = segment_start;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                phrase.push_str(&meta[segment_start..i]);
+                phrase.push('/');
+                i += 2;
+                segment_start = i;
+            }
+            b'/' => {
+                if !is_word_token_end(bytes, i + 1) {
+                    if is_word_token_start(bytes, i) {
+                        // A new slash token began before this expression was
+                        // closed. Reject the malformed expression so the
+                        // outer scanner can recover and parse the new token.
+                        return None;
+                    }
+                    // The Markdown parser normalizes `\/` in fence metadata
+                    // to `/` before this hast-phase visitor runs. A slash that
+                    // is not followed by a token boundary therefore remains
+                    // part of the literal phrase; only the boundary slash can
+                    // close it.
+                    i += 1;
+                    continue;
+                }
+                phrase.push_str(&meta[segment_start..i]);
+                return Some((i + 1, phrase));
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Select non-overlapping matches from left to right. At a shared start,
+/// metadata order wins because `phrases` is checked in order. Advancing to a
+/// winning match's end makes that visible range unavailable to later matches.
+fn find_word_matches(visible: &str, phrases: &[String]) -> Option<Vec<(usize, usize)>> {
+    let mut matches = Vec::new();
+    let mut pos = 0usize;
+    while pos < visible.len() {
+        let tail = &visible[pos..];
+        if let Some(phrase) = phrases
+            .iter()
+            .find(|phrase| tail.starts_with(phrase.as_str()))
+        {
+            let end = pos + phrase.len();
+            matches.push((pos, end));
+            if matches.len() > MAX_WORD_MATCHES_PER_LINE {
+                return None;
+            }
+            pos = end;
+        } else {
+            let Some(ch) = tail.chars().next() else {
+                break;
+            };
+            pos += ch.len_utf8();
+        }
+    }
+    Some(matches)
+}
+
+#[derive(Debug, Clone)]
+struct SyntaxSpan<'a> {
+    id: usize,
+    open: &'a str,
+}
+
+#[derive(Debug)]
+struct VisibleUnit<'a> {
+    raw: &'a str,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug)]
+struct TextRun<'a> {
+    path: Vec<SyntaxSpan<'a>>,
+    units: Vec<VisibleUnit<'a>>,
+}
+
+/// Wrap matches in serialized Syntect HTML without flattening syntax spans.
+///
+/// The highlighter emits only nested `<span ...>` elements plus escaped text
+/// in each line fragment. We validate that contract, decode text entities for
+/// matching, then close/reopen the active syntax path at word boundaries. The
+/// original opening tags, attributes, text entity spellings, and closing tags
+/// are retained byte-for-byte on every resulting fragment.
+fn highlight_words_in_html(raw_html: &str, phrases: &[String]) -> Option<String> {
+    if phrases.is_empty() {
+        return None;
+    }
+    let (visible, runs) = tokenize_visible_html(raw_html)?;
+    let matches = find_word_matches(&visible, phrases)?;
+    if matches.is_empty() {
+        return None;
+    }
+
+    // Splitting/reopening a syntax path necessarily duplicates its opening
+    // tags. Keep that structural amplification proportional to the original
+    // line fragment; crafted one-character matches inside a huge attribute
+    // must fail closed instead of allocating an arbitrarily large result.
+    let output_budget = raw_html
+        .len()
+        .saturating_mul(MAX_WORD_OUTPUT_AMPLIFICATION)
+        .saturating_add(MAX_WORD_OUTPUT_EXTRA_BYTES);
+
+    // Start at input size and let the buffer grow with actual wrappers. A
+    // crafted input with one match per character must not trigger a large
+    // speculative allocation before any output is produced.
+    let mut out = String::with_capacity(raw_html.len());
+    let mut current_path: Vec<SyntaxSpan<'_>> = Vec::new();
+    let mut current_highlight = false;
+    let mut match_index = 0usize;
+
+    for run in &runs {
+        for unit in &run.units {
+            while match_index < matches.len() && matches[match_index].1 <= unit.start {
+                match_index += 1;
+            }
+            let highlighted = matches
+                .get(match_index)
+                .is_some_and(|&(start, end)| start <= unit.start && unit.end <= end);
+            transition_render_path(
+                &mut out,
+                &mut current_path,
+                &run.path,
+                &mut current_highlight,
+                highlighted,
+            );
+            if out.len().saturating_add(unit.raw.len()) > output_budget {
+                return None;
+            }
+            out.push_str(unit.raw);
+        }
+    }
+
+    close_syntax_path(&mut out, &current_path, 0);
+    if current_highlight {
+        out.push_str("</span>");
+    }
+    (out.len() <= output_budget).then_some(out)
+}
+
+fn transition_render_path<'a>(
+    out: &mut String,
+    current_path: &mut Vec<SyntaxSpan<'a>>,
+    desired_path: &[SyntaxSpan<'a>],
+    current_highlight: &mut bool,
+    desired_highlight: bool,
+) {
+    if *current_highlight != desired_highlight {
+        close_syntax_path(out, current_path, 0);
+        if *current_highlight {
+            out.push_str("</span>");
+        }
+        if desired_highlight {
+            out.push_str("<span class=\"highlighted-word\">");
+        }
+        for span in desired_path {
+            out.push_str(span.open);
+        }
+    } else {
+        let common = current_path
+            .iter()
+            .zip(desired_path)
+            .take_while(|(left, right)| left.id == right.id)
+            .count();
+        close_syntax_path(out, current_path, common);
+        for span in &desired_path[common..] {
+            out.push_str(span.open);
+        }
+    }
+    current_path.clear();
+    current_path.extend_from_slice(desired_path);
+    *current_highlight = desired_highlight;
+}
+
+fn close_syntax_path(out: &mut String, path: &[SyntaxSpan<'_>], keep: usize) {
+    for _ in path[keep..].iter().rev() {
+        out.push_str("</span>");
+    }
+}
+
+/// Tokenize the narrowly-defined Syntect line fragment. Any unexpected or
+/// malformed markup returns `None`, making word enrichment fail closed while
+/// leaving the original HTML untouched.
+fn tokenize_visible_html(raw_html: &str) -> Option<(String, Vec<TextRun<'_>>)> {
+    let mut visible = String::new();
+    let mut runs = Vec::new();
+    let mut stack: Vec<SyntaxSpan<'_>> = Vec::new();
+    let mut next_id = 0usize;
+    let mut i = 0usize;
+
+    while i < raw_html.len() {
+        if raw_html[i..].starts_with("</span>") {
+            stack.pop()?;
+            i += "</span>".len();
+        } else if raw_html[i..].starts_with("<span")
+            && raw_html
+                .as_bytes()
+                .get(i + "<span".len())
+                .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>')
+        {
+            if stack.len() >= MAX_SYNTAX_SPAN_DEPTH {
+                return None;
+            }
+            let end = find_html_tag_end(raw_html, i)?;
+            if end - i > MAX_SYNTAX_TAG_BYTES {
+                return None;
+            }
+            let open = &raw_html[i..end];
+            stack.push(SyntaxSpan { id: next_id, open });
+            next_id = next_id.checked_add(1)?;
+            i = end;
+        } else if raw_html.as_bytes()[i] == b'<' {
+            return None;
+        } else {
+            let text_end = raw_html[i..]
+                .find('<')
+                .map_or(raw_html.len(), |offset| i + offset);
+            let text = &raw_html[i..text_end];
+            let mut units = Vec::new();
+            let mut text_pos = 0usize;
+            while text_pos < text.len() {
+                let (raw_len, decoded) = decode_visible_unit(&text[text_pos..]);
+                let start = visible.len();
+                visible.push(decoded);
+                let end = visible.len();
+                units.push(VisibleUnit {
+                    raw: &text[text_pos..text_pos + raw_len],
+                    start,
+                    end,
+                });
+                text_pos += raw_len;
+            }
+            if !units.is_empty() {
+                runs.push(TextRun {
+                    path: stack.clone(),
+                    units,
+                });
+            }
+            i = text_end;
+        }
+    }
+
+    if stack.is_empty() {
+        Some((visible, runs))
+    } else {
+        None
+    }
+}
+
+fn find_html_tag_end(html: &str, opening: usize) -> Option<usize> {
+    let bytes = html.as_bytes();
+    let mut quote: Option<u8> = None;
+    let mut i = opening + 1;
+    while i < bytes.len() {
+        match (quote, bytes[i]) {
+            (Some(delimiter), byte) if byte == delimiter => quote = None,
+            (None, b'\'' | b'"') => quote = Some(bytes[i]),
+            (None, b'>') => return Some(i + 1),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Decode exactly the entity spellings emitted by the shared HTML escaper,
+/// plus numeric entities. Unknown named entities remain visible as a literal
+/// `&` followed by their ordinary characters.
+fn decode_visible_unit(input: &str) -> (usize, char) {
+    for (entity, decoded) in [
+        ("&amp;", '&'),
+        ("&lt;", '<'),
+        ("&gt;", '>'),
+        ("&quot;", '"'),
+        ("&#39;", '\''),
+        ("&apos;", '\''),
+    ] {
+        if input.starts_with(entity) {
+            return (entity.len(), decoded);
+        }
+    }
+    if let Some(rest) = input.strip_prefix("&#") {
+        if let Some(semicolon) = rest.find(';').filter(|&index| index <= 8) {
+            let number = &rest[..semicolon];
+            let parsed = number
+                .strip_prefix(['x', 'X'])
+                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                .or_else(|| number.parse::<u32>().ok());
+            if let Some(decoded) = parsed.and_then(char::from_u32) {
+                return (2 + semicolon + 1, decoded);
+            }
+        }
+    }
+    let ch = input.chars().next().expect("input is non-empty");
+    (ch.len_utf8(), ch)
 }
 
 // ── Diff marker detection & stripping ────────────────────────────────────────
@@ -278,8 +682,8 @@ fn find_span_open_start(html: &str, gt_pos: usize) -> Option<usize> {
 
 // ── Visitor ──────────────────────────────────────────────────────────────────
 
-/// Hast visitor that enriches code blocks with diff markers and line
-/// highlighting.
+/// Hast visitor that enriches code blocks with diff markers, line
+/// highlighting, and visible-text word emphasis.
 ///
 /// Wired into the pipeline by `register_post_syntect_features` (in
 /// `zfb-content::pipeline`) AFTER [`SyntectPlugin`] has run.
@@ -287,40 +691,48 @@ fn find_span_open_start(html: &str, gt_pos: usize) -> Option<usize> {
 /// The visitor walks `<pre><code>` subtrees, reading:
 ///
 /// - The `data-meta` attribute on the `<code>` element to extract a
-///   `{1,3-5}` line-highlight range.
+///   `{1,3-5}` line-highlight range and `/word/` emphasis phrases.
 /// - The `Raw(…)` content of each `<span class="line">` child to detect and
 ///   strip diff markers.
 ///
-/// Both behaviours can be toggled independently via [`CodeEnrichmentConfig`].
+/// All three behaviours can be toggled independently via
+/// [`CodeEnrichmentConfig`].
 /// `None` means enabled (the default when the feature is on).
 pub struct CodeEnrichmentPlugin {
     diff_markers: bool,
     line_highlight: bool,
+    word_highlight: bool,
 }
 
 impl CodeEnrichmentPlugin {
     /// Create a new plugin from a [`CodeEnrichmentConfig`].
     ///
-    /// `diff_markers` and `line_highlight` default to `true` when their
-    /// respective `Option<bool>` field is `None`.
+    /// Every subfeature defaults to `true` when its respective `Option<bool>`
+    /// field is `None`.
     #[must_use]
     pub fn new(cfg: CodeEnrichmentConfig) -> Self {
         Self {
             diff_markers: cfg.diff_markers.unwrap_or(true),
             line_highlight: cfg.line_highlight.unwrap_or(true),
+            word_highlight: cfg.word_highlight.unwrap_or(true),
         }
     }
 }
 
 impl HastVisitor for CodeEnrichmentPlugin {
     fn visit(&mut self, node: &mut HastNode) {
-        // When both features are off this visitor is a no-op.
-        if !self.diff_markers && !self.line_highlight {
+        // When all features are off this visitor is a no-op.
+        if !self.diff_markers && !self.line_highlight && !self.word_highlight {
             return;
         }
         match node {
             HastNode::Root { children } | HastNode::Element { children, .. } => {
-                enrich_children(children, self.diff_markers, self.line_highlight);
+                enrich_children(
+                    children,
+                    self.diff_markers,
+                    self.line_highlight,
+                    self.word_highlight,
+                );
                 for c in children {
                     self.visit(c);
                 }
@@ -337,7 +749,12 @@ impl HastVisitor for CodeEnrichmentPlugin {
 /// nested inside a `<div class="code-block-container">` wrapper added by
 /// `CodeTitlePlugin`. The recursion in `CodeEnrichmentPlugin::visit` handles
 /// the nested case; this function handles the direct case.
-fn enrich_children(children: &mut [HastNode], diff_markers: bool, line_highlight: bool) {
+fn enrich_children(
+    children: &mut [HastNode],
+    diff_markers: bool,
+    line_highlight: bool,
+    word_highlight: bool,
+) {
     for child in children.iter_mut() {
         if let Some((meta, line_spans)) = pre_code_meta_and_lines(child) {
             // Pass the actual line count as the cap for range parsing so a
@@ -351,10 +768,17 @@ fn enrich_children(children: &mut [HastNode], diff_markers: bool, line_highlight
             } else {
                 Vec::new()
             };
+            let word_phrases = if word_highlight {
+                meta.as_deref()
+                    .map(extract_word_phrases)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
 
             for (idx, span) in line_spans.iter_mut().enumerate() {
                 let line_num = idx + 1; // 1-based
-                enrich_line_span(span, line_num, &highlight_set, diff_markers);
+                enrich_line_span(span, line_num, &highlight_set, diff_markers, &word_phrases);
             }
         }
     }
@@ -412,11 +836,14 @@ fn pre_code_meta_and_lines(node: &mut HastNode) -> Option<(Option<String>, &mut 
 /// - If diff markers are enabled and the line's `Raw(…)` content contains
 ///   a marker, add `data-line-diff="added"` / `"removed"` and strip the
 ///   marker from the raw content.
+/// - Wrap configured visible-text matches in `.highlighted-word` while
+///   preserving syntax span attributes and escaped text.
 fn enrich_line_span(
     span: &mut HastNode,
     line_num: usize,
     highlight_set: &[usize],
     diff_markers: bool,
+    word_phrases: &[String],
 ) {
     let HastNode::Element {
         tag,
@@ -464,6 +891,21 @@ fn enrich_line_span(
             // Simplification: replace ALL Raw children with a single Raw(stripped).
             children.retain(|c| !matches!(c, HastNode::Raw(_)));
             children.insert(0, HastNode::Raw(stripped));
+        }
+    }
+
+    // ── Word highlighting ────────────────────────────────────────────
+    if !word_phrases.is_empty() {
+        let raw_html: String = children
+            .iter()
+            .filter_map(|child| match child {
+                HastNode::Raw(raw) => Some(raw.as_str()),
+                _ => None,
+            })
+            .collect();
+        if let Some(highlighted) = highlight_words_in_html(&raw_html, word_phrases) {
+            children.retain(|child| !matches!(child, HastNode::Raw(_)));
+            children.insert(0, HastNode::Raw(highlighted));
         }
     }
 
@@ -546,6 +988,128 @@ mod tests {
     #[test]
     fn extract_empty_braces_returns_none() {
         assert!(extract_highlight_range("{}", usize::MAX).is_none());
+    }
+
+    // ── Word metadata and rewriting ────────────────────────────────────────
+
+    #[test]
+    fn extracts_one_and_multiple_word_expressions_around_other_meta() {
+        assert_eq!(extract_word_phrases("/answer/"), vec!["answer"]);
+        assert_eq!(
+            extract_word_phrases("title=\"demo/example\" {1,3} /first/ /second phrase/"),
+            vec!["first", "second phrase"]
+        );
+    }
+
+    #[test]
+    fn word_expression_supports_escaped_slash() {
+        assert_eq!(extract_word_phrases(r"/path\/name/"), vec!["path/name"]);
+        // This is the shape received after the Markdown parser normalizes the
+        // author's `\/` escape in fence metadata.
+        assert_eq!(extract_word_phrases("/path/name/"), vec!["path/name"]);
+    }
+
+    #[test]
+    fn empty_malformed_and_unterminated_expressions_are_ignored() {
+        assert!(extract_word_phrases("//").is_empty());
+        assert!(extract_word_phrases("/unterminated").is_empty());
+        assert!(extract_word_phrases("/bad/adjacent").is_empty());
+        assert!(extract_word_phrases("title=\"/not an expression/\"").is_empty());
+        assert_eq!(extract_word_phrases("/unterminated /word/"), vec!["word"]);
+    }
+
+    #[test]
+    fn word_matching_repeats_and_resolves_overlaps_by_start_then_meta_order() {
+        assert_eq!(
+            find_word_matches("answer answer", &["answer".into()]).unwrap(),
+            vec![(0, 6), (7, 13)]
+        );
+        // Earliest start wins even though the later-starting pattern is first.
+        assert_eq!(
+            find_word_matches("answer", &["swer".into(), "answer".into()]).unwrap(),
+            vec![(0, 6)]
+        );
+        // At the same start, metadata order wins and consumes the range.
+        assert_eq!(
+            find_word_matches("answer", &["ans".into(), "answer".into()]).unwrap(),
+            vec![(0, 3)]
+        );
+    }
+
+    #[test]
+    fn excessive_match_count_fails_closed() {
+        let visible = "a".repeat(MAX_WORD_MATCHES_PER_LINE + 1);
+        assert!(find_word_matches(&visible, &["a".into()]).is_none());
+    }
+
+    #[test]
+    fn highlights_visible_text_without_matching_tags_or_attributes() {
+        let html = r#"<span class="answer">plain</span>"#;
+        assert!(highlight_words_in_html(html, &["answer".into()]).is_none());
+        assert_eq!(
+            highlight_words_in_html(html, &["plain".into()]).unwrap(),
+            r#"<span class="highlighted-word"><span class="answer">plain</span></span>"#
+        );
+    }
+
+    #[test]
+    fn highlights_decoded_html_sensitive_text_and_preserves_entities() {
+        let html = r#"<span class="hi-str">&lt;tag&gt; &amp; &#39;q&#39;</span>"#;
+        assert_eq!(
+            highlight_words_in_html(html, &["<tag> & 'q'".into()]).unwrap(),
+            r#"<span class="highlighted-word"><span class="hi-str">&lt;tag&gt; &amp; &#39;q&#39;</span></span>"#
+        );
+    }
+
+    #[test]
+    fn phrase_crossing_syntax_spans_clones_semantic_markup_at_boundaries() {
+        let html = r#"<span class="hi-var">an</span><span style="color:#123">swer</span> = 1"#;
+        assert_eq!(
+            highlight_words_in_html(html, &["answer".into()]).unwrap(),
+            r#"<span class="highlighted-word"><span class="hi-var">an</span><span style="color:#123">swer</span></span> = 1"#
+        );
+    }
+
+    #[test]
+    fn phrase_inside_nested_syntax_spans_preserves_the_full_role_path() {
+        let html = r#"<span class="outer">an<span class="inner">sw</span>er</span>"#;
+        assert_eq!(
+            highlight_words_in_html(html, &["answer".into()]).unwrap(),
+            r#"<span class="highlighted-word"><span class="outer">an<span class="inner">sw</span>er</span></span>"#
+        );
+    }
+
+    #[test]
+    fn repeated_visible_matches_each_receive_a_wrapper() {
+        let highlighted = highlight_words_in_html("answer answer", &["answer".into()]).unwrap();
+        assert_eq!(highlighted.matches("highlighted-word").count(), 2);
+        assert_eq!(
+            highlighted,
+            r#"<span class="highlighted-word">answer</span> <span class="highlighted-word">answer</span>"#
+        );
+    }
+
+    #[test]
+    fn phrase_boundaries_split_a_syntax_span_without_losing_attributes() {
+        let html = r#"<span class="hi-var" style="color:#123">the answer value</span>"#;
+        assert_eq!(
+            highlight_words_in_html(html, &["answer".into()]).unwrap(),
+            r#"<span class="hi-var" style="color:#123">the </span><span class="highlighted-word"><span class="hi-var" style="color:#123">answer</span></span><span class="hi-var" style="color:#123"> value</span>"#
+        );
+    }
+
+    #[test]
+    fn malformed_highlight_html_fails_closed() {
+        assert!(highlight_words_in_html("<span>answer", &["answer".into()]).is_none());
+        assert!(highlight_words_in_html("<em>answer</em>", &["answer".into()]).is_none());
+    }
+
+    #[test]
+    fn excessive_structural_amplification_fails_closed() {
+        let attribute = "x".repeat(3_000);
+        let visible = "ab".repeat(64);
+        let html = format!(r#"<span data-large="{attribute}">{visible}</span>"#);
+        assert!(highlight_words_in_html(&html, &["a".into()]).is_none());
     }
 
     // ── detect_and_strip_marker ───────────────────────────────────────────────
@@ -705,7 +1269,7 @@ mod tests {
     #[test]
     fn enrich_highlight_adds_attribute() {
         let mut span = make_line_span("const x = 1;");
-        enrich_line_span(&mut span, 1, &[1, 3, 5], false);
+        enrich_line_span(&mut span, 1, &[1, 3, 5], false, &[]);
         let HastNode::Element { attrs, .. } = &span else {
             panic!()
         };
@@ -720,7 +1284,7 @@ mod tests {
     #[test]
     fn enrich_no_highlight_when_not_in_set() {
         let mut span = make_line_span("const x = 1;");
-        enrich_line_span(&mut span, 2, &[1, 3, 5], false);
+        enrich_line_span(&mut span, 2, &[1, 3, 5], false, &[]);
         let HastNode::Element { attrs, .. } = &span else {
             panic!()
         };
@@ -733,7 +1297,7 @@ mod tests {
     #[test]
     fn enrich_diff_marker_adds_attribute_and_strips() {
         let mut span = make_line_span("x = 1 // [!code ++]");
-        enrich_line_span(&mut span, 1, &[], true);
+        enrich_line_span(&mut span, 1, &[], true, &[]);
         let HastNode::Element {
             attrs, children, ..
         } = &span
@@ -766,7 +1330,7 @@ mod tests {
     #[test]
     fn both_diff_and_highlight_can_apply_to_same_line() {
         let mut span = make_line_span("x = 1 // [!code ++]");
-        enrich_line_span(&mut span, 1, &[1], true);
+        enrich_line_span(&mut span, 1, &[1], true, &[]);
         let HastNode::Element { attrs, .. } = &span else {
             panic!()
         };
@@ -779,11 +1343,12 @@ mod tests {
     }
 
     #[test]
-    fn no_op_when_both_features_off() {
+    fn no_op_when_all_features_off() {
         // The visitor should return early without touching the tree.
         let mut plugin = CodeEnrichmentPlugin {
             diff_markers: false,
             line_highlight: false,
+            word_highlight: false,
         };
         let mut root = HastNode::Root {
             children: vec![make_line_span("x = 1 // [!code ++]")],

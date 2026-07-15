@@ -135,7 +135,11 @@ impl From<GfmOptions> for ResolvedGfmConstructs {
 ///     "githubAlerts": true,
 ///     "readingTime": { "wpm": 200 },
 ///     "githubAutolinks": { "repo": "owner/repo" },
-///     "codeEnrichment": { "diffMarkers": true, "lineHighlight": true },
+///     "codeEnrichment": {
+///       "diffMarkers": true,
+///       "lineHighlight": true,
+///       "wordHighlight": true
+///     },
 ///     "codeTabs": true,
 ///     "ruby": true,
 ///     "tocExport": { "maxDepth": 3 },

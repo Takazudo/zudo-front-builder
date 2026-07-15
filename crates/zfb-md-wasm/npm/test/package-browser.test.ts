@@ -124,23 +124,57 @@ describe("packed browser conditional entry", () => {
     for (const resource of resources) {
       expect(entryText).toContain(`./${resource}`);
     }
-    expect(entryText).toContain("?zfbMdWasmGen=");
+    expect(entryText).toContain("zfbMdWasmGen");
+    expect(entryText).toContain("zfbMdWasmAttempt");
 
     // Exercise the emitted browser branch without a browser: its fetch only
     // needs a file: adapter in Node. The dynamic glue import remains exactly
     // the emitted URL with a query, which Node treats as a fresh ESM record.
     const originalFetch = globalThis.fetch;
+    let wasmFetchAttempts = 0;
     globalThis.fetch = async (input) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
       if (url.protocol !== "file:") {
         return originalFetch(input);
+      }
+      if (url.pathname.endsWith(".wasm")) {
+        wasmFetchAttempts += 1;
+        if (wasmFetchAttempts === 1) {
+          return new Response("temporary wasm outage", {
+            status: 503,
+            statusText: "Transient Failure",
+          });
+        }
       }
       return new Response(readFileSync(fileURLToPath(url)), { status: 200 });
     };
     try {
       const bundled = await import(pathToFileURL(entryOutput).href);
       const before = bundled.__getTrapRecoveryStateForTests();
-      await bundled.init();
+      await expect(bundled.init()).rejects.toThrow("503 Transient Failure");
+
+      const afterFailure = bundled.__getTrapRecoveryStateForTests();
+      expect(afterFailure).toMatchObject({
+        compiledModuleLoads: before.compiledModuleLoads + 1,
+        currentGeneration: before.currentGeneration,
+        freshInstanceStarts: before.freshInstanceStarts + 1,
+        glueImportAttempts: before.glueImportAttempts + 1,
+        terminal: false,
+        trapRecoveriesStarted: before.trapRecoveriesStarted,
+      });
+
+      await Promise.all([bundled.init(), bundled.init()]);
+      const afterRetry = bundled.__getTrapRecoveryStateForTests();
+      expect(wasmFetchAttempts).toBe(2);
+      expect(afterRetry).toMatchObject({
+        compiledModuleLoads: before.compiledModuleLoads + 2,
+        currentGeneration: before.currentGeneration,
+        freshInstanceStarts: before.freshInstanceStarts + 2,
+        glueImportAttempts: before.glueImportAttempts + 2,
+        terminal: false,
+        trapRecoveriesStarted: before.trapRecoveriesStarted,
+      });
+
       await expect(bundled.__forceTrapForTests()).rejects.toMatchObject({
         name: "ZfbMdWasmTrapError",
       });
@@ -151,8 +185,10 @@ describe("packed browser conditional entry", () => {
 
       expect(highlighted.diagnostics).toEqual([]);
       expect(after.currentGeneration).toBe(before.currentGeneration + 1);
-      expect(after.freshInstanceStarts).toBe(before.freshInstanceStarts + 2);
-      expect(after.compiledModuleLoads).toBe(before.compiledModuleLoads + 1);
+      expect(after.trapRecoveriesStarted).toBe(before.trapRecoveriesStarted + 1);
+      expect(after.freshInstanceStarts).toBe(before.freshInstanceStarts + 3);
+      expect(after.glueImportAttempts).toBe(before.glueImportAttempts + 3);
+      expect(after.compiledModuleLoads).toBe(before.compiledModuleLoads + 2);
     } finally {
       globalThis.fetch = originalFetch;
     }

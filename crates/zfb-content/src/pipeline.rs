@@ -303,6 +303,7 @@ fn assert_features_fingerprint_covers_every_field(
         Some(CodeEnrichmentConfig {
             diff_markers: _,
             line_highlight: _,
+            word_highlight: _,
         })
         | None => {}
     }
@@ -2357,7 +2358,8 @@ fn register_post_syntect_features_config_derived(
     p: &mut Pipeline,
     features: &zfb_md_extras::MarkdownFeaturesConfig,
 ) {
-    // Wave 5 (#575): code_enrichment — diff markers + line highlighting.
+    // Wave 5 (#575), extended by #1657: code_enrichment — diff markers,
+    // line highlighting, and visible-text word emphasis.
     if let Some(cfg) = &features.code_enrichment {
         p.push_config_derived_hast_visitor(Box::new(
             zfb_md_extras::code_enrichment::CodeEnrichmentPlugin::new(cfg.clone()),

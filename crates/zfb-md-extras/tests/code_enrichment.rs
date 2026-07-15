@@ -3,7 +3,8 @@
 //! Each subdirectory under `tests/fixtures/code_enrichment/` is a self-contained
 //! fixture: `input.md` holds the Markdown source and `expected.html` holds the
 //! expected HTML output after running through a fully-wired pipeline with
-//! `codeEnrichment: {}` (both diff markers and line highlighting enabled).
+//! `codeEnrichment: {}` (diff markers, line highlighting, and word emphasis
+//! enabled).
 
 use zfb_content::pipeline::Pipeline;
 use zfb_content::serializer::serialize;
@@ -20,8 +21,8 @@ fn pipeline_with_enrichment(cfg: CodeEnrichmentConfig) -> Pipeline {
     Pipeline::with_defaults_and_features(&features)
 }
 
-/// Build a pipeline with both enrichment features on (the default).
-fn pipeline_both_on() -> Pipeline {
+/// Build a pipeline with all enrichment features on (the default).
+fn pipeline_all_on() -> Pipeline {
     pipeline_with_enrichment(CodeEnrichmentConfig::default())
 }
 
@@ -34,16 +35,16 @@ fn run(name: &str) {
     .to_string()
         + name;
     run_fixture(&dir, |input| {
-        let mut p = pipeline_both_on();
+        let mut p = pipeline_all_on();
         let hast = p.run(input).expect("pipeline failed");
         serialize(&hast)
     });
 }
 
 /// Build a class-mode pipeline (`codeHighlight.mode: "class"`, Highlight
-/// Tokens epic zfb#1528) with both enrichment features on — the confirm
+/// Tokens epic zfb#1528) with all enrichment features on — the confirm
 /// sub's #1535 check 1: enrichment × class mode.
-fn pipeline_class_both_on() -> Pipeline {
+fn pipeline_class_all_on() -> Pipeline {
     let features = MarkdownFeaturesConfig {
         code_enrichment: Some(CodeEnrichmentConfig::default()),
         ..Default::default()
@@ -67,10 +68,32 @@ fn run_class(name: &str) {
     .to_string()
         + name;
     run_fixture(&dir, |input| {
-        let mut p = pipeline_class_both_on();
+        let mut p = pipeline_class_all_on();
         let hast = p.run(input).expect("pipeline failed");
         serialize(&hast)
     });
+}
+
+/// Run a newly-authored exact-output fixture while tolerating the fixture
+/// file's conventional final newline. Existing normalized fixtures predate
+/// this helper and intentionally remain on [`run_fixture`].
+fn run_word_fixture(name: &str, class_mode: bool) {
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/code_enrichment/"
+    )
+    .to_string()
+        + name;
+    let input = std::fs::read_to_string(format!("{dir}/input.md")).expect("fixture input");
+    let expected =
+        std::fs::read_to_string(format!("{dir}/expected.html")).expect("fixture expected HTML");
+    let mut pipeline = if class_mode {
+        pipeline_class_all_on()
+    } else {
+        pipeline_all_on()
+    };
+    let actual = serialize(&pipeline.run(&input).expect("pipeline failed"));
+    assert_eq!(actual.trim_end(), expected.trim_end(), "fixture {name}");
 }
 
 // ── Line highlighting ──────────────────────────────────────────────────────────
@@ -133,6 +156,34 @@ fn both_features_combined() {
     run("both-features-combined");
 }
 
+// ── Word highlighting ─────────────────────────────────────────────────
+
+/// Word emphasis coexists with a code title, line range, diff marker, and a
+/// second metadata expression in inline-style highlighting mode.
+#[test]
+fn word_highlight_combined_inline_mode() {
+    run_word_fixture("word-highlight-combined", false);
+}
+
+/// The same stable marker preserves semantic syntax-role classes.
+#[test]
+fn word_highlight_class_mode() {
+    run_word_fixture("class-mode-word-highlight", true);
+}
+
+/// Escaped slash delimiters survive Markdown fence metadata parsing and match
+/// the decoded fallback text of an unknown language.
+#[test]
+fn word_highlight_escaped_slash_expression() {
+    let mut pipeline = pipeline_all_on();
+    let input = "```unknown /path\\/name/\npath/name\n```\n";
+    let html = serialize(&pipeline.run(input).expect("pipeline failed"));
+    assert!(
+        html.contains(r#"<span class="highlighted-word">path/name</span>"#),
+        "got: {html}"
+    );
+}
+
 // ── Class mode (Highlight Tokens epic zfb#1528, confirm sub #1535) ─────────────
 
 /// `{1,3}` line highlighting AND `[!code ++]`/`[!code --]` diff markers
@@ -171,6 +222,7 @@ fn diff_markers_disabled_does_not_strip() {
     let cfg = CodeEnrichmentConfig {
         diff_markers: Some(false),
         line_highlight: Some(true),
+        word_highlight: Some(true),
     };
     let mut p = pipeline_with_enrichment(cfg);
     let input = "```js\nconst x = 1; // [!code ++]\n```\n";
@@ -193,6 +245,7 @@ fn line_highlight_disabled_does_not_annotate() {
     let cfg = CodeEnrichmentConfig {
         diff_markers: Some(true),
         line_highlight: Some(false),
+        word_highlight: Some(true),
     };
     let mut p = pipeline_with_enrichment(cfg);
     let input = "```js {1}\nconst x = 1;\n```\n";
@@ -204,12 +257,34 @@ fn line_highlight_disabled_does_not_annotate() {
     );
 }
 
-/// When both flags are `false`, the visitor is a no-op.
+/// `wordHighlight: false` suppresses only word emphasis while line and diff
+/// processing remain enabled.
+#[test]
+fn word_highlight_disabled_keeps_other_enrichments() {
+    let cfg = CodeEnrichmentConfig {
+        diff_markers: Some(true),
+        line_highlight: Some(true),
+        word_highlight: Some(false),
+    };
+    let mut p = pipeline_with_enrichment(cfg);
+    let input = "```js {1} /answer/\nconst answer = 1; // [!code ++]\n```\n";
+    let html = serialize(&p.run(input).expect("pipeline failed"));
+    assert!(html.contains(r#"data-line-diff="added""#), "got: {html}");
+    assert!(
+        html.contains(r#"data-line-highlight="true""#),
+        "got: {html}"
+    );
+    assert!(!html.contains("highlighted-word"), "got: {html}");
+    assert!(!html.contains("[!code ++]"), "got: {html}");
+}
+
+/// When all flags are `false`, the visitor is a no-op.
 #[test]
 fn both_disabled_is_noop() {
     let cfg_disabled = CodeEnrichmentConfig {
         diff_markers: Some(false),
         line_highlight: Some(false),
+        word_highlight: Some(false),
     };
     let cfg_none = MarkdownFeaturesConfig::default();
 
