@@ -6413,14 +6413,18 @@ mod tests {
 
     /// #1202 (4th level): user sets
     /// `markdown.features.codeEnrichment.diffMarkers` and a preset sets the
-    /// DIFFERENT sibling `markdown.features.codeEnrichment.lineHighlight` →
-    /// both survive. This is a genuine 4th-level object collision (markdown →
-    /// features → codeEnrichment → {diffMarkers, lineHighlight}).
+    /// DIFFERENT siblings `markdown.features.codeEnrichment.lineHighlight`
+    /// and `wordHighlight` → all survive. This is a genuine 4th-level object collision (markdown →
+    /// features → codeEnrichment → {diffMarkers, lineHighlight,
+    /// wordHighlight}).
     #[test]
     fn preset_markdown_features_fourth_level_siblings_both_survive() {
         let cfg = merge_presets_to_config(
             vec![serde_json::json!({
-                "markdown": { "features": { "codeEnrichment": { "lineHighlight": false } } }
+                "markdown": { "features": { "codeEnrichment": {
+                    "lineHighlight": false,
+                    "wordHighlight": true
+                } } }
             })],
             serde_json::json!({
                 "markdown": { "features": { "codeEnrichment": { "diffMarkers": false } } }
@@ -6442,6 +6446,11 @@ mod tests {
             enrichment.line_highlight,
             Some(false),
             "preset's sibling codeEnrichment.lineHighlight must survive"
+        );
+        assert_eq!(
+            enrichment.word_highlight,
+            Some(true),
+            "preset's sibling codeEnrichment.wordHighlight must survive"
         );
     }
 

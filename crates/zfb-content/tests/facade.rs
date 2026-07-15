@@ -295,6 +295,33 @@ fn code_enrichment_line_highlight_from_json_config() {
 }
 
 #[test]
+fn code_enrichment_word_highlight_from_json_config() {
+    let input = "```js /answer/\nconst answer = 42;\n```\n";
+    let html = render(r#"{"features": {"codeEnrichment": {}}}"#, input);
+    assert!(html.contains(r#"class="highlighted-word""#), "got: {html}");
+    assert_eq!(
+        html.matches(r#"class="highlighted-word""#).count(),
+        1,
+        "got: {html}"
+    );
+}
+
+#[test]
+fn code_enrichment_word_highlight_can_be_disabled_from_json_config() {
+    let input = "```js {1} /answer/\nconst answer = 42; // [!code ++]\n```\n";
+    let html = render(
+        r#"{"features": {"codeEnrichment": {"wordHighlight": false}}}"#,
+        input,
+    );
+    assert!(!html.contains("highlighted-word"), "got: {html}");
+    assert!(html.contains(r#"data-line-diff="added""#), "got: {html}");
+    assert!(
+        html.contains(r#"data-line-highlight="true""#),
+        "got: {html}"
+    );
+}
+
+#[test]
 fn mermaid_marker_swap_from_json_config() {
     let input = "```mermaid\ngraph TD\nA-->B\n```\n";
     let html = render(r#"{"features": {"mermaid": true}}"#, input);

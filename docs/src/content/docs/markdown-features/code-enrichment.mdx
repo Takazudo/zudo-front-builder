@@ -1,15 +1,16 @@
 ---
 title: Code-block enrichment
-description: Add diff markers and per-line highlighting to fenced code blocks.
+description: Add diff markers, per-line highlighting, and word emphasis to fenced code blocks.
 tier: Opt-in
 ---
 
-The `codeEnrichment` feature adds two interactive code-block enrichments:
+The `codeEnrichment` feature adds three interactive code-block enrichments:
 
 1. **Diff markers** — annotate added/removed lines via `// [!code ++]` / `// [!code --]` comments.
 2. **Line highlighting** — highlight specific lines by adding a range like `{1,3-5}` to the fence info-string.
+3. **Word emphasis** — wrap visible code phrases named by metadata such as `/answer/` in `.highlighted-word`.
 
-Both behaviors run as a hast-phase visitor after the syntect highlighter, operating on the per-line
+All three behaviors run as a hast-phase visitor after the syntect highlighter, operating on the per-line
 `<span class="line">` structure it emits. Reference: [rehype-pretty-code](https://rehype-pretty-code.netlify.app/).
 
 ## Enable
@@ -25,13 +26,14 @@ export default defineConfig({
 });
 ```
 
-Both `diffMarkers` and `lineHighlight` are **on by default** when the feature is enabled.
-To disable either independently:
+`diffMarkers`, `lineHighlight`, and `wordHighlight` are **on by default** when the feature is enabled.
+To disable any subfeature independently:
 
 ```ts
 codeEnrichment: {
   diffMarkers: false,   // disable diff-marker processing
   lineHighlight: true,
+  wordHighlight: true,
 },
 ```
 
@@ -86,15 +88,45 @@ The range syntax supports:
 - Ranges: `{3-5}` (inclusive)
 - Combinations: `{1,3-5,8}`
 
-## Combining both
+## Word emphasis
 
-Diff markers and line highlighting work independently on each line, so the same line can have both:
+Add one or more slash-delimited literal phrases to the fence info-string.
+Every non-overlapping occurrence in the visible code text is wrapped in
+`<span class="highlighted-word">`:
 
 ````md
-```js {2}
-const x = 1; // [!code ++]
-const y = 2;
+```js /answer/ /path\/name/
+const answer = "path/name";
 ```
 ````
 
-Line 1 gets `data-line-diff="added"` (diff marker). Line 2 gets `data-line-highlight="true"` (highlight range).
+Use the stable class in CSS:
+
+```css
+.highlighted-word {
+  background: rgba(255, 255, 0, 0.2);
+}
+```
+
+The slash in a phrase is escaped as `\/`. Matching uses the decoded visible
+code text, not serialized syntax-highlight tags or HTML entities. Syntax token
+classes and inline styles remain on the text inside the wrapper, including
+when one phrase crosses multiple syntax tokens.
+
+Matches are selected from left to right. The earliest visible-text start wins;
+when expressions start at the same position, their order in the fence metadata
+wins. Empty, malformed, and unterminated expressions are ignored.
+
+## Combining enrichments
+
+All subfeatures work independently, so the same line can use them together:
+
+````md
+```js {2} /x/
+const x = 1; // [!code ++]
+const x = 2;
+```
+````
+
+Line 1 gets `data-line-diff="added"` (diff marker), both `x` occurrences get
+`.highlighted-word`, and line 2 gets `data-line-highlight="true"` (highlight range).
