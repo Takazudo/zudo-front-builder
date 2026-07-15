@@ -6182,11 +6182,13 @@ fn concrete_ssr_target_candidates(
 }
 
 fn project_path_is_inside_node_modules(path: &Path, project_root: &Path) -> bool {
-    path.strip_prefix(project_root).is_ok_and(|relative| {
-        relative
-            .components()
-            .any(|component| component.as_os_str() == std::ffi::OsStr::new("node_modules"))
-    })
+    path.strip_prefix(project_root)
+        .is_ok_and(path_is_inside_node_modules)
+}
+
+fn path_is_inside_node_modules(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == std::ffi::OsStr::new("node_modules"))
 }
 
 fn shadow_path_for_project_path(
@@ -6442,8 +6444,10 @@ fn stage_dependency_candidate(
 /// from these sources resolves ONLY if its package was staged as a real copy;
 /// seeding the sources here lets the closure discover those packages (issue
 /// #1645). Every source file is itself a seed, so no transitive first-party
-/// discovery is needed. `node_modules`, infra dirs, and excluded / out-of-root
-/// paths are skipped.
+/// discovery is needed. Explicitly supplied roots may live outside the project
+/// (notably the build package-route overlay); their files still seed project
+/// dependencies, while `node_modules`, infra dirs, and excluded paths are
+/// skipped.
 fn collect_project_source_module_graph_seed_files(
     roots: &[PathBuf],
     project_root: &Path,
@@ -6468,10 +6472,7 @@ fn collect_project_source_module_graph_seed_files(
             if !entry.file_type().is_file() || !is_seed_source(path) {
                 continue;
             }
-            if !path.starts_with(project_root)
-                || project_path_is_inside_node_modules(path, project_root)
-                || bundle_exclude.is_excluded(path, project_root)
-            {
+            if path_is_inside_node_modules(path) || bundle_exclude.is_excluded(path, project_root) {
                 continue;
             }
             out.insert(path.to_path_buf());
@@ -6577,6 +6578,15 @@ fn extend_node_modules_dependency_staging(
             // An unused invalid alternate must remain esbuild-contextual.
             continue;
         };
+        // Overlay pages are physical copies under a per-build temp directory,
+        // but their imports retain project-page semantics. Resolve their bare
+        // dependencies from the synthetic project entry rather than from the
+        // temp directory, which has no project `node_modules` ancestors.
+        let logical_importer = if seed.starts_with(project_root) {
+            seed.as_path()
+        } else {
+            synthetic_importer.as_path()
+        };
         for specifier in &specifiers {
             // Alias-claimed specifiers are resolved by the alias system; staging
             // a same-named installed package would resurrect the excluded-target
@@ -6591,7 +6601,7 @@ fn extend_node_modules_dependency_staging(
                 continue;
             }
             let (logical_dependency, source_dependency) = if let Some(dependency) =
-                resolve_installed_package_dir(seed, &package_name, project_root)
+                resolve_installed_package_dir(logical_importer, &package_name, project_root)
             {
                 (dependency.clone(), dependency)
             } else if let Some(dependency) =
@@ -6605,7 +6615,7 @@ fn extend_node_modules_dependency_staging(
                 continue;
             };
             stage_dependency_candidate(
-                seed,
+                logical_importer,
                 &package_name,
                 logical_dependency,
                 source_dependency,
