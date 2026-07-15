@@ -6350,6 +6350,34 @@ fn specifier_is_alias_claimed(specifier: &str, alias_claimed_keys: &BTreeSet<Str
         .any(|key| specifier_matches_alias_key(specifier, key))
 }
 
+/// Whether staging `package_name` at the project-level `node_modules` would
+/// expose a fallback for any alias-owned specifier in that package namespace.
+/// A universal `*` remains a fallback mapping, but exact subpaths and bounded
+/// wildcards claim the package containing them as well as exact package keys.
+fn package_namespace_is_alias_claimed(
+    package_name: &str,
+    alias_claimed_keys: &BTreeSet<String>,
+) -> bool {
+    alias_claimed_keys.iter().any(|key| {
+        if key == "*" {
+            return false;
+        }
+        if specifier_matches_alias_key(package_name, key) {
+            return true;
+        }
+        let Some(star) = key.find('*') else {
+            return bare_package_name(key).as_deref() == Some(package_name);
+        };
+        let prefix = &key[..star];
+        if prefix.is_empty() {
+            // A suffix-only wildcard can claim a subpath beneath any package.
+            return true;
+        }
+        let representative = key.replacen('*', "__zfb_alias_probe__", 1);
+        bare_package_name(&representative).as_deref() == Some(package_name)
+    })
+}
+
 /// Whether the WHOLE package `package_name` is marked external. esbuild resolves
 /// nothing for a fully-external package, so staging + closure-walking + copying
 /// its tree into the shadow is pure waste (issue #1645). An external entry uses
@@ -6669,7 +6697,7 @@ fn extend_node_modules_dependency_staging(
                         )
                     })
                     .flatten();
-                let (logical_dependency, source_dependency) = if let Some(dependency) =
+                let (mut logical_dependency, source_dependency) = if let Some(dependency) =
                     canonical_dependency
                 {
                     (
@@ -6697,6 +6725,24 @@ fn extend_node_modules_dependency_staging(
                 } else {
                     continue;
                 };
+                if bundle_exclude.is_excluded(&logical_dependency, project_root) {
+                    continue;
+                }
+                // A transitive package may be physically hoisted even though
+                // its importer genuinely depends on it. If its namespace is
+                // alias-owned, copying that hoisted location into the shadow
+                // would let an excluded first-party alias fall back to the npm
+                // package. Keep the physical source, but expose it only beneath
+                // this importer package so ordinary Node resolution still finds
+                // it for the dependency that requested it (#1646).
+                if !bundle_exclude.is_empty()
+                    && package_namespace_is_alias_claimed(
+                        &package_name,
+                        alias_claimed_specifier_keys,
+                    )
+                {
+                    logical_dependency = logical_root.join("node_modules").join(&package_name);
+                }
                 stage_dependency_candidate(
                     &logical_importer,
                     &package_name,
@@ -8307,6 +8353,20 @@ mod tests {
             "@takazudo/zfb-adapter-cloudflare",
             &keys
         ));
+    }
+
+    #[test]
+    fn package_namespace_is_alias_claimed_over_key_shapes() {
+        let claimed = |package: &str, key: &str| {
+            package_namespace_is_alias_claimed(package, &BTreeSet::from([key.to_string()]))
+        };
+        assert!(claimed("collision-alias", "collision-alias"));
+        assert!(claimed("collision-alias", "collision-alias/subpath"));
+        assert!(claimed("collision-alias", "collision-alias/*"));
+        assert!(claimed("@scope/package", "@scope/*"));
+        assert!(claimed("any-package", "*/generated"));
+        assert!(!claimed("unrelated", "collision-alias/*"));
+        assert!(!claimed("unrelated", "*"));
     }
 
     #[test]
