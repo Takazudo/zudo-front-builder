@@ -81,20 +81,9 @@ for (const relativePath of [
     );
   }
 }
-const loaderSource = resolve(
-  testRoot,
-  "fixture-site",
-  "node_modules",
-  "@zfb-fixture",
-  "md-wasm-loader",
-  "index.js",
-);
-if (
-  !existsSync(loaderSource) ||
-  readFileSync(loaderSource, "utf8") !==
-    'export const loadMdWasm = () => import("@takazudo/zfb-md-wasm");\n'
-) {
-  throw new Error("fixture is missing the installed user-triggered packed md-wasm root importer");
+const firstPartySource = resolve(testRoot, "fixture-site", "components", "md-wasm-highlighter.tsx");
+if (!readFileSync(firstPartySource, "utf8").includes('import("@takazudo/zfb-md-wasm")')) {
+  throw new Error("fixture is missing the first-party packed md-wasm root importer");
 }
 
 console.log("md-wasm browser fixture is staged from the asserted packed tarball");
