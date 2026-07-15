@@ -314,11 +314,9 @@ fn user_page_bare_import_is_staged_from_package_route_overlay() {
     fs::create_dir_all(root.join("pages")).unwrap();
     fs::write(
         root.join("pages/index.tsx"),
-        r#"import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+        r#"import { slugify } from "@takazudo/zfb/slugify";
 export default function Page() {
-  const marker = typeof getCloudflareContext === "function"
-    ? "OVERLAY_BARE_IMPORT_STAGED"
-    : "OVERLAY_BARE_IMPORT_MISSING";
+  const marker = slugify("OVERLAY BARE IMPORT STAGED");
   return <html lang="en"><body><p>{marker}</p></body></html>;
 }
 "#,
@@ -358,10 +356,9 @@ export default function Page() {
     assert!(home.is_file(), "expected dist/index.html");
     let body = fs::read_to_string(&home).unwrap();
     assert!(
-        body.contains("OVERLAY_BARE_IMPORT_STAGED"),
+        body.contains("overlay-bare-import-staged"),
         "the overlay user page's project dependency must resolve from the staged view; got: {body}"
     );
-    assert!(!body.contains("OVERLAY_BARE_IMPORT_MISSING"), "{body}");
 }
 
 // ---------------------------------------------------------------------------
