@@ -741,7 +741,8 @@ impl FsResolver {
     /// imports into a different on-disk shape (e.g. `src/<sub>/index.ts`)
     /// — the common pattern for un-built TypeScript workspace packages.
     /// Conditional shapes (`{ "source": "...", "default": "..." }`) are
-    /// flattened in priority `source` → `default` → `import`; pattern
+    /// flattened in priority `source` → `module` → `browser` → `default` →
+    /// `import`; pattern
     /// entries (`*` wildcards) are intentionally not handled here.
     ///
     /// Bare-package imports (no subpath) read `package.json` and try
@@ -1142,8 +1143,8 @@ fn substitute_alias_target(target: &str, rest: Option<&str>) -> String {
 ///
 /// - Single string: `"./sub": "./src/sub/index.ts"` — returned as-is.
 /// - Conditional object: `"./sub": { "source": "...", "default": "..." }`
-///   — flattened in priority `source` → `default` → `import` to prefer
-///   un-built source over compiled output.
+///   — flattened in priority `source` → `module` → `browser` → `default` →
+///   `import` to prefer un-built source, then browser-compatible output.
 ///
 /// **Out of scope** (intentional limits):
 ///
@@ -1211,7 +1212,8 @@ fn resolve_exports_dot(pkg_json: &serde_json::Value) -> Option<String> {
 /// Recursively pick a target string out of an `exports` entry value.
 ///
 /// Plain strings are returned verbatim; conditional objects are
-/// walked in priority `source` → `default` → `import`. The first key
+/// walked in priority `source` → `module` → `browser` → `default` → `import`.
+/// The first key
 /// that resolves to a string (after recursion through nested
 /// conditional shapes) wins. Arrays of fallbacks (`["./a", "./b"]`)
 /// take the first string entry.
@@ -1220,7 +1222,8 @@ fn flatten_exports_entry(value: &serde_json::Value) -> Option<String> {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Object(_) => {
             // Priority: `source` (un-built TS workspace source) → `module`
-            // / `default` (ESM dist) → `import` (ESM entry condition).
+            // (generic ESM dist) → `browser` (browser-compatible dist) →
+            // `default` → `import` (generic ESM entry conditions).
             // `require`/`types`/`node` are intentionally skipped — we only
             // scan ESM source. `default` is kept ahead of `import` to
             // preserve the pre-#999 contract (see the
@@ -1230,7 +1233,7 @@ fn flatten_exports_entry(value: &serde_json::Value) -> Option<String> {
             // fixed ESM-only priority instead — pinning `module` ahead of
             // `default` — diverging from Node's author-controlled
             // condition-order semantics.
-            for cond in ["source", "module", "default", "import"] {
+            for cond in ["source", "module", "browser", "default", "import"] {
                 if let Some(inner) = value.get(cond) {
                     if let Some(found) = flatten_exports_entry(inner) {
                         return Some(found);
@@ -5306,12 +5309,18 @@ mod tests {
     }
 
     #[test]
-    fn resolve_exports_subpath_prefers_source_then_default_then_import() {
+    fn resolve_exports_subpath_prefers_source_then_browser_then_default_then_import() {
         let json: serde_json::Value = serde_json::from_str(
-            r#"{ "exports": { "./a": { "source": "S", "default": "D", "import": "I" } } }"#,
+            r#"{ "exports": { "./a": { "source": "S", "browser": "B", "default": "D", "import": "I" } } }"#,
         )
         .unwrap();
         assert_eq!(resolve_exports_subpath(&json, "a"), Some("S".to_string()));
+
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{ "exports": { "./a": { "browser": "B", "default": "D", "import": "I" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_exports_subpath(&json, "a"), Some("B".to_string()));
 
         let json: serde_json::Value =
             serde_json::from_str(r#"{ "exports": { "./a": { "default": "D", "import": "I" } } }"#)
@@ -5349,6 +5358,18 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(r#"{ "exports": { "default": "D", "module": "M" } }"#).unwrap();
         assert_eq!(resolve_exports_dot(&json), Some("M".to_string()));
+    }
+
+    #[test]
+    fn resolve_exports_dot_prefers_browser_over_default() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{ "exports": { ".": { "types": "./dist/index.d.ts", "browser": "./dist/browser.js", "default": "./dist/index.js" } } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_exports_dot(&json),
+            Some("./dist/browser.js".to_string())
+        );
     }
 
     #[test]

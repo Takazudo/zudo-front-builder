@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "preact/hooks";
-import { loadMdWasm } from "@zfb-fixture/md-wasm-loader";
+
+const loadMdWasm = () => import("@takazudo/zfb-md-wasm");
 
 const EXAMPLES = [
   ["html", '<main data-x="a & b">hello</main>'],
@@ -38,9 +39,9 @@ export function MdWasmHighlighter() {
   async function runHighlights(): Promise<void> {
     setStatus("Loading the packed browser package…");
 
-    // The installed fixture adapter performs the exact package-root lazy
-    // import. zfb's islands bundler must emit the package's glue and wasm
-    // resources, but neither is requested until this click invokes it.
+    // This first-party module performs the public package-root lazy import.
+    // zfb's islands bundler must emit the package's glue and wasm resources,
+    // but neither is requested until this click invokes it.
     const wasm = await loadMdWasm();
     const rendered: RenderedHighlights = {};
     for (const [language, code] of EXAMPLES) {
