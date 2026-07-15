@@ -67,7 +67,7 @@ pub struct GithubAutolinksConfig {
 
 /// Options for the `codeEnrichment` feature.
 ///
-/// Both flags default to `true` (ON) when the feature is enabled with the
+/// All flags default to `true` (ON) when the feature is enabled with the
 /// shorthand `codeEnrichment: {}` or when a field is absent.
 ///
 /// Mirrors `CodeEnrichmentConfig` in `packages/zfb/src/config.ts`.
@@ -87,6 +87,12 @@ pub struct CodeEnrichmentConfig {
     /// Defaults to `true` when absent.
     #[serde(default)]
     pub line_highlight: Option<bool>,
+    /// Enable visible-text word emphasis: slash-delimited literal phrases in
+    /// fence metadata (for example `/answer/`) are wrapped in
+    /// `<span class="highlighted-word">` after syntax highlighting. Defaults
+    /// to `true` when absent.
+    #[serde(default)]
+    pub word_highlight: Option<bool>,
 }
 
 /// Options for the `tocExport` feature.

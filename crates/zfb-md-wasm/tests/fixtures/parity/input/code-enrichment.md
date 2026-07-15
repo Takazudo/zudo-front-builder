@@ -1,5 +1,5 @@
-```js {2}
+```js {2} /word/
 const removed = 1; // [!code --]
-const kept = 2;
+const word = 2;
 const added = 3; // [!code ++]
 ```

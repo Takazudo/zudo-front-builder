@@ -916,7 +916,7 @@ export type GithubAutolinksConfig = {
 /**
  * Options for the `codeEnrichment` feature.
  *
- * Both flags default to `true` when the feature is enabled with
+ * All flags default to `true` when the feature is enabled with
  * `codeEnrichment: {}` or when a field is absent.
  *
  * Mirrors `CodeEnrichmentConfig` in `crates/zfb-md-ast/src/features_config.rs`.
@@ -932,6 +932,11 @@ export type CodeEnrichmentConfig = {
    * Default: `true`.
    */
   lineHighlight?: boolean;
+  /**
+   * Enable visible-text word emphasis for slash-delimited fence metadata
+   * such as `/answer/`. Default: `true`.
+   */
+  wordHighlight?: boolean;
 };
 
 /**
