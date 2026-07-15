@@ -53,6 +53,28 @@ fn link_embedded_node_modules(root: &Path) -> tempfile::TempDir {
     nm_handle
 }
 
+/// Copy the embedded runtime packages into a real workspace-level
+/// `node_modules` so both a consumer app and its linked sibling package can
+/// resolve the same live dependency graph in the regression fixture.
+fn materialize_embedded_node_modules(root: &Path) {
+    let (_nm_handle, embedded_nm_path) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    copy_dir(&embedded_nm_path, &root.join("node_modules"));
+}
+
+fn copy_dir(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).expect("create_dir_all");
+    for entry in fs::read_dir(src).expect("read_dir").flatten() {
+        let ty = entry.file_type().expect("file_type");
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir(&entry.path(), &dst_path);
+        } else {
+            fs::copy(entry.path(), &dst_path).expect("copy file");
+        }
+    }
+}
+
 /// Run `zfb build` in `root` with the supplied esbuild binary.
 fn run_zfb_build(root: &Path, esbuild: &Path) -> std::process::Output {
     Command::new(zfb_binary!())
@@ -358,6 +380,111 @@ export default function Page() {
     assert!(
         body.contains("overlay-bare-import-staged"),
         "the overlay user page's project dependency must resolve from the staged view; got: {body}"
+    );
+}
+
+/// A workspace-linked package route must execute against the same staged
+/// Preact singleton as the generated renderer when `bundle.exclude` disables
+/// the live shadow `node_modules` link. The package page self-imports a sibling
+/// component that calls `useState`, reproducing issue #1650's split graph.
+#[test]
+fn workspace_package_route_hooks_share_staged_preact_identity() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[workspace_route_hooks] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[workspace_route_hooks] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspace = tmp.path();
+    materialize_embedded_node_modules(workspace);
+
+    let root = workspace.join("apps/site");
+    fs::create_dir_all(root.join("pages")).unwrap();
+    std::os::unix::fs::symlink(workspace.join("node_modules"), root.join("node_modules"))
+        .expect("link app node_modules to workspace dependencies");
+
+    let package_root = workspace.join("packages/route-package");
+    fs::create_dir_all(package_root.join("src")).unwrap();
+    fs::write(
+        package_root.join("package.json"),
+        r#"{
+  "name": "@fixture/route-package",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    "./sidebar-toggle": "./src/sidebar-toggle.tsx"
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        package_root.join("src/sidebar-toggle.tsx"),
+        r#"import { useState } from "preact/hooks";
+export function SidebarToggle() {
+  const [label] = useState("WORKSPACE_ROUTE_HOOK_SINGLETON");
+  return <p>{label}</p>;
+}
+"#,
+    )
+    .unwrap();
+    let entrypoint = package_root.join("src/page.tsx");
+    fs::write(
+        &entrypoint,
+        r#"import { SidebarToggle } from "@fixture/route-package/sidebar-toggle";
+export default function Page() {
+  return <html lang="en"><body><SidebarToggle /></body></html>;
+}
+"#,
+    )
+    .unwrap();
+
+    let package_link = workspace.join("node_modules/@fixture/route-package");
+    fs::create_dir_all(package_link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&package_root, &package_link)
+        .expect("link workspace route package into node_modules");
+
+    let entrypoint_json = serde_json::to_string(&entrypoint.to_string_lossy()).unwrap();
+    fs::write(
+        root.join("preset.mjs"),
+        format!(
+            r#"export default {{
+  name: "workspace-route-hooks",
+  setup({{ injectRoute }}) {{
+    injectRoute("/package-hooks", {entrypoint_json});
+  }},
+}};
+"#,
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/index.tsx"),
+        page_module("WORKSPACE_ROUTE_HOME"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{
+  "framework": "preact",
+  "plugins": [{ "name": "./preset.mjs" }],
+  "bundle": { "exclude": ["e2e/fixtures/**", "_temp-resource/**"] }
+}
+"#,
+    )
+    .unwrap();
+
+    let Some(dist) = build_or_skip(&root, &esbuild, "workspace_route_hooks") else {
+        return;
+    };
+    let body = fs::read_to_string(dist.join("package-hooks/index.html")).unwrap();
+    assert!(
+        body.contains("WORKSPACE_ROUTE_HOOK_SINGLETON"),
+        "the linked package route hook must render through the shared staged Preact identity; got: {body}"
     );
 }
 
