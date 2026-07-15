@@ -132,6 +132,9 @@ const MAX_WORD_META_BYTES: usize = 16 * 1024;
 const MAX_WORD_EXPRESSIONS: usize = 32;
 const MAX_WORD_PATTERN_BYTES: usize = 256;
 const MAX_TOTAL_WORD_PATTERN_BYTES: usize = 4 * 1024;
+const MAX_WORD_MATCHES_PER_LINE: usize = 16 * 1024;
+const MAX_WORD_OUTPUT_AMPLIFICATION: usize = 16;
+const MAX_WORD_OUTPUT_EXTRA_BYTES: usize = 4 * 1024;
 const MAX_SYNTAX_SPAN_DEPTH: usize = 32;
 const MAX_SYNTAX_TAG_BYTES: usize = 4 * 1024;
 
@@ -259,7 +262,7 @@ fn parse_word_expression(meta: &str, opening: usize) -> Option<(usize, String)> 
 /// Select non-overlapping matches from left to right. At a shared start,
 /// metadata order wins because `phrases` is checked in order. Advancing to a
 /// winning match's end makes that visible range unavailable to later matches.
-fn find_word_matches(visible: &str, phrases: &[String]) -> Vec<(usize, usize)> {
+fn find_word_matches(visible: &str, phrases: &[String]) -> Option<Vec<(usize, usize)>> {
     let mut matches = Vec::new();
     let mut pos = 0usize;
     while pos < visible.len() {
@@ -270,6 +273,9 @@ fn find_word_matches(visible: &str, phrases: &[String]) -> Vec<(usize, usize)> {
         {
             let end = pos + phrase.len();
             matches.push((pos, end));
+            if matches.len() > MAX_WORD_MATCHES_PER_LINE {
+                return None;
+            }
             pos = end;
         } else {
             let Some(ch) = tail.chars().next() else {
@@ -278,7 +284,7 @@ fn find_word_matches(visible: &str, phrases: &[String]) -> Vec<(usize, usize)> {
             pos += ch.len_utf8();
         }
     }
-    matches
+    Some(matches)
 }
 
 #[derive(Debug, Clone)]
@@ -312,10 +318,19 @@ fn highlight_words_in_html(raw_html: &str, phrases: &[String]) -> Option<String>
         return None;
     }
     let (visible, runs) = tokenize_visible_html(raw_html)?;
-    let matches = find_word_matches(&visible, phrases);
+    let matches = find_word_matches(&visible, phrases)?;
     if matches.is_empty() {
         return None;
     }
+
+    // Splitting/reopening a syntax path necessarily duplicates its opening
+    // tags. Keep that structural amplification proportional to the original
+    // line fragment; crafted one-character matches inside a huge attribute
+    // must fail closed instead of allocating an arbitrarily large result.
+    let output_budget = raw_html
+        .len()
+        .saturating_mul(MAX_WORD_OUTPUT_AMPLIFICATION)
+        .saturating_add(MAX_WORD_OUTPUT_EXTRA_BYTES);
 
     // Start at input size and let the buffer grow with actual wrappers. A
     // crafted input with one match per character must not trigger a large
@@ -340,6 +355,9 @@ fn highlight_words_in_html(raw_html: &str, phrases: &[String]) -> Option<String>
                 &mut current_highlight,
                 highlighted,
             );
+            if out.len().saturating_add(unit.raw.len()) > output_budget {
+                return None;
+            }
             out.push_str(unit.raw);
         }
     }
@@ -348,7 +366,7 @@ fn highlight_words_in_html(raw_html: &str, phrases: &[String]) -> Option<String>
     if current_highlight {
         out.push_str("</span>");
     }
-    Some(out)
+    (out.len() <= output_budget).then_some(out)
 }
 
 fn transition_render_path<'a>(
@@ -1003,19 +1021,25 @@ mod tests {
     #[test]
     fn word_matching_repeats_and_resolves_overlaps_by_start_then_meta_order() {
         assert_eq!(
-            find_word_matches("answer answer", &["answer".into()]),
+            find_word_matches("answer answer", &["answer".into()]).unwrap(),
             vec![(0, 6), (7, 13)]
         );
         // Earliest start wins even though the later-starting pattern is first.
         assert_eq!(
-            find_word_matches("answer", &["swer".into(), "answer".into()]),
+            find_word_matches("answer", &["swer".into(), "answer".into()]).unwrap(),
             vec![(0, 6)]
         );
         // At the same start, metadata order wins and consumes the range.
         assert_eq!(
-            find_word_matches("answer", &["ans".into(), "answer".into()]),
+            find_word_matches("answer", &["ans".into(), "answer".into()]).unwrap(),
             vec![(0, 3)]
         );
+    }
+
+    #[test]
+    fn excessive_match_count_fails_closed() {
+        let visible = "a".repeat(MAX_WORD_MATCHES_PER_LINE + 1);
+        assert!(find_word_matches(&visible, &["a".into()]).is_none());
     }
 
     #[test]
@@ -1078,6 +1102,14 @@ mod tests {
     fn malformed_highlight_html_fails_closed() {
         assert!(highlight_words_in_html("<span>answer", &["answer".into()]).is_none());
         assert!(highlight_words_in_html("<em>answer</em>", &["answer".into()]).is_none());
+    }
+
+    #[test]
+    fn excessive_structural_amplification_fails_closed() {
+        let attribute = "x".repeat(3_000);
+        let visible = "ab".repeat(64);
+        let html = format!(r#"<span data-large="{attribute}">{visible}</span>"#);
+        assert!(highlight_words_in_html(&html, &["a".into()]).is_none());
     }
 
     // ── detect_and_strip_marker ───────────────────────────────────────────────
