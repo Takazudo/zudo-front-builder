@@ -1018,6 +1018,93 @@ async fn run_and_assert_workspace_shape_development(root: &Path, esbuild: &Path)
     assert_text_omits_sub_packages(&session.logs(), "pnpm-workspace development output");
 }
 
+// Issue #1674: a genuinely-CLAIMED pnpm-workspace sub-package host whose client
+// graph reaches SIBLING workspace source through `?raw` (entry) and a
+// project-local module worker (whose own graph reaches a second sibling
+// `?raw`). The build runs with the host — `sub-packages/reroot-host` — as the
+// project root; `first_party_root_for` widens to the copied workspace root so
+// the sibling raw payloads inline instead of erroring "outside the mirrorable
+// project tree". The two sibling payloads live under `sub-packages/reroot-shared`.
+const REROOT_HOST_REL: &str = "sub-packages/reroot-host";
+const REROOT_ENTRY_RAW: &str = "ZFB_REROOT_SIBLING_ENTRY_RAW_PAYLOAD";
+const REROOT_WORKER_RAW: &str = "ZFB_REROOT_SIBLING_WORKER_RAW_PAYLOAD";
+
+fn reroot_worker_filename(host_root: &Path) -> String {
+    zfb_types::module_worker_filename(host_root, &host_root.join("src/reroot.worker.ts"))
+        .expect("derive reroot host worker companion filename")
+}
+
+fn run_and_assert_reroot_host_production(host_root: &Path, esbuild: &Path) {
+    run_zfb_build(host_root, esbuild, "the workspace reroot host");
+
+    let client_dir = host_root.join("dist/assets/client");
+    let client_entry = read_text(&find_single_asset(&client_dir, "reroot-"));
+    assert_contains_all(
+        &client_entry,
+        &["ZFB_REROOT_CLIENT_ENTRY", REROOT_ENTRY_RAW],
+        "reroot host production client entry",
+    );
+    assert_contains_none(
+        &client_entry,
+        &["?raw"],
+        "reroot host production client entry",
+    );
+
+    let worker = read_text(&client_dir.join(reroot_worker_filename(host_root)));
+    assert_contains_all(
+        &worker,
+        &["ZFB_REROOT_WORKER_ENTRY", REROOT_WORKER_RAW],
+        "reroot host production worker",
+    );
+    assert_contains_none(&worker, &["?raw"], "reroot host production worker");
+}
+
+async fn run_and_assert_reroot_host_development(host_root: &Path, esbuild: &Path) {
+    let mut session = spawn_dev(host_root, esbuild);
+    let port = wait_for_ready(&mut session).await;
+    let origin = format!("http://localhost:{port}");
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build loopback HTTP client");
+
+    let client_entry = poll_body(
+        &client,
+        &format!("{origin}/assets/client/reroot.js"),
+        "ZFB_REROOT_CLIENT_ENTRY",
+        "reroot host development client entry",
+        &session,
+    )
+    .await;
+    assert_contains_all(
+        &client_entry,
+        &[REROOT_ENTRY_RAW],
+        "reroot host development client entry",
+    );
+    assert_contains_none(
+        &client_entry,
+        &["?raw"],
+        "reroot host development client entry",
+    );
+
+    let worker_filename = reroot_worker_filename(host_root);
+    let worker = poll_body(
+        &client,
+        &format!("{origin}/assets/client/{worker_filename}"),
+        "ZFB_REROOT_WORKER_ENTRY",
+        "reroot host development worker",
+        &session,
+    )
+    .await;
+    assert_contains_all(
+        &worker,
+        &[REROOT_WORKER_RAW],
+        "reroot host development worker",
+    );
+    assert_contains_none(&worker, &["?raw"], "reroot host development worker");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
             cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
@@ -1068,4 +1155,30 @@ async fn real_binary_build_and_dev_cover_pnpm_workspace_raw_hardening_contract()
     copy_fixture(&fixture_dir(), development.path())
         .expect("copy pnpm-workspace development fixture");
     run_and_assert_workspace_shape_development(development.path(), &esbuild).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
+async fn real_binary_build_and_dev_cover_workspace_reroot_host_contract() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let esbuild = locate_esbuild().expect(
+        "workspace reroot-host cross-pipeline test requires the pinned esbuild binary; \
+         set ZFB_ESBUILD_BIN to an absolute executable path",
+    );
+    assert!(
+        esbuild.is_absolute(),
+        "locate_esbuild must resolve an absolute binary path, got {}",
+        esbuild.display(),
+    );
+
+    let production = tempfile::tempdir().expect("reroot-host production fixture tempdir");
+    copy_fixture(&fixture_dir(), production.path()).expect("copy reroot-host production fixture");
+    run_and_assert_reroot_host_production(&production.path().join(REROOT_HOST_REL), &esbuild);
+
+    let development = tempfile::tempdir().expect("reroot-host development fixture tempdir");
+    copy_fixture(&fixture_dir(), development.path()).expect("copy reroot-host development fixture");
+    run_and_assert_reroot_host_development(&development.path().join(REROOT_HOST_REL), &esbuild)
+        .await;
 }

@@ -1,0 +1,5 @@
+{
+  "name": "@zfb-test/reroot-shared",
+  "private": true,
+  "type": "module"
+}
