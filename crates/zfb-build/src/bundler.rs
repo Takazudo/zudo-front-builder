@@ -2705,44 +2705,80 @@ pub fn bundle_with_session(
     //     (linked at `<shadow>/node_modules` by 2b below). esbuild walks up
     //     from a project-mirror file to `<shadow>/node_modules` first, then to
     //     `<work>/node_modules`, preserving nearest-package precedence for the
-    //     day sibling sources are staged (a later sub-issue). Without a
-    //     workspace `workspace_rel` is `None`, so this is skipped entirely and
-    //     the layout stays byte-identical. Created directly (not through the
-    //     ShadowWriter), like the 2b link, so it never enters the prune
-    //     bookkeeping. In session mode a dirty/copy-mode-flip wipe of `work`
-    //     removes it, and this re-creates it (the `already_correct` short
-    //     circuit keeps the steady-state tick a no-op).
+    //     day sibling sources are staged (a later sub-issue).
+    //
+    //     WHAT lives there follows `bundle.exclude` EXACTLY like the 2b link:
+    //     - Empty exclude → create the live link (byte-identical nearest
+    //       -package fallback).
+    //     - Exclusions active → the live link is a resurrection hatch: esbuild
+    //       could climb `<work>/node_modules` to a package the staged
+    //       `<shadow>` view deliberately omits, and the metafile audit cannot
+    //       catch it because the canonical workspace-root path is OUTSIDE
+    //       `project_root`, where the exclusion matcher always returns false.
+    //       So it is NEVER created, and a stale link from a previous empty
+    //       -exclude tick of a persistent session is actively removed (same
+    //       empty→non-empty transition the 2b block handles).
+    //
+    //     Without a workspace `workspace_rel` is `None`, so this is skipped
+    //     entirely and the layout stays byte-identical. Created/removed
+    //     directly (not through the ShadowWriter), like the 2b link, so it
+    //     never enters the prune bookkeeping.
     if workspace_rel.is_some() {
         let workspace_node_modules = first_party_root.join("node_modules");
         if workspace_node_modules.is_dir() {
             let work_nm = work.join("node_modules");
-            #[cfg(unix)]
-            {
-                let already_correct = fs::read_link(&work_nm)
-                    .map(|t| t == workspace_node_modules)
-                    .unwrap_or(false);
-                if !already_correct {
-                    let _ = fs::remove_file(&work_nm);
-                    let _ = fs::remove_dir_all(&work_nm);
-                    std::os::unix::fs::symlink(&workspace_node_modules, &work_nm).with_context(
-                        || {
-                            format!(
-                                "bundler: failed to symlink workspace node_modules {} → {}",
-                                workspace_node_modules.display(),
-                                work_nm.display()
-                            )
-                        },
-                    )?;
+            if bundle_exclude.is_empty() {
+                #[cfg(unix)]
+                {
+                    let already_correct = fs::read_link(&work_nm)
+                        .map(|t| t == workspace_node_modules)
+                        .unwrap_or(false);
+                    if !already_correct {
+                        let _ = fs::remove_file(&work_nm);
+                        let _ = fs::remove_dir_all(&work_nm);
+                        std::os::unix::fs::symlink(&workspace_node_modules, &work_nm)
+                            .with_context(|| {
+                                format!(
+                                    "bundler: failed to symlink workspace node_modules {} → {}",
+                                    workspace_node_modules.display(),
+                                    work_nm.display()
+                                )
+                            })?;
+                    }
                 }
-            }
-            #[cfg(not(unix))]
-            {
-                fs::create_dir_all(&work_nm).with_context(|| {
-                    format!(
-                        "bundler: failed to create workspace node_modules dir {}",
-                        work_nm.display()
-                    )
-                })?;
+                #[cfg(not(unix))]
+                {
+                    fs::create_dir_all(&work_nm).with_context(|| {
+                        format!(
+                            "bundler: failed to create workspace node_modules dir {}",
+                            work_nm.display()
+                        )
+                    })?;
+                }
+            } else {
+                // Exclusions active: remove any stale live link left by a
+                // previous empty-exclude tick of a persistent session.
+                // `remove_file` deletes the symlink itself (not its target);
+                // a real dir (never created here) is left untouched.
+                #[cfg(unix)]
+                {
+                    if fs::symlink_metadata(&work_nm)
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                    {
+                        let _ = fs::remove_file(&work_nm);
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    if fs::symlink_metadata(&work_nm)
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                    {
+                        let _ = fs::remove_file(&work_nm);
+                        let _ = fs::remove_dir(&work_nm);
+                    }
+                }
             }
         }
     }
@@ -12879,7 +12915,11 @@ mod tests {
             fs::remove_file(dest).unwrap();
             fs::write(dest, b"__CORRUPT_NOT_THE_SOURCE__").unwrap();
         }
-        fs::write(project.join("pages/index.tsx"), "export const V = 1234567;\n").unwrap();
+        fs::write(
+            project.join("pages/index.tsx"),
+            "export const V = 1234567;\n",
+        )
+        .unwrap();
         fs::remove_file(project.join("pages/about.tsx")).unwrap();
 
         bundle_with_session(mock_ssr_input(&project), Some(&mut session))
@@ -12981,6 +13021,67 @@ mod tests {
                 None,
             ),
             non_project.to_path_buf(),
+        );
+    }
+
+    #[test]
+    fn ssr_shadow_workspace_node_modules_link_honors_bundle_exclude() {
+        // The workspace-hoisted `<work>/node_modules` link is a live-tree
+        // resolution root, so it must obey `bundle.exclude` exactly like the
+        // project-level 2b link: created under an empty exclude, but NEVER
+        // under active exclusions (else esbuild could climb it to a package
+        // the staged `<shadow>` view deliberately omits — a resurrection
+        // hatch the metafile audit cannot catch because the canonical
+        // workspace-root path is outside `project_root`).
+        let ws_tmp = tempfile::tempdir().unwrap();
+        let ws_root = ws_tmp.path();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        // A real workspace-hoisted node_modules so the link has a target.
+        fs::create_dir_all(ws_root.join("node_modules/left-pad")).unwrap();
+        fs::write(
+            ws_root.join("node_modules/left-pad/index.js"),
+            "module.exports = 0;\n",
+        )
+        .unwrap();
+        let project = ws_root.join("sub-packages/host");
+        for dir in ["pages", "content", "components", "layouts"] {
+            fs::create_dir_all(project.join(dir)).unwrap();
+        }
+        fs::write(
+            project.join("pages/index.tsx"),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+
+        let work_nm = |session: &ShadowSession| session.shadow_root().join("node_modules");
+
+        // Tick 1 — empty exclude: the workspace-hoisted link IS created.
+        let mut session = ShadowSession::new(&project).unwrap();
+        bundle_with_session(mock_ssr_input(&project), Some(&mut session))
+            .expect("tick 1 (empty exclude) mock bundle");
+        assert!(
+            fs::symlink_metadata(work_nm(&session))
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false),
+            "an empty bundle.exclude must create the workspace-hoisted node_modules link"
+        );
+
+        // Tick 2 — same session, exclusions now active: the stale live link
+        // must be removed (empty→non-empty transition), so no live-tree escape
+        // survives.
+        let excluded_input = BundlerInput {
+            bundle_exclude: vec!["**/*.secret".to_string()],
+            ..mock_ssr_input(&project)
+        };
+        bundle_with_session(excluded_input, Some(&mut session))
+            .expect("tick 2 (active exclude) mock bundle");
+        assert!(
+            !work_nm(&session).exists(),
+            "active bundle.exclude must remove the workspace-hoisted link (live-tree escape)"
         );
     }
 
