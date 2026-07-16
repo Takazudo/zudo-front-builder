@@ -3960,6 +3960,12 @@ fn stage_client_script_preprocessing_with_worker_context(
     // live tree. `materialise_client_preprocess_stage_file` keys expansions on
     // `paths.path_key`, so a sibling `?raw`/worker importer is written with its
     // already-computed rewrite (and any generated raw modules) automatically.
+    //
+    // Dev-invalidation gap (issue #1683): sibling NORMAL modules staged here are
+    // outside the project's client-script roots and absent from the returned
+    // `raw_targets`/`worker_targets`, so editing one does not yet rebuild the
+    // client script in `zfb dev`. Sibling `?raw` targets and worker deps do
+    // invalidate.
     let mut sibling_closure: std::collections::BTreeSet<PathBuf> =
         std::collections::BTreeSet::new();
     let mut consider_sibling = |physical: &Path| {
@@ -4007,6 +4013,12 @@ fn stage_client_script_preprocessing_with_worker_context(
     // boundary); the project's own nested install at the mirrored project dir.
     // Without a workspace both collapse to the single root-level symlink,
     // byte-identical to the pre-#1674 behavior.
+    //
+    // Known limitation (issue #1682, shared with the islands shadow): a sibling
+    // imported through its pnpm PACKAGE NAME resolves through this live
+    // node_modules link to the unprocessed source, bypassing the staged
+    // rewrite. Sibling reach via tsconfig alias / relative path (what #1674
+    // covers) resolves to the staged files instead.
     if let Some(node_modules) = &first_party_node_modules {
         shadow_symlink(node_modules, &root.join("node_modules")).with_context(|| {
             format!(
