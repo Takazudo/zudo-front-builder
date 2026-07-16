@@ -54,8 +54,26 @@ use crate::policy::{classify_change_with_content_roots, GranularityPolicy, PathC
 
 /// Register non-recursive parent watches for browser dependency closures
 /// discovered outside the configured recursive source roots.
+///
+/// The parents newly watched by a call are the out-of-recursive-root
+/// dependency directories that just entered the watch set — in a pnpm
+/// workspace these are the sibling-package source directories backing a
+/// client-script `?raw` / module-worker target the latest bundle discovered
+/// (issue #1678). They become watched restart-free, on the very tick that
+/// discovers them, so the edit that introduces a new sibling import is enough
+/// to make subsequent sibling edits invalidate. That registration is
+/// otherwise silent and asynchronous, so — behind the shared `ZFB_DEV_TIMING`
+/// flag — each newly watched directory is surfaced as an observable
+/// `watch-extra registered:` line. It is the deterministic signal an e2e keys
+/// its "the sibling directory is now watched" wait on before editing the
+/// sibling (see the deflaking recipe's Step-5 escalation).
 fn register_dynamic_dependency_watches(watcher: &mut Watcher, policy: &GranularityPolicy) {
-    watcher.watch_additional_files(policy.dynamic_dependency_paths());
+    let newly_watched = watcher.watch_additional_files(policy.dynamic_dependency_paths());
+    if dev_timing_enabled() {
+        for dir in &newly_watched {
+            eprintln!("[zfb-timing] watch-extra registered: {}", dir.display());
+        }
+    }
 }
 
 /// `ZFB_DEV_TIMING` gate for the per-tick kind/narrowing trace (issue #1058).
