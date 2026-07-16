@@ -3092,19 +3092,26 @@ pub fn bundle_with_session(
         .filter(|path| is_plugin_preprocessing_excluded(path))
         .cloned()
         .collect::<BTreeSet<_>>();
+    let plugin_preprocessing_first_party_root =
+        zfb_types::first_party_root_for(&input.project_root);
     for physical in &plugin_preprocessing_files {
         if excluded_plugin_preprocessing_files.contains(physical) {
             continue;
         }
-        physical
-            .strip_prefix(&input.project_root)
-            .with_context(|| {
-                format!(
-                    "bundler: plugin preprocessing file {} escaped {}",
-                    physical.display(),
-                    input.project_root.display()
-                )
-            })?;
+        if physical.strip_prefix(&input.project_root).is_err() {
+            // Issue #1664: a workspace-sibling first-party file passes the
+            // widened graph validation but is not staged into the SSR shadow;
+            // authored relative/alias spellings keep reaching it in the real
+            // tree, matching the pre-widening escape behavior.
+            if physical.starts_with(&plugin_preprocessing_first_party_root) {
+                continue;
+            }
+            return Err(anyhow!(
+                "bundler: plugin preprocessing file {} escaped {}",
+                physical.display(),
+                input.project_root.display()
+            ));
+        }
         let isolated_node_modules = project_path_is_inside_node_modules(physical, &project_root);
         // No isolation root under exclusions → node_modules preprocessing files
         // stage into `<shadow>` at their logical paths via the main shadow writer.
