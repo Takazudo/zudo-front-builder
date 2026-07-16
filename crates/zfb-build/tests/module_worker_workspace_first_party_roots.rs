@@ -204,11 +204,13 @@ fn preprocessing_graph_walks_into_sibling_workspace_source() {
     );
 }
 
-/// Workspace-sibling worker ENTRIES stay unsupported (the #1500 naming
-/// contract is project-scoped) but must fail with the explicit limitation
-/// error, not the naming contract's generic one. Tracked at issue 1667.
+/// Workspace-sibling worker ENTRIES are now supported (issue #1677 threaded
+/// the `worker--ws-` naming contract added by #1673 into
+/// `resolve_worker_target`'s naming call and deleted the former #1667 guard):
+/// a worker source resolving to a sibling workspace package mints a scoped,
+/// workspace-relative companion name instead of failing.
 #[test]
-fn workspace_sibling_worker_entry_fails_with_named_limitation() {
+fn workspace_sibling_worker_entry_succeeds_with_scoped_companion_name() {
     let workspace = tempfile::tempdir().unwrap();
     let (project, _, _) = write_workspace_fixture(workspace.path());
     let sibling_importer = workspace.path().join("lib/widgets/panel.ts");
@@ -224,17 +226,34 @@ fn workspace_sibling_worker_entry_fails_with_named_limitation() {
         Vec::new(),
     );
 
-    let error = rewrite_module_worker_urls_with_context(
+    let rewrite = rewrite_module_worker_urls_with_context(
         source_with_worker(),
         &sibling_importer,
         &project,
         &context,
     )
-    .expect_err("a sibling-package worker entry must fail until issue 1667 lands");
-    let message = format!("{error:#}");
+    .expect("a sibling-package worker entry must now succeed (issue #1677)");
+
+    let first_party_root = zfb_types::first_party_root_for(&project);
+    let expected_filename =
+        zfb_types::module_worker_filename_scoped(&project, &first_party_root, &sibling_worker)
+            .expect("a workspace-sibling worker source has a scoped companion filename");
     assert!(
-        message.contains("sibling workspace package") && message.contains("issues/1667"),
-        "expected the named workspace-worker limitation, got: {message}"
+        expected_filename.starts_with("worker--ws-"),
+        "expected the scoped `-ws-` prefix: {expected_filename}"
+    );
+    assert!(
+        rewrite.expanded_source.contains(&expected_filename),
+        "the rewritten URL must reference the scoped companion filename {expected_filename}: {}",
+        rewrite.expanded_source
+    );
+    assert!(
+        rewrite
+            .worker_edges
+            .iter()
+            .any(|edge| edge.source_path == sibling_worker),
+        "the sibling worker target must be tracked as a worker edge: {:?}",
+        rewrite.worker_edges
     );
 }
 
@@ -540,13 +559,14 @@ fn workspace_sibling_import_meta_glob_is_staged_and_expanded() {
 ///
 /// The sibling file constructs a module Worker via a relative URL that
 /// resolves BACK INTO the project root (`../../sub-packages/host/src/...`).
-/// That relative-URL shape is deliberate: a worker TARGET that itself stays a
-/// workspace sibling hits the unrelated, earlier #1667 flat-naming-contract
-/// limitation inside `resolve_worker_target` (see
-/// `workspace_sibling_worker_entry_fails_with_named_limitation` above), so
-/// pointing the target back into the project isolates the sibling IMPORTER's
-/// own staging. #1668 part 2 stages the sibling with its `new Worker(...)` URL
-/// rewritten to the project-local companion filename + content-hash query.
+/// This isolates the sibling IMPORTER's own staging from the worker TARGET's
+/// naming: the target here is project-local, so it keeps the unscoped
+/// companion contract. See `workspace_sibling_worker_target_is_staged_with_scoped_companion_name`
+/// below for the case where the worker TARGET is itself a workspace sibling
+/// (issue #1677 — the former #1667 flat-naming-contract limitation that used
+/// to reject that case is deleted). #1668 part 2 stages the sibling with its
+/// `new Worker(...)` URL rewritten to the project-local companion filename +
+/// content-hash query.
 #[test]
 fn workspace_sibling_nested_worker_construction_is_staged_and_rewritten() {
     let workspace = tempfile::tempdir().unwrap();
@@ -583,6 +603,58 @@ fn workspace_sibling_nested_worker_construction_is_staged_and_rewritten() {
     );
     assert!(
         !staged_body.contains("nested-worker.ts"),
+        "the original worker source path must be gone from the rewritten URL: {staged_body}"
+    );
+}
+
+/// **Issue #1677 — a worker TARGET that is itself a workspace sibling.**
+///
+/// The sibling importer's `new Worker(...)` URL resolves to ANOTHER workspace
+/// sibling file (not back into the project). This is exactly the case the
+/// former #1667 guard in `resolve_worker_target` used to reject; #1677
+/// deletes that guard and threads the `worker--ws-` scoped naming contract
+/// (issue #1673) through the SSR shadow staging pipeline instead.
+#[test]
+fn workspace_sibling_worker_target_is_staged_with_scoped_companion_name() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (sibling, input) = write_guard_fixture(workspace.path(), "ws-worker-user");
+    let project = input.project_root.clone();
+    let worker_target = workspace.path().join("lib/shared/ws-worker-target.ts");
+    write(&worker_target, "self.postMessage('ws-worker-target');\n");
+    write(
+        &sibling,
+        "export const value = 'ok';\n\
+         new Worker(new URL('./ws-worker-target.ts', import.meta.url), { type: 'module' });\n",
+    );
+    let first_party_root = zfb_types::first_party_root_for(&project);
+    let worker_filename =
+        zfb_types::module_worker_filename_scoped(&project, &first_party_root, &worker_target)
+            .expect("a workspace-sibling worker target has a scoped companion filename");
+    assert!(
+        worker_filename.starts_with("worker--ws-"),
+        "expected the scoped `-ws-` prefix: {worker_filename}"
+    );
+
+    let mut session = ShadowSession::new(&project).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect(
+        "a sibling importer whose worker TARGET is also a workspace sibling must now stage \
+         into the SSR shadow (issue #1677)",
+    );
+
+    let staged = work_mirror_root(&session).join("lib/shared/ws-worker-user.ts");
+    let staged_body = fs::read_to_string(&staged)
+        .unwrap_or_else(|e| panic!("sibling must be staged at {}: {e}", staged.display()));
+    assert!(
+        staged_body.contains(&worker_filename),
+        "the nested worker URL must be rewritten to its scoped companion filename \
+         {worker_filename}: {staged_body}"
+    );
+    assert!(
+        staged_body.contains("?v="),
+        "the rewritten worker URL must carry the content-hash query: {staged_body}"
+    );
+    assert!(
+        !staged_body.contains("ws-worker-target.ts"),
         "the original worker source path must be gone from the rewritten URL: {staged_body}"
     );
 }
