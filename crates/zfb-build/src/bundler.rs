@@ -12678,6 +12678,312 @@ mod tests {
         );
     }
 
+    // ── Issue #1668 part 1: SSR shadow workspace layout re-root ─────────────
+
+    /// A mock-subprocess SSR input for `project_root` — skips the esbuild
+    /// subprocess so a fixture needs no real binary, but still runs the full
+    /// materialise → prune pipeline whose shadow layout these tests inspect.
+    fn mock_ssr_input(project_root: &Path) -> BundlerInput {
+        BundlerInput {
+            mock_subprocess_output: Some("export default {};\n".to_string()),
+            external: vec![
+                "preact".into(),
+                "preact-render-to-string".into(),
+                "@takazudo/zfb-runtime".into(),
+            ],
+            ..BundlerInput::for_project(
+                project_root.to_path_buf(),
+                Framework::Preact,
+                BundleMode::Production,
+                project_root.join("dist"),
+                None,
+            )
+        }
+    }
+
+    /// Every FILE (not directory) under `root`, as sorted forward-slash
+    /// relative paths. Symlinks (e.g. a `node_modules` link) are recorded as a
+    /// single entry, never descended into, so the set stays the shadow's own
+    /// materialised layout.
+    fn collect_shadow_files(root: &Path) -> Vec<String> {
+        fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
+            let Ok(entries) = fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let file_type = entry.file_type().expect("dirent file type");
+                if file_type.is_dir() {
+                    walk(&entry.path(), base, out);
+                } else {
+                    let rel = entry.path().strip_prefix(base).unwrap().to_path_buf();
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn ssr_shadow_layout_reroots_under_project_rel_and_is_a_noop_without_a_workspace() {
+        // The SAME project content, built two ways: standalone (no workspace)
+        // and as a claimed member of a pnpm workspace. The workspace build must
+        // nest the WHOLE project mirror under the project's workspace-relative
+        // subpath, and its layout — stripped of that prefix — must equal the
+        // standalone (flat) layout. That single equality proves BOTH acceptance
+        // criteria: a non-workspace build is a byte-identical no-op, and a
+        // workspace build nests the project mirror carrying project-only
+        // content.
+        fn seed_project(root: &Path) {
+            for dir in ["pages", "content", "components", "layouts"] {
+                fs::create_dir_all(root.join(dir)).unwrap();
+            }
+            fs::write(
+                root.join("layouts/default.tsx"),
+                "export default function L({ children }) { return children; }\n",
+            )
+            .unwrap();
+            fs::write(
+                root.join("pages/index.tsx"),
+                "export default function Home() { return null; }\n",
+            )
+            .unwrap();
+        }
+
+        // (a) Standalone project — no workspace marker anywhere above it.
+        let flat_tmp = tempfile::tempdir().unwrap();
+        let flat_root = flat_tmp.path();
+        seed_project(flat_root);
+        let mut flat_session = ShadowSession::new(flat_root).unwrap();
+        bundle_with_session(mock_ssr_input(flat_root), Some(&mut flat_session))
+            .expect("standalone mock bundle should succeed");
+        let flat_files = collect_shadow_files(flat_session.shadow_root());
+
+        // (b) The same project as a claimed pnpm-workspace member.
+        let ws_tmp = tempfile::tempdir().unwrap();
+        let ws_root = ws_tmp.path();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let ws_project = ws_root.join("sub-packages/host");
+        seed_project(&ws_project);
+        let mut ws_session = ShadowSession::new(&ws_project).unwrap();
+        bundle_with_session(mock_ssr_input(&ws_project), Some(&mut ws_session))
+            .expect("workspace mock bundle should succeed");
+        let ws_files = collect_shadow_files(ws_session.shadow_root());
+
+        let prefix = "sub-packages/host/";
+        assert!(
+            ws_files.iter().all(|file| file.starts_with(prefix)),
+            "every workspace shadow file must nest under {prefix}: {ws_files:?}"
+        );
+        assert!(
+            !ws_session.shadow_root().join("entry.mjs").exists(),
+            "entry.mjs must live in the nested project mirror, not the flat work root"
+        );
+        assert!(
+            ws_session
+                .shadow_root()
+                .join("sub-packages/host/entry.mjs")
+                .exists(),
+            "the nested project mirror must carry entry.mjs"
+        );
+        let ws_stripped: Vec<String> = ws_files
+            .iter()
+            .map(|file| file.strip_prefix(prefix).unwrap().to_string())
+            .collect();
+        assert_eq!(
+            ws_stripped, flat_files,
+            "the workspace layout minus its project-rel prefix must equal the flat layout"
+        );
+        for expected in [
+            "__zfb_internal_hydrate.jsx",
+            "entry.mjs",
+            "layouts/default.tsx",
+            "pages/index.tsx",
+            "tsconfig.json",
+        ] {
+            assert!(
+                flat_files.iter().any(|file| file == expected),
+                "the flat layout must contain {expected}: {flat_files:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ssr_shadow_session_prunes_and_skips_workspace_root_relative_destinations() {
+        // Same-session edit/delete against a workspace project, proving the
+        // ShadowWriter/ShadowSession bookkeeping tracks the re-rooted,
+        // workspace-root-relative destinations. `ShadowSession` owns a fresh
+        // random tempdir per process and has no layout version field, so there
+        // is nothing to "bump" — the guarantee is that the visited/prune pass
+        // and the (mtime,size) skip cache both key off the nested dest.
+        //
+        // Plain `.tsx` pages are SYMLINKED into the shadow (no transform to
+        // preserve), so they live in the `source_skip` cache + visited/prune
+        // bookkeeping — symlinks are never recorded in `written`. The
+        // white-box discriminator is the `source_skip_plain_file` idiom:
+        // replace a dest with a corrupt REAL file — a re-materialise removes
+        // it and re-symlinks; a correct (mtime,size) skip leaves it.
+        let ws_tmp = tempfile::tempdir().unwrap();
+        let ws_root = ws_tmp.path();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let project = ws_root.join("sub-packages/host");
+        for dir in ["pages", "content", "components", "layouts"] {
+            fs::create_dir_all(project.join(dir)).unwrap();
+        }
+        fs::write(
+            project.join("layouts/default.tsx"),
+            "export default function L({ children }) { return children; }\n",
+        )
+        .unwrap();
+        fs::write(project.join("pages/index.tsx"), "export const V = 1;\n").unwrap();
+        fs::write(project.join("pages/about.tsx"), "export const V = 2;\n").unwrap();
+
+        let mut session = ShadowSession::new(&project).unwrap();
+        bundle_with_session(mock_ssr_input(&project), Some(&mut session))
+            .expect("tick 1 mock bundle");
+
+        let ws_rel = Path::new("sub-packages/host");
+        let shadow_root = session.shadow_root().to_path_buf();
+        let index_dest = shadow_root.join(ws_rel).join("pages/index.tsx");
+        let about_dest = shadow_root.join(ws_rel).join("pages/about.tsx");
+        let layout_dest = shadow_root.join(ws_rel).join("layouts/default.tsx");
+        assert!(
+            index_dest.exists() && about_dest.exists() && layout_dest.exists(),
+            "tick 1 must materialise the project mirror under {ws_rel:?}"
+        );
+        // The incremental skip cache is keyed by the workspace-root-relative
+        // destination — direct proof the writer's `rel_of` strips the WORK
+        // root, not the project mirror.
+        assert!(
+            session
+                .source_skip
+                .contains_key(&ws_rel.join("pages/index.tsx")),
+            "source_skip must be keyed by the workspace-root-relative dest: {:?}",
+            session.source_skip.keys().collect::<Vec<_>>()
+        );
+
+        // White-box discriminators against the RE-ROOTED dest keys: replace
+        // each dest symlink with a corrupt REAL file, then leave layouts
+        // UNCHANGED but EDIT index (a size change forces re-materialise).
+        for dest in [&index_dest, &layout_dest] {
+            fs::remove_file(dest).unwrap();
+            fs::write(dest, b"__CORRUPT_NOT_THE_SOURCE__").unwrap();
+        }
+        fs::write(project.join("pages/index.tsx"), "export const V = 1234567;\n").unwrap();
+        fs::remove_file(project.join("pages/about.tsx")).unwrap();
+
+        bundle_with_session(mock_ssr_input(&project), Some(&mut session))
+            .expect("tick 2 mock bundle");
+
+        // Deleted source → its workspace-root-relative dest is pruned.
+        assert!(
+            !about_dest.exists(),
+            "the deleted page's workspace-root-relative dest must be pruned"
+        );
+        // Edited source (size changed) → NOT skipped → re-materialised at the
+        // re-rooted dest, so the corruption is replaced by a symlink reading
+        // the new source bytes.
+        assert_eq!(
+            fs::read_to_string(&index_dest).unwrap(),
+            "export const V = 1234567;\n",
+            "the edited page must be re-materialised at its re-rooted dest"
+        );
+        // Unchanged source → skipped via (mtime,size) on the re-rooted key, so
+        // the corruption survives untouched.
+        assert_eq!(
+            fs::read(&layout_dest).unwrap(),
+            b"__CORRUPT_NOT_THE_SOURCE__",
+            "an unchanged page must be skipped via (mtime,size) on its re-rooted dest key"
+        );
+    }
+
+    #[test]
+    fn shadow_path_for_project_path_maps_workspace_siblings_into_the_work_mirror() {
+        let work = Path::new("/work");
+        let first_party = Path::new("/ws");
+        let project = Path::new("/ws/sub-packages/host");
+        let shadow = Path::new("/work/sub-packages/host");
+
+        // Under project_root → the project mirror (unchanged tier).
+        assert_eq!(
+            shadow_path_for_project_path(
+                &project.join("pages/index.tsx"),
+                project,
+                first_party,
+                shadow,
+                work,
+                None,
+            ),
+            shadow.join("pages/index.tsx"),
+        );
+        // The project root itself → the project mirror root.
+        assert_eq!(
+            shadow_path_for_project_path(project, project, first_party, shadow, work, None),
+            shadow.to_path_buf(),
+        );
+        // node_modules under the project → the isolation slot (unchanged tier).
+        assert_eq!(
+            shadow_path_for_project_path(
+                &project.join("node_modules/preact/index.js"),
+                project,
+                first_party,
+                shadow,
+                work,
+                None,
+            ),
+            shadow
+                .join(".zfb-exact-isolation")
+                .join("node_modules/preact/index.js"),
+        );
+        // A workspace sibling (under first_party_root, outside the project) →
+        // its workspace-relative slot in the work mirror (the new tier).
+        assert_eq!(
+            shadow_path_for_project_path(
+                &first_party.join("lib/shared/contract.ts"),
+                project,
+                first_party,
+                shadow,
+                work,
+                None,
+            ),
+            work.join("lib/shared/contract.ts"),
+        );
+        // Beyond the first-party root entirely → the real path (live-tree
+        // escape, unchanged).
+        let outside = Path::new("/elsewhere/thing.ts");
+        assert_eq!(
+            shadow_path_for_project_path(outside, project, first_party, shadow, work, None),
+            outside.to_path_buf(),
+        );
+        // No workspace (first_party_root == project_root): the sibling tier is
+        // inert, so a non-project path stays the real path — byte-identical to
+        // the pre-#1668 two-tier mapping.
+        let flat_project = Path::new("/proj");
+        let flat_shadow = Path::new("/work2");
+        let non_project = Path::new("/proj-adjacent/x.ts");
+        assert_eq!(
+            shadow_path_for_project_path(
+                non_project,
+                flat_project,
+                flat_project,
+                flat_shadow,
+                flat_shadow,
+                None,
+            ),
+            non_project.to_path_buf(),
+        );
+    }
+
     #[test]
     fn server_secrets_are_not_bundled() {
         // Real esbuild test (gated). Verifies a SECRET_ env var never
