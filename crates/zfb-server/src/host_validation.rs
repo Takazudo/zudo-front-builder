@@ -2,31 +2,56 @@
 //!
 //! ## What this protects against
 //!
-//! Once the dev/preview server is bound to a non-localhost interface
-//! (`--host 0.0.0.0`, the bare `--host` LAN shortcut, or `host` in
-//! `zfb.config.ts`), any site the developer's browser visits can issue
-//! requests that reach the server via **DNS rebinding**: the attacker's
-//! domain re-resolves to the LAN/loopback IP, the browser happily sends
+//! Any site the developer's browser visits can issue requests that
+//! reach the dev/preview server via **DNS rebinding**: the attacker's
+//! domain re-resolves to the server's IP, the browser happily sends
 //! requests with `Host: attacker.example`, and same-origin policy no
 //! longer protects the rendered pages or the plugin/SSR fetch handlers.
-//! Validating the `Host` header against an allowlist (the same defence
-//! Vite ships as `server.allowedHosts`) closes that hole. The companion
-//! Origin check (see [`HostValidation::origin_allowed`], enforced at the
-//! dynamic-dispatch sites in [`crate::routes`]) covers CSRF-style
-//! cross-origin non-GET requests to SSR/plugin/embed handlers.
+//! This is **not** limited to LAN binds — a hostile domain can
+//! re-resolve to `127.0.0.1` just as easily as to a `192.168.x.x`
+//! address, so a loopback-bound server that serves token-bearing or
+//! otherwise sensitive responses is readable cross-origin too (issue
+//! #1684, raised from zudolab/zzmod#1745). Validating the `Host` header
+//! against an allowlist (the same defence Vite ships as
+//! `server.allowedHosts`, which Vite also enforces regardless of bind
+//! address) closes that hole. The companion Origin check (see
+//! [`HostValidation::origin_allowed`], enforced at the dynamic-dispatch
+//! sites in [`crate::routes`]) covers CSRF-style cross-origin non-GET
+//! requests to SSR/plugin/embed handlers.
 //!
-//! ## Defaults
+//! ## Enforcement
 //!
-//! - **Bound to a loopback interface (the default):** validation is
-//!   disabled entirely — [`apply_host_validation_layer`] returns the
-//!   router unchanged and every Origin is accepted. Zero behaviour
-//!   change for the common `localhost` case.
-//! - **Bound to a non-loopback interface:** enforcement is on. The
-//!   always-allowed set is `localhost`, the explicitly bound host
-//!   string (e.g. `--host mydev.local`), and any IP-literal host
-//!   (`127.0.0.1`, `[::1]`, the bound IP, the LAN interface URLs the
-//!   startup banner prints — see the matching rules below). Additional
-//!   hosts come from the user's `allowedHosts` config entries.
+//! Enforcement is **on for every real bind**, loopback included
+//! ([`HostValidation::for_bind`]). Only the explicit
+//! [`HostValidation::disabled`] constructor — for callers with no bind
+//! address in scope (router-level unit tests, synthetic states) — turns
+//! every check into a short-circuit "allowed".
+//!
+//! The always-allowed set is `localhost` (and every `*.localhost`
+//! subdomain — RFC 6761 special-use, always loopback, Vite parity),
+//! `127.0.0.1`, `[::1]`, the explicitly bound host string (e.g.
+//! `--host mydev.local`), and any IP-literal host (the bound IP plus the
+//! LAN interface URLs the bind-all startup banner prints — see the
+//! matching rules below).
+//! Additional hosts come from the user's `allowedHosts` config entries.
+//! The common `localhost` / `127.0.0.1` / `[::1]` dev loop therefore
+//! keeps working with no config, while a rebinding
+//! `Host: attacker.example` — loopback bind or not — gets a 403.
+//!
+//! ## The companion Origin check on loopback vs LAN
+//!
+//! The Origin gate ([`crate::plugin_middleware::origin_gate`]) guards
+//! non-GET requests to the dynamic-dispatch surfaces. A **present**
+//! `Origin` is checked against the same allowlist on every bind — that is
+//! the cross-origin / rebinding vector. A **missing** `Origin` differs by
+//! bind: rejected on a LAN bind (an untrusted peer could forge a
+//! non-browser request) but allowed on a loopback bind, because a browser
+//! always attaches `Origin` to a cross-origin non-GET request, so a
+//! missing one is local, non-browser tooling (curl, a localhost webhook)
+//! that already has full access to loopback — failing it closed would
+//! break dev tooling for no rebinding-security gain (issue #1684). See
+//! [`HostValidation::allows_missing_origin`]. A missing **Host** still
+//! fails closed on every enforcing bind (HTTP/1.1 mandates it).
 //!
 //! ## Matching rules (config entries)
 //!
@@ -80,13 +105,22 @@ enum AllowRule {
 /// router build, not per request — the middleware holds an [`Arc`]).
 #[derive(Clone, Debug)]
 pub struct HostValidation {
-    /// `false` when the server is bound to a loopback interface — every
-    /// check short-circuits to "allowed" so the default `localhost`
-    /// setup sees zero behaviour change.
+    /// `false` only for [`HostValidation::disabled`] — every check
+    /// short-circuits to "allowed". Every real bind ([`for_bind`]) sets
+    /// this `true`, loopback included; see the module docs for why
+    /// loopback is no exception (issue #1684).
+    ///
+    /// [`for_bind`]: HostValidation::for_bind
     enforce: bool,
     /// Drives the 403 body shape (#926 policy: explanatory in Dev,
     /// generic in Preview/Embed).
     mode: ServerMode,
+    /// `true` when the server is bound to a loopback interface. The Host
+    /// allowlist and the present-Origin allowlist are enforced regardless
+    /// (issue #1684), but a **missing** `Origin` on a non-GET request is
+    /// allowed on a loopback bind and rejected on a LAN bind — see
+    /// [`Self::allows_missing_origin`].
+    bind_is_loopback: bool,
     rules: Vec<AllowRule>,
 }
 
@@ -97,14 +131,23 @@ impl HostValidation {
         Self {
             enforce: false,
             mode: ServerMode::Dev,
+            // Irrelevant while `enforce` is false (every check
+            // short-circuits before reading it); pick the safe value.
+            bind_is_loopback: false,
             rules: Vec::new(),
         }
     }
 
     /// Build the validation state for a server bound to `bind_ip`.
     ///
-    /// - `bind_ip` decides enforcement: loopback → disabled (the
-    ///   default-bind short-circuit), anything else → enforced.
+    /// Enforcement is always on (issue #1684 — loopback binds are DNS
+    /// rebinding targets too); use [`HostValidation::disabled`] for the
+    /// explicit opt-out.
+    ///
+    /// - `bind_ip` joins the always-allowed set as an IP literal (e.g.
+    ///   `--host 192.168.1.5` reached as `http://192.168.1.5:3000`; for
+    ///   a loopback bind it is `127.0.0.1` / `::1`, which the IP-literal
+    ///   allow rule already covers).
     /// - `bound_host` is the host string the user explicitly bound
     ///   (`--host mydev.local` / `host` in config) — always allowed so
     ///   the URL the server tells the user to open never 403s.
@@ -115,9 +158,24 @@ impl HostValidation {
         allowed_hosts: &[String],
         mode: ServerMode,
     ) -> Self {
-        let enforce = !bind_ip.is_loopback();
+        // Issue #1684: enforce on every bind, loopback included. A
+        // hostile domain can DNS-rebind to 127.0.0.1 as easily as to a
+        // LAN address, so a loopback-bound server is readable
+        // cross-origin without this check. The localhost forms added to
+        // the always-allowed set below keep the default dev loop working
+        // with no config. `HostValidation::disabled()` remains the only
+        // way to opt a real router out.
+        let enforce = true;
+        let bind_is_loopback = bind_ip.is_loopback();
         let mut rules = vec![
-            AllowRule::Exact("localhost".to_string()),
+            // `localhost` AND every `*.localhost` subdomain
+            // (`app.localhost`, …). RFC 6761 reserves `.localhost` as
+            // special-use: resolvers always map it to loopback, so it is
+            // never an attacker-controllable rebinding name — hence safe
+            // to allow on every bind. Mirrors Vite's default allowlist,
+            // and matters most for the embed server (no `allowedHosts`
+            // escape hatch) and subdomain-per-tenant local dev.
+            AllowRule::Suffix("localhost".to_string()),
             AllowRule::Exact("127.0.0.1".to_string()),
             // Normalised form of `[::1]` (brackets are stripped on both
             // sides of every comparison).
@@ -141,14 +199,38 @@ impl HostValidation {
         Self {
             enforce,
             mode,
+            bind_is_loopback,
             rules,
         }
     }
 
-    /// Whether checks are active (i.e. the server is bound to a
-    /// non-loopback interface).
+    /// Whether checks are active — `true` for every [`for_bind`] server
+    /// (loopback included, issue #1684), `false` only for
+    /// [`HostValidation::disabled`].
+    ///
+    /// [`for_bind`]: HostValidation::for_bind
     pub fn is_enforced(&self) -> bool {
         self.enforce
+    }
+
+    /// Whether a **missing** `Origin` header on a non-GET request to a
+    /// dynamic-dispatch surface is allowed through (issue #1684).
+    ///
+    /// A missing `Origin` is allowed on a **loopback** bind and rejected
+    /// on a **LAN** bind. Rationale: a browser always attaches `Origin`
+    /// to a cross-origin non-GET request, so a *missing* `Origin` can
+    /// never be a browser-driven DNS-rebinding/CSRF request — it means a
+    /// local, non-browser client (curl, a test script, a localhost
+    /// webhook). On a loopback bind every such client is already a
+    /// local process with full access, so failing closed buys no
+    /// rebinding protection while breaking common dev tooling; on a LAN
+    /// bind the same request could come from an untrusted peer, so it
+    /// still fails closed. A *present* `Origin` is always checked against
+    /// the allowlist regardless of bind (that is the actual rebinding /
+    /// cross-origin vector), and a missing **Host** still fails closed on
+    /// every enforcing bind.
+    pub fn allows_missing_origin(&self) -> bool {
+        self.enforce && self.bind_is_loopback
     }
 
     /// The server mode the 403 bodies are shaped for.
@@ -338,9 +420,9 @@ fn forbidden_response(title: &str, detail: &str, mode: ServerMode) -> Response {
 
 /// Apply the Host-header validation layer to a router.
 ///
-/// When `validation` is not enforced (loopback bind / `disabled()`)
-/// the router is returned unchanged so the default `localhost` paths
-/// pay nothing — mirrors
+/// When `validation` is not enforced — only [`HostValidation::disabled`]
+/// now, since every real bind enforces (issue #1684) — the router is
+/// returned unchanged, mirroring
 /// [`crate::middleware::apply_request_extension_layer`]'s empty
 /// short-circuit.
 ///
@@ -356,9 +438,10 @@ pub fn apply_host_validation_layer(router: Router, validation: HostValidation) -
 
 /// The middleware closure: reject requests whose `Host` header (or
 /// `:authority`, for HTTP/2-shaped requests with no Host) fails the
-/// allowlist. Requests with no host information at all are allowed
-/// with a warning — browsers always send `Host`, so such a request
-/// cannot be a browser-driven rebinding attack.
+/// allowlist. The layer only runs on enforcing routers, so a request
+/// with no host information at all fails closed (403) — browsers always
+/// send `Host`, so absence implies a non-browser client that could
+/// bypass the allowlist by omitting it.
 async fn validate_host_middleware(
     axum::extract::State(validation): axum::extract::State<Arc<HostValidation>>,
     req: Request,
@@ -439,6 +522,21 @@ mod tests {
         assert!(v.host_allowed("[::1]"));
         assert!(v.host_allowed("[::1]:3000"));
         assert!(!v.host_allowed("evil.test"));
+    }
+
+    #[test]
+    fn localhost_subdomains_are_always_allowed() {
+        // `*.localhost` is RFC 6761 special-use (always resolves to
+        // loopback, never an attacker-controllable rebinding name), so
+        // it rides the built-in suffix rule on every bind — Vite parity.
+        let v = enforcing(&[]);
+        assert!(v.host_allowed("app.localhost"));
+        assert!(v.host_allowed("app.localhost:3000"));
+        assert!(v.host_allowed("tenant.api.localhost:8080"));
+        // A non-boundary suffix must NOT ride the rule.
+        assert!(!v.host_allowed("notlocalhost"));
+        assert!(!v.host_allowed("evil-localhost"));
+        assert!(!v.host_allowed("localhost.evil.test"));
     }
 
     #[test]
@@ -530,19 +628,62 @@ mod tests {
         assert!(!v.host_allowed("evil.test"));
     }
 
-    // --- matcher: loopback short-circuit -------------------------------
+    // --- matcher: loopback bind now enforces (issue #1684) -------------
 
     #[test]
-    fn loopback_bind_disables_enforcement_entirely() {
+    fn loopback_bind_enforces_validation() {
+        // Issue #1684: loopback binds used to short-circuit to "allowed";
+        // they now enforce the same allowlist as a LAN bind (a hostile
+        // domain can DNS-rebind to 127.0.0.1). The localhost forms stay
+        // allowed via the built-in set + IP-literal rule; a rebinding
+        // name and its Origin are rejected.
         for ip in [
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             IpAddr::V6(Ipv6Addr::LOCALHOST),
         ] {
             let v = HostValidation::for_bind(ip, None, &[], ServerMode::Dev);
-            assert!(!v.is_enforced());
-            assert!(v.host_allowed("absolutely.anything.example"));
-            assert!(v.origin_allowed("https://absolutely.anything.example"));
+            assert!(v.is_enforced());
+            assert!(v.host_allowed("localhost"));
+            assert!(v.host_allowed("localhost:3000"));
+            assert!(v.host_allowed("127.0.0.1:3000"));
+            assert!(v.host_allowed("[::1]:3000"));
+            // The DNS-rebinding host the attacker controls is rejected.
+            assert!(!v.host_allowed("absolutely.anything.example"));
+            assert!(!v.origin_allowed("https://absolutely.anything.example"));
         }
+    }
+
+    #[test]
+    fn loopback_bind_honors_allowed_hosts_and_bound_host() {
+        // The `allowedHosts` escape hatch and the explicitly bound host
+        // string work on a loopback bind exactly as on a LAN bind — an
+        // /etc/hosts alias pointing a name at 127.0.0.1 is the case the
+        // 403 body's `allowedHosts` hint exists for.
+        let v = HostValidation::for_bind(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            Some("mydev.local"),
+            &["allowed.test".to_string()],
+            ServerMode::Dev,
+        );
+        assert!(v.is_enforced());
+        assert!(v.host_allowed("mydev.local:3000"));
+        assert!(v.host_allowed("allowed.test:8080"));
+        assert!(!v.host_allowed("evil.test"));
+    }
+
+    #[test]
+    fn allows_missing_origin_only_on_enforcing_loopback_binds() {
+        // Loopback bind → a missing Origin on a non-GET request is local
+        // tooling and is allowed (issue #1684).
+        let loopback =
+            HostValidation::for_bind(IpAddr::V4(Ipv4Addr::LOCALHOST), None, &[], ServerMode::Dev);
+        assert!(loopback.allows_missing_origin());
+        // LAN bind → a missing Origin fails closed.
+        let lan = HostValidation::for_bind(LAN_IP, None, &[], ServerMode::Dev);
+        assert!(!lan.allows_missing_origin());
+        // Disabled → not enforcing at all, so the missing-Origin gate is
+        // never reached; the accessor reports false.
+        assert!(!HostValidation::disabled().allows_missing_origin());
     }
 
     // --- matcher: malformed values fail closed -------------------------
@@ -651,9 +792,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn layer_allows_requests_without_host_header_when_not_enforced() {
-        // Loopback bind: not enforced — missing Host is allowed (no
-        // behaviour change from the pre-LAN-security path).
+    async fn layer_rejects_requests_without_host_header_on_loopback_bind() {
+        // Issue #1684: a loopback bind now enforces, so a missing Host
+        // header fails closed (403) exactly as a LAN bind does — no more
+        // free pass for the default `localhost` case.
         let v = HostValidation::for_bind(
             std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             None,
@@ -661,12 +803,23 @@ mod tests {
             ServerMode::Dev,
         );
         let router = apply_host_validation_layer(test_router(), v);
+        let (status, body) = status_for(router, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body.contains("missing Host header"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn layer_allows_requests_without_host_header_when_disabled() {
+        // The only non-enforcing path left (issue #1684): an explicit
+        // `disabled()` validation. The layer is a no-op, so a missing
+        // Host is allowed through.
+        let router = apply_host_validation_layer(test_router(), HostValidation::disabled());
         let (status, _) = status_for(router, None).await;
         assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn layer_is_noop_when_not_enforced() {
+    async fn layer_is_noop_when_disabled() {
         let router = apply_host_validation_layer(test_router(), HostValidation::disabled());
         let (status, _) = status_for(router, Some("evil.test")).await;
         assert_eq!(status, StatusCode::OK);
