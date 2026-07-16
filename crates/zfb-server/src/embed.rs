@@ -276,10 +276,11 @@ impl Server {
         let actual = listener
             .local_addr()
             .expect("listener.local_addr() must succeed after bind");
-        // Issue #931: embed callers have no `allowedHosts` knob yet —
-        // a non-loopback bind enforces the built-in allowlist
-        // (localhost forms + the bound IP); the default loopback bind
-        // disables validation entirely.
+        // Issue #931 / #1684: embed callers have no `allowedHosts` knob
+        // yet, so they get the built-in allowlist only (localhost forms +
+        // the bound IP + any IP-literal Host). Enforcement is on for every
+        // bind, loopback included — a loopback-bound embed server is a DNS
+        // rebinding target too.
         let host_validation =
             crate::host_validation::HostValidation::for_bind(actual.ip(), None, &[], self.mode);
         let state = AppState {

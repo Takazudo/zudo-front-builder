@@ -3,9 +3,9 @@
 //!
 //! Boots the real axum server via [`serve_with_listener`] — once on a
 //! non-loopback listener (`0.0.0.0:0`, reached through `127.0.0.1` so
-//! the test stays machine-local) to exercise the enforced path, and
-//! once on the default loopback bind to prove zero behaviour change
-//! there. Covers:
+//! the test stays machine-local) to exercise the LAN path, and once on
+//! the default loopback bind to prove it now enforces the same allowlist
+//! (issue #1684 — loopback binds are DNS rebinding targets too). Covers:
 //!
 //! 1. enforced bind: disallowed `Host` → 403, allowed → 200 (page
 //!    cache), built-in `localhost`/`127.0.0.1` always pass;
@@ -17,8 +17,9 @@
 //!    browsers always send Origin on cross-origin non-GET requests);
 //! 4. static read paths are exempt from the Origin check (cross-origin
 //!    GET works; non-GET to static paths still 405s, not 403s);
-//! 5. default loopback bind: any Host and any Origin pass through
-//!    unchanged.
+//! 5. default loopback bind: enforces the same Host/Origin allowlist as
+//!    a LAN bind (issue #1684) — the localhost forms + bound host +
+//!    `allowedHosts` pass, a DNS-rebinding `Host`/`Origin` gets 403.
 //!
 //! Uses the same ephemeral-port binding pattern as `integration.rs`
 //! and the same synthetic dispatchers as `ssr_integration.rs`.
@@ -106,9 +107,13 @@ impl DevMiddlewareDispatcher for CountingPluginDispatcher {
 
 struct BootOpts {
     /// Bind `0.0.0.0:0` (non-loopback → host validation enforced)
-    /// instead of the default `127.0.0.1:0`.
+    /// instead of the default `127.0.0.1:0`. Since issue #1684 both binds
+    /// enforce; `bind_any` now only picks which interface is exercised.
     bind_any: bool,
     allowed_hosts: Vec<String>,
+    /// The explicitly bound host string (`--host` / `host` in config),
+    /// threaded into `ServeOpts::bound_host` — always allowed.
+    bound_host: Option<String>,
     ssr_routes: Option<SsrRouteSet>,
     plugin_set: Option<DevMiddlewareSet>,
     base: Option<String>,
@@ -119,6 +124,7 @@ impl Default for BootOpts {
         Self {
             bind_any: true,
             allowed_hosts: Vec::new(),
+            bound_host: None,
             ssr_routes: None,
             plugin_set: None,
             base: None,
@@ -175,7 +181,7 @@ async fn boot(
         islands_bundle_url: None,
         css_bundle_url: None,
         allowed_hosts: opts.allowed_hosts,
-        bound_host: None,
+        bound_host: opts.bound_host,
         render_on_request_hook: None,
         redirects: None,
     };
@@ -458,38 +464,107 @@ async fn static_paths_are_exempt_from_origin_check() {
     server.abort();
 }
 
-// --- Default loopback bind: zero behaviour change --------------------------
+// --- Default loopback bind now ENFORCES (issue #1684) ----------------------
 
+/// Issue #1684 (raised from zudolab/zzmod#1745): a loopback bind is a
+/// DNS-rebinding target too — a hostile domain can re-resolve to
+/// 127.0.0.1 and read token-bearing localhost responses. The default
+/// loopback bind therefore enforces the same Host/Origin allowlist as a
+/// LAN bind: the localhost forms + bound host + `allowedHosts` pass, a
+/// rebinding `Host`/`Origin` gets 403.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn loopback_bind_accepts_any_host_and_any_origin() {
+async fn loopback_bind_enforces_host_and_origin_validation() {
     let dispatcher = Arc::new(CountingSsrDispatcher::new());
     let set = ssr_set("/dynamic", dispatcher.clone() as Arc<dyn SsrDispatcher>);
     let (addr, pages, server, _tmp) = boot(BootOpts {
         bind_any: false,
+        allowed_hosts: vec!["allowed.test".to_string()],
+        bound_host: Some("mydev.local".to_string()),
         ssr_routes: Some(set),
         ..Default::default()
     })
     .await;
     pages.insert("/", "<html><body>home</body></html>").await;
 
-    // Any Host passes — no allowlist is enforced on the default bind.
+    // DNS-rebinding Host on a loopback bind → 403 (Dev body names the
+    // `allowedHosts` escape hatch).
     let resp = client()
         .get(local_url(addr, "/"))
-        .header(reqwest::header::HOST, "totally.unknown.example")
+        .header(reqwest::header::HOST, "attacker.example")
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(resp.status().as_u16(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("allowedHosts"), "body: {body}");
 
-    // Cross-origin POST to an SSR route still dispatches.
+    // The localhost forms, the explicitly bound host, and the
+    // `allowedHosts` entry all pass on a loopback bind.
+    for host in [
+        "localhost:3000",
+        "127.0.0.1:9999",
+        "[::1]:3000",
+        "mydev.local",
+        "allowed.test:8080",
+    ] {
+        let resp = client()
+            .get(local_url(addr, "/"))
+            .header(reqwest::header::HOST, host)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "loopback bind must allow Host {host}"
+        );
+    }
+
+    // DNS-rebinding-style cross-origin POST to an SSR route → 403, and
+    // the dispatcher never runs (the Origin gate fired before dispatch).
     let resp = client()
         .post(local_url(addr, "/dynamic"))
-        .header(reqwest::header::ORIGIN, "https://evil.test")
+        .header(reqwest::header::HOST, "allowed.test")
+        .header(reqwest::header::ORIGIN, "https://attacker.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 403);
+    assert_eq!(
+        dispatcher.count(),
+        0,
+        "SSR dispatcher must not run on a rebinding cross-origin POST"
+    );
+
+    // Allowed-origin POST still dispatches — proves it is the Origin,
+    // not the method, being gated.
+    let resp = client()
+        .post(local_url(addr, "/dynamic"))
+        .header(reqwest::header::HOST, "allowed.test")
+        .header(reqwest::header::ORIGIN, "http://allowed.test:8080")
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
     assert_eq!(dispatcher.count(), 1);
+
+    // A non-GET request with NO Origin header on a loopback bind is local
+    // non-browser tooling (curl, a localhost webhook) — allowed, since a
+    // missing Origin can never be a browser rebinding/CSRF request
+    // (issue #1684). Contrast the LAN bind, where the same request fails
+    // closed (see `cross_origin_post_to_ssr_route_is_rejected_without_dispatch`).
+    let resp = client()
+        .post(local_url(addr, "/dynamic"))
+        .header(reqwest::header::HOST, "localhost")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "loopback bind must dispatch a non-GET request with no Origin (local tooling)"
+    );
+    assert_eq!(dispatcher.count(), 2);
 
     server.abort();
 }
