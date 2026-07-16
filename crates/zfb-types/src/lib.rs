@@ -24,7 +24,8 @@ pub use client_scripts::{
 pub use first_party::first_party_root_for;
 pub use helpers::{escape_html, json_string, normalize_path_lexical, path_to_posix_string};
 pub use module_workers::{
-    module_worker_content_hash, module_worker_filename, module_worker_url_specifier,
-    ModuleWorkerPathError, MODULE_WORKER_CSP_GLOB, MODULE_WORKER_FILENAME_PREFIX,
+    module_worker_content_hash, module_worker_filename, module_worker_filename_scoped,
+    module_worker_url_specifier, module_worker_url_specifier_scoped, ModuleWorkerPathError,
+    MODULE_WORKER_CSP_GLOB, MODULE_WORKER_FILENAME_PREFIX,
 };
 pub use segment::Segment;
