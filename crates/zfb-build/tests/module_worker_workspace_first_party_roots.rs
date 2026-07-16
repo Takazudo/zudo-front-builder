@@ -192,6 +192,68 @@ fn preprocessing_graph_walks_into_sibling_workspace_source() {
     );
 }
 
+/// Workspace-sibling worker ENTRIES stay unsupported (the #1500 naming
+/// contract is project-scoped) but must fail with the explicit limitation
+/// error, not the naming contract's generic one. Tracked at issue 1667.
+#[test]
+fn workspace_sibling_worker_entry_fails_with_named_limitation() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (project, _, _) = write_workspace_fixture(workspace.path());
+    let sibling_importer = workspace.path().join("lib/widgets/panel.ts");
+    let sibling_worker = workspace.path().join("lib/widgets/worker.ts");
+    write(&sibling_importer, "placeholder");
+    write(&sibling_worker, "self.postMessage('sibling');");
+
+    let context = ModuleWorkerBuildContext::default().with_plugins(
+        vec![(
+            "@widgets/panel".into(),
+            sibling_importer.to_string_lossy().into_owned(),
+        )],
+        Vec::new(),
+    );
+
+    let error = rewrite_module_worker_urls_with_context(
+        source_with_worker(),
+        &sibling_importer,
+        &project,
+        &context,
+    )
+    .expect_err("a sibling-package worker entry must fail until issue 1667 lands");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("sibling workspace package") && message.contains("issues/1667"),
+        "expected the named workspace-worker limitation, got: {message}"
+    );
+}
+
+/// The worker cache key must not embed the checkout location: two identical
+/// workspaces materialised at different paths (each importing a sibling file
+/// through an absolute virtual-module import) must produce identical worker
+/// URLs (`?v=` hashes).
+#[test]
+fn workspace_sibling_virtual_import_hash_is_checkout_location_independent() {
+    let rewrite_for = |workspace: &Path| {
+        let (project, importer, shared) = write_workspace_fixture(workspace);
+        let context = virtual_module_importing(&shared);
+        rewrite_module_worker_urls_with_context(source_with_worker(), &importer, &project, &context)
+            .expect("sibling-workspace dependency must resolve")
+            .expanded_source
+    };
+
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let first_workspace = first.path().join("checkout-a/deep/nested");
+    let second_workspace = second.path().join("b");
+    std::fs::create_dir_all(&first_workspace).unwrap();
+    std::fs::create_dir_all(&second_workspace).unwrap();
+
+    assert_eq!(
+        rewrite_for(&first_workspace),
+        rewrite_for(&second_workspace),
+        "worker cache keys must be stable across relocated workspaces"
+    );
+}
+
 /// Single-package guard: without a workspace marker the boundary stays the
 /// project root and the pre-#1664 rejection is byte-for-byte preserved.
 #[test]

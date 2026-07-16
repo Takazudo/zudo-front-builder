@@ -619,6 +619,20 @@ fn resolve_worker_target(importer: &Path, specifier: &str, project_root: &Path) 
         );
     }
     let target = validate_first_party_path(&target, project_root, "module-worker source")?;
+    // A workspace-sibling worker ENTRY passes the widened first-party check
+    // (issue #1664) but the locked #1500 flat-naming contract still derives
+    // companion filenames from the project-relative path. Fail here with the
+    // real limitation instead of the naming contract's generic error.
+    // https://github.com/Takazudo/zudo-front-builder/issues/1667
+    if !target.starts_with(normalize_path_lexical(project_root)) {
+        bail!(
+            "zfb bundler: module-worker source {} lives in a sibling workspace package. \
+             Workspace-sibling worker entries are not supported yet (the worker companion \
+             naming contract is project-scoped) — move the worker entry under the project \
+             root, or follow https://github.com/Takazudo/zudo-front-builder/issues/1667",
+            target.display()
+        );
+    }
     if !is_js_like(&target) {
         bail!(
             "zfb bundler: module-worker source {} is not a supported JS/TS entry",
@@ -1564,7 +1578,17 @@ fn stable_virtual_module_source(source: &str, project_root: &Path) -> String {
     let mut replacements = collect_import_specifier_occurrences(&module, base, unresolved_ctxt)
         .into_iter()
         .filter_map(|occurrence| {
+            // Cache identity only (never a real import spelling): in-project
+            // absolute imports keep their historical "./rel" form; workspace
+            // -sibling absolute imports (issue #1664) get a NUL-tagged
+            // workspace-relative form so the hash stops embedding the
+            // checkout location. The shadow REMAP path deliberately does not
+            // use the workspace tier — see
+            // `remap_virtual_module_project_imports_to_shadow`.
             let stable = stable_project_virtual_specifier(&occurrence.specifier, project_root)
+                .or_else(|| {
+                    stable_workspace_virtual_cache_specifier(&occurrence.specifier, project_root)
+                })
                 .unwrap_or(occurrence.specifier);
             let replacement = serde_json::to_string(&stable).ok()?;
             Some((occurrence.lo, occurrence.hi, replacement))
@@ -1613,6 +1637,49 @@ pub(crate) fn remap_virtual_module_project_imports_to_shadow(
         remapped.replace_range(lo..hi, &replacement);
     }
     remapped
+}
+
+/// Cache-identity spelling for a virtual-module import of a workspace-sibling
+/// file (issue #1664). Only absolute spellings can embed the checkout
+/// location — relative escapes are already relocation-stable as authored —
+/// so only those are remapped, onto the same NUL-tagged workspace scope the
+/// worker-graph cache key uses. The result is hashed, never resolved, so the
+/// tag never has to be a loadable path.
+fn stable_workspace_virtual_cache_specifier(
+    specifier: &str,
+    project_root: &Path,
+) -> Option<String> {
+    if specifier.contains('?') || specifier.contains('#') {
+        return None;
+    }
+    let specifier_path = Path::new(specifier);
+    if !specifier_path.is_absolute() {
+        return None;
+    }
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    if normalize_path_lexical(&first_party_root) == normalize_path_lexical(project_root) {
+        return None;
+    }
+    let candidate = normalize_path_lexical(specifier_path);
+    if is_inside_node_modules(&candidate) {
+        return None;
+    }
+    let found = probe_graph_candidate(&candidate, false)?;
+    let canonical_root = first_party_root.canonicalize().ok()?;
+    let canonical = found.canonicalize().ok()?;
+    if !canonical.starts_with(&canonical_root) || is_inside_node_modules(&canonical) {
+        return None;
+    }
+    let relative = canonical.strip_prefix(&canonical_root).ok()?;
+    let relative = relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    Some(format!("\u{0}workspace\u{0}{relative}"))
 }
 
 fn stable_project_virtual_specifier(specifier: &str, project_root: &Path) -> Option<String> {

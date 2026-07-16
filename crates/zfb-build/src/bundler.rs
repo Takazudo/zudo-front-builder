@@ -2113,6 +2113,7 @@ pub fn bundle_with_session(
         .clone()
         .without_user_claimed_virtual_modules(&input.tsconfig_paths);
     let mut plugin_preprocessing_files = BTreeSet::new();
+    let mut preprocessing_worker_importers: BTreeSet<PathBuf> = BTreeSet::new();
     let mut root_entry_dependency_seed_files = BTreeSet::new();
     let mut root_entry_dependency_logical_importers = BTreeMap::new();
     if mat_ctx.worker_build_context.has_plugin_resolver_inputs() {
@@ -2122,6 +2123,12 @@ pub fn bundle_with_session(
         )
         .context("bundler: validate registered virtual-module preprocessing syntax")?;
         plugin_preprocessing_files.extend(virtual_discovery.files);
+        preprocessing_worker_importers.extend(
+            virtual_discovery
+                .worker_edges
+                .iter()
+                .map(|edge| edge.importer.clone()),
+        );
         mat_ctx.raw_import_edges.borrow_mut().extend(
             virtual_discovery
                 .raw_import_edges
@@ -2187,6 +2194,12 @@ pub fn bundle_with_session(
         };
         let root_level_entry = root_level_staged_entry_file(&target, &project_root).is_some();
         let discovered_files = discovery.files;
+        preprocessing_worker_importers.extend(
+            discovery
+                .worker_edges
+                .iter()
+                .map(|edge| edge.importer.clone()),
+        );
         plugin_preprocessing_files.insert(target.clone());
         if root_level_entry && !bundle_exclude.is_empty() {
             root_entry_dependency_seed_files.insert(target.clone());
@@ -3102,8 +3115,36 @@ pub fn bundle_with_session(
             // Issue #1664: a workspace-sibling first-party file passes the
             // widened graph validation but is not staged into the SSR shadow;
             // authored relative/alias spellings keep reaching it in the real
-            // tree, matching the pre-widening escape behavior.
+            // tree, matching the pre-widening escape behavior. That is only
+            // sound for plain modules — a sibling file that itself needs
+            // preprocessing rewrites (`?raw` importer, `import.meta.glob`,
+            // nested Worker) would reach esbuild unprocessed, so fail those
+            // loudly with the real limitation instead.
+            // https://github.com/Takazudo/zudo-front-builder/issues/1668
             if physical.starts_with(&plugin_preprocessing_first_party_root) {
+                let is_raw_importer = mat_ctx
+                    .raw_import_edges
+                    .borrow()
+                    .iter()
+                    .any(|edge| &edge.importer == physical);
+                let is_worker_importer = preprocessing_worker_importers.contains(physical);
+                let has_glob = std::fs::read_to_string(physical)
+                    .ok()
+                    .filter(|source| source.contains("import.meta.glob"))
+                    .map(|source| {
+                        crate::glob_expand::source_contains_import_meta_glob(&source)
+                            .unwrap_or(true)
+                    })
+                    .unwrap_or(false);
+                if is_raw_importer || is_worker_importer || has_glob {
+                    return Err(anyhow!(
+                        "bundler: workspace-sibling file {} needs `?raw`/glob/module-worker \
+                         preprocessing, which the SSR bundler cannot stage outside the project \
+                         root yet — move the file under the project root or follow \
+                         https://github.com/Takazudo/zudo-front-builder/issues/1668",
+                        physical.display()
+                    ));
+                }
                 continue;
             }
             return Err(anyhow!(
