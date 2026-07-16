@@ -1299,6 +1299,11 @@ struct IslandsShadow {
     /// `--preserve-symlinks` for this shadow. False only when source files were
     /// copied into the shadow instead of symlinked.
     preserve_symlinks: bool,
+    /// esbuild's working directory inside the shadow: the mirrored project
+    /// dir. Equal to the shadow root except in a workspace-widened shadow
+    /// (issue #1664), where the project is mirrored at its workspace-relative
+    /// location.
+    bundle_working_dir: PathBuf,
     /// Logical original terminal targets represented by generated modules.
     raw_targets: std::collections::BTreeSet<PathBuf>,
     /// Logical first-party paths that participate in any module-worker URL
@@ -1345,7 +1350,10 @@ fn discover_plugin_preprocessing(
     if !worker_build_context.has_plugin_resolver_inputs() {
         return Ok(PluginPreprocessingMeta::default());
     }
-    let paths = IslandsShadowPaths::new(project_root);
+    // Issue #1664: entries logicalize against the widened first-party root so
+    // workspace-sibling sources are walked instead of silently skipped.
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let paths = IslandsShadowPaths::new(&first_party_root);
     let mut discovered = PluginPreprocessingMeta::default();
     if include_registered_virtuals {
         discovered.extend_discovery(
@@ -1460,11 +1468,16 @@ impl<'a> IslandsShadowPaths<'a> {
     }
 
     fn usable_rel(rel: &Path) -> Option<PathBuf> {
-        match rel.components().next() {
-            Some(c) if c.as_os_str() == "node_modules" => None,
-            Some(_) => Some(rel.to_path_buf()),
-            None => None,
+        if rel.as_os_str().is_empty() {
+            return None;
         }
+        // Any `node_modules` segment disqualifies — in a workspace-widened
+        // root (issue #1664) an installed-package path can carry the segment
+        // mid-path (`sub-packages/host/node_modules/...`), not just first.
+        if rel.components().any(|c| c.as_os_str() == "node_modules") {
+            return None;
+        }
+        Some(rel.to_path_buf())
     }
 }
 
@@ -2275,7 +2288,13 @@ fn materialise_islands_shadow_with_worker_context(
 ) -> Result<IslandsShadowOutcome> {
     use std::collections::{BTreeSet, HashMap};
 
-    let root = project_root;
+    // Issue #1664: in a pnpm workspace the mirrorable first-party tree is the
+    // whole workspace, so sibling-package sources reached through tsconfig
+    // aliases are mirrored instead of becoming stopgap offenders. The shadow
+    // layout is keyed relative to this widened root; without a workspace
+    // marker it is exactly `project_root` and the layout is unchanged.
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let root = first_party_root.as_path();
     let paths = IslandsShadowPaths::new(root);
 
     // --- Pre-flight: every glob module must be shadow-expandable. ---------
@@ -2369,7 +2388,9 @@ fn materialise_islands_shadow_with_worker_context(
     //     glob module's own directory subtree.
     if !matched_glob_targets.is_empty() {
         let target_roots: Vec<PathBuf> = matched_glob_targets.iter().cloned().collect();
-        let resolver = FsResolver::new().with_project_root(root);
+        // Raw-alias table stays scoped to the project's own tsconfig; the
+        // containment bound is widened inside `validate_raw_candidate`.
+        let resolver = FsResolver::new().with_project_root(project_root);
         match scan_reachable_modules_with_meta(&target_roots, &resolver) {
             Ok(meta) => {
                 for m in meta.modules {
@@ -2438,7 +2459,7 @@ fn materialise_islands_shadow_with_worker_context(
             anyhow!(
                 "raw importer {} has no logical path under {}",
                 importer.display(),
-                project_root.display()
+                root.display()
             )
         })?;
         let source = match expanded_by_key.get(&key) {
@@ -2505,7 +2526,7 @@ fn materialise_islands_shadow_with_worker_context(
             anyhow!(
                 "module-worker importer {} has no logical path under {}",
                 importer.display(),
-                project_root.display()
+                root.display()
             )
         })?;
         module_worker_dependencies.insert(logical_importer.clone());
@@ -2620,7 +2641,7 @@ fn materialise_islands_shadow_with_worker_context(
             .iter()
             .filter_map(|island| paths.logical_project_path(&island.source_path)),
     );
-    let shadow_configs = collect_islands_shadow_configs(project_root, &config_sources)?;
+    let shadow_configs = collect_islands_shadow_configs(root, &config_sources)?;
 
     // --- Materialise. ----------------------------------------------------
     let tempdir = tempfile::Builder::new()
@@ -2628,9 +2649,19 @@ fn materialise_islands_shadow_with_worker_context(
         .tempdir()
         .context("failed to allocate islands shadow tempdir")?;
     let shadow_root = tempdir.path();
-    let project_node_modules = detect_project_node_modules(root);
+    // A workspace-widened shadow needs node_modules at BOTH install roots:
+    // the workspace root (hoisted deps) and the project's own nested dir.
+    // Without a workspace the two are the same lookup and behavior is
+    // unchanged.
+    let first_party_node_modules = detect_project_node_modules(root);
+    let project_node_modules = if root == project_root {
+        None
+    } else {
+        detect_project_node_modules(project_root)
+    };
+    let has_node_modules = first_party_node_modules.is_some() || project_node_modules.is_some();
     let source_copy_mode =
-        project_node_modules.is_some() && shadow_config_scope_uses_paths(root, &shadow_configs);
+        has_node_modules && shadow_config_scope_uses_paths(root, &shadow_configs);
     let preserve_symlinks = !source_copy_mode;
 
     for from in &to_mirror {
@@ -2670,12 +2701,14 @@ fn materialise_islands_shadow_with_worker_context(
         }
     }
 
-    materialise_shadow_typescript_configs(project_root, shadow_root, &shadow_configs)?;
+    materialise_shadow_typescript_configs(root, shadow_root, &shadow_configs)?;
 
     // Symlink node_modules as a whole so shadow files' bare imports
     // (`preact`, `@takazudo/zfb/runtime`, …) resolve — esbuild walks up from
-    // each shadow file to `<shadow>/node_modules`.
-    if let Some(nm) = project_node_modules {
+    // each shadow file to the nearest mirrored `node_modules`. In a widened
+    // workspace shadow, both the workspace-root install and the project's
+    // nested install are linked so nearest-package precedence is preserved.
+    if let Some(nm) = first_party_node_modules {
         let shadow_nm = shadow_root.join("node_modules");
         shadow_symlink(&nm, &shadow_nm).with_context(|| {
             format!(
@@ -2685,9 +2718,27 @@ fn materialise_islands_shadow_with_worker_context(
             )
         })?;
     }
+    let shadow_project_dir =
+        match zfb_types::normalize_path_lexical(project_root).strip_prefix(root) {
+            Ok(rel) if !rel.as_os_str().is_empty() => shadow_root.join(rel),
+            _ => shadow_root.to_path_buf(),
+        };
+    std::fs::create_dir_all(&shadow_project_dir)
+        .with_context(|| format!("create shadow project dir {}", shadow_project_dir.display()))?;
+    if let Some(nm) = project_node_modules {
+        let shadow_nm = shadow_project_dir.join("node_modules");
+        shadow_symlink(&nm, &shadow_nm).with_context(|| {
+            format!(
+                "symlink shadow project node_modules {} -> {}",
+                shadow_nm.display(),
+                nm.display()
+            )
+        })?;
+    }
     // The user's selected tsconfig/jsconfig hierarchy is now present in the
-    // shadow. The caller also uses this root as esbuild's cwd, so implicit
-    // config lookup and plugin-merged per-entry configs agree on shadow paths.
+    // shadow. The caller uses the mirrored project dir as esbuild's cwd (and
+    // the shadow root as the tsconfig search boundary), so implicit config
+    // lookup and plugin-merged per-entry configs agree on shadow paths.
 
     // --- Remap island source_paths into the shadow. ----------------------
     let mut remap: HashMap<PathBuf, PathBuf> = HashMap::new();
@@ -2713,6 +2764,7 @@ fn materialise_islands_shadow_with_worker_context(
         _tempdir: tempdir,
         remap,
         preserve_symlinks,
+        bundle_working_dir: shadow_project_dir,
         raw_targets: all_raw_edges
             .into_iter()
             .filter_map(|edge| paths.logical_project_path(&edge.target))
@@ -3018,7 +3070,8 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // targets (normally empty); a worker shadow contributes its complete
     // first-party graph in addition to raw targets.
     if let Some(invalidation) = raw_invalidation {
-        let paths = IslandsShadowPaths::new(project_root);
+        let invalidation_first_party_root = zfb_types::first_party_root_for(project_root);
+        let paths = IslandsShadowPaths::new(&invalidation_first_party_root);
         let mut dependencies: std::collections::BTreeSet<PathBuf> = scan_meta
             .raw_import_edges_from_islands
             .iter()
@@ -3139,15 +3192,21 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     let islands_tsconfig_boundary = _islands_shadow
         .as_ref()
         .map(|shadow| shadow._tempdir.path().to_path_buf());
-    let islands_bundler_working_dir = islands_tsconfig_boundary
-        .clone()
+    // cwd is the mirrored project dir (== shadow root outside a workspace);
+    // the tsconfig search boundary stays the shadow root so workspace-level
+    // configs mirrored above the project dir are still discoverable.
+    let islands_bundler_working_dir = _islands_shadow
+        .as_ref()
+        .map(|shadow| shadow.bundle_working_dir.clone())
         .unwrap_or_else(|| project_root.to_path_buf());
     let mut esbuild_cfg =
         EsbuildSubprocessConfig::default().with_working_dir(islands_bundler_working_dir);
     if let Some(boundary) = islands_tsconfig_boundary {
         esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
     }
-    if detect_project_node_modules(project_root).is_some() {
+    if detect_project_node_modules(project_root).is_some()
+        || detect_project_node_modules(&zfb_types::first_party_root_for(project_root)).is_some()
+    {
         _embedded_nm_handle = None;
     } else {
         match embedded_node_modules() {
@@ -3190,7 +3249,7 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         .as_ref()
         .map(|shadow| {
             remap_project_plugin_aliases_to_shadow(
-                project_root,
+                &zfb_types::first_party_root_for(project_root),
                 shadow._tempdir.path(),
                 &plugin_config.alias_entries,
             )
@@ -3219,7 +3278,8 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // preprocessing shadow (where `?raw` and nested worker URLs have already
     // been rewritten), while its filename is derived from the corresponding
     // original project path by the locked #1500 contract.
-    let shadow_paths = IslandsShadowPaths::new(project_root);
+    let islands_first_party_root = zfb_types::first_party_root_for(project_root);
+    let shadow_paths = IslandsShadowPaths::new(&islands_first_party_root);
     let module_worker_sources: std::collections::BTreeSet<PathBuf> = match &_islands_shadow {
         Some(shadow) => shadow.module_worker_sources.clone(),
         None => scan_meta

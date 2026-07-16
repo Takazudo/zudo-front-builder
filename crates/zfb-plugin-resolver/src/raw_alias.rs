@@ -179,7 +179,11 @@ pub fn validate_raw_candidate(
     project_root: &Path,
     candidate: PathBuf,
 ) -> Result<PathBuf> {
-    let lexical_root = normalize_path_lexical(project_root);
+    // Issue #1664: in a pnpm workspace the containment boundary is the
+    // workspace root, not the single package dir — a raw target in a sibling
+    // workspace package is first-party.
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let lexical_root = normalize_path_lexical(&first_party_root);
     if !candidate.starts_with(&lexical_root) {
         bail!(
             "zfb bundler: raw import target {specifier_without_query:?} from {} escapes the \
@@ -198,10 +202,10 @@ pub fn validate_raw_candidate(
             candidate.display()
         );
     }
-    let canonical_root = project_root.canonicalize().with_context(|| {
+    let canonical_root = first_party_root.canonicalize().with_context(|| {
         format!(
             "canonicalize logical project root {} for ?raw containment",
-            project_root.display()
+            first_party_root.display()
         )
     })?;
     let canonical_target = candidate.canonicalize().with_context(|| {

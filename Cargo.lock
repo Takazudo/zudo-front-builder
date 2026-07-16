@@ -6269,6 +6269,7 @@ dependencies = [
  "hex",
  "serde",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]

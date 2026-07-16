@@ -201,12 +201,25 @@ impl ModuleWorkerBuildContext {
         let mut aliases = self.plugin_alias_entries.clone();
         aliases.sort();
         let root = normalize_path_lexical(project_root);
+        let first_party_root =
+            normalize_path_lexical(&zfb_types::first_party_root_for(project_root));
         for (specifier, target) in aliases {
             let target_path = normalize_path_lexical(Path::new(&target));
+            // Issue #1664: alias targets in sibling workspace packages get a
+            // relocation-stable NUL-tagged identity instead of the absolute
+            // `external:` spelling (which embeds machine-specific paths).
             let stable_target = target_path
                 .strip_prefix(&root)
                 .map(|relative| {
                     format!("project:/{}", relative.to_string_lossy().replace('\\', "/"))
+                })
+                .or_else(|_| {
+                    target_path.strip_prefix(&first_party_root).map(|relative| {
+                        format!(
+                            "\u{0}workspace\u{0}{}",
+                            relative.to_string_lossy().replace('\\', "/")
+                        )
+                    })
                 })
                 .unwrap_or_else(|_| format!("external:{}", target_path.to_string_lossy()));
             field(aggregate, b"plugin-alias", specifier.as_bytes());
@@ -556,7 +569,11 @@ fn is_inside_node_modules(path: &Path) -> bool {
 }
 
 fn validate_first_party_path(path: &Path, project_root: &Path, context: &str) -> Result<PathBuf> {
-    let root = normalize_path_lexical(project_root);
+    // Issue #1664: in a pnpm workspace the first-party boundary is the
+    // workspace, not the single package dir — sibling-workspace source
+    // reached through tsconfig aliases is first-party, not an escape.
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let root = normalize_path_lexical(&first_party_root);
     let logical = normalize_path_lexical(path);
     if !logical.starts_with(&root) || is_inside_node_modules(&logical) {
         bail!(
@@ -565,9 +582,9 @@ fn validate_first_party_path(path: &Path, project_root: &Path, context: &str) ->
             root.display()
         );
     }
-    let canonical_root = project_root
+    let canonical_root = first_party_root
         .canonicalize()
-        .with_context(|| format!("canonicalize project root {}", project_root.display()))?;
+        .with_context(|| format!("canonicalize project root {}", first_party_root.display()))?;
     let canonical = logical
         .canonicalize()
         .with_context(|| format!("canonicalize {context} {}", logical.display()))?;
@@ -575,7 +592,7 @@ fn validate_first_party_path(path: &Path, project_root: &Path, context: &str) ->
         bail!(
             "zfb bundler: {context} {} escapes project root {} through a symlink or resolves under node_modules (canonical target {})",
             logical.display(),
-            project_root.display(),
+            first_party_root.display(),
             canonical.display()
         );
     }
@@ -602,6 +619,20 @@ fn resolve_worker_target(importer: &Path, specifier: &str, project_root: &Path) 
         );
     }
     let target = validate_first_party_path(&target, project_root, "module-worker source")?;
+    // A workspace-sibling worker ENTRY passes the widened first-party check
+    // (issue #1664) but the locked #1500 flat-naming contract still derives
+    // companion filenames from the project-relative path. Fail here with the
+    // real limitation instead of the naming contract's generic error.
+    // https://github.com/Takazudo/zudo-front-builder/issues/1667
+    if !target.starts_with(normalize_path_lexical(project_root)) {
+        bail!(
+            "zfb bundler: module-worker source {} lives in a sibling workspace package. \
+             Workspace-sibling worker entries are not supported yet (the worker companion \
+             naming contract is project-scoped) — move the worker entry under the project \
+             root, or follow https://github.com/Takazudo/zudo-front-builder/issues/1667",
+            target.display()
+        );
+    }
     if !is_js_like(&target) {
         bail!(
             "zfb bundler: module-worker source {} is not a supported JS/TS entry",
@@ -863,6 +894,18 @@ fn config_identity(project_root: &Path, config: &Path) -> String {
     let config = normalize_path_lexical(config);
     if let Ok(relative) = config.strip_prefix(&root) {
         return format!("project:/{}", relative.to_string_lossy().replace('\\', "/"));
+    }
+    // Issue #1664: configs owned by sibling workspace packages keep a
+    // relocation-stable identity behind a NUL-tagged scope (NUL cannot appear
+    // in a real path component, so this cannot collide with `project:/…`).
+    let first_party_root = normalize_path_lexical(&zfb_types::first_party_root_for(project_root));
+    if first_party_root != root {
+        if let Ok(relative) = config.strip_prefix(&first_party_root) {
+            return format!(
+                "\u{0}workspace\u{0}{}",
+                relative.to_string_lossy().replace('\\', "/")
+            );
+        }
     }
 
     let components = config.components().collect::<Vec<_>>();
@@ -1133,9 +1176,10 @@ impl ProjectGraphResolver {
             return Ok(None);
         }
 
-        let canonical_root = self.project_root.canonicalize().with_context(|| {
-            format!("canonicalize project root {}", self.project_root.display())
-        })?;
+        let first_party_root = zfb_types::first_party_root_for(&self.project_root);
+        let canonical_root = first_party_root
+            .canonicalize()
+            .with_context(|| format!("canonicalize project root {}", first_party_root.display()))?;
         let canonical = found.canonicalize().with_context(|| {
             format!(
                 "canonicalize absolute module-worker dependency {}",
@@ -1161,7 +1205,7 @@ impl ProjectGraphResolver {
                 canonical_root.display()
             )
         })?;
-        let logical = normalize_path_lexical(&self.project_root.join(relative));
+        let logical = normalize_path_lexical(&first_party_root.join(relative));
         match validate_first_party_path(&logical, &self.project_root, "module-worker dependency") {
             Ok(path) => Ok(Some(if raw {
                 GraphResolution::RawFile(path)
@@ -1534,7 +1578,17 @@ fn stable_virtual_module_source(source: &str, project_root: &Path) -> String {
     let mut replacements = collect_import_specifier_occurrences(&module, base, unresolved_ctxt)
         .into_iter()
         .filter_map(|occurrence| {
+            // Cache identity only (never a real import spelling): in-project
+            // absolute imports keep their historical "./rel" form; workspace
+            // -sibling absolute imports (issue #1664) get a NUL-tagged
+            // workspace-relative form so the hash stops embedding the
+            // checkout location. The shadow REMAP path deliberately does not
+            // use the workspace tier — see
+            // `remap_virtual_module_project_imports_to_shadow`.
             let stable = stable_project_virtual_specifier(&occurrence.specifier, project_root)
+                .or_else(|| {
+                    stable_workspace_virtual_cache_specifier(&occurrence.specifier, project_root)
+                })
                 .unwrap_or(occurrence.specifier);
             let replacement = serde_json::to_string(&stable).ok()?;
             Some((occurrence.lo, occurrence.hi, replacement))
@@ -1583,6 +1637,49 @@ pub(crate) fn remap_virtual_module_project_imports_to_shadow(
         remapped.replace_range(lo..hi, &replacement);
     }
     remapped
+}
+
+/// Cache-identity spelling for a virtual-module import of a workspace-sibling
+/// file (issue #1664). Only absolute spellings can embed the checkout
+/// location — relative escapes are already relocation-stable as authored —
+/// so only those are remapped, onto the same NUL-tagged workspace scope the
+/// worker-graph cache key uses. The result is hashed, never resolved, so the
+/// tag never has to be a loadable path.
+fn stable_workspace_virtual_cache_specifier(
+    specifier: &str,
+    project_root: &Path,
+) -> Option<String> {
+    if specifier.contains('?') || specifier.contains('#') {
+        return None;
+    }
+    let specifier_path = Path::new(specifier);
+    if !specifier_path.is_absolute() {
+        return None;
+    }
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    if normalize_path_lexical(&first_party_root) == normalize_path_lexical(project_root) {
+        return None;
+    }
+    let candidate = normalize_path_lexical(specifier_path);
+    if is_inside_node_modules(&candidate) {
+        return None;
+    }
+    let found = probe_graph_candidate(&candidate, false)?;
+    let canonical_root = first_party_root.canonicalize().ok()?;
+    let canonical = found.canonicalize().ok()?;
+    if !canonical.starts_with(&canonical_root) || is_inside_node_modules(&canonical) {
+        return None;
+    }
+    let relative = canonical.strip_prefix(&canonical_root).ok()?;
+    let relative = relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    Some(format!("\u{0}workspace\u{0}{relative}"))
 }
 
 fn stable_project_virtual_specifier(specifier: &str, project_root: &Path) -> Option<String> {
@@ -1922,18 +2019,27 @@ fn inspect_worker_graph(
 
     // Length-prefix every path and body so concatenation is unambiguous. Paths
     // are project-relative and slash-normalized, making the cache key stable
-    // across worktree locations and host operating systems.
+    // across worktree locations and host operating systems. Workspace files
+    // outside `project_root` (issue #1664) key on their first-party-root
+    // relative path behind a NUL-prefixed scope tag — a real path component
+    // can never contain NUL, so the tag cannot collide with a project file,
+    // and project-local keys stay byte-identical to the pre-#1664 form.
     let root = normalize_path_lexical(project_root);
+    let first_party_root = normalize_path_lexical(&zfb_types::first_party_root_for(project_root));
     let mut aggregate = Vec::new();
     context.append_cache_envelope(&mut aggregate, project_root);
     for (path, bytes) in &file_bytes {
-        let relative = path.strip_prefix(&root).map_err(|_| {
+        let (scope_root, workspace_scoped) = match path.strip_prefix(&root) {
+            Ok(_) => (&root, false),
+            Err(_) => (&first_party_root, true),
+        };
+        let relative = path.strip_prefix(scope_root).map_err(|_| {
             anyhow!(
                 "zfb bundler: worker dependency {} lost project-root containment",
                 path.display()
             )
         })?;
-        let relative = relative
+        let mut relative = relative
             .components()
             .filter_map(|component| match component {
                 Component::Normal(value) => Some(value.to_string_lossy()),
@@ -1941,6 +2047,9 @@ fn inspect_worker_graph(
             })
             .collect::<Vec<_>>()
             .join("/");
+        if workspace_scoped {
+            relative = format!("\u{0}workspace\u{0}{relative}");
+        }
         aggregate.extend_from_slice(&(relative.len() as u64).to_le_bytes());
         aggregate.extend_from_slice(relative.as_bytes());
         aggregate.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
