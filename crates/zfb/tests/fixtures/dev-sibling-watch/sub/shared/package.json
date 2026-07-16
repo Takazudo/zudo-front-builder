@@ -1,0 +1,5 @@
+{
+  "name": "@zfb-test/sibling-shared",
+  "private": true,
+  "type": "module"
+}
