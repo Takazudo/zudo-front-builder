@@ -162,6 +162,97 @@ pub fn module_worker_url_specifier(
     ))
 }
 
+/// Workspace-scoped variant of [`module_worker_filename`] (issue #1673, the
+/// #1500 flat-naming contract extended for issue #1667 workspace parity).
+///
+/// `first_party_root` is the widened first-party boundary returned by
+/// [`crate::first_party_root_for`] — the workspace root when `project_root`
+/// is a claimed pnpm workspace member, or `project_root` itself otherwise.
+/// Project-local sources delegate unchanged to [`module_worker_filename`],
+/// so every existing project-local name stays byte-identical. A source that
+/// falls outside `project_root` but inside `first_party_root` (a workspace
+/// sibling reached only through a tsconfig path alias) instead encodes its
+/// *workspace*-relative path behind the `worker--ws-` prefix, using the same
+/// injective per-byte encoding. A source outside `first_party_root` entirely
+/// is rejected.
+///
+/// The `-ws-` marker is grammar-disjoint from every project-local encoding
+/// by construction: the first token after the `worker-` prefix in a
+/// project-local name is always a bare alnum/underscore byte or one of the
+/// `-d-` / `-h-` / `-xNN-` escape tokens — never `-w`. See
+/// `project_local_encoding_can_never_start_with_dash_w` below for the
+/// exhaustive proof.
+pub fn module_worker_filename_scoped(
+    project_root: &Path,
+    first_party_root: &Path,
+    source_path: &Path,
+) -> Result<String, ModuleWorkerPathError> {
+    if let Ok(filename) = module_worker_filename(project_root, source_path) {
+        return Ok(filename);
+    }
+
+    let error = || ModuleWorkerPathError {
+        project_root: project_root.to_path_buf(),
+        source_path: source_path.to_path_buf(),
+    };
+
+    let workspace_root = normalize_path_lexical(first_party_root);
+    let source = normalize_path_lexical(source_path);
+
+    // The project root itself is never a valid source under either naming
+    // scheme. The delegate above already rejects it via the unscoped
+    // function's empty-relative-path check, but when `first_party_root` is
+    // wider than `project_root`, `source` is simultaneously a non-empty
+    // path relative to `workspace_root` (e.g. `apps/site`) — without this
+    // guard it would fall through and mint a workspace-scoped name for a
+    // directory that is not a project-local source at all.
+    if source == normalize_path_lexical(project_root) {
+        return Err(error());
+    }
+
+    let relative = source
+        .strip_prefix(&workspace_root)
+        .ok()
+        .filter(|relative| {
+            !relative.as_os_str().is_empty()
+                && relative
+                    .components()
+                    .all(|component| matches!(component, Component::Normal(_)))
+        })
+        .ok_or_else(error)?;
+
+    let mut encoded = String::new();
+    for (component_index, component) in relative.components().enumerate() {
+        if component_index > 0 {
+            encoded.push_str("-s-");
+        }
+        let Component::Normal(value) = component else {
+            unreachable!("relative path was validated above")
+        };
+        encode_os_component(value, &mut encoded);
+    }
+
+    if encoded.is_empty() {
+        return Err(error());
+    }
+    Ok(format!("{MODULE_WORKER_FILENAME_PREFIX}-ws-{encoded}.js"))
+}
+
+/// Workspace-scoped variant of [`module_worker_url_specifier`]; see
+/// [`module_worker_filename_scoped`] for the naming contract.
+pub fn module_worker_url_specifier_scoped(
+    project_root: &Path,
+    first_party_root: &Path,
+    source_path: &Path,
+    content_hash: &str,
+) -> Result<String, ModuleWorkerPathError> {
+    Ok(format!(
+        "./{}?v={}",
+        module_worker_filename_scoped(project_root, first_party_root, source_path)?,
+        content_hash
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +343,236 @@ mod tests {
         assert_eq!(left_name, "worker-w-x80--d-ts.js");
         assert_eq!(right_name, "worker-w-x81--d-ts.js");
         assert_ne!(left_name, right_name);
+    }
+
+    // ── scoped (workspace-parity, issue #1673) ──────────────────────────────
+
+    #[test]
+    fn scoped_project_local_source_is_byte_identical_to_unscoped() {
+        let project_root = Path::new("/ws/apps/site");
+        let workspace_root = Path::new("/ws");
+        let source = project_root.join("src/search/index.worker.ts");
+
+        let unscoped = module_worker_filename(project_root, &source).unwrap();
+        let scoped = module_worker_filename_scoped(project_root, workspace_root, &source).unwrap();
+        assert_eq!(scoped, unscoped);
+        assert_eq!(scoped, "worker-src-s-search-s-index-d-worker-d-ts.js");
+    }
+
+    #[test]
+    fn scoped_workspace_sibling_source_uses_ws_prefix_and_workspace_relative_path() {
+        let project_root = Path::new("/ws/apps/site");
+        let workspace_root = Path::new("/ws");
+        // Reached only via a tsconfig path alias (e.g. `@shared/*`), not
+        // beneath the project root.
+        let source = workspace_root.join("packages/shared/src/worker.ts");
+
+        let filename =
+            module_worker_filename_scoped(project_root, workspace_root, &source).unwrap();
+        assert_eq!(
+            filename,
+            "worker--ws-packages-s-shared-s-src-s-worker-d-ts.js"
+        );
+        assert!(filename.starts_with(MODULE_WORKER_FILENAME_PREFIX));
+
+        // Deterministic: same source always yields the same name.
+        assert_eq!(
+            filename,
+            module_worker_filename_scoped(project_root, workspace_root, &source).unwrap()
+        );
+    }
+
+    #[test]
+    fn scoped_workspace_root_itself_delegates_when_project_root_equals_workspace_root() {
+        // No workspace widening (first_party_root == project_root): behavior
+        // must be identical to the unscoped function, including rejection.
+        let project_root = Path::new("/app");
+        let error =
+            module_worker_filename_scoped(project_root, project_root, Path::new("/other/w.ts"))
+                .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("not a non-empty path beneath project root"));
+    }
+
+    #[test]
+    fn scoped_source_outside_first_party_root_is_rejected() {
+        let project_root = Path::new("/ws/apps/site");
+        let workspace_root = Path::new("/ws");
+        let error = module_worker_filename_scoped(
+            project_root,
+            workspace_root,
+            Path::new("/elsewhere/worker.ts"),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("not a non-empty path beneath project root"));
+    }
+
+    #[test]
+    fn scoped_workspace_root_source_itself_is_rejected() {
+        // The workspace root path with nothing beneath it encodes to an
+        // empty relative path, same rejection as the unscoped function's
+        // empty-relative-path case.
+        let project_root = Path::new("/ws/apps/site");
+        let workspace_root = Path::new("/ws");
+        assert!(
+            module_worker_filename_scoped(project_root, workspace_root, workspace_root).is_err()
+        );
+    }
+
+    #[test]
+    fn scoped_project_root_itself_is_rejected_even_when_workspace_is_wider() {
+        // Regression (codex review, issue #1673): the unscoped delegate
+        // rejects `source == project_root` (empty project-relative path),
+        // but `project_root` is simultaneously a non-empty path relative to
+        // a WIDER `first_party_root` (e.g. `apps/site` under `/ws`). Without
+        // an explicit guard the workspace-sibling branch would wrongly mint
+        // a name like `worker--ws-apps-s-site.js` for the project root
+        // itself, which is not a valid module-worker source under either
+        // scheme.
+        let project_root = Path::new("/ws/apps/site");
+        let workspace_root = Path::new("/ws");
+        let error =
+            module_worker_filename_scoped(project_root, workspace_root, project_root).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("not a non-empty path beneath project root"));
+    }
+
+    #[test]
+    fn scoped_url_specifier_matches_scoped_filename_and_carries_hash() {
+        let project_root = Path::new("/ws/apps/site");
+        let workspace_root = Path::new("/ws");
+        let source = workspace_root.join("packages/shared/src/worker.ts");
+        let hash = module_worker_content_hash(b"postMessage('a')");
+
+        let url = module_worker_url_specifier_scoped(project_root, workspace_root, &source, &hash)
+            .unwrap();
+        let filename =
+            module_worker_filename_scoped(project_root, workspace_root, &source).unwrap();
+        assert_eq!(url, format!("./{filename}?v={hash}"));
+    }
+
+    #[test]
+    fn scoped_names_still_match_the_reserved_prefix_and_csp_glob() {
+        let project_root = Path::new("/ws/apps/site");
+        let workspace_root = Path::new("/ws");
+        let source = workspace_root.join("packages/shared/worker.ts");
+        let filename =
+            module_worker_filename_scoped(project_root, workspace_root, &source).unwrap();
+
+        assert!(filename.starts_with(MODULE_WORKER_FILENAME_PREFIX));
+        // MODULE_WORKER_CSP_GLOB is "/assets/worker-*.js": `*` matches any
+        // byte sequence including the embedded "-ws-" marker and further
+        // dashes, so a scoped name under /assets/ still satisfies the glob.
+        assert_eq!(MODULE_WORKER_CSP_GLOB, "/assets/worker-*.js");
+        let simulated_asset_path = format!("/assets/{filename}");
+        let (prefix, suffix) = ("/assets/worker-", ".js");
+        assert!(simulated_asset_path.starts_with(prefix));
+        assert!(simulated_asset_path.ends_with(suffix));
+    }
+
+    /// Grammar-level disjointness proof (issue #1673): exhaustively checks,
+    /// for every possible input byte, that [`encode_path_byte`] never
+    /// produces a token starting with `-w`. Combined with the fact that the
+    /// inter-component separator is the fixed literal `-s-` (also not
+    /// `-w`-prefixed) and is never emitted before the first component, this
+    /// proves NO project-local encoding produced by [`module_worker_filename`]
+    /// can ever start with `-w` immediately after the `worker-` prefix.
+    /// [`module_worker_filename_scoped`]'s workspace-sibling branch always
+    /// starts its encoded suffix with the literal `-ws-`, so the two name
+    /// spaces can never collide.
+    #[test]
+    fn project_local_encoding_can_never_start_with_dash_w() {
+        for byte in 0u8..=255 {
+            let mut out = String::new();
+            encode_path_byte(byte, &mut out);
+            assert!(
+                !out.starts_with("-w"),
+                "byte {byte:#04x} encoded to {out:?}, which starts with the reserved -w marker"
+            );
+        }
+        // The fixed component separator is likewise never `-w`-prefixed.
+        assert!(!"-s-".starts_with("-w"));
+    }
+
+    /// Property-style sweep (issue #1673): for a broad, deterministically
+    /// generated set of project-local and workspace-sibling source paths
+    /// (including paths that already contain literal `-`, `.`, `s`, `w`,
+    /// and non-ASCII bytes — the characters most likely to produce an
+    /// accidental collision), no project-local name ever equals any
+    /// workspace-scoped name.
+    #[test]
+    fn scoped_and_unscoped_namespaces_never_collide_across_generated_paths() {
+        let project_root = Path::new("/ws/apps/site");
+        let workspace_root = Path::new("/ws");
+
+        let segments = [
+            "a",
+            "b",
+            "worker",
+            "ws",
+            "w",
+            "s",
+            "index.worker.ts",
+            "a-b",
+            "a.b",
+            "a--b",
+            "-leading-dash",
+            "unicode-\u{1F600}",
+            "sub_dir",
+            "-ws-literal",
+        ];
+
+        let mut project_local_names = std::collections::HashSet::new();
+        let mut workspace_names = std::collections::HashSet::new();
+
+        // Deterministic LCG so the sweep is reproducible without pulling in
+        // a `rand`/`proptest` dependency for a single grammar test.
+        let mut state: u64 = 0x9E3779B97F4A7C15;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            state
+        };
+
+        for _ in 0..500 {
+            let depth = 1 + (next() % 3) as usize;
+            let mut project_relative = PathBuf::new();
+            let mut workspace_relative = PathBuf::from("packages/shared");
+            for _ in 0..depth {
+                let segment = segments[(next() as usize) % segments.len()];
+                project_relative.push(segment);
+                workspace_relative.push(segment);
+            }
+
+            let project_local_source = project_root.join(&project_relative);
+            let workspace_sibling_source = workspace_root.join(&workspace_relative);
+
+            if let Ok(name) = module_worker_filename(project_root, &project_local_source) {
+                project_local_names.insert(name);
+            }
+            if let Ok(name) = module_worker_filename_scoped(
+                project_root,
+                workspace_root,
+                &workspace_sibling_source,
+            ) {
+                workspace_names.insert(name);
+            }
+        }
+
+        assert!(!project_local_names.is_empty());
+        assert!(!workspace_names.is_empty());
+        let collisions: Vec<_> = project_local_names.intersection(&workspace_names).collect();
+        assert!(
+            collisions.is_empty(),
+            "project-local and workspace-scoped names collided: {collisions:?}"
+        );
+        assert!(workspace_names
+            .iter()
+            .all(|name| name.starts_with(&format!("{MODULE_WORKER_FILENAME_PREFIX}-ws-"))));
     }
 }
