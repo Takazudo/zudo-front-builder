@@ -198,6 +198,18 @@ pub fn module_worker_filename_scoped(
 
     let workspace_root = normalize_path_lexical(first_party_root);
     let source = normalize_path_lexical(source_path);
+
+    // The project root itself is never a valid source under either naming
+    // scheme. The delegate above already rejects it via the unscoped
+    // function's empty-relative-path check, but when `first_party_root` is
+    // wider than `project_root`, `source` is simultaneously a non-empty
+    // path relative to `workspace_root` (e.g. `apps/site`) — without this
+    // guard it would fall through and mint a workspace-scoped name for a
+    // directory that is not a project-local source at all.
+    if source == normalize_path_lexical(project_root) {
+        return Err(error());
+    }
+
     let relative = source
         .strip_prefix(&workspace_root)
         .ok()
@@ -408,6 +420,25 @@ mod tests {
         assert!(
             module_worker_filename_scoped(project_root, workspace_root, workspace_root).is_err()
         );
+    }
+
+    #[test]
+    fn scoped_project_root_itself_is_rejected_even_when_workspace_is_wider() {
+        // Regression (codex review, issue #1673): the unscoped delegate
+        // rejects `source == project_root` (empty project-relative path),
+        // but `project_root` is simultaneously a non-empty path relative to
+        // a WIDER `first_party_root` (e.g. `apps/site` under `/ws`). Without
+        // an explicit guard the workspace-sibling branch would wrongly mint
+        // a name like `worker--ws-apps-s-site.js` for the project root
+        // itself, which is not a valid module-worker source under either
+        // scheme.
+        let project_root = Path::new("/ws/apps/site");
+        let workspace_root = Path::new("/ws");
+        let error =
+            module_worker_filename_scoped(project_root, workspace_root, project_root).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("not a non-empty path beneath project root"));
     }
 
     #[test]
