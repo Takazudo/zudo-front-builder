@@ -1974,7 +1974,7 @@ pub fn bundle_with_session(
     } else {
         None
     };
-    let (owned_work, shadow) = match &session {
+    let (owned_work, work) = match &session {
         Some(s) => (None, canonical_shadow_root(s.work.path())?),
         None => {
             let parent = shadow_parent_dir(&input.project_root)?;
@@ -1986,8 +1986,30 @@ pub fn bundle_with_session(
             (Some(work), path)
         }
     };
-    let shadow: &Path = &shadow;
-    ensure_shadow_path_outside_project(&input.project_root, shadow, "bundler shadow root")?;
+    let work: &Path = &work;
+    ensure_shadow_path_outside_project(&input.project_root, work, "bundler shadow root")?;
+
+    // Issue #1668 part 1: re-root the SSR shadow at the widened first-party
+    // boundary. The allocated tempdir (`work`) mirrors the whole first-party
+    // tree — the workspace root in a pnpm workspace — and the PROJECT mirror
+    // (`shadow`) is nested at the project's workspace-relative subpath. Every
+    // downstream step keeps keying off `shadow` (entry.mjs / synthetic
+    // tsconfig / hydration shim live there; esbuild's cwd is `shadow`), so
+    // without a workspace `first_party_root == project_root`, `workspace_rel`
+    // is empty, and `shadow == work` — a byte-identical no-op vs the pre-#1668
+    // single-mirror layout. Sibling-package sources are NOT staged in this
+    // part (the #1668 guard still escapes them); only the layout re-roots.
+    let first_party_root = zfb_types::first_party_root_for(&input.project_root);
+    let workspace_rel = normalize_path_lexical(&input.project_root)
+        .strip_prefix(&first_party_root)
+        .ok()
+        .filter(|rel| !rel.as_os_str().is_empty())
+        .map(Path::to_path_buf);
+    let shadow_buf = match &workspace_rel {
+        Some(rel) => work.join(rel),
+        None => work.to_path_buf(),
+    };
+    let shadow: &Path = &shadow_buf;
 
     // The effective `PipelineSpec` is the input spec with its
     // `resolve_source_map` knob ALWAYS rewritten from the derivation
@@ -2024,7 +2046,21 @@ pub fn bundle_with_session(
         .ok()
         .and_then(|p| p.config_fingerprint());
 
-    let writer = ShadowWriter::new(shadow.to_path_buf(), session, copy_mode, config_fingerprint)?;
+    // The writer's dest-relative bookkeeping (visited / prune / skip caches)
+    // is rooted at the WORK mirror, so every destination is workspace-root
+    // -relative (`<workspace-rel>/pages/…` in a workspace, plain `pages/…`
+    // without one). `ShadowWriter::new` also performs the session dirty /
+    // copy-mode-flip wipe of the whole `work` tree, so the project mirror must
+    // be (re-)created AFTER it.
+    let writer = ShadowWriter::new(work.to_path_buf(), session, copy_mode, config_fingerprint)?;
+    if workspace_rel.is_some() {
+        fs::create_dir_all(shadow).with_context(|| {
+            format!(
+                "bundler: failed to create nested project mirror {}",
+                shadow.display()
+            )
+        })?;
+    }
 
     // Build the shared materialisation context from the fields of `input`
     // that are invariant across every materialise_shadow / materialise_collection
@@ -2662,6 +2698,55 @@ pub fn bundle_with_session(
         }
     }
 
+    // 2a-ws. Workspace-hoisted `node_modules` at the WORK root (issue #1668
+    //     part 1). In a pnpm workspace the deps are hoisted to the workspace
+    //     root, so the work mirror gets its own `<work>/node_modules` symlink
+    //     — the SECOND install root above the project's own nested install
+    //     (linked at `<shadow>/node_modules` by 2b below). esbuild walks up
+    //     from a project-mirror file to `<shadow>/node_modules` first, then to
+    //     `<work>/node_modules`, preserving nearest-package precedence for the
+    //     day sibling sources are staged (a later sub-issue). Without a
+    //     workspace `workspace_rel` is `None`, so this is skipped entirely and
+    //     the layout stays byte-identical. Created directly (not through the
+    //     ShadowWriter), like the 2b link, so it never enters the prune
+    //     bookkeeping. In session mode a dirty/copy-mode-flip wipe of `work`
+    //     removes it, and this re-creates it (the `already_correct` short
+    //     circuit keeps the steady-state tick a no-op).
+    if workspace_rel.is_some() {
+        let workspace_node_modules = first_party_root.join("node_modules");
+        if workspace_node_modules.is_dir() {
+            let work_nm = work.join("node_modules");
+            #[cfg(unix)]
+            {
+                let already_correct = fs::read_link(&work_nm)
+                    .map(|t| t == workspace_node_modules)
+                    .unwrap_or(false);
+                if !already_correct {
+                    let _ = fs::remove_file(&work_nm);
+                    let _ = fs::remove_dir_all(&work_nm);
+                    std::os::unix::fs::symlink(&workspace_node_modules, &work_nm).with_context(
+                        || {
+                            format!(
+                                "bundler: failed to symlink workspace node_modules {} → {}",
+                                workspace_node_modules.display(),
+                                work_nm.display()
+                            )
+                        },
+                    )?;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                fs::create_dir_all(&work_nm).with_context(|| {
+                    format!(
+                        "bundler: failed to create workspace node_modules dir {}",
+                        work_nm.display()
+                    )
+                })?;
+            }
+        }
+    }
+
     // 2b. `<shadow>/node_modules` resolution root.
     //     When `BundlerInput::node_modules_dir` is set, esbuild needs a
     //     `<shadow>/node_modules` to walk into instead of an empty tempdir
@@ -3010,7 +3095,9 @@ pub fn bundle_with_session(
         let dest = shadow_path_for_project_path(
             logical_root,
             &project_root,
+            &first_party_root,
             shadow,
+            work,
             node_modules_isolation_root,
         );
         materialise_isolated_exact_dir(
@@ -3036,7 +3123,9 @@ pub fn bundle_with_session(
         let dest = shadow_path_for_project_path(
             logical_root,
             &project_root,
+            &first_party_root,
             shadow,
+            work,
             node_modules_isolation_root,
         );
         materialise_isolated_exact_dir(
@@ -3076,7 +3165,9 @@ pub fn bundle_with_session(
         let to = shadow_path_for_project_path(
             physical,
             &project_root,
+            &first_party_root,
             shadow,
+            work,
             node_modules_isolation_root,
         );
         let shadow_relative = to
@@ -3105,8 +3196,8 @@ pub fn bundle_with_session(
         .filter(|path| is_plugin_preprocessing_excluded(path))
         .cloned()
         .collect::<BTreeSet<_>>();
-    let plugin_preprocessing_first_party_root =
-        zfb_types::first_party_root_for(&input.project_root);
+    // Reuses the widened first-party root computed once for the shadow
+    // re-root above (issue #1668); the guard below keys off the same boundary.
     for physical in &plugin_preprocessing_files {
         if excluded_plugin_preprocessing_files.contains(physical) {
             continue;
@@ -3121,7 +3212,7 @@ pub fn bundle_with_session(
             // nested Worker) would reach esbuild unprocessed, so fail those
             // loudly with the real limitation instead.
             // https://github.com/Takazudo/zudo-front-builder/issues/1668
-            if physical.starts_with(&plugin_preprocessing_first_party_root) {
+            if physical.starts_with(&first_party_root) {
                 let is_raw_importer = mat_ctx
                     .raw_import_edges
                     .borrow()
@@ -3171,7 +3262,9 @@ pub fn bundle_with_session(
         let to = shadow_path_for_project_path(
             physical,
             &project_root,
+            &first_party_root,
             shadow,
+            work,
             node_modules_isolation_root,
         );
         let shadow_relative = to
@@ -6251,26 +6344,51 @@ fn path_is_inside_node_modules(path: &Path) -> bool {
         .any(|component| component.as_os_str() == std::ffi::OsStr::new("node_modules"))
 }
 
+/// Map a logical path to its physical location in the re-rooted SSR shadow
+/// (issue #1668 part 1). Tiers, in order:
+///
+/// - under `project_root`, inside `node_modules` → the isolation root (or the
+///   `.zfb-exact-isolation` slot in the project mirror).
+/// - under `project_root` otherwise → the project mirror (`shadow`).
+/// - under `first_party_root` but OUTSIDE `project_root` (a workspace sibling)
+///   → its workspace-relative slot in the work mirror (`work_root/<rel>`).
+///   Part 1 does not stage siblings — the #1668 guard still escapes them
+///   before they reach here — so this tier is exercised only by its unit test
+///   and prepares the layout for the sibling-staging sub-issue.
+/// - anything else → the real path (the unchanged live-tree escape).
+///
+/// Callers that only ever pass under-`project_root` paths may pass
+/// `first_party_root == project_root` (with any `work_root`) to make the
+/// first-party tier unreachable — its behavior is then byte-identical to the
+/// pre-#1668 two-tier mapping.
 fn shadow_path_for_project_path(
     path: &Path,
     project_root: &Path,
+    first_party_root: &Path,
     shadow: &Path,
+    work_root: &Path,
     node_modules_isolation_root: Option<&Path>,
 ) -> PathBuf {
-    let Ok(relative) = path.strip_prefix(project_root) else {
-        return path.to_path_buf();
-    };
-    if project_path_is_inside_node_modules(path, project_root) {
-        if let Some(isolation_root) = node_modules_isolation_root {
-            isolation_root.join(relative)
+    if let Ok(relative) = path.strip_prefix(project_root) {
+        return if project_path_is_inside_node_modules(path, project_root) {
+            match node_modules_isolation_root {
+                Some(isolation_root) => isolation_root.join(relative),
+                None => shadow.join(".zfb-exact-isolation").join(relative),
+            }
+        } else if relative.as_os_str().is_empty() {
+            shadow.to_path_buf()
         } else {
-            shadow.join(".zfb-exact-isolation").join(relative)
-        }
-    } else if relative.as_os_str().is_empty() {
-        shadow.to_path_buf()
-    } else {
-        shadow.join(relative)
+            shadow.join(relative)
+        };
     }
+    if first_party_root != project_root {
+        if let Ok(relative) = path.strip_prefix(first_party_root) {
+            if !relative.as_os_str().is_empty() {
+                return work_root.join(relative);
+            }
+        }
+    }
+    path.to_path_buf()
 }
 
 fn node_modules_package_root(path: &Path, project_root: &Path) -> Option<PathBuf> {
@@ -7173,9 +7291,14 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                 // `shadow.join("")` would yield `<shadow>/` and produce a
                 // malformed `<shadow>//*` target; use `shadow` directly so
                 // the shadow-first entry is a clean `<shadow>/*`.
+                // Only under-`project_root` prefixes reach here (the guard
+                // above), so the first-party tier is inert: pass the project
+                // mirror as its own first-party/work root.
                 let shadow_prefix = shadow_path_for_project_path(
                     prefix_path,
                     project_root,
+                    project_root,
+                    shadow,
                     shadow,
                     node_modules_isolation_root,
                 );
@@ -7998,9 +8121,14 @@ fn run_esbuild(
             let target_path = normalize_path_lexical(Path::new(target));
             let remapped = match target_path.strip_prefix(&project_root) {
                 Ok(_) => {
+                    // Under-`project_root` targets only (the `match` guard), so
+                    // the first-party tier is inert: the project mirror is its
+                    // own first-party/work root here.
                     let shadow_target = shadow_path_for_project_path(
                         &target_path,
                         &project_root,
+                        &project_root,
+                        shadow,
                         shadow,
                         node_modules_isolation_root,
                     );
@@ -8014,6 +8142,8 @@ fn run_esbuild(
                                     shadow_path_for_project_path(
                                         candidate,
                                         &project_root,
+                                        &project_root,
+                                        shadow,
                                         shadow,
                                         node_modules_isolation_root,
                                     )
