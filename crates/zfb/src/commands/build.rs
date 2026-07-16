@@ -3304,8 +3304,9 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
                 .unwrap_or_else(|| source.clone()),
             None => source.clone(),
         };
-        module_workers.push(zfb_islands::ModuleWorkerBundleEntry::new(
+        module_workers.push(zfb_islands::ModuleWorkerBundleEntry::new_scoped(
             project_root,
+            &islands_first_party_root,
             &logical_source,
             physical_source,
         )?);
@@ -4070,27 +4071,41 @@ fn stage_client_script_preprocessing_with_worker_context(
     for (entry_name, sources) in worker_sources_by_entry {
         let mut workers = Vec::with_capacity(sources.len());
         for source in sources {
-            // The #1500 flat-naming contract derives companion filenames from
-            // the PROJECT-relative path, so a worker SOURCE must stay under the
-            // project root even though the widened first-party boundary (issue
-            // #1674) would otherwise accept a sibling. Fail with the named
-            // limitation like `resolve_worker_target`
-            // (`crates/zfb-build/src/module_worker.rs`), not the naming
-            // contract's generic error.
-            // https://github.com/Takazudo/zudo-front-builder/issues/1667
-            let Some(rel) = project_paths.project_local_rel(&source) else {
-                return Err(anyhow!(
-                    "client-script module-worker source {} lives in a sibling workspace \
-                     package. Workspace-sibling worker entries are not supported yet (the \
-                     worker companion naming contract is project-scoped) — move the worker \
-                     entry under the project root, or follow \
-                     https://github.com/Takazudo/zudo-front-builder/issues/1667",
-                    source.display()
-                ));
-            };
-            let logical_source = project_root.join(&rel);
-            let filename = zfb_types::module_worker_filename(project_root, &logical_source)
+            // The #1500 flat-naming contract now covers workspace siblings too
+            // (issue #1677, using the `worker--ws-` encoding zfb-types added
+            // for #1673): a project-local source keeps its byte-identical
+            // unscoped name and stages under the mirrored project dir; a
+            // workspace-sibling source — accepted by the widened #1674
+            // first-party boundary, formerly rejected here by the #1667 guard
+            // — mints a workspace-relative `-ws-` name and stages at its
+            // workspace-relative slot instead (the same slot the sibling
+            // closure above already materialised it at).
+            let (logical_source, staged_source_path, filename) = if let Some(rel) =
+                project_paths.project_local_rel(&source)
+            {
+                let logical_source = project_root.join(&rel);
+                let filename = zfb_types::module_worker_filename(project_root, &logical_source)
+                    .map_err(|error| {
+                        anyhow!("client-script module-worker naming failed: {error}")
+                    })?;
+                (logical_source, stage_project_dir.join(&rel), filename)
+            } else {
+                let rel = paths.project_local_rel(&source).ok_or_else(|| {
+                    anyhow!(
+                        "client-script module-worker source {} is outside the mirrorable \
+                             first-party project tree",
+                        source.display()
+                    )
+                })?;
+                let logical_source = first_party_root.join(&rel);
+                let filename = zfb_types::module_worker_filename_scoped(
+                    project_root,
+                    &first_party_root,
+                    &logical_source,
+                )
                 .map_err(|error| anyhow!("client-script module-worker naming failed: {error}"))?;
+                (logical_source, root.join(&rel), filename)
+            };
             if let Some(existing) = filename_owners.get(&filename) {
                 if existing != &logical_source {
                     return Err(anyhow!(
@@ -4104,7 +4119,7 @@ fn stage_client_script_preprocessing_with_worker_context(
             }
             workers.push(ClientScriptWorkerEntry {
                 filename,
-                source_path: stage_project_dir.join(&rel),
+                source_path: staged_source_path,
             });
         }
         workers.sort_by(|left, right| left.filename.cmp(&right.filename));
@@ -11239,12 +11254,14 @@ mod tests {
         );
     }
 
+    /// Inverted #1667 guard-pin test (issue #1677): a worker whose SOURCE
+    /// lives in a sibling workspace package used to fail with the named
+    /// #1667 limitation (the #1500 flat-naming contract was project-scoped).
+    /// #1677 threads the `worker--ws-` scoped naming contract (issue #1673)
+    /// through this pipeline instead, so the sibling worker entry now stages
+    /// and names successfully.
     #[test]
-    fn client_script_stage_sibling_worker_entry_names_issue_1667() {
-        // A worker whose SOURCE lives in a sibling workspace package passes the
-        // widened first-party check but must fail with the named #1667
-        // limitation (the #1500 flat-naming contract is project-scoped), not a
-        // generic error.
+    fn client_script_stage_sibling_worker_entry_names_scoped_companion() {
         let workspace = tempdir().unwrap();
         write_reroot_ws_file(
             workspace.path(),
@@ -11267,11 +11284,39 @@ mod tests {
             source_path: entry,
         }];
 
-        let error = stage_client_script_preprocessing(&project_root, &entries).unwrap_err();
-        let error = format!("{error:#}");
+        let stage = stage_client_script_preprocessing(&project_root, &entries)
+            .unwrap()
+            .expect("a workspace-sibling worker entry now needs a stage (issue #1677)");
+
+        let workers = stage
+            .workers_by_entry
+            .get("widget")
+            .expect("the widget entry must have a discovered module worker");
+        assert_eq!(workers.len(), 1);
+        let worker = &workers[0];
+
+        let first_party_root = zfb_types::first_party_root_for(&project_root);
+        let expected_filename = zfb_types::module_worker_filename_scoped(
+            &project_root,
+            &first_party_root,
+            &first_party_root.join("lib/widgets/worker.ts"),
+        )
+        .expect("a workspace-sibling worker source has a scoped companion filename");
+        assert_eq!(worker.filename, expected_filename);
         assert!(
-            error.contains("1667") && error.contains("sibling workspace package"),
-            "a sibling worker source must name the #1667 limitation: {error}"
+            worker.filename.starts_with("worker--ws-"),
+            "a workspace-sibling worker source must mint the scoped `-ws-` companion name: {}",
+            worker.filename
+        );
+
+        // The worker's physical source must be staged at its
+        // workspace-relative slot (not the mirrored PROJECT dir), matching
+        // the sibling-closure staging that runs earlier in the stage.
+        let expected_source_path = stage.root.join("lib/widgets/worker.ts");
+        assert_eq!(worker.source_path, expected_source_path);
+        assert_eq!(
+            std::fs::read_to_string(&worker.source_path).unwrap(),
+            "self.postMessage('sibling');\n"
         );
     }
 

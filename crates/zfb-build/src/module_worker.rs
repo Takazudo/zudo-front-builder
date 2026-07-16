@@ -26,7 +26,9 @@ use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax
 use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::visit::{Visit, VisitWith};
 use zfb_plugin_resolver::{read_tsconfig_paths_file, TsConfigDependencyInput, TsConfigPaths};
-use zfb_types::{module_worker_content_hash, module_worker_url_specifier, normalize_path_lexical};
+use zfb_types::{
+    module_worker_content_hash, module_worker_url_specifier_scoped, normalize_path_lexical,
+};
 
 /// Every non-source input that can change emitted module-worker bytes.
 ///
@@ -620,19 +622,10 @@ fn resolve_worker_target(importer: &Path, specifier: &str, project_root: &Path) 
     }
     let target = validate_first_party_path(&target, project_root, "module-worker source")?;
     // A workspace-sibling worker ENTRY passes the widened first-party check
-    // (issue #1664) but the locked #1500 flat-naming contract still derives
-    // companion filenames from the project-relative path. Fail here with the
-    // real limitation instead of the naming contract's generic error.
-    // https://github.com/Takazudo/zudo-front-builder/issues/1667
-    if !target.starts_with(normalize_path_lexical(project_root)) {
-        bail!(
-            "zfb bundler: module-worker source {} lives in a sibling workspace package. \
-             Workspace-sibling worker entries are not supported yet (the worker companion \
-             naming contract is project-scoped) — move the worker entry under the project \
-             root, or follow https://github.com/Takazudo/zudo-front-builder/issues/1667",
-            target.display()
-        );
-    }
+    // (issue #1664) and, since issue #1677, the flat-naming contract itself:
+    // `module_worker_filename_scoped` mints a `worker--ws-`-prefixed
+    // workspace-relative name for a target outside `project_root`. The former
+    // #1667 guard that rejected such targets here is deleted.
     if !is_js_like(&target) {
         bail!(
             "zfb bundler: module-worker source {} is not a supported JS/TS entry",
@@ -2188,7 +2181,9 @@ pub fn discover_registered_virtual_preprocessing_with_context(
 /// Only the first string-literal argument of the exact
 /// `new Worker(new URL("./x.ts", import.meta.url), { type: "module" })`
 /// shape changes. The replacement is
-/// `./worker-<injectively-encoded-relative-path>.js?v=<graph-hash>`.
+/// `./worker-<injectively-encoded-relative-path>.js?v=<graph-hash>`, or, for a
+/// worker source that resolves to a workspace-sibling package (issue #1677),
+/// `./worker--ws-<injectively-encoded-workspace-relative-path>.js?v=<graph-hash>`.
 /// The filename is stable and CSP-matchable; the query changes when the entry,
 /// a first-party transitive import, or a nested worker changes.
 ///
@@ -2231,6 +2226,7 @@ pub fn rewrite_module_worker_urls_with_context(
     if occurrences.is_empty() {
         return Ok(empty_rewrite(source));
     }
+    let first_party_root = zfb_types::first_party_root_for(project_root);
 
     let mut replacements = Vec::new();
     let mut worker_edges = BTreeSet::new();
@@ -2247,8 +2243,13 @@ pub fn rewrite_module_worker_urls_with_context(
         }
         let worker = resolve_worker_target(importer, &occurrence.specifier, project_root)?;
         let graph = inspect_worker_graph(&worker, project_root, context, false)?;
-        let rewritten = module_worker_url_specifier(project_root, &worker, &graph.hash)
-            .map_err(|error| anyhow!("zfb bundler: {error}"))?;
+        let rewritten = module_worker_url_specifier_scoped(
+            project_root,
+            &first_party_root,
+            &worker,
+            &graph.hash,
+        )
+        .map_err(|error| anyhow!("zfb bundler: {error}"))?;
         replacements.push((
             occurrence.lo,
             occurrence.hi,
