@@ -4885,17 +4885,22 @@ export default {{
     Ok(token)
 }
 
-/// Find the right-most occurrence of `needle` that begins at the start of a
-/// line (immediately preceded by `\n`, or at offset 0 of `source`).
+/// Find the right-most occurrence of `needle` strictly before byte offset
+/// `before` that begins at the start of a line (immediately preceded by
+/// `\n`, or at offset 0 of `source`).
 ///
 /// Real esbuild `--format=esm` output always starts a top-level export
 /// statement at column 0; rendered content embedded in a string literal
 /// (e.g. a code sample on a styleguide page) never does. Anchoring scans to
 /// line starts is what keeps such decoy text out of
-/// `rewrite_dev_bundle_default_export` below (issue #1666).
+/// `rewrite_dev_bundle_default_export` below (issue #1666). Taking a
+/// `before` bound lets that function retry earlier anchored occurrences
+/// when the right-most one turns out not to be the default-export clause
+/// (e.g. esbuild can place a preserved legal comment, itself capable of
+/// containing a line-anchored `export {`, after the real one).
 #[cfg(feature = "embed_v8")]
-fn rfind_line_anchored(source: &str, needle: &str) -> Option<usize> {
-    let mut search_end = source.len();
+fn rfind_line_anchored(source: &str, needle: &str, before: usize) -> Option<usize> {
+    let mut search_end = before;
     loop {
         let candidate = source[..search_end].rfind(needle)?;
         if candidate == 0 || source.as_bytes()[candidate - 1] == b'\n' {
@@ -4917,13 +4922,17 @@ fn rfind_line_anchored(source: &str, needle: &str) -> Option<usize> {
 /// alias scan is additionally bounded to the matched `export { ... }`
 /// clause, so a string-literal decoy containing the literal text
 /// `"export default"` or `" as default"` can never be mistaken for the real
-/// export statement (issue #1666).
+/// export statement (issue #1666). The alias scan also retries earlier
+/// anchored `export {` occurrences when the right-most one has no default
+/// alias — esbuild can place a preserved legal comment (itself capable of
+/// containing a line-anchored `export {`) after the real clause.
 #[cfg(feature = "embed_v8")]
 fn rewrite_dev_bundle_default_export(source: &str) -> Result<(String, String)> {
     const PRIVATE_EXPORT: &str = "__zfb_content_trace_inner_default";
     const DEFAULT_ALIAS: &str = " as default";
 
-    if let Some(export_start) = rfind_line_anchored(source, "export {") {
+    let mut search_end = source.len();
+    while let Some(export_start) = rfind_line_anchored(source, "export {", search_end) {
         let clause_end = source[export_start..]
             .find('}')
             .map(|offset| export_start + offset);
@@ -4931,39 +4940,42 @@ fn rewrite_dev_bundle_default_export(source: &str) -> Result<(String, String)> {
             .and_then(|clause_end| source[export_start..clause_end].find(DEFAULT_ALIAS))
             .map(|offset| export_start + offset);
 
-        if let Some(alias_start) = alias_start {
-            let alias_end = alias_start + DEFAULT_ALIAS.len();
-            match source[alias_end..].trim_start().chars().next() {
-                Some(',' | '}') => {}
-                _ => anyhow::bail!("default export alias has an unsupported ESM shape"),
-            }
+        let Some(alias_start) = alias_start else {
+            search_end = export_start;
+            continue;
+        };
 
-            let binding_end = alias_start;
-            let mut binding_start = binding_end;
-            let bytes = source.as_bytes();
-            while binding_start > 0
-                && matches!(
-                    bytes[binding_start - 1],
-                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'$'
-                )
-            {
-                binding_start -= 1;
-            }
-            if binding_start == binding_end {
-                anyhow::bail!("default export alias has no local worker binding");
-            }
-
-            let binding = source[binding_start..binding_end].to_string();
-            let mut rewritten = String::with_capacity(source.len() + PRIVATE_EXPORT.len());
-            rewritten.push_str(&source[..alias_start]);
-            rewritten.push_str(" as ");
-            rewritten.push_str(PRIVATE_EXPORT);
-            rewritten.push_str(&source[alias_end..]);
-            return Ok((rewritten, binding));
+        let alias_end = alias_start + DEFAULT_ALIAS.len();
+        match source[alias_end..].trim_start().chars().next() {
+            Some(',' | '}') => {}
+            _ => anyhow::bail!("default export alias has an unsupported ESM shape"),
         }
+
+        let binding_end = alias_start;
+        let mut binding_start = binding_end;
+        let bytes = source.as_bytes();
+        while binding_start > 0
+            && matches!(
+                bytes[binding_start - 1],
+                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'$'
+            )
+        {
+            binding_start -= 1;
+        }
+        if binding_start == binding_end {
+            anyhow::bail!("default export alias has no local worker binding");
+        }
+
+        let binding = source[binding_start..binding_end].to_string();
+        let mut rewritten = String::with_capacity(source.len() + PRIVATE_EXPORT.len());
+        rewritten.push_str(&source[..alias_start]);
+        rewritten.push_str(" as ");
+        rewritten.push_str(PRIVATE_EXPORT);
+        rewritten.push_str(&source[alias_end..]);
+        return Ok((rewritten, binding));
     }
 
-    if let Some(export_start) = rfind_line_anchored(source, "export default") {
+    if let Some(export_start) = rfind_line_anchored(source, "export default", source.len()) {
         let export_end = export_start + "export default".len();
         let mut rewritten = String::with_capacity(source.len() + PRIVATE_EXPORT.len());
         rewritten.push_str(&source[..export_start]);
@@ -10241,6 +10253,34 @@ mod tests {
             assert!(
                 rewritten.contains("worker as __zfb_content_trace_inner_default"),
                 "the real alias clause must be the one that gets rewritten"
+            );
+        }
+
+        /// Codex review finding on #1671: esbuild can preserve a "legal
+        /// comment" (`/*! ... */`) after the real default-export clause,
+        /// and such a comment can itself contain a line-anchored `export {
+        /// ... };` with no default alias (e.g. quoting a code sample in a
+        /// license header). A single rightmost-anchored-clause lookup would
+        /// pick the comment's clause, find no default alias in it, and
+        /// then wrongly report "no default export" on a valid bundle. The
+        /// alias scan must retry earlier anchored `export {` occurrences
+        /// until it finds the one that actually carries `as default`.
+        #[test]
+        fn preserved_legal_comment_after_default_export_does_not_hijack_the_alias_clause() {
+            let bundle = "const worker = { fetch() {} };\nexport { worker as default };\n/*!\nexport { example };\n*/\n";
+
+            let (rewritten, binding) = rewrite_dev_bundle_default_export(bundle).unwrap();
+            assert_eq!(
+                binding, "worker",
+                "must fall back to the earlier real alias clause, not bail on the comment's clause"
+            );
+            assert!(
+                rewritten.contains("worker as __zfb_content_trace_inner_default"),
+                "the real alias clause must be the one that gets rewritten"
+            );
+            assert!(
+                rewritten.contains("export { example };"),
+                "the preserved legal comment must survive untouched"
             );
         }
     }
