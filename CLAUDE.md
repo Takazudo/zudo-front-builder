@@ -120,7 +120,7 @@ Every `#[ignore]`d Rust test carries a reason starting with one of 5 machine-gre
 - `verification: <why>` — one-time "it was done" proof, not a regression guard (no issue URL needed).
 - `pending-feature: <issue-url>` — blocked on an unimplemented product feature or unwritten test body (issue URL mandatory).
 
-Audited and retagged in full during issue #1337 (2026-07); reconciled again during issue #1504 (2026-07); a third cross-pipeline env-gate joined during issue #1674 (2026-07); a dev workspace-sibling watch e2e joined during issue #1678 (2026-07). The table below lists all **33** ignored Rust tests (**26** `env-gate`, **6** `heavy`, **1** `verification`) and their scheduled homes. Update this table whenever a `#[ignore]` is added, removed, or reclassified.
+Audited and retagged in full during issue #1337 (2026-07); reconciled again during issue #1504 (2026-07); a third cross-pipeline env-gate joined during issue #1674 (2026-07); a dev workspace-sibling watch e2e joined + the pre-existing `shared_bundle_discovers_marked_glue_and_wasm_resources` env-gate row (missing since #1674) restored during issue #1678 (2026-07). The table below lists all **34** ignored Rust tests (**27** `env-gate`, **6** `heavy`, **1** `verification`) and their scheduled homes. Update this table whenever a `#[ignore]` is added, removed, or reclassified.
 
 | Test (file:line) | Tag | Where / how it runs |
 |---|---|---|
@@ -128,6 +128,7 @@ Audited and retagged in full during issue #1337 (2026-07); reconciled again duri
 | `crates/zfb-islands/tests/integration.rs:285` `shared_bundle_keeps_islands_with_no_top_level_side_effect` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs:394` `splitting_emits_chunk_for_dynamic_import` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs:508` `no_dynamic_import_yields_single_file` | `env-gate` (esbuild) | Same as above. |
+| `crates/zfb-islands/tests/integration.rs:556` `shared_bundle_discovers_marked_glue_and_wasm_resources` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs:553` `client_script_real_esbuild_bundles_discovered_entry` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs:658` `client_script_shadow_jobs_resolve_project_tsconfig_aliases` | `env-gate` (esbuild) | Same as above. |
 | `crates/zfb-islands/tests/integration.rs:769` `islands_shadow_raw_import_bundles_text` | `env-gate` (esbuild) | Same as above. |
@@ -156,7 +157,7 @@ Audited and retagged in full during issue #1337 (2026-07); reconciled again duri
 | `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:706` `e2e_transitive_css_import_refreshes_stylesheet` | `heavy` | Same as above. |
 | `crates/zfb/tests/dev_dep_invalidation_1284_e2e.rs:907` `e2e_new_utility_class_in_component_is_emitted` | `heavy` | Same as above. |
 | `crates/zfb/src/render_pipeline.rs:2146` `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` | `heavy` | Local (T4): `cargo test -p zfb --lib render_pipeline:: -- --ignored`. Level-4 integration test: boots a real esbuild subprocess + embedded V8 isolate via `crate::v8_host_adapter::ThreadedV8Host`. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job (issue #1344), allowed-to-fail. |
-| `crates/zfb/tests/dev_sibling_watch_1678_e2e.rs` `e2e_dev_watches_workspace_sibling_raw_and_worker_sources` | `heavy` | Local: `ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb --test dev_sibling_watch_1678_e2e -- --ignored`. Level-4 real `zfb dev --port 0` (issue #1678): proves editing a workspace-sibling `?raw` / module-worker source refreshes the served bundle restart-free, and that a newly-introduced sibling import makes its directory watched (keyed on the `watch-extra registered:` timing signal). Flock-adopting; serialized by the nextest `e2e-heavy` group. |
+| `crates/zfb/tests/dev_sibling_watch_1678_e2e.rs:302` `e2e_dev_watches_workspace_sibling_raw_and_worker_sources` | `heavy` | Local: `ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb --test dev_sibling_watch_1678_e2e -- --ignored`. **Also CI, weekly (T3)**: `exam.yml`'s `quarantine-heavy` job runs it via the exact-name filterset (issue #1344), allowed-to-fail. Level-4 real `zfb dev --port 0` (issue #1678): proves editing a workspace-sibling `?raw` / module-worker source refreshes the served bundle restart-free, and that a newly-introduced sibling import makes its directory watched (keyed on the `watch-extra registered:` timing signal). Flock-adopting; serialized by the nextest `e2e-heavy` group. |
 
 No `flaky:` tagged tests exist as of this audit. The lone `verification:` helper above is a one-time extraction aid, not a regression guard.
 

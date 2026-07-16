@@ -44,6 +44,12 @@ use std::time::{Duration, Instant};
 use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
 
 const BOOT_DEADLINE: Duration = Duration::from_secs(120);
+// Boot CONTENT polls happen after the ready banner, when the eager boot bundle
+// is already on disk — seconds, not the full boot budget. Kept smaller than
+// BOOT_DEADLINE so the worst-case cumulative of every deadline in this test
+// (~450s) stays clear of the nextest `e2e-heavy` 600s terminate-after, leaving
+// margin for the diagnostic panic to print before a SIGKILL.
+const BOOT_CONTENT_DEADLINE: Duration = Duration::from_secs(60);
 const SCENARIO_DEADLINE: Duration = Duration::from_secs(60);
 const SIGNAL_DEADLINE: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -339,7 +345,7 @@ async fn e2e_dev_watches_workspace_sibling_raw_and_worker_sources() {
         &client_url,
         "ZFB_SIBLING_PANEL_RAW_PAYLOAD_V1",
         "boot client entry inlines the sibling ?raw",
-        BOOT_DEADLINE,
+        BOOT_CONTENT_DEADLINE,
         &session,
     )
     .await;
@@ -353,7 +359,7 @@ async fn e2e_dev_watches_workspace_sibling_raw_and_worker_sources() {
         &worker_url,
         "ZFB_SIBLING_WORKER_RAW_PAYLOAD_V1",
         "boot worker companion inlines the sibling ?raw",
-        BOOT_DEADLINE,
+        BOOT_CONTENT_DEADLINE,
         &session,
     )
     .await;
