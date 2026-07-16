@@ -6,20 +6,23 @@
 //!
 //! Modeled on `module_worker_plugin_virtual_absolute_deps.rs`.
 //!
-//! The bottom section (issue #1672) is a DIFFERENT, `bundle()`-level layer:
-//! it pins the issue #1668 guard in `crates/zfb-build/src/bundler.rs` (~3140)
-//! that fires when a first-party workspace-sibling file itself needs
-//! `?raw`/glob/module-worker preprocessing the SSR bundler cannot yet stage
-//! outside the project root. That guard previously had zero test coverage;
-//! the upcoming SSR re-root refactor must not be able to silently drop it.
+//! The bottom section is a DIFFERENT, `bundle()`-level layer: issue #1668
+//! part 2 STAGES every discovered workspace-sibling first-party file into the
+//! re-rooted SSR shadow, so its `?raw`/glob/nested-worker rewrites land there.
+//! These tests are the INVERSION of the former #1672 guard-pin tests (the
+//! guard in `crates/zfb-build/src/bundler.rs` that rejected such siblings is
+//! now deleted): they assert the sibling is staged + rewritten, obeys
+//! `copy_mode`, layers node_modules by precedence, and still contains
+//! symlink escapes.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use zfb_build::{
-    bundle, discover_module_preprocessing_with_context, rewrite_module_worker_urls_with_context,
-    BundleMode, BundlerInput, ModuleWorkerBuildContext,
+    bundle, bundle_with_session, discover_module_preprocessing_with_context,
+    rewrite_module_worker_urls_with_context, BundleMode, BundlerInput, ModuleWorkerBuildContext,
+    ShadowSession,
 };
 use zfb_render::adapters::Framework;
 
@@ -294,32 +297,39 @@ fn without_workspace_marker_outside_dependency_stays_rejected() {
     );
 }
 
-// --- Issue #1672: bundle()-level regression tests for the #1668 guard ---
+// --- Issue #1668 part 2: bundle()-level SIBLING STAGING (the inverted #1672 guard) ---
 //
 // `discover_module_preprocessing_with_context` (exercised directly above)
-// happily walks a `bundle()`-level exact-target staging graph into
-// workspace-sibling source (issue #1664's widened first-party boundary).
-// But `bundler.rs`'s materialisation pass cannot yet STAGE `?raw`/glob/
-// module-worker preprocessing for a file living outside the project root —
-// so it must fail loudly (~bundler.rs:3140) instead of letting an
-// unprocessed specifier reach esbuild. These tests pin that guard at the
-// full `bundle()` level, one per trigger predicate, plus a control case
-// proving an ordinary sibling module still bundles via the pre-#1664
-// real-tree escape (the `continue` at ~bundler.rs:3148).
+// walks a `bundle()`-level exact-target staging graph into workspace-sibling
+// source (issue #1664's widened first-party boundary). Issue #1668 part 1
+// re-rooted the SSR shadow at the workspace boundary; part 2 (this change)
+// STAGES every discovered workspace-sibling first-party file uniformly
+// through the same materialise pass as a project file — at its
+// workspace-relative slot in the WORK mirror — so its `?raw`/glob/nested-
+// worker rewrites land in the shadow. The pre-#1668 guard (`bundler.rs`,
+// which rejected such siblings) is DELETED.
 //
-// **Coming inversion:** once the SSR re-root (the sibling sub-issues of
-// #1668 in this epic) lands, sibling `?raw`/glob/module-worker files become
-// stageable too, and the 3 guard-message tests below flip to success
-// assertions (mirroring the plain-module test's `bundle(input).expect(...)`
-// shape and `bundler_exact_match_resolution.rs`'s
+// These tests are the INVERSION of the #1672 guard-pin tests: the 3 tests
+// that used to assert the guard error now assert the sibling was staged +
+// rewritten in the shadow copy, one per preprocessing form. They mirror
+// `bundler_exact_match_resolution.rs`'s
 // `project_plugin_alias_is_preprocessed_inside_the_ssr_shadow`, which proves
-// the same 3 preprocessing forms for a PROJECT-LOCAL plugin alias target).
-// Each guard test below carries its own inversion-intent comment.
+// the same 3 forms for a PROJECT-LOCAL plugin alias target under real
+// esbuild; the L4 real-esbuild sibling equivalent runs centrally in the
+// epic's confirm sub-issue (#1674's cross-pipeline lane).
 //
-// The guard fires purely from Rust-side graph discovery and a direct file
-// read — no esbuild subprocess runs before it. Every fixture here sets
-// `mock_subprocess_output` (never a real `esbuild_binary`), and the guard
-// still fires identically, confirming these tests need NO esbuild env-gate.
+// Staging is a pure Rust materialise pass — no esbuild subprocess runs to
+// build the shadow tree. Every fixture here sets `mock_subprocess_output`
+// (never a real `esbuild_binary`) and drives `bundle_with_session` so the
+// persistent shadow survives the call for inspection, confirming these tests
+// need NO esbuild env-gate.
+
+/// Root of the WORK mirror (the persistent shadow tree) after a mock bundle.
+/// On macOS the bundler canonicalises the shadow root (`/var` → `/private/var`),
+/// so canonicalise here too before joining workspace-relative staged paths.
+fn work_mirror_root(session: &ShadowSession) -> PathBuf {
+    fs::canonicalize(session.shadow_root()).expect("canonicalize persistent shadow root")
+}
 
 /// A pnpm workspace whose sub-package project is `bundle()`'s
 /// `project_root`, with the full directory set `bundle()` requires
@@ -432,20 +442,17 @@ fn write_guard_fixture(workspace: &Path, name: &str) -> (PathBuf, BundlerInput) 
     (sibling, input)
 }
 
-/// **Guard trigger 1/3 — sibling `?raw` importer.**
+/// **Preprocessing form 1/3 — sibling `?raw` importer (inverted #1672 guard).**
 ///
 /// The sibling file itself imports another sibling file via `?raw`. The
-/// widened #1664 graph walk happily discovers it, but the SSR bundler
-/// cannot stage a `?raw` rewrite outside the project root yet, so `bundle()`
-/// must fail with the named #1668 limitation instead of letting the
-/// unresolved `?raw` specifier reach esbuild.
-///
-/// INVERSION (post SSR re-root): flips to `bundle(input).expect(...)` + an
-/// assertion that `SIBLING_RAW_PAYLOAD` reached the bundle, the same shape
-/// `project_plugin_alias_is_preprocessed_inside_the_ssr_shadow` already uses
-/// for a project-local `?raw` importer.
+/// widened #1664 graph walk discovers it; #1668 part 2 stages it into the WORK
+/// mirror with the `?raw` rewrite applied. We inspect the staged copy: the
+/// `?raw` specifier is gone and the payload was inlined into a generated
+/// module beside it. (Mirrors the project-local
+/// `project_plugin_alias_is_preprocessed_inside_the_ssr_shadow`, which proves
+/// the same under real esbuild.)
 #[test]
-fn workspace_sibling_raw_importer_fails_with_1668_guard() {
+fn workspace_sibling_raw_importer_is_staged_and_rewritten() {
     let workspace = tempfile::tempdir().unwrap();
     let (sibling, input) = write_guard_fixture(workspace.path(), "raw-importer");
     write(
@@ -458,71 +465,95 @@ fn workspace_sibling_raw_importer_fails_with_1668_guard() {
         "SIBLING_RAW_PAYLOAD",
     );
 
-    let error = bundle(input).expect_err(
-        "a workspace-sibling `?raw` importer must fail with the #1668 guard, not bundle unprocessed",
-    );
-    let message = format!("{error:#}");
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session))
+        .expect("a workspace-sibling `?raw` importer must now stage into the SSR shadow");
+
+    let shared_dir = work_mirror_root(&session).join("lib/shared");
+    let staged = shared_dir.join("raw-importer.ts");
+    let staged_body = fs::read_to_string(&staged)
+        .unwrap_or_else(|e| panic!("sibling must be staged at {}: {e}", staged.display()));
     assert!(
-        message.contains("needs `?raw`/glob/module-worker"),
-        "{message}"
+        !staged_body.contains("?raw"),
+        "the `?raw` specifier must be rewritten away in the staged copy: {staged_body}"
     );
-    assert!(message.contains("issues/1668"), "{message}");
-    assert!(message.contains("raw-importer.ts"), "{message}");
+    // The raw payload is inlined into a generated module written beside the
+    // staged importer.
+    let generated_has_payload = fs::read_dir(&shared_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            fs::read_to_string(entry.path())
+                .map(|body| body.contains("SIBLING_RAW_PAYLOAD"))
+                .unwrap_or(false)
+        });
+    assert!(
+        generated_has_payload,
+        "the inlined `?raw` payload must appear in a generated module under {}",
+        shared_dir.display()
+    );
 }
 
-/// **Guard trigger 2/3 — sibling `import.meta.glob` user.**
+/// **Preprocessing form 2/3 — sibling `import.meta.glob` user (inverted #1672 guard).**
 ///
-/// The sibling file contains a real `import.meta.glob(...)` call. The guard
-/// check re-reads the file directly and parses it for the call form — no
-/// matching glob target files are needed for the guard itself to fire, so
-/// this fixture deliberately leaves `./glob-user-data/*` unpopulated.
-///
-/// INVERSION (post SSR re-root): flips to a success assertion once the
-/// bundler can stage the sibling's glob expansion outside the project root.
+/// The sibling file contains a real `import.meta.glob(...)` call over two
+/// sibling target files. #1668 part 2 stages the sibling into the WORK mirror
+/// with the glob expanded to a static barrel; the staged copy no longer
+/// contains `import.meta.glob` and references both discovered targets.
 #[test]
-fn workspace_sibling_import_meta_glob_fails_with_1668_guard() {
+fn workspace_sibling_import_meta_glob_is_staged_and_expanded() {
     let workspace = tempfile::tempdir().unwrap();
     let (sibling, input) = write_guard_fixture(workspace.path(), "glob-user");
     write(
         &sibling,
         "export const value = 'ok';\n\
-         export const modules = import.meta.glob('./glob-user-data/*.ts');\n",
+         export const modules = import.meta.glob('./glob-user-data/*.ts', { eager: true });\n",
+    );
+    // Two real glob targets so the expansion is a non-empty barrel.
+    write(
+        &workspace.path().join("lib/shared/glob-user-data/a.ts"),
+        "export const a = 1;\n",
+    );
+    write(
+        &workspace.path().join("lib/shared/glob-user-data/b.ts"),
+        "export const b = 2;\n",
     );
 
-    let error = bundle(input).expect_err(
-        "a workspace-sibling `import.meta.glob` user must fail with the #1668 guard, not bundle unprocessed",
-    );
-    let message = format!("{error:#}");
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session))
+        .expect("a workspace-sibling `import.meta.glob` user must now stage into the SSR shadow");
+
+    let staged = work_mirror_root(&session).join("lib/shared/glob-user.ts");
+    let staged_body = fs::read_to_string(&staged)
+        .unwrap_or_else(|e| panic!("sibling must be staged at {}: {e}", staged.display()));
     assert!(
-        message.contains("needs `?raw`/glob/module-worker"),
-        "{message}"
+        !staged_body.contains("import.meta.glob"),
+        "`import.meta.glob` must be expanded away in the staged copy: {staged_body}"
     );
-    assert!(message.contains("issues/1668"), "{message}");
-    assert!(message.contains("glob-user.ts"), "{message}");
+    assert!(
+        staged_body.contains("glob-user-data/a.ts") && staged_body.contains("glob-user-data/b.ts"),
+        "the expanded barrel must reference both glob targets: {staged_body}"
+    );
 }
 
-/// **Guard trigger 3/3 — sibling nested `new Worker(...)` construction.**
+/// **Preprocessing form 3/3 — sibling nested `new Worker(...)` (inverted #1672 guard).**
 ///
 /// The sibling file constructs a module Worker via a relative URL that
 /// resolves BACK INTO the project root (`../../sub-packages/host/src/...`).
-/// That relative-URL shape is deliberate: a worker TARGET that itself stays
-/// a workspace sibling hits the unrelated, earlier #1667 flat-naming-contract
-/// limitation inside `resolve_worker_target` before this #1668 guard is ever
-/// reached (see `workspace_sibling_worker_entry_fails_with_named_limitation`
-/// above) — #1667 guards the worker's own companion-file naming, #1668
-/// guards staging the sibling IMPORTER's other preprocessing needs, and this
-/// test isolates the latter.
-///
-/// INVERSION (post SSR re-root): flips to a success assertion + an
-/// assertion that the worker companion filename reached the bundle, the
-/// same shape `project_plugin_alias_is_preprocessed_inside_the_ssr_shadow`
-/// already uses for a project-local nested worker.
+/// That relative-URL shape is deliberate: a worker TARGET that itself stays a
+/// workspace sibling hits the unrelated, earlier #1667 flat-naming-contract
+/// limitation inside `resolve_worker_target` (see
+/// `workspace_sibling_worker_entry_fails_with_named_limitation` above), so
+/// pointing the target back into the project isolates the sibling IMPORTER's
+/// own staging. #1668 part 2 stages the sibling with its `new Worker(...)` URL
+/// rewritten to the project-local companion filename + content-hash query.
 #[test]
-fn workspace_sibling_nested_worker_construction_fails_with_1668_guard() {
+fn workspace_sibling_nested_worker_construction_is_staged_and_rewritten() {
     let workspace = tempfile::tempdir().unwrap();
     let (sibling, input) = write_guard_fixture(workspace.path(), "worker-user");
+    let project = input.project_root.clone();
     write(
-        &input.project_root.join("src/nested-worker.ts"),
+        &project.join("src/nested-worker.ts"),
         "self.postMessage('nested-worker-target');\n",
     );
     write(
@@ -530,50 +561,199 @@ fn workspace_sibling_nested_worker_construction_fails_with_1668_guard() {
         "export const value = 'ok';\n\
          new Worker(new URL('../../sub-packages/host/src/nested-worker.ts', import.meta.url), { type: 'module' });\n",
     );
+    let worker_target = project.join("src/nested-worker.ts");
+    let worker_filename = zfb_types::module_worker_filename(&project, &worker_target)
+        .expect("a project-local worker target has a companion filename");
 
-    let error = bundle(input).expect_err(
-        "a workspace-sibling nested `new Worker(...)` construction must fail with the #1668 guard, not bundle unprocessed",
-    );
-    let message = format!("{error:#}");
+    let mut session = ShadowSession::new(&project).unwrap();
+    bundle_with_session(input, Some(&mut session))
+        .expect("a workspace-sibling nested `new Worker(...)` must now stage into the SSR shadow");
+
+    let staged = work_mirror_root(&session).join("lib/shared/worker-user.ts");
+    let staged_body = fs::read_to_string(&staged)
+        .unwrap_or_else(|e| panic!("sibling must be staged at {}: {e}", staged.display()));
     assert!(
-        message.contains("needs `?raw`/glob/module-worker"),
-        "{message}"
+        staged_body.contains(&worker_filename),
+        "the nested worker URL must be rewritten to its companion filename \
+         {worker_filename}: {staged_body}"
     );
-    assert!(message.contains("issues/1668"), "{message}");
-    assert!(message.contains("worker-user.ts"), "{message}");
+    assert!(
+        staged_body.contains("?v="),
+        "the rewritten worker URL must carry the content-hash query: {staged_body}"
+    );
+    assert!(
+        !staged_body.contains("nested-worker.ts"),
+        "the original worker source path must be gone from the rewritten URL: {staged_body}"
+    );
 }
 
-/// **Control — a PLAIN sibling module still bundles.**
+/// **Uniform staging — a PLAIN sibling module is staged too (was the control).**
 ///
-/// No `?raw`/glob/module-worker preprocessing need anywhere in the sibling
-/// file, so the pre-#1664 real-tree escape (the `continue` at
-/// ~bundler.rs:3148) still applies: the widened first-party graph walk
-/// discovers the sibling, the guard's 3 predicates all come back false, and
-/// `bundle()` returns `Ok` instead of the #1668 guard's `Err` — proving the
-/// guard itself does not misfire for a plain sibling. Note the scope: this
-/// fixture uses `mock_subprocess_output`, which skips the esbuild subprocess
-/// entirely, so it cannot confirm that the sibling's authored content
-/// actually threads through real esbuild resolution — only that the Rust-side
-/// guard check ahead of esbuild takes its `continue` branch rather than
-/// erroring. Real-tree content threading is exercised elsewhere (e.g.
-/// `workspace_sibling_dependency_is_accepted_and_tracked` /
-/// `preprocessing_graph_walks_into_sibling_workspace_source` above) and by
-/// the real-esbuild fixtures in `bundler_exact_match_resolution.rs`. This is
-/// NOT expected to change shape after the SSR re-root (unlike the 3 guard
-/// tests above); it stays a success assertion.
+/// The #1668 part 2 DECISION: every discovered workspace-sibling first-party
+/// file is staged, not just the preprocessing-hungry ones. A plain module (no
+/// `?raw`/glob/worker needs) that formerly took the real-tree escape (the old
+/// `continue`) is now materialised into the WORK mirror at its
+/// workspace-relative slot, carrying its exact authored bytes. This replaces
+/// the old control that asserted the real-tree escape.
 #[test]
-fn workspace_sibling_plain_module_bundles_via_real_tree_escape() {
+fn workspace_sibling_plain_module_is_staged_uniformly() {
     let workspace = tempfile::tempdir().unwrap();
     let (sibling, input) = write_guard_fixture(workspace.path(), "plain-sibling");
     write(&sibling, "export const value = 'PLAIN_SIBLING_VALUE';\n");
 
-    let output = bundle(input).expect(
-        "a plain workspace-sibling module (no ?raw/glob/module-worker preprocessing needs) \
-         must still bundle via the pre-#1664 real-tree escape",
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session))
+        .expect("a plain workspace-sibling module must now stage uniformly into the SSR shadow");
+
+    let staged = work_mirror_root(&session).join("lib/shared/plain-sibling.ts");
+    let staged_body = fs::read_to_string(&staged)
+        .unwrap_or_else(|e| panic!("plain sibling must be staged at {}: {e}", staged.display()));
+    assert_eq!(
+        staged_body, "export const value = 'PLAIN_SIBLING_VALUE';\n",
+        "a plain sibling is staged with its exact authored bytes (no rewrite)"
+    );
+}
+
+/// **Sibling `copy_mode` — a staged sibling is a REAL copy under branch 4.**
+///
+/// When esbuild will run WITHOUT `--preserve-symlinks` (branch 4:
+/// `node_modules_dir` set + non-empty `tsconfig_paths`), the bundler sets
+/// `copy_mode` so every in-shadow source is a real file — otherwise esbuild
+/// canonicalises a symlinked shadow file back to the real tree and any sibling
+/// in-shadow transform becomes invisible (the #443/#450 bug class). A staged
+/// workspace sibling must obey `copy_mode` exactly like a project file.
+#[test]
+fn workspace_sibling_obeys_copy_mode() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (sibling, mut input) = write_guard_fixture(workspace.path(), "copymode-sibling");
+    write(&sibling, "export const value = 'COPY_MODE_SIBLING';\n");
+    // Trigger branch 4 (copy_mode): a node_modules root + a non-empty tsconfig
+    // paths map. The `@/*` wildcard is not a concrete staging target, so it
+    // only flips the copy_mode predicate.
+    fs::create_dir_all(workspace.path().join("node_modules")).unwrap();
+    input.node_modules_dir = Some(workspace.path().join("node_modules"));
+    input.tsconfig_paths = BTreeMap::from([(
+        "@/*".to_string(),
+        vec![input
+            .project_root
+            .join("src/*")
+            .to_string_lossy()
+            .into_owned()],
+    )]);
+
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("copy_mode sibling bundle must succeed");
+
+    let staged = work_mirror_root(&session).join("lib/shared/copymode-sibling.ts");
+    let meta = fs::symlink_metadata(&staged)
+        .unwrap_or_else(|e| panic!("sibling must be staged at {}: {e}", staged.display()));
+    assert!(
+        !meta.file_type().is_symlink(),
+        "under copy_mode a staged sibling must be a REAL copy, not a symlink"
+    );
+    assert_eq!(
+        fs::read_to_string(&staged).unwrap(),
+        "export const value = 'COPY_MODE_SIBLING';\n"
+    );
+}
+
+/// **Sibling symlink-escape containment.**
+///
+/// A sibling that constructs a `new Worker` whose target file is a symlink
+/// pointing OUTSIDE the workspace must be CONTAINED: the first-party boundary
+/// check canonicalises the target and rejects the escape, so `bundle()` fails
+/// rather than smuggling out-of-workspace content through the new
+/// sibling-staging path. (The lower-level discovery guard is pinned by
+/// `symlink_escape_beyond_the_workspace_stays_rejected` above; this pins it
+/// through the full `bundle()`.)
+#[cfg(unix)]
+#[test]
+fn workspace_sibling_symlink_escape_is_contained() {
+    use std::os::unix::fs::symlink;
+
+    let outer = tempfile::tempdir().unwrap();
+    let workspace = outer.path().join("workspace");
+    let (sibling, input) = write_guard_fixture(&workspace, "escape-worker-user");
+    let outside_worker = outer.path().join("outside/escaped-worker.ts");
+    write(&outside_worker, "self.postMessage('ESCAPED_WORKER');\n");
+    let escape_link = workspace.join("lib/shared/escape-worker.ts");
+    fs::create_dir_all(escape_link.parent().unwrap()).unwrap();
+    symlink(&outside_worker, &escape_link).unwrap();
+    write(
+        &sibling,
+        "export const value = 'ok';\n\
+         new Worker(new URL('./escape-worker.ts', import.meta.url), { type: 'module' });\n",
+    );
+
+    let error = bundle(input).expect_err(
+        "a sibling Worker target that symlinks outside the workspace must be contained",
+    );
+    let message = format!("{error:#}");
+    assert!(
+        !message.is_empty(),
+        "containment must surface as a build error"
     );
     assert!(
-        output.bundle_path.exists(),
-        "expected a bundle to be written to {}",
-        output.bundle_path.display()
+        !message.contains("ESCAPED_WORKER"),
+        "the escaped worker's contents must never reach the build: {message}"
+    );
+}
+
+/// **Workspace-vs-project node_modules precedence — nearest install wins.**
+///
+/// #1668 part 1 gives the re-rooted shadow two install roots: the project's
+/// own `<shadow>/node_modules` (nearest) and the workspace-hoisted
+/// `<work>/node_modules` (outer). esbuild walks up from a project-mirror file
+/// and reaches the project install first, so a package present at BOTH levels
+/// resolves to the project copy. This pins the LAYOUT that guarantees it: the
+/// two links point at the two distinct installs.
+#[test]
+fn workspace_and_project_node_modules_are_layered_by_precedence() {
+    let workspace = tempfile::tempdir().unwrap();
+    let ws_root = workspace.path();
+    write(
+        &ws_root.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+    );
+    let project = ws_root.join("sub-packages/host");
+    for dir in ["pages", "content", "components", "layouts", "src"] {
+        fs::create_dir_all(project.join(dir)).unwrap();
+    }
+    write(
+        &project.join("layouts/default.tsx"),
+        "export default function L({ children }) { return children; }\n",
+    );
+    write(
+        &project.join("pages/index.tsx"),
+        "export default function Page() { return null; }\n",
+    );
+    // The SAME package name installed at BOTH levels, with distinct contents.
+    write(
+        &ws_root.join("node_modules/dup-pkg/marker.js"),
+        "WORKSPACE_INSTALL",
+    );
+    write(
+        &project.join("node_modules/dup-pkg/marker.js"),
+        "PROJECT_INSTALL",
+    );
+
+    let mut input = make_bundle_input(&project, "dist-precedence", vec![]);
+    input.node_modules_dir = Some(project.join("node_modules"));
+
+    let mut session = ShadowSession::new(&project).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("precedence layout bundle must succeed");
+
+    let work = work_mirror_root(&session);
+    // The project mirror's OWN node_modules link → the PROJECT install (nearest).
+    assert_eq!(
+        fs::read_to_string(work.join("sub-packages/host/node_modules/dup-pkg/marker.js")).unwrap(),
+        "PROJECT_INSTALL",
+        "the project-mirror node_modules must resolve the nearest (project) install"
+    );
+    // The workspace-hoisted link → the WORKSPACE install (outer fallback).
+    assert_eq!(
+        fs::read_to_string(work.join("node_modules/dup-pkg/marker.js")).unwrap(),
+        "WORKSPACE_INSTALL",
+        "the workspace-hoisted node_modules must resolve the outer install"
     );
 }
