@@ -1153,6 +1153,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &dev_assets_root,
         &cfg,
         &[],
+        &islands_plugin_config.alias_entries,
     ) {
         Ok(Some(payload)) => {
             // Write the bytes to the isolated dev-assets root (issue #1189)
@@ -1199,6 +1200,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // Issue #1189: build + write CSS into the isolated dev-assets root.
         let dev_assets_root_for_css = dev_assets_root.clone();
         let cfg_for_css = cfg.clone();
+        let plugin_alias_entries_for_css = islands_plugin_config.alias_entries.clone();
         let url_prefix = dev_css_url_prefix.clone();
         let url_handle = Arc::clone(&css_bundle_url_handle);
         Some(Arc::new(move || -> Result<bool> {
@@ -1207,6 +1209,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &dev_assets_root_for_css,
                 &cfg_for_css,
                 &[],
+                &plugin_alias_entries_for_css,
             )?;
             let mut guard = url_handle.write().unwrap_or_else(|p| {
                 tracing::warn!(

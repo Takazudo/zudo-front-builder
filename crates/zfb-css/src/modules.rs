@@ -249,12 +249,15 @@ impl CssModulesProcessor {
 /// absolute (lossy) path: stable within a build, just not across
 /// relocations.
 ///
-/// Used for the lightningcss `[hash]` prefix in [`CssModulesProcessor`]
-/// and for the class-map JSON filename hash in `pipeline.rs`, so both
-/// user-visible hashes derive from the same normalised string.
-///
 /// Delegates to [`hash_filename_with_workspace`] with `first_party_root:
-/// None`, so its behaviour (and every existing call site) is unchanged.
+/// None`.
+///
+/// Every production call site ([`CssModulesProcessor`]'s `[hash]` prefix
+/// and the class-map JSON filename hash in `pipeline.rs`) now calls
+/// [`hash_filename_with_workspace`] directly (issue #1694/#1696) — this
+/// wrapper's only remaining caller is its own test module, which pins the
+/// delegation contract (`hash_filename_with_workspace_none_matches_hash_filename`).
+#[allow(dead_code)] // kept for the delegation-contract regression pin above
 pub(crate) fn hash_filename(path: &Path, project_root: Option<&Path>) -> String {
     hash_filename_with_workspace(path, project_root, None)
 }
