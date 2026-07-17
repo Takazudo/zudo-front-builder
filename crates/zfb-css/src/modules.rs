@@ -57,6 +57,22 @@ pub struct CssModulesConfig {
     /// by the original absolute path so downstream bundler lookups are
     /// unaffected.
     pub project_root: Option<PathBuf>,
+
+    /// Optional workspace-wide root used as a *second* relativization base
+    /// for module paths that fall outside `project_root` — e.g. a
+    /// `.module.css` file in a workspace sibling package staged into the
+    /// SSR shadow (issue #1691/#1694).
+    ///
+    /// When `Some`, [`hash_filename`]'s absolute-path fallback is tried
+    /// last: a path outside `project_root` but under `first_party_root`
+    /// hashes off its `first_party_root`-relative path instead of the
+    /// absolute path, keeping sibling scoped class names (and the
+    /// class-map JSON filename) reproducible across checkout locations
+    /// too. This never changes behaviour for paths already under
+    /// `project_root`, and `None` reproduces the pre-#1694 fallback
+    /// exactly — see [`hash_filename`]'s doc comment for the full
+    /// resolution order.
+    pub first_party_root: Option<PathBuf>,
 }
 
 /// Output of [`CssModulesProcessor::process`].
@@ -86,6 +102,27 @@ impl CssModulesConfig {
     pub fn for_project_root(root: &Path) -> Self {
         Self {
             project_root: Some(root.to_path_buf()),
+            ..Self::default()
+        }
+    }
+
+    /// Workspace-aware variant of [`Self::for_project_root`] (issue #1694).
+    ///
+    /// Use this instead of `for_project_root` when the build has a
+    /// workspace: a module path outside `project_root` but under
+    /// `first_party_root` (a sibling package staged into the SSR shadow's
+    /// work mirror) hashes off its `first_party_root`-relative path rather
+    /// than falling back to the absolute path, so sibling `.module.css`
+    /// scoped class names stay reproducible across checkout locations too.
+    /// Behaviour for paths under `project_root` is unchanged.
+    ///
+    /// Callers without a workspace should keep using `for_project_root` —
+    /// passing the same value for both roots also works (it degenerates to
+    /// `for_project_root`'s behaviour) but is needlessly indirect.
+    pub fn for_project_and_first_party_roots(project_root: &Path, first_party_root: &Path) -> Self {
+        Self {
+            project_root: Some(project_root.to_path_buf()),
+            first_party_root: Some(first_party_root.to_path_buf()),
             ..Self::default()
         }
     }
@@ -162,7 +199,11 @@ impl CssModulesProcessor {
             .map_err(|e| anyhow::anyhow!("invalid CSS Modules pattern {pattern:?}: {e}"))?;
 
         let parser_opts = ParserOptions {
-            filename: hash_filename(path, self.config.project_root.as_deref()),
+            filename: hash_filename_with_workspace(
+                path,
+                self.config.project_root.as_deref(),
+                self.config.first_party_root.as_deref(),
+            ),
             css_modules: Some(LcssConfig {
                 pattern: pattern_parsed,
                 dashed_idents: false,
@@ -211,16 +252,55 @@ impl CssModulesProcessor {
 /// Used for the lightningcss `[hash]` prefix in [`CssModulesProcessor`]
 /// and for the class-map JSON filename hash in `pipeline.rs`, so both
 /// user-visible hashes derive from the same normalised string.
+///
+/// Delegates to [`hash_filename_with_workspace`] with `first_party_root:
+/// None`, so its behaviour (and every existing call site) is unchanged.
 pub(crate) fn hash_filename(path: &Path, project_root: Option<&Path>) -> String {
-    let rel = project_root.and_then(|root| path.strip_prefix(root).ok());
-    let chosen = rel.unwrap_or(path);
-    // Normalise `\` → `/` UNCONDITIONALLY (not via the OS-path-gated
-    // `zfb_types::path_to_posix_string`, which only replaces on Windows to
-    // avoid corrupting literal `\` in Unix filenames). The module hash must be
-    // identical regardless of the host OS that produced the path — a Windows
-    // checkout's `sub\a.css` must hash the same as a Unix checkout's
-    // `sub/a.css` (#825).
-    chosen.to_string_lossy().replace('\\', "/")
+    hash_filename_with_workspace(path, project_root, None)
+}
+
+/// Workspace-aware variant of [`hash_filename`] (issue #1694).
+///
+/// Resolution order: `project_root`-relative first (identical to
+/// `hash_filename`); when `path` is not under `project_root`,
+/// `first_party_root`-relative next (a workspace sibling package staged
+/// into the SSR shadow's work mirror — issue #1691); otherwise the
+/// absolute-path fallback. Passing `first_party_root: None` reproduces
+/// `hash_filename` exactly, byte for byte.
+///
+/// The `first_party_root`-relative branch is tagged with a
+/// `workspace-sibling:` prefix. Without it, a project module and a sibling
+/// module that happen to share the same root-relative suffix (e.g. project
+/// `lib/card.module.css` vs. a sibling package's `lib/card.module.css`)
+/// would hash to the identical string *within the same build*, giving two
+/// distinct files the same scoped `[hash]` prefix — caught in review for
+/// #1694.
+pub(crate) fn hash_filename_with_workspace(
+    path: &Path,
+    project_root: Option<&Path>,
+    first_party_root: Option<&Path>,
+) -> String {
+    if let Some(root) = project_root {
+        if let Ok(rel) = path.strip_prefix(root) {
+            return normalize_hash_path(rel);
+        }
+    }
+    if let Some(root) = first_party_root {
+        if let Ok(rel) = path.strip_prefix(root) {
+            return format!("workspace-sibling:{}", normalize_hash_path(rel));
+        }
+    }
+    normalize_hash_path(path)
+}
+
+// Normalise `\` → `/` UNCONDITIONALLY (not via the OS-path-gated
+// `zfb_types::path_to_posix_string`, which only replaces on Windows to
+// avoid corrupting literal `\` in Unix filenames). The module hash must be
+// identical regardless of the host OS that produced the path — a Windows
+// checkout's `sub\a.css` must hash the same as a Unix checkout's
+// `sub/a.css` (#825).
+fn normalize_hash_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]
@@ -234,6 +314,16 @@ mod tests {
             project_root: Some(PathBuf::from(root)),
             ..CssModulesConfig::default()
         })
+    }
+
+    fn processor_with_workspace_roots(
+        project_root: &str,
+        first_party_root: &str,
+    ) -> CssModulesProcessor {
+        CssModulesProcessor::new(CssModulesConfig::for_project_and_first_party_roots(
+            Path::new(project_root),
+            Path::new(first_party_root),
+        ))
     }
 
     /// Synthetic absolute paths only — no tempdirs. A disk-backed
@@ -330,6 +420,103 @@ mod tests {
         assert_eq!(
             hash_filename(Path::new(r"sub\card.module.css"), None),
             "sub/card.module.css"
+        );
+    }
+
+    /// #1694: a sibling module (outside `project_root`, inside
+    /// `first_party_root`) hashes off its `first_party_root`-relative
+    /// path, so byte-identical siblings at the same workspace-relative
+    /// path are checkout-location independent — same guarantee #825 gave
+    /// project files, extended to workspace siblings.
+    #[test]
+    fn scoped_names_for_sibling_modules_are_stable_across_workspace_roots() {
+        let a = scoped_name(
+            &processor_with_workspace_roots("/home/runner/work/ws/proj", "/home/runner/work/ws"),
+            "/home/runner/work/ws/lib/shared/card.module.css",
+        );
+        let b = scoped_name(
+            &processor_with_workspace_roots("/Users/dev/repos/ws/proj", "/Users/dev/repos/ws"),
+            "/Users/dev/repos/ws/lib/shared/card.module.css",
+        );
+        assert_eq!(
+            a, b,
+            "same workspace-relative sibling path under different workspace roots must hash identically"
+        );
+    }
+
+    #[test]
+    fn hash_filename_with_workspace_relativises_under_first_party_root_outside_project_root() {
+        assert_eq!(
+            hash_filename_with_workspace(
+                Path::new("/ws/lib/shared/card.module.css"),
+                Some(Path::new("/ws/proj")),
+                Some(Path::new("/ws")),
+            ),
+            "workspace-sibling:lib/shared/card.module.css"
+        );
+    }
+
+    /// A project module and a workspace-sibling module that happen to share
+    /// the same root-relative suffix must NOT collide onto the same hash
+    /// input within a single build — they are two distinct files and must
+    /// keep distinct scoped names (caught in review for #1694).
+    #[test]
+    fn hash_filename_with_workspace_does_not_collide_project_and_sibling_same_suffix() {
+        let project_side = hash_filename_with_workspace(
+            Path::new("/ws/apps/site/lib/card.module.css"),
+            Some(Path::new("/ws/apps/site")),
+            Some(Path::new("/ws")),
+        );
+        let sibling_side = hash_filename_with_workspace(
+            Path::new("/ws/lib/card.module.css"),
+            Some(Path::new("/ws/apps/site")),
+            Some(Path::new("/ws")),
+        );
+        assert_eq!(project_side, "lib/card.module.css");
+        assert_eq!(sibling_side, "workspace-sibling:lib/card.module.css");
+        assert_ne!(
+            project_side, sibling_side,
+            "project-relative and workspace-sibling-relative paths sharing the same suffix must not collide"
+        );
+    }
+
+    #[test]
+    fn hash_filename_with_workspace_prefers_project_root_when_path_is_under_both() {
+        // project_root is nested under first_party_root here (the common
+        // shape); a path under project_root must still relativize against
+        // project_root, not the wider first_party_root.
+        assert_eq!(
+            hash_filename_with_workspace(
+                Path::new("/ws/proj/src/card.module.css"),
+                Some(Path::new("/ws/proj")),
+                Some(Path::new("/ws")),
+            ),
+            "src/card.module.css"
+        );
+    }
+
+    #[test]
+    fn hash_filename_with_workspace_falls_back_to_absolute_outside_both_roots() {
+        assert_eq!(
+            hash_filename_with_workspace(
+                Path::new("/elsewhere/card.module.css"),
+                Some(Path::new("/ws/proj")),
+                Some(Path::new("/ws")),
+            ),
+            "/elsewhere/card.module.css"
+        );
+    }
+
+    /// `first_party_root: None` must reproduce `hash_filename` byte for
+    /// byte — the delegation in `hash_filename` is exercised directly, not
+    /// just asserted by reading the source.
+    #[test]
+    fn hash_filename_with_workspace_none_matches_hash_filename() {
+        let path = Path::new("/elsewhere/card.module.css");
+        let root = Some(Path::new("/proj"));
+        assert_eq!(
+            hash_filename_with_workspace(path, root, None),
+            hash_filename(path, root)
         );
     }
 }
