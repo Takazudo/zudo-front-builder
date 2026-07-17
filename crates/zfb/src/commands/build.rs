@@ -3304,8 +3304,9 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
                 .unwrap_or_else(|| source.clone()),
             None => source.clone(),
         };
-        module_workers.push(zfb_islands::ModuleWorkerBundleEntry::new(
+        module_workers.push(zfb_islands::ModuleWorkerBundleEntry::new_scoped(
             project_root,
+            &islands_first_party_root,
             &logical_source,
             physical_source,
         )?);
@@ -3394,7 +3395,16 @@ fn production_islands_asset_to_payload(
 #[derive(Debug)]
 struct ClientScriptsPreprocessStage {
     _tempdir: tempfile::TempDir,
+    /// Stage root and tsconfig search boundary. In a workspace-widened stage
+    /// (issue #1674) this is the mirrored WORKSPACE first-party root, above the
+    /// mirrored project dir; without a workspace marker it equals the mirrored
+    /// project dir.
     root: PathBuf,
+    /// esbuild's working directory inside the stage: the mirrored project dir.
+    /// Equal to `root` except in a workspace-widened stage, where the project
+    /// is mirrored at its workspace-relative location. Mirrors the islands
+    /// shadow's `bundle_working_dir` (issue #1664).
+    bundle_working_dir: PathBuf,
     entries: Vec<zfb_islands::client_scripts::ClientScriptEntry>,
     preserve_symlinks: bool,
     raw_targets: std::collections::BTreeSet<PathBuf>,
@@ -3523,7 +3533,24 @@ fn stage_client_script_preprocessing_with_worker_context(
         return Ok(None);
     }
 
-    let paths = IslandsShadowPaths::new(project_root);
+    // Issue #1669/#1674: re-root the client-script preprocessing stage at the
+    // workspace first-party boundary, mirroring the islands shadow
+    // (`materialise_islands_shadow_with_worker_context`). Without a workspace
+    // marker `first_party_root == project_root` (lexically) and every path
+    // computation below collapses to the pre-#1674 single-package behavior, so
+    // non-workspace projects stage byte-identically.
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let paths = IslandsShadowPaths::new(&first_party_root);
+    // The #1500 worker-companion naming contract and the "which files does the
+    // full-tree walk cover" question stay PROJECT-scoped: the walk mirrors the
+    // project tree under the mirrored project dir, while sibling first-party
+    // files are materialised selectively at their workspace-relative location.
+    let project_paths = IslandsShadowPaths::new(project_root);
+    let project_rel =
+        match zfb_types::normalize_path_lexical(project_root).strip_prefix(&first_party_root) {
+            Ok(rel) if !rel.as_os_str().is_empty() => rel.to_path_buf(),
+            _ => PathBuf::new(),
+        };
     let mut external_entries_without_preprocessing = std::collections::BTreeSet::new();
     let mut worker_sources_by_entry: std::collections::BTreeMap<
         String,
@@ -3617,6 +3644,10 @@ fn stage_client_script_preprocessing_with_worker_context(
     let mut worker_expanded_by_key: std::collections::HashMap<PathBuf, String> =
         std::collections::HashMap::new();
     let mut worker_targets = std::collections::BTreeSet::new();
+    // Physical worker-dependency paths (as the rewrite reports them) so a
+    // dependency that lives in a workspace sibling can be selectively staged
+    // later; `worker_targets` only keeps the logical (watch) spelling.
+    let mut worker_dependency_physicals = std::collections::BTreeSet::new();
     let worker_importers = dedup_shadow_paths(
         &paths,
         graph
@@ -3680,6 +3711,7 @@ fn stage_client_script_preprocessing_with_worker_context(
                         dependency.dependency.display()
                     )
                 })?;
+            worker_dependency_physicals.insert(dependency.dependency);
             worker_targets.insert(logical_dependency);
         }
         for config in rewrite.config_dependencies {
@@ -3768,16 +3800,33 @@ fn stage_client_script_preprocessing_with_worker_context(
         .iter()
         .filter_map(|source| paths.logical_project_path(source))
         .collect();
-    let client_configs = collect_islands_shadow_configs(project_root, &client_config_sources)?;
+    let client_configs = collect_islands_shadow_configs(&first_party_root, &client_config_sources)?;
 
     let tempdir = tempfile::Builder::new()
         .prefix("zfb-client-preprocess-")
         .tempdir()
         .context("allocate client-script preprocessing directory")?;
     let root = tempdir.path().to_path_buf();
-    let project_node_modules = detect_project_node_modules(project_root);
-    let copy_mode = project_node_modules.is_some()
-        && shadow_config_scope_uses_paths(project_root, &client_configs);
+    // The mirrored PROJECT dir: the walked project tree stages here, and it is
+    // esbuild's working directory. Equal to `root` without a workspace marker.
+    let stage_project_dir = if project_rel.as_os_str().is_empty() {
+        root.clone()
+    } else {
+        root.join(&project_rel)
+    };
+    // A workspace-widened stage needs node_modules at BOTH install roots: the
+    // workspace-hoisted install at the stage root and the project's own nested
+    // install at the mirrored project dir. Without a workspace the two collapse
+    // to the single project-root install linked at the stage root.
+    let first_party_node_modules = detect_project_node_modules(&first_party_root);
+    let project_node_modules = if first_party_root.as_path() == project_root {
+        None
+    } else {
+        detect_project_node_modules(project_root)
+    };
+    let has_node_modules = first_party_node_modules.is_some() || project_node_modules.is_some();
+    let copy_mode =
+        has_node_modules && shadow_config_scope_uses_paths(&first_party_root, &client_configs);
 
     for entry in walkdir::WalkDir::new(project_root)
         .follow_links(false)
@@ -3808,7 +3857,9 @@ fn stage_client_script_preprocessing_with_worker_context(
         if rel.as_os_str().is_empty() {
             continue;
         }
-        let to = root.join(rel);
+        // Stage the project tree under the mirrored project dir; a workspace
+        // sibling reached by the graph is materialised separately below.
+        let to = stage_project_dir.join(rel);
         if entry.file_type().is_dir() {
             std::fs::create_dir_all(&to)
                 .with_context(|| format!("create client preprocess stage dir {}", to.display()))?;
@@ -3902,13 +3953,94 @@ fn stage_client_script_preprocessing_with_worker_context(
         )?;
     }
 
-    materialise_shadow_typescript_configs(project_root, &root, &client_configs)?;
+    // Selectively materialise the already-discovered first-party closure that
+    // lives OUTSIDE the walked project tree (workspace siblings). The project
+    // tree itself is covered by the walk above; `node_modules` is symlinked
+    // whole. Each sibling is written at its workspace-relative location so
+    // esbuild resolves the same tsconfig-alias / relative graph it does in the
+    // live tree. `materialise_client_preprocess_stage_file` keys expansions on
+    // `paths.path_key`, so a sibling `?raw`/worker importer is written with its
+    // already-computed rewrite (and any generated raw modules) automatically.
+    //
+    // Dev-invalidation gap (issue #1683): sibling NORMAL modules staged here are
+    // outside the project's client-script roots and absent from the returned
+    // `raw_targets`/`worker_targets`, so editing one does not yet rebuild the
+    // client script in `zfb dev`. Sibling `?raw` targets and worker deps do
+    // invalidate.
+    let mut sibling_closure: std::collections::BTreeSet<PathBuf> =
+        std::collections::BTreeSet::new();
+    let mut consider_sibling = |physical: &Path| {
+        if paths.project_local_rel(physical).is_some()
+            && project_paths.project_local_rel(physical).is_none()
+        {
+            sibling_closure.insert(physical.to_path_buf());
+        }
+    };
+    for source in &config_source_candidates {
+        consider_sibling(source);
+    }
+    for edge in &all_raw_edges {
+        consider_sibling(&edge.importer);
+        consider_sibling(&edge.target);
+    }
+    for dependency in &worker_dependency_physicals {
+        consider_sibling(dependency);
+    }
+    for physical in &sibling_closure {
+        let rel = paths.project_local_rel(physical).ok_or_else(|| {
+            anyhow!(
+                "client-script first-party sibling {} has no logical path under {}",
+                physical.display(),
+                first_party_root.display()
+            )
+        })?;
+        let to = root.join(&rel);
+        materialise_client_preprocess_stage_file(
+            physical,
+            physical,
+            &to,
+            &root,
+            &paths,
+            &expanded_by_key,
+            &worker_expanded_by_key,
+            copy_mode,
+            false,
+        )?;
+    }
 
-    if let Some(node_modules) = project_node_modules {
-        shadow_symlink(&node_modules, &root.join("node_modules")).with_context(|| {
+    materialise_shadow_typescript_configs(&first_party_root, &root, &client_configs)?;
+
+    // Workspace-hoisted install at the stage root (the tsconfig search
+    // boundary); the project's own nested install at the mirrored project dir.
+    // Without a workspace both collapse to the single root-level symlink,
+    // byte-identical to the pre-#1674 behavior.
+    //
+    // Known limitation (issue #1682, shared with the islands shadow): a sibling
+    // imported through its pnpm PACKAGE NAME resolves through this live
+    // node_modules link to the unprocessed source, bypassing the staged
+    // rewrite. Sibling reach via tsconfig alias / relative path (what #1674
+    // covers) resolves to the staged files instead.
+    if let Some(node_modules) = &first_party_node_modules {
+        shadow_symlink(node_modules, &root.join("node_modules")).with_context(|| {
             format!(
                 "symlink client preprocess stage node_modules {} -> {}",
                 root.join("node_modules").display(),
+                node_modules.display()
+            )
+        })?;
+    }
+    std::fs::create_dir_all(&stage_project_dir).with_context(|| {
+        format!(
+            "create client preprocess mirrored project dir {}",
+            stage_project_dir.display()
+        )
+    })?;
+    if let Some(node_modules) = &project_node_modules {
+        let nested = stage_project_dir.join("node_modules");
+        shadow_symlink(node_modules, &nested).with_context(|| {
+            format!(
+                "symlink client preprocess stage project node_modules {} -> {}",
+                nested.display(),
                 node_modules.display()
             )
         })?;
@@ -3939,15 +4071,41 @@ fn stage_client_script_preprocessing_with_worker_context(
     for (entry_name, sources) in worker_sources_by_entry {
         let mut workers = Vec::with_capacity(sources.len());
         for source in sources {
-            let rel = paths.project_local_rel(&source).ok_or_else(|| {
-                anyhow!(
-                    "client-script module-worker source {} is outside the mirrorable project tree",
-                    source.display()
+            // The #1500 flat-naming contract now covers workspace siblings too
+            // (issue #1677, using the `worker--ws-` encoding zfb-types added
+            // for #1673): a project-local source keeps its byte-identical
+            // unscoped name and stages under the mirrored project dir; a
+            // workspace-sibling source — accepted by the widened #1674
+            // first-party boundary, formerly rejected here by the #1667 guard
+            // — mints a workspace-relative `-ws-` name and stages at its
+            // workspace-relative slot instead (the same slot the sibling
+            // closure above already materialised it at).
+            let (logical_source, staged_source_path, filename) = if let Some(rel) =
+                project_paths.project_local_rel(&source)
+            {
+                let logical_source = project_root.join(&rel);
+                let filename = zfb_types::module_worker_filename(project_root, &logical_source)
+                    .map_err(|error| {
+                        anyhow!("client-script module-worker naming failed: {error}")
+                    })?;
+                (logical_source, stage_project_dir.join(&rel), filename)
+            } else {
+                let rel = paths.project_local_rel(&source).ok_or_else(|| {
+                    anyhow!(
+                        "client-script module-worker source {} is outside the mirrorable \
+                             first-party project tree",
+                        source.display()
+                    )
+                })?;
+                let logical_source = first_party_root.join(&rel);
+                let filename = zfb_types::module_worker_filename_scoped(
+                    project_root,
+                    &first_party_root,
+                    &logical_source,
                 )
-            })?;
-            let logical_source = project_root.join(&rel);
-            let filename = zfb_types::module_worker_filename(project_root, &logical_source)
                 .map_err(|error| anyhow!("client-script module-worker naming failed: {error}"))?;
+                (logical_source, root.join(&rel), filename)
+            };
             if let Some(existing) = filename_owners.get(&filename) {
                 if existing != &logical_source {
                     return Err(anyhow!(
@@ -3961,7 +4119,7 @@ fn stage_client_script_preprocessing_with_worker_context(
             }
             workers.push(ClientScriptWorkerEntry {
                 filename,
-                source_path: root.join(rel),
+                source_path: staged_source_path,
             });
         }
         workers.sort_by(|left, right| left.filename.cmp(&right.filename));
@@ -3990,6 +4148,7 @@ fn stage_client_script_preprocessing_with_worker_context(
     Ok(Some(ClientScriptsPreprocessStage {
         _tempdir: tempdir,
         root,
+        bundle_working_dir: stage_project_dir,
         entries: staged_entries,
         preserve_symlinks: !copy_mode,
         raw_targets,
@@ -4121,11 +4280,14 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
         &entries,
         &worker_build_context,
     )?;
+    // esbuild's cwd is the mirrored project dir (== stage root outside a
+    // workspace); the tsconfig search boundary stays the stage root so a
+    // workspace-level config mirrored above the project dir is discoverable.
     let client_tsconfig_boundary = preprocess_stage.as_ref().map(|stage| stage.root.clone());
     let (bundle_entries, bundler_working_dir, preserve_symlinks) = match preprocess_stage.as_ref() {
         Some(stage) => (
             stage.entries.as_slice(),
-            stage.root.clone(),
+            stage.bundle_working_dir.clone(),
             stage.preserve_symlinks,
         ),
         None => (entries.as_slice(), project_root.to_path_buf(), false),
@@ -4141,7 +4303,7 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
         .as_ref()
         .map(|stage| {
             remap_project_plugin_aliases_to_shadow(
-                project_root,
+                &zfb_types::first_party_root_for(project_root),
                 &stage.root,
                 &plugin_config.alias_entries,
             )
@@ -4156,7 +4318,9 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     if let Some(boundary) = client_tsconfig_boundary {
         esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
     }
-    if detect_project_node_modules(project_root).is_some() {
+    if detect_project_node_modules(project_root).is_some()
+        || detect_project_node_modules(&zfb_types::first_party_root_for(project_root)).is_some()
+    {
         _embedded_nm_handle = None;
     } else {
         match embedded_node_modules() {
@@ -4435,7 +4599,7 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
         match preprocess_stage.as_ref() {
             Some(stage) => (
                 stage.entries.as_slice(),
-                stage.root.clone(),
+                stage.bundle_working_dir.clone(),
                 stage.preserve_symlinks,
                 stage.raw_targets.clone(),
                 stage.worker_targets.clone(),
@@ -4448,6 +4612,8 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
                 std::collections::BTreeSet::new(),
             ),
         };
+    // The tsconfig search boundary stays the stage root even though esbuild's
+    // cwd is the mirrored project dir (issue #1674).
     let client_tsconfig_boundary = preprocess_stage.as_ref().map(|stage| stage.root.clone());
 
     // Set up the esbuild subprocess — same wiring as `build_default_client_scripts_payloads`
@@ -4459,7 +4625,7 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
         .as_ref()
         .map(|stage| {
             remap_project_plugin_aliases_to_shadow(
-                project_root,
+                &zfb_types::first_party_root_for(project_root),
                 &stage.root,
                 &plugin_config.alias_entries,
             )
@@ -4474,7 +4640,9 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     if let Some(boundary) = client_tsconfig_boundary {
         esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
     }
-    if detect_project_node_modules(project_root).is_some() {
+    if detect_project_node_modules(project_root).is_some()
+        || detect_project_node_modules(&zfb_types::first_party_root_for(project_root)).is_some()
+    {
         _embedded_nm_handle = None;
     } else {
         match embedded_node_modules() {
@@ -10800,6 +10968,356 @@ mod tests {
         let error = format!("{error:#}");
         assert!(error.contains("scan client-script graph"), "{error}");
         assert!(error.contains("unsupported import query"), "{error}");
+    }
+
+    // ---- Issue #1674: workspace-first-party re-rooting of the client stage. --
+
+    fn write_reroot_ws_file(root: &Path, rel: &str, body: &str) -> PathBuf {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// A genuinely-CLAIMED pnpm-workspace sub-package host whose client entry
+    /// reaches a SIBLING workspace helper (normal import + a sibling `?raw`),
+    /// modeled on `crates/zfb-build/tests/module_worker_workspace_first_party_roots.rs`.
+    /// Returns `(project_root, entries)`.
+    fn write_reroot_workspace_client_fixture(
+        workspace: &Path,
+    ) -> (PathBuf, Vec<zfb_islands::client_scripts::ClientScriptEntry>) {
+        write_reroot_ws_file(
+            workspace,
+            "pnpm-workspace.yaml",
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        );
+        write_reroot_ws_file(
+            workspace,
+            "lib/shared/panel.frag",
+            "ZFB_REROOT_SIBLING_RAW_PAYLOAD\n",
+        );
+        write_reroot_ws_file(
+            workspace,
+            "lib/shared/plain.ts",
+            "export const plain = 'ZFB_REROOT_SIBLING_PLAIN';\n",
+        );
+        write_reroot_ws_file(
+            workspace,
+            "lib/shared/helper.ts",
+            "import { plain } from './plain';\nimport text from './panel.frag?raw';\nexport const shared = plain + text;\n",
+        );
+        let entry = write_reroot_ws_file(
+            workspace,
+            "sub-packages/host/pages/widget.client.ts",
+            "import { shared } from '../../../lib/shared/helper';\nconsole.log(shared);\n",
+        );
+        let project_root = workspace.join("sub-packages/host");
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+        (project_root, entries)
+    }
+
+    #[test]
+    fn client_script_stage_reroots_at_workspace_and_materialises_sibling_closure() {
+        let workspace = tempdir().unwrap();
+        let (project_root, entries) = write_reroot_workspace_client_fixture(workspace.path());
+
+        let stage = stage_client_script_preprocessing(&project_root, &entries)
+            .unwrap()
+            .expect("a claimed workspace host reaching sibling source needs a stage");
+
+        // The stage roots at the workspace; esbuild's cwd is the mirrored
+        // project dir nested under it.
+        let expected_working_dir = stage.root.join("sub-packages/host");
+        assert_eq!(stage.bundle_working_dir, expected_working_dir);
+        assert_ne!(
+            stage.bundle_working_dir, stage.root,
+            "a workspace-widened stage must mirror the project below the stage root"
+        );
+        assert!(stage.entries[0]
+            .source_path
+            .starts_with(&stage.bundle_working_dir));
+        assert_eq!(
+            stage.entries[0].source_path,
+            stage.bundle_working_dir.join("pages/widget.client.ts")
+        );
+
+        // The sibling normal-import module is materialised at its
+        // workspace-relative location (symlink in the default no-node_modules
+        // mode).
+        let staged_plain = stage.root.join("lib/shared/plain.ts");
+        assert!(
+            std::fs::symlink_metadata(&staged_plain)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "a sibling normal module must be staged (symlinked) at its workspace-relative path"
+        );
+
+        // The sibling `?raw` importer is rewritten in place with a generated
+        // raw module beside it — proof the raw expansion crosses the widened
+        // boundary instead of erroring "outside the mirrorable project tree".
+        let staged_helper = stage.root.join("lib/shared/helper.ts");
+        let rewritten = std::fs::read_to_string(&staged_helper).unwrap();
+        assert!(!rewritten.contains("?raw"), "{rewritten}");
+        assert!(std::fs::read_dir(stage.root.join("lib/shared"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .any(|path| path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".zfb-raw-") && name.ends_with(".mjs"))));
+
+        assert!(
+            stage
+                .raw_targets
+                .iter()
+                .any(|target| target.ends_with("lib/shared/panel.frag")),
+            "the sibling raw target must be tracked for dev invalidation: {:?}",
+            stage.raw_targets
+        );
+    }
+
+    #[test]
+    fn client_script_stage_no_op_equivalence_without_workspace_marker() {
+        // Without a workspace marker `first_party_root == project_root`, so the
+        // stage must NOT re-root: esbuild's cwd equals the stage root and the
+        // entry stages at its project-relative path with no mirrored-project
+        // prefix — byte-identical to the pre-#1674 single-package behavior.
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write_reroot_ws_file(
+            root,
+            "pages/widget.client.ts",
+            "import text from '../src/message.txt?raw';\nconsole.log(text);\n",
+        );
+        write_reroot_ws_file(root, "src/message.txt", "no-op equivalence\n");
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: root.join("pages/widget.client.ts"),
+        }];
+
+        let stage = stage_client_script_preprocessing(root, &entries)
+            .unwrap()
+            .expect("a project-local raw graph still needs a stage");
+        assert_eq!(
+            stage.bundle_working_dir, stage.root,
+            "a non-workspace project must not re-root: cwd stays the stage root"
+        );
+        assert_eq!(
+            stage.entries[0].source_path,
+            stage.root.join("pages/widget.client.ts"),
+            "the entry must stage at its project-relative path, not under a workspace prefix"
+        );
+    }
+
+    #[test]
+    fn client_script_stage_present_but_unclaimed_workspace_marker_does_not_reroot() {
+        // A `pnpm-workspace.yaml` that does NOT claim the project keeps the
+        // boundary at the project root (mirrors first_party_root_for's
+        // non-membership rule), so the stage must not re-root.
+        let workspace = tempdir().unwrap();
+        write_reroot_ws_file(
+            workspace.path(),
+            "pnpm-workspace.yaml",
+            "packages:\n  - 'packages/*'\n",
+        );
+        let project_root = workspace.path().join("sub-packages/host");
+        write_reroot_ws_file(
+            &project_root,
+            "pages/widget.client.ts",
+            "import text from '../src/message.txt?raw';\nconsole.log(text);\n",
+        );
+        write_reroot_ws_file(&project_root, "src/message.txt", "unclaimed\n");
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: project_root.join("pages/widget.client.ts"),
+        }];
+
+        let stage = stage_client_script_preprocessing(&project_root, &entries)
+            .unwrap()
+            .expect("a project-local raw graph still needs a stage");
+        assert_eq!(
+            stage.bundle_working_dir, stage.root,
+            "an unclaimed project must keep its own boundary and not re-root"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_script_stage_widened_root_contains_symlink_escape() {
+        // A symlinked dir INSIDE the project that escapes to a location outside
+        // BOTH the project and the workspace must not leak into the stage. The
+        // walk's containment bound stays project-scoped under the widened root.
+        let outer = tempdir().unwrap();
+        let workspace = outer.path().join("workspace");
+        let (project_root, entries) = write_reroot_workspace_client_fixture(&workspace);
+        let secret_dir = outer.path().join("secret");
+        write_reroot_ws_file(
+            &secret_dir,
+            "leaked.ts",
+            "export const leaked = 'SECRET';\n",
+        );
+        std::os::unix::fs::symlink(&secret_dir, project_root.join("escape")).unwrap();
+
+        let stage = stage_client_script_preprocessing(&project_root, &entries)
+            .unwrap()
+            .expect("the sibling raw graph still needs a stage");
+        assert!(
+            !stage.bundle_working_dir.join("escape/leaked.ts").exists(),
+            "a symlink escaping the project must not be followed into the mirrored project dir"
+        );
+        assert!(
+            !stage.root.join("secret/leaked.ts").exists()
+                && !stage.root.join("escape/leaked.ts").exists(),
+            "the escaped file must not appear anywhere in the stage"
+        );
+    }
+
+    #[test]
+    fn client_script_stage_widened_root_uses_copy_mode_for_sibling() {
+        // node_modules present at the workspace root + a project tsconfig with
+        // `paths` selects copy mode; the sibling normal module must then be a
+        // real copy in the stage, not a symlink back to the live tree.
+        let workspace = tempdir().unwrap();
+        let (project_root, entries) = write_reroot_workspace_client_fixture(workspace.path());
+        std::fs::create_dir_all(workspace.path().join("node_modules")).unwrap();
+        write_reroot_ws_file(
+            workspace.path(),
+            "sub-packages/host/tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@shared/*":["../../lib/shared/*"]}}}"#,
+        );
+
+        let stage = stage_client_script_preprocessing(&project_root, &entries)
+            .unwrap()
+            .expect("the sibling raw graph still needs a stage");
+        assert!(
+            !stage.preserve_symlinks,
+            "workspace node_modules plus tsconfig paths must select copy mode"
+        );
+        let staged_plain = stage.root.join("lib/shared/plain.ts");
+        let metadata = std::fs::symlink_metadata(&staged_plain).unwrap();
+        assert!(
+            metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
+            "copy mode must materialise the sibling module as a real file"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_script_stage_symlinks_both_workspace_and_project_node_modules() {
+        // With an install at BOTH the workspace root and the project dir, the
+        // stage links each at its matching location so esbuild's nearest-package
+        // walk keeps project-nested precedence over the workspace-hoisted tree.
+        let workspace = tempdir().unwrap();
+        let (project_root, entries) = write_reroot_workspace_client_fixture(workspace.path());
+        write_reroot_ws_file(
+            workspace.path(),
+            "node_modules/.workspace-marker",
+            "workspace hoisted",
+        );
+        write_reroot_ws_file(
+            &project_root,
+            "node_modules/.project-marker",
+            "project nested",
+        );
+
+        let stage = stage_client_script_preprocessing(&project_root, &entries)
+            .unwrap()
+            .expect("the sibling raw graph still needs a stage");
+
+        let workspace_link = stage.root.join("node_modules");
+        let project_link = stage.bundle_working_dir.join("node_modules");
+        assert!(
+            std::fs::symlink_metadata(&workspace_link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the workspace-hoisted install must be linked at the stage root"
+        );
+        assert!(
+            std::fs::symlink_metadata(&project_link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the project-nested install must be linked at the mirrored project dir"
+        );
+        assert_eq!(
+            std::fs::read_link(&workspace_link).unwrap(),
+            workspace.path().join("node_modules")
+        );
+        assert_eq!(
+            std::fs::read_link(&project_link).unwrap(),
+            project_root.join("node_modules")
+        );
+    }
+
+    /// Inverted #1667 guard-pin test (issue #1677): a worker whose SOURCE
+    /// lives in a sibling workspace package used to fail with the named
+    /// #1667 limitation (the #1500 flat-naming contract was project-scoped).
+    /// #1677 threads the `worker--ws-` scoped naming contract (issue #1673)
+    /// through this pipeline instead, so the sibling worker entry now stages
+    /// and names successfully.
+    #[test]
+    fn client_script_stage_sibling_worker_entry_names_scoped_companion() {
+        let workspace = tempdir().unwrap();
+        write_reroot_ws_file(
+            workspace.path(),
+            "pnpm-workspace.yaml",
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        );
+        write_reroot_ws_file(
+            workspace.path(),
+            "lib/widgets/worker.ts",
+            "self.postMessage('sibling');\n",
+        );
+        let project_root = workspace.path().join("sub-packages/host");
+        let entry = write_reroot_ws_file(
+            &project_root,
+            "pages/widget.client.ts",
+            "new Worker(new URL('../../../lib/widgets/worker.ts', import.meta.url), { type: 'module' });\nconsole.log('x');\n",
+        );
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        let stage = stage_client_script_preprocessing(&project_root, &entries)
+            .unwrap()
+            .expect("a workspace-sibling worker entry now needs a stage (issue #1677)");
+
+        let workers = stage
+            .workers_by_entry
+            .get("widget")
+            .expect("the widget entry must have a discovered module worker");
+        assert_eq!(workers.len(), 1);
+        let worker = &workers[0];
+
+        let first_party_root = zfb_types::first_party_root_for(&project_root);
+        let expected_filename = zfb_types::module_worker_filename_scoped(
+            &project_root,
+            &first_party_root,
+            &first_party_root.join("lib/widgets/worker.ts"),
+        )
+        .expect("a workspace-sibling worker source has a scoped companion filename");
+        assert_eq!(worker.filename, expected_filename);
+        assert!(
+            worker.filename.starts_with("worker--ws-"),
+            "a workspace-sibling worker source must mint the scoped `-ws-` companion name: {}",
+            worker.filename
+        );
+
+        // The worker's physical source must be staged at its
+        // workspace-relative slot (not the mirrored PROJECT dir), matching
+        // the sibling-closure staging that runs earlier in the stage.
+        let expected_source_path = stage.root.join("lib/widgets/worker.ts");
+        assert_eq!(worker.source_path, expected_source_path);
+        assert_eq!(
+            std::fs::read_to_string(&worker.source_path).unwrap(),
+            "self.postMessage('sibling');\n"
+        );
     }
 
     #[test]

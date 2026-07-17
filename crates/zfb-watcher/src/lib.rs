@@ -239,19 +239,28 @@ impl Watcher {
     }
 
     /// Add non-recursive watches for the parent directories of absolute
-    /// dependency files discovered after the watcher started.
+    /// dependency files discovered after the watcher started, returning the
+    /// parent directories NEWLY watched by this call (deduped; empty when
+    /// every parent was already covered).
     ///
     /// Watching the parent instead of the file preserves delete/recreate
     /// visibility. Non-recursive mode avoids broadening a root-level
     /// dependency into a recursive watch of the entire project (including
-    /// generated output). Existing boot roots and previously-added parents
-    /// are deduplicated. Per-path failures are warned and skipped, matching
-    /// the boot registration policy.
-    pub fn watch_additional_files<I, P>(&mut self, paths: I)
+    /// generated output) — and, because a first-party dependency file's
+    /// parent is never a `node_modules` directory, it is the `node_modules`-
+    /// safe way to follow a workspace-sibling source directory (issue #1678):
+    /// the returned directories are exactly the out-of-recursive-root
+    /// dependency parents (client-script `?raw`/module-worker sibling targets
+    /// among them) that the caller may surface as an observable signal.
+    /// Existing boot roots and previously-added parents are deduplicated.
+    /// Per-path failures are warned and skipped, matching the boot
+    /// registration policy.
+    pub fn watch_additional_files<I, P>(&mut self, paths: I) -> Vec<PathBuf>
     where
         I: IntoIterator<Item = P>,
         P: AsRef<Path>,
     {
+        let mut newly_watched = Vec::new();
         for path in paths {
             let path = path.as_ref();
             if !path.is_absolute() {
@@ -285,8 +294,10 @@ impl Watcher {
             } else {
                 self.watched_dependency_dirs.extend(aliases);
                 debug!(path = %parent.display(), "watching dynamic dependency parent");
+                newly_watched.push(parent.to_path_buf());
             }
         }
+        newly_watched
     }
 }
 
@@ -1038,6 +1049,49 @@ mod tests {
                 Some(ChangeKind::Created) | Some(ChangeKind::Modified)
             ),
             "watching the parent must preserve recreate visibility"
+        );
+
+        watcher.shutdown().await;
+    }
+
+    /// `watch_additional_files` returns exactly the parent directories NEWLY
+    /// watched by the call — the observable the dev orchestrator surfaces as the
+    /// #1678 `watch-extra registered:` signal. A dependency whose parent is
+    /// already covered by a recursive boot root (the in-project / non-workspace
+    /// case) yields NOTHING, so a project without workspace siblings registers
+    /// no new directory and emits no signal (issue #1678 acceptance: non-
+    /// workspace projects' watch set is unchanged).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn watch_additional_files_returns_only_newly_watched_out_of_root_parents() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        std::fs::create_dir_all(root.join("src")).expect("src dir");
+        std::fs::create_dir_all(root.join("sibling")).expect("sibling dir");
+        let in_root_dep = root.join("src/in-root.ts");
+        let sibling_dep = root.join("sibling/sib.frag");
+        std::fs::write(&in_root_dep, "in-root\n").expect("seed in-root dep");
+        std::fs::write(&sibling_dep, "sib\n").expect("seed sibling dep");
+
+        // `src` is a recursive boot root; `sibling` is not.
+        let (mut watcher, _rx) =
+            Watcher::start_with_debounce(&root, std::iter::once("src"), Duration::from_millis(50))
+                .expect("watcher start");
+
+        // The in-root dependency's parent is already recursively covered, so it
+        // registers nothing; only the out-of-root sibling parent is newly
+        // watched and returned.
+        let newly = watcher.watch_additional_files([in_root_dep.clone(), sibling_dep.clone()]);
+        assert_eq!(
+            newly,
+            vec![root.join("sibling")],
+            "only the out-of-root sibling parent is newly watched"
+        );
+
+        // Re-registering an already-watched parent is idempotent: nothing new.
+        let again = watcher.watch_additional_files([sibling_dep]);
+        assert!(
+            again.is_empty(),
+            "re-registering an already-watched sibling parent must be a no-op, got {again:?}"
         );
 
         watcher.shutdown().await;

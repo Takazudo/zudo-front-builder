@@ -410,13 +410,35 @@ impl ModuleWorkerBundleEntry {
     /// `logical_source_path` must be beneath `project_root`; `source_path`
     /// is the physical path handed to esbuild (normally the same path, or its
     /// materialised islands-shadow counterpart).
+    ///
+    /// Delegates to [`Self::new_scoped`] with `first_party_root ==
+    /// project_root`, so single-package projects keep byte-identical names.
     pub fn new(
         project_root: &Path,
         logical_source_path: &Path,
         source_path: impl Into<PathBuf>,
     ) -> Result<Self> {
-        let filename = zfb_types::module_worker_filename(project_root, logical_source_path)
-            .map_err(|error| anyhow::anyhow!(error))?;
+        Self::new_scoped(project_root, project_root, logical_source_path, source_path)
+    }
+
+    /// Workspace-scoped variant of [`Self::new`] (issue #1677): accepts a
+    /// `logical_source_path` that lives outside `project_root` but inside
+    /// the widened `first_party_root` (a workspace sibling, issue #1664),
+    /// minting the `worker--ws-`-prefixed workspace-relative companion name
+    /// instead of failing. A project-local `logical_source_path` still gets
+    /// the byte-identical unscoped name.
+    pub fn new_scoped(
+        project_root: &Path,
+        first_party_root: &Path,
+        logical_source_path: &Path,
+        source_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let filename = zfb_types::module_worker_filename_scoped(
+            project_root,
+            first_party_root,
+            logical_source_path,
+        )
+        .map_err(|error| anyhow::anyhow!(error))?;
         Ok(Self {
             source_path: source_path.into(),
             filename,
@@ -963,6 +985,56 @@ mod tests {
             cfg.module_workers[0].source_path(),
             Path::new("/shadow/src/search.worker.ts")
         );
+    }
+
+    // ── workspace-scoped naming (issue #1677) ───────────────────────────────
+
+    #[test]
+    fn new_scoped_project_local_source_is_byte_identical_to_new() {
+        let root = Path::new("/ws/apps/site");
+        let logical = root.join("src/search.worker.ts");
+        let via_new =
+            ModuleWorkerBundleEntry::new(root, &logical, "/shadow/src/search.worker.ts").unwrap();
+        let via_scoped = ModuleWorkerBundleEntry::new_scoped(
+            root,
+            Path::new("/ws"),
+            &logical,
+            "/shadow/src/search.worker.ts",
+        )
+        .unwrap();
+        assert_eq!(via_new.filename(), via_scoped.filename());
+        assert_eq!(via_new.filename(), "worker-src-s-search-d-worker-d-ts.js");
+    }
+
+    #[test]
+    fn new_scoped_workspace_sibling_source_mints_ws_prefixed_name() {
+        let project_root = Path::new("/ws/apps/site");
+        let first_party_root = Path::new("/ws");
+        let logical = first_party_root.join("packages/shared/worker.ts");
+        let worker = ModuleWorkerBundleEntry::new_scoped(
+            project_root,
+            first_party_root,
+            &logical,
+            "/shadow/packages/shared/worker.ts",
+        )
+        .unwrap();
+        assert_eq!(
+            worker.filename(),
+            "worker--ws-packages-s-shared-s-worker-d-ts.js"
+        );
+        assert_eq!(
+            worker.filename(),
+            zfb_types::module_worker_filename_scoped(project_root, first_party_root, &logical)
+                .unwrap()
+        );
+        assert_eq!(
+            worker.source_path(),
+            Path::new("/shadow/packages/shared/worker.ts")
+        );
+
+        // A workspace-sibling target rejected by `new` (project-scoped)
+        // still succeeds through `new_scoped`.
+        assert!(ModuleWorkerBundleEntry::new(project_root, &logical, "/shadow/worker.ts").is_err());
     }
 
     #[test]

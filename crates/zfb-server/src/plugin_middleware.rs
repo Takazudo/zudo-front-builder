@@ -227,19 +227,30 @@ pub fn body_limit_layer() -> DefaultBodyLimit {
 
 /// Origin gate for non-GET/HEAD requests reaching the dynamic dispatch
 /// surfaces — plugin dev-middleware, embed handlers, request-time SSR
-/// (issue #931 / #919). Returns `Some(403)` when the server is
-/// LAN-exposed (host validation enforced) and either:
+/// (issue #931 / #919). Returns `Some(403)` when host validation is
+/// enforced (every real bind, loopback included since issue #1684) and
+/// either:
 ///
-/// - the `Origin` header is absent on a non-GET request (fail closed —
-///   browsers always send `Origin` on cross-origin non-GET requests, so
-///   absence implies a non-browser LAN client bypassing CORS), or
 /// - the request carries an `Origin` whose host fails the same allowlist
-///   the Host-header layer uses.
+///   the Host-header layer uses (the DNS-rebinding / cross-origin vector
+///   — rejected on every bind), or
+/// - the `Origin` header is absent on a non-GET request **and** the bind
+///   is non-loopback (LAN). A missing `Origin` can never be a browser
+///   cross-origin request, so it is not a rebinding vector; on a LAN bind
+///   it is failed closed anyway (an untrusted peer could forge a
+///   non-browser request), but on a loopback bind it is allowed — see
+///   [`HostValidation::allows_missing_origin`].
 ///
 /// Returns `None` (allow) when:
 ///
-/// - the method is GET/HEAD (safe methods rely on the Host check), or
-/// - the server is bound to loopback (default — zero behaviour change).
+/// - the method is GET/HEAD (safe methods rely on the Host check),
+/// - the `Origin` is absent on a **loopback** bind (local non-browser
+///   tooling — issue #1684), or
+/// - validation is not enforced (only [`HostValidation::disabled`] now —
+///   loopback binds otherwise enforce the same gate as LAN binds).
+///
+/// [`HostValidation::disabled`]: crate::host_validation::HostValidation::disabled
+/// [`HostValidation::allows_missing_origin`]: crate::host_validation::HostValidation::allows_missing_origin
 ///
 /// Static read paths (`/assets`, dist/public fallbacks, livereload) are
 /// exempt by construction — this helper is only invoked at the dynamic-
@@ -260,10 +271,18 @@ pub fn origin_gate(
         return None;
     }
     let Some(value) = headers.get(header::ORIGIN) else {
-        // When enforcement is on, a non-GET request that omits the Origin
-        // header cannot be a browser cross-origin request (browsers always
-        // send it). Fail closed: return 403 so non-browser LAN clients
-        // cannot bypass the CSRF guard by dropping the header.
+        // A non-GET request that omits the Origin header cannot be a
+        // browser cross-origin request (browsers always send Origin on
+        // cross-origin non-GET), so it is never a DNS-rebinding/CSRF
+        // vector. On a LAN bind it could still be an untrusted non-browser
+        // peer bypassing CORS — fail closed (403). On a loopback bind
+        // (issue #1684) the only clients are local processes that already
+        // own localhost, so allow it: failing closed would break common
+        // dev tooling (curl/webhooks POSTing without an Origin) for no
+        // rebinding-security gain.
+        if host_validation.allows_missing_origin() {
+            return None;
+        }
         return Some(crate::host_validation::missing_origin_forbidden_response(
             host_validation.mode(),
         ));
@@ -534,5 +553,75 @@ mod tests {
         // Non-UTF-8 is dropped (binary upload is a future extension).
         let bad = Bytes::from(vec![0xff, 0xfe, 0xfd]);
         assert!(body_bytes_to_utf8_string(&bad).is_none());
+    }
+
+    // --- origin_gate: loopback vs LAN (issue #1684) ---------------------
+
+    fn loopback_validation() -> crate::host_validation::HostValidation {
+        crate::host_validation::HostValidation::for_bind(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            None,
+            &[],
+            crate::ServerMode::Dev,
+        )
+    }
+
+    fn lan_validation() -> crate::host_validation::HostValidation {
+        crate::host_validation::HostValidation::for_bind(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 5)),
+            None,
+            &[],
+            crate::ServerMode::Dev,
+        )
+    }
+
+    #[test]
+    fn origin_gate_missing_origin_allowed_on_loopback_rejected_on_lan() {
+        // Issue #1684: a non-GET request with no Origin header is local
+        // non-browser tooling (never a browser cross-origin/rebinding
+        // request). Allowed on a loopback bind, failed closed on a LAN
+        // bind where an untrusted peer could forge it.
+        let empty = HeaderMap::new();
+        assert!(
+            origin_gate(&loopback_validation(), &Method::POST, &empty).is_none(),
+            "loopback bind must allow a non-GET request with no Origin (local tooling)"
+        );
+        assert_eq!(
+            origin_gate(&lan_validation(), &Method::POST, &empty).map(|r| r.status()),
+            Some(StatusCode::FORBIDDEN),
+            "LAN bind must fail closed on a non-GET request with no Origin"
+        );
+    }
+
+    #[test]
+    fn origin_gate_rejects_present_cross_origin_even_on_loopback() {
+        // A present, cross-origin Origin IS the rebinding / CSRF vector —
+        // rejected on every enforcing bind, loopback included.
+        let mut cross = HeaderMap::new();
+        cross.insert(header::ORIGIN, "https://attacker.example".parse().unwrap());
+        assert_eq!(
+            origin_gate(&loopback_validation(), &Method::POST, &cross).map(|r| r.status()),
+            Some(StatusCode::FORBIDDEN),
+            "loopback bind must reject a present cross-origin Origin"
+        );
+        // A same-origin (localhost) Origin passes on a loopback bind.
+        let mut same = HeaderMap::new();
+        same.insert(header::ORIGIN, "http://localhost:3000".parse().unwrap());
+        assert!(
+            origin_gate(&loopback_validation(), &Method::POST, &same).is_none(),
+            "loopback bind must allow a same-origin localhost Origin"
+        );
+        // GET is always allowed — safe method, covered by the Host check.
+        assert!(origin_gate(&loopback_validation(), &Method::GET, &cross).is_none());
+    }
+
+    #[test]
+    fn origin_gate_disabled_validation_allows_everything() {
+        // `disabled()` short-circuits before the bind check.
+        let disabled = crate::host_validation::HostValidation::disabled();
+        let mut cross = HeaderMap::new();
+        cross.insert(header::ORIGIN, "https://attacker.example".parse().unwrap());
+        assert!(origin_gate(&disabled, &Method::POST, &cross).is_none());
+        assert!(origin_gate(&disabled, &Method::POST, &HeaderMap::new()).is_none());
     }
 }

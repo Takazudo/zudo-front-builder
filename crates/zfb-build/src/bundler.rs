@@ -638,14 +638,28 @@ pub struct BundlerInput {
     /// special-casing. Default: `None`.
     pub mdx_components_file: Option<PathBuf>,
 
-    /// Project-relative gitignore-style globs for source files the bundler
-    /// must keep OUT of the esbuild graph.
+    /// Gitignore-style globs for source files the bundler must keep OUT of the
+    /// esbuild graph.
     ///
-    /// Mirrors `zfb::config::resolve_bundle_exclude(config.bundle)`. Each
-    /// pattern is matched against a candidate file's path relative to
-    /// [`Self::project_root`], in POSIX form (e.g.
-    /// `components/Foo.stories.tsx`, `components/**/*.stories.tsx`). A matched
-    /// file is applied at TWO consistent points so they cannot diverge:
+    /// Mirrors `zfb::config::resolve_bundle_exclude(config.bundle)`. Patterns
+    /// match a candidate file's relative POSIX path (e.g.
+    /// `components/Foo.stories.tsx`, `components/**/*.stories.tsx`) under a
+    /// TWO-TIER anchoring contract (issue #1668 part 2):
+    ///
+    /// - **Project files** (under [`Self::project_root`]) match their
+    ///   PROJECT-relative path — the original, documented behavior. An
+    ///   existing `src/**` keeps meaning "under the project's `src/`", so a
+    ///   nested pnpm-workspace host does not silently change what a pattern
+    ///   excludes.
+    /// - **Workspace-sibling files** (under the enclosing pnpm workspace root
+    ///   but OUTSIDE the project, staged into the SSR shadow by #1668) match
+    ///   their WORKSPACE-relative path (e.g. `lib/shared/secret.ts`). A
+    ///   project-relative pattern like `src/**` therefore can never
+    ///   accidentally exclude a sibling whose workspace-relative path lies
+    ///   outside `src/`. The sibling tier is inert outside a pnpm workspace.
+    ///
+    /// A matched file is applied at TWO consistent points so they cannot
+    /// diverge:
     ///
     /// 1. `materialise_shadow` SKIPS copying/symlinking it into the shadow
     ///    tree (the file is never present for esbuild to resolve).
@@ -1952,7 +1966,13 @@ pub fn bundle_with_session(
     // extra top-level dirs). Empty patterns → a matcher that never matches,
     // so an unset `bundle.exclude` is byte-identical to a build without the
     // knob. An invalid glob is a hard, clearly-named build error.
-    let bundle_exclude = BundleExcludeMatcher::new(&input.bundle_exclude)?;
+    //
+    // `with_workspace_root` arms the issue #1668 part 2 two-tier contract: in
+    // a claimed pnpm workspace a sibling file matches patterns WORKSPACE-
+    // relative while project files stay PROJECT-relative. Outside a workspace
+    // it is a no-op (single-tier, byte-identical to pre-#1668).
+    let bundle_exclude =
+        BundleExcludeMatcher::new(&input.bundle_exclude)?.with_workspace_root(&input.project_root);
 
     // `ZFB_DEV_TIMING=1` — per-call phase split (issue #993 Step 0):
     // `materialise` (tempdir alloc + every materialise walk + diagnostics
@@ -1974,7 +1994,7 @@ pub fn bundle_with_session(
     } else {
         None
     };
-    let (owned_work, shadow) = match &session {
+    let (owned_work, work) = match &session {
         Some(s) => (None, canonical_shadow_root(s.work.path())?),
         None => {
             let parent = shadow_parent_dir(&input.project_root)?;
@@ -1986,8 +2006,30 @@ pub fn bundle_with_session(
             (Some(work), path)
         }
     };
-    let shadow: &Path = &shadow;
-    ensure_shadow_path_outside_project(&input.project_root, shadow, "bundler shadow root")?;
+    let work: &Path = &work;
+    ensure_shadow_path_outside_project(&input.project_root, work, "bundler shadow root")?;
+
+    // Issue #1668 part 1: re-root the SSR shadow at the widened first-party
+    // boundary. The allocated tempdir (`work`) mirrors the whole first-party
+    // tree — the workspace root in a pnpm workspace — and the PROJECT mirror
+    // (`shadow`) is nested at the project's workspace-relative subpath. Every
+    // downstream step keeps keying off `shadow` (entry.mjs / synthetic
+    // tsconfig / hydration shim live there; esbuild's cwd is `shadow`), so
+    // without a workspace `first_party_root == project_root`, `workspace_rel`
+    // is empty, and `shadow == work` — a byte-identical no-op vs the pre-#1668
+    // single-mirror layout. Sibling-package sources are NOT staged in this
+    // part (the #1668 guard still escapes them); only the layout re-roots.
+    let first_party_root = zfb_types::first_party_root_for(&input.project_root);
+    let workspace_rel = normalize_path_lexical(&input.project_root)
+        .strip_prefix(&first_party_root)
+        .ok()
+        .filter(|rel| !rel.as_os_str().is_empty())
+        .map(Path::to_path_buf);
+    let shadow_buf = match &workspace_rel {
+        Some(rel) => work.join(rel),
+        None => work.to_path_buf(),
+    };
+    let shadow: &Path = &shadow_buf;
 
     // The effective `PipelineSpec` is the input spec with its
     // `resolve_source_map` knob ALWAYS rewritten from the derivation
@@ -2024,7 +2066,21 @@ pub fn bundle_with_session(
         .ok()
         .and_then(|p| p.config_fingerprint());
 
-    let writer = ShadowWriter::new(shadow.to_path_buf(), session, copy_mode, config_fingerprint)?;
+    // The writer's dest-relative bookkeeping (visited / prune / skip caches)
+    // is rooted at the WORK mirror, so every destination is workspace-root
+    // -relative (`<workspace-rel>/pages/…` in a workspace, plain `pages/…`
+    // without one). `ShadowWriter::new` also performs the session dirty /
+    // copy-mode-flip wipe of the whole `work` tree, so the project mirror must
+    // be (re-)created AFTER it.
+    let writer = ShadowWriter::new(work.to_path_buf(), session, copy_mode, config_fingerprint)?;
+    if workspace_rel.is_some() {
+        fs::create_dir_all(shadow).with_context(|| {
+            format!(
+                "bundler: failed to create nested project mirror {}",
+                shadow.display()
+            )
+        })?;
+    }
 
     // Build the shared materialisation context from the fields of `input`
     // that are invariant across every materialise_shadow / materialise_collection
@@ -2113,7 +2169,6 @@ pub fn bundle_with_session(
         .clone()
         .without_user_claimed_virtual_modules(&input.tsconfig_paths);
     let mut plugin_preprocessing_files = BTreeSet::new();
-    let mut preprocessing_worker_importers: BTreeSet<PathBuf> = BTreeSet::new();
     let mut root_entry_dependency_seed_files = BTreeSet::new();
     let mut root_entry_dependency_logical_importers = BTreeMap::new();
     if mat_ctx.worker_build_context.has_plugin_resolver_inputs() {
@@ -2123,12 +2178,6 @@ pub fn bundle_with_session(
         )
         .context("bundler: validate registered virtual-module preprocessing syntax")?;
         plugin_preprocessing_files.extend(virtual_discovery.files);
-        preprocessing_worker_importers.extend(
-            virtual_discovery
-                .worker_edges
-                .iter()
-                .map(|edge| edge.importer.clone()),
-        );
         mat_ctx.raw_import_edges.borrow_mut().extend(
             virtual_discovery
                 .raw_import_edges
@@ -2194,12 +2243,6 @@ pub fn bundle_with_session(
         };
         let root_level_entry = root_level_staged_entry_file(&target, &project_root).is_some();
         let discovered_files = discovery.files;
-        preprocessing_worker_importers.extend(
-            discovery
-                .worker_edges
-                .iter()
-                .map(|edge| edge.importer.clone()),
-        );
         plugin_preprocessing_files.insert(target.clone());
         if root_level_entry && !bundle_exclude.is_empty() {
             root_entry_dependency_seed_files.insert(target.clone());
@@ -2662,6 +2705,91 @@ pub fn bundle_with_session(
         }
     }
 
+    // 2a-ws. Workspace-hoisted `node_modules` at the WORK root (issue #1668
+    //     part 1). In a pnpm workspace the deps are hoisted to the workspace
+    //     root, so the work mirror gets its own `<work>/node_modules` symlink
+    //     — the SECOND install root above the project's own nested install
+    //     (linked at `<shadow>/node_modules` by 2b below). esbuild walks up
+    //     from a project-mirror file to `<shadow>/node_modules` first, then to
+    //     `<work>/node_modules`, preserving nearest-package precedence for the
+    //     day sibling sources are staged (a later sub-issue).
+    //
+    //     WHAT lives there follows `bundle.exclude` EXACTLY like the 2b link:
+    //     - Empty exclude → create the live link (byte-identical nearest
+    //       -package fallback).
+    //     - Exclusions active → the live link is a resurrection hatch: esbuild
+    //       could climb `<work>/node_modules` to a package the staged
+    //       `<shadow>` view deliberately omits, and the metafile audit cannot
+    //       catch it because the canonical workspace-root path is OUTSIDE
+    //       `project_root`, where the exclusion matcher always returns false.
+    //       So it is NEVER created, and a stale link from a previous empty
+    //       -exclude tick of a persistent session is actively removed (same
+    //       empty→non-empty transition the 2b block handles).
+    //
+    //     Without a workspace `workspace_rel` is `None`, so this is skipped
+    //     entirely and the layout stays byte-identical. Created/removed
+    //     directly (not through the ShadowWriter), like the 2b link, so it
+    //     never enters the prune bookkeeping.
+    if workspace_rel.is_some() {
+        let workspace_node_modules = first_party_root.join("node_modules");
+        if workspace_node_modules.is_dir() {
+            let work_nm = work.join("node_modules");
+            if bundle_exclude.is_empty() {
+                #[cfg(unix)]
+                {
+                    let already_correct = fs::read_link(&work_nm)
+                        .map(|t| t == workspace_node_modules)
+                        .unwrap_or(false);
+                    if !already_correct {
+                        let _ = fs::remove_file(&work_nm);
+                        let _ = fs::remove_dir_all(&work_nm);
+                        std::os::unix::fs::symlink(&workspace_node_modules, &work_nm)
+                            .with_context(|| {
+                                format!(
+                                    "bundler: failed to symlink workspace node_modules {} → {}",
+                                    workspace_node_modules.display(),
+                                    work_nm.display()
+                                )
+                            })?;
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    fs::create_dir_all(&work_nm).with_context(|| {
+                        format!(
+                            "bundler: failed to create workspace node_modules dir {}",
+                            work_nm.display()
+                        )
+                    })?;
+                }
+            } else {
+                // Exclusions active: remove any stale live link left by a
+                // previous empty-exclude tick of a persistent session.
+                // `remove_file` deletes the symlink itself (not its target);
+                // a real dir (never created here) is left untouched.
+                #[cfg(unix)]
+                {
+                    if fs::symlink_metadata(&work_nm)
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                    {
+                        let _ = fs::remove_file(&work_nm);
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    if fs::symlink_metadata(&work_nm)
+                        .map(|m| m.file_type().is_symlink())
+                        .unwrap_or(false)
+                    {
+                        let _ = fs::remove_file(&work_nm);
+                        let _ = fs::remove_dir(&work_nm);
+                    }
+                }
+            }
+        }
+    }
+
     // 2b. `<shadow>/node_modules` resolution root.
     //     When `BundlerInput::node_modules_dir` is set, esbuild needs a
     //     `<shadow>/node_modules` to walk into instead of an empty tempdir
@@ -3010,7 +3138,9 @@ pub fn bundle_with_session(
         let dest = shadow_path_for_project_path(
             logical_root,
             &project_root,
+            &first_party_root,
             shadow,
+            work,
             node_modules_isolation_root,
         );
         materialise_isolated_exact_dir(
@@ -3036,7 +3166,9 @@ pub fn bundle_with_session(
         let dest = shadow_path_for_project_path(
             logical_root,
             &project_root,
+            &first_party_root,
             shadow,
+            work,
             node_modules_isolation_root,
         );
         materialise_isolated_exact_dir(
@@ -3076,7 +3208,9 @@ pub fn bundle_with_session(
         let to = shadow_path_for_project_path(
             physical,
             &project_root,
+            &first_party_root,
             shadow,
+            work,
             node_modules_isolation_root,
         );
         let shadow_relative = to
@@ -3105,59 +3239,51 @@ pub fn bundle_with_session(
         .filter(|path| is_plugin_preprocessing_excluded(path))
         .cloned()
         .collect::<BTreeSet<_>>();
-    let plugin_preprocessing_first_party_root =
-        zfb_types::first_party_root_for(&input.project_root);
+    // Reuses the widened first-party root computed once for the shadow
+    // re-root above (issue #1668); the guard below keys off the same boundary.
     for physical in &plugin_preprocessing_files {
         if excluded_plugin_preprocessing_files.contains(physical) {
             continue;
         }
-        if physical.strip_prefix(&input.project_root).is_err() {
-            // Issue #1664: a workspace-sibling first-party file passes the
-            // widened graph validation but is not staged into the SSR shadow;
-            // authored relative/alias spellings keep reaching it in the real
-            // tree, matching the pre-widening escape behavior. That is only
-            // sound for plain modules — a sibling file that itself needs
-            // preprocessing rewrites (`?raw` importer, `import.meta.glob`,
-            // nested Worker) would reach esbuild unprocessed, so fail those
-            // loudly with the real limitation instead.
-            // https://github.com/Takazudo/zudo-front-builder/issues/1668
-            if physical.starts_with(&plugin_preprocessing_first_party_root) {
-                let is_raw_importer = mat_ctx
-                    .raw_import_edges
-                    .borrow()
-                    .iter()
-                    .any(|edge| &edge.importer == physical);
-                let is_worker_importer = preprocessing_worker_importers.contains(physical);
-                let has_glob = std::fs::read_to_string(physical)
-                    .ok()
-                    .filter(|source| source.contains("import.meta.glob"))
-                    .map(|source| {
-                        crate::glob_expand::source_contains_import_meta_glob(&source)
-                            .unwrap_or(true)
-                    })
-                    .unwrap_or(false);
-                if is_raw_importer || is_worker_importer || has_glob {
-                    return Err(anyhow!(
-                        "bundler: workspace-sibling file {} needs `?raw`/glob/module-worker \
-                         preprocessing, which the SSR bundler cannot stage outside the project \
-                         root yet — move the file under the project root or follow \
-                         https://github.com/Takazudo/zudo-front-builder/issues/1668",
-                        physical.display()
-                    ));
-                }
+        let under_project = physical.strip_prefix(&input.project_root).is_ok();
+        // Issue #1668 part 2: a workspace-sibling first-party file (outside the
+        // project but inside the widened first-party root) is now STAGED
+        // uniformly through the same materialise pass as a project file — at its
+        // workspace-relative slot in the WORK mirror (see
+        // `shadow_path_for_project_path`) — so its `?raw`/glob/nested-worker
+        // rewrites land in the shadow just like a project file's. This replaces
+        // the pre-#1668 part-1 guard that rejected such siblings.
+        if !under_project {
+            if !physical.starts_with(&first_party_root) {
+                // Beyond the widened first-party boundary — a true escape the
+                // graph walk should already have rejected; fail loudly.
+                return Err(anyhow!(
+                    "bundler: plugin preprocessing file {} escaped {}",
+                    physical.display(),
+                    input.project_root.display()
+                ));
+            }
+            if path_is_inside_node_modules(physical) {
+                // A workspace-hoisted dependency, NOT first-party source: it
+                // resolves through the `<work>/node_modules` link, never staged
+                // (matching the pre-#1668 real-tree escape for node_modules).
                 continue;
             }
-            return Err(anyhow!(
-                "bundler: plugin preprocessing file {} escaped {}",
-                physical.display(),
-                input.project_root.display()
-            ));
+            // Otherwise a workspace-sibling first-party file — fall through and
+            // stage it uniformly below.
         }
+        let workspace_sibling = !under_project;
         let isolated_node_modules = project_path_is_inside_node_modules(physical, &project_root);
-        // No isolation root under exclusions → node_modules preprocessing files
-        // stage into `<shadow>` at their logical paths via the main shadow writer.
+        // A workspace sibling is plain first-party source (node_modules siblings
+        // `continue`d above), so it stages through the main writer at the WORK
+        // root; project files keep the shadow root, and project-local
+        // node_modules keep the isolation root. No isolation root under
+        // exclusions → node_modules preprocessing files stage into `<shadow>` at
+        // their logical paths via the main shadow writer.
         let target_root = if isolated_node_modules {
             node_modules_isolation_root.unwrap_or(shadow)
+        } else if workspace_sibling {
+            work
         } else {
             shadow
         };
@@ -3171,7 +3297,9 @@ pub fn bundle_with_session(
         let to = shadow_path_for_project_path(
             physical,
             &project_root,
+            &first_party_root,
             shadow,
+            work,
             node_modules_isolation_root,
         );
         let shadow_relative = to
@@ -3384,6 +3512,8 @@ pub fn bundle_with_session(
         run_esbuild(
             &input,
             shadow,
+            &first_party_root,
+            work,
             &bundle_path,
             metafile_path.as_deref(),
             &bundle_exclude,
@@ -5968,6 +6098,15 @@ fn store_source_skip_entry(
 #[derive(Debug)]
 struct BundleExcludeMatcher {
     set: globset::GlobSet,
+    /// The workspace first-party root (issue #1668 part 2), set only when the
+    /// project is a claimed pnpm-workspace member — i.e. when
+    /// [`zfb_types::first_party_root_for`] widens the boundary past
+    /// `project_root`. A workspace-sibling file (under this root but outside
+    /// `project_root`) then matches patterns against its WORKSPACE-relative
+    /// path, the second tier of the exclusion contract. `None` for a
+    /// standalone project keeps single-tier project-relative matching — the
+    /// exact pre-#1668 behavior.
+    workspace_root: Option<PathBuf>,
 }
 
 impl BundleExcludeMatcher {
@@ -5986,27 +6125,69 @@ impl BundleExcludeMatcher {
         let set = builder
             .build()
             .map_err(|e| anyhow!("zfb bundler: failed to compile bundle.exclude globset: {e}"))?;
-        Ok(Self { set })
+        Ok(Self {
+            set,
+            workspace_root: None,
+        })
+    }
+
+    /// Enable the issue #1668 part 2 workspace-sibling tier of
+    /// [`Self::is_excluded`].
+    ///
+    /// Records the widened first-party root when — and ONLY when —
+    /// `project_root` is a claimed member of an enclosing pnpm workspace
+    /// (`first_party_root_for` returns an ancestor). A standalone project
+    /// leaves `workspace_root` at `None`, so the sibling tier stays inert and
+    /// matching is byte-identical to the single-tier pre-#1668 behavior.
+    fn with_workspace_root(mut self, project_root: &Path) -> Self {
+        let normalized = normalize_path_lexical(project_root);
+        let first_party = zfb_types::first_party_root_for(project_root);
+        self.workspace_root = (first_party != normalized).then_some(first_party);
+        self
     }
 
     fn is_empty(&self) -> bool {
         self.set.is_empty()
     }
 
-    /// `true` when `abs` (an absolute path on disk) is under `project_root`
-    /// and its project-relative POSIX path matches any compiled pattern.
+    /// `true` when `abs` (an absolute path on disk) matches any compiled
+    /// pattern under the TWO-TIER contract (issue #1668 part 2):
     ///
-    /// A path outside `project_root` (e.g. a workspace package symlinked from
-    /// elsewhere) cannot be expressed as a project-relative pattern, so it is
-    /// never excluded — matching the user's mental model that
-    /// `bundle.exclude` patterns are anchored at the project root.
+    /// - **Tier 1 — project files.** A path under `project_root` matches its
+    ///   PROJECT-relative POSIX path (the documented, unchanged behavior — an
+    ///   existing `src/**` pattern keeps meaning "under the project's `src/`",
+    ///   even for a nested workspace host).
+    /// - **Tier 2 — workspace siblings.** A path under the workspace
+    ///   first-party root but OUTSIDE `project_root` matches its
+    ///   WORKSPACE-relative POSIX path. This tier is active only when the
+    ///   project is a claimed pnpm-workspace member (see
+    ///   [`Self::with_workspace_root`]); a sibling exclusion pattern is
+    ///   therefore written workspace-relative (e.g. `lib/shared/secret.ts`),
+    ///   and a project-relative pattern like `src/**` can never accidentally
+    ///   match a sibling whose workspace-relative path lies outside `src/`.
+    ///
+    /// A path under NEITHER root cannot be expressed as a relative pattern, so
+    /// it is never excluded — matching the user's mental model that
+    /// `bundle.exclude` patterns are anchored at the project (and, for
+    /// siblings, the workspace) root.
     fn is_excluded(&self, abs: &Path, project_root: &Path) -> bool {
         if self.is_empty() {
             return false;
         }
-        let Ok(rel) = abs.strip_prefix(project_root) else {
-            return false;
-        };
+        // Tier 1 — project-relative.
+        if let Ok(rel) = abs.strip_prefix(project_root) {
+            return self.rel_posix_matches(rel);
+        }
+        // Tier 2 — workspace-sibling → workspace-relative.
+        if let Some(workspace_root) = self.workspace_root.as_deref() {
+            if let Ok(rel) = abs.strip_prefix(workspace_root) {
+                return self.rel_posix_matches(rel);
+            }
+        }
+        false
+    }
+
+    fn rel_posix_matches(&self, rel: &Path) -> bool {
         let rel_posix = path_to_posix_string(rel);
         if rel_posix.is_empty() {
             return false;
@@ -6090,7 +6271,18 @@ fn rebase_tsconfig_paths_to_shadow(
     project_root: &Path,
     shadow: &Path,
 ) -> BTreeMap<String, Vec<String>> {
-    rebase_tsconfig_paths_to_shadow_with_exclusions(paths, project_root, shadow, None, None)
+    // Sibling tier inert (first_party/work == project/shadow): the baseline
+    // write is overwritten by the plugin-merged rebase in `run_esbuild` for
+    // real builds; it only matters for the mock-subprocess path.
+    rebase_tsconfig_paths_to_shadow_with_exclusions(
+        paths,
+        project_root,
+        shadow,
+        project_root,
+        shadow,
+        None,
+        None,
+    )
 }
 
 const SSR_RESOLVE_EXTENSIONS: [&str; 6] = ["tsx", "ts", "jsx", "js", "css", "json"];
@@ -6251,26 +6443,51 @@ fn path_is_inside_node_modules(path: &Path) -> bool {
         .any(|component| component.as_os_str() == std::ffi::OsStr::new("node_modules"))
 }
 
+/// Map a logical path to its physical location in the re-rooted SSR shadow
+/// (issue #1668 part 1). Tiers, in order:
+///
+/// - under `project_root`, inside `node_modules` → the isolation root (or the
+///   `.zfb-exact-isolation` slot in the project mirror).
+/// - under `project_root` otherwise → the project mirror (`shadow`).
+/// - under `first_party_root` but OUTSIDE `project_root` (a workspace sibling)
+///   → its workspace-relative slot in the work mirror (`work_root/<rel>`).
+///   Issue #1668 part 2 STAGES such siblings through this tier (the
+///   materialise loop, the tsconfig rebase, and the plugin-alias remap all
+///   route sibling targets here), so their in-shadow rewrites land.
+/// - anything else → the real path (the unchanged live-tree escape).
+///
+/// Callers that only ever pass under-`project_root` paths may pass
+/// `first_party_root == project_root` (with any `work_root`) to make the
+/// first-party tier unreachable — its behavior is then byte-identical to the
+/// pre-#1668 two-tier mapping.
 fn shadow_path_for_project_path(
     path: &Path,
     project_root: &Path,
+    first_party_root: &Path,
     shadow: &Path,
+    work_root: &Path,
     node_modules_isolation_root: Option<&Path>,
 ) -> PathBuf {
-    let Ok(relative) = path.strip_prefix(project_root) else {
-        return path.to_path_buf();
-    };
-    if project_path_is_inside_node_modules(path, project_root) {
-        if let Some(isolation_root) = node_modules_isolation_root {
-            isolation_root.join(relative)
+    if let Ok(relative) = path.strip_prefix(project_root) {
+        return if project_path_is_inside_node_modules(path, project_root) {
+            match node_modules_isolation_root {
+                Some(isolation_root) => isolation_root.join(relative),
+                None => shadow.join(".zfb-exact-isolation").join(relative),
+            }
+        } else if relative.as_os_str().is_empty() {
+            shadow.to_path_buf()
         } else {
-            shadow.join(".zfb-exact-isolation").join(relative)
-        }
-    } else if relative.as_os_str().is_empty() {
-        shadow.to_path_buf()
-    } else {
-        shadow.join(relative)
+            shadow.join(relative)
+        };
     }
+    if first_party_root != project_root {
+        if let Ok(relative) = path.strip_prefix(first_party_root) {
+            if !relative.as_os_str().is_empty() {
+                return work_root.join(relative);
+            }
+        }
+    }
+    path.to_path_buf()
 }
 
 fn node_modules_package_root(path: &Path, project_root: &Path) -> Option<PathBuf> {
@@ -7141,6 +7358,12 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
     paths: &BTreeMap<String, Vec<String>>,
     project_root: &Path,
     shadow: &Path,
+    // Issue #1668 part 2: the widened first-party root + WORK mirror root, so a
+    // workspace-sibling alias target rebases to its staged copy in the work
+    // mirror. Pass `project_root` + `shadow` to make the sibling tier inert
+    // (the pre-#1668 two-tier project/plugin mapping).
+    first_party_root: &Path,
+    work_root: &Path,
     bundle_exclude: Option<&BundleExcludeMatcher>,
     node_modules_isolation_root: Option<&Path>,
 ) -> BTreeMap<String, Vec<String>> {
@@ -7152,6 +7375,7 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
     // metafile audit, wired separately, is the authoritative backstop). This is
     // deliberately uniform — no per-target 3-state classification, no
     // provably-disjoint carve-out — so the seam has a single, decidable rule.
+    // A workspace-sibling target obeys the SAME rule against the work mirror.
     let exclusions_active = bundle_exclude.is_some_and(|matcher| !matcher.is_empty());
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, targets) in paths {
@@ -7173,9 +7397,14 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                 // `shadow.join("")` would yield `<shadow>/` and produce a
                 // malformed `<shadow>//*` target; use `shadow` directly so
                 // the shadow-first entry is a clean `<shadow>/*`.
+                // Only under-`project_root` prefixes reach here (the guard
+                // above), so the first-party tier is inert: pass the project
+                // mirror as its own first-party/work root.
                 let shadow_prefix = shadow_path_for_project_path(
                     prefix_path,
                     project_root,
+                    project_root,
+                    shadow,
                     shadow,
                     node_modules_isolation_root,
                 );
@@ -7185,6 +7414,34 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                 );
                 shadow_target.push_str(suffix);
                 push_unique(&mut new_targets, shadow_target);
+
+                if exclusions_active {
+                    // Shadow-only: suppress the live-real fallback entirely.
+                    continue;
+                }
+            } else if !already_shadowed
+                && first_party_root != project_root
+                && prefix_path.strip_prefix(first_party_root).is_ok()
+            {
+                // Issue #1668 part 2: a workspace-sibling alias target (outside
+                // project_root, inside first_party_root) rebases to its
+                // workspace-relative slot in the WORK mirror — work-first with
+                // the real-tree fallback under an empty exclude, staged-only
+                // under exclusions (the same uniform rule as the project tier).
+                let work_prefix = shadow_path_for_project_path(
+                    prefix_path,
+                    project_root,
+                    first_party_root,
+                    shadow,
+                    work_root,
+                    node_modules_isolation_root,
+                );
+                let mut work_target = preserve_trailing_path_separator(
+                    work_prefix.to_string_lossy().into_owned(),
+                    prefix,
+                );
+                work_target.push_str(suffix);
+                push_unique(&mut new_targets, work_target);
 
                 if exclusions_active {
                     // Shadow-only: suppress the live-real fallback entirely.
@@ -7829,9 +8086,20 @@ fn effective_ssr_main_fields(input: &BundlerInput) -> Vec<&str> {
 /// graph esbuild itself resolved — the dev path parses it to populate per-route
 /// `DepKind::Module` edges (#1284/#1287), while every real bundle pass uses its
 /// `outputs` map to publish copied Wasm deployment assets.
+// The shadow layout roots (`shadow`/`first_party_root`/`work_root`) are passed
+// separately rather than folded into a struct so each stays explicit at the
+// single call site (issue #1668).
+#[allow(clippy::too_many_arguments)]
 fn run_esbuild(
     input: &BundlerInput,
     shadow: &Path,
+    // Issue #1668: the widened first-party root and the WORK mirror root, so
+    // the plugin-alias remap and tsconfig rebase below can point a
+    // workspace-sibling alias target at its staged copy in the work mirror.
+    // Outside a workspace `first_party_root == normalize(project_root)` and
+    // `work_root == shadow`, making the sibling tier inert.
+    first_party_root: &Path,
+    work_root: &Path,
     bundle_path: &Path,
     metafile_path: Option<&Path>,
     bundle_exclude: &BundleExcludeMatcher,
@@ -7998,9 +8266,14 @@ fn run_esbuild(
             let target_path = normalize_path_lexical(Path::new(target));
             let remapped = match target_path.strip_prefix(&project_root) {
                 Ok(_) => {
+                    // Under-`project_root` targets only (the `match` guard), so
+                    // the first-party tier is inert: the project mirror is its
+                    // own first-party/work root here.
                     let shadow_target = shadow_path_for_project_path(
                         &target_path,
                         &project_root,
+                        &project_root,
+                        shadow,
                         shadow,
                         node_modules_isolation_root,
                     );
@@ -8014,6 +8287,8 @@ fn run_esbuild(
                                     shadow_path_for_project_path(
                                         candidate,
                                         &project_root,
+                                        &project_root,
+                                        shadow,
                                         shadow,
                                         node_modules_isolation_root,
                                     )
@@ -8026,7 +8301,54 @@ fn run_esbuild(
                         }
                     }
                 }
-                Err(_) => target_path,
+                Err(_) => {
+                    // Issue #1668 part 2: a workspace-sibling alias target
+                    // (outside project_root but inside first_party_root)
+                    // resolves to its staged copy in the WORK mirror. Under
+                    // exclusions it is the SOLE target (absence = exclusion);
+                    // under an empty exclude, prefer the staged copy only when
+                    // it (or a candidate) actually exists, else keep the real
+                    // target — mirroring the project tier above. Non-sibling
+                    // targets (plugin temp files, out-of-workspace paths) pass
+                    // through unchanged.
+                    if first_party_root != project_root.as_path()
+                        && target_path.strip_prefix(first_party_root).is_ok()
+                    {
+                        let work_target = shadow_path_for_project_path(
+                            &target_path,
+                            &project_root,
+                            first_party_root,
+                            shadow,
+                            work_root,
+                            node_modules_isolation_root,
+                        );
+                        if exclusions_active {
+                            work_target
+                        } else {
+                            let has_shadow_candidate =
+                                concrete_ssr_target_candidates(target, &effective_main_fields)
+                                    .iter()
+                                    .map(|candidate| {
+                                        shadow_path_for_project_path(
+                                            candidate,
+                                            &project_root,
+                                            first_party_root,
+                                            shadow,
+                                            work_root,
+                                            node_modules_isolation_root,
+                                        )
+                                    })
+                                    .any(|candidate| candidate.is_file());
+                            if work_target.exists() || has_shadow_candidate {
+                                work_target
+                            } else {
+                                target_path
+                            }
+                        }
+                    } else {
+                        target_path
+                    }
+                }
             };
             let remapped = remapped.to_string_lossy().into_owned();
             (
@@ -8078,6 +8400,8 @@ fn run_esbuild(
         &input.tsconfig_paths,
         &input.project_root,
         shadow,
+        first_party_root,
+        work_root,
         Some(bundle_exclude),
         node_modules_isolation_root,
     );
@@ -8885,6 +9209,9 @@ mod tests {
             &paths,
             root,
             shadow,
+            // Sibling tier inert (first_party/work == project/shadow).
+            root,
+            shadow,
             Some(&matcher),
             None,
         );
@@ -8912,6 +9239,80 @@ mod tests {
             vec!["/other/pkg/*".to_string()],
             "external targets pass through unchanged"
         );
+    }
+
+    #[test]
+    fn rebase_tsconfig_paths_sibling_tier_maps_to_work_mirror() {
+        // Issue #1668 part 2: a workspace-sibling alias target (outside
+        // project_root, inside first_party_root) rebases to the WORK mirror,
+        // obeying the same shadow-first-vs-shadow-only rule as the project tier.
+        let project = Path::new("/ws/sub-packages/host");
+        let first_party = Path::new("/ws");
+        let shadow = Path::new("/work/sub-packages/host");
+        let work = Path::new("/work");
+        let mut paths: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        // project-local alias → project-mirror-first dual-target
+        paths.insert(
+            "@/*".to_string(),
+            vec!["/ws/sub-packages/host/src/*".to_string()],
+        );
+        // workspace-sibling alias → WORK-mirror-first dual-target
+        paths.insert(
+            "@shared/*".to_string(),
+            vec!["/ws/lib/shared/*".to_string()],
+        );
+        // beyond the workspace entirely → unchanged
+        paths.insert("@ext/*".to_string(), vec!["/elsewhere/pkg/*".to_string()]);
+
+        // Empty exclude: dual-targets (staged-first, real fallback).
+        let empty = BundleExcludeMatcher::new(&[]).unwrap();
+        let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
+            &paths,
+            project,
+            shadow,
+            first_party,
+            work,
+            Some(&empty),
+            None,
+        );
+        assert_eq!(
+            out["@/*"],
+            vec![
+                "/work/sub-packages/host/src/*".to_string(),
+                "/ws/sub-packages/host/src/*".to_string(),
+            ]
+        );
+        assert_eq!(
+            out["@shared/*"],
+            vec![
+                "/work/lib/shared/*".to_string(),
+                "/ws/lib/shared/*".to_string(),
+            ],
+            "a workspace-sibling alias rebases work-mirror-first with a real fallback"
+        );
+        assert_eq!(out["@ext/*"], vec!["/elsewhere/pkg/*".to_string()]);
+
+        // Active exclusions: staged-only (no real fallback) for BOTH tiers.
+        let excluded = BundleExcludeMatcher::new(&["**/*.secret".to_string()]).unwrap();
+        let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
+            &paths,
+            project,
+            shadow,
+            first_party,
+            work,
+            Some(&excluded),
+            None,
+        );
+        assert_eq!(
+            out["@/*"],
+            vec!["/work/sub-packages/host/src/*".to_string()]
+        );
+        assert_eq!(
+            out["@shared/*"],
+            vec!["/work/lib/shared/*".to_string()],
+            "under exclusions a workspace-sibling alias is work-mirror-only (no live-real fallback)"
+        );
+        assert_eq!(out["@ext/*"], vec!["/elsewhere/pkg/*".to_string()]);
     }
 
     // ── friendly_esbuild_error + its parsing helpers (#1388) ────────────────
@@ -12548,6 +12949,377 @@ mod tests {
         );
     }
 
+    // ── Issue #1668 part 1: SSR shadow workspace layout re-root ─────────────
+
+    /// A mock-subprocess SSR input for `project_root` — skips the esbuild
+    /// subprocess so a fixture needs no real binary, but still runs the full
+    /// materialise → prune pipeline whose shadow layout these tests inspect.
+    fn mock_ssr_input(project_root: &Path) -> BundlerInput {
+        BundlerInput {
+            mock_subprocess_output: Some("export default {};\n".to_string()),
+            external: vec![
+                "preact".into(),
+                "preact-render-to-string".into(),
+                "@takazudo/zfb-runtime".into(),
+            ],
+            ..BundlerInput::for_project(
+                project_root.to_path_buf(),
+                Framework::Preact,
+                BundleMode::Production,
+                project_root.join("dist"),
+                None,
+            )
+        }
+    }
+
+    /// Every FILE (not directory) under `root`, as sorted forward-slash
+    /// relative paths. Symlinks (e.g. a `node_modules` link) are recorded as a
+    /// single entry, never descended into, so the set stays the shadow's own
+    /// materialised layout.
+    fn collect_shadow_files(root: &Path) -> Vec<String> {
+        fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
+            let Ok(entries) = fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let file_type = entry.file_type().expect("dirent file type");
+                if file_type.is_dir() {
+                    walk(&entry.path(), base, out);
+                } else {
+                    let rel = entry.path().strip_prefix(base).unwrap().to_path_buf();
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn ssr_shadow_layout_reroots_under_project_rel_and_is_a_noop_without_a_workspace() {
+        // The SAME project content, built two ways: standalone (no workspace)
+        // and as a claimed member of a pnpm workspace. The workspace build must
+        // nest the WHOLE project mirror under the project's workspace-relative
+        // subpath, and its layout — stripped of that prefix — must equal the
+        // standalone (flat) layout. That single equality proves BOTH acceptance
+        // criteria: a non-workspace build is a byte-identical no-op, and a
+        // workspace build nests the project mirror carrying project-only
+        // content.
+        fn seed_project(root: &Path) {
+            for dir in ["pages", "content", "components", "layouts"] {
+                fs::create_dir_all(root.join(dir)).unwrap();
+            }
+            fs::write(
+                root.join("layouts/default.tsx"),
+                "export default function L({ children }) { return children; }\n",
+            )
+            .unwrap();
+            fs::write(
+                root.join("pages/index.tsx"),
+                "export default function Home() { return null; }\n",
+            )
+            .unwrap();
+        }
+
+        // (a) Standalone project — no workspace marker anywhere above it.
+        let flat_tmp = tempfile::tempdir().unwrap();
+        let flat_root = flat_tmp.path();
+        seed_project(flat_root);
+        let mut flat_session = ShadowSession::new(flat_root).unwrap();
+        bundle_with_session(mock_ssr_input(flat_root), Some(&mut flat_session))
+            .expect("standalone mock bundle should succeed");
+        let flat_files = collect_shadow_files(flat_session.shadow_root());
+
+        // (b) The same project as a claimed pnpm-workspace member.
+        let ws_tmp = tempfile::tempdir().unwrap();
+        let ws_root = ws_tmp.path();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let ws_project = ws_root.join("sub-packages/host");
+        seed_project(&ws_project);
+        let mut ws_session = ShadowSession::new(&ws_project).unwrap();
+        bundle_with_session(mock_ssr_input(&ws_project), Some(&mut ws_session))
+            .expect("workspace mock bundle should succeed");
+        let ws_files = collect_shadow_files(ws_session.shadow_root());
+
+        let prefix = "sub-packages/host/";
+        assert!(
+            ws_files.iter().all(|file| file.starts_with(prefix)),
+            "every workspace shadow file must nest under {prefix}: {ws_files:?}"
+        );
+        assert!(
+            !ws_session.shadow_root().join("entry.mjs").exists(),
+            "entry.mjs must live in the nested project mirror, not the flat work root"
+        );
+        assert!(
+            ws_session
+                .shadow_root()
+                .join("sub-packages/host/entry.mjs")
+                .exists(),
+            "the nested project mirror must carry entry.mjs"
+        );
+        let ws_stripped: Vec<String> = ws_files
+            .iter()
+            .map(|file| file.strip_prefix(prefix).unwrap().to_string())
+            .collect();
+        assert_eq!(
+            ws_stripped, flat_files,
+            "the workspace layout minus its project-rel prefix must equal the flat layout"
+        );
+        for expected in [
+            "__zfb_internal_hydrate.jsx",
+            "entry.mjs",
+            "layouts/default.tsx",
+            "pages/index.tsx",
+            "tsconfig.json",
+        ] {
+            assert!(
+                flat_files.iter().any(|file| file == expected),
+                "the flat layout must contain {expected}: {flat_files:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ssr_shadow_session_prunes_and_skips_workspace_root_relative_destinations() {
+        // Same-session edit/delete against a workspace project, proving the
+        // ShadowWriter/ShadowSession bookkeeping tracks the re-rooted,
+        // workspace-root-relative destinations. `ShadowSession` owns a fresh
+        // random tempdir per process and has no layout version field, so there
+        // is nothing to "bump" — the guarantee is that the visited/prune pass
+        // and the (mtime,size) skip cache both key off the nested dest.
+        //
+        // Plain `.tsx` pages are SYMLINKED into the shadow (no transform to
+        // preserve), so they live in the `source_skip` cache + visited/prune
+        // bookkeeping — symlinks are never recorded in `written`. The
+        // white-box discriminator is the `source_skip_plain_file` idiom:
+        // replace a dest with a corrupt REAL file — a re-materialise removes
+        // it and re-symlinks; a correct (mtime,size) skip leaves it.
+        let ws_tmp = tempfile::tempdir().unwrap();
+        let ws_root = ws_tmp.path();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let project = ws_root.join("sub-packages/host");
+        for dir in ["pages", "content", "components", "layouts"] {
+            fs::create_dir_all(project.join(dir)).unwrap();
+        }
+        fs::write(
+            project.join("layouts/default.tsx"),
+            "export default function L({ children }) { return children; }\n",
+        )
+        .unwrap();
+        fs::write(project.join("pages/index.tsx"), "export const V = 1;\n").unwrap();
+        fs::write(project.join("pages/about.tsx"), "export const V = 2;\n").unwrap();
+
+        let mut session = ShadowSession::new(&project).unwrap();
+        bundle_with_session(mock_ssr_input(&project), Some(&mut session))
+            .expect("tick 1 mock bundle");
+
+        let ws_rel = Path::new("sub-packages/host");
+        let shadow_root = session.shadow_root().to_path_buf();
+        let index_dest = shadow_root.join(ws_rel).join("pages/index.tsx");
+        let about_dest = shadow_root.join(ws_rel).join("pages/about.tsx");
+        let layout_dest = shadow_root.join(ws_rel).join("layouts/default.tsx");
+        assert!(
+            index_dest.exists() && about_dest.exists() && layout_dest.exists(),
+            "tick 1 must materialise the project mirror under {ws_rel:?}"
+        );
+        // The incremental skip cache is keyed by the workspace-root-relative
+        // destination — direct proof the writer's `rel_of` strips the WORK
+        // root, not the project mirror.
+        assert!(
+            session
+                .source_skip
+                .contains_key(&ws_rel.join("pages/index.tsx")),
+            "source_skip must be keyed by the workspace-root-relative dest: {:?}",
+            session.source_skip.keys().collect::<Vec<_>>()
+        );
+
+        // White-box discriminators against the RE-ROOTED dest keys: replace
+        // each dest symlink with a corrupt REAL file, then leave layouts
+        // UNCHANGED but EDIT index (a size change forces re-materialise).
+        for dest in [&index_dest, &layout_dest] {
+            fs::remove_file(dest).unwrap();
+            fs::write(dest, b"__CORRUPT_NOT_THE_SOURCE__").unwrap();
+        }
+        fs::write(
+            project.join("pages/index.tsx"),
+            "export const V = 1234567;\n",
+        )
+        .unwrap();
+        fs::remove_file(project.join("pages/about.tsx")).unwrap();
+
+        bundle_with_session(mock_ssr_input(&project), Some(&mut session))
+            .expect("tick 2 mock bundle");
+
+        // Deleted source → its workspace-root-relative dest is pruned.
+        assert!(
+            !about_dest.exists(),
+            "the deleted page's workspace-root-relative dest must be pruned"
+        );
+        // Edited source (size changed) → NOT skipped → re-materialised at the
+        // re-rooted dest, so the corruption is replaced by a symlink reading
+        // the new source bytes.
+        assert_eq!(
+            fs::read_to_string(&index_dest).unwrap(),
+            "export const V = 1234567;\n",
+            "the edited page must be re-materialised at its re-rooted dest"
+        );
+        // Unchanged source → skipped via (mtime,size) on the re-rooted key, so
+        // the corruption survives untouched.
+        assert_eq!(
+            fs::read(&layout_dest).unwrap(),
+            b"__CORRUPT_NOT_THE_SOURCE__",
+            "an unchanged page must be skipped via (mtime,size) on its re-rooted dest key"
+        );
+    }
+
+    #[test]
+    fn shadow_path_for_project_path_maps_workspace_siblings_into_the_work_mirror() {
+        let work = Path::new("/work");
+        let first_party = Path::new("/ws");
+        let project = Path::new("/ws/sub-packages/host");
+        let shadow = Path::new("/work/sub-packages/host");
+
+        // Under project_root → the project mirror (unchanged tier).
+        assert_eq!(
+            shadow_path_for_project_path(
+                &project.join("pages/index.tsx"),
+                project,
+                first_party,
+                shadow,
+                work,
+                None,
+            ),
+            shadow.join("pages/index.tsx"),
+        );
+        // The project root itself → the project mirror root.
+        assert_eq!(
+            shadow_path_for_project_path(project, project, first_party, shadow, work, None),
+            shadow.to_path_buf(),
+        );
+        // node_modules under the project → the isolation slot (unchanged tier).
+        assert_eq!(
+            shadow_path_for_project_path(
+                &project.join("node_modules/preact/index.js"),
+                project,
+                first_party,
+                shadow,
+                work,
+                None,
+            ),
+            shadow
+                .join(".zfb-exact-isolation")
+                .join("node_modules/preact/index.js"),
+        );
+        // A workspace sibling (under first_party_root, outside the project) →
+        // its workspace-relative slot in the work mirror (the new tier).
+        assert_eq!(
+            shadow_path_for_project_path(
+                &first_party.join("lib/shared/contract.ts"),
+                project,
+                first_party,
+                shadow,
+                work,
+                None,
+            ),
+            work.join("lib/shared/contract.ts"),
+        );
+        // Beyond the first-party root entirely → the real path (live-tree
+        // escape, unchanged).
+        let outside = Path::new("/elsewhere/thing.ts");
+        assert_eq!(
+            shadow_path_for_project_path(outside, project, first_party, shadow, work, None),
+            outside.to_path_buf(),
+        );
+        // No workspace (first_party_root == project_root): the sibling tier is
+        // inert, so a non-project path stays the real path — byte-identical to
+        // the pre-#1668 two-tier mapping.
+        let flat_project = Path::new("/proj");
+        let flat_shadow = Path::new("/work2");
+        let non_project = Path::new("/proj-adjacent/x.ts");
+        assert_eq!(
+            shadow_path_for_project_path(
+                non_project,
+                flat_project,
+                flat_project,
+                flat_shadow,
+                flat_shadow,
+                None,
+            ),
+            non_project.to_path_buf(),
+        );
+    }
+
+    #[test]
+    fn ssr_shadow_workspace_node_modules_link_honors_bundle_exclude() {
+        // The workspace-hoisted `<work>/node_modules` link is a live-tree
+        // resolution root, so it must obey `bundle.exclude` exactly like the
+        // project-level 2b link: created under an empty exclude, but NEVER
+        // under active exclusions (else esbuild could climb it to a package
+        // the staged `<shadow>` view deliberately omits — a resurrection
+        // hatch the metafile audit cannot catch because the canonical
+        // workspace-root path is outside `project_root`).
+        let ws_tmp = tempfile::tempdir().unwrap();
+        let ws_root = ws_tmp.path();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        // A real workspace-hoisted node_modules so the link has a target.
+        fs::create_dir_all(ws_root.join("node_modules/left-pad")).unwrap();
+        fs::write(
+            ws_root.join("node_modules/left-pad/index.js"),
+            "module.exports = 0;\n",
+        )
+        .unwrap();
+        let project = ws_root.join("sub-packages/host");
+        for dir in ["pages", "content", "components", "layouts"] {
+            fs::create_dir_all(project.join(dir)).unwrap();
+        }
+        fs::write(
+            project.join("pages/index.tsx"),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+
+        let work_nm = |session: &ShadowSession| session.shadow_root().join("node_modules");
+
+        // Tick 1 — empty exclude: the workspace-hoisted link IS created.
+        let mut session = ShadowSession::new(&project).unwrap();
+        bundle_with_session(mock_ssr_input(&project), Some(&mut session))
+            .expect("tick 1 (empty exclude) mock bundle");
+        assert!(
+            fs::symlink_metadata(work_nm(&session))
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false),
+            "an empty bundle.exclude must create the workspace-hoisted node_modules link"
+        );
+
+        // Tick 2 — same session, exclusions now active: the stale live link
+        // must be removed (empty→non-empty transition), so no live-tree escape
+        // survives.
+        let excluded_input = BundlerInput {
+            bundle_exclude: vec!["**/*.secret".to_string()],
+            ..mock_ssr_input(&project)
+        };
+        bundle_with_session(excluded_input, Some(&mut session))
+            .expect("tick 2 (active exclude) mock bundle");
+        assert!(
+            !work_nm(&session).exists(),
+            "active bundle.exclude must remove the workspace-hoisted link (live-tree escape)"
+        );
+    }
+
     #[test]
     fn server_secrets_are_not_bundled() {
         // Real esbuild test (gated). Verifies a SECRET_ env var never
@@ -14484,6 +15256,87 @@ mod tests {
         let deep = BundleExcludeMatcher::new(&["components/**/*.stories.tsx".to_string()]).unwrap();
         assert!(deep.is_excluded(Path::new("/proj/components/Button.stories.tsx"), root));
         assert!(deep.is_excluded(Path::new("/proj/components/sub/Deep.stories.tsx"), root));
+    }
+
+    // ── issue #1668 part 2: two-tier bundle.exclude anchoring ────────────────
+
+    /// A claimed pnpm-workspace member: returns `(TempDir, workspace_root,
+    /// project_root)`. The `TempDir` guard must stay alive for the fixture's
+    /// `pnpm-workspace.yaml` to keep existing while `with_workspace_root` reads
+    /// it.
+    fn workspace_exclude_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let ws = tempfile::tempdir().unwrap();
+        let ws_root = ws.path().to_path_buf();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let project = ws_root.join("sub-packages/host");
+        fs::create_dir_all(&project).unwrap();
+        (ws, ws_root, project)
+    }
+
+    #[test]
+    fn bundle_exclude_project_relative_pattern_never_leaks_to_siblings() {
+        let (_ws, ws_root, project) = workspace_exclude_fixture();
+        // A PROJECT-relative pattern.
+        let m = BundleExcludeMatcher::new(&["src/**".to_string()])
+            .unwrap()
+            .with_workspace_root(&project);
+        // Tier 1: a project file under the project's own `src/` is excluded.
+        assert!(m.is_excluded(&project.join("src/secret.ts"), &project));
+        // Tier 2: a sibling whose WORKSPACE-relative path is `lib/shared/foo.ts`
+        // is anchored workspace-relative, so the project-relative `src/**`
+        // never reaches it.
+        assert!(!m.is_excluded(&ws_root.join("lib/shared/foo.ts"), &project));
+        // A sibling package's OWN `src/` is `sub-packages/other/src/...`
+        // workspace-relative — also outside the host's `src/**`.
+        assert!(!m.is_excluded(&ws_root.join("sub-packages/other/src/x.ts"), &project));
+    }
+
+    #[test]
+    fn bundle_exclude_workspace_relative_pattern_matches_siblings() {
+        let (_ws, ws_root, project) = workspace_exclude_fixture();
+        let sibling = ws_root.join("lib/shared/secret.ts");
+        // A workspace-relative sibling pattern.
+        let m = BundleExcludeMatcher::new(&["lib/shared/*.ts".to_string()])
+            .unwrap()
+            .with_workspace_root(&project);
+        // Tier 2: the sibling matches, anchored at the workspace root.
+        assert!(
+            m.is_excluded(&sibling, &project),
+            "a workspace sibling must match its workspace-relative pattern"
+        );
+        // The tier is what enables it: the SAME pattern without the workspace
+        // root leaves the sibling included (the pre-#1668 single-tier behavior,
+        // where a path outside project_root was never excluded).
+        let single_tier = BundleExcludeMatcher::new(&["lib/shared/*.ts".to_string()]).unwrap();
+        assert!(
+            !single_tier.is_excluded(&sibling, &project),
+            "without the workspace tier a sibling is never excluded"
+        );
+    }
+
+    #[test]
+    fn bundle_exclude_sibling_tier_is_inert_without_a_workspace() {
+        // A standalone project (no pnpm-workspace.yaml above it): the sibling
+        // tier records no widened root, so matching is byte-identical to the
+        // single-tier pre-#1668 matcher.
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("standalone");
+        fs::create_dir_all(&project).unwrap();
+        let m = BundleExcludeMatcher::new(&["lib/shared/*.ts".to_string()])
+            .unwrap()
+            .with_workspace_root(&project);
+        assert!(
+            m.workspace_root.is_none(),
+            "a standalone project must not arm the sibling tier"
+        );
+        // Tier 1 still matches a project file.
+        assert!(m.is_excluded(&project.join("lib/shared/secret.ts"), &project));
+        // A path outside the project is never excluded (no sibling tier).
+        assert!(!m.is_excluded(&tmp.path().join("adjacent/lib/shared/secret.ts"), &project));
     }
 
     // REMOVED (#1557): `bundle_exclude_prefix_overlap_only_keeps_provably_disjoint_wildcards`
