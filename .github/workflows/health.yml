@@ -400,7 +400,10 @@ jobs:
           name: zfb-debug-linux-x64
           path: target/debug/zfb
           if-no-files-found: error
-          retention-days: 7
+          # Consumed within this run by the wasm-md-browser job; ~194MB per run
+          # piles up fast (7GB live at 7 days — 2026-07 storage audit), so cap
+          # at the 1-day floor like release.yml's transfer artifacts.
+          retention-days: 1
 
   # V8-off feature matrix (issue #371, sub-task 4.1a).
   #
