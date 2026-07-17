@@ -3448,6 +3448,21 @@ pub fn bundle_with_session(
         &writer,
     )
     .context("bundler: failed rewriting CSS Modules in shadow tree")?;
+    // Issue #1697: the sibling half of the same pass — a claimed sibling
+    // `.module.css` lands under `work` outside the project mirror `shadow`,
+    // which the walk above never visits. Gated on `workspace_rel.is_some()`
+    // (⇔ `shadow` is nested under `work`, not equal to it) so a non-workspace
+    // build never enters here and stays byte-identical.
+    if workspace_rel.is_some() {
+        rewrite_css_modules_in_work_mirror(
+            work,
+            shadow,
+            &first_party_root,
+            &input.css_module_class_maps,
+            &writer,
+        )
+        .context("bundler: failed rewriting CSS Modules in work mirror")?;
+    }
     if let (Some(isolation_root), Some(isolation_writer)) = (
         node_modules_isolation_root,
         node_modules_isolation_writer.as_ref(),
@@ -5643,6 +5658,89 @@ fn rewrite_css_modules_in_shadow(
         // marking those visited would shield them from the prune pass.
         // Legit `.module.css` files were already marked visited by their
         // materialise pass.
+        writer
+            .write_if_changed_no_visit(path, js.as_bytes())
+            .with_context(|| {
+                format!(
+                    "bundler: failed writing CSS Modules JS shim to {}",
+                    path.display()
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Sibling variant of [`rewrite_css_modules_in_shadow`] (issue #1697). A
+/// claimed sibling `.module.css` — staged by the wholesale mirror (#1692) or
+/// the glob fixed-point queue (#1695) — lands at its own workspace-relative
+/// slot under `work`, OUTSIDE the nested project mirror `shadow`, so the
+/// walk above never visits it. Walk `work` again, pruning the already-handled
+/// `shadow` subtree, and reconstruct each file's original path via
+/// `first_party_root` (not `project_root`) — the reconstruction
+/// `rewrite_css_modules_in_shadow` uses would be wrong here: a sibling
+/// file's original absolute path lives outside `project_root` entirely.
+///
+/// `class_maps` is the SAME map the project walk uses: #1696's
+/// `compute_css_module_class_maps` already keys a claimed sibling's entry by
+/// its absolute physical path (under `first_party_root`), so no second map
+/// is needed — a lookup miss here means "unmapped" and is handled exactly
+/// like an unmapped project file (`export default {};`). That also covers a
+/// `.module.css` staged only via the #1695 glob queue outside any claimed
+/// mirror root (invisible to `SiblingMirrorPlan`, so it can never have a map
+/// entry): it still needs a valid JS shim, since the paired
+/// `--loader:.module.css=js` esbuild flag applies to the extension
+/// regardless of claim status.
+///
+/// The caller gates this on `workspace_rel.is_some()`: without a workspace
+/// `shadow == work`, so pruning `shadow` here would prune the walk root
+/// itself and this becomes an inert no-op anyway — the gate just skips the
+/// wasted walk, keeping non-workspace builds byte-identical.
+fn rewrite_css_modules_in_work_mirror(
+    work: &Path,
+    shadow: &Path,
+    first_party_root: &Path,
+    class_maps: &HashMap<PathBuf, HashMap<String, String>>,
+    writer: &ShadowWriter<'_>,
+) -> Result<()> {
+    for entry in WalkDir::new(work)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| e.path() != shadow)
+    {
+        let entry = entry.with_context(|| format!("walking work mirror {}", work.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        // Match the `.module.css` double-extension exactly, same as the
+        // project-mirror walk.
+        if !path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n.ends_with(".module.css"))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        // Reconstruct the original sibling path: work-relative path joined
+        // onto the WORKSPACE root, not the project root.
+        let rel = path.strip_prefix(work).map_err(|_| {
+            anyhow!(
+                "bundler: work-mirror file {} is not under work root {}",
+                path.display(),
+                work.display()
+            )
+        })?;
+        let original = first_party_root.join(rel);
+
+        let names = class_maps.get(&original);
+        let js = render_css_module_js(names);
+
+        // See FIX #553 on `rewrite_css_modules_in_shadow`: never write
+        // through a symlink, and use the `_no_visit` variant since this walk
+        // (like that one) covers the whole tree including files whose source
+        // was deleted this tick.
         writer
             .write_if_changed_no_visit(path, js.as_bytes())
             .with_context(|| {
@@ -10190,6 +10288,83 @@ mod tests {
 
         let global = fs::read_to_string(shadow_root.join("styles/global.css")).unwrap();
         assert_eq!(global, ".g{}", "plain .css must be untouched");
+    }
+
+    #[test]
+    fn rewrite_css_modules_in_work_mirror_rewrites_mapped_and_unmapped_sibling() {
+        let work = tempfile::tempdir().unwrap();
+        let work_root = work.path();
+        let first_party_root = Path::new("/workspace");
+
+        // `shadow` is nested under `work` (a workspace_rel of "apps/site"),
+        // carrying its own .module.css — the project-mirror walk's job, not
+        // this one's. This proves the pruned subtree is left byte-for-byte
+        // untouched by the work-mirror walk.
+        let shadow_root = work_root.join("apps/site");
+        fs::create_dir_all(shadow_root.join("components")).unwrap();
+        fs::write(
+            shadow_root.join("components/card.module.css"),
+            ".card { color: red; }",
+        )
+        .unwrap();
+
+        // Claimed sibling region staged wholesale under `work`, outside
+        // `shadow` — the #1692 wholesale mirror's shape.
+        fs::create_dir_all(work_root.join("lib/shared")).unwrap();
+        fs::write(
+            work_root.join("lib/shared/widget.module.css"),
+            ".widget { color: green; }",
+        )
+        .unwrap();
+        fs::write(
+            work_root.join("lib/shared/orphan.module.css"),
+            ".x { color: blue; }",
+        )
+        .unwrap();
+        // A plain .css file must be left untouched.
+        fs::write(work_root.join("lib/shared/global.css"), ".g{}").unwrap();
+
+        // Map keyed by the sibling's absolute physical path under
+        // `first_party_root` — #1696's `compute_css_module_class_maps`
+        // contract, which this walk must consume directly (no separate map).
+        let mut names = HashMap::new();
+        names.insert("widget".to_string(), "sc0_widget".to_string());
+        let mut maps = HashMap::new();
+        maps.insert(first_party_root.join("lib/shared/widget.module.css"), names);
+
+        rewrite_css_modules_in_work_mirror(
+            work_root,
+            &shadow_root,
+            first_party_root,
+            &maps,
+            leaked_passthrough_writer(),
+        )
+        .unwrap();
+
+        let mapped = fs::read_to_string(work_root.join("lib/shared/widget.module.css")).unwrap();
+        assert!(
+            mapped.contains("sc0_widget"),
+            "mapped sibling module: {mapped}"
+        );
+        assert!(!mapped.contains("color: green"), "raw CSS must be gone");
+
+        let orphan = fs::read_to_string(work_root.join("lib/shared/orphan.module.css")).unwrap();
+        assert_eq!(
+            orphan, "export default {};\n",
+            "unmapped sibling module degrades to {{}}, same as an unmapped project file"
+        );
+
+        let global = fs::read_to_string(work_root.join("lib/shared/global.css")).unwrap();
+        assert_eq!(global, ".g{}", "plain .css must be untouched");
+
+        // The shadow subtree is pruned entirely — this walk never visits it,
+        // so its raw CSS is untouched (the project-mirror walk owns it).
+        let shadow_untouched =
+            fs::read_to_string(shadow_root.join("components/card.module.css")).unwrap();
+        assert_eq!(
+            shadow_untouched, ".card { color: red; }",
+            "shadow subtree must be pruned from the work-mirror walk"
+        );
     }
 
     fn make_minimal_input(tmp: &tempfile::TempDir) -> BundlerInput {
