@@ -137,10 +137,12 @@ use crate::adapter::run_capturing;
 // The `import.meta.glob` expansion helpers moved to their own `pub` module
 // (issue #1402) so #1404's downstream orchestration in `crates/zfb` can
 // reuse them without `zfb-islands` gaining a `zfb-build` dependency. Only
-// `expand_import_meta_glob` is still called directly from this file (in
-// `materialise_source_file`); `glob_match_relative` and `GlobCallCollector`
-// have no other call sites left in `bundler.rs`.
-use crate::glob_expand::expand_import_meta_glob;
+// `expand_import_meta_glob_with_matches` is called directly from this file
+// (in `materialise_source_file`) — the richer form is used (rather than the
+// `expand_import_meta_glob` convenience wrapper) so the matched target files
+// feed the issue #1695 fixed-point staging queue below; `glob_match_relative`
+// and `GlobCallCollector` have no other call sites left in `bundler.rs`.
+use crate::glob_expand::expand_import_meta_glob_with_matches;
 use crate::module_worker::{
     collect_runtime_import_specifiers_from_file, discover_module_preprocessing_with_context,
     discover_registered_virtual_preprocessing_with_context,
@@ -664,9 +666,10 @@ pub struct BundlerInput {
     /// 1. `materialise_shadow` SKIPS copying/symlinking it into the shadow
     ///    tree (the file is never present for esbuild to resolve).
     /// 2. The #665 `import.meta.glob` eager-expansion seam
-    ///    ([`expand_import_meta_glob`]) DROPS it from any glob expansion, so
-    ///    an excluded file is never emitted as a static import (which would
-    ///    otherwise make esbuild error on the generated import).
+    ///    ([`expand_import_meta_glob_with_matches`]) DROPS it from any glob
+    ///    expansion, so an excluded file is never emitted as a static import
+    ///    (which would otherwise make esbuild error on the generated
+    ///    import).
     ///
     /// Why this is needed: a `--platform=neutral` worker bundle rejects
     /// CJS-only packages resolved only via `main`/`module` or a
@@ -2121,6 +2124,7 @@ pub fn bundle_with_session(
         bundle_exclude: &bundle_exclude,
         project_root: &input.project_root,
         writer: &writer,
+        glob_matched_files: RefCell::new(BTreeSet::new()),
         raw_import_edges: RefCell::new(BTreeSet::new()),
         raw_import_aliases: RawImportAliasContext::from_paths_and_project_base_url(
             &input.tsconfig_paths,
@@ -3403,6 +3407,7 @@ pub fn bundle_with_session(
                 mat_ctx.copy_mode
             },
             target_writer,
+            &mat_ctx.glob_matched_files,
             &mat_ctx.raw_import_edges,
             &mat_ctx.raw_import_aliases,
             &mat_ctx.module_worker_dependencies,
@@ -3416,6 +3421,28 @@ pub fn bundle_with_session(
             )
         })?;
     }
+
+    // 2f. Issue #1695: `import.meta.glob` matched-files fixed-point drain.
+    //
+    // `import.meta.glob(...)` targets are invisible to the AST-based
+    // preprocessing-discovery graph every pass above is seeded from — the
+    // discovery walker resolves `import`/`require`/`?raw`/worker specifiers,
+    // never a glob macro — so `SiblingMirrorPlan` (computed once, before any
+    // materialise pass ran) never claims a mirror root for a file reached
+    // ONLY through a glob. By this point every materialise pass above has
+    // run at least once this call, so `mat_ctx.glob_matched_files` holds the
+    // union of every glob match discovered anywhere in the shadow tree so
+    // far; drain it to a fixed point. See
+    // [`stage_glob_matched_files_to_fixed_point`] for the queue shape.
+    stage_glob_matched_files_to_fixed_point(
+        &mat_ctx,
+        &sibling_mirror_plan,
+        &project_root,
+        &first_party_root,
+        shadow,
+        work,
+        node_modules_isolation_root,
+    )?;
 
     // 2g. CSS Modules — run after every explicit exact-target/package copy
     //     so raw staged `.module.css` files cannot overwrite the rewrite.
@@ -4234,12 +4261,12 @@ impl SiblingMirrorPlan {
     }
 
     /// Audit predicate for Wave 2/3: is `path` inside a claimed mirror root?
-    /// The CSS discovery (#1696/#1697) and any resurrection audit key off this
-    /// so they enumerate exactly the regions this plan staged — no second,
-    /// drift-prone definition of "a claimed sibling path". Not yet consumed in
-    /// this sub-issue (#1692); it is the reuse surface the epic requires this
-    /// plan to expose for the downstream waves.
-    #[allow(dead_code)]
+    /// The CSS discovery (#1696/#1697), the issue #1695 glob fixed-point
+    /// queue below (a match already inside a claimed root was already
+    /// wholesale-copied by [`mirror_sibling_root`], so the queue skips it),
+    /// and any resurrection audit key off this so they enumerate exactly the
+    /// regions this plan staged — no second, drift-prone definition of "a
+    /// claimed sibling path".
     pub fn claims_path(&self, path: &Path) -> bool {
         let path = normalize_path_lexical(path);
         self.mirror_roots
@@ -4306,6 +4333,133 @@ fn mirror_sibling_root(
                 dest.display()
             )
         })?;
+    }
+    Ok(())
+}
+
+/// Drain [`MaterialiseCtx::glob_matched_files`] to a fixed point (issue
+/// #1695): every `import.meta.glob(...)` target discovered anywhere in this
+/// `bundle_with_session` call, that is NOT already inside a claimed
+/// [`SiblingMirrorPlan`] mirror root, is staged at its own
+/// [`shadow_path_for_project_path`] slot through
+/// [`materialise_source_file`] — the same pass every other first-party file
+/// goes through.
+///
+/// `import.meta.glob(...)` targets are invisible to the AST-based
+/// preprocessing-discovery graph `SiblingMirrorPlan` is built from (the
+/// discovery walker resolves `import`/`require`/`?raw`/worker specifiers,
+/// never a glob macro), so a file reached ONLY through a glob has no claim.
+/// A match already inside a claimed mirror root is SKIPPED —
+/// `mirror_sibling_root` already wholesale-copied it, so
+/// `sibling_mirror_plan.claims_path` is the single source of truth for
+/// "already staged" and this queue never double-copies. Staging a queued
+/// file runs it through the identical glob/raw/worker-expansion path every
+/// other materialise pass uses, so a queued file's OWN nested edges extend
+/// `glob_matched_files` further and this function loops again; it returns
+/// once a full pass adds nothing new. The `BTreeSet` backing
+/// `glob_matched_files` keeps each round's processing order deterministic
+/// regardless of which materialise pass discovered which match first.
+///
+/// A queued project-side match the ordinary walks already covered is staged
+/// again here, but harmlessly: `materialise_source_file` recomputes the
+/// identical bytes, and both the session incremental-skip cache and the
+/// passthrough writer's write-if-changed hashing make the repeat a no-op on
+/// disk. Only a target genuinely unreachable any other way — a brand-new
+/// sibling region no claim source ever saw, or a project path the ordinary
+/// walks did not reach (e.g. gitignored) — depends on this queue for
+/// correctness.
+///
+/// Pruning a match that disappears on a later `ShadowSession` tick needs no
+/// bespoke bookkeeping: `mat_ctx.glob_matched_files` starts empty every
+/// `bundle_with_session` call (a fresh [`MaterialiseCtx`]), so a file the
+/// live glob no longer matches is simply never re-queued, never re-visited
+/// this tick, and falls out of `ShadowSession::prev_visited` at the
+/// `writer.prune_stale()` call the caller makes after this returns — the
+/// same tick-boundary mechanism every other staged file already relies on.
+#[allow(clippy::too_many_arguments)]
+fn stage_glob_matched_files_to_fixed_point(
+    mat_ctx: &MaterialiseCtx<'_, '_>,
+    sibling_mirror_plan: &SiblingMirrorPlan,
+    project_root: &Path,
+    first_party_root: &Path,
+    shadow: &Path,
+    work: &Path,
+    node_modules_isolation_root: Option<&Path>,
+) -> Result<()> {
+    let mut staged_glob_targets: BTreeSet<PathBuf> = BTreeSet::new();
+    loop {
+        let pending: Vec<PathBuf> = mat_ctx
+            .glob_matched_files
+            .borrow()
+            .iter()
+            .filter(|path| {
+                !staged_glob_targets.contains(*path) && !sibling_mirror_plan.claims_path(path)
+            })
+            .cloned()
+            .collect();
+        if pending.is_empty() {
+            break;
+        }
+        for target in pending {
+            staged_glob_targets.insert(target.clone());
+            // Defense in depth, mirroring `mirror_sibling_root`'s guard: a
+            // glob match must be a real first-party file under the widened
+            // first-party root, never through `node_modules` (vendored, not
+            // source — resolves through the live `node_modules` link) and
+            // never anything `shadow_path_for_project_path` would leave
+            // pointed at the LIVE tree (its fallback tier for a path outside
+            // both `project_root` and `first_party_root`, which must never
+            // happen for a glob match but is never worth writing through).
+            if !target.is_file()
+                || path_is_inside_node_modules(&target)
+                || !target.starts_with(first_party_root)
+            {
+                continue;
+            }
+            if mat_ctx.bundle_exclude.is_excluded(&target, project_root) {
+                continue;
+            }
+            let to = shadow_path_for_project_path(
+                &target,
+                project_root,
+                first_party_root,
+                shadow,
+                work,
+                node_modules_isolation_root,
+            );
+            if let Some(parent) = to.parent() {
+                mat_ctx.writer.ensure_dir(parent).with_context(|| {
+                    format!(
+                        "bundler: create import.meta.glob matched-file parent dir {}",
+                        parent.display()
+                    )
+                })?;
+            }
+            materialise_source_file(
+                &target,
+                &target,
+                &to,
+                &|path| {
+                    mat_ctx
+                        .bundle_exclude
+                        .is_excluded(path, mat_ctx.project_root)
+                },
+                mat_ctx.copy_mode,
+                mat_ctx.writer,
+                &mat_ctx.glob_matched_files,
+                &mat_ctx.raw_import_edges,
+                &mat_ctx.raw_import_aliases,
+                &mat_ctx.module_worker_dependencies,
+                mat_ctx.project_root,
+                &mat_ctx.worker_build_context,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: materialise import.meta.glob matched file {}",
+                    target.display()
+                )
+            })?;
+        }
     }
     Ok(())
 }
@@ -4405,6 +4559,7 @@ fn stage_project_root_loose_files(
                 &|path| ctx.bundle_exclude.is_excluded(path, ctx.project_root),
                 ctx.copy_mode,
                 ctx.writer,
+                &ctx.glob_matched_files,
                 &ctx.raw_import_edges,
                 &ctx.raw_import_aliases,
                 &ctx.module_worker_dependencies,
@@ -4490,6 +4645,7 @@ fn materialise_mdx_components_file(
         &|path| ctx.bundle_exclude.is_excluded(path, ctx.project_root),
         true,
         ctx.writer,
+        &ctx.glob_matched_files,
         &ctx.raw_import_edges,
         &ctx.raw_import_aliases,
         &ctx.module_worker_dependencies,
@@ -4703,6 +4859,7 @@ fn materialise_symlinked_dir(
                     is_excluded,
                     true,
                     ctx.writer,
+                    &ctx.glob_matched_files,
                     &ctx.raw_import_edges,
                     &ctx.raw_import_aliases,
                     &ctx.module_worker_dependencies,
@@ -4811,6 +4968,20 @@ struct MaterialiseCtx<'a, 's> {
     /// session. Every shadow write in the materialise passes routes
     /// through this.
     writer: &'a ShadowWriter<'s>,
+    /// `import.meta.glob(...)` matched target files discovered while
+    /// preprocessing source files in every materialise pass (issue #1695).
+    /// `materialise_source_file` extends this with every file
+    /// `expand_import_meta_glob_with_matches` matches, regardless of which
+    /// pass staged the glob-importing file itself. After every explicit
+    /// materialise pass has run, `bundle_with_session` drains this set to a
+    /// fixed point: a matched file outside every claimed
+    /// [`SiblingMirrorPlan`] mirror root — invisible to that plan, because
+    /// glob targets never enter the AST-based preprocessing-discovery graph
+    /// the plan is built from — is staged on its own via the same
+    /// `materialise_source_file` pass, which may in turn extend this set
+    /// with ITS OWN matched files. A `BTreeSet` keeps the drain queue's
+    /// iteration order deterministic across ticks.
+    glob_matched_files: RefCell<BTreeSet<PathBuf>>,
     /// Raw terminal edges discovered while preprocessing source files in
     /// every materialise pass. Used after esbuild's metafile walk to map the
     /// generated `.zfb-raw-*.mjs` input back to the ORIGINAL target for dev
@@ -5191,6 +5362,7 @@ fn materialise_shadow(
                 &is_excluded,
                 ctx.copy_mode,
                 ctx.writer,
+                &ctx.glob_matched_files,
                 &ctx.raw_import_edges,
                 &ctx.raw_import_aliases,
                 &ctx.module_worker_dependencies,
@@ -6139,6 +6311,7 @@ fn materialise_collection(
                 &is_bundle_excluded,
                 ctx.copy_mode,
                 ctx.writer,
+                &ctx.glob_matched_files,
                 &ctx.raw_import_edges,
                 &ctx.raw_import_aliases,
                 &ctx.module_worker_dependencies,
@@ -6268,9 +6441,17 @@ fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
 /// (`from.parent()`), so matched relative paths line up with what esbuild later
 /// resolves through the shadow.
 ///
-/// `is_excluded` is threaded straight through to [`expand_import_meta_glob`]
-/// (Wave 1 passes a no-op `&|_| false`; Wave 2 / #672 supplies the real
-/// `bundle.exclude` predicate).
+/// `is_excluded` is threaded straight through to
+/// [`expand_import_meta_glob_with_matches`] (Wave 1 passes a no-op
+/// `&|_| false`; Wave 2 / #672 supplies the real `bundle.exclude`
+/// predicate).
+///
+/// `glob_matched_files` collects every target file
+/// [`expand_import_meta_glob_with_matches`] matches (issue #1695) — every
+/// call site shares the SAME `MaterialiseCtx::glob_matched_files` set, so
+/// `bundle_with_session`'s post-pass fixed-point drain sees every match
+/// discovered anywhere in this call's materialise passes, not just the ones
+/// under whichever source root happened to be walked.
 ///
 /// `copy_mode` forces a real `fs::copy` for the non-transformed fallback
 /// instead of a symlink. When esbuild runs without `--preserve-symlinks`
@@ -6294,6 +6475,7 @@ fn materialise_source_file(
     is_excluded: &dyn Fn(&Path) -> bool,
     copy_mode: bool,
     writer: &ShadowWriter<'_>,
+    glob_matched_files: &RefCell<BTreeSet<PathBuf>>,
     raw_import_edges: &RefCell<BTreeSet<RawImportEdge>>,
     raw_import_aliases: &RawImportAliasContext,
     module_worker_dependencies: &RefCell<BTreeSet<ModuleWorkerDependency>>,
@@ -6402,10 +6584,20 @@ fn materialise_source_file(
                 if expanded.contains("import.meta.glob") {
                     has_glob = true;
                     let file_dir = logical_from.parent().unwrap_or_else(|| Path::new("."));
-                    expanded = expand_import_meta_glob(&expanded, file_dir, is_excluded)
-                        .with_context(|| {
-                            format!("expand import.meta.glob in {}", logical_from.display())
-                        })?;
+                    let glob_expansion =
+                        expand_import_meta_glob_with_matches(&expanded, file_dir, is_excluded)
+                            .with_context(|| {
+                                format!("expand import.meta.glob in {}", logical_from.display())
+                            })?;
+                    // #1695: every matched target feeds the fixed-point
+                    // staging queue `bundle_with_session` drains after every
+                    // materialise pass — this is the ONLY place a glob's
+                    // matched files become known, so a shared accumulator is
+                    // the sole way the queue learns about them.
+                    glob_matched_files
+                        .borrow_mut()
+                        .extend(glob_expansion.matched_files);
+                    expanded = glob_expansion.expanded_source;
                 }
 
                 if has_query_syntax {
@@ -11115,6 +11307,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -11182,6 +11375,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -12199,6 +12393,7 @@ mod tests {
         let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
         let writer = ShadowWriter::new(shadow_root.clone(), Some(session), false, fingerprint)
             .expect("session writer construction");
+        let glob_matched_files = RefCell::new(BTreeSet::new());
         let raw_import_edges = RefCell::new(BTreeSet::new());
         let module_worker_dependencies = RefCell::new(BTreeSet::new());
         for (from, dest_rel) in files {
@@ -12213,6 +12408,7 @@ mod tests {
                 &|_| false,
                 false,
                 &writer,
+                &glob_matched_files,
                 &raw_import_edges,
                 &RawImportAliasContext::empty(),
                 &module_worker_dependencies,
@@ -12288,6 +12484,7 @@ mod tests {
             let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
             let writer =
                 ShadowWriter::new(shadow_root.clone(), Some(session), false, fingerprint).unwrap();
+            let glob_matched_files = RefCell::new(BTreeSet::new());
             let raw_edges = RefCell::new(BTreeSet::new());
             let worker_dependencies = RefCell::new(BTreeSet::new());
             let staged = shadow_root.join(staged_rel);
@@ -12299,6 +12496,7 @@ mod tests {
                 &|_| false,
                 false,
                 &writer,
+                &glob_matched_files,
                 &raw_edges,
                 &RawImportAliasContext::empty(),
                 &worker_dependencies,
@@ -12583,6 +12781,7 @@ mod tests {
         fs::write(&target, "aliased materialise raw").unwrap();
         let shadow = tempfile::tempdir().unwrap();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, false, None).unwrap();
+        let glob_matched_files = RefCell::new(BTreeSet::new());
         let raw_edges = RefCell::new(BTreeSet::new());
         let worker_dependencies = RefCell::new(BTreeSet::new());
         let aliases = RawImportAliasContext::from_paths(&BTreeMap::from([(
@@ -12599,6 +12798,7 @@ mod tests {
             &|_| false,
             false,
             &writer,
+            &glob_matched_files,
             &raw_edges,
             &aliases,
             &worker_dependencies,
@@ -12639,6 +12839,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -12688,6 +12889,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -12744,6 +12946,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -12798,6 +13001,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -12838,6 +13042,7 @@ mod tests {
         fs::write(&importer, "import text from './secret.txt?raw';\n").unwrap();
         let shadow = tempfile::tempdir().unwrap();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, false, None).unwrap();
+        let glob_matched_files = RefCell::new(BTreeSet::new());
         let edges = RefCell::new(BTreeSet::new());
         let worker_dependencies = RefCell::new(BTreeSet::new());
         let matcher = BundleExcludeMatcher::new(&["components/*.txt".to_string()]).unwrap();
@@ -12848,6 +13053,7 @@ mod tests {
             &|path| matcher.is_excluded(path, tmp.path()),
             false,
             &writer,
+            &glob_matched_files,
             &edges,
             &RawImportAliasContext::empty(),
             &worker_dependencies,
@@ -15817,6 +16023,258 @@ mod tests {
         assert!(!plan.claims_path(&project.join("src/app.ts")));
     }
 
+    // -----------------------------------------------------------------
+    // `import.meta.glob` matched-files fixed-point drain (#1695), driving
+    // `stage_glob_matched_files_to_fixed_point` directly rather than the
+    // full `bundle_with_session` orchestration — the queue's own shape
+    // (skip-if-claimed, transitive drain, tick-boundary pruning) is what
+    // these tests pin down.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn glob_fixed_point_skips_claimed_match_but_stages_one_outside_every_claim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("app");
+        fs::create_dir_all(&project).unwrap();
+
+        // A claimed sibling region: `lib/shared`, claimed via a discovered
+        // graph file living there.
+        fs::create_dir_all(ws.join("lib/shared")).unwrap();
+        let claim_entry = ws.join("lib/shared/entry.ts");
+        fs::write(&claim_entry, "export const entry = 1;\n").unwrap();
+        // A file INSIDE that claimed region a glob elsewhere ALSO matched —
+        // stands in for a target Wave 1's `mirror_sibling_root` already
+        // wholesale-copied.
+        let claimed_target = ws.join("lib/shared/already-mirrored.ts");
+        fs::write(&claimed_target, "export const already = 2;\n").unwrap();
+
+        // A second, totally unrelated sibling region no claim source ever
+        // saw.
+        fs::create_dir_all(ws.join("other-lib")).unwrap();
+        let unclaimed_target = ws.join("other-lib/widget.ts");
+        fs::write(&unclaimed_target, "export const widget = 'w';\n").unwrap();
+
+        let plan = SiblingMirrorPlan::compute(
+            &project,
+            ws,
+            &BTreeSet::from([claim_entry]),
+            &BTreeMap::new(),
+            &[],
+        );
+        assert!(
+            plan.claims_path(&claimed_target),
+            "fixture sanity: lib/shared must be claimed"
+        );
+        assert!(
+            !plan.claims_path(&unclaimed_target),
+            "fixture sanity: other-lib must not be claimed"
+        );
+
+        let out = tempfile::tempdir().unwrap();
+        let work = out.path().join("work");
+        let shadow = work.join("app");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&project, &exclude);
+        ctx.glob_matched_files
+            .borrow_mut()
+            .extend([claimed_target, unclaimed_target]);
+
+        stage_glob_matched_files_to_fixed_point(&ctx, &plan, &project, ws, &shadow, &work, None)
+            .unwrap();
+
+        assert!(
+            !work.join("lib/shared/already-mirrored.ts").exists(),
+            "a match already inside a claimed mirror root must NOT be re-staged by the queue"
+        );
+        assert!(
+            work.join("other-lib/widget.ts").exists(),
+            "a match outside every claimed mirror root must be staged at its workspace-relative slot"
+        );
+        assert_eq!(
+            fs::read_to_string(work.join("other-lib/widget.ts")).unwrap(),
+            "export const widget = 'w';\n"
+        );
+    }
+
+    #[test]
+    fn glob_fixed_point_drains_transitive_glob_chain_to_a_fixed_point() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("app");
+        fs::create_dir_all(&project).unwrap();
+
+        // `hop1.ts` is the seed; it itself glob-imports `nested/*.ts`,
+        // matching `hop2.ts` — a SECOND round the drain must discover on
+        // its own, without `hop2.ts` ever being queued directly.
+        fs::create_dir_all(ws.join("other-lib/nested")).unwrap();
+        fs::write(
+            ws.join("other-lib/hop1.ts"),
+            "export const mods = import.meta.glob('./nested/*.ts', { eager: true });\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("other-lib/nested/hop2.ts"),
+            "export const hop2 = 'end';\n",
+        )
+        .unwrap();
+
+        let plan = SiblingMirrorPlan::default(); // no claims anywhere
+        let out = tempfile::tempdir().unwrap();
+        let work = out.path().join("work");
+        let shadow = work.join("app");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&project, &exclude);
+        ctx.glob_matched_files
+            .borrow_mut()
+            .insert(ws.join("other-lib/hop1.ts"));
+
+        stage_glob_matched_files_to_fixed_point(&ctx, &plan, &project, ws, &shadow, &work, None)
+            .unwrap();
+
+        let hop1_staged = work.join("other-lib/hop1.ts");
+        let hop2_staged = work.join("other-lib/nested/hop2.ts");
+        assert!(hop1_staged.exists(), "the seeded first hop must be staged");
+        assert!(
+            hop2_staged.exists(),
+            "hop1's OWN glob match (hop2) must be staged too — the drain must run a second round"
+        );
+        let hop1_source = fs::read_to_string(&hop1_staged).unwrap();
+        assert!(
+            !hop1_source.contains("import.meta.glob("),
+            "hop1's own glob macro must be expanded when staged, not copied verbatim: {hop1_source}"
+        );
+        assert!(
+            hop1_source.contains("./nested/hop2.ts"),
+            "hop1's expansion must reference the matched hop2 file: {hop1_source}"
+        );
+    }
+
+    #[test]
+    fn glob_fixed_point_stages_project_side_match_outside_ordinary_walk_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("app");
+        // Stands in for a project subtree the ordinary `materialise_shadow` /
+        // `enumerate_extra_top_level_dirs` walks never reach (e.g.
+        // gitignored) — this isolated test drives the drain directly, with
+        // no walk at all, so the target is ONLY reachable through the queue.
+        fs::create_dir_all(project.join("generated")).unwrap();
+        let target = project.join("generated/data.ts");
+        fs::write(&target, "export const data = 1;\n").unwrap();
+
+        // A standalone project: the plan is empty and never claims a
+        // project-local path anyway (`SiblingMirrorPlan` only ever claims
+        // paths OUTSIDE `project_root`).
+        let plan = SiblingMirrorPlan::default();
+        let out = tempfile::tempdir().unwrap();
+        let shadow = out.path().join("shadow");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&project, &exclude);
+        ctx.glob_matched_files.borrow_mut().insert(target);
+
+        // No workspace ⇒ `shadow == work`, mirroring the byte-identical
+        // no-op layout `bundle_with_session` uses outside a workspace.
+        stage_glob_matched_files_to_fixed_point(
+            &ctx, &plan, &project, &project, &shadow, &shadow, None,
+        )
+        .unwrap();
+
+        assert!(
+            shadow.join("generated/data.ts").exists(),
+            "a project-side glob match outside every ordinary walk's coverage must still be staged"
+        );
+    }
+
+    #[test]
+    fn glob_fixed_point_prunes_vanished_match_on_next_session_tick() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("app");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(ws.join("other-lib")).unwrap();
+        let target = ws.join("other-lib/gone-soon.ts");
+        fs::write(&target, "export const x = 1;\n").unwrap();
+
+        let plan = SiblingMirrorPlan::default();
+        let exclude = no_bundle_exclude();
+        let mut session = ShadowSession::new(&project).unwrap();
+        let work = session.shadow_root().to_path_buf();
+        let shadow = work.join("app");
+        let staged_rel = Path::new("other-lib/gone-soon.ts");
+
+        // Tick 1: the live glob matches `target` — every `MaterialiseCtx`
+        // (including its `glob_matched_files` accumulator) is freshly built
+        // per tick, exactly like `bundle_with_session` builds one per call.
+        {
+            let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
+            let writer =
+                ShadowWriter::new(work.clone(), Some(&mut session), false, fingerprint).unwrap();
+            let ctx = MaterialiseCtx {
+                pipeline_spec: zfb_content::PipelineSpec::default(),
+                copy_mode: false,
+                bundle_exclude: &exclude,
+                project_root: &project,
+                writer: &writer,
+                glob_matched_files: RefCell::new(BTreeSet::from([target.clone()])),
+                raw_import_edges: RefCell::new(BTreeSet::new()),
+                raw_import_aliases: RawImportAliasContext::empty(),
+                module_worker_dependencies: RefCell::new(BTreeSet::new()),
+                worker_build_context: ModuleWorkerBuildContext::default(),
+                raw_preflight_complete: Cell::new(false),
+                snapshot_specifiers: None,
+            };
+            stage_glob_matched_files_to_fixed_point(
+                &ctx, &plan, &project, ws, &shadow, &work, None,
+            )
+            .unwrap();
+            writer.prune_stale().unwrap();
+            writer.mark_clean();
+        }
+        assert!(
+            work.join(staged_rel).exists(),
+            "tick 1: the matched target must be staged into the work mirror"
+        );
+
+        // Tick 2: the live glob no longer matches `target` (deleted /
+        // renamed / edited out of the pattern) — this tick's
+        // `glob_matched_files` starts (and stays) empty.
+        {
+            let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
+            let writer =
+                ShadowWriter::new(work.clone(), Some(&mut session), false, fingerprint).unwrap();
+            let ctx = MaterialiseCtx {
+                pipeline_spec: zfb_content::PipelineSpec::default(),
+                copy_mode: false,
+                bundle_exclude: &exclude,
+                project_root: &project,
+                writer: &writer,
+                glob_matched_files: RefCell::new(BTreeSet::new()),
+                raw_import_edges: RefCell::new(BTreeSet::new()),
+                raw_import_aliases: RawImportAliasContext::empty(),
+                module_worker_dependencies: RefCell::new(BTreeSet::new()),
+                worker_build_context: ModuleWorkerBuildContext::default(),
+                raw_preflight_complete: Cell::new(false),
+                snapshot_specifiers: None,
+            };
+            stage_glob_matched_files_to_fixed_point(
+                &ctx, &plan, &project, ws, &shadow, &work, None,
+            )
+            .unwrap();
+            writer.prune_stale().unwrap();
+            writer.mark_clean();
+        }
+        assert!(
+            !work.join(staged_rel).exists(),
+            "tick 2: a vanished glob match must be pruned from the work mirror"
+        );
+    }
+
     #[test]
     fn has_wildcard_root_alias_detects_root_wildcard() {
         let tmp = tempfile::tempdir().unwrap();
@@ -16060,6 +16518,7 @@ mod tests {
             bundle_exclude: exclude,
             project_root,
             writer: leaked_passthrough_writer(),
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
