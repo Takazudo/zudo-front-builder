@@ -74,7 +74,7 @@ pub use atomic::{atomic_write, atomic_write_string, validate_output_path};
 pub use bundler::{
     bundle, bundle_with_session, resolve_esbuild_binary_with_env, BundleManifest, BundleMode,
     BundlerInput, BundlerOutput, ContentCollectionSpec, OnBrokenLinks, ResolveMarkdownLinksRoute,
-    ResolveMarkdownLinksSpec, RouteEntry, ShadowSession, DEFAULT_ESBUILD_SLOT,
+    ResolveMarkdownLinksSpec, RouteEntry, ShadowSession, SiblingMirrorPlan, DEFAULT_ESBUILD_SLOT,
 };
 pub use content_provenance::{
     ContentCollectionId, ContentCollectionMembership, ContentEdgeGroup, ContentProvenance,

@@ -4168,7 +4168,7 @@ fn resolve_mirror_root(
 /// consume. Empty (and inert) for a standalone project, so a non-workspace
 /// build stays byte-identical.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct SiblingMirrorPlan {
+pub struct SiblingMirrorPlan {
     /// Distinct mirror roots, each an absolute, lexically-normalized directory
     /// under `first_party_root`, outside `project_root`, never through a
     /// `node_modules` component and never `first_party_root` itself.
@@ -4189,7 +4189,7 @@ impl SiblingMirrorPlan {
     ///
     /// Each claim resolves through [`resolve_mirror_root`]; `None` results are
     /// dropped (project-local, out-of-workspace, node_modules, etc.).
-    pub(crate) fn compute(
+    pub fn compute(
         project_root: &Path,
         first_party_root: &Path,
         discovered_graph_files: &BTreeSet<PathBuf>,
@@ -4223,13 +4223,13 @@ impl SiblingMirrorPlan {
     }
 
     /// The distinct mirror roots to wholesale-stage, in deterministic order.
-    pub(crate) fn mirror_roots(&self) -> impl Iterator<Item = &Path> {
+    pub fn mirror_roots(&self) -> impl Iterator<Item = &Path> {
         self.mirror_roots.iter().map(PathBuf::as_path)
     }
 
     /// Whether the plan claims nothing (a standalone project, or a workspace
     /// whose build reaches no sibling region).
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.mirror_roots.is_empty()
     }
 
@@ -4240,7 +4240,7 @@ impl SiblingMirrorPlan {
     /// this sub-issue (#1692); it is the reuse surface the epic requires this
     /// plan to expose for the downstream waves.
     #[allow(dead_code)]
-    pub(crate) fn claims_path(&self, path: &Path) -> bool {
+    pub fn claims_path(&self, path: &Path) -> bool {
         let path = normalize_path_lexical(path);
         self.mirror_roots
             .iter()
