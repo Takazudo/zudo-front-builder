@@ -267,22 +267,40 @@ pub(crate) fn hash_filename(path: &Path, project_root: Option<&Path>) -> String 
 /// into the SSR shadow's work mirror — issue #1691); otherwise the
 /// absolute-path fallback. Passing `first_party_root: None` reproduces
 /// `hash_filename` exactly, byte for byte.
+///
+/// The `first_party_root`-relative branch is tagged with a
+/// `workspace-sibling:` prefix. Without it, a project module and a sibling
+/// module that happen to share the same root-relative suffix (e.g. project
+/// `lib/card.module.css` vs. a sibling package's `lib/card.module.css`)
+/// would hash to the identical string *within the same build*, giving two
+/// distinct files the same scoped `[hash]` prefix — caught in review for
+/// #1694.
 pub(crate) fn hash_filename_with_workspace(
     path: &Path,
     project_root: Option<&Path>,
     first_party_root: Option<&Path>,
 ) -> String {
-    let rel = project_root
-        .and_then(|root| path.strip_prefix(root).ok())
-        .or_else(|| first_party_root.and_then(|root| path.strip_prefix(root).ok()));
-    let chosen = rel.unwrap_or(path);
-    // Normalise `\` → `/` UNCONDITIONALLY (not via the OS-path-gated
-    // `zfb_types::path_to_posix_string`, which only replaces on Windows to
-    // avoid corrupting literal `\` in Unix filenames). The module hash must be
-    // identical regardless of the host OS that produced the path — a Windows
-    // checkout's `sub\a.css` must hash the same as a Unix checkout's
-    // `sub/a.css` (#825).
-    chosen.to_string_lossy().replace('\\', "/")
+    if let Some(root) = project_root {
+        if let Ok(rel) = path.strip_prefix(root) {
+            return normalize_hash_path(rel);
+        }
+    }
+    if let Some(root) = first_party_root {
+        if let Ok(rel) = path.strip_prefix(root) {
+            return format!("workspace-sibling:{}", normalize_hash_path(rel));
+        }
+    }
+    normalize_hash_path(path)
+}
+
+// Normalise `\` → `/` UNCONDITIONALLY (not via the OS-path-gated
+// `zfb_types::path_to_posix_string`, which only replaces on Windows to
+// avoid corrupting literal `\` in Unix filenames). The module hash must be
+// identical regardless of the host OS that produced the path — a Windows
+// checkout's `sub\a.css` must hash the same as a Unix checkout's
+// `sub/a.css` (#825).
+fn normalize_hash_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]
@@ -434,7 +452,31 @@ mod tests {
                 Some(Path::new("/ws/proj")),
                 Some(Path::new("/ws")),
             ),
-            "lib/shared/card.module.css"
+            "workspace-sibling:lib/shared/card.module.css"
+        );
+    }
+
+    /// A project module and a workspace-sibling module that happen to share
+    /// the same root-relative suffix must NOT collide onto the same hash
+    /// input within a single build — they are two distinct files and must
+    /// keep distinct scoped names (caught in review for #1694).
+    #[test]
+    fn hash_filename_with_workspace_does_not_collide_project_and_sibling_same_suffix() {
+        let project_side = hash_filename_with_workspace(
+            Path::new("/ws/apps/site/lib/card.module.css"),
+            Some(Path::new("/ws/apps/site")),
+            Some(Path::new("/ws")),
+        );
+        let sibling_side = hash_filename_with_workspace(
+            Path::new("/ws/lib/card.module.css"),
+            Some(Path::new("/ws/apps/site")),
+            Some(Path::new("/ws")),
+        );
+        assert_eq!(project_side, "lib/card.module.css");
+        assert_eq!(sibling_side, "workspace-sibling:lib/card.module.css");
+        assert_ne!(
+            project_side, sibling_side,
+            "project-relative and workspace-sibling-relative paths sharing the same suffix must not collide"
         );
     }
 
