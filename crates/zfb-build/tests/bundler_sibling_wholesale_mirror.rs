@@ -334,6 +334,57 @@ fn project_root_loose_json_via_wildcard_alias_is_staged_under_exclusions() {
     );
 }
 
+/// A root `?raw` importer whose payload is ANOTHER root `.ts` file must keep
+/// the payload RAW even when the payload sorts/materialises before its
+/// importer: the loose-file pass preflights every root source file before
+/// materialising any, so the terminal raw-target edge is registered first.
+/// (`a-payload.ts` sorts before `z-importer.ts`, so without the preflight pass
+/// the payload would be materialised as source — its `import.meta.glob`
+/// expanded away — before the importer's edge marked it a raw target.)
+#[test]
+fn root_loose_raw_payload_is_preflighted_before_materialize() {
+    let root = tempfile::tempdir().unwrap();
+    let project = write_standalone_project(root.path());
+    write(
+        &project.join("a-payload.ts"),
+        "export const modules = import.meta.glob('./a-data/*.ts', { eager: true });\n\
+         export const SENTINEL = 'RAW_PAYLOAD_BODY';\n",
+    );
+    write(&project.join("a-data/one.ts"), "export const one = 1;\n");
+    write(
+        &project.join("z-importer.ts"),
+        "import payload from './a-payload.ts?raw';\nexport const value = payload;\n",
+    );
+    let tsconfig_paths = BTreeMap::from([(
+        "@/*".to_string(),
+        vec![project.join("*").to_string_lossy().into_owned()],
+    )]);
+
+    let input = make_bundle_input(
+        &project,
+        "dist-rawroot",
+        vec![],
+        tsconfig_paths,
+        vec!["**/*.secret".to_string()],
+    );
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("root raw-payload bundle succeeds");
+
+    let shadow = work_mirror_root(&session);
+    let staged_payload = fs::read_to_string(shadow.join("a-payload.ts"))
+        .expect("the raw payload must be staged at the shadow root");
+    assert!(
+        staged_payload.contains("import.meta.glob"),
+        "the raw payload must be kept verbatim (not macro-expanded as source): {staged_payload}"
+    );
+    let staged_importer = fs::read_to_string(shadow.join("z-importer.ts"))
+        .expect("the root importer must be staged");
+    assert!(
+        !staged_importer.contains("?raw"),
+        "the importer's `?raw` specifier must be rewritten away: {staged_importer}"
+    );
+}
+
 /// Byte-identical: with an EMPTY `bundle.exclude` the dual-target tsconfig
 /// still resolves `@/<name>` against the real project root, so the root
 /// loose-file pass must NOT stage anything — preserving the pre-#1692 output.

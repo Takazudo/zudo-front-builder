@@ -4365,6 +4365,14 @@ fn stage_project_root_loose_files(
         // stay defensive here (the same "rebuild more, not less" bias).
         Err(_) => return Ok(()),
     };
+    // Collect the eligible loose files first (deterministic order), then
+    // preflight-then-materialise: the global preflight pass never visited the
+    // project ROOT's own files (only pages/content/components/layouts/extra),
+    // so a `?raw` edge between two root files must be established here before
+    // either is materialised — otherwise `read_dir` order could materialise a
+    // `.ts` raw PAYLOAD as source (expanding its own macros / rejecting it)
+    // before the importer's terminal edge marks it a raw target.
+    let mut loose_files: Vec<PathBuf> = Vec::new();
     for entry in entries.flatten() {
         if !entry.file_type().is_ok_and(|ft| ft.is_file()) {
             continue;
@@ -4388,14 +4396,28 @@ fn stage_project_root_loose_files(
         if ctx.bundle_exclude.is_excluded(&src, ctx.project_root) {
             continue;
         }
-        let dest = shadow.join(name.as_ref());
-        if raw_source_extension(&src) {
+        loose_files.push(src);
+    }
+    loose_files.sort();
+
+    // Preflight pass — establish every terminal raw-target identity among the
+    // root files before any of them is materialised (mirrors the tree-level
+    // `preflight_raw_tree` → `materialise_shadow` ordering).
+    for src in &loose_files {
+        if raw_source_extension(src) {
+            preflight_raw_file(src, src, ctx);
+        }
+    }
+
+    for src in &loose_files {
+        let dest = shadow.join(src.file_name().unwrap_or_default());
+        if raw_source_extension(src) {
             // A source file reached via `@/<name>` may itself carry `?raw` /
             // glob / worker syntax — run it through the same preprocessing the
             // project source walks apply, so its rewrites land in the shadow.
             materialise_source_file(
-                &src,
-                &src,
+                src,
+                src,
                 &dest,
                 &|path| ctx.bundle_exclude.is_excluded(path, ctx.project_root),
                 ctx.copy_mode,
@@ -4414,7 +4436,7 @@ fn stage_project_root_loose_files(
                 )
             })?;
         } else {
-            ctx.writer.copy_if_changed(&src, &dest).with_context(|| {
+            ctx.writer.copy_if_changed(src, &dest).with_context(|| {
                 format!(
                     "bundler: stage project-root loose file {} -> {}",
                     src.display(),
