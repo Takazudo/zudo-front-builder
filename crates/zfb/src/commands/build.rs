@@ -705,9 +705,14 @@ impl BuildRunner for DefaultRunner {
         // bytes. Either slot independently returns `None` when the
         // project doesn't exercise it (Tailwind disabled, no
         // `"use client"` components, etc.).
-        let css =
-            build_default_css_payload(project_root, outdir, config, package_route_entrypoints)
-                .context("CSS emitter (DefaultRunner) failed")?;
+        let css = build_default_css_payload(
+            project_root,
+            outdir,
+            config,
+            package_route_entrypoints,
+            &self.islands_plugin_config.alias_entries,
+        )
+        .context("CSS emitter (DefaultRunner) failed")?;
         let (islands, registered_marker_names) = build_default_islands_payload_with_bundle_options(
             project_root,
             user_pages_dir,
@@ -776,6 +781,12 @@ pub(crate) fn build_default_css_payload(
     // dirs) are scanned and not silently pruned from the emitted stylesheet.
     // Empty on the no-package-route path (byte-identical parity).
     package_route_entrypoints: &[PathBuf],
+    // Sibling Mirror (issue #1691/#1696): tsconfig/plugin alias targets
+    // (claim source b), forwarded to `discover_css_source_files` so a
+    // claimed workspace-sibling package's own source files join the CSS
+    // Modules scan. Empty on the no-workspace / no-alias path (byte-identical
+    // parity).
+    plugin_alias_entries: &[(String, String)],
 ) -> Result<Option<AssetEmitterPayload>> {
     // `tailwind: { enabled: false }` disables only the Tailwind layers,
     // not the authored-CSS pipeline. Route to the Tailwind-free path so
@@ -791,10 +802,15 @@ pub(crate) fn build_default_css_payload(
 
     let tailwind_enabled = config.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
     if !tailwind_enabled {
-        return build_authored_only_css_payload(project_root, outdir, framework_css);
+        return build_authored_only_css_payload(
+            project_root,
+            outdir,
+            framework_css,
+            plugin_alias_entries,
+        );
     }
 
-    let sources = discover_css_source_files(project_root);
+    let sources = discover_css_source_files(project_root, plugin_alias_entries);
     if sources.is_empty() {
         // No scannable surface — Tailwind would emit only its
         // preflight + reset bytes, which still yields a non-empty
@@ -983,9 +999,17 @@ fn run_css_emitter<E: CssEngine>(
         // class-map writer when `class_map_dir` is `Some`. Pin it to
         // the configured outdir for forward-compat.
         output_root: outdir.to_path_buf(),
-        // Hash root shared with `compute_css_module_class_maps` via
-        // `CssModulesConfig::for_project_root` (issue #825).
-        modules_config: zfb_css::modules::CssModulesConfig::for_project_root(project_root),
+        // Hash root shared with `compute_css_module_class_maps` via the
+        // workspace-aware `for_project_and_first_party_roots` constructor
+        // (issues #825/#1694) — a claimed sibling `.module.css` (issue
+        // #1696) hashes off its `first_party_root`-relative path here too,
+        // so its scoped `[hash]` prefix agrees with the class map.
+        // `first_party_root == project_root` outside a workspace, so this
+        // is byte-identical to the old `for_project_root` call there.
+        modules_config: zfb_css::modules::CssModulesConfig::for_project_and_first_party_roots(
+            project_root,
+            &zfb_types::first_party_root_for(project_root),
+        ),
         // zfb-hi.css default token stylesheet, class-mode only (#1533).
         // Computed once by the caller (`build_default_css_payload`) and
         // threaded down as a plain `Option<String>`, so both the Tailwind
@@ -1031,6 +1055,7 @@ fn build_authored_only_css_payload(
     project_root: &Path,
     outdir: &Path,
     framework_css: Option<String>,
+    plugin_alias_entries: &[(String, String)],
 ) -> Result<Option<AssetEmitterPayload>> {
     let authored_css = match resolve_input_global_css(project_root) {
         Some(path) => {
@@ -1047,7 +1072,7 @@ fn build_authored_only_css_payload(
         None => String::new(),
     };
 
-    let sources = discover_css_source_files(project_root);
+    let sources = discover_css_source_files(project_root, plugin_alias_entries);
     let engine = AuthoredCssEngine::new(authored_css);
 
     let payload = run_css_emitter(engine, project_root, outdir, sources, framework_css)?;
@@ -1141,6 +1166,37 @@ pub(crate) fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Infra directories skipped when wholesale-walking a claimed sibling
+/// mirror root for CSS-scan sources (issue #1696). Mirrors
+/// `zfb_build::bundler`'s own `MIRROR_SKIP_DIRS` used to wholesale-mirror
+/// the same root into the SSR shadow, so the CSS-side walk and the
+/// bundler's real mirror agree on what counts as infra vs. source.
+const CSS_SIBLING_MIRROR_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "dist",
+    ".git",
+    "target",
+    ".turbo",
+    ".next",
+    ".vercel",
+];
+
+/// Push `path` onto `out` iff its extension (case-insensitively) is one of
+/// `extensions`. Shared by both walk loops in [`discover_css_source_files`]
+/// so the project-root walk (`walkdir`) and the sibling-mirror-root walk
+/// (`ignore`) apply the identical filter.
+fn push_if_matching_extension(path: PathBuf, extensions: &[&str], out: &mut Vec<PathBuf>) {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    if let Some(ext) = ext {
+        if extensions.contains(&ext.as_str()) {
+            out.push(path);
+        }
+    }
+}
+
 /// Walk the conventional CSS-content roots (`pages/`, `components/`,
 /// `layouts/`, `content/`) and return every TSX/TS/JSX/JS/MDX/MD
 /// source file beneath them. Used as the `sources` field for the
@@ -1152,7 +1208,24 @@ pub(crate) fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
 /// Order is filesystem walk order — the CSS pipeline's discovery
 /// step de-dupes against an internal HashSet, so determinism is the
 /// pipeline's responsibility, not this helper's.
-fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
+///
+/// Sibling Mirror (issue #1691/#1696): a project file can reach a
+/// workspace-sibling COMPONENT through a claimed tsconfig/plugin alias
+/// (e.g. `@shared/Button` -> a sibling package). That component's own
+/// relative `import styles from "./Button.module.css"` is only found by
+/// the scanner below when the component file itself is a scan source —
+/// so every claimed [`zfb_build::SiblingMirrorPlan`] mirror root is
+/// additionally walked wholesale, same as the bundler's own wholesale
+/// sibling mirror. The plan is built from claim source (b) only
+/// (tsconfig / plugin alias targets): claim sources (a)/(c) key off the
+/// bundler's preprocessing-discovery graph, which does not exist yet at
+/// this pre-bundle command-layer call site. Empty (and inert) for a
+/// standalone project, so a non-workspace build walks exactly the same
+/// files as before.
+fn discover_css_source_files(
+    project_root: &Path,
+    plugin_alias_entries: &[(String, String)],
+) -> Vec<std::path::PathBuf> {
     let mut out: Vec<std::path::PathBuf> = Vec::new();
     let extensions = ["tsx", "ts", "jsx", "js", "mdx", "md"];
     for root in zfb_css::engine::DEFAULT_CONTENT_ROOTS {
@@ -1167,16 +1240,41 @@ fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
             if !entry.file_type().is_file() {
                 continue;
             }
-            let ext = entry
-                .path()
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_ascii_lowercase());
-            if let Some(ext) = ext {
-                if extensions.contains(&ext.as_str()) {
-                    out.push(entry.into_path());
+            push_if_matching_extension(entry.into_path(), &extensions, &mut out);
+        }
+    }
+
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let tsconfig_paths = read_tsconfig_paths(project_root);
+    let plan = zfb_build::SiblingMirrorPlan::compute(
+        project_root,
+        &first_party_root,
+        &std::collections::BTreeSet::new(),
+        &tsconfig_paths,
+        plugin_alias_entries,
+    );
+    for mirror_root in plan.mirror_roots() {
+        let walker = ignore::WalkBuilder::new(mirror_root)
+            .standard_filters(true) // .gitignore + .git/info/exclude + global gitignore + hidden
+            .require_git(false) // honor .gitignore even when the sibling isn't a git repo
+            .filter_entry(|entry| {
+                if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                    let name = entry.file_name().to_string_lossy();
+                    if CSS_SIBLING_MIRROR_SKIP_DIRS
+                        .iter()
+                        .any(|skip| name == *skip)
+                    {
+                        return false;
+                    }
                 }
+                true
+            })
+            .build();
+        for entry in walker.flatten() {
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                continue;
             }
+            push_if_matching_extension(entry.into_path(), &extensions, &mut out);
         }
     }
     out
@@ -1194,9 +1292,10 @@ fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
 ///
 /// The scoped class names produced here MUST be byte-identical to the
 /// ones in the emitted `styles-<hash>.css` — both sides run
-/// `CssModulesProcessor` with `CssModulesConfig::default()` (the same
-/// config `CssPipeline` uses inside `build_emitter`), so the scoped
-/// names agree without a shared channel.
+/// `CssModulesProcessor` with the same workspace-aware hash root (issue
+/// #1694's `for_project_and_first_party_roots`, the same config
+/// `run_css_emitter` feeds its pipeline), so the scoped names agree
+/// without a shared channel.
 ///
 /// Returns an empty map when no `.module.css` files are reachable — the
 /// build then behaves exactly as before.
@@ -1207,12 +1306,25 @@ fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
 /// so the class-map rewrite must run in lockstep or the HTML `class`
 /// attributes would reference classes that never appear in the
 /// stylesheet.
+///
+/// Sibling Mirror (issue #1691/#1696): a resolved module outside
+/// `project_root` is kept only when the [`zfb_build::SiblingMirrorPlan`]
+/// actually claims it. `discover_css_source_files` already restricts scan
+/// *sources* to project files + claimed sibling files, but a claimed
+/// sibling source can still contain a stray relative import that escapes
+/// its own claimed region (e.g. `../../another-unclaimed-lib/x.module.css`)
+/// — the real SSR shadow never mirrors that region, so including it here
+/// would desync the class map from the emitted stylesheet. This is the
+/// gate that makes an unclaimed sibling `.module.css` a no-op for CSS
+/// output, matching the epic invariant that esbuild-visible reachability
+/// (staged trees) is the only thing that ships.
 pub(crate) fn compute_css_module_class_maps(
     project_root: &Path,
+    plugin_alias_entries: &[(String, String)],
 ) -> Result<std::collections::HashMap<PathBuf, std::collections::HashMap<String, String>>> {
     use std::collections::HashMap;
 
-    let sources = discover_css_source_files(project_root);
+    let sources = discover_css_source_files(project_root, plugin_alias_entries);
     if sources.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1220,21 +1332,42 @@ pub(crate) fn compute_css_module_class_maps(
     let scan =
         zfb_css::scan_css_module_imports(&sources).context("CSS Modules import scan failed")?;
 
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let project_root_norm = zfb_types::normalize_path_lexical(project_root);
+    let plan = zfb_build::SiblingMirrorPlan::compute(
+        project_root,
+        &first_party_root,
+        &std::collections::BTreeSet::new(),
+        &read_tsconfig_paths(project_root),
+        plugin_alias_entries,
+    );
+
     // Auto-discovered modules: keep only resolved paths that exist on
     // disk — mirrors `CssPipeline::collect_modules`. Bare specifiers
     // (`@org/pkg/x.module.css`) cannot be compiled by lightningcss and
-    // are dropped here too.
-    let module_files: Vec<PathBuf> = scan.modules.into_iter().filter(|m| m.exists()).collect();
+    // are dropped here too. A path outside `project_root` is kept only
+    // when the claim plan stages that sibling region — see the doc
+    // comment above.
+    let module_files: Vec<PathBuf> = scan
+        .modules
+        .into_iter()
+        .filter(|m| m.exists())
+        .filter(|m| m.starts_with(&project_root_norm) || plan.claims_path(m))
+        .collect();
     if module_files.is_empty() {
         return Ok(HashMap::new());
     }
 
-    // Hash scoped names off the project-relative path via the shared
-    // `for_project_root` constructor (issue #825) — the same config
+    // Hash scoped names off the project-relative (or, for a claimed
+    // sibling, workspace-sibling-relative) path via the shared
+    // workspace-aware constructor (issues #825/#1694) — the same config
     // `run_css_emitter` feeds its pipeline, so the scoped names baked into
     // the JSX rewrite match the ones in the emitted `styles-<hash>.css`.
     let processor = zfb_css::CssModulesProcessor::new(
-        zfb_css::modules::CssModulesConfig::for_project_root(project_root),
+        zfb_css::modules::CssModulesConfig::for_project_and_first_party_roots(
+            project_root,
+            &first_party_root,
+        ),
     );
     let out = processor
         .process(&module_files)
@@ -8127,7 +8260,7 @@ mod tests {
             ..Config::default()
         };
         let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
                 .expect("should not error")
                 .expect(
                     "expected Some payload: authored CSS + module must ship even with tailwind off",
@@ -8155,7 +8288,7 @@ mod tests {
 
         // And the class-map producer must run in lockstep so the HTML
         // `class` attributes reference classes that actually ship.
-        let maps = compute_css_module_class_maps(project_root).expect("class maps");
+        let maps = compute_css_module_class_maps(project_root, &[]).expect("class maps");
         assert!(
             !maps.is_empty(),
             "CSS Modules class maps must be non-empty when tailwind is disabled",
@@ -8189,7 +8322,7 @@ mod tests {
             ..Config::default()
         };
         let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
                 .expect("should not error");
         assert!(
             payload.is_none(),
@@ -8216,7 +8349,7 @@ mod tests {
             ..Config::default()
         };
         let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
                 .expect("should not error")
                 .expect("authored CSS must still ship");
         let css = String::from_utf8(payload.bytes).unwrap();
@@ -8269,7 +8402,7 @@ mod tests {
             code_highlight: Some(code_highlight_config(CodeHighlightMode::Class, true, "hi-")),
             ..Config::default()
         };
-        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
             .expect("should not error")
             .expect(
                 "expected Some payload: default_hi_css() is non-empty so class mode always ships a payload",
@@ -8312,7 +8445,7 @@ mod tests {
             ..Config::default()
         };
         let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
                 .expect("should not error")
                 .expect("authored global CSS keeps the payload non-empty");
 
@@ -8344,7 +8477,7 @@ mod tests {
             ..Config::default()
         };
         let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
                 .expect("should not error")
                 .expect("authored global CSS keeps the payload non-empty");
 
@@ -8352,6 +8485,168 @@ mod tests {
         assert!(
             !css.contains("--zfb-hi-kw"),
             "inline mode (default) must never ship the class-mode token stylesheet; got:\n{css}",
+        );
+    }
+
+    // ── Sibling Mirror (issue #1691/#1696): sibling `.module.css` class
+    // maps + CSS emission through the claim plan ─────────────────────────
+
+    /// Workspace + claimed-sibling-alias fixture shared by the sibling CSS
+    /// Modules tests below. Layout:
+    ///
+    /// ```text
+    /// <ws>/pnpm-workspace.yaml              packages: ['.', 'sub-packages/*']
+    /// <ws>/sub-packages/host/                the project (host)
+    /// <ws>/sub-packages/host/tsconfig.json   "@shared/*" -> "../../lib/shared/*"
+    /// <ws>/lib/shared/Button.tsx             relatively imports ./Button.module.css
+    /// <ws>/lib/shared/Button.module.css      the CLAIMED sibling module
+    /// ```
+    ///
+    /// The wildcard tsconfig alias is claim source (b) of
+    /// `zfb_build::SiblingMirrorPlan` — no `package.json` sits between
+    /// `lib/shared` and the workspace root, so the mirror root resolves to
+    /// the claim's own directory (`resolve_mirror_root`'s bare-dir branch).
+    /// Returns `(TempDir, project_root)`; the guard must stay alive for the
+    /// fixture files to keep existing.
+    fn sibling_css_workspace_fixture() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::write(
+            ws.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+
+        let project = ws.join("sub-packages/host");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("tsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"@shared/*":["../../lib/shared/*"]}}}"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(ws.join("lib/shared")).unwrap();
+        std::fs::write(
+            ws.join("lib/shared/Button.tsx"),
+            "import styles from \"./Button.module.css\";\n\
+             export default function Button() { return styles.root; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("lib/shared/Button.module.css"),
+            ".root { color: blue; }\n",
+        )
+        .unwrap();
+
+        (tmp, project)
+    }
+
+    /// Acceptance: a sibling `.module.css` reached through a claimed
+    /// tsconfig wildcard alias (`@shared/*`) gets a class map keyed by its
+    /// physical path — `discover_css_source_files` walked the sibling's own
+    /// `Button.tsx` (since it sits under a claimed
+    /// `SiblingMirrorPlan` mirror root), and the scanner resolved its
+    /// relative `./Button.module.css` import from there.
+    #[test]
+    fn compute_css_module_class_maps_includes_claimed_sibling_module() {
+        let (_tmp, project) = sibling_css_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap();
+        let sibling_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/shared/Button.module.css"));
+
+        let maps = compute_css_module_class_maps(&project, &[]).expect("class maps");
+        let names = maps.get(&sibling_module).unwrap_or_else(|| {
+            panic!(
+                "claimed sibling .module.css must get a class map keyed by its physical path \
+                 {}; got keys: {:?}",
+                sibling_module.display(),
+                maps.keys().collect::<Vec<_>>()
+            )
+        });
+        assert!(
+            names.contains_key("root"),
+            "scoped class for `.root` must appear in the sibling's class map; got: {names:?}",
+        );
+    }
+
+    /// Acceptance: with Tailwind disabled (hermetic — no tailwind binary
+    /// required), the emitted stylesheet contains the scoped sibling class
+    /// AND its name matches the one `compute_css_module_class_maps`
+    /// (the bundler's JSX-rewrite producer) computed — proving the CSS
+    /// emission path and the class-map path agree on a claimed sibling,
+    /// driven end-to-end through the real command-layer functions (not a
+    /// manually-supplied map).
+    #[test]
+    fn css_payload_emits_claimed_sibling_module_css_and_matches_class_map() {
+        let (_tmp, project) = sibling_css_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            ..Config::default()
+        };
+        let payload = build_default_css_payload(&project, &project.join("dist"), &cfg, &[], &[])
+            .expect("should not error")
+            .expect("claimed sibling module must ship a non-empty payload");
+        let css = String::from_utf8(payload.bytes).unwrap();
+
+        let sibling_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/shared/Button.module.css"));
+        let maps = compute_css_module_class_maps(&project, &[]).expect("class maps");
+        let scoped = maps
+            .get(&sibling_module)
+            .and_then(|names| names.get("root"))
+            .cloned()
+            .expect("bundler map must contain the scoped `.root` class for the sibling module");
+
+        assert!(
+            css.contains(&format!(".{scoped}")),
+            "emitted CSS must contain the scoped sibling class `.{scoped}`; got:\n{css}",
+        );
+    }
+
+    /// Acceptance: an UNCLAIMED sibling `.module.css` — no tsconfig/plugin
+    /// alias targets its directory, so no `SiblingMirrorPlan` mirror root
+    /// covers it — must not change CSS output. `discover_css_source_files`
+    /// never walks it (nothing claims the directory), so it never becomes a
+    /// scan source and the class map stays exactly as if the file did not
+    /// exist. The CLAIMED sibling from the shared fixture is asserted
+    /// present too, so the negative result is provably due to the missing
+    /// claim, not a wholesale regression.
+    #[test]
+    fn compute_css_module_class_maps_ignores_unclaimed_sibling_module() {
+        let (_tmp, project) = sibling_css_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap().to_path_buf();
+
+        std::fs::create_dir_all(ws.join("lib/other")).unwrap();
+        std::fs::write(
+            ws.join("lib/other/Widget.tsx"),
+            "import styles from \"./Widget.module.css\";\n\
+             export default function Widget() { return styles.root; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("lib/other/Widget.module.css"),
+            ".root { color: green; }\n",
+        )
+        .unwrap();
+
+        let maps = compute_css_module_class_maps(&project, &[]).expect("class maps");
+
+        let unclaimed_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/other/Widget.module.css"));
+        assert!(
+            !maps.contains_key(&unclaimed_module),
+            "an unclaimed sibling .module.css must not appear in the class map; got keys: {:?}",
+            maps.keys().collect::<Vec<_>>()
+        );
+
+        let claimed_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/shared/Button.module.css"));
+        assert!(
+            maps.contains_key(&claimed_module),
+            "the claimed sibling from the fixture must still be present; got keys: {:?}",
+            maps.keys().collect::<Vec<_>>()
         );
     }
 
