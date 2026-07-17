@@ -2769,86 +2769,69 @@ pub fn bundle_with_session(
     }
 
     // 2a-ws. Workspace-hoisted `node_modules` at the WORK root (issue #1668
-    //     part 1). In a pnpm workspace the deps are hoisted to the workspace
-    //     root, so the work mirror gets its own `<work>/node_modules` symlink
-    //     — the SECOND install root above the project's own nested install
-    //     (linked at `<shadow>/node_modules` by 2b below). esbuild walks up
-    //     from a project-mirror file to `<shadow>/node_modules` first, then to
-    //     `<work>/node_modules`, preserving nearest-package precedence for the
-    //     day sibling sources are staged (a later sub-issue).
+    //     part 1; contract inverted by #1693). In a pnpm workspace the deps
+    //     are hoisted to the workspace root, so the work mirror gets its own
+    //     `<work>/node_modules` symlink — the SECOND install root above the
+    //     project's own nested install (linked at `<shadow>/node_modules` by
+    //     2b below). esbuild walks up from a project-mirror file to
+    //     `<shadow>/node_modules` first, then to `<work>/node_modules`,
+    //     preserving nearest-package precedence — including for a
+    //     wholesale-mirrored sibling staged directly under
+    //     `<work>/<workspace_rel>/...` (#1692), which has no ancestor
+    //     `node_modules` to resolve a bare import against unless this link
+    //     exists.
     //
-    //     WHAT lives there follows `bundle.exclude` EXACTLY like the 2b link:
-    //     - Empty exclude → create the live link (byte-identical nearest
-    //       -package fallback).
-    //     - Exclusions active → the live link is a resurrection hatch: esbuild
-    //       could climb `<work>/node_modules` to a package the staged
-    //       `<shadow>` view deliberately omits, and the metafile audit cannot
-    //       catch it because the canonical workspace-root path is OUTSIDE
-    //       `project_root`, where the exclusion matcher always returns false.
-    //       So it is NEVER created, and a stale link from a previous empty
-    //       -exclude tick of a persistent session is actively removed (same
-    //       empty→non-empty transition the 2b block handles).
+    //     UNLIKE the 2b link, this one is now created REGARDLESS of
+    //     `bundle.exclude` — empty or active. Removing it under exclusions
+    //     (the pre-#1693 behavior) broke every sibling bare import, not just
+    //     the excluded ones, once #1692 started staging sibling sources
+    //     outside `<shadow>`. "Exclusion = absence from a staged shadow tree"
+    //     stays enforceable anyway: the fail-closed metafile audit
+    //     (`audit_metafile_exclusions_at_path`, run after esbuild below)
+    //     checks every input esbuild actually resolved — canonicalised —
+    //     against the TIER-2 workspace-relative `BundleExcludeMatcher`
+    //     pattern set (issue #1676), which is armed for exactly this case: a
+    //     resolved path under `first_party_root` but outside `project_root`.
+    //     So a resurrection climbing this link is not silently missed — it
+    //     hard-fails the build as an offending metafile input, the same
+    //     fail-closed guarantee the old "never create the link" approach
+    //     gave, without breaking legitimate sibling deps.
     //
     //     Without a workspace `workspace_rel` is `None`, so this is skipped
-    //     entirely and the layout stays byte-identical. Created/removed
-    //     directly (not through the ShadowWriter), like the 2b link, so it
-    //     never enters the prune bookkeeping.
+    //     entirely and the layout stays byte-identical. Created directly (not
+    //     through the ShadowWriter), like the 2b link, so it never enters the
+    //     prune bookkeeping.
     if workspace_rel.is_some() {
         let workspace_node_modules = first_party_root.join("node_modules");
         if workspace_node_modules.is_dir() {
             let work_nm = work.join("node_modules");
-            if bundle_exclude.is_empty() {
-                #[cfg(unix)]
-                {
-                    let already_correct = fs::read_link(&work_nm)
-                        .map(|t| t == workspace_node_modules)
-                        .unwrap_or(false);
-                    if !already_correct {
-                        let _ = fs::remove_file(&work_nm);
-                        let _ = fs::remove_dir_all(&work_nm);
-                        std::os::unix::fs::symlink(&workspace_node_modules, &work_nm)
-                            .with_context(|| {
-                                format!(
-                                    "bundler: failed to symlink workspace node_modules {} → {}",
-                                    workspace_node_modules.display(),
-                                    work_nm.display()
-                                )
-                            })?;
-                    }
+            #[cfg(unix)]
+            {
+                let already_correct = fs::read_link(&work_nm)
+                    .map(|t| t == workspace_node_modules)
+                    .unwrap_or(false);
+                if !already_correct {
+                    let _ = fs::remove_file(&work_nm);
+                    let _ = fs::remove_dir_all(&work_nm);
+                    std::os::unix::fs::symlink(&workspace_node_modules, &work_nm).with_context(
+                        || {
+                            format!(
+                                "bundler: failed to symlink workspace node_modules {} → {}",
+                                workspace_node_modules.display(),
+                                work_nm.display()
+                            )
+                        },
+                    )?;
                 }
-                #[cfg(not(unix))]
-                {
-                    fs::create_dir_all(&work_nm).with_context(|| {
-                        format!(
-                            "bundler: failed to create workspace node_modules dir {}",
-                            work_nm.display()
-                        )
-                    })?;
-                }
-            } else {
-                // Exclusions active: remove any stale live link left by a
-                // previous empty-exclude tick of a persistent session.
-                // `remove_file` deletes the symlink itself (not its target);
-                // a real dir (never created here) is left untouched.
-                #[cfg(unix)]
-                {
-                    if fs::symlink_metadata(&work_nm)
-                        .map(|m| m.file_type().is_symlink())
-                        .unwrap_or(false)
-                    {
-                        let _ = fs::remove_file(&work_nm);
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    if fs::symlink_metadata(&work_nm)
-                        .map(|m| m.file_type().is_symlink())
-                        .unwrap_or(false)
-                    {
-                        let _ = fs::remove_file(&work_nm);
-                        let _ = fs::remove_dir(&work_nm);
-                    }
-                }
+            }
+            #[cfg(not(unix))]
+            {
+                fs::create_dir_all(&work_nm).with_context(|| {
+                    format!(
+                        "bundler: failed to create workspace node_modules dir {}",
+                        work_nm.display()
+                    )
+                })?;
             }
         }
     }
@@ -13746,14 +13729,28 @@ mod tests {
     }
 
     #[test]
-    fn ssr_shadow_workspace_node_modules_link_honors_bundle_exclude() {
-        // The workspace-hoisted `<work>/node_modules` link is a live-tree
-        // resolution root, so it must obey `bundle.exclude` exactly like the
-        // project-level 2b link: created under an empty exclude, but NEVER
-        // under active exclusions (else esbuild could climb it to a package
-        // the staged `<shadow>` view deliberately omits — a resurrection
-        // hatch the metafile audit cannot catch because the canonical
-        // workspace-root path is outside `project_root`).
+    fn ssr_shadow_workspace_node_modules_link_created_under_bundle_exclude() {
+        // INVERSION of the former `ssr_shadow_workspace_node_modules_link_
+        // honors_bundle_exclude` (issue #1693, #1672-style guard-inversion
+        // ritual): that test pinned a guard which NEVER created the
+        // workspace-hoisted `<work>/node_modules` link once `bundle.exclude`
+        // went active, reasoning that the link was an unauditable
+        // resurrection hatch. Once #1692's wholesale sibling mirror stages
+        // sibling sources directly under `<work>/<workspace_rel>/...`
+        // (outside `<shadow>`), those siblings have no ancestor
+        // `node_modules` to resolve a bare import against unless this link
+        // exists — so removing it under exclusions broke every sibling bare
+        // import, not just excluded ones.
+        //
+        // The link is now created REGARDLESS of `bundle.exclude`. The old
+        // "unauditable" premise is gone too: the fail-closed metafile audit
+        // (`audit_metafile_exclusions_at_path`, exercised directly in
+        // `metafile_audit_hard_fails_on_workspace_node_modules_resurrection`
+        // below) checks every esbuild-resolved input against the TIER-2
+        // workspace-relative `BundleExcludeMatcher` (issue #1676), which is
+        // armed for exactly a path under `first_party_root` but outside
+        // `project_root` — so a resurrection climbing this link is caught,
+        // not silently missed.
         let ws_tmp = tempfile::tempdir().unwrap();
         let ws_root = ws_tmp.path();
         fs::write(
@@ -13779,21 +13776,24 @@ mod tests {
         .unwrap();
 
         let work_nm = |session: &ShadowSession| session.shadow_root().join("node_modules");
+        let link_targets_workspace_node_modules = |session: &ShadowSession| {
+            fs::read_link(work_nm(session))
+                .map(|target| target == ws_root.join("node_modules"))
+                .unwrap_or(false)
+        };
 
-        // Tick 1 — empty exclude: the workspace-hoisted link IS created.
+        // Tick 1 — empty exclude: the workspace-hoisted link IS created
+        // (unchanged from before #1693).
         let mut session = ShadowSession::new(&project).unwrap();
         bundle_with_session(mock_ssr_input(&project), Some(&mut session))
             .expect("tick 1 (empty exclude) mock bundle");
         assert!(
-            fs::symlink_metadata(work_nm(&session))
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false),
+            link_targets_workspace_node_modules(&session),
             "an empty bundle.exclude must create the workspace-hoisted node_modules link"
         );
 
-        // Tick 2 — same session, exclusions now active: the stale live link
-        // must be removed (empty→non-empty transition), so no live-tree escape
-        // survives.
+        // Tick 2 — same session, exclusions now active: the link stays
+        // PRESENT (the #1693 inversion) instead of being torn down.
         let excluded_input = BundlerInput {
             bundle_exclude: vec!["**/*.secret".to_string()],
             ..mock_ssr_input(&project)
@@ -13801,8 +13801,187 @@ mod tests {
         bundle_with_session(excluded_input, Some(&mut session))
             .expect("tick 2 (active exclude) mock bundle");
         assert!(
-            !work_nm(&session).exists(),
-            "active bundle.exclude must remove the workspace-hoisted link (live-tree escape)"
+            link_targets_workspace_node_modules(&session),
+            "an active bundle.exclude must NOT remove the workspace-hoisted node_modules link \
+             (#1693) — sibling bare imports need it; the metafile audit is the enforcement point"
+        );
+    }
+
+    #[test]
+    fn metafile_audit_hard_fails_on_workspace_node_modules_resurrection() {
+        // Fail-closed proof for the #1693 contract: now that the workspace
+        // -hoisted `<work>/node_modules` link is always created (see the
+        // inverted guard test above), a synthetic metafile whose `inputs`
+        // record esbuild having resolved THROUGH that link into a package an
+        // active `bundle.exclude` pattern matches — workspace-relative,
+        // tier-2 (#1676) — must be caught by `audit_metafile_exclusions`,
+        // exactly the way it already catches a project-relative leak. This
+        // is the direct replacement for the deleted "never create the link"
+        // guard: enforcement moved from link-absence to audit-detection.
+        let ws_tmp = tempfile::tempdir().unwrap();
+        let ws_root = ws_tmp.path();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let secret_pkg = ws_root.join("node_modules/secret-pkg/index.js");
+        fs::create_dir_all(secret_pkg.parent().unwrap()).unwrap();
+        fs::write(&secret_pkg, "module.exports = 'leaked';\n").unwrap();
+
+        let project = ws_root.join("sub-packages/host");
+        fs::create_dir_all(&project).unwrap();
+        let shadow_root = ws_tmp.path().join("shadow");
+        fs::create_dir_all(&shadow_root).unwrap();
+
+        // The excluded package resolved through the always-present
+        // `<work>/node_modules` link: esbuild records the absolute path it
+        // climbed to, which lands under `first_party_root` (the workspace
+        // root) but OUTSIDE `project_root` — precisely the tier-2 shape.
+        // Deliberately NOT canonicalised: spelling 1 below (the logical key
+        // joined onto `project_root`) never canonicalises either, and
+        // `ws_root` is used lexically throughout this test, so comparing
+        // like-for-like avoids a spurious `/var` vs `/private/var` mismatch
+        // on macOS that a canonicalised key would introduce here.
+        let metafile = format!(
+            r#"{{"inputs": {{ {:?}: {{ "imports": [] }} }} }}"#,
+            secret_pkg.to_string_lossy()
+        );
+
+        let matcher = BundleExcludeMatcher::new(&["node_modules/secret-pkg/**".to_string()])
+            .unwrap()
+            .with_workspace_root(&project);
+        let is_excluded = |abs: &Path| matcher.is_excluded(abs, &project);
+
+        let error = crate::metafile_deps::audit_metafile_exclusions(
+            metafile.as_bytes(),
+            &is_excluded,
+            &shadow_root,
+            &project,
+        )
+        .expect_err(
+            "the metafile audit must hard-fail when an excluded sibling-workspace package \
+             resolved through the workspace-hoisted node_modules link",
+        );
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("bundle.exclude leak"),
+            "the audit error must name the leak: {message}"
+        );
+        assert!(
+            message.contains("secret-pkg"),
+            "the audit error must list the offending resolved path: {message}"
+        );
+    }
+
+    #[test]
+    fn sibling_bare_import_resolves_via_workspace_node_modules_under_exclude() {
+        // Mock-level staging assertion (issue #1693 acceptance criterion 3):
+        // a workspace-sibling file discovered through the existing
+        // preprocessing-graph closure (issue #1668 part 2 — the wholesale
+        // directory mirror lands in #1692) is staged into `<work>/lib/
+        // shared/...`, and — with `bundle.exclude` active for an UNRELATED
+        // pattern — the workspace-hoisted `<work>/node_modules` link still
+        // exists as this test's sibling directory's DIRECT ancestor within
+        // `<work>`. That is the exact filesystem precondition esbuild's
+        // ordinary node_modules walk-up needs to resolve a bare import
+        // (`left-pad`) from the staged sibling: no real esbuild subprocess
+        // runs here (real-esbuild confirmation belongs to sub-issue #1698),
+        // this asserts the staged tree SHAPE esbuild would walk.
+        let ws_tmp = tempfile::tempdir().unwrap();
+        let ws_root = ws_tmp.path();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(ws_root.join("node_modules/left-pad")).unwrap();
+        fs::write(
+            ws_root.join("node_modules/left-pad/index.js"),
+            "module.exports = function concat() {};\n",
+        )
+        .unwrap();
+
+        let project = ws_root.join("sub-packages/host");
+        for dir in ["pages", "content", "components", "layouts", "src"] {
+            fs::create_dir_all(project.join(dir)).unwrap();
+        }
+        fs::write(
+            project.join("pages/index.tsx"),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+
+        // A plain project entry (staged via `plugin_alias_entries`, matching
+        // the existing exact-target discovery path) that plainly imports a
+        // workspace-sibling module — no `?raw`/glob/worker syntax needed:
+        // `discover_module_preprocessing_with_context` walks the whole
+        // relative-import closure, not just preprocessing-triggering edges.
+        let entry = project.join("src/entry.ts");
+        fs::write(
+            &entry,
+            "import { value } from '../../../lib/shared/widget';\n\
+             export const entry = value;\n",
+        )
+        .unwrap();
+        let sibling = ws_root.join("lib/shared/widget.ts");
+        fs::create_dir_all(sibling.parent().unwrap()).unwrap();
+        fs::write(
+            &sibling,
+            "import concat from 'left-pad';\n\
+             export const value = concat('x', 5, '0');\n",
+        )
+        .unwrap();
+
+        let input = BundlerInput {
+            // Excludes something unrelated — proves the link/staging above
+            // is not gated on exclusions being empty.
+            bundle_exclude: vec!["**/*.secret".to_string()],
+            plugin_alias_entries: vec![(
+                "plugin:sibling-bare-entry".to_string(),
+                entry.to_string_lossy().into_owned(),
+            )],
+            ..mock_ssr_input(&project)
+        };
+
+        let mut session = ShadowSession::new(&project).unwrap();
+        bundle_with_session(input, Some(&mut session))
+            .expect("a workspace sibling with a bare import must bundle under active exclusions");
+
+        let work_root = fs::canonicalize(session.shadow_root()).unwrap();
+        let staged_sibling = work_root.join("lib/shared/widget.ts");
+        assert!(
+            staged_sibling.is_file(),
+            "the workspace-sibling module must be staged into the work mirror: {}",
+            staged_sibling.display()
+        );
+        let work_node_modules = work_root.join("node_modules");
+        assert!(
+            fs::symlink_metadata(&work_node_modules)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false),
+            "the workspace-hoisted node_modules link must exist under active exclusions"
+        );
+        assert!(
+            work_node_modules.join("left-pad/index.js").is_file(),
+            "the bare dependency must be reachable from the staged sibling's nearest ancestor \
+             node_modules ({}) — the exact resolution root esbuild's node_modules walk-up would \
+             find climbing from {}",
+            work_node_modules.display(),
+            staged_sibling.display()
+        );
+        // Both the staged sibling's containing dir and the node_modules link
+        // are direct children of the SAME work root, so an ancestor walk
+        // from the sibling (lib/shared → lib → work root) reaches
+        // `<work>/node_modules` without crossing any other node_modules.
+        assert_eq!(
+            staged_sibling
+                .strip_prefix(&work_root)
+                .unwrap()
+                .components()
+                .count(),
+            3,
+            "sibling must be nested exactly 2 dirs below the work root (lib/shared/widget.ts)"
         );
     }
 
