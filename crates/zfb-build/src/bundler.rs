@@ -7273,7 +7273,7 @@ fn path_is_inside_node_modules(path: &Path) -> bool {
 /// `first_party_root == project_root` (with any `work_root`) to make the
 /// first-party tier unreachable — its behavior is then byte-identical to the
 /// pre-#1668 two-tier mapping.
-fn shadow_path_for_project_path(
+pub(crate) fn shadow_path_for_project_path(
     path: &Path,
     project_root: &Path,
     first_party_root: &Path,
@@ -9176,7 +9176,12 @@ fn run_esbuild(
         .map(|(specifier, source)| {
             (
                 specifier.clone(),
-                remap_virtual_module_project_imports_to_shadow(source, &input.project_root),
+                remap_virtual_module_project_imports_to_shadow(
+                    source,
+                    &input.project_root,
+                    first_party_root,
+                    work_root,
+                ),
             )
         })
         .collect::<Vec<_>>();
