@@ -27,6 +27,13 @@
 //! (`base/sweep-260718`, pre-epic — no `SiblingMirrorPlan`, no sibling CSS
 //! discovery) and PASS on the epic branch; see the PR/issue description for
 //! both run transcripts.
+//!
+//! Unix-only (`#![cfg(unix)]`): the fixture symlinks the workspace-hoisted
+//! `node_modules` to the embedded-vendor tree (`std::os::unix::fs::symlink`),
+//! matching `css_modules_components_build.rs`'s
+//! `corp_shape_with_real_node_modules_and_no_tsconfig_paths_builds` gate —
+//! Windows symlinks need admin/developer mode this test doesn't assume.
+#![cfg(unix)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
