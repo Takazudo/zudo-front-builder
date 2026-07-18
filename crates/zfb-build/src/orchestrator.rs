@@ -2323,6 +2323,120 @@ mod tests {
         assert!(orch.plan_for_changes([next_sibling]).rerun_client_scripts);
     }
 
+    /// Issue #1711 (Sibling Invalidation epic #1709, confirm pass) — the
+    /// DELETION gate. `tick_with_kinds` excludes removed paths from
+    /// `plan_for_changes`'s classification (the cold-start All-fallback
+    /// would be wrong for an intentional deletion) and instead applies the
+    /// `is_client_script_*_target` checks directly against the removed path
+    /// in its own loop. `is_client_script_sibling_target` was added to that
+    /// loop alongside raw/worker in #1710; this proves the sibling registry
+    /// is actually wired into the deletion path, not just the two edit-time
+    /// gates already covered above. Mirrors
+    /// `client_raw_dependency_planning_survives_delete_recreate_and_replaces_stale_targets`.
+    #[test]
+    fn client_script_sibling_dependency_deletion_reruns_client_scripts_and_clears_stale_ownership()
+    {
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("lib/shared")).unwrap();
+        let sibling = root.join("lib/shared/plain.ts");
+        let next_sibling = root.join("lib/shared/next-plain.ts");
+        std::fs::write(&sibling, "export const plain = 'ZFB_SIBLING';\n").unwrap();
+        invalidation.replace_client_script_siblings([sibling.clone()]);
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let config = OrchestratorConfig::new(&root, vec![PathBuf::from("pages")]).with_policy(
+            crate::policy::GranularityPolicy::default()
+                .with_raw_import_invalidation(invalidation.clone()),
+        );
+        let orch = BuildOrchestrator::new(config, make_graph(), pipeline);
+        let dist = tempfile::tempdir().unwrap();
+
+        orch.tick_with_kinds(
+            vec![(sibling.clone(), ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let edited = applies.lock().unwrap().last().unwrap().clone();
+        assert!(edited.rerun_client_scripts);
+        assert!(!edited.rerun_islands);
+
+        std::fs::remove_file(&sibling).unwrap();
+        orch.tick_with_kinds(
+            vec![(sibling.clone(), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+        let deleted = applies.lock().unwrap().last().unwrap().clone();
+        assert!(
+            deleted.rerun_client_scripts,
+            "deleting a sibling plain module must still rerun client scripts \
+             so the owning bundle is re-emitted without the removed import"
+        );
+        assert!(!deleted.rerun_islands);
+
+        // Stale-ownership hygiene: after a deletion the lexical alias stays
+        // live (recreate can recover), but once a successful bundle replaces
+        // the graph with a different target, the old path must stop owning
+        // client-script reruns.
+        invalidation.replace_client_script_siblings([next_sibling.clone()]);
+        let stale_tick = orch.plan_for_changes([sibling]);
+        assert!(
+            !stale_tick.rerun_client_scripts,
+            "successful sibling graph replacement must clear stale ownership after a deletion"
+        );
+        assert!(orch.plan_for_changes([next_sibling]).rerun_client_scripts);
+    }
+
+    /// Issue #1711 (Sibling Invalidation epic #1709, confirm pass) — the
+    /// EXTERNAL-INVALIDATION gate. When an `external_invalidation` hook
+    /// narrows an out-of-root path to a specific page set (issue #1038),
+    /// `plan_for_changes` re-applies the asset-flag side effects (CSS /
+    /// islands / client-scripts) additively rather than letting the hook's
+    /// narrowing suppress them — `is_client_script_sibling_target` was added
+    /// to that additive re-apply in #1710 alongside raw/worker. Mirrors
+    /// `external_hook_narrowing_css_still_reruns_css` /
+    /// `external_hook_narrowing_islands_module_still_reruns_islands`.
+    #[test]
+    fn external_hook_narrowing_client_script_sibling_still_reruns_client_scripts() {
+        let sibling = PathBuf::from("/srv/shared/lib/plain.ts");
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_client_script_siblings([sibling.clone()]);
+        let hook: ExternalInvalidationHook =
+            Arc::new(|_path: &Path| Some(vec![pid("/proj/pages/a.tsx")]));
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            )
+            .with_policy(
+                crate::policy::GranularityPolicy::default()
+                    .with_raw_import_invalidation(invalidation),
+            )
+            .with_external_invalidation(hook),
+            make_graph(),
+            CountingPipeline::default(),
+        );
+
+        let plan = orch.plan_for_changes(vec![sibling]);
+        match &plan.pages {
+            PageSelection::Specific(s) => {
+                assert_eq!(*s, BTreeSet::from([pid("/proj/pages/a.tsx")]));
+            }
+            other => unreachable!("expected PageSelection::Specific, got {other:?}"),
+        }
+        assert!(
+            plan.rerun_client_scripts,
+            "narrowing an external sibling plain-module path must still rerun client scripts"
+        );
+        assert!(!plan.rerun_islands);
+        assert!(plan.ssr_reload_needed);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn client_worker_dependency_outside_boot_roots_is_watched() {
         use std::time::Duration;

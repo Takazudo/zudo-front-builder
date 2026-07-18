@@ -4,9 +4,16 @@
 // reaches a second sibling `?raw`. Editing either sibling file must invalidate
 // the dev bundle without a `zfb dev` restart — the dev watcher registers the
 // sibling directory dynamically on the tick that discovers the import.
+//
+// It also imports a sibling PLAIN module (`../../shared/plain`, issue #1711
+// Scenario D) — neither `?raw` nor a worker dependency — proving the
+// `client_script_siblings` registry (issue #1710) closes the DEV loop for
+// that third sibling shape the same way it does for the two above.
 import panel from "../../shared/panel.frag?raw";
+import { plainMarker } from "../../shared/plain";
 
 console.info("ZFB_SIBLING_CLIENT_ENTRY", panel);
+console.info("ZFB_SIBLING_PLAIN_ENTRY", plainMarker);
 
 if (typeof globalThis.addEventListener === "function") {
   globalThis.addEventListener(
