@@ -69,7 +69,7 @@ use zfb_islands::{
     build_production_client_scripts_with_workers, build_production_islands_asset,
     discover_client_scripts, scan_islands_with_meta, scan_reachable_modules_with_meta,
     BundleConfig, ClientScriptWorkerEntry, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
-    FrameworkKind, FsResolver,
+    FrameworkKind, FsResolver, StageAuditPolicy,
 };
 use zfb_router::Router;
 
@@ -2471,6 +2471,31 @@ fn materialise_islands_shadow_with_worker_context(
     let root = first_party_root.as_path();
     let paths = IslandsShadowPaths::new(root);
 
+    // Issue #1703, Stage Escape Guards — Guard (a): a bare package-name
+    // import of a first-party workspace sibling resolves through the
+    // wholesale `node_modules` symlink this shadow sets up below straight
+    // to the UNPROCESSED source, silently bypassing whatever `?raw` /
+    // module-worker / `import.meta.glob` rewrite this shadow exists to
+    // stage. `scan_meta.workspace_package_edges_from_islands` is already
+    // scoped to the island-reachable graph (never a server-only import —
+    // it is projected by the same forward walk as
+    // `raw_import_edges_from_islands`), and this function only ever runs
+    // once the caller has determined staging is needed for this closure,
+    // so a project with no glob/raw/worker preprocessing never reaches
+    // this check.
+    if let Some(edge) = scan_meta.workspace_package_edges_from_islands.first() {
+        return Err(anyhow!(
+            "island module {} imports \"{}\" by its workspace-package name, but this island \
+             graph requires `?raw`/module-worker/`import.meta.glob` shadow staging; a \
+             package-name import resolves through the live node_modules symlink to the \
+             unprocessed source and silently bypasses the staged rewrite — use a tsconfig \
+             alias or relative import to reach a workspace sibling; package-name imports of \
+             first-party siblings are not supported once staging is active",
+            edge.importer.display(),
+            edge.specifier
+        ));
+    }
+
     // --- Pre-flight: every glob module must be shadow-expandable. ---------
     // A glob module outside the mirrorable tree (outside project_root, or
     // under node_modules) would be reached through the whole `node_modules`
@@ -2882,6 +2907,18 @@ fn materialise_islands_shadow_with_worker_context(
     // each shadow file to the nearest mirrored `node_modules`. In a widened
     // workspace shadow, both the workspace-root install and the project's
     // nested install are linked so nearest-package precedence is preserved.
+    //
+    // Issue #1682 (shared with the client-script preprocessing stage below):
+    // a sibling imported through its pnpm PACKAGE NAME resolves through this
+    // live node_modules symlink to the unprocessed source, bypassing the
+    // staged rewrite. Sibling reach via tsconfig alias / relative path
+    // (what #1674 covers) resolves to the staged files instead. Guarded by
+    // this epic (#1702): guard (a) (issue #1703, checked earlier in this
+    // function against `scan_meta.workspace_package_edges_from_islands`)
+    // pre-flight rejects the escape before this symlink is even created;
+    // guard (b) (issue #1705/#1707) is the esbuild-time backstop — a
+    // per-subprocess metafile audit that rejects it even if a lower-level
+    // bundler invocation ever bypassed guard (a).
     if let Some(nm) = first_party_node_modules {
         let shadow_nm = shadow_root.join("node_modules");
         shadow_symlink(&nm, &shadow_nm).with_context(|| {
@@ -3012,6 +3049,79 @@ pub(crate) fn build_default_islands_payload(
         islands_glob_policy,
         raw_invalidation,
     )
+}
+
+/// Issue #1707 (Stage Escape Guards): build the guard (b) stage-escape audit
+/// policy for an islands / client-scripts esbuild config — but ONLY when the
+/// staging root widened past `project_root`, i.e. this is a pnpm-workspace
+/// first-party build where `first_party_root != project_root`.
+///
+/// Outside a workspace `first_party_root_for(project_root)` returns
+/// `normalize_path_lexical(project_root)` verbatim, so the widened check
+/// compares against the *normalized* project root — a raw `!= project_root`
+/// would false-positive whenever `project_root` carries a `.`, trailing
+/// slash, or `..` that normalization strips. When not widened, the wholesale
+/// `node_modules` symlink the stage sets up can only reach the project's OWN
+/// dependency tree (no first-party workspace-sibling to escape to), so the
+/// audit would be pure overhead — the dev loop is latency-sensitive
+/// (`dev_sibling_watch_1678_e2e` guards this pipeline) — and the policy stays
+/// `None`, leaving the argv byte-identical (no `--metafile`).
+///
+/// When widened, the audit is armed with `stage_root` as the sole stage
+/// boundary (every legitimately staged input — the mirrored project plus the
+/// wholesale-mirrored siblings — lives under it) and `first_party_root` as the
+/// live-source boundary a package-name escape climbs to. `metafile_cwd` is not
+/// passed here: [`EsbuildSubprocessConfig`] already runs esbuild from — and
+/// audits against — its `working_dir` (the stage's `bundle_working_dir`,
+/// nested below `stage_root`), wired in issue #1705.
+fn stage_escape_audit_policy(
+    project_root: &Path,
+    first_party_root: &Path,
+    stage_root: &Path,
+) -> Option<StageAuditPolicy> {
+    if first_party_root == zfb_types::normalize_path_lexical(project_root) {
+        return None;
+    }
+    Some(StageAuditPolicy {
+        stage_roots: vec![stage_root.to_path_buf()],
+        first_party_root: first_party_root.to_path_buf(),
+    })
+}
+
+#[cfg(test)]
+mod stage_escape_audit_policy_tests {
+    use super::*;
+
+    #[test]
+    fn none_when_not_widened_even_with_an_unnormalized_project_root() {
+        // Outside a workspace `first_party_root_for` hands back the NORMALIZED
+        // project root, so the widened check compares against that — a raw
+        // `!= project_root` would false-positive on an unnormalized path. An
+        // unnormalized project_root that normalizes to the first-party root is
+        // NOT widened → no policy → no `--metafile` in the argv.
+        let project_root = Path::new("/proj/./sub/..");
+        let first_party_root = zfb_types::normalize_path_lexical(project_root); // "/proj"
+        assert!(stage_escape_audit_policy(
+            project_root,
+            &first_party_root,
+            Path::new("/tmp/stage")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn some_with_correct_roots_when_widened() {
+        // A pnpm-workspace build: first_party_root is a proper ancestor of
+        // project_root → the stage widened → audit armed with the stage root
+        // as the boundary and the workspace root as the first-party root.
+        let project_root = Path::new("/ws/packages/app");
+        let first_party_root = Path::new("/ws");
+        let stage_root = Path::new("/tmp/zfb-stage-abc/ws");
+        let policy = stage_escape_audit_policy(project_root, first_party_root, stage_root)
+            .expect("a stage widened past project_root must arm the audit");
+        assert_eq!(policy.stage_roots, vec![stage_root.to_path_buf()]);
+        assert_eq!(policy.first_party_root, first_party_root.to_path_buf());
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // 10 params: #1497 added bundle mode/config + raw_invalidation; each param carries its own routing contract (see per-param comments), a struct would just shuffle the same fields
@@ -3375,6 +3485,23 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         .unwrap_or_else(|| project_root.to_path_buf());
     let mut esbuild_cfg =
         EsbuildSubprocessConfig::default().with_working_dir(islands_bundler_working_dir);
+    // Issue #1707: arm the guard (b) stage-escape audit for the islands shadow
+    // when the stage widened past project_root (a pnpm-workspace build). The
+    // shadow root (`_tempdir`) is the boundary every staged input lives under;
+    // esbuild's cwd (`bundle_working_dir`) is nested below it and is what #1705
+    // audits metafile keys against.
+    if let Some(islands_stage_root) = _islands_shadow
+        .as_ref()
+        .map(|shadow| shadow._tempdir.path())
+    {
+        if let Some(policy) = stage_escape_audit_policy(
+            project_root,
+            &zfb_types::first_party_root_for(project_root),
+            islands_stage_root,
+        ) {
+            esbuild_cfg = esbuild_cfg.with_stage_audit(policy);
+        }
+    }
     if let Some(boundary) = islands_tsconfig_boundary {
         esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
     }
@@ -3720,6 +3847,26 @@ fn stage_client_script_preprocessing_with_worker_context(
         && plugin_preprocessing.worker_edges.is_empty()
     {
         return Ok(None);
+    }
+
+    // Issue #1703, Stage Escape Guards — Guard (a): same escape as the
+    // islands shadow above, on the client-script preprocessing path. `graph`
+    // is already scoped to this closure's client-entry roots (it's the
+    // reachable-modules scan seeded from `entries` alone), so a server-only
+    // workspace-package import never appears here. This check only runs
+    // once the gate above has already established `?raw`/module-worker
+    // staging is active for this closure.
+    if let Some(edge) = graph.workspace_package_edges.first() {
+        return Err(anyhow!(
+            "client-script module {} imports \"{}\" by its workspace-package name, but this \
+             client-script graph requires `?raw`/module-worker preprocessing; a package-name \
+             import resolves through the live node_modules symlink to the unprocessed source \
+             and silently bypasses the staged rewrite — use a tsconfig alias or relative \
+             import to reach a workspace sibling; package-name imports of first-party \
+             siblings are not supported once staging is active",
+            edge.importer.display(),
+            edge.specifier
+        ));
     }
 
     // Issue #1669/#1674: re-root the client-script preprocessing stage at the
@@ -4204,11 +4351,16 @@ fn stage_client_script_preprocessing_with_worker_context(
     // Without a workspace both collapse to the single root-level symlink,
     // byte-identical to the pre-#1674 behavior.
     //
-    // Known limitation (issue #1682, shared with the islands shadow): a sibling
-    // imported through its pnpm PACKAGE NAME resolves through this live
-    // node_modules link to the unprocessed source, bypassing the staged
-    // rewrite. Sibling reach via tsconfig alias / relative path (what #1674
-    // covers) resolves to the staged files instead.
+    // Issue #1682 (shared with the islands shadow above): a sibling imported
+    // through its pnpm PACKAGE NAME resolves through this live node_modules
+    // link to the unprocessed source, bypassing the staged rewrite. Sibling
+    // reach via tsconfig alias / relative path (what #1674 covers) resolves
+    // to the staged files instead. Guarded by this epic (#1702): guard (a)
+    // (issue #1703, checked earlier in this function against
+    // `graph.workspace_package_edges`) pre-flight rejects the escape before
+    // this symlink is even created; guard (b) (issue #1705/#1707) is the
+    // esbuild-time backstop — a per-subprocess metafile audit that rejects
+    // it even if a lower-level bundler invocation ever bypassed guard (a).
     if let Some(node_modules) = &first_party_node_modules {
         shadow_symlink(node_modules, &root.join("node_modules")).with_context(|| {
             format!(
@@ -4488,6 +4640,20 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    // Issue #1707: arm the guard (b) stage-escape audit for the client-script
+    // stage when it widened past project_root (a pnpm-workspace build). Same
+    // shape as the islands shadow — `stage.root` is the staged-input boundary;
+    // esbuild's cwd (`bundle_working_dir`) nested below it is what #1705 audits
+    // metafile keys against.
+    if let Some(client_stage_root) = preprocess_stage.as_ref().map(|stage| stage.root.as_path()) {
+        if let Some(policy) = stage_escape_audit_policy(
+            project_root,
+            &zfb_types::first_party_root_for(project_root),
+            client_stage_root,
+        ) {
+            esbuild_cfg = esbuild_cfg.with_stage_audit(policy);
+        }
+    }
     let client_alias_entries = preprocess_stage
         .as_ref()
         .map(|stage| {
@@ -4820,6 +4986,20 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    // Issue #1707: arm the guard (b) stage-escape audit for the client-script
+    // stage when it widened past project_root (a pnpm-workspace build). Same
+    // shape as the islands shadow — `stage.root` is the staged-input boundary;
+    // esbuild's cwd (`bundle_working_dir`) nested below it is what #1705 audits
+    // metafile keys against.
+    if let Some(client_stage_root) = preprocess_stage.as_ref().map(|stage| stage.root.as_path()) {
+        if let Some(policy) = stage_escape_audit_policy(
+            project_root,
+            &zfb_types::first_party_root_for(project_root),
+            client_stage_root,
+        ) {
+            esbuild_cfg = esbuild_cfg.with_stage_audit(policy);
+        }
+    }
     let client_alias_entries = preprocess_stage
         .as_ref()
         .map(|stage| {
@@ -9333,6 +9513,7 @@ mod tests {
             ],
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
@@ -9381,6 +9562,122 @@ mod tests {
         assert!(
             std::fs::symlink_metadata(shadow_root.join("components/widgets/a.tsx")).is_ok(),
             "glob target must be present in the shadow"
+        );
+    }
+
+    /// Issue #1703, Stage Escape Guards — Guard (a): once this shadow is
+    /// materialised at all (some other preprocessing need — glob, `?raw`,
+    /// or a module worker — already made staging necessary), any bare
+    /// package-name import of a workspace sibling recorded on `scan_meta`
+    /// must hard-error naming the offending specifier and importer. The
+    /// wholesale `node_modules` symlink this shadow creates below would
+    /// otherwise let the import resolve straight to unprocessed source,
+    /// silently bypassing every rewrite the shadow exists to stage.
+    /// `scan_meta.workspace_package_edges_from_islands` is set directly
+    /// here (rather than produced by a real scan) since production only
+    /// ever calls this function once the caller's own glob/raw/worker gate
+    /// already determined staging is needed — this test exercises Guard
+    /// (a)'s check in isolation.
+    #[test]
+    fn materialise_islands_shadow_hard_errors_on_workspace_package_edge() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("components")).unwrap();
+        let island_src = project_root.join("components/gallery.tsx");
+        std::fs::write(
+            &island_src,
+            "\"use client\";\nexport function Gallery() { return null; }\n",
+        )
+        .unwrap();
+
+        let islands = vec![zfb_islands::Island::new("Gallery", island_src.clone())];
+        let scan_meta = zfb_islands::ScanMeta {
+            uses_client_router: false,
+            near_miss_candidates: 0,
+            glob_reachable_from_islands: Vec::new(),
+            island_reachable_modules: vec![island_src.clone()],
+            raw_import_edges_from_islands: Vec::new(),
+            module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: vec![zfb_islands::WorkspacePackageImportEdge {
+                importer: island_src.clone(),
+                specifier: "@acme/shared".to_string(),
+                package_dir: project_root.join("node_modules/@acme/shared"),
+            }],
+        };
+
+        // `.err().expect(...)` rather than `.unwrap_err()`: the Ok type
+        // `IslandsShadowOutcome` is not `Debug`, which `Result::unwrap_err`
+        // would require.
+        let error = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .err()
+            .expect("Guard (a) must reject the workspace-package edge once staging is active");
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/shared"), "{message}");
+        assert!(
+            message.contains(island_src.display().to_string().as_str()),
+            "{message}"
+        );
+        assert!(
+            message.contains("not supported once staging is active"),
+            "{message}"
+        );
+    }
+
+    /// Issue #1708, Stage Escape Guards confirm pass — Guard (a)
+    /// end-to-end: the test above hand-builds `ScanMeta` to exercise the
+    /// check in isolation; this test instead drives the REAL islands
+    /// scanner (`scan_islands_with_meta`) against a genuine
+    /// `node_modules` workspace-package symlink fixture (the same
+    /// `link_workspace_package` helper the client-script counterpart below
+    /// uses), so `workspace_package_edges_from_islands` is populated by
+    /// production code, not injected by the test. The island bare-imports
+    /// `@acme/shared` and also needs `?raw` staging, so this proves the
+    /// full real-scan → real-staging-check path a real build takes — and
+    /// it never reaches esbuild.
+    #[cfg(unix)]
+    #[test]
+    fn materialise_islands_shadow_hard_errors_on_workspace_package_edge_from_real_scan() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        link_workspace_package(root);
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        let island_src = root.join("components/gallery.tsx");
+        std::fs::write(
+            &island_src,
+            "'use client';\n\
+             import { helper } from '@acme/shared';\n\
+             import text from './message.txt?raw';\n\
+             export function Gallery() { console.log(helper, text); return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("components/message.txt"), "hello").unwrap();
+
+        let (islands, scan_meta) =
+            scan_islands_with_meta(std::slice::from_ref(&island_src), &FsResolver::new()).unwrap();
+        assert_eq!(
+            islands.len(),
+            1,
+            "the \"use client\" component must be discovered as a real island"
+        );
+        assert_eq!(
+            scan_meta.workspace_package_edges_from_islands.len(),
+            1,
+            "the real scanner must record the bare @acme/shared import as a workspace-package \
+             edge"
+        );
+
+        let error = materialise_islands_shadow(root, &islands, &scan_meta)
+            .err()
+            .expect("Guard (a) must reject the real-scanned workspace-package edge");
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/shared"), "{message}");
+        assert!(
+            message.contains(island_src.display().to_string().as_str()),
+            "{message}"
+        );
+        assert!(
+            message.contains("not supported once staging is active"),
+            "{message}"
         );
     }
 
@@ -11341,6 +11638,99 @@ mod tests {
         assert!(error.contains("unsupported import query"), "{error}");
     }
 
+    // ---- Issue #1703, Stage Escape Guards — Guard (a): a bare
+    // package-name import of a workspace sibling. --------------------------
+
+    /// Set up `<root>/node_modules/@acme/shared` as a pnpm-workspace-style
+    /// symlink into `<root>/workspace/shared` (a real directory outside
+    /// `node_modules`), mirroring the fixture
+    /// `pnpm_workspace_consumer_fixture_yields_workspace_package_islands`
+    /// sets up at install time in `crates/zfb-islands/tests/integration.rs`
+    /// — enough for `FsResolver`'s bare-specifier probe to resolve
+    /// `@acme/shared` as a genuine workspace package (symlink whose
+    /// canonical target carries no `node_modules` path segment).
+    #[cfg(unix)]
+    fn link_workspace_package(root: &Path) {
+        let pkg = root.join("workspace/shared");
+        std::fs::create_dir_all(pkg.join("src")).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"@acme/shared","source":"src/index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(pkg.join("src/index.ts"), "export const helper = 1;\n").unwrap();
+        let scope_dir = root.join("node_modules/@acme");
+        std::fs::create_dir_all(&scope_dir).unwrap();
+        std::os::unix::fs::symlink(&pkg, scope_dir.join("shared")).unwrap();
+    }
+
+    /// Acceptance criterion (issue #1703): a package-name import of a
+    /// workspace sibling with NO `?raw`/module-worker preprocessing active
+    /// for the closure keeps its historical behaviour unchanged — the
+    /// existing fast path returns `Ok(None)` before Guard (a)'s check ever
+    /// runs, so nothing is staged and the plain `node_modules` symlink an
+    /// unshadowed build already relies on stays the supported path.
+    #[cfg(unix)]
+    #[test]
+    fn client_script_bare_workspace_package_import_without_raw_stays_supported() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        link_workspace_package(root);
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        let entry = root.join("pages/widget.client.ts");
+        std::fs::write(
+            &entry,
+            "import { helper } from '@acme/shared';\nconsole.log(helper);\n",
+        )
+        .unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        assert!(stage_client_script_preprocessing(root, &entries)
+            .unwrap()
+            .is_none());
+    }
+
+    /// Acceptance criterion (issue #1703): the same package-name import,
+    /// but this closure ALSO needs `?raw` preprocessing — so the stage IS
+    /// materialised, and the wholesale `node_modules` symlink it creates
+    /// would otherwise let `@acme/shared` resolve straight to unprocessed
+    /// source, silently bypassing the staged `?raw` rewrite. Guard (a) must
+    /// hard-error naming the offending specifier before any stage is
+    /// written to disk.
+    #[cfg(unix)]
+    #[test]
+    fn client_script_bare_workspace_package_import_hard_errors_once_raw_staging_is_active() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        link_workspace_package(root);
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let entry = root.join("pages/widget.client.ts");
+        std::fs::write(
+            &entry,
+            "import { helper } from '@acme/shared';\n\
+             import text from '../src/message.txt?raw';\n\
+             console.log(helper, text);\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/message.txt"), "hello").unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        let error = stage_client_script_preprocessing(root, &entries).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/shared"), "{message}");
+        assert!(
+            message.contains("not supported once staging is active"),
+            "{message}"
+        );
+    }
+
     // ---- Issue #1674: workspace-first-party re-rooting of the client stage. --
 
     fn write_reroot_ws_file(root: &Path, rel: &str, body: &str) -> PathBuf {
@@ -11775,6 +12165,7 @@ mod tests {
             ],
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
@@ -12037,6 +12428,7 @@ mod tests {
             island_reachable_modules: island_reachable,
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
         (islands, scan_meta)
     }
@@ -12121,6 +12513,7 @@ mod tests {
             island_reachable_modules: vec![island_src, glob_src],
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(&project_root, &islands, &scan_meta)

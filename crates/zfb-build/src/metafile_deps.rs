@@ -16,10 +16,11 @@
 //! workspace component deps) as extra watch targets.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
+use zfb_types::normalize_path_lexical;
 
 /// Minimal view of esbuild's metafile — only the `inputs` graph is needed.
 ///
@@ -191,6 +192,79 @@ fn canonical_or_self(p: &Path) -> Option<PathBuf> {
     Some(std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
 }
 
+/// True when any path component is literally `node_modules` — i.e. the path
+/// was reached by resolving a bare package specifier through some install
+/// root, rather than a relative/project-rooted import. Used by
+/// [`audit_metafile_stage_escape`] to tell a package-name resolution (guard
+/// (a)'s scope, cases 2/3 of the epic's predicate) apart from an ordinary
+/// source path (cases 1/4).
+fn has_node_modules_segment(path: &Path) -> bool {
+    path.components()
+        .any(|c| matches!(c, Component::Normal(name) if name == "node_modules"))
+}
+
+/// One metafile input, resolved under the two spellings every post-esbuild
+/// audit in this module needs:
+///
+/// - `logical_path`: `key` joined onto `logical_root`, with NO
+///   canonicalisation and no disk lookup (esbuild's own recorded spelling,
+///   taken at face value).
+/// - `canonical_path`: `key`'s real on-disk path with symlinks followed,
+///   tried against `canonical_roots` in order (first existing hit wins), or
+///   `None` when it resolves under none of them.
+///
+/// `PathBuf::join` already treats an absolute `key` as replacing the base
+/// entirely, so both spellings degrade correctly for the `node_modules`
+/// canonicalised-absolute-key case without a separate branch here.
+///
+/// This is the shared dual-spelling machinery [`audit_metafile_exclusions`]
+/// used to inline directly; factored out (issue #1704) so
+/// [`audit_metafile_stage_escape`] can reuse it with different roots.
+/// `audit_metafile_exclusions` keeps its existing project-rooted logical
+/// spelling and project-root-then-shadow-root canonicalisation fallback
+/// (`logical_root = project_root`, `canonical_roots = [project_root,
+/// shadow_root]`) — behaviorally unchanged. `audit_metafile_stage_escape` is
+/// cwd-rooted on both counts: a widened workspace stage runs esbuild from a
+/// directory nested BELOW the stage root, so its keys must never be assumed
+/// project-rooted.
+struct MetafileInputResolution<'a> {
+    key: &'a str,
+    logical_path: PathBuf,
+    canonical_path: Option<PathBuf>,
+}
+
+fn resolve_metafile_inputs<'a>(
+    meta: &'a Metafile,
+    logical_root: &Path,
+    canonical_roots: &[&Path],
+) -> Vec<MetafileInputResolution<'a>> {
+    meta.inputs
+        .keys()
+        .filter(|key| !is_synthetic_input(key))
+        .map(|key| {
+            let key_path = Path::new(key.as_str());
+            let logical_path = logical_root.join(key_path);
+            let canonical_path = if key_path.is_absolute() {
+                canonical_or_self(key_path)
+            } else {
+                canonical_roots.iter().find_map(|root| {
+                    let candidate = root.join(key_path);
+                    if candidate.exists() {
+                        canonical_or_self(&candidate)
+                    } else {
+                        None
+                    }
+                })
+            };
+            MetafileInputResolution {
+                key,
+                logical_path,
+                canonical_path,
+            }
+        })
+        .collect()
+}
+
 /// Fail-closed audit: prove that no `bundle.exclude`-matched source leaked
 /// into the bundle by cross-checking esbuild's `--metafile` `inputs` record
 /// (its authoritative resolution log) against the exclude predicate.
@@ -230,25 +304,20 @@ pub fn audit_metafile_exclusions(
         .map_err(|e| anyhow!("zfb bundler: bundle.exclude audit failed to parse metafile: {e}"))?;
 
     let mut offenders: BTreeSet<String> = BTreeSet::new();
-    for key in meta.inputs.keys() {
-        if is_synthetic_input(key) {
-            continue;
-        }
-
+    for record in resolve_metafile_inputs(&meta, project_root, &[project_root, shadow_root]) {
         // Spelling 1: the logical key, as esbuild recorded it, resolved
         // against the project root — no canonicalisation, no disk lookup.
-        let logical = project_root.join(Path::new(key));
-        if is_excluded(&logical) {
-            offenders.insert(key.clone());
+        if is_excluded(&record.logical_path) {
+            offenders.insert(record.key.to_string());
             continue;
         }
 
         // Spelling 2: the same key, mapped to its real on-disk path (may
         // resolve through a symlink, landing somewhere the logical spelling
         // above does not point at).
-        if let Some(real) = map_to_real(key, shadow_root, project_root) {
+        if let Some(real) = record.canonical_path {
             if is_excluded(&real) {
-                offenders.insert(key.clone());
+                offenders.insert(record.key.to_string());
             }
         }
     }
@@ -280,6 +349,187 @@ pub fn audit_metafile_exclusions_at_path(
         )
     })?;
     audit_metafile_exclusions(&bytes, is_excluded, shadow_root, project_root)
+}
+
+/// Guard (b) primitive (issue #1704, epic #1702): fail-closed stage-escape
+/// audit for a REAL esbuild metafile emitted from inside a widened stage.
+/// `bundle.exclude`'s dual-spelling audit above proves nothing EXCLUDED
+/// leaked in; this proves nothing STAGING was meant to isolate (a
+/// workspace-sibling package reached via its bare package name, or live
+/// first-party source reached without ever producing a staged spelling)
+/// escaped the stage boundary either.
+///
+/// Every non-synthetic input is classified by the epic's four-case
+/// predicate:
+///
+/// 1. a staged source symlink that canonicalises to live first-party source
+///    = **ALLOWED** — the intentional staged-mirror/symlink shape the
+///    sibling-mirror epic (#1691) relies on. (A copy-mode staged source
+///    canonicalises to a path still inside the stage and is allowed too,
+///    trivially — see the `in_stage` short-circuit below.)
+/// 2. a staged `node_modules/<pkg>` (or `node_modules/@scope/pkg`) symlink
+///    that canonicalises to a live WORKSPACE SIBLING (no further
+///    `node_modules` segment in the real path) = **OFFENDER** — the exact
+///    package-name reach Guard (a) rejects at scan time; this is the
+///    metafile backstop for anything that slips past it.
+/// 3. an ordinary `node_modules`-nested third-party dependency (pnpm's
+///    `.pnpm/<pkg>@<ver>/node_modules/<pkg>` content-addressable layout, or
+///    any other real install with a `node_modules` segment still present in
+///    its canonical path) = **ALLOWED**.
+/// 4. a first-party input recorded OUTSIDE every stage root = **OFFENDER** —
+///    esbuild resolved straight into live source without ever producing a
+///    staged spelling for it at all (e.g. climbing a workspace-hoisted
+///    `node_modules` symlink past the stage boundary via a `package.json`
+///    `main`/`imports` field). Whether esbuild wrote that as an absolute
+///    path or, running without `--preserve-symlinks`, as a `..`-laden
+///    relative path climbing out of `metafile_cwd` (e.g.
+///    `../../workspace/packages/shared/index.ts`) is the same escape under
+///    two spellings — case 1 and case 4 are told apart by whether the
+///    *logical* (pre-canonicalisation, symlink-unaware) spelling itself
+///    still names a location inside a stage root, not by whether the key
+///    string happens to be absolute.
+///
+/// An input whose canonical path falls under neither `first_party_root` nor
+/// any `stage_roots` entry (e.g. a genuinely external symlink) is outside
+/// this predicate's four-case scope and is left unflagged, as is any input
+/// that does not resolve to a real on-disk path at all (mirrors
+/// [`route_module_deps`]'s "skip, don't invent" posture).
+///
+/// `metafile_cwd` is the metafile's OWN working directory — do NOT assume it
+/// equals a stage root: a widened workspace stage runs esbuild from a
+/// mirrored directory nested BELOW the stage root, so callers must pass the
+/// exact directory esbuild ran in (relative metafile keys resolve against
+/// it, not against any stage root). `stage_roots` is the full set of roots a
+/// resolved input may legitimately live under (a build can stage into more
+/// than one root — e.g. a shadow root plus a separately wholesale-mirrored
+/// sibling root). `first_party_root` is the outer boundary of "this build's
+/// own source" (the project root, or the widened workspace root for a
+/// sibling-mirrored build).
+///
+/// Callers are expected to invoke this once per REAL esbuild subprocess in a
+/// widened stage, immediately after that subprocess succeeds — wiring which
+/// call sites invoke it, and when a stage counts as "widened", is wave 2/3
+/// (#1705/#1707), not this primitive.
+pub fn audit_metafile_stage_escape(
+    metafile_bytes: &[u8],
+    metafile_cwd: &Path,
+    stage_roots: &[&Path],
+    first_party_root: &Path,
+) -> Result<()> {
+    let meta: Metafile = serde_json::from_slice(metafile_bytes)
+        .map_err(|e| anyhow!("zfb bundler: stage-escape audit failed to parse metafile: {e}"))?;
+
+    let canonical_stage_roots: Vec<PathBuf> = stage_roots
+        .iter()
+        .map(|root| canonical_or_self(root).unwrap_or_else(|| root.to_path_buf()))
+        .collect();
+    let canonical_first_party_root =
+        canonical_or_self(first_party_root).unwrap_or_else(|| first_party_root.to_path_buf());
+    // Lexically (not canonically — no symlink-following, no disk lookup)
+    // normalised stage roots, for the case-1-vs-case-4 "did a staged
+    // spelling ever exist" check below. Must NOT be the canonical roots
+    // above: the whole point is to compare against the pre-symlink-
+    // resolution shape of both sides.
+    let lexical_stage_roots: Vec<PathBuf> = stage_roots
+        .iter()
+        .map(|root| normalize_path_lexical(root))
+        .collect();
+
+    let mut offenders: Vec<String> = Vec::new();
+    for record in resolve_metafile_inputs(&meta, metafile_cwd, &[metafile_cwd]) {
+        let Some(canonical) = record.canonical_path else {
+            continue;
+        };
+
+        let package_shaped = has_node_modules_segment(Path::new(record.key));
+        let canonical_in_node_modules = has_node_modules_segment(&canonical);
+        let in_stage = canonical_stage_roots
+            .iter()
+            .any(|root| canonical.starts_with(root));
+        let in_first_party = canonical.starts_with(&canonical_first_party_root);
+
+        if package_shaped {
+            // Cases 2/3: resolved via a bare package specifier through some
+            // node_modules root.
+            if canonical_in_node_modules {
+                continue; // case 3: ordinary third-party dep, allowed.
+            }
+            if in_first_party {
+                // case 2: the symlink at node_modules/<pkg> canonicalises
+                // straight to workspace source, no node_modules layer left.
+                offenders.push(format!(
+                    "{} (package import resolved outside node_modules to workspace sibling {})",
+                    record.key,
+                    canonical.display()
+                ));
+            }
+            continue;
+        }
+
+        if in_stage {
+            continue; // ordinary staged source, still inside the stage.
+        }
+
+        // The canonical (symlink-followed) path escaped the stage. Case 1
+        // vs case 4 hinges on whether a genuine staged spelling ever
+        // existed: does the LOGICAL path (`metafile_cwd.join(key)`,
+        // lexically normalised — `..` collapsed WITHOUT touching the
+        // filesystem, so a symlink target is never followed here) still
+        // land inside a stage root? A key like "components/Header.tsx"
+        // does (the symlink itself is a real filesystem entry inside the
+        // stage) — case 1, allowed. A key like
+        // "../../workspace/packages/shared/index.ts", OR an equivalent
+        // already-absolute key, lexically escapes the stage before any
+        // canonicalisation even happens — case 4, no staged spelling was
+        // ever produced, flag it regardless of which spelling esbuild used.
+        let logical_in_stage = lexical_stage_roots
+            .iter()
+            .any(|root| normalize_path_lexical(&record.logical_path).starts_with(root));
+
+        if logical_in_stage {
+            continue; // case 1: allowed by design.
+        }
+
+        if in_first_party {
+            // case 4: esbuild never produced a staged spelling for this
+            // input at all — it recorded the live first-party path
+            // directly, whether as an absolute key or a `..`-climbing one.
+            offenders.push(format!(
+                "{} (first-party input resolved outside every stage root, no staged spelling)",
+                record.key
+            ));
+        }
+        // Otherwise: a path outside first-party territory entirely — out of
+        // this predicate's four-case scope, left unflagged.
+    }
+
+    if offenders.is_empty() {
+        return Ok(());
+    }
+
+    bail!(
+        "zfb bundler: stage-escape audit — the following metafile input(s) escaped their stage: {}",
+        offenders.join(", ")
+    );
+}
+
+/// Convenience wrapper over [`audit_metafile_stage_escape`]: read the
+/// metafile from `metafile_path` first. Fail-closed extends to the read
+/// itself — a missing or unreadable metafile is a build error, exactly like
+/// malformed JSON, mirroring [`audit_metafile_exclusions_at_path`].
+pub fn audit_metafile_stage_escape_at_path(
+    metafile_path: &Path,
+    metafile_cwd: &Path,
+    stage_roots: &[&Path],
+    first_party_root: &Path,
+) -> Result<()> {
+    let bytes = std::fs::read(metafile_path).map_err(|e| {
+        anyhow!(
+            "zfb bundler: stage-escape audit failed to read metafile {}: {e}",
+            metafile_path.display()
+        )
+    })?;
+    audit_metafile_stage_escape(&bytes, metafile_cwd, stage_roots, first_party_root)
 }
 
 #[cfg(test)]
@@ -606,6 +856,319 @@ mod tests {
         assert!(
             err.to_string().contains("bundle.exclude"),
             "fail-closed error must name bundle.exclude; got {err}"
+        );
+    }
+
+    // --- audit_metafile_stage_escape (issue #1704) --------------------
+
+    #[test]
+    fn stage_escape_allows_staged_source_symlink_to_first_party() {
+        // Preserve-symlinks staging shape: the staged entry is itself a
+        // symlink whose target is real first-party source that lives
+        // outside the stage. This is case 1 of the epic's predicate —
+        // exactly the sibling-mirror pattern (#1691) — and must be allowed.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let stage = base.join("stage");
+        let first_party = base.join("workspace");
+        let real_sibling = first_party.join("packages/shared/src/Header.tsx");
+        write(&first_party, "packages/shared/src/Header.tsx", "header");
+
+        let link = stage.join("components/Header.tsx");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_sibling, &link).unwrap();
+        #[cfg(not(unix))]
+        std::fs::write(&link, "header").unwrap();
+
+        let metafile = br#"{"inputs": {"components/Header.tsx": {"imports": []}}}"#;
+
+        let result = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party);
+        assert!(
+            result.is_ok(),
+            "a staged source symlink resolving to live first-party source must be allowed; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn stage_escape_allows_staged_source_copy_within_stage() {
+        // Copy-mode staging shape: the staged entry is a plain copy, not a
+        // symlink, so its canonical path never leaves the stage at all.
+        // Trivially allowed — nothing escaped.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let stage = base.join("stage");
+        let first_party = base.join("workspace");
+        write(&stage, "components/Header.tsx", "header");
+
+        let metafile = br#"{"inputs": {"components/Header.tsx": {"imports": []}}}"#;
+
+        let result = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party);
+        assert!(
+            result.is_ok(),
+            "a copy-mode staged source with no escape must be allowed; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn stage_escape_flags_package_name_symlink_to_workspace_sibling() {
+        // Case 2: a staged node_modules/@scope/pkg symlink canonicalises
+        // straight to live workspace source (no further node_modules
+        // segment) — the exact package-name reach Guard (a) blocks at scan
+        // time. This is the metafile backstop and must be an offender.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let stage = base.join("stage");
+        let first_party = base.join("workspace");
+        let real_sibling_pkg = first_party.join("packages/design-system/Button.tsx");
+        write(&first_party, "packages/design-system/Button.tsx", "btn");
+
+        let link = stage.join("node_modules/@ds/Button.tsx");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_sibling_pkg, &link).unwrap();
+        #[cfg(not(unix))]
+        std::fs::write(&link, "btn").unwrap();
+
+        let metafile = br#"{"inputs": {"node_modules/@ds/Button.tsx": {"imports": []}}}"#;
+
+        let result = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party);
+
+        #[cfg(unix)]
+        {
+            let err = result.expect_err(
+                "a node_modules package symlink canonicalising to a workspace sibling must be an offender",
+            );
+            let msg = err.to_string();
+            assert!(
+                msg.contains("stage-escape audit"),
+                "error must name the stage-escape audit; got {msg:?}"
+            );
+            assert!(
+                msg.contains("node_modules/@ds/Button.tsx"),
+                "error must name the offending metafile key; got {msg:?}"
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            // No symlink semantics off unix in this test harness — the
+            // write() fallback keeps the staged path a real file under
+            // node_modules, which case 3 (ordinary third-party dep) allows.
+            let _ = result;
+        }
+    }
+
+    #[test]
+    fn stage_escape_allows_ordinary_pnpm_third_party_dep() {
+        // Case 3: an ordinary node_modules-nested third-party dependency —
+        // pnpm's `.pnpm/<pkg>@<ver>/node_modules/<pkg>` content-addressable
+        // layout — must be allowed. Unlike the offender tests above, this
+        // one holds on every platform: whether or not the staged entry is a
+        // real symlink, its resolved path always keeps a `node_modules`
+        // segment (the store layout puts one there deliberately).
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let stage = base.join("stage");
+        let store = base.join("store/.pnpm/preact@10.0.0/node_modules/preact");
+        write(&store, "index.js", "preact");
+
+        let link = stage.join("node_modules/preact/index.js");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(store.join("index.js"), &link).unwrap();
+        #[cfg(not(unix))]
+        std::fs::write(&link, "preact").unwrap();
+
+        let first_party = base.join("workspace");
+        let metafile = br#"{"inputs": {"node_modules/preact/index.js": {"imports": []}}}"#;
+
+        let result = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party);
+        assert!(
+            result.is_ok(),
+            "an ordinary node_modules-nested third-party dep must be allowed; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn stage_escape_flags_absolute_first_party_input_outside_stage() {
+        // Case 4: esbuild recorded an already-absolute, real path directly —
+        // no staged spelling was ever produced for this input. Reaching
+        // live first-party source outside every stage root this way (e.g.
+        // by climbing a workspace-hoisted node_modules symlink past the
+        // stage boundary) is exactly the "resurrection" escape the audit
+        // exists to catch.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let stage = base.join("stage");
+        let first_party = base.join("workspace");
+        let real_file = first_party.join("pages/other.tsx");
+        write(&first_party, "pages/other.tsx", "other");
+
+        let metafile = format!(
+            r#"{{"inputs": {{"{}": {{"imports": []}}}}}}"#,
+            real_file.display()
+        );
+
+        let result =
+            audit_metafile_stage_escape(metafile.as_bytes(), &stage, &[&stage], &first_party);
+        let err = result.expect_err(
+            "an absolute first-party input outside every stage root must be an offender",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("stage-escape audit"),
+            "error must name the stage-escape audit; got {msg:?}"
+        );
+        assert!(
+            msg.contains(&real_file.display().to_string()),
+            "error must name the offending absolute path; got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn stage_escape_flags_relative_dotdot_climb_to_first_party_without_a_staged_spelling() {
+        // Case 4 via the OTHER spelling esbuild can choose: running without
+        // `--preserve-symlinks`, esbuild does not necessarily write an
+        // already-canonicalised ABSOLUTE key for a resolution that reaches
+        // outside its cwd — it can write a `..`-laden path relative to
+        // `metafile_cwd` instead (e.g. `../workspace/pages/other.tsx`). No
+        // symlink is even needed to construct this: it is purely a claim,
+        // via `..` components, that a location OUTSIDE the stage was
+        // resolved directly, with no staged spelling ever produced for it.
+        // A predicate keyed on `key.is_absolute()` alone misses this
+        // spelling entirely — it must be caught the same way case 4 always
+        // is, via the lexically-normalised logical path escaping the stage.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let stage = base.join("stage");
+        let first_party = base.join("workspace");
+        write(&first_party, "pages/other.tsx", "other");
+        std::fs::create_dir_all(&stage).unwrap();
+
+        let metafile = br#"{"inputs": {"../workspace/pages/other.tsx": {"imports": []}}}"#;
+
+        let result = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party);
+        let err = result.expect_err(
+            "a relative `..`-climbing key reaching first-party source with no staged spelling must be an offender",
+        );
+        assert!(
+            err.to_string().contains("../workspace/pages/other.tsx"),
+            "error must name the offending relative key; got {err}"
+        );
+    }
+
+    #[test]
+    fn stage_escape_resolves_relative_keys_against_nested_metafile_cwd() {
+        // Nested-cwd key resolution: a widened workspace stage runs esbuild
+        // from a directory nested BELOW the stage root, so a relative key
+        // must resolve against that nested cwd — not the (outer) stage
+        // root. Prove this by placing the escaping symlink only under the
+        // nested cwd: if the audit mistakenly joined the key onto
+        // `stage_roots` instead of `metafile_cwd`, this input would not
+        // resolve to a real path at all and would be silently skipped
+        // instead of flagged.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let stage = base.join("stage");
+        let cwd = stage.join("workspace-mirror/inner");
+        let first_party = base.join("workspace");
+        let real_sibling_pkg = first_party.join("packages/design-system/Icon.tsx");
+        write(&first_party, "packages/design-system/Icon.tsx", "icon");
+
+        let link = cwd.join("node_modules/@ds/Icon.tsx");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_sibling_pkg, &link).unwrap();
+        #[cfg(not(unix))]
+        std::fs::write(&link, "icon").unwrap();
+
+        let metafile = br#"{"inputs": {"node_modules/@ds/Icon.tsx": {"imports": []}}}"#;
+
+        let result = audit_metafile_stage_escape(metafile, &cwd, &[&stage], &first_party);
+
+        #[cfg(unix)]
+        {
+            let err = result.expect_err(
+                "a package-name escape staged under a nested metafile cwd must still be caught",
+            );
+            assert!(
+                err.to_string().contains("node_modules/@ds/Icon.tsx"),
+                "error must name the offending metafile key; got {err}"
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = result;
+        }
+    }
+
+    #[test]
+    fn stage_escape_honors_the_full_stage_root_set() {
+        // `stage_roots` is a SET, not a single root: a build can widen into
+        // more than one root (e.g. a shadow root plus a separately
+        // wholesale-mirrored sibling root). An absolute input resolving
+        // inside a second, non-cwd stage root must be allowed when that
+        // root is present in the set, and flagged when it is omitted —
+        // proving the plural parameter is actually consulted, not just
+        // accepted and ignored.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let stage_a = base.join("stageA");
+        let first_party = base.join("workspace");
+        // The second stage root is a sibling mirror staged inside the
+        // widened first-party tree, as `mirror_sibling_root` does.
+        let stage_b = first_party.join(".zfb-sibling-stage");
+        let real_file = stage_b.join("pages/mirrored.tsx");
+        write(&stage_b, "pages/mirrored.tsx", "mirrored");
+
+        let metafile = format!(
+            r#"{{"inputs": {{"{}": {{"imports": []}}}}}}"#,
+            real_file.display()
+        );
+
+        let allowed = audit_metafile_stage_escape(
+            metafile.as_bytes(),
+            &stage_a,
+            &[&stage_a, &stage_b],
+            &first_party,
+        );
+        assert!(
+            allowed.is_ok(),
+            "an absolute input inside a recognised second stage root must be allowed; got {allowed:?}"
+        );
+
+        let flagged =
+            audit_metafile_stage_escape(metafile.as_bytes(), &stage_a, &[&stage_a], &first_party);
+        assert!(
+            flagged.is_err(),
+            "the same input must be flagged once its stage root is omitted from the set"
+        );
+    }
+
+    #[test]
+    fn stage_escape_fails_closed_on_malformed_metafile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        let err = audit_metafile_stage_escape(b"not json", &root, &[&root], &root)
+            .expect_err("a malformed metafile must be a build error, not an empty pass");
+        assert!(
+            err.to_string().contains("stage-escape audit"),
+            "fail-closed error must name the stage-escape audit; got {err}"
+        );
+    }
+
+    #[test]
+    fn stage_escape_fails_closed_on_missing_metafile_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let missing = root.join("does-not-exist/metafile.json");
+
+        let err = audit_metafile_stage_escape_at_path(&missing, &root, &[&root], &root)
+            .expect_err("an unreadable metafile path must be a build error, not an empty pass");
+        assert!(
+            err.to_string().contains("stage-escape audit"),
+            "fail-closed error must name the stage-escape audit; got {err}"
         );
     }
 }

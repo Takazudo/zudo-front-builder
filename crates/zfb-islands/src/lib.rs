@@ -52,7 +52,7 @@ pub use client_scripts::{
 pub use esbuild::{
     hash_8, render_island_entry_source, render_runtime_entry_source,
     render_shared_bundle_entry_source, ClientScriptBundleOutput, EsbuildSubprocessBundler,
-    EsbuildSubprocessConfig, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
+    EsbuildSubprocessConfig, StageAuditPolicy, EXPECTED_ESBUILD_SHA256, EXPECTED_ESBUILD_VERSION,
 };
 pub use future_rust_native::NativeRustBundler;
 pub use html_tree::HtmlTree;
@@ -66,6 +66,7 @@ pub use scanner::{
     is_bare_specifier, scan_islands, scan_islands_with_meta, scan_reachable_modules,
     scan_reachable_modules_with_meta, FsResolver, InMemoryResolver, IslandsSet, ModuleWorkerEdge,
     RawImportEdge, ReachableModulesMeta, Resolver, ScanError, ScanMeta, ScanResult,
+    WorkspacePackageImportEdge,
 };
 pub use zfb_types::{
     module_worker_content_hash, module_worker_filename, module_worker_url_specifier,

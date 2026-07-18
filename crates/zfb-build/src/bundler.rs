@@ -2801,6 +2801,15 @@ pub fn bundle_with_session(
     //     fail-closed guarantee the old "never create the link" approach
     //     gave, without breaking legitimate sibling deps.
     //
+    //     Guard (b) (issue #1706, the stage-escape audit run right after the
+    //     exclusion audit below) is the second, exclusion-independent lock on
+    //     this same link: `bundle.exclude` resurrection is only ONE way to
+    //     abuse it. A bare first-party PACKAGE-NAME import (as opposed to the
+    //     alias/relative reach #1691 stages) climbs this link straight to a
+    //     LIVE sibling regardless of whether anything is excluded, so the
+    //     stage-escape audit fires for EVERY real pass when `workspace_rel`
+    //     is set — not just under active exclusions.
+    //
     //     Without a workspace `workspace_rel` is `None`, so this is skipped
     //     entirely and the layout stays byte-identical. Created directly (not
     //     through the ShadowWriter), like the 2b link, so it never enters the
@@ -3645,6 +3654,37 @@ pub fn bundle_with_session(
                 &input.project_root,
             )
             .context("bundler: bundle.exclude audit failed")?;
+        }
+    }
+
+    // Fail-closed stage-escape audit (#1706, Stage Escape Guards — Guard (b)):
+    // the wholesale `<work>/node_modules` symlink the work mirror sets up
+    // (created for EVERY workspace build since #1693 — empty or active
+    // exclusions) lets a bare first-party PACKAGE-NAME import climb straight to
+    // a LIVE workspace sibling, unprocessed source outside the staged mirror.
+    // Unlike the `bundle.exclude` audit above (armed only under active
+    // exclusions), this escape exists regardless of `bundle.exclude`, so the
+    // audit runs whenever `workspace_rel.is_some()` — the widened-stage
+    // condition. Outside a workspace `workspace_rel` is `None` and this is a
+    // zero-cost no-op, byte-identical to the pre-#1706 build. esbuild runs
+    // from `shadow` (its cwd — `cmd.current_dir(shadow)` in `run_esbuild`), so
+    // metafile keys resolve against it; `work` is the mirror boundary every
+    // legitimately staged input (the project shadow at `work/<workspace_rel>`
+    // plus wholesale-mirrored siblings under `work`) lives under. A metafile
+    // input that canonicalises to live first-party source outside `work` with
+    // no staged spelling — or a staged `node_modules/@scope/pkg` symlink
+    // resolving to a live sibling — is the escape and hard-fails the build.
+    // `metafile_path` is `None` on the mock-subprocess path, so this is a
+    // deliberate no-op for mocks, like the exclusion audit.
+    if workspace_rel.is_some() {
+        if let Some(meta_path) = metafile_path.as_deref() {
+            crate::metafile_deps::audit_metafile_stage_escape_at_path(
+                meta_path,
+                shadow,
+                &[work],
+                &first_party_root,
+            )
+            .context("bundler: SSR work-mirror stage-escape audit failed")?;
         }
     }
 
@@ -14311,6 +14351,102 @@ mod tests {
         assert!(
             message.contains("secret-pkg"),
             "the audit error must list the offending resolved path: {message}"
+        );
+    }
+
+    // ---- Issue #1706, Stage Escape Guards — Guard (b): SSR work-mirror
+    // stage-escape audit. The primitive itself is exhaustively unit-tested in
+    // `metafile_deps.rs`; these tests pin the BUNDLER's wiring arg-shape —
+    // metafile_cwd = `shadow` (esbuild's cwd, nested BELOW the stage root),
+    // stage_roots = [`work`], first_party_root = the widened workspace root —
+    // which the real-esbuild end-to-end proof (#1708) exercises through a live
+    // `zfb build`. -------------------------------------------------------------
+
+    /// A bare first-party PACKAGE-NAME import that climbed the always-present
+    /// `<work>/node_modules` symlink to a LIVE workspace sibling (case 2) must
+    /// be flagged with the bundler's exact arg shape, regardless of
+    /// `bundle.exclude` (the stage-escape audit takes no exclusion predicate).
+    #[cfg(unix)]
+    #[test]
+    fn stage_escape_audit_flags_workspace_package_name_reach_through_work_node_modules() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Live sibling source, OUTSIDE the stage.
+        let ws_root = tmp.path().join("ws");
+        let live_sibling = ws_root.join("packages/shared");
+        fs::create_dir_all(&live_sibling).unwrap();
+        fs::write(live_sibling.join("index.ts"), "export const x = 1;\n").unwrap();
+
+        // Work mirror (stage root) with esbuild's cwd nested below it.
+        let work = tmp.path().join("work");
+        let shadow = work.join("host"); // esbuild cwd == metafile_cwd
+        fs::create_dir_all(&shadow).unwrap();
+        // The wholesale `<work>/node_modules` layout: `@acme` is a real dir;
+        // the package itself is the pnpm-style symlink to the live sibling
+        // (canonical target carries NO further node_modules segment).
+        fs::create_dir_all(work.join("node_modules/@acme")).unwrap();
+        std::os::unix::fs::symlink(&live_sibling, work.join("node_modules/@acme/shared")).unwrap();
+
+        // esbuild (cwd = `shadow`) records the input it resolved through the
+        // link, keyed relative to its cwd: `../node_modules/@acme/shared/...`.
+        let metafile = r#"{"inputs": {"../node_modules/@acme/shared/index.ts": {"imports": []}}}"#;
+
+        let error = crate::metafile_deps::audit_metafile_stage_escape(
+            metafile.as_bytes(),
+            &shadow,
+            &[work.as_path()],
+            &ws_root,
+        )
+        .expect_err(
+            "a package-name import climbing <work>/node_modules to a live sibling must be flagged",
+        );
+        let message = format!("{error:#}");
+        assert!(message.contains("stage-escape audit"), "{message}");
+        assert!(
+            message.contains("shared"),
+            "the offending input must be listed: {message}"
+        );
+    }
+
+    /// No false positive: ordinary staged inputs — the project shadow's own
+    /// source, a wholesale-mirrored sibling staged under `work`, and a genuine
+    /// third-party dep resolving to `.pnpm` (case 3) — must ALL pass. Even
+    /// when a staged file's canonical path escapes the stage, the LOGICAL
+    /// spelling still names a location inside `work` (case 1, allowed).
+    #[cfg(unix)]
+    #[test]
+    fn stage_escape_audit_allows_staged_project_sibling_and_third_party_inputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_root = tmp.path().join("ws");
+        fs::create_dir_all(&ws_root).unwrap();
+        let work = tmp.path().join("work");
+        let shadow = work.join("host");
+        fs::create_dir_all(&shadow).unwrap();
+        // Staged project source (a real file inside the stage).
+        fs::write(shadow.join("app.ts"), "export const a = 1;\n").unwrap();
+        // Wholesale-mirrored sibling staged under `work`.
+        fs::create_dir_all(work.join("lib/shared")).unwrap();
+        fs::write(work.join("lib/shared/index.ts"), "export const b = 2;\n").unwrap();
+        // A genuine third-party dep: the `node_modules/<pkg>` symlink points
+        // into `.pnpm`, so its canonical path keeps a node_modules segment.
+        let pnpm_pkg = work.join("node_modules/.pnpm/left-pad@1.0.0/node_modules/left-pad");
+        fs::create_dir_all(&pnpm_pkg).unwrap();
+        fs::write(pnpm_pkg.join("index.js"), "module.exports = 1;\n").unwrap();
+        std::os::unix::fs::symlink(&pnpm_pkg, work.join("node_modules/left-pad")).unwrap();
+
+        let metafile = r#"{"inputs": {
+            "app.ts": {"imports": []},
+            "../lib/shared/index.ts": {"imports": []},
+            "../node_modules/left-pad/index.js": {"imports": []}
+        }}"#;
+
+        crate::metafile_deps::audit_metafile_stage_escape(
+            metafile.as_bytes(),
+            &shadow,
+            &[work.as_path()],
+            &ws_root,
+        )
+        .expect(
+            "staged project source, staged sibling, and third-party dep must all pass the audit",
         );
     }
 
