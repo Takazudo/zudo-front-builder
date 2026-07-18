@@ -71,6 +71,10 @@ pub struct RawImportInvalidation {
     islands: Arc<RwLock<BTreeSet<PathBuf>>>,
     client_scripts: Arc<RwLock<BTreeSet<PathBuf>>>,
     client_script_workers: Arc<RwLock<BTreeSet<PathBuf>>>,
+    /// Workspace-sibling plain modules materialised into the client-script
+    /// preprocess stage (issue #1710) — neither a terminal `?raw` target nor
+    /// a worker dependency, so distinct from both sets above.
+    client_script_siblings: Arc<RwLock<BTreeSet<PathBuf>>>,
 }
 
 impl RawImportInvalidation {
@@ -147,6 +151,21 @@ impl RawImportInvalidation {
             .unwrap_or_default()
     }
 
+    /// Atomically replace the client-script workspace-sibling plain-module
+    /// set after a successful staging/bundle pass (issue #1710).
+    pub fn replace_client_script_siblings(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        Self::replace(&self.client_script_siblings, paths);
+    }
+
+    /// Snapshot the current client-script sibling-module aliases for dynamic
+    /// watcher registration.
+    pub fn client_script_sibling_paths(&self) -> BTreeSet<PathBuf> {
+        self.client_script_siblings
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
+    }
+
     fn contains(set: &RwLock<BTreeSet<PathBuf>>, path: &Path) -> bool {
         let lexical = zfb_types::normalize_path_lexical(path);
         let resolved = Self::resolved_alias(path);
@@ -172,6 +191,12 @@ impl RawImportInvalidation {
     /// Whether `path` is part of the current client-script worker graph.
     pub fn is_client_script_worker_target(&self, path: &Path) -> bool {
         Self::contains(&self.client_script_workers, path)
+    }
+
+    /// Whether `path` is a workspace-sibling plain module materialised into
+    /// the current client-script preprocess stage (issue #1710).
+    pub fn is_client_script_sibling_target(&self, path: &Path) -> bool {
+        Self::contains(&self.client_script_siblings, path)
     }
 }
 
@@ -582,6 +607,7 @@ impl GranularityPolicy {
         let mut paths = self.raw_import_invalidation.islands_paths();
         paths.extend(self.raw_import_invalidation.client_script_paths());
         paths.extend(self.raw_import_invalidation.client_script_worker_paths());
+        paths.extend(self.raw_import_invalidation.client_script_sibling_paths());
         paths
     }
 
@@ -595,6 +621,14 @@ impl GranularityPolicy {
     pub fn is_client_script_worker_target(&self, path: &Path) -> bool {
         self.raw_import_invalidation
             .is_client_script_worker_target(path)
+    }
+
+    /// Whether this exact changed path is a workspace-sibling plain module
+    /// materialised into the current client-script preprocess stage (issue
+    /// #1710) — neither a terminal raw target nor a worker dependency.
+    pub fn is_client_script_sibling_target(&self, path: &Path) -> bool {
+        self.raw_import_invalidation
+            .is_client_script_sibling_target(path)
     }
 
     /// Decide whether a `Module` change is inside an islands root.
@@ -686,11 +720,14 @@ mod tests {
         let island_helper = PathBuf::from("/proj/lib/island-helper.ts");
         let client_raw = PathBuf::from("/proj/lib/client-payload.txt");
         let client_helper = PathBuf::from("/proj/lib/client-helper.ts");
+        let client_sibling = PathBuf::from("/workspace/lib/shared/plain.ts");
         let next_client_raw = PathBuf::from("/proj/lib/next-client-payload.txt");
         let next_client_helper = PathBuf::from("/proj/lib/next-client-helper.ts");
+        let next_client_sibling = PathBuf::from("/workspace/lib/shared/next-plain.ts");
         invalidation.replace_islands([island_helper.clone()]);
         invalidation.replace_client_scripts([client_raw.clone()]);
         invalidation.replace_client_script_workers([client_helper.clone()]);
+        invalidation.replace_client_script_siblings([client_sibling.clone()]);
         let policy =
             GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
 
@@ -698,20 +735,30 @@ mod tests {
         assert!(first.contains(&island_helper));
         assert!(first.contains(&client_raw));
         assert!(first.contains(&client_helper));
+        assert!(first.contains(&client_sibling));
         assert!(policy.is_islands_dependency(&island_helper));
         assert!(!policy.is_islands_dependency(&client_raw));
         assert!(!policy.is_islands_dependency(&client_helper));
+        assert!(!policy.is_islands_dependency(&client_sibling));
         assert!(policy.is_client_script_raw_target(&client_raw));
         assert!(!policy.is_client_script_raw_target(&island_helper));
+        assert!(!policy.is_client_script_raw_target(&client_sibling));
         assert!(policy.is_client_script_worker_target(&client_helper));
         assert!(!policy.is_client_script_worker_target(&island_helper));
+        assert!(!policy.is_client_script_worker_target(&client_sibling));
+        assert!(policy.is_client_script_sibling_target(&client_sibling));
+        assert!(!policy.is_client_script_sibling_target(&island_helper));
+        assert!(!policy.is_client_script_sibling_target(&client_raw));
+        assert!(!policy.is_client_script_sibling_target(&client_helper));
 
         invalidation.replace_client_scripts([next_client_raw.clone()]);
         invalidation.replace_client_script_workers([next_client_helper.clone()]);
+        invalidation.replace_client_script_siblings([next_client_sibling.clone()]);
         let second = policy.dynamic_dependency_paths();
         assert!(second.contains(&island_helper));
         assert!(second.contains(&next_client_raw));
         assert!(second.contains(&next_client_helper));
+        assert!(second.contains(&next_client_sibling));
         assert!(
             !second.contains(&client_raw),
             "a replaced client raw graph must not retain stale watch aliases"
@@ -719,6 +766,10 @@ mod tests {
         assert!(
             !second.contains(&client_helper),
             "a replaced client worker graph must not retain stale watch aliases"
+        );
+        assert!(
+            !second.contains(&client_sibling),
+            "a replaced client sibling graph must not retain stale watch aliases"
         );
     }
 
@@ -1309,6 +1360,44 @@ mod tests {
         std::fs::write(&physical_candidate, r#"{"compilerOptions":{}}"#).unwrap();
         assert!(invalidation.is_client_script_worker_target(&physical_candidate));
         assert!(invalidation.is_client_script_worker_target(&logical_candidate));
+    }
+
+    /// Issue #1710 — the `client_script_siblings` registry mirrors the
+    /// canonical/missing-path aliasing and stale-set-replacement coverage the
+    /// three pre-existing registries already have above.
+    #[cfg(unix)]
+    #[test]
+    fn client_script_sibling_invalidation_aliases_missing_candidates_through_canonical_parent() {
+        let project = tempfile::tempdir().unwrap();
+        let physical = project.path().join("physical");
+        let linked = project.path().join("linked");
+        std::fs::create_dir_all(physical.join("lib/shared")).unwrap();
+        std::os::unix::fs::symlink(&physical, &linked).unwrap();
+        let logical_candidate = linked.join("lib/shared/plain.ts");
+        let physical_candidate = physical.join("lib/shared/plain.ts");
+
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_client_script_siblings([logical_candidate.clone()]);
+        assert!(invalidation
+            .client_script_sibling_paths()
+            .contains(&zfb_types::normalize_path_lexical(&logical_candidate)));
+        let resolved_candidate =
+            RawImportInvalidation::resolved_alias(&physical_candidate).unwrap();
+        assert!(invalidation
+            .client_script_sibling_paths()
+            .contains(&resolved_candidate));
+        assert!(invalidation.is_client_script_sibling_target(&physical_candidate));
+
+        std::fs::write(&physical_candidate, "export const plain = 'ZFB_SIBLING';\n").unwrap();
+        assert!(invalidation.is_client_script_sibling_target(&physical_candidate));
+        assert!(invalidation.is_client_script_sibling_target(&logical_candidate));
+
+        // A successful second scan replaces (rather than appends to) the
+        // graph — dropping a sibling that stopped being reachable must stop
+        // triggering client-script reruns.
+        invalidation.replace_client_script_siblings(Vec::new());
+        assert!(!invalidation.is_client_script_sibling_target(&physical_candidate));
+        assert!(!invalidation.is_client_script_sibling_target(&logical_candidate));
     }
 
     /// #1581 — the registry's whole job: recognise an entry the dev session

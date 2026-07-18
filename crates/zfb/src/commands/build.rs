@@ -3725,6 +3725,12 @@ struct ClientScriptsPreprocessStage {
     preserve_symlinks: bool,
     raw_targets: std::collections::BTreeSet<PathBuf>,
     worker_targets: std::collections::BTreeSet<PathBuf>,
+    /// Workspace-sibling plain modules (neither a terminal `?raw` target nor a
+    /// worker dependency) materialised into this stage. Issue #1710: without
+    /// this set a sibling normal module is invisible to dev invalidation at
+    /// both the watcher and the `mark_client_scripts()` gates, so editing it
+    /// serves stale output until a restart.
+    client_script_siblings: std::collections::BTreeSet<PathBuf>,
     workers_by_entry: std::collections::BTreeMap<String, Vec<ClientScriptWorkerEntry>>,
 }
 
@@ -4344,6 +4350,21 @@ fn stage_client_script_preprocessing_with_worker_context(
         )?;
     }
 
+    // Issue #1710: track every sibling in this closure (not just the `?raw`
+    // targets / worker dependencies already captured above) for dev
+    // invalidation. Converted to the logical (watched) spelling — the same
+    // identity space `raw_targets` and `worker_targets` already use — via
+    // `logical_project_path`, which is a no-op unless a symlink sits in the
+    // physical ancestry.
+    let client_script_siblings: std::collections::BTreeSet<PathBuf> = sibling_closure
+        .iter()
+        .map(|physical| {
+            paths
+                .logical_project_path(physical)
+                .unwrap_or_else(|| physical.clone())
+        })
+        .collect();
+
     materialise_shadow_typescript_configs(&first_party_root, &root, &client_configs)?;
 
     // Workspace-hoisted install at the stage root (the tsconfig search
@@ -4494,6 +4515,7 @@ fn stage_client_script_preprocessing_with_worker_context(
         preserve_symlinks: !copy_mode,
         raw_targets,
         worker_targets,
+        client_script_siblings,
         workers_by_entry,
     }))
 }
@@ -4821,15 +4843,26 @@ fn prune_dev_client_script_outputs(
     changed
 }
 
-/// Outcome of a dev client-scripts bundle pass: (any output changed, live
-/// output basenames for next-pass pruning, `?raw` targets, module-worker
-/// targets — the last two feed raw/worker watch invalidation).
-type DevClientScriptsOutcome = (
-    bool,
-    std::collections::HashSet<String>,
-    std::collections::BTreeSet<PathBuf>,
-    std::collections::BTreeSet<PathBuf>,
-);
+/// Outcome of a dev client-scripts bundle pass.
+pub(crate) struct DevClientScriptsOutcome {
+    /// `true` when at least one file was written with new or changed bytes
+    /// (or any stale file was pruned). The dev-server wires this to a
+    /// `ReloadEvent::Page`.
+    pub(crate) changed: bool,
+    /// Entry and worker output basenames that were just written — pass as
+    /// `prev_output_filenames` on the next call.
+    pub(crate) output_filenames: std::collections::HashSet<String>,
+    /// The logical original terminal-target set for dev invalidation; the
+    /// shared registry retains lexical + canonical aliases.
+    pub(crate) raw_targets: std::collections::BTreeSet<PathBuf>,
+    /// The complete first-party worker dependency closure; edits to any
+    /// member must rerun the client-script pipeline.
+    pub(crate) worker_targets: std::collections::BTreeSet<PathBuf>,
+    /// Workspace-sibling plain modules (neither a `?raw` target nor a worker
+    /// dependency) materialised into the preprocess stage (issue #1710) — an
+    /// edit to any member must also rerun the client-script pipeline.
+    pub(crate) client_script_siblings: std::collections::BTreeSet<PathBuf>,
+}
 
 #[cfg(test)]
 pub(crate) fn build_dev_client_scripts_to_disk(
@@ -4952,31 +4985,40 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     );
 
     if entries.is_empty() {
-        return Ok((
-            any_changed,
-            current_output_filenames,
-            std::collections::BTreeSet::new(),
-            std::collections::BTreeSet::new(),
-        ));
+        return Ok(DevClientScriptsOutcome {
+            changed: any_changed,
+            output_filenames: current_output_filenames,
+            raw_targets: std::collections::BTreeSet::new(),
+            worker_targets: std::collections::BTreeSet::new(),
+            client_script_siblings: std::collections::BTreeSet::new(),
+        });
     }
 
-    let (bundle_entries, bundler_working_dir, preserve_symlinks, raw_targets, worker_targets) =
-        match preprocess_stage.as_ref() {
-            Some(stage) => (
-                stage.entries.as_slice(),
-                stage.bundle_working_dir.clone(),
-                stage.preserve_symlinks,
-                stage.raw_targets.clone(),
-                stage.worker_targets.clone(),
-            ),
-            None => (
-                entries.as_slice(),
-                project_root.to_path_buf(),
-                false,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-        };
+    let (
+        bundle_entries,
+        bundler_working_dir,
+        preserve_symlinks,
+        raw_targets,
+        worker_targets,
+        client_script_siblings,
+    ) = match preprocess_stage.as_ref() {
+        Some(stage) => (
+            stage.entries.as_slice(),
+            stage.bundle_working_dir.clone(),
+            stage.preserve_symlinks,
+            stage.raw_targets.clone(),
+            stage.worker_targets.clone(),
+            stage.client_script_siblings.clone(),
+        ),
+        None => (
+            entries.as_slice(),
+            project_root.to_path_buf(),
+            false,
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::new(),
+        ),
+    };
     // The tsconfig search boundary stays the stage root even though esbuild's
     // cwd is the mirrored project dir (issue #1674).
     let client_tsconfig_boundary = preprocess_stage.as_ref().map(|stage| stage.root.clone());
@@ -5144,12 +5186,13 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
         }
     }
 
-    Ok((
-        any_changed,
-        current_output_filenames,
+    Ok(DevClientScriptsOutcome {
+        changed: any_changed,
+        output_filenames: current_output_filenames,
         raw_targets,
         worker_targets,
-    ))
+        client_script_siblings,
+    })
 }
 
 /// Drive the build for a fully-resolved input set. Returns the number
@@ -10510,17 +10553,20 @@ mod tests {
         assert!(client_companions.contains_key(&plugin_worker_filename));
 
         let dev_assets_root = root.join("dev-assets");
-        let (dev_changed, dev_outputs, dev_raw_targets, dev_worker_targets) =
-            build_dev_client_scripts_to_disk_with_plugin_config(
-                root,
-                &dev_assets_root,
-                crate::config::Framework::Preact,
-                None,
-                &std::collections::HashSet::new(),
-                &zfb_build::ClientEntryList::new(),
-                &plugin_config,
-            )
-            .expect("dev client preprocessing shadow must bundle with plugins");
+        let dev_outcome = build_dev_client_scripts_to_disk_with_plugin_config(
+            root,
+            &dev_assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &std::collections::HashSet::new(),
+            &zfb_build::ClientEntryList::new(),
+            &plugin_config,
+        )
+        .expect("dev client preprocessing shadow must bundle with plugins");
+        let dev_changed = dev_outcome.changed;
+        let dev_outputs = dev_outcome.output_filenames;
+        let dev_raw_targets = dev_outcome.raw_targets;
+        let dev_worker_targets = dev_outcome.worker_targets;
         assert!(dev_changed);
         assert!(dev_outputs.contains("widget.js"));
         assert!(dev_outputs.contains(&primary_filename));
@@ -11411,16 +11457,19 @@ mod tests {
 
         let assets_root = root.join("dev-assets");
         let registered = zfb_build::ClientEntryList::new();
-        let (first_changed, first_outputs, first_raw, first_worker_targets) =
-            build_dev_client_scripts_to_disk(
-                root,
-                &assets_root,
-                crate::config::Framework::Preact,
-                None,
-                &std::collections::HashSet::new(),
-                &registered,
-            )
-            .unwrap();
+        let first_outcome = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &std::collections::HashSet::new(),
+            &registered,
+        )
+        .unwrap();
+        let first_changed = first_outcome.changed;
+        let first_outputs = first_outcome.output_filenames;
+        let first_raw = first_outcome.raw_targets;
+        let first_worker_targets = first_outcome.worker_targets;
         assert!(first_changed);
         assert!(first_raw.is_empty());
         assert!(first_worker_targets.contains(&importer));
@@ -11458,16 +11507,19 @@ mod tests {
             "constructor importer must remain an invalidation target until the next build"
         );
 
-        let (second_changed, second_outputs, second_raw, second_worker_targets) =
-            build_dev_client_scripts_to_disk(
-                root,
-                &assets_root,
-                crate::config::Framework::Preact,
-                None,
-                &first_outputs,
-                &registered,
-            )
-            .unwrap();
+        let second_outcome = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &first_outputs,
+            &registered,
+        )
+        .unwrap();
+        let second_changed = second_outcome.changed;
+        let second_outputs = second_outcome.output_filenames;
+        let second_raw = second_outcome.raw_targets;
+        let second_worker_targets = second_outcome.worker_targets;
         assert!(second_changed, "stale worker pruning is an asset change");
         assert!(second_raw.is_empty());
         assert!(second_worker_targets.is_empty());
@@ -11838,6 +11890,75 @@ mod tests {
                 .any(|target| target.ends_with("lib/shared/panel.frag")),
             "the sibling raw target must be tracked for dev invalidation: {:?}",
             stage.raw_targets
+        );
+
+        // Issue #1710: the sibling PLAIN module (`plain.ts` — neither a
+        // terminal `?raw` target nor a worker dependency) and the sibling
+        // `?raw` importer (`helper.ts`) must both land in the new
+        // invalidation set, or editing either serves stale dev output until
+        // a restart.
+        assert!(
+            stage
+                .client_script_siblings
+                .iter()
+                .any(|target| target.ends_with("lib/shared/plain.ts")),
+            "the sibling plain module must be tracked for dev invalidation: {:?}",
+            stage.client_script_siblings
+        );
+        assert!(
+            stage
+                .client_script_siblings
+                .iter()
+                .any(|target| target.ends_with("lib/shared/helper.ts")),
+            "the sibling `?raw` importer must be tracked for dev invalidation: {:?}",
+            stage.client_script_siblings
+        );
+    }
+
+    #[test]
+    fn build_dev_client_scripts_to_disk_returns_sibling_plain_module_in_outcome() {
+        // Issue #1710, build-layer assertion: staging-struct coverage alone
+        // doesn't prove the outcome plumbing threads the sibling closure all
+        // the way out to the dev caller (`zfb dev`'s watcher wiring). The
+        // entry lives under `pages/`, a discovery root, so it is picked up by
+        // `discover_client_scripts` without needing a registered entry.
+        //
+        // Forced into copy mode (workspace node_modules + a project tsconfig
+        // with `paths`, same recipe as
+        // `client_script_stage_widened_root_uses_copy_mode_for_sibling`):
+        // symlink mode stages the sibling as a real symlink back to the live
+        // tree, which the embedded (non-system) esbuild binary used by this
+        // non-ignored test resolves to its real path and the stage-escape
+        // audit (#1705) then rejects as unstaged — the same real-esbuild-vs-
+        // workspace-symlink gap the `client_bundling_cross_pipeline` env-gate
+        // tests exist to cover with a real system esbuild instead.
+        let workspace = tempdir().unwrap();
+        let (project_root, _entries) = write_reroot_workspace_client_fixture(workspace.path());
+        std::fs::create_dir_all(workspace.path().join("node_modules")).unwrap();
+        write_reroot_ws_file(
+            workspace.path(),
+            "sub-packages/host/tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@shared/*":["../../lib/shared/*"]}}}"#,
+        );
+        let assets_root = project_root.join("dev-assets");
+        let registered = zfb_build::ClientEntryList::new();
+        let outcome = build_dev_client_scripts_to_disk(
+            &project_root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &std::collections::HashSet::new(),
+            &registered,
+        )
+        .expect("dev bundle of the workspace-reroot sibling fixture must succeed");
+        assert!(outcome.changed);
+        assert!(
+            outcome
+                .client_script_siblings
+                .iter()
+                .any(|target| target.ends_with("lib/shared/plain.ts")),
+            "the dev outcome must carry the sibling plain module: {:?}",
+            outcome.client_script_siblings
         );
     }
 

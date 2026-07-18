@@ -1269,12 +1269,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &registered_client_entries,
         &islands_plugin_config,
     ) {
-        Ok((_, outputs, raw_targets, worker_targets)) => {
+        Ok(outcome) => {
             if let Ok(mut guard) = live_client_script_outputs.lock() {
-                *guard = outputs;
+                *guard = outcome.output_filenames;
             }
-            raw_import_invalidation.replace_client_scripts(raw_targets);
-            raw_import_invalidation.replace_client_script_workers(worker_targets);
+            raw_import_invalidation.replace_client_scripts(outcome.raw_targets);
+            raw_import_invalidation.replace_client_script_workers(outcome.worker_targets);
+            raw_import_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
         }
         Err(err) => {
             output::warn(format!(
@@ -1307,7 +1308,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     p.into_inner()
                 })
                 .clone();
-            let (changed, new_outputs, raw_targets, worker_targets) =
+            let outcome =
                 crate::commands::build::build_dev_client_scripts_to_disk_with_plugin_config(
                     &project_root_for_cs,
                     &dev_assets_root_for_cs,
@@ -1324,10 +1325,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 );
                 p.into_inner()
             });
-            *guard = new_outputs;
-            raw_invalidation.replace_client_scripts(raw_targets);
-            raw_invalidation.replace_client_script_workers(worker_targets);
-            Ok(changed)
+            *guard = outcome.output_filenames;
+            raw_invalidation.replace_client_scripts(outcome.raw_targets);
+            raw_invalidation.replace_client_script_workers(outcome.worker_targets);
+            raw_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
+            Ok(outcome.changed)
         }))
     };
 

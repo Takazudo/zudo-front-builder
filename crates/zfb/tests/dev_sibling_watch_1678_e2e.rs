@@ -25,6 +25,12 @@
 //!   sibling package (never watched at boot) makes that sibling directory
 //!   watched (asserted on the `watch-extra registered:` signal), after which
 //!   editing the new sibling file refreshes the bundle.
+//! - **D** — (issue #1711, Sibling Invalidation epic #1709 confirm pass)
+//!   editing a BOOT-discovered sibling PLAIN module (`sub/shared/plain.ts`,
+//!   reached by an ordinary import — neither `?raw` nor a worker dependency)
+//!   refreshes the served client bundle restart-free, proving the
+//!   `client_script_siblings` registry threaded end-to-end in #1710 closes
+//!   the dev loop for this third sibling shape too.
 //!
 //! `#[ignore]`d (`heavy:`): it spawns a real `zfb dev --port 0` with embedded
 //! V8 + a real esbuild subprocess, polls it over HTTP, and is serialized with
@@ -321,6 +327,23 @@ async fn e2e_dev_watches_workspace_sibling_raw_and_worker_sources() {
     let host_root = workspace.path().join("sub/host");
     let shared_dir = workspace.path().join("sub/shared");
 
+    // Scenario D (issue #1711) needs COPY mode for the preprocess stage, not
+    // the default symlink mode: a sibling PLAIN module is resolved directly
+    // by esbuild's normal module graph (unlike `?raw`/worker deps, which are
+    // rewritten into generated in-place modules and never hit esbuild's own
+    // symlink resolution). Real esbuild's `--preserve-symlinks` does not
+    // protect a plain relative-import symlink the way it protects a
+    // `node_modules`-shaped one, so in symlink mode the stage-escape audit
+    // (#1705) rejects the resolved real path as an escape. `copy_mode` in
+    // `stage_client_script_preprocessing` (crates/zfb/src/commands/build.rs)
+    // requires BOTH a discoverable `node_modules` dir and a tsconfig `paths`
+    // map in scope — the `sub/host/tsconfig.json` fixture already carries an
+    // (otherwise unused) `paths` entry for this; this empty dir is the other
+    // half. `copy_fixture` above intentionally skips copying `node_modules`,
+    // so it must be created here rather than checked into the fixture.
+    std::fs::create_dir_all(workspace.path().join("node_modules"))
+        .expect("create workspace node_modules dir to force copy-mode staging");
+
     let mut session = spawn_dev(&host_root, &esbuild);
     let Some(port) = wait_for_ready(&mut session).await else {
         return; // environmental skip (no V8/esbuild)
@@ -352,6 +375,15 @@ async fn e2e_dev_watches_workspace_sibling_raw_and_worker_sources() {
     assert!(
         !boot_entry.contains("?raw"),
         "served client entry must not leak a `?raw` specifier\n{}",
+        session.logs(),
+    );
+    // Scenario D's boot-discovered sibling PLAIN module: its exported string
+    // constant is inlined into the bundled client entry alongside the `?raw`
+    // payload above (proving `graph.modules` — not just the raw/worker edges
+    // — feeds the client_script_siblings closure staged for this entry).
+    assert!(
+        boot_entry.contains("ZFB_SIBLING_PLAIN_PAYLOAD_V1"),
+        "boot client entry must inline the sibling plain module's export\n{}",
         session.logs(),
     );
     poll_body(
@@ -437,6 +469,24 @@ async fn e2e_dev_watches_workspace_sibling_raw_and_worker_sources() {
         &client_url,
         "ZFB_LATE_PANEL_RAW_PAYLOAD_V2_EDITED",
         "scenario C: editing the newly-watched sibling refreshes the client bundle",
+        &session,
+    )
+    .await;
+
+    // Scenario D (issue #1711) — edit the BOOT-discovered sibling PLAIN
+    // module (`sub/shared/plain.ts`, a committed fixture file imported by
+    // `entry.client.ts` since boot, same as the `?raw` sibling in Scenario A
+    // — NOT introduced after boot the way Scenario C's `late` package is).
+    // The sibling directory is already watched from boot for the same reason
+    // Scenario A's is; re-issuing the edit absorbs the same FSEvents
+    // activation window `edit_until_served` already accounts for.
+    edit_until_served(
+        &client,
+        &shared_dir.join("plain.ts"),
+        "export const plainMarker = \"ZFB_SIBLING_PLAIN_PAYLOAD_V2_EDITED\";\n",
+        &client_url,
+        "ZFB_SIBLING_PLAIN_PAYLOAD_V2_EDITED",
+        "scenario D: sibling plain-module edit refreshes the client bundle",
         &session,
     )
     .await;
