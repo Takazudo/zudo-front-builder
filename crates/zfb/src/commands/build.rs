@@ -2907,6 +2907,18 @@ fn materialise_islands_shadow_with_worker_context(
     // each shadow file to the nearest mirrored `node_modules`. In a widened
     // workspace shadow, both the workspace-root install and the project's
     // nested install are linked so nearest-package precedence is preserved.
+    //
+    // Issue #1682 (shared with the client-script preprocessing stage below):
+    // a sibling imported through its pnpm PACKAGE NAME resolves through this
+    // live node_modules symlink to the unprocessed source, bypassing the
+    // staged rewrite. Sibling reach via tsconfig alias / relative path
+    // (what #1674 covers) resolves to the staged files instead. Guarded by
+    // this epic (#1702): guard (a) (issue #1703, checked earlier in this
+    // function against `scan_meta.workspace_package_edges_from_islands`)
+    // pre-flight rejects the escape before this symlink is even created;
+    // guard (b) (issue #1705/#1707) is the esbuild-time backstop — a
+    // per-subprocess metafile audit that rejects it even if a lower-level
+    // bundler invocation ever bypassed guard (a).
     if let Some(nm) = first_party_node_modules {
         let shadow_nm = shadow_root.join("node_modules");
         shadow_symlink(&nm, &shadow_nm).with_context(|| {
@@ -4339,15 +4351,16 @@ fn stage_client_script_preprocessing_with_worker_context(
     // Without a workspace both collapse to the single root-level symlink,
     // byte-identical to the pre-#1674 behavior.
     //
-    // Issue #1682 (shared with the islands shadow): a sibling imported
+    // Issue #1682 (shared with the islands shadow above): a sibling imported
     // through its pnpm PACKAGE NAME resolves through this live node_modules
     // link to the unprocessed source, bypassing the staged rewrite. Sibling
     // reach via tsconfig alias / relative path (what #1674 covers) resolves
-    // to the staged files instead. Guard (a) (issue #1703, checked earlier
-    // in this function) hard-errors before this symlink is even created
-    // when staging is active and a package-name escape was detected, so by
-    // the time we get here either no such edge exists or staging was never
-    // active for this closure in the first place.
+    // to the staged files instead. Guarded by this epic (#1702): guard (a)
+    // (issue #1703, checked earlier in this function against
+    // `graph.workspace_package_edges`) pre-flight rejects the escape before
+    // this symlink is even created; guard (b) (issue #1705/#1707) is the
+    // esbuild-time backstop — a per-subprocess metafile audit that rejects
+    // it even if a lower-level bundler invocation ever bypassed guard (a).
     if let Some(node_modules) = &first_party_node_modules {
         shadow_symlink(node_modules, &root.join("node_modules")).with_context(|| {
             format!(
