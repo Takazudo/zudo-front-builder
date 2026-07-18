@@ -339,7 +339,10 @@ pub(crate) fn assemble_bundler_input(
     // - WarnAndEmpty (dev): log a warning and continue with an empty map so
     //   the dev server still boots even when CSS is temporarily broken.
     bundler_input.css_module_class_maps =
-        match crate::commands::build::compute_css_module_class_maps(project_root) {
+        match crate::commands::build::compute_css_module_class_maps(
+            project_root,
+            &plugin_alias_entries,
+        ) {
             Ok(maps) => maps,
             Err(e) => match css_fail_mode {
                 CssModuleFailMode::HardFail => {

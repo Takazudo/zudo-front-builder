@@ -553,6 +553,24 @@ fn workspace_sibling_import_meta_glob_is_staged_and_expanded() {
         staged_body.contains("glob-user-data/a.ts") && staged_body.contains("glob-user-data/b.ts"),
         "the expanded barrel must reference both glob targets: {staged_body}"
     );
+
+    // Issue #1692: the wholesale sibling mirror must ALSO physically stage the
+    // glob TARGET files into the work mirror (not just reference them by name
+    // in the expanded barrel). The barrel imports `./glob-user-data/a.ts` etc.
+    // relative to the staged `glob-user.ts`, so esbuild resolves them inside
+    // the shadow — they must exist there. Pre-#1692 they were referenced but
+    // absent (the gap wholesale mirroring closes).
+    let glob_data = work_mirror_root(&session).join("lib/shared/glob-user-data");
+    assert!(
+        glob_data.join("a.ts").is_file(),
+        "glob target a.ts must be physically present in the work mirror: {}",
+        glob_data.display()
+    );
+    assert!(
+        glob_data.join("b.ts").is_file(),
+        "glob target b.ts must be physically present in the work mirror: {}",
+        glob_data.display()
+    );
 }
 
 /// **Preprocessing form 3/3 — sibling nested `new Worker(...)` (inverted #1672 guard).**

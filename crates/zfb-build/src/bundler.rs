@@ -137,10 +137,12 @@ use crate::adapter::run_capturing;
 // The `import.meta.glob` expansion helpers moved to their own `pub` module
 // (issue #1402) so #1404's downstream orchestration in `crates/zfb` can
 // reuse them without `zfb-islands` gaining a `zfb-build` dependency. Only
-// `expand_import_meta_glob` is still called directly from this file (in
-// `materialise_source_file`); `glob_match_relative` and `GlobCallCollector`
-// have no other call sites left in `bundler.rs`.
-use crate::glob_expand::expand_import_meta_glob;
+// `expand_import_meta_glob_with_matches` is called directly from this file
+// (in `materialise_source_file`) — the richer form is used (rather than the
+// `expand_import_meta_glob` convenience wrapper) so the matched target files
+// feed the issue #1695 fixed-point staging queue below; `glob_match_relative`
+// and `GlobCallCollector` have no other call sites left in `bundler.rs`.
+use crate::glob_expand::expand_import_meta_glob_with_matches;
 use crate::module_worker::{
     collect_runtime_import_specifiers_from_file, discover_module_preprocessing_with_context,
     discover_registered_virtual_preprocessing_with_context,
@@ -664,9 +666,10 @@ pub struct BundlerInput {
     /// 1. `materialise_shadow` SKIPS copying/symlinking it into the shadow
     ///    tree (the file is never present for esbuild to resolve).
     /// 2. The #665 `import.meta.glob` eager-expansion seam
-    ///    ([`expand_import_meta_glob`]) DROPS it from any glob expansion, so
-    ///    an excluded file is never emitted as a static import (which would
-    ///    otherwise make esbuild error on the generated import).
+    ///    ([`expand_import_meta_glob_with_matches`]) DROPS it from any glob
+    ///    expansion, so an excluded file is never emitted as a static import
+    ///    (which would otherwise make esbuild error on the generated
+    ///    import).
     ///
     /// Why this is needed: a `--platform=neutral` worker bundle rejects
     /// CJS-only packages resolved only via `main`/`module` or a
@@ -896,6 +899,22 @@ const KNOWN_SOURCE_DIRS: &[&str] = &[
     "content",
     "components",
     "layouts",
+    "node_modules",
+    "dist",
+    ".git",
+    "target",
+    ".turbo",
+    ".next",
+    ".vercel",
+];
+/// Infra directories never mirrored in a wholesale sibling copy (issue #1692).
+/// This is `KNOWN_SOURCE_DIRS` minus the four project-owned source-dir names
+/// (`pages`/`content`/`components`/`layouts`): a workspace-sibling library may
+/// legitimately own a directory named `pages`/`content`/etc., so those are NOT
+/// pruned when mirroring a sibling region — only genuine build/VCS/vendor
+/// output is. `node_modules` is pruned here AND enforced again by the
+/// per-file `path_is_inside_node_modules` guard (defense in depth).
+const MIRROR_SKIP_DIRS: &[&str] = &[
     "node_modules",
     "dist",
     ".git",
@@ -2105,6 +2124,7 @@ pub fn bundle_with_session(
         bundle_exclude: &bundle_exclude,
         project_root: &input.project_root,
         writer: &writer,
+        glob_matched_files: RefCell::new(BTreeSet::new()),
         raw_import_edges: RefCell::new(BTreeSet::new()),
         raw_import_aliases: RawImportAliasContext::from_paths_and_project_base_url(
             &input.tsconfig_paths,
@@ -2272,6 +2292,20 @@ pub fn bundle_with_session(
                     }),
             );
     }
+
+    // Issue #1692: the claim plan — computed ONCE here now that
+    // `plugin_preprocessing_files` (claim sources a + c) is fully populated,
+    // alongside the tsconfig/plugin alias targets (claim source b). It drives
+    // the wholesale sibling mirror below and is the single source of truth the
+    // Wave 2/3 CSS-discovery / audit sub-issues consume. Empty (and inert) for
+    // a standalone project, so a non-workspace build stays byte-identical.
+    let sibling_mirror_plan = SiblingMirrorPlan::compute(
+        &project_root,
+        &first_party_root,
+        &plugin_preprocessing_files,
+        &input.tsconfig_paths,
+        &input.plugin_alias_entries,
+    );
 
     // Seed the staged-dependency closure from the materialized project module
     // graph and the framework packages the generated entry/hydration shim
@@ -2705,87 +2739,103 @@ pub fn bundle_with_session(
         }
     }
 
+    // 2a-sibling. Wholesale sibling mirror (issue #1692). For each claimed
+    // mirror root, RAW-copy its whole tree (gitignore + skip-list honored,
+    // root-level files included) into its workspace-relative slot in the WORK
+    // mirror, so esbuild — the sole resolver — can resolve anything inside a
+    // sibling region (glob targets, index files, `package.json` main/imports,
+    // wildcard-alias targets) that the Rust preprocessing discovery could not
+    // predict. Reachable source files that need `?raw`/glob/worker rewrites are
+    // overwritten by the plugin-preprocessing pass further below (which
+    // materialises the discovered graph AFTER this raw copy). Gated on
+    // `workspace_rel.is_some()` (⇔ the plan being non-empty requires a widened
+    // first-party root), so a non-workspace build never enters here and stays
+    // byte-identical.
+    if workspace_rel.is_some() && !sibling_mirror_plan.is_empty() {
+        for mirror_root in sibling_mirror_plan.mirror_roots() {
+            mirror_sibling_root(
+                mirror_root,
+                &project_root,
+                &first_party_root,
+                shadow,
+                work,
+                node_modules_isolation_root,
+                &writer,
+                &bundle_exclude,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: wholesale-mirror sibling region {}",
+                    mirror_root.display()
+                )
+            })?;
+        }
+    }
+
     // 2a-ws. Workspace-hoisted `node_modules` at the WORK root (issue #1668
-    //     part 1). In a pnpm workspace the deps are hoisted to the workspace
-    //     root, so the work mirror gets its own `<work>/node_modules` symlink
-    //     — the SECOND install root above the project's own nested install
-    //     (linked at `<shadow>/node_modules` by 2b below). esbuild walks up
-    //     from a project-mirror file to `<shadow>/node_modules` first, then to
-    //     `<work>/node_modules`, preserving nearest-package precedence for the
-    //     day sibling sources are staged (a later sub-issue).
+    //     part 1; contract inverted by #1693). In a pnpm workspace the deps
+    //     are hoisted to the workspace root, so the work mirror gets its own
+    //     `<work>/node_modules` symlink — the SECOND install root above the
+    //     project's own nested install (linked at `<shadow>/node_modules` by
+    //     2b below). esbuild walks up from a project-mirror file to
+    //     `<shadow>/node_modules` first, then to `<work>/node_modules`,
+    //     preserving nearest-package precedence — including for a
+    //     wholesale-mirrored sibling staged directly under
+    //     `<work>/<workspace_rel>/...` (#1692), which has no ancestor
+    //     `node_modules` to resolve a bare import against unless this link
+    //     exists.
     //
-    //     WHAT lives there follows `bundle.exclude` EXACTLY like the 2b link:
-    //     - Empty exclude → create the live link (byte-identical nearest
-    //       -package fallback).
-    //     - Exclusions active → the live link is a resurrection hatch: esbuild
-    //       could climb `<work>/node_modules` to a package the staged
-    //       `<shadow>` view deliberately omits, and the metafile audit cannot
-    //       catch it because the canonical workspace-root path is OUTSIDE
-    //       `project_root`, where the exclusion matcher always returns false.
-    //       So it is NEVER created, and a stale link from a previous empty
-    //       -exclude tick of a persistent session is actively removed (same
-    //       empty→non-empty transition the 2b block handles).
+    //     UNLIKE the 2b link, this one is now created REGARDLESS of
+    //     `bundle.exclude` — empty or active. Removing it under exclusions
+    //     (the pre-#1693 behavior) broke every sibling bare import, not just
+    //     the excluded ones, once #1692 started staging sibling sources
+    //     outside `<shadow>`. "Exclusion = absence from a staged shadow tree"
+    //     stays enforceable anyway: the fail-closed metafile audit
+    //     (`audit_metafile_exclusions_at_path`, run after esbuild below)
+    //     checks every input esbuild actually resolved — canonicalised —
+    //     against the TIER-2 workspace-relative `BundleExcludeMatcher`
+    //     pattern set (issue #1676), which is armed for exactly this case: a
+    //     resolved path under `first_party_root` but outside `project_root`.
+    //     So a resurrection climbing this link is not silently missed — it
+    //     hard-fails the build as an offending metafile input, the same
+    //     fail-closed guarantee the old "never create the link" approach
+    //     gave, without breaking legitimate sibling deps.
     //
     //     Without a workspace `workspace_rel` is `None`, so this is skipped
-    //     entirely and the layout stays byte-identical. Created/removed
-    //     directly (not through the ShadowWriter), like the 2b link, so it
-    //     never enters the prune bookkeeping.
+    //     entirely and the layout stays byte-identical. Created directly (not
+    //     through the ShadowWriter), like the 2b link, so it never enters the
+    //     prune bookkeeping.
     if workspace_rel.is_some() {
         let workspace_node_modules = first_party_root.join("node_modules");
         if workspace_node_modules.is_dir() {
             let work_nm = work.join("node_modules");
-            if bundle_exclude.is_empty() {
-                #[cfg(unix)]
-                {
-                    let already_correct = fs::read_link(&work_nm)
-                        .map(|t| t == workspace_node_modules)
-                        .unwrap_or(false);
-                    if !already_correct {
-                        let _ = fs::remove_file(&work_nm);
-                        let _ = fs::remove_dir_all(&work_nm);
-                        std::os::unix::fs::symlink(&workspace_node_modules, &work_nm)
-                            .with_context(|| {
-                                format!(
-                                    "bundler: failed to symlink workspace node_modules {} → {}",
-                                    workspace_node_modules.display(),
-                                    work_nm.display()
-                                )
-                            })?;
-                    }
+            #[cfg(unix)]
+            {
+                let already_correct = fs::read_link(&work_nm)
+                    .map(|t| t == workspace_node_modules)
+                    .unwrap_or(false);
+                if !already_correct {
+                    let _ = fs::remove_file(&work_nm);
+                    let _ = fs::remove_dir_all(&work_nm);
+                    std::os::unix::fs::symlink(&workspace_node_modules, &work_nm).with_context(
+                        || {
+                            format!(
+                                "bundler: failed to symlink workspace node_modules {} → {}",
+                                workspace_node_modules.display(),
+                                work_nm.display()
+                            )
+                        },
+                    )?;
                 }
-                #[cfg(not(unix))]
-                {
-                    fs::create_dir_all(&work_nm).with_context(|| {
-                        format!(
-                            "bundler: failed to create workspace node_modules dir {}",
-                            work_nm.display()
-                        )
-                    })?;
-                }
-            } else {
-                // Exclusions active: remove any stale live link left by a
-                // previous empty-exclude tick of a persistent session.
-                // `remove_file` deletes the symlink itself (not its target);
-                // a real dir (never created here) is left untouched.
-                #[cfg(unix)]
-                {
-                    if fs::symlink_metadata(&work_nm)
-                        .map(|m| m.file_type().is_symlink())
-                        .unwrap_or(false)
-                    {
-                        let _ = fs::remove_file(&work_nm);
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    if fs::symlink_metadata(&work_nm)
-                        .map(|m| m.file_type().is_symlink())
-                        .unwrap_or(false)
-                    {
-                        let _ = fs::remove_file(&work_nm);
-                        let _ = fs::remove_dir(&work_nm);
-                    }
-                }
+            }
+            #[cfg(not(unix))]
+            {
+                fs::create_dir_all(&work_nm).with_context(|| {
+                    format!(
+                        "bundler: failed to create workspace node_modules dir {}",
+                        work_nm.display()
+                    )
+                })?;
             }
         }
     }
@@ -3113,6 +3163,26 @@ pub fn bundle_with_session(
         None => None,
     };
 
+    // 2e-root. Project-root loose-file staging (issue #1692). A wildcard root
+    // alias (`"@/*": ["./*"]`) lets esbuild resolve `@/<name>` to a file
+    // sitting directly in the project root. With `bundle.exclude` active the
+    // tsconfig is rewritten shadow-only (no live-tree fallback), so those loose
+    // files must be present in the shadow or the import fails with `Could not
+    // resolve` (the real-site #1685 breakage). Gated on exclusions-active so
+    // the empty-exclude path stays byte-identical (there the dual-target
+    // tsconfig still resolves such imports against the real root), AND on a
+    // wildcard root alias actually existing so nothing is staged needlessly.
+    if !bundle_exclude.is_empty()
+        && has_wildcard_root_alias(
+            &project_root,
+            &input.tsconfig_paths,
+            &input.plugin_alias_entries,
+        )
+    {
+        stage_project_root_loose_files(&input.project_root, shadow, &mat_ctx)
+            .context("bundler: failed staging project-root loose files into shadow")?;
+    }
+
     // 2f. Exact user/plugin targets can point at root-level files or paths
     // absent from the conventional source-root walks above. Materialise the
     // complete plugin-aware first-party closure explicitly so `?raw` wrappers and
@@ -3337,6 +3407,7 @@ pub fn bundle_with_session(
                 mat_ctx.copy_mode
             },
             target_writer,
+            &mat_ctx.glob_matched_files,
             &mat_ctx.raw_import_edges,
             &mat_ctx.raw_import_aliases,
             &mat_ctx.module_worker_dependencies,
@@ -3351,6 +3422,22 @@ pub fn bundle_with_session(
         })?;
     }
 
+    // 2f. Issue #1695: `import.meta.glob` matched-files fixed-point drain.
+    // By this point every materialise pass above has run at least once this
+    // call, so `mat_ctx.glob_matched_files` holds the union of every glob
+    // match discovered anywhere in the shadow tree so far; drain it to a
+    // fixed point. See [`stage_glob_matched_files_to_fixed_point`] for why
+    // every match is staged here (including ones inside an already-claimed
+    // `SiblingMirrorPlan` region) and the full queue shape.
+    stage_glob_matched_files_to_fixed_point(
+        &mat_ctx,
+        &project_root,
+        &first_party_root,
+        shadow,
+        work,
+        node_modules_isolation_root,
+    )?;
+
     // 2g. CSS Modules — run after every explicit exact-target/package copy
     //     so raw staged `.module.css` files cannot overwrite the rewrite.
     //     Paired with `--loader:.module.css=js`, this emits scoped class maps.
@@ -3361,6 +3448,21 @@ pub fn bundle_with_session(
         &writer,
     )
     .context("bundler: failed rewriting CSS Modules in shadow tree")?;
+    // Issue #1697: the sibling half of the same pass — a claimed sibling
+    // `.module.css` lands under `work` outside the project mirror `shadow`,
+    // which the walk above never visits. Gated on `workspace_rel.is_some()`
+    // (⇔ `shadow` is nested under `work`, not equal to it) so a non-workspace
+    // build never enters here and stays byte-identical.
+    if workspace_rel.is_some() {
+        rewrite_css_modules_in_work_mirror(
+            work,
+            shadow,
+            &first_party_root,
+            &input.css_module_class_maps,
+            &writer,
+        )
+        .context("bundler: failed rewriting CSS Modules in work mirror")?;
+    }
     if let (Some(isolation_root), Some(isolation_writer)) = (
         node_modules_isolation_root,
         node_modules_isolation_writer.as_ref(),
@@ -3980,6 +4082,597 @@ fn enumerate_extra_top_level_dirs(project_root: &Path, known_skip_list: &[&str])
     out
 }
 
+/// Walk `root` with the same `ignore::WalkBuilder` machinery
+/// [`enumerate_extra_top_level_dirs`] uses (`.gitignore` / `.git/info/exclude`
+/// / global-git honored via `standard_filters`, `require_git(false)` so the
+/// filter still applies outside a git repo, hidden entries pruned), but over
+/// the WHOLE subtree (not `max_depth(1)`) and yielding FILES — the root-level
+/// files included. This is the generalization the sibling wholesale mirror
+/// (issue #1692) needs: the project pass enumerates top-level dirs and hands
+/// each to `materialise_shadow`; the sibling pass walks a claimed mirror root
+/// end-to-end. The `MIRROR_SKIP_DIRS` infra dirs are pruned at any depth, and
+/// a `node_modules` component is never descended into (also re-checked
+/// per-file by the caller).
+fn enumerate_mirror_root_files(root: &Path) -> Vec<PathBuf> {
+    use ignore::WalkBuilder;
+    let walker = WalkBuilder::new(root)
+        .standard_filters(true) // .gitignore + .git/info/exclude + global gitignore + hidden
+        .require_git(false) // honor .gitignore even when the sibling isn't a git repo
+        .filter_entry(|entry| {
+            // Prune the infra skip-list directories at any depth. Non-dirs and
+            // the walk root itself are always kept; `standard_filters` already
+            // prunes hidden dirs and gitignored entries.
+            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                let name = entry.file_name().to_string_lossy();
+                if MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip) {
+                    return false;
+                }
+            }
+            true
+        })
+        .build();
+    let mut out = Vec::new();
+    for entry in walker.flatten() {
+        if entry.file_type().is_some_and(|ft| ft.is_file()) {
+            out.push(entry.path().to_path_buf());
+        }
+    }
+    out
+}
+
+/// Split off a trailing `/*` or `/**` glob segment from an alias `target` so a
+/// wildcard target's DIRECTORY component becomes the claim path (issue #1691's
+/// claim policy: for `@shared/* -> ../../lib/shared/*` the claim is
+/// `../../lib/shared`). A concrete (non-wildcard) target claims itself. The
+/// result is lexically normalized so it compares cleanly against the
+/// (lexical, non-canonicalized) `first_party_root` / `project_root`.
+fn alias_target_claim_path(target: &str) -> PathBuf {
+    let trimmed = target
+        .strip_suffix("/**")
+        .or_else(|| target.strip_suffix("/*"))
+        .unwrap_or(target);
+    normalize_path_lexical(Path::new(trimmed))
+}
+
+/// Resolve a claim path to its **mirror root** per issue #1691's claim policy:
+/// the nearest ancestor directory that directly contains a `package.json`,
+/// else the claim's own directory. Returns `None` for anything that is not a
+/// wholesale-mirrorable workspace-sibling region:
+///
+/// - a standalone project (`first_party_root == project_root` — no siblings),
+/// - a claim outside `first_party_root`, or under (i.e. local to)
+///   `project_root` — those are the project mirror's own concern,
+/// - a claim reached through a `node_modules` component (vendored, not source),
+/// - `first_party_root` itself (never mirrored wholesale), and
+/// - a region that would CONTAIN `project_root` (an ancestor-of-project dir):
+///   mirroring it would double-stage the project subtree over its own mirror.
+///
+/// The ancestor search never crosses into `first_party_root` or a
+/// project-containing directory, so the returned root is always a disjoint
+/// sibling region.
+fn resolve_mirror_root(
+    claim: &Path,
+    project_root: &Path,
+    first_party_root: &Path,
+) -> Option<PathBuf> {
+    if first_party_root == project_root {
+        return None;
+    }
+    let claim = normalize_path_lexical(claim);
+    if path_is_inside_node_modules(&claim) {
+        return None;
+    }
+    if !claim.starts_with(first_party_root) || claim.starts_with(project_root) {
+        return None;
+    }
+    let claim_dir = if claim.is_dir() {
+        claim.clone()
+    } else {
+        claim.parent()?.to_path_buf()
+    };
+    if claim_dir == first_party_root || !claim_dir.starts_with(first_party_root) {
+        return None;
+    }
+    // A claim whose own directory is an ancestor of the project is not a
+    // disjoint sibling region (mirroring it would swallow the project mirror).
+    if project_root.starts_with(&claim_dir) {
+        return None;
+    }
+    // Nearest ancestor (from the claim dir up to, but excluding,
+    // `first_party_root`) that directly contains a `package.json`.
+    let mut dir: &Path = claim_dir.as_path();
+    loop {
+        if dir == first_party_root || project_root.starts_with(dir) {
+            break;
+        }
+        if dir.join("package.json").is_file() {
+            return Some(dir.to_path_buf());
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => break,
+        }
+    }
+    Some(claim_dir)
+}
+
+/// The claim plan (issue #1691/#1692): the set of distinct workspace-sibling
+/// **mirror roots** to wholesale-stage into the SSR work mirror, computed ONCE
+/// per [`bundle`] from the three claim sources. This is the single source of
+/// truth for sibling staging and — via [`Self::claims_path`] — for the CSS
+/// discovery and audit predicates the Wave 2/3 sub-issues (#1695–#1697)
+/// consume. Empty (and inert) for a standalone project, so a non-workspace
+/// build stays byte-identical.
+#[derive(Debug, Clone, Default)]
+pub struct SiblingMirrorPlan {
+    /// Distinct mirror roots, each an absolute, lexically-normalized directory
+    /// under `first_party_root`, outside `project_root`, never through a
+    /// `node_modules` component and never `first_party_root` itself.
+    mirror_roots: BTreeSet<PathBuf>,
+}
+
+impl SiblingMirrorPlan {
+    /// Compute the plan from the three claim sources of issue #1691:
+    ///
+    /// - **(a)** every preprocessing-discovery-graph file under
+    ///   `first_party_root` outside `project_root` (`discovered_graph_files`
+    ///   is the bundler's `plugin_preprocessing_files` set),
+    /// - **(c)** every registered virtual module's absolute import there — its
+    ///   discovered graph is folded into the same `discovered_graph_files`
+    ///   set (the virtual-module discovery feeds `plugin_preprocessing_files`),
+    /// - **(b)** every tsconfig / plugin alias target there (wildcard target →
+    ///   its directory component, via [`alias_target_claim_path`]).
+    ///
+    /// Each claim resolves through [`resolve_mirror_root`]; `None` results are
+    /// dropped (project-local, out-of-workspace, node_modules, etc.).
+    pub fn compute(
+        project_root: &Path,
+        first_party_root: &Path,
+        discovered_graph_files: &BTreeSet<PathBuf>,
+        tsconfig_paths: &BTreeMap<String, Vec<String>>,
+        plugin_alias_entries: &[(String, String)],
+    ) -> Self {
+        let mut mirror_roots = BTreeSet::new();
+        if first_party_root == project_root {
+            return Self { mirror_roots };
+        }
+        // (a) + (c): discovered graph files (project and sibling); only the
+        // siblings survive `resolve_mirror_root`.
+        for file in discovered_graph_files {
+            if let Some(root) = resolve_mirror_root(file, project_root, first_party_root) {
+                mirror_roots.insert(root);
+            }
+        }
+        // (b): alias targets — wildcard targets contribute their directory.
+        for target in tsconfig_paths.values().flatten().map(String::as_str).chain(
+            plugin_alias_entries
+                .iter()
+                .map(|(_, target)| target.as_str()),
+        ) {
+            let claim = alias_target_claim_path(target);
+            if let Some(root) = resolve_mirror_root(&claim, project_root, first_party_root) {
+                mirror_roots.insert(root);
+            }
+        }
+        Self { mirror_roots }
+    }
+
+    /// The distinct mirror roots to wholesale-stage, in deterministic order.
+    pub fn mirror_roots(&self) -> impl Iterator<Item = &Path> {
+        self.mirror_roots.iter().map(PathBuf::as_path)
+    }
+
+    /// Whether the plan claims nothing (a standalone project, or a workspace
+    /// whose build reaches no sibling region).
+    pub fn is_empty(&self) -> bool {
+        self.mirror_roots.is_empty()
+    }
+
+    /// Audit predicate for Wave 2/3: is `path` inside a claimed mirror root?
+    /// The CSS discovery (#1696/#1697) and any resurrection audit key off
+    /// this so they enumerate exactly the regions this plan staged — no
+    /// second, drift-prone definition of "a claimed sibling path". NOT
+    /// consumed by the issue #1695 glob fixed-point queue: an earlier cut of
+    /// that queue used this to skip a match already inside a claimed
+    /// region, on the assumption [`mirror_sibling_root`]'s wholesale copy
+    /// already made it correct — false for a claimed-region file that
+    /// itself uses `import.meta.glob`/`?raw`/a worker URL, since that copy
+    /// is a raw byte copy with no macro expansion. The queue now stages
+    /// every match unconditionally instead.
+    pub fn claims_path(&self, path: &Path) -> bool {
+        let path = normalize_path_lexical(path);
+        self.mirror_roots.iter().any(|root| path.starts_with(root))
+    }
+}
+
+/// Wholesale-mirror one claimed sibling `mirror_root` into the SSR work mirror
+/// (issue #1692) — the sibling analogue of the project's exact-target dir
+/// staging ([`materialise_isolated_exact_dir`]): a RAW file copy of the whole
+/// region so esbuild (the sole resolver) can resolve anything inside it —
+/// glob directory probing, index files, `package.json` `main`/`imports`,
+/// wildcard-alias targets — that the Rust preprocessing discovery could not
+/// predict. Reachable source files that DO need `?raw`/glob/worker rewrites
+/// are overwritten afterwards by the plugin-preprocessing pass (which runs
+/// after this and materialises the discovered graph). Every file lands at its
+/// workspace-relative slot via [`shadow_path_for_project_path`]
+/// (`work.join(<rel>)`), so it never collides with the nested project mirror.
+#[allow(clippy::too_many_arguments)]
+fn mirror_sibling_root(
+    mirror_root: &Path,
+    project_root: &Path,
+    first_party_root: &Path,
+    shadow: &Path,
+    work: &Path,
+    node_modules_isolation_root: Option<&Path>,
+    writer: &ShadowWriter<'_>,
+    bundle_exclude: &BundleExcludeMatcher,
+) -> Result<()> {
+    for src in enumerate_mirror_root_files(mirror_root) {
+        // Defense in depth vs. the walk's own pruning: never mirror through a
+        // node_modules component, out of the first-party region, or over the
+        // project mirror.
+        if path_is_inside_node_modules(&src)
+            || !src.starts_with(first_party_root)
+            || src.starts_with(project_root)
+        {
+            continue;
+        }
+        // The two-tier (issue #1668 part 2) `bundle.exclude` contract still
+        // governs a sibling file: an excluded sibling is absent from the
+        // shadow, exactly like an excluded project file.
+        if bundle_exclude.is_excluded(&src, project_root) {
+            continue;
+        }
+        let dest = shadow_path_for_project_path(
+            &src,
+            project_root,
+            first_party_root,
+            shadow,
+            work,
+            node_modules_isolation_root,
+        );
+        if let Some(parent) = dest.parent() {
+            writer.ensure_dir(parent).with_context(|| {
+                format!("bundler: create sibling mirror dir {}", parent.display())
+            })?;
+        }
+        writer.copy_if_changed(&src, &dest).with_context(|| {
+            format!(
+                "bundler: wholesale-mirror sibling file {} -> {}",
+                src.display(),
+                dest.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Drain [`MaterialiseCtx::glob_matched_files`] to a fixed point (issue
+/// #1695): every `import.meta.glob(...)` target discovered anywhere in this
+/// `bundle_with_session` call is staged at its own
+/// [`shadow_path_for_project_path`] slot through
+/// [`materialise_source_file`] — the same pass every other first-party file
+/// goes through — plus, since that only expands glob/`?raw`/worker macros
+/// and never walks plain `import` specifiers, the target's own ordinary
+/// first-party dependency closure (via [`discover_module_preprocessing_with_context`],
+/// the same discovery [`bundle_with_session`]'s `exact_target_staging_files`
+/// loop uses).
+///
+/// `import.meta.glob(...)` targets are invisible to the AST-based
+/// preprocessing-discovery graph [`SiblingMirrorPlan`] is built from (the
+/// discovery walker resolves `import`/`require`/`?raw`/worker specifiers,
+/// never a glob macro), so a file reached ONLY through a glob has no claim.
+///
+/// EVERY match is staged here, deliberately including ones already inside a
+/// claimed [`SiblingMirrorPlan`] mirror root — a codex-review finding on the
+/// first cut of this queue (which skipped those via `claims_path`) caught
+/// that `mirror_sibling_root`'s wholesale copy is a RAW byte copy with no
+/// macro expansion, so a claimed-region file that itself uses
+/// `import.meta.glob`/`?raw`/a worker URL was left with the literal,
+/// unexpanded macro reaching esbuild. Restaging is cheap for the common
+/// plain-file case (see below) and correctness-required for that case, so
+/// there is no gate left to apply here.
+///
+/// A queued file's OWN nested glob/raw/worker edges (from
+/// `materialise_source_file`) and its own plain-import closure (from the
+/// discovery pass) both extend `glob_matched_files` further, so this
+/// function loops again; it returns once a full pass adds nothing new. The
+/// `BTreeSet` backing `glob_matched_files` keeps each round's processing
+/// order deterministic regardless of which materialise pass — or which
+/// discovery call — found which file first.
+///
+/// A queued match the ordinary walks (or `mirror_sibling_root`, or the
+/// `plugin_preprocessing_files` loop) already covered is staged again here,
+/// but harmlessly: `materialise_source_file` recomputes identical bytes, and
+/// both the session incremental-skip cache and the passthrough writer's
+/// write-if-changed hashing make the repeat a no-op on disk. Only a target
+/// genuinely unreachable any other way — a brand-new sibling region no claim
+/// source ever saw, or a project path the ordinary walks did not reach (e.g.
+/// gitignored) — depends on this queue for correctness.
+///
+/// `.mdx` matches are skipped outright: they need the MDX compile pipeline
+/// (`materialise_mdx_with_skip`, driven by `materialise_shadow`'s own walk),
+/// not `materialise_source_file`'s plain JS/TS transform. A project `.mdx`
+/// file the ordinary walk already compiled would have that CORRECT compiled
+/// output clobbered by a raw copy/symlink of the uncompiled source if staged
+/// here — worse than doing nothing. A glob-matched `.mdx` file no other pass
+/// reaches stays an unsupported form for now (mirroring Wave 1's
+/// "unsupported form is an explicit failure, not a silent mis-expansion"
+/// posture for `import.meta.glob`): esbuild's JSX loader reports a clear
+/// parse error naming the uncompiled file rather than the queue silently
+/// corrupting an already-correct compile.
+///
+/// Pruning a match that disappears on a later `ShadowSession` tick needs no
+/// bespoke bookkeeping: `mat_ctx.glob_matched_files` starts empty every
+/// `bundle_with_session` call (a fresh [`MaterialiseCtx`]), so a file the
+/// live glob no longer matches is simply never re-queued, never re-visited
+/// this tick, and falls out of `ShadowSession::prev_visited` at the
+/// `writer.prune_stale()` call the caller makes after this returns — the
+/// same tick-boundary mechanism every other staged file already relies on.
+fn stage_glob_matched_files_to_fixed_point(
+    mat_ctx: &MaterialiseCtx<'_, '_>,
+    project_root: &Path,
+    first_party_root: &Path,
+    shadow: &Path,
+    work: &Path,
+    node_modules_isolation_root: Option<&Path>,
+) -> Result<()> {
+    let mut staged_glob_targets: BTreeSet<PathBuf> = BTreeSet::new();
+    loop {
+        let pending: Vec<PathBuf> = mat_ctx
+            .glob_matched_files
+            .borrow()
+            .iter()
+            .filter(|path| !staged_glob_targets.contains(*path))
+            .cloned()
+            .collect();
+        if pending.is_empty() {
+            break;
+        }
+        for target in pending {
+            staged_glob_targets.insert(target.clone());
+            // Defense in depth, mirroring `mirror_sibling_root`'s guard: a
+            // glob match must be a real first-party file under the widened
+            // first-party root, never through `node_modules` (vendored, not
+            // source — resolves through the live `node_modules` link) and
+            // never anything `shadow_path_for_project_path` would leave
+            // pointed at the LIVE tree (its fallback tier for a path outside
+            // both `project_root` and `first_party_root`, which must never
+            // happen for a glob match but is never worth writing through).
+            if !target.is_file()
+                || path_is_inside_node_modules(&target)
+                || !target.starts_with(first_party_root)
+            {
+                continue;
+            }
+            if mat_ctx.bundle_exclude.is_excluded(&target, project_root) {
+                continue;
+            }
+            // See the function doc: `.mdx` needs the MDX pipeline, and
+            // staging it here would clobber an already-correct compile.
+            if target.extension().and_then(|ext| ext.to_str()) == Some("mdx") {
+                continue;
+            }
+            let to = shadow_path_for_project_path(
+                &target,
+                project_root,
+                first_party_root,
+                shadow,
+                work,
+                node_modules_isolation_root,
+            );
+            if let Some(parent) = to.parent() {
+                mat_ctx.writer.ensure_dir(parent).with_context(|| {
+                    format!(
+                        "bundler: create import.meta.glob matched-file parent dir {}",
+                        parent.display()
+                    )
+                })?;
+            }
+            materialise_source_file(
+                &target,
+                &target,
+                &to,
+                &|path| {
+                    mat_ctx
+                        .bundle_exclude
+                        .is_excluded(path, mat_ctx.project_root)
+                },
+                mat_ctx.copy_mode,
+                mat_ctx.writer,
+                &mat_ctx.glob_matched_files,
+                &mat_ctx.raw_import_edges,
+                &mat_ctx.raw_import_aliases,
+                &mat_ctx.module_worker_dependencies,
+                mat_ctx.project_root,
+                &mat_ctx.worker_build_context,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: materialise import.meta.glob matched file {}",
+                    target.display()
+                )
+            })?;
+
+            // codex-review P2: `materialise_source_file` only expands
+            // glob/`?raw`/worker macros — it never walks plain `import`
+            // specifiers, so a matched file's ordinary first-party
+            // dependency closure would otherwise never enter the shadow
+            // tree, and esbuild would fail to resolve it. Best-effort: a
+            // discovery failure here (e.g. a parse error in an unrelated
+            // branch of the target's graph) degrades to "stage the matched
+            // file alone" rather than failing the whole build — the same
+            // "rebuild more, not less" bias `zfb-build`'s policy favors
+            // elsewhere; a genuinely broken import inside the target itself
+            // still surfaces as a named esbuild resolve error.
+            if let Ok(discovery) = discover_module_preprocessing_with_context(
+                &target,
+                project_root,
+                &mat_ctx.worker_build_context,
+            ) {
+                mat_ctx.raw_import_edges.borrow_mut().extend(
+                    discovery
+                        .raw_import_edges
+                        .into_iter()
+                        .map(|edge| RawImportEdge {
+                            importer: edge.importer,
+                            target: edge.target,
+                        }),
+                );
+                mat_ctx
+                    .glob_matched_files
+                    .borrow_mut()
+                    .extend(discovery.files);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether `name` is a reserved GENERATED file the bundler writes into the
+/// shadow root — the project-root loose-file staging pass (issue #1692) must
+/// never overwrite one of these with a user file of the same name (the
+/// generated file wins; the user file is skipped with a debug note).
+fn is_reserved_shadow_root_name(name: &str) -> bool {
+    name == SHADOW_TSCONFIG_FILENAME
+        || name == SHADOW_ENTRY_FILENAME
+        || name == SHADOW_HYDRATE_FILENAME
+        || name == ".zfb-metafile.json"
+        || name.starts_with(".zfb-virtual-")
+}
+
+/// Stage the project-root LOOSE FILES into the shadow root (issue #1692) — the
+/// generalization of [`materialise_mdx_components_file`], which stages exactly
+/// one fixed-name root file. A wildcard root alias (`"@/*": ["./*"]`, whose
+/// target directory is the project root) lets esbuild resolve `@/<name>` to a
+/// file sitting directly in the project root; with `bundle.exclude` active the
+/// tsconfig is rewritten shadow-only (no live-tree fallback — see
+/// [`rebase_tsconfig_paths_to_shadow_with_exclusions`]), so those loose files
+/// must be present in the shadow or the import fails with `Could not resolve`
+/// (the real-site #1685 breakage). Direct child DIRECTORIES are already staged
+/// by the extra-dirs pass; only depth-1 files are handled here.
+///
+/// Reserved generated names ([`is_reserved_shadow_root_name`]) are SKIPPED so
+/// the generated `tsconfig.json` / `entry.mjs` / hydrate shim / `.zfb-*`
+/// infra files always win. `mdx-components.tsx` keeps its own dedicated pass.
+/// Hidden dotfiles are skipped (never resolved by a bare `@/<name>` import).
+fn stage_project_root_loose_files(
+    project_root: &Path,
+    shadow: &Path,
+    ctx: &MaterialiseCtx<'_, '_>,
+) -> Result<()> {
+    let entries = match fs::read_dir(project_root) {
+        Ok(entries) => entries,
+        // A missing/unreadable project root is surfaced by the earlier passes;
+        // stay defensive here (the same "rebuild more, not less" bias).
+        Err(_) => return Ok(()),
+    };
+    // Collect the eligible loose files first (deterministic order), then
+    // preflight-then-materialise: the global preflight pass never visited the
+    // project ROOT's own files (only pages/content/components/layouts/extra),
+    // so a `?raw` edge between two root files must be established here before
+    // either is materialised — otherwise `read_dir` order could materialise a
+    // `.ts` raw PAYLOAD as source (expanding its own macros / rejecting it)
+    // before the importer's terminal edge marks it a raw target.
+    let mut loose_files: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|ft| ft.is_file()) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == MDX_COMPONENTS_FILENAME {
+            continue; // its own dedicated pass (returns the entry import spec)
+        }
+        if is_reserved_shadow_root_name(&name) {
+            tracing::debug!(
+                file = %name,
+                "bundler: skipping project-root loose file — reserved generated shadow name"
+            );
+            continue;
+        }
+        if name.starts_with('.') {
+            continue;
+        }
+        let src = entry.path();
+        if ctx.bundle_exclude.is_excluded(&src, ctx.project_root) {
+            continue;
+        }
+        loose_files.push(src);
+    }
+    loose_files.sort();
+
+    // Preflight pass — establish every terminal raw-target identity among the
+    // root files before any of them is materialised (mirrors the tree-level
+    // `preflight_raw_tree` → `materialise_shadow` ordering).
+    for src in &loose_files {
+        if raw_source_extension(src) {
+            preflight_raw_file(src, src, ctx);
+        }
+    }
+
+    for src in &loose_files {
+        let dest = shadow.join(src.file_name().unwrap_or_default());
+        if raw_source_extension(src) {
+            // A source file reached via `@/<name>` may itself carry `?raw` /
+            // glob / worker syntax — run it through the same preprocessing the
+            // project source walks apply, so its rewrites land in the shadow.
+            materialise_source_file(
+                src,
+                src,
+                &dest,
+                &|path| ctx.bundle_exclude.is_excluded(path, ctx.project_root),
+                ctx.copy_mode,
+                ctx.writer,
+                &ctx.glob_matched_files,
+                &ctx.raw_import_edges,
+                &ctx.raw_import_aliases,
+                &ctx.module_worker_dependencies,
+                ctx.project_root,
+                &ctx.worker_build_context,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: stage project-root loose source file {} -> {}",
+                    src.display(),
+                    dest.display()
+                )
+            })?;
+        } else {
+            ctx.writer.copy_if_changed(src, &dest).with_context(|| {
+                format!(
+                    "bundler: stage project-root loose file {} -> {}",
+                    src.display(),
+                    dest.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether any tsconfig / plugin wildcard alias target resolves to the project
+/// root itself (`"@/*": ["./*"]` and friends) — the precondition for the
+/// project-root loose-file staging pass. Concrete (non-wildcard) root aliases
+/// are staged file-by-file by [`plan_concrete_target_staging`]; only a
+/// wildcard can resolve to an unpredictable set of root files.
+fn has_wildcard_root_alias(
+    project_root: &Path,
+    tsconfig_paths: &BTreeMap<String, Vec<String>>,
+    plugin_alias_entries: &[(String, String)],
+) -> bool {
+    tsconfig_paths
+        .values()
+        .flatten()
+        .map(String::as_str)
+        .chain(
+            plugin_alias_entries
+                .iter()
+                .map(|(_, target)| target.as_str()),
+        )
+        .any(|target| target.contains('*') && alias_target_claim_path(target) == project_root)
+}
+
 /// Materialise the project-root `mdx-components.tsx` (sub-issue #616) into
 /// the shadow root.
 ///
@@ -4021,6 +4714,7 @@ fn materialise_mdx_components_file(
         &|path| ctx.bundle_exclude.is_excluded(path, ctx.project_root),
         true,
         ctx.writer,
+        &ctx.glob_matched_files,
         &ctx.raw_import_edges,
         &ctx.raw_import_aliases,
         &ctx.module_worker_dependencies,
@@ -4234,6 +4928,7 @@ fn materialise_symlinked_dir(
                     is_excluded,
                     true,
                     ctx.writer,
+                    &ctx.glob_matched_files,
                     &ctx.raw_import_edges,
                     &ctx.raw_import_aliases,
                     &ctx.module_worker_dependencies,
@@ -4342,6 +5037,20 @@ struct MaterialiseCtx<'a, 's> {
     /// session. Every shadow write in the materialise passes routes
     /// through this.
     writer: &'a ShadowWriter<'s>,
+    /// `import.meta.glob(...)` matched target files discovered while
+    /// preprocessing source files in every materialise pass (issue #1695).
+    /// `materialise_source_file` extends this with every file
+    /// `expand_import_meta_glob_with_matches` matches, regardless of which
+    /// pass staged the glob-importing file itself. After every explicit
+    /// materialise pass has run, `bundle_with_session` drains this set to a
+    /// fixed point: a matched file outside every claimed
+    /// [`SiblingMirrorPlan`] mirror root — invisible to that plan, because
+    /// glob targets never enter the AST-based preprocessing-discovery graph
+    /// the plan is built from — is staged on its own via the same
+    /// `materialise_source_file` pass, which may in turn extend this set
+    /// with ITS OWN matched files. A `BTreeSet` keeps the drain queue's
+    /// iteration order deterministic across ticks.
+    glob_matched_files: RefCell<BTreeSet<PathBuf>>,
     /// Raw terminal edges discovered while preprocessing source files in
     /// every materialise pass. Used after esbuild's metafile walk to map the
     /// generated `.zfb-raw-*.mjs` input back to the ORIGINAL target for dev
@@ -4722,6 +5431,7 @@ fn materialise_shadow(
                 &is_excluded,
                 ctx.copy_mode,
                 ctx.writer,
+                &ctx.glob_matched_files,
                 &ctx.raw_import_edges,
                 &ctx.raw_import_aliases,
                 &ctx.module_worker_dependencies,
@@ -4949,6 +5659,89 @@ fn rewrite_css_modules_in_shadow(
         // marking those visited would shield them from the prune pass.
         // Legit `.module.css` files were already marked visited by their
         // materialise pass.
+        writer
+            .write_if_changed_no_visit(path, js.as_bytes())
+            .with_context(|| {
+                format!(
+                    "bundler: failed writing CSS Modules JS shim to {}",
+                    path.display()
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Sibling variant of [`rewrite_css_modules_in_shadow`] (issue #1697). A
+/// claimed sibling `.module.css` — staged by the wholesale mirror (#1692) or
+/// the glob fixed-point queue (#1695) — lands at its own workspace-relative
+/// slot under `work`, OUTSIDE the nested project mirror `shadow`, so the
+/// walk above never visits it. Walk `work` again, pruning the already-handled
+/// `shadow` subtree, and reconstruct each file's original path via
+/// `first_party_root` (not `project_root`) — the reconstruction
+/// `rewrite_css_modules_in_shadow` uses would be wrong here: a sibling
+/// file's original absolute path lives outside `project_root` entirely.
+///
+/// `class_maps` is the SAME map the project walk uses: #1696's
+/// `compute_css_module_class_maps` already keys a claimed sibling's entry by
+/// its absolute physical path (under `first_party_root`), so no second map
+/// is needed — a lookup miss here means "unmapped" and is handled exactly
+/// like an unmapped project file (`export default {};`). That also covers a
+/// `.module.css` staged only via the #1695 glob queue outside any claimed
+/// mirror root (invisible to `SiblingMirrorPlan`, so it can never have a map
+/// entry): it still needs a valid JS shim, since the paired
+/// `--loader:.module.css=js` esbuild flag applies to the extension
+/// regardless of claim status.
+///
+/// The caller gates this on `workspace_rel.is_some()`: without a workspace
+/// `shadow == work`, so pruning `shadow` here would prune the walk root
+/// itself and this becomes an inert no-op anyway — the gate just skips the
+/// wasted walk, keeping non-workspace builds byte-identical.
+fn rewrite_css_modules_in_work_mirror(
+    work: &Path,
+    shadow: &Path,
+    first_party_root: &Path,
+    class_maps: &HashMap<PathBuf, HashMap<String, String>>,
+    writer: &ShadowWriter<'_>,
+) -> Result<()> {
+    for entry in WalkDir::new(work)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| e.path() != shadow)
+    {
+        let entry = entry.with_context(|| format!("walking work mirror {}", work.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        // Match the `.module.css` double-extension exactly, same as the
+        // project-mirror walk.
+        if !path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n.ends_with(".module.css"))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        // Reconstruct the original sibling path: work-relative path joined
+        // onto the WORKSPACE root, not the project root.
+        let rel = path.strip_prefix(work).map_err(|_| {
+            anyhow!(
+                "bundler: work-mirror file {} is not under work root {}",
+                path.display(),
+                work.display()
+            )
+        })?;
+        let original = first_party_root.join(rel);
+
+        let names = class_maps.get(&original);
+        let js = render_css_module_js(names);
+
+        // See FIX #553 on `rewrite_css_modules_in_shadow`: never write
+        // through a symlink, and use the `_no_visit` variant since this walk
+        // (like that one) covers the whole tree including files whose source
+        // was deleted this tick.
         writer
             .write_if_changed_no_visit(path, js.as_bytes())
             .with_context(|| {
@@ -5670,6 +6463,7 @@ fn materialise_collection(
                 &is_bundle_excluded,
                 ctx.copy_mode,
                 ctx.writer,
+                &ctx.glob_matched_files,
                 &ctx.raw_import_edges,
                 &ctx.raw_import_aliases,
                 &ctx.module_worker_dependencies,
@@ -5799,9 +6593,17 @@ fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
 /// (`from.parent()`), so matched relative paths line up with what esbuild later
 /// resolves through the shadow.
 ///
-/// `is_excluded` is threaded straight through to [`expand_import_meta_glob`]
-/// (Wave 1 passes a no-op `&|_| false`; Wave 2 / #672 supplies the real
-/// `bundle.exclude` predicate).
+/// `is_excluded` is threaded straight through to
+/// [`expand_import_meta_glob_with_matches`] (Wave 1 passes a no-op
+/// `&|_| false`; Wave 2 / #672 supplies the real `bundle.exclude`
+/// predicate).
+///
+/// `glob_matched_files` collects every target file
+/// [`expand_import_meta_glob_with_matches`] matches (issue #1695) — every
+/// call site shares the SAME `MaterialiseCtx::glob_matched_files` set, so
+/// `bundle_with_session`'s post-pass fixed-point drain sees every match
+/// discovered anywhere in this call's materialise passes, not just the ones
+/// under whichever source root happened to be walked.
 ///
 /// `copy_mode` forces a real `fs::copy` for the non-transformed fallback
 /// instead of a symlink. When esbuild runs without `--preserve-symlinks`
@@ -5825,6 +6627,7 @@ fn materialise_source_file(
     is_excluded: &dyn Fn(&Path) -> bool,
     copy_mode: bool,
     writer: &ShadowWriter<'_>,
+    glob_matched_files: &RefCell<BTreeSet<PathBuf>>,
     raw_import_edges: &RefCell<BTreeSet<RawImportEdge>>,
     raw_import_aliases: &RawImportAliasContext,
     module_worker_dependencies: &RefCell<BTreeSet<ModuleWorkerDependency>>,
@@ -5933,10 +6736,20 @@ fn materialise_source_file(
                 if expanded.contains("import.meta.glob") {
                     has_glob = true;
                     let file_dir = logical_from.parent().unwrap_or_else(|| Path::new("."));
-                    expanded = expand_import_meta_glob(&expanded, file_dir, is_excluded)
-                        .with_context(|| {
-                            format!("expand import.meta.glob in {}", logical_from.display())
-                        })?;
+                    let glob_expansion =
+                        expand_import_meta_glob_with_matches(&expanded, file_dir, is_excluded)
+                            .with_context(|| {
+                                format!("expand import.meta.glob in {}", logical_from.display())
+                            })?;
+                    // #1695: every matched target feeds the fixed-point
+                    // staging queue `bundle_with_session` drains after every
+                    // materialise pass — this is the ONLY place a glob's
+                    // matched files become known, so a shared accumulator is
+                    // the sole way the queue learns about them.
+                    glob_matched_files
+                        .borrow_mut()
+                        .extend(glob_expansion.matched_files);
+                    expanded = glob_expansion.expanded_source;
                 }
 
                 if has_query_syntax {
@@ -9478,6 +10291,83 @@ mod tests {
         assert_eq!(global, ".g{}", "plain .css must be untouched");
     }
 
+    #[test]
+    fn rewrite_css_modules_in_work_mirror_rewrites_mapped_and_unmapped_sibling() {
+        let work = tempfile::tempdir().unwrap();
+        let work_root = work.path();
+        let first_party_root = Path::new("/workspace");
+
+        // `shadow` is nested under `work` (a workspace_rel of "apps/site"),
+        // carrying its own .module.css — the project-mirror walk's job, not
+        // this one's. This proves the pruned subtree is left byte-for-byte
+        // untouched by the work-mirror walk.
+        let shadow_root = work_root.join("apps/site");
+        fs::create_dir_all(shadow_root.join("components")).unwrap();
+        fs::write(
+            shadow_root.join("components/card.module.css"),
+            ".card { color: red; }",
+        )
+        .unwrap();
+
+        // Claimed sibling region staged wholesale under `work`, outside
+        // `shadow` — the #1692 wholesale mirror's shape.
+        fs::create_dir_all(work_root.join("lib/shared")).unwrap();
+        fs::write(
+            work_root.join("lib/shared/widget.module.css"),
+            ".widget { color: green; }",
+        )
+        .unwrap();
+        fs::write(
+            work_root.join("lib/shared/orphan.module.css"),
+            ".x { color: blue; }",
+        )
+        .unwrap();
+        // A plain .css file must be left untouched.
+        fs::write(work_root.join("lib/shared/global.css"), ".g{}").unwrap();
+
+        // Map keyed by the sibling's absolute physical path under
+        // `first_party_root` — #1696's `compute_css_module_class_maps`
+        // contract, which this walk must consume directly (no separate map).
+        let mut names = HashMap::new();
+        names.insert("widget".to_string(), "sc0_widget".to_string());
+        let mut maps = HashMap::new();
+        maps.insert(first_party_root.join("lib/shared/widget.module.css"), names);
+
+        rewrite_css_modules_in_work_mirror(
+            work_root,
+            &shadow_root,
+            first_party_root,
+            &maps,
+            leaked_passthrough_writer(),
+        )
+        .unwrap();
+
+        let mapped = fs::read_to_string(work_root.join("lib/shared/widget.module.css")).unwrap();
+        assert!(
+            mapped.contains("sc0_widget"),
+            "mapped sibling module: {mapped}"
+        );
+        assert!(!mapped.contains("color: green"), "raw CSS must be gone");
+
+        let orphan = fs::read_to_string(work_root.join("lib/shared/orphan.module.css")).unwrap();
+        assert_eq!(
+            orphan, "export default {};\n",
+            "unmapped sibling module degrades to {{}}, same as an unmapped project file"
+        );
+
+        let global = fs::read_to_string(work_root.join("lib/shared/global.css")).unwrap();
+        assert_eq!(global, ".g{}", "plain .css must be untouched");
+
+        // The shadow subtree is pruned entirely — this walk never visits it,
+        // so its raw CSS is untouched (the project-mirror walk owns it).
+        let shadow_untouched =
+            fs::read_to_string(shadow_root.join("components/card.module.css")).unwrap();
+        assert_eq!(
+            shadow_untouched, ".card { color: red; }",
+            "shadow subtree must be pruned from the work-mirror walk"
+        );
+    }
+
     fn make_minimal_input(tmp: &tempfile::TempDir) -> BundlerInput {
         let root = tmp.path().to_path_buf();
         // pages/index.tsx
@@ -10646,6 +11536,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -10713,6 +11604,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -11730,6 +12622,7 @@ mod tests {
         let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
         let writer = ShadowWriter::new(shadow_root.clone(), Some(session), false, fingerprint)
             .expect("session writer construction");
+        let glob_matched_files = RefCell::new(BTreeSet::new());
         let raw_import_edges = RefCell::new(BTreeSet::new());
         let module_worker_dependencies = RefCell::new(BTreeSet::new());
         for (from, dest_rel) in files {
@@ -11744,6 +12637,7 @@ mod tests {
                 &|_| false,
                 false,
                 &writer,
+                &glob_matched_files,
                 &raw_import_edges,
                 &RawImportAliasContext::empty(),
                 &module_worker_dependencies,
@@ -11819,6 +12713,7 @@ mod tests {
             let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
             let writer =
                 ShadowWriter::new(shadow_root.clone(), Some(session), false, fingerprint).unwrap();
+            let glob_matched_files = RefCell::new(BTreeSet::new());
             let raw_edges = RefCell::new(BTreeSet::new());
             let worker_dependencies = RefCell::new(BTreeSet::new());
             let staged = shadow_root.join(staged_rel);
@@ -11830,6 +12725,7 @@ mod tests {
                 &|_| false,
                 false,
                 &writer,
+                &glob_matched_files,
                 &raw_edges,
                 &RawImportAliasContext::empty(),
                 &worker_dependencies,
@@ -12114,6 +13010,7 @@ mod tests {
         fs::write(&target, "aliased materialise raw").unwrap();
         let shadow = tempfile::tempdir().unwrap();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, false, None).unwrap();
+        let glob_matched_files = RefCell::new(BTreeSet::new());
         let raw_edges = RefCell::new(BTreeSet::new());
         let worker_dependencies = RefCell::new(BTreeSet::new());
         let aliases = RawImportAliasContext::from_paths(&BTreeMap::from([(
@@ -12130,6 +13027,7 @@ mod tests {
             &|_| false,
             false,
             &writer,
+            &glob_matched_files,
             &raw_edges,
             &aliases,
             &worker_dependencies,
@@ -12170,6 +13068,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -12219,6 +13118,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -12275,6 +13175,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -12329,6 +13230,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -12369,6 +13271,7 @@ mod tests {
         fs::write(&importer, "import text from './secret.txt?raw';\n").unwrap();
         let shadow = tempfile::tempdir().unwrap();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, false, None).unwrap();
+        let glob_matched_files = RefCell::new(BTreeSet::new());
         let edges = RefCell::new(BTreeSet::new());
         let worker_dependencies = RefCell::new(BTreeSet::new());
         let matcher = BundleExcludeMatcher::new(&["components/*.txt".to_string()]).unwrap();
@@ -12379,6 +13282,7 @@ mod tests {
             &|path| matcher.is_excluded(path, tmp.path()),
             false,
             &writer,
+            &glob_matched_files,
             &edges,
             &RawImportAliasContext::empty(),
             &worker_dependencies,
@@ -13260,14 +14164,28 @@ mod tests {
     }
 
     #[test]
-    fn ssr_shadow_workspace_node_modules_link_honors_bundle_exclude() {
-        // The workspace-hoisted `<work>/node_modules` link is a live-tree
-        // resolution root, so it must obey `bundle.exclude` exactly like the
-        // project-level 2b link: created under an empty exclude, but NEVER
-        // under active exclusions (else esbuild could climb it to a package
-        // the staged `<shadow>` view deliberately omits — a resurrection
-        // hatch the metafile audit cannot catch because the canonical
-        // workspace-root path is outside `project_root`).
+    fn ssr_shadow_workspace_node_modules_link_created_under_bundle_exclude() {
+        // INVERSION of the former `ssr_shadow_workspace_node_modules_link_
+        // honors_bundle_exclude` (issue #1693, #1672-style guard-inversion
+        // ritual): that test pinned a guard which NEVER created the
+        // workspace-hoisted `<work>/node_modules` link once `bundle.exclude`
+        // went active, reasoning that the link was an unauditable
+        // resurrection hatch. Once #1692's wholesale sibling mirror stages
+        // sibling sources directly under `<work>/<workspace_rel>/...`
+        // (outside `<shadow>`), those siblings have no ancestor
+        // `node_modules` to resolve a bare import against unless this link
+        // exists — so removing it under exclusions broke every sibling bare
+        // import, not just excluded ones.
+        //
+        // The link is now created REGARDLESS of `bundle.exclude`. The old
+        // "unauditable" premise is gone too: the fail-closed metafile audit
+        // (`audit_metafile_exclusions_at_path`, exercised directly in
+        // `metafile_audit_hard_fails_on_workspace_node_modules_resurrection`
+        // below) checks every esbuild-resolved input against the TIER-2
+        // workspace-relative `BundleExcludeMatcher` (issue #1676), which is
+        // armed for exactly a path under `first_party_root` but outside
+        // `project_root` — so a resurrection climbing this link is caught,
+        // not silently missed.
         let ws_tmp = tempfile::tempdir().unwrap();
         let ws_root = ws_tmp.path();
         fs::write(
@@ -13293,21 +14211,24 @@ mod tests {
         .unwrap();
 
         let work_nm = |session: &ShadowSession| session.shadow_root().join("node_modules");
+        let link_targets_workspace_node_modules = |session: &ShadowSession| {
+            fs::read_link(work_nm(session))
+                .map(|target| target == ws_root.join("node_modules"))
+                .unwrap_or(false)
+        };
 
-        // Tick 1 — empty exclude: the workspace-hoisted link IS created.
+        // Tick 1 — empty exclude: the workspace-hoisted link IS created
+        // (unchanged from before #1693).
         let mut session = ShadowSession::new(&project).unwrap();
         bundle_with_session(mock_ssr_input(&project), Some(&mut session))
             .expect("tick 1 (empty exclude) mock bundle");
         assert!(
-            fs::symlink_metadata(work_nm(&session))
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false),
+            link_targets_workspace_node_modules(&session),
             "an empty bundle.exclude must create the workspace-hoisted node_modules link"
         );
 
-        // Tick 2 — same session, exclusions now active: the stale live link
-        // must be removed (empty→non-empty transition), so no live-tree escape
-        // survives.
+        // Tick 2 — same session, exclusions now active: the link stays
+        // PRESENT (the #1693 inversion) instead of being torn down.
         let excluded_input = BundlerInput {
             bundle_exclude: vec!["**/*.secret".to_string()],
             ..mock_ssr_input(&project)
@@ -13315,8 +14236,187 @@ mod tests {
         bundle_with_session(excluded_input, Some(&mut session))
             .expect("tick 2 (active exclude) mock bundle");
         assert!(
-            !work_nm(&session).exists(),
-            "active bundle.exclude must remove the workspace-hoisted link (live-tree escape)"
+            link_targets_workspace_node_modules(&session),
+            "an active bundle.exclude must NOT remove the workspace-hoisted node_modules link \
+             (#1693) — sibling bare imports need it; the metafile audit is the enforcement point"
+        );
+    }
+
+    #[test]
+    fn metafile_audit_hard_fails_on_workspace_node_modules_resurrection() {
+        // Fail-closed proof for the #1693 contract: now that the workspace
+        // -hoisted `<work>/node_modules` link is always created (see the
+        // inverted guard test above), a synthetic metafile whose `inputs`
+        // record esbuild having resolved THROUGH that link into a package an
+        // active `bundle.exclude` pattern matches — workspace-relative,
+        // tier-2 (#1676) — must be caught by `audit_metafile_exclusions`,
+        // exactly the way it already catches a project-relative leak. This
+        // is the direct replacement for the deleted "never create the link"
+        // guard: enforcement moved from link-absence to audit-detection.
+        let ws_tmp = tempfile::tempdir().unwrap();
+        let ws_root = ws_tmp.path();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let secret_pkg = ws_root.join("node_modules/secret-pkg/index.js");
+        fs::create_dir_all(secret_pkg.parent().unwrap()).unwrap();
+        fs::write(&secret_pkg, "module.exports = 'leaked';\n").unwrap();
+
+        let project = ws_root.join("sub-packages/host");
+        fs::create_dir_all(&project).unwrap();
+        let shadow_root = ws_tmp.path().join("shadow");
+        fs::create_dir_all(&shadow_root).unwrap();
+
+        // The excluded package resolved through the always-present
+        // `<work>/node_modules` link: esbuild records the absolute path it
+        // climbed to, which lands under `first_party_root` (the workspace
+        // root) but OUTSIDE `project_root` — precisely the tier-2 shape.
+        // Deliberately NOT canonicalised: spelling 1 below (the logical key
+        // joined onto `project_root`) never canonicalises either, and
+        // `ws_root` is used lexically throughout this test, so comparing
+        // like-for-like avoids a spurious `/var` vs `/private/var` mismatch
+        // on macOS that a canonicalised key would introduce here.
+        let metafile = format!(
+            r#"{{"inputs": {{ {:?}: {{ "imports": [] }} }} }}"#,
+            secret_pkg.to_string_lossy()
+        );
+
+        let matcher = BundleExcludeMatcher::new(&["node_modules/secret-pkg/**".to_string()])
+            .unwrap()
+            .with_workspace_root(&project);
+        let is_excluded = |abs: &Path| matcher.is_excluded(abs, &project);
+
+        let error = crate::metafile_deps::audit_metafile_exclusions(
+            metafile.as_bytes(),
+            &is_excluded,
+            &shadow_root,
+            &project,
+        )
+        .expect_err(
+            "the metafile audit must hard-fail when an excluded sibling-workspace package \
+             resolved through the workspace-hoisted node_modules link",
+        );
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("bundle.exclude leak"),
+            "the audit error must name the leak: {message}"
+        );
+        assert!(
+            message.contains("secret-pkg"),
+            "the audit error must list the offending resolved path: {message}"
+        );
+    }
+
+    #[test]
+    fn sibling_bare_import_resolves_via_workspace_node_modules_under_exclude() {
+        // Mock-level staging assertion (issue #1693 acceptance criterion 3):
+        // a workspace-sibling file discovered through the existing
+        // preprocessing-graph closure (issue #1668 part 2 — the wholesale
+        // directory mirror lands in #1692) is staged into `<work>/lib/
+        // shared/...`, and — with `bundle.exclude` active for an UNRELATED
+        // pattern — the workspace-hoisted `<work>/node_modules` link still
+        // exists as this test's sibling directory's DIRECT ancestor within
+        // `<work>`. That is the exact filesystem precondition esbuild's
+        // ordinary node_modules walk-up needs to resolve a bare import
+        // (`left-pad`) from the staged sibling: no real esbuild subprocess
+        // runs here (real-esbuild confirmation belongs to sub-issue #1698),
+        // this asserts the staged tree SHAPE esbuild would walk.
+        let ws_tmp = tempfile::tempdir().unwrap();
+        let ws_root = ws_tmp.path();
+        fs::write(
+            ws_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(ws_root.join("node_modules/left-pad")).unwrap();
+        fs::write(
+            ws_root.join("node_modules/left-pad/index.js"),
+            "module.exports = function concat() {};\n",
+        )
+        .unwrap();
+
+        let project = ws_root.join("sub-packages/host");
+        for dir in ["pages", "content", "components", "layouts", "src"] {
+            fs::create_dir_all(project.join(dir)).unwrap();
+        }
+        fs::write(
+            project.join("pages/index.tsx"),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+
+        // A plain project entry (staged via `plugin_alias_entries`, matching
+        // the existing exact-target discovery path) that plainly imports a
+        // workspace-sibling module — no `?raw`/glob/worker syntax needed:
+        // `discover_module_preprocessing_with_context` walks the whole
+        // relative-import closure, not just preprocessing-triggering edges.
+        let entry = project.join("src/entry.ts");
+        fs::write(
+            &entry,
+            "import { value } from '../../../lib/shared/widget';\n\
+             export const entry = value;\n",
+        )
+        .unwrap();
+        let sibling = ws_root.join("lib/shared/widget.ts");
+        fs::create_dir_all(sibling.parent().unwrap()).unwrap();
+        fs::write(
+            &sibling,
+            "import concat from 'left-pad';\n\
+             export const value = concat('x', 5, '0');\n",
+        )
+        .unwrap();
+
+        let input = BundlerInput {
+            // Excludes something unrelated — proves the link/staging above
+            // is not gated on exclusions being empty.
+            bundle_exclude: vec!["**/*.secret".to_string()],
+            plugin_alias_entries: vec![(
+                "plugin:sibling-bare-entry".to_string(),
+                entry.to_string_lossy().into_owned(),
+            )],
+            ..mock_ssr_input(&project)
+        };
+
+        let mut session = ShadowSession::new(&project).unwrap();
+        bundle_with_session(input, Some(&mut session))
+            .expect("a workspace sibling with a bare import must bundle under active exclusions");
+
+        let work_root = fs::canonicalize(session.shadow_root()).unwrap();
+        let staged_sibling = work_root.join("lib/shared/widget.ts");
+        assert!(
+            staged_sibling.is_file(),
+            "the workspace-sibling module must be staged into the work mirror: {}",
+            staged_sibling.display()
+        );
+        let work_node_modules = work_root.join("node_modules");
+        assert!(
+            fs::symlink_metadata(&work_node_modules)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false),
+            "the workspace-hoisted node_modules link must exist under active exclusions"
+        );
+        assert!(
+            work_node_modules.join("left-pad/index.js").is_file(),
+            "the bare dependency must be reachable from the staged sibling's nearest ancestor \
+             node_modules ({}) — the exact resolution root esbuild's node_modules walk-up would \
+             find climbing from {}",
+            work_node_modules.display(),
+            staged_sibling.display()
+        );
+        // Both the staged sibling's containing dir and the node_modules link
+        // are direct children of the SAME work root, so an ancestor walk
+        // from the sibling (lib/shared → lib → work root) reaches
+        // `<work>/node_modules` without crossing any other node_modules.
+        assert_eq!(
+            staged_sibling
+                .strip_prefix(&work_root)
+                .unwrap()
+                .components()
+                .count(),
+            3,
+            "sibling must be nested exactly 2 dirs below the work root (lib/shared/widget.ts)"
         );
     }
 
@@ -15011,6 +16111,556 @@ mod tests {
         );
     }
 
+    // ── issue #1692 claim-plan / wholesale-mirror helper tests ───────────
+
+    #[test]
+    fn alias_target_claim_path_strips_glob_suffix() {
+        assert_eq!(
+            alias_target_claim_path("/ws/lib/shared/*"),
+            normalize_path_lexical(Path::new("/ws/lib/shared"))
+        );
+        assert_eq!(
+            alias_target_claim_path("/ws/lib/shared/**"),
+            normalize_path_lexical(Path::new("/ws/lib/shared"))
+        );
+        // A concrete target claims itself.
+        assert_eq!(
+            alias_target_claim_path("/ws/lib/shared/index.ts"),
+            normalize_path_lexical(Path::new("/ws/lib/shared/index.ts"))
+        );
+    }
+
+    #[test]
+    fn resolve_mirror_root_uses_nearest_package_json_ancestor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("sub-packages/host");
+        fs::create_dir_all(&project).unwrap();
+        // Package-layout sibling with its own package.json.
+        fs::create_dir_all(ws.join("packages/ui/deep")).unwrap();
+        fs::write(ws.join("packages/ui/package.json"), "{}").unwrap();
+        let claim = ws.join("packages/ui/deep/util.ts");
+        fs::write(&claim, "x").unwrap();
+        assert_eq!(
+            resolve_mirror_root(&claim, &project, ws),
+            Some(normalize_path_lexical(&ws.join("packages/ui"))),
+            "a file under a package.json'd sibling resolves to that package dir"
+        );
+
+        // Bare-dir sibling (no package.json anywhere between the file and the
+        // workspace root) → the claim's own directory.
+        fs::create_dir_all(ws.join("lib/shared")).unwrap();
+        let bare = ws.join("lib/shared/contract.ts");
+        fs::write(&bare, "x").unwrap();
+        assert_eq!(
+            resolve_mirror_root(&bare, &project, ws),
+            Some(normalize_path_lexical(&ws.join("lib/shared"))),
+            "a bare-dir sibling resolves to the claim's own directory"
+        );
+    }
+
+    #[test]
+    fn resolve_mirror_root_rejects_non_sibling_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("sub-packages/host");
+        fs::create_dir_all(&project).unwrap();
+
+        // No workspace: first_party_root == project_root → never a sibling.
+        let inside = project.join("src/app.ts");
+        fs::create_dir_all(inside.parent().unwrap()).unwrap();
+        fs::write(&inside, "x").unwrap();
+        assert_eq!(resolve_mirror_root(&inside, &project, &project), None);
+
+        // A project-local path is not a sibling.
+        assert_eq!(resolve_mirror_root(&inside, &project, ws), None);
+
+        // A node_modules path is never mirrored.
+        let vendored = ws.join("node_modules/pkg/x.ts");
+        fs::create_dir_all(vendored.parent().unwrap()).unwrap();
+        fs::write(&vendored, "x").unwrap();
+        assert_eq!(resolve_mirror_root(&vendored, &project, ws), None);
+
+        // The first-party root itself is never mirrored wholesale.
+        let root_file = ws.join("root.ts");
+        fs::write(&root_file, "x").unwrap();
+        assert_eq!(resolve_mirror_root(&root_file, &project, ws), None);
+
+        // A region CONTAINING the project (an ancestor-of-project dir) is not a
+        // disjoint sibling region.
+        let container_claim = ws.join("sub-packages/thing.ts");
+        fs::write(&container_claim, "x").unwrap();
+        assert_eq!(resolve_mirror_root(&container_claim, &project, ws), None);
+    }
+
+    #[test]
+    fn sibling_mirror_plan_empty_for_standalone_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        let outside = tmp.path().join("lib/shared/x.ts");
+        fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        fs::write(&outside, "x").unwrap();
+        let files = BTreeSet::from([outside]);
+        // first_party_root == project_root ⇒ standalone.
+        let plan = SiblingMirrorPlan::compute(&project, &project, &files, &BTreeMap::new(), &[]);
+        assert!(
+            plan.is_empty(),
+            "a standalone project claims no sibling region"
+        );
+    }
+
+    #[test]
+    fn sibling_mirror_plan_claims_from_discovered_files_and_wildcard_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("sub-packages/host");
+        fs::create_dir_all(&project).unwrap();
+        // (a) a discovered graph file in a bare-dir sibling.
+        fs::create_dir_all(ws.join("lib/shared")).unwrap();
+        let discovered = ws.join("lib/shared/contract.ts");
+        fs::write(&discovered, "x").unwrap();
+        // (b) a wildcard alias into a DIFFERENT sibling with no discovered file.
+        fs::create_dir_all(ws.join("packages/ui")).unwrap();
+        fs::write(ws.join("packages/ui/package.json"), "{}").unwrap();
+        let tsconfig_paths = BTreeMap::from([(
+            "@ui/*".to_string(),
+            vec![ws.join("packages/ui/*").to_string_lossy().into_owned()],
+        )]);
+
+        let plan = SiblingMirrorPlan::compute(
+            &project,
+            ws,
+            &BTreeSet::from([discovered]),
+            &tsconfig_paths,
+            &[],
+        );
+        let roots: Vec<PathBuf> = plan.mirror_roots().map(Path::to_path_buf).collect();
+        assert!(
+            roots.contains(&normalize_path_lexical(&ws.join("lib/shared"))),
+            "the discovered-file claim contributes lib/shared; got {roots:?}"
+        );
+        assert!(
+            roots.contains(&normalize_path_lexical(&ws.join("packages/ui"))),
+            "the wildcard-alias claim contributes packages/ui; got {roots:?}"
+        );
+        // The audit predicate reports paths inside a claimed root.
+        assert!(plan.claims_path(&ws.join("packages/ui/nested/x.ts")));
+        assert!(!plan.claims_path(&project.join("src/app.ts")));
+    }
+
+    // -----------------------------------------------------------------
+    // `import.meta.glob` matched-files fixed-point drain (#1695), driving
+    // `stage_glob_matched_files_to_fixed_point` directly rather than the
+    // full `bundle_with_session` orchestration — the queue's own shape
+    // (unconditional staging, transitive drain via nested globs AND plain
+    // imports, the `.mdx` guard, tick-boundary pruning) is what these tests
+    // pin down.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn glob_fixed_point_stages_match_outside_every_claim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("app");
+        fs::create_dir_all(&project).unwrap();
+
+        // A totally unrelated sibling region no claim source ever saw.
+        fs::create_dir_all(ws.join("other-lib")).unwrap();
+        let unclaimed_target = ws.join("other-lib/widget.ts");
+        fs::write(&unclaimed_target, "export const widget = 'w';\n").unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        let work = out.path().join("work");
+        let shadow = work.join("app");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&project, &exclude);
+        ctx.glob_matched_files.borrow_mut().insert(unclaimed_target);
+
+        stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None).unwrap();
+
+        assert!(
+            work.join("other-lib/widget.ts").exists(),
+            "a match outside every claimed mirror root must be staged at its workspace-relative slot"
+        );
+        assert_eq!(
+            fs::read_to_string(work.join("other-lib/widget.ts")).unwrap(),
+            "export const widget = 'w';\n"
+        );
+    }
+
+    #[test]
+    fn glob_fixed_point_expands_nested_macro_in_a_match_already_inside_a_claimed_region() {
+        // codex-review regression test (P1 on the first cut of this queue):
+        // `mirror_sibling_root`'s wholesale mirror is a RAW byte copy with
+        // no macro expansion, so a match already inside a CLAIMED sibling
+        // region that itself uses `import.meta.glob` must still have that
+        // macro expanded when the queue stages it — skipping claimed-region
+        // matches (the original design) left the literal, unexpanded macro
+        // reaching esbuild.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("app");
+        fs::create_dir_all(&project).unwrap();
+
+        fs::create_dir_all(ws.join("lib/shared/nested")).unwrap();
+        // `already-mirrored.ts` stands in for a file `mirror_sibling_root`
+        // already wholesale-copied because it lives inside a claimed
+        // region — but the copy is raw bytes; its OWN glob macro is still
+        // unexpanded until THIS queue stages it.
+        let claimed_target = ws.join("lib/shared/already-mirrored.ts");
+        fs::write(
+            &claimed_target,
+            "export const mods = import.meta.glob('./nested/*.ts', { eager: true });\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("lib/shared/nested/leaf.ts"),
+            "export const leaf = 1;\n",
+        )
+        .unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        let work = out.path().join("work");
+        let shadow = work.join("app");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&project, &exclude);
+        ctx.glob_matched_files.borrow_mut().insert(claimed_target);
+
+        stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None).unwrap();
+
+        let staged = work.join("lib/shared/already-mirrored.ts");
+        assert!(staged.exists(), "the claimed-region match must be staged");
+        let staged_source = fs::read_to_string(&staged).unwrap();
+        assert!(
+            !staged_source.contains("import.meta.glob("),
+            "a claimed-region match's OWN glob macro must be expanded, not left raw: {staged_source}"
+        );
+        assert!(
+            work.join("lib/shared/nested/leaf.ts").exists(),
+            "the nested match discovered by the claimed-region file's own glob must be staged too"
+        );
+    }
+
+    #[test]
+    fn glob_fixed_point_drains_transitive_glob_chain_to_a_fixed_point() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("app");
+        fs::create_dir_all(&project).unwrap();
+
+        // `hop1.ts` is the seed; it itself glob-imports `nested/*.ts`,
+        // matching `hop2.ts` — a SECOND round the drain must discover on
+        // its own, without `hop2.ts` ever being queued directly.
+        fs::create_dir_all(ws.join("other-lib/nested")).unwrap();
+        fs::write(
+            ws.join("other-lib/hop1.ts"),
+            "export const mods = import.meta.glob('./nested/*.ts', { eager: true });\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("other-lib/nested/hop2.ts"),
+            "export const hop2 = 'end';\n",
+        )
+        .unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        let work = out.path().join("work");
+        let shadow = work.join("app");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&project, &exclude);
+        ctx.glob_matched_files
+            .borrow_mut()
+            .insert(ws.join("other-lib/hop1.ts"));
+
+        stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None).unwrap();
+
+        let hop1_staged = work.join("other-lib/hop1.ts");
+        let hop2_staged = work.join("other-lib/nested/hop2.ts");
+        assert!(hop1_staged.exists(), "the seeded first hop must be staged");
+        assert!(
+            hop2_staged.exists(),
+            "hop1's OWN glob match (hop2) must be staged too — the drain must run a second round"
+        );
+        let hop1_source = fs::read_to_string(&hop1_staged).unwrap();
+        assert!(
+            !hop1_source.contains("import.meta.glob("),
+            "hop1's own glob macro must be expanded when staged, not copied verbatim: {hop1_source}"
+        );
+        assert!(
+            hop1_source.contains("./nested/hop2.ts"),
+            "hop1's expansion must reference the matched hop2 file: {hop1_source}"
+        );
+    }
+
+    #[test]
+    fn glob_fixed_point_stages_plain_dependency_closure_of_a_matched_file() {
+        // codex-review regression test (P2): `materialise_source_file` only
+        // expands glob/`?raw`/worker macros — a matched file's ORDINARY
+        // `import` dependency is invisible to it. The queue must run the
+        // same discovery pass the exact-target staging loop uses so a
+        // matched file's plain-import closure is staged too, or esbuild
+        // fails to resolve it.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("app");
+        fs::create_dir_all(&project).unwrap();
+        // `discover_module_preprocessing_with_context` re-derives the
+        // first-party boundary itself (`zfb_types::first_party_root_for`),
+        // which only widens past `project_root` for a REAL
+        // `pnpm-workspace.yaml` claiming it as a member — required here so
+        // the discovery call accepts `other-lib` (a sibling of `app`) as
+        // first-party rather than rejecting it as an escape.
+        fs::write(ws.join("pnpm-workspace.yaml"), "packages:\n  - 'app'\n").unwrap();
+
+        fs::create_dir_all(ws.join("other-lib")).unwrap();
+        let matched = ws.join("other-lib/widget.ts");
+        fs::write(
+            &matched,
+            "import { helper } from './helper.ts';\nexport const widget = helper();\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("other-lib/helper.ts"),
+            "export function helper() { return 1; }\n",
+        )
+        .unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        let work = out.path().join("work");
+        let shadow = work.join("app");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&project, &exclude);
+        ctx.glob_matched_files.borrow_mut().insert(matched);
+
+        stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None).unwrap();
+
+        assert!(
+            work.join("other-lib/widget.ts").exists(),
+            "the matched file itself must be staged"
+        );
+        assert!(
+            work.join("other-lib/helper.ts").exists(),
+            "the matched file's PLAIN (non-glob) import must be staged too, or esbuild cannot resolve it"
+        );
+    }
+
+    #[test]
+    fn glob_fixed_point_skips_mdx_matches_to_avoid_clobbering_a_correct_compile() {
+        // codex-review regression test (P2): an `.mdx` match needs the MDX
+        // compile pipeline, not `materialise_source_file`'s plain JS/TS
+        // transform. Staging it here would write raw/uncompiled Markdown
+        // over whatever a real MDX-aware pass produced — worse than a no-op
+        // — so the queue must skip it outright.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("app");
+        fs::create_dir_all(&project).unwrap();
+
+        fs::create_dir_all(ws.join("other-lib")).unwrap();
+        let target = ws.join("other-lib/doc.mdx");
+        fs::write(&target, "# Hello\n").unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        let work = out.path().join("work");
+        let shadow = work.join("app");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&project, &exclude);
+        ctx.glob_matched_files.borrow_mut().insert(target);
+
+        stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None).unwrap();
+
+        assert!(
+            !work.join("other-lib/doc.mdx").exists(),
+            "an `.mdx` match must be skipped by this queue, not raw-copied over a real MDX compile"
+        );
+    }
+
+    #[test]
+    fn glob_fixed_point_stages_project_side_match_outside_ordinary_walk_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("app");
+        // Stands in for a project subtree the ordinary `materialise_shadow` /
+        // `enumerate_extra_top_level_dirs` walks never reach (e.g.
+        // gitignored) — this isolated test drives the drain directly, with
+        // no walk at all, so the target is ONLY reachable through the queue.
+        fs::create_dir_all(project.join("generated")).unwrap();
+        let target = project.join("generated/data.ts");
+        fs::write(&target, "export const data = 1;\n").unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        let shadow = out.path().join("shadow");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&project, &exclude);
+        ctx.glob_matched_files.borrow_mut().insert(target);
+
+        // No workspace ⇒ `shadow == work`, mirroring the byte-identical
+        // no-op layout `bundle_with_session` uses outside a workspace.
+        stage_glob_matched_files_to_fixed_point(&ctx, &project, &project, &shadow, &shadow, None)
+            .unwrap();
+
+        assert!(
+            shadow.join("generated/data.ts").exists(),
+            "a project-side glob match outside every ordinary walk's coverage must still be staged"
+        );
+    }
+
+    #[test]
+    fn glob_fixed_point_prunes_vanished_match_on_next_session_tick() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("app");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(ws.join("other-lib")).unwrap();
+        let target = ws.join("other-lib/gone-soon.ts");
+        fs::write(&target, "export const x = 1;\n").unwrap();
+
+        let exclude = no_bundle_exclude();
+        let mut session = ShadowSession::new(&project).unwrap();
+        let work = session.shadow_root().to_path_buf();
+        let shadow = work.join("app");
+        let staged_rel = Path::new("other-lib/gone-soon.ts");
+
+        // Tick 1: the live glob matches `target` — every `MaterialiseCtx`
+        // (including its `glob_matched_files` accumulator) is freshly built
+        // per tick, exactly like `bundle_with_session` builds one per call.
+        {
+            let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
+            let writer =
+                ShadowWriter::new(work.clone(), Some(&mut session), false, fingerprint).unwrap();
+            let ctx = MaterialiseCtx {
+                pipeline_spec: zfb_content::PipelineSpec::default(),
+                copy_mode: false,
+                bundle_exclude: &exclude,
+                project_root: &project,
+                writer: &writer,
+                glob_matched_files: RefCell::new(BTreeSet::from([target.clone()])),
+                raw_import_edges: RefCell::new(BTreeSet::new()),
+                raw_import_aliases: RawImportAliasContext::empty(),
+                module_worker_dependencies: RefCell::new(BTreeSet::new()),
+                worker_build_context: ModuleWorkerBuildContext::default(),
+                raw_preflight_complete: Cell::new(false),
+                snapshot_specifiers: None,
+            };
+            stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None)
+                .unwrap();
+            writer.prune_stale().unwrap();
+            writer.mark_clean();
+        }
+        assert!(
+            work.join(staged_rel).exists(),
+            "tick 1: the matched target must be staged into the work mirror"
+        );
+
+        // Tick 2: the live glob no longer matches `target` (deleted /
+        // renamed / edited out of the pattern) — this tick's
+        // `glob_matched_files` starts (and stays) empty.
+        {
+            let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
+            let writer =
+                ShadowWriter::new(work.clone(), Some(&mut session), false, fingerprint).unwrap();
+            let ctx = MaterialiseCtx {
+                pipeline_spec: zfb_content::PipelineSpec::default(),
+                copy_mode: false,
+                bundle_exclude: &exclude,
+                project_root: &project,
+                writer: &writer,
+                glob_matched_files: RefCell::new(BTreeSet::new()),
+                raw_import_edges: RefCell::new(BTreeSet::new()),
+                raw_import_aliases: RawImportAliasContext::empty(),
+                module_worker_dependencies: RefCell::new(BTreeSet::new()),
+                worker_build_context: ModuleWorkerBuildContext::default(),
+                raw_preflight_complete: Cell::new(false),
+                snapshot_specifiers: None,
+            };
+            stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None)
+                .unwrap();
+            writer.prune_stale().unwrap();
+            writer.mark_clean();
+        }
+        assert!(
+            !work.join(staged_rel).exists(),
+            "tick 2: a vanished glob match must be pruned from the work mirror"
+        );
+    }
+
+    #[test]
+    fn has_wildcard_root_alias_detects_root_wildcard() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = normalize_path_lexical(tmp.path());
+        let root_wildcard = BTreeMap::from([(
+            "@/*".to_string(),
+            vec![project.join("*").to_string_lossy().into_owned()],
+        )]);
+        assert!(has_wildcard_root_alias(&project, &root_wildcard, &[]));
+
+        // A wildcard into a SUBDIR (not the root) does not arm the root pass.
+        let subdir_wildcard = BTreeMap::from([(
+            "@/*".to_string(),
+            vec![project.join("src/*").to_string_lossy().into_owned()],
+        )]);
+        assert!(!has_wildcard_root_alias(&project, &subdir_wildcard, &[]));
+
+        // A concrete root alias is staged file-by-file, not by the loose pass.
+        let concrete = BTreeMap::from([(
+            "@data".to_string(),
+            vec![project.join("data.json").to_string_lossy().into_owned()],
+        )]);
+        assert!(!has_wildcard_root_alias(&project, &concrete, &[]));
+    }
+
+    #[test]
+    fn enumerate_mirror_root_files_honors_gitignore_and_skip_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("keep.ts"), "x").unwrap();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub/nested.ts"), "x").unwrap();
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        fs::write(root.join("node_modules/pkg/v.ts"), "x").unwrap();
+        fs::create_dir_all(root.join("dist")).unwrap();
+        fs::write(root.join("dist/out.js"), "x").unwrap();
+        fs::write(root.join(".gitignore"), "ignored.ts\n").unwrap();
+        fs::write(root.join("ignored.ts"), "x").unwrap();
+
+        let rels: Vec<PathBuf> = enumerate_mirror_root_files(root)
+            .into_iter()
+            .map(|p| p.strip_prefix(root).unwrap().to_path_buf())
+            .collect();
+        assert!(
+            rels.contains(&PathBuf::from("keep.ts")),
+            "root-level file kept; got {rels:?}"
+        );
+        assert!(
+            rels.contains(&PathBuf::from("sub/nested.ts")),
+            "nested file kept; got {rels:?}"
+        );
+        assert!(
+            !rels.iter().any(|p| p.starts_with("node_modules")),
+            "node_modules pruned; got {rels:?}"
+        );
+        assert!(
+            !rels.iter().any(|p| p.starts_with("dist")),
+            "dist pruned; got {rels:?}"
+        );
+        assert!(
+            !rels.contains(&PathBuf::from("ignored.ts")),
+            "gitignored file pruned; got {rels:?}"
+        );
+    }
+
     // ── symlink_or_copy tests ────────────────────────────────────────────
 
     /// Non-transformed files (CSS, PNG) placed by materialise_shadow must
@@ -15198,6 +16848,7 @@ mod tests {
             bundle_exclude: exclude,
             project_root,
             writer: leaked_passthrough_writer(),
+            glob_matched_files: RefCell::new(BTreeSet::new()),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
