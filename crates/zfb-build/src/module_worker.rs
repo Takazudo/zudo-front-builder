@@ -1684,6 +1684,9 @@ fn workspace_sibling_virtual_specifier(
         return None;
     }
     let candidate = normalize_path_lexical(specifier_path);
+    if is_inside_node_modules(&candidate) {
+        return None;
+    }
     if candidate.strip_prefix(&project_root).is_ok() {
         return None;
     }
@@ -3455,6 +3458,36 @@ mod tests {
         let source = format!(
             "export {{ external }} from {};\n",
             serde_json::to_string(&outside.path().to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            &project_root,
+            workspace.path(),
+            &work_root,
+        );
+
+        assert_eq!(remapped, source);
+    }
+
+    #[test]
+    fn workspace_sibling_node_modules_import_stays_untouched() {
+        // Sibling mirroring omits node_modules (only the workspace-root
+        // work/node_modules symlink exists, not per-package nested copies —
+        // codex-review, issue #1700), so a sibling package's own installed
+        // dependency must stay on the live absolute path rather than being
+        // rewritten to a work_root location that was never staged.
+        let workspace = tempfile::tempdir().unwrap();
+        let project_root = workspace.path().join("packages/app");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let installed = workspace
+            .path()
+            .join("packages/shared/node_modules/dep/index.js");
+        write(&installed, "export default 1;\n");
+        let work_root = workspace.path().join(".zfb-work");
+        let source = format!(
+            "export {{ default as dep }} from {};\n",
+            serde_json::to_string(&installed.to_string_lossy()).unwrap(),
         );
 
         let remapped = remap_virtual_module_project_imports_to_shadow(
