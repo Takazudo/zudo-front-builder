@@ -446,6 +446,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 if self.config.policy.is_client_script_candidate(&path)
                     || self.config.policy.is_client_script_raw_target(&path)
                     || self.config.policy.is_client_script_worker_target(&path)
+                    || self.config.policy.is_client_script_sibling_target(&path)
                 {
                     plan.mark_client_scripts();
                 }
@@ -584,6 +585,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             if self.config.policy.is_client_script_candidate(&path)
                 || self.config.policy.is_client_script_raw_target(&path)
                 || self.config.policy.is_client_script_worker_target(&path)
+                || self.config.policy.is_client_script_sibling_target(&path)
             {
                 plan.mark_client_scripts();
             }
@@ -886,6 +888,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             }
             if self.config.policy.is_client_script_raw_target(path)
                 || self.config.policy.is_client_script_worker_target(path)
+                || self.config.policy.is_client_script_sibling_target(path)
             {
                 plan.mark_client_scripts();
             }
@@ -2286,6 +2289,38 @@ mod tests {
             "a removed worker edge must clear stale invalidation ownership"
         );
         assert!(orch.plan_for_changes([next_helper]).rerun_client_scripts);
+    }
+
+    /// Issue #1710: a workspace-sibling PLAIN module (neither a `?raw` target
+    /// nor a worker dependency) must still trigger `mark_client_scripts()` —
+    /// this is the orchestrator-side half of the bug fix, mirroring the
+    /// worker-registry test above for the new `client_script_siblings` set.
+    #[test]
+    fn client_script_sibling_dependency_replacement_stops_stale_pipeline_planning() {
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        let old_sibling = PathBuf::from("/workspace/lib/shared/plain.ts");
+        let next_sibling = PathBuf::from("/workspace/lib/shared/next-plain.ts");
+        invalidation.replace_client_script_siblings([old_sibling.clone()]);
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")]).with_policy(
+            crate::policy::GranularityPolicy::default()
+                .with_raw_import_invalidation(invalidation.clone()),
+        );
+        let orch = BuildOrchestrator::new(config, make_graph(), CountingPipeline::default());
+
+        let first_tick = orch.plan_for_changes([old_sibling.clone()]);
+        assert!(
+            first_tick.rerun_client_scripts,
+            "a sibling plain-module edit must re-emit the owning client script"
+        );
+        assert!(!first_tick.rerun_islands);
+
+        invalidation.replace_client_script_siblings([next_sibling.clone()]);
+        let stale_tick = orch.plan_for_changes([old_sibling]);
+        assert!(
+            !stale_tick.rerun_client_scripts,
+            "a sibling that stopped being reachable must clear stale invalidation ownership"
+        );
+        assert!(orch.plan_for_changes([next_sibling]).rerun_client_scripts);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
