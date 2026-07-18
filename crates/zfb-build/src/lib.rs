@@ -87,7 +87,9 @@ pub use head_inject::{
 pub use metafile_deps::{route_module_deps, RouteEntryRef, RouteModuleDeps};
 pub use module_worker::{
     discover_module_preprocessing_with_context,
-    discover_registered_virtual_preprocessing_with_context, rewrite_module_worker_urls,
+    discover_registered_virtual_preprocessing_with_context,
+    remap_virtual_module_project_imports_to_shadow,
+    remap_virtual_module_workspace_sibling_imports_to_shadow, rewrite_module_worker_urls,
     rewrite_module_worker_urls_with_context, ModulePreprocessingDiscovery,
     ModuleWorkerBuildContext, ModuleWorkerDependency, ModuleWorkerEdge, ModuleWorkerRawImportEdge,
     ModuleWorkerRewrite,
