@@ -4244,12 +4244,11 @@ impl SiblingMirrorPlan {
             }
         }
         // (b): alias targets — wildcard targets contribute their directory.
-        for target in tsconfig_paths
-            .values()
-            .flatten()
-            .map(String::as_str)
-            .chain(plugin_alias_entries.iter().map(|(_, target)| target.as_str()))
-        {
+        for target in tsconfig_paths.values().flatten().map(String::as_str).chain(
+            plugin_alias_entries
+                .iter()
+                .map(|(_, target)| target.as_str()),
+        ) {
             let claim = alias_target_claim_path(target);
             if let Some(root) = resolve_mirror_root(&claim, project_root, first_party_root) {
                 mirror_roots.insert(root);
@@ -4282,9 +4281,7 @@ impl SiblingMirrorPlan {
     /// every match unconditionally instead.
     pub fn claims_path(&self, path: &Path) -> bool {
         let path = normalize_path_lexical(path);
-        self.mirror_roots
-            .iter()
-            .any(|root| path.starts_with(root))
+        self.mirror_roots.iter().any(|root| path.starts_with(root))
     }
 }
 
@@ -4335,9 +4332,9 @@ fn mirror_sibling_root(
             node_modules_isolation_root,
         );
         if let Some(parent) = dest.parent() {
-            writer
-                .ensure_dir(parent)
-                .with_context(|| format!("bundler: create sibling mirror dir {}", parent.display()))?;
+            writer.ensure_dir(parent).with_context(|| {
+                format!("bundler: create sibling mirror dir {}", parent.display())
+            })?;
         }
         writer.copy_if_changed(&src, &dest).with_context(|| {
             format!(
@@ -4668,7 +4665,11 @@ fn has_wildcard_root_alias(
         .values()
         .flatten()
         .map(String::as_str)
-        .chain(plugin_alias_entries.iter().map(|(_, target)| target.as_str()))
+        .chain(
+            plugin_alias_entries
+                .iter()
+                .map(|(_, target)| target.as_str()),
+        )
         .any(|target| target.contains('*') && alias_target_claim_path(target) == project_root)
 }
 
@@ -16202,14 +16203,11 @@ mod tests {
         fs::write(&outside, "x").unwrap();
         let files = BTreeSet::from([outside]);
         // first_party_root == project_root ⇒ standalone.
-        let plan = SiblingMirrorPlan::compute(
-            &project,
-            &project,
-            &files,
-            &BTreeMap::new(),
-            &[],
+        let plan = SiblingMirrorPlan::compute(&project, &project, &files, &BTreeMap::new(), &[]);
+        assert!(
+            plan.is_empty(),
+            "a standalone project claims no sibling region"
         );
-        assert!(plan.is_empty(), "a standalone project claims no sibling region");
     }
 
     #[test]
@@ -16641,13 +16639,22 @@ mod tests {
             .into_iter()
             .map(|p| p.strip_prefix(root).unwrap().to_path_buf())
             .collect();
-        assert!(rels.contains(&PathBuf::from("keep.ts")), "root-level file kept; got {rels:?}");
-        assert!(rels.contains(&PathBuf::from("sub/nested.ts")), "nested file kept; got {rels:?}");
+        assert!(
+            rels.contains(&PathBuf::from("keep.ts")),
+            "root-level file kept; got {rels:?}"
+        );
+        assert!(
+            rels.contains(&PathBuf::from("sub/nested.ts")),
+            "nested file kept; got {rels:?}"
+        );
         assert!(
             !rels.iter().any(|p| p.starts_with("node_modules")),
             "node_modules pruned; got {rels:?}"
         );
-        assert!(!rels.iter().any(|p| p.starts_with("dist")), "dist pruned; got {rels:?}");
+        assert!(
+            !rels.iter().any(|p| p.starts_with("dist")),
+            "dist pruned; got {rels:?}"
+        );
         assert!(
             !rels.contains(&PathBuf::from("ignored.ts")),
             "gitignored file pruned; got {rels:?}"

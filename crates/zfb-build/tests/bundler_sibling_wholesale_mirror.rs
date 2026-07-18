@@ -162,7 +162,10 @@ fn package_layout_sibling_with_package_json_is_wholesale_mirrored() {
         "ui",
         "../../../packages/ui/index", // discovered import into the sibling package
     );
-    write(&ws_root.join("packages/ui/package.json"), "{\n  \"name\": \"ui\"\n}\n");
+    write(
+        &ws_root.join("packages/ui/package.json"),
+        "{\n  \"name\": \"ui\"\n}\n",
+    );
     write(
         &ws_root.join("packages/ui/index.ts"),
         "export const value = 'UI_INDEX';\n",
@@ -213,12 +216,21 @@ fn bare_dir_sibling_without_package_json_is_wholesale_mirrored() {
         "export const extra = 'SHARED_UNREFERENCED';\n",
     );
 
-    let input = make_bundle_input(&project, "dist-shared", vec![alias], BTreeMap::new(), vec![]);
+    let input = make_bundle_input(
+        &project,
+        "dist-shared",
+        vec![alias],
+        BTreeMap::new(),
+        vec![],
+    );
     let mut session = ShadowSession::new(&input.project_root).unwrap();
     bundle_with_session(input, Some(&mut session)).expect("bare-dir sibling bundle succeeds");
 
     let shared = work_mirror_root(&session).join("lib/shared");
-    assert!(shared.join("contract.ts").is_file(), "discovered file staged");
+    assert!(
+        shared.join("contract.ts").is_file(),
+        "discovered file staged"
+    );
     assert!(
         shared.join("unreferenced.ts").is_file(),
         "a NON-discovered bare-dir sibling file must be wholesale-mirrored"
@@ -233,26 +245,41 @@ fn skip_list_dirs_and_gitignored_files_are_not_mirrored() {
     let (ws_root, project) = write_bundle_workspace_project(workspace.path());
     let alias = project_entry_importing(&project, "skip", "../../../lib/shared/contract");
     let shared_src = ws_root.join("lib/shared");
-    write(&shared_src.join("contract.ts"), "export const value = 'C';\n");
+    write(
+        &shared_src.join("contract.ts"),
+        "export const value = 'C';\n",
+    );
     // Infra dirs (skip-list) — never mirrored.
-    write(&shared_src.join("node_modules/pkg/vendored.ts"), "export const v = 1;\n");
+    write(
+        &shared_src.join("node_modules/pkg/vendored.ts"),
+        "export const v = 1;\n",
+    );
     write(&shared_src.join("dist/out.js"), "export const o = 1;\n");
     write(&shared_src.join("target/debug/artifact.txt"), "junk\n");
     // A .gitignore'd file — never mirrored (honored even without a .git dir).
     write(&shared_src.join(".gitignore"), "secret.ts\n");
-    write(&shared_src.join("secret.ts"), "export const secret = 'LEAK';\n");
+    write(
+        &shared_src.join("secret.ts"),
+        "export const secret = 'LEAK';\n",
+    );
 
     let input = make_bundle_input(&project, "dist-skip", vec![alias], BTreeMap::new(), vec![]);
     let mut session = ShadowSession::new(&input.project_root).unwrap();
     bundle_with_session(input, Some(&mut session)).expect("skip-list sibling bundle succeeds");
 
     let shared = work_mirror_root(&session).join("lib/shared");
-    assert!(shared.join("contract.ts").is_file(), "discovered file staged");
+    assert!(
+        shared.join("contract.ts").is_file(),
+        "discovered file staged"
+    );
     assert!(
         !shared.join("node_modules").exists(),
         "a node_modules component must never be mirrored"
     );
-    assert!(!shared.join("dist").exists(), "dist/ (skip-list) must not be mirrored");
+    assert!(
+        !shared.join("dist").exists(),
+        "dist/ (skip-list) must not be mirrored"
+    );
     assert!(
         !shared.join("target").exists(),
         "target/ (skip-list) must not be mirrored"
@@ -271,7 +298,10 @@ fn wildcard_alias_only_claim_mirrors_target_dir() {
     let (ws_root, project) = write_bundle_workspace_project(workspace.path());
     // NO project entry imports the sibling — the ONLY claim is the wildcard
     // alias target directory.
-    write(&ws_root.join("lib/shared/helper.ts"), "export const help = 'HELP';\n");
+    write(
+        &ws_root.join("lib/shared/helper.ts"),
+        "export const help = 'HELP';\n",
+    );
     let tsconfig_paths = BTreeMap::from([(
         "@shared/*".to_string(),
         vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
@@ -377,8 +407,8 @@ fn root_loose_raw_payload_is_preflighted_before_materialize() {
         staged_payload.contains("import.meta.glob"),
         "the raw payload must be kept verbatim (not macro-expanded as source): {staged_payload}"
     );
-    let staged_importer = fs::read_to_string(shadow.join("z-importer.ts"))
-        .expect("the root importer must be staged");
+    let staged_importer =
+        fs::read_to_string(shadow.join("z-importer.ts")).expect("the root importer must be staged");
     assert!(
         !staged_importer.contains("?raw"),
         "the importer's `?raw` specifier must be rewritten away: {staged_importer}"
