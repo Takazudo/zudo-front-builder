@@ -15,9 +15,10 @@
 use std::path::{Path, PathBuf};
 
 use zfb_islands::{
-    bundle_link_href, manifest_json, module_worker_filename, scan_islands, BundleConfig,
-    BundleOutput, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig, FsResolver,
-    Island, Manifest, ModuleWorkerBundleEntry, NativeRustBundler,
+    bundle_link_href, manifest_json, module_worker_filename, scan_islands, scan_islands_with_meta,
+    BundleConfig, BundleOutput, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
+    FsResolver, Island, Manifest, ModuleWorkerBundleEntry, NativeRustBundler,
+    WorkspacePackageImportEdge,
 };
 
 fn island(name: &str, path: &str) -> Island {
@@ -1633,8 +1634,8 @@ fn fixture_root(name: &str) -> PathBuf {
 #[test]
 fn pnpm_workspace_consumer_fixture_yields_workspace_package_islands() {
     let root = fixture_root("pnpm-workspace-consumer");
-    // Set up the workspace symlink pnpm would maintain at install time.
-    // We do this in the test (not as a checked-in symlink) because
+    // Set up the workspace symlinks pnpm would maintain at install time.
+    // We do this in the test (not as checked-in symlinks) because
     // checked-in symlinks travel poorly across OSes / git settings.
     let pkg = root.join("workspace/zfb-blog-islands");
     let scope_dir = root.join("node_modules/@takazudo");
@@ -1645,9 +1646,19 @@ fn pnpm_workspace_consumer_fixture_yields_workspace_package_islands() {
     let _ = std::fs::remove_dir_all(&pkg_link);
     std::os::unix::fs::symlink(&pkg, &pkg_link).expect("symlink workspace pkg into node_modules");
 
+    // Issue #1703, Guard (a): the island's own source imports a SECOND
+    // workspace sibling (`@takazudo/zfb-blog-shared`) by its bare package
+    // name — set up its symlink the same way.
+    let shared_pkg = root.join("workspace/zfb-blog-shared");
+    let shared_link = scope_dir.join("zfb-blog-shared");
+    let _ = std::fs::remove_file(&shared_link);
+    let _ = std::fs::remove_dir_all(&shared_link);
+    std::os::unix::fs::symlink(&shared_pkg, &shared_link)
+        .expect("symlink shared workspace pkg into node_modules");
+
     let pages = vec![root.join("pages/home.tsx")];
     let resolver = FsResolver::new();
-    let islands = scan_islands(&pages, &resolver).expect("scan");
+    let (islands, meta) = scan_islands_with_meta(&pages, &resolver).expect("scan");
 
     let names: Vec<String> = islands.iter().map(|i| i.component_name.clone()).collect();
     assert_eq!(
@@ -1666,6 +1677,26 @@ fn pnpm_workspace_consumer_fixture_yields_workspace_package_islands() {
     for island in &islands {
         assert_eq!(island.source_path, expected, "got: {island:?}");
     }
+
+    // Issue #1703, Guard (a): the island's own bare package-name import of
+    // its workspace sibling must surface as a `WorkspacePackageImportEdge`
+    // — the signal `materialise_islands_shadow_with_worker_context` /
+    // `stage_client_script_preprocessing_with_worker_context` in
+    // `crates/zfb/src/commands/build.rs` hard-error on once staging is
+    // active for the closure.
+    let expected_shared_dir = shared_pkg
+        .canonicalize()
+        .expect("canonicalize shared workspace package dir");
+    assert_eq!(
+        meta.workspace_package_edges_from_islands,
+        vec![WorkspacePackageImportEdge {
+            importer: expected,
+            specifier: "@takazudo/zfb-blog-shared".to_string(),
+            package_dir: expected_shared_dir,
+        }],
+        "got: {:?}",
+        meta.workspace_package_edges_from_islands
+    );
 }
 
 #[test]

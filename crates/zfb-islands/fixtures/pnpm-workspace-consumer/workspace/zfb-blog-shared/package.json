@@ -1,0 +1,6 @@
+{
+  "name": "@takazudo/zfb-blog-shared",
+  "version": "0.0.0",
+  "type": "module",
+  "source": "src/index.ts"
+}
