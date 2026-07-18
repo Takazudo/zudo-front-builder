@@ -2907,6 +2907,18 @@ fn materialise_islands_shadow_with_worker_context(
     // each shadow file to the nearest mirrored `node_modules`. In a widened
     // workspace shadow, both the workspace-root install and the project's
     // nested install are linked so nearest-package precedence is preserved.
+    //
+    // Issue #1682 (shared with the client-script preprocessing stage below):
+    // a sibling imported through its pnpm PACKAGE NAME resolves through this
+    // live node_modules symlink to the unprocessed source, bypassing the
+    // staged rewrite. Sibling reach via tsconfig alias / relative path
+    // (what #1674 covers) resolves to the staged files instead. Guarded by
+    // this epic (#1702): guard (a) (issue #1703, checked earlier in this
+    // function against `scan_meta.workspace_package_edges_from_islands`)
+    // pre-flight rejects the escape before this symlink is even created;
+    // guard (b) (issue #1705/#1707) is the esbuild-time backstop — a
+    // per-subprocess metafile audit that rejects it even if a lower-level
+    // bundler invocation ever bypassed guard (a).
     if let Some(nm) = first_party_node_modules {
         let shadow_nm = shadow_root.join("node_modules");
         shadow_symlink(&nm, &shadow_nm).with_context(|| {
@@ -4339,15 +4351,16 @@ fn stage_client_script_preprocessing_with_worker_context(
     // Without a workspace both collapse to the single root-level symlink,
     // byte-identical to the pre-#1674 behavior.
     //
-    // Issue #1682 (shared with the islands shadow): a sibling imported
+    // Issue #1682 (shared with the islands shadow above): a sibling imported
     // through its pnpm PACKAGE NAME resolves through this live node_modules
     // link to the unprocessed source, bypassing the staged rewrite. Sibling
     // reach via tsconfig alias / relative path (what #1674 covers) resolves
-    // to the staged files instead. Guard (a) (issue #1703, checked earlier
-    // in this function) hard-errors before this symlink is even created
-    // when staging is active and a package-name escape was detected, so by
-    // the time we get here either no such edge exists or staging was never
-    // active for this closure in the first place.
+    // to the staged files instead. Guarded by this epic (#1702): guard (a)
+    // (issue #1703, checked earlier in this function against
+    // `graph.workspace_package_edges`) pre-flight rejects the escape before
+    // this symlink is even created; guard (b) (issue #1705/#1707) is the
+    // esbuild-time backstop — a per-subprocess metafile audit that rejects
+    // it even if a lower-level bundler invocation ever bypassed guard (a).
     if let Some(node_modules) = &first_party_node_modules {
         shadow_symlink(node_modules, &root.join("node_modules")).with_context(|| {
             format!(
@@ -9598,6 +9611,64 @@ mod tests {
         let error = materialise_islands_shadow(project_root, &islands, &scan_meta)
             .err()
             .expect("Guard (a) must reject the workspace-package edge once staging is active");
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/shared"), "{message}");
+        assert!(
+            message.contains(island_src.display().to_string().as_str()),
+            "{message}"
+        );
+        assert!(
+            message.contains("not supported once staging is active"),
+            "{message}"
+        );
+    }
+
+    /// Issue #1708, Stage Escape Guards confirm pass — Guard (a)
+    /// end-to-end: the test above hand-builds `ScanMeta` to exercise the
+    /// check in isolation; this test instead drives the REAL islands
+    /// scanner (`scan_islands_with_meta`) against a genuine
+    /// `node_modules` workspace-package symlink fixture (the same
+    /// `link_workspace_package` helper the client-script counterpart below
+    /// uses), so `workspace_package_edges_from_islands` is populated by
+    /// production code, not injected by the test. The island bare-imports
+    /// `@acme/shared` and also needs `?raw` staging, so this proves the
+    /// full real-scan → real-staging-check path a real build takes — and
+    /// it never reaches esbuild.
+    #[cfg(unix)]
+    #[test]
+    fn materialise_islands_shadow_hard_errors_on_workspace_package_edge_from_real_scan() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        link_workspace_package(root);
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        let island_src = root.join("components/gallery.tsx");
+        std::fs::write(
+            &island_src,
+            "'use client';\n\
+             import { helper } from '@acme/shared';\n\
+             import text from './message.txt?raw';\n\
+             export function Gallery() { console.log(helper, text); return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("components/message.txt"), "hello").unwrap();
+
+        let (islands, scan_meta) =
+            scan_islands_with_meta(std::slice::from_ref(&island_src), &FsResolver::new()).unwrap();
+        assert_eq!(
+            islands.len(),
+            1,
+            "the \"use client\" component must be discovered as a real island"
+        );
+        assert_eq!(
+            scan_meta.workspace_package_edges_from_islands.len(),
+            1,
+            "the real scanner must record the bare @acme/shared import as a workspace-package \
+             edge"
+        );
+
+        let error = materialise_islands_shadow(root, &islands, &scan_meta)
+            .err()
+            .expect("Guard (a) must reject the real-scanned workspace-package edge");
         let message = format!("{error:#}");
         assert!(message.contains("@acme/shared"), "{message}");
         assert!(
