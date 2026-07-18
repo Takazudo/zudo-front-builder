@@ -1029,9 +1029,39 @@ const REROOT_HOST_REL: &str = "sub-packages/reroot-host";
 const REROOT_ENTRY_RAW: &str = "ZFB_REROOT_SIBLING_ENTRY_RAW_PAYLOAD";
 const REROOT_WORKER_RAW: &str = "ZFB_REROOT_SIBLING_WORKER_RAW_PAYLOAD";
 
+// Issue #1701 (Wave 2 confirm pass): the registered virtual module
+// `virtual:reroot-vmodule-host` (`sub-packages/reroot-host/preset.mjs`)
+// absolute-imports `sub-packages/vmodule-sibling/vmodule-host.ts`, which
+// itself exercises all three sibling rewrite kinds — `?raw`, an eager
+// `import.meta.glob`, and a nested module worker — so the workspace tier of
+// `remap_virtual_module_project_imports_to_shadow` (#1699/#1700) is proven
+// to carry every preprocessing pass through a virtual-module edge, not just
+// the plain relative sibling `?raw` the rest of this test already covers.
+const REROOT_VMODULE_ENTRY_MARKER: &str = "ZFB_VMODULE_SIBLING_ENTRY";
+const REROOT_VMODULE_RAW: &str = "ZFB_VMODULE_SIBLING_RAW_PAYLOAD";
+const REROOT_VMODULE_GLOB_ONE: &str = "ZFB_VMODULE_GLOB_ITEM_ONE";
+const REROOT_VMODULE_GLOB_TWO: &str = "ZFB_VMODULE_GLOB_ITEM_TWO";
+const REROOT_VMODULE_WORKER_MARKER: &str = "ZFB_VMODULE_WORKER_ENTRY";
+const REROOT_VMODULE_WORKER_ORIGINAL_URL: &str = "./vmodule-worker.ts";
+
 fn reroot_worker_filename(host_root: &Path) -> String {
     zfb_types::module_worker_filename(host_root, &host_root.join("src/reroot.worker.ts"))
         .expect("derive reroot host worker companion filename")
+}
+
+// The virtual-module sibling's own worker source lives OUTSIDE the host
+// project (under `sub-packages/vmodule-sibling`, a workspace sibling of
+// `reroot-host`), so its companion name goes through the workspace-scoped
+// `worker--ws-` branch (`module_worker_filename_scoped`) rather than the
+// project-local branch `reroot_worker_filename` above exercises.
+fn reroot_vmodule_worker_filename(host_root: &Path) -> String {
+    let sibling_worker = host_root
+        .parent()
+        .expect("reroot host has a sub-packages parent")
+        .join("vmodule-sibling/vmodule-worker.ts");
+    let first_party_root = zfb_types::first_party_root_for(host_root);
+    zfb_types::module_worker_filename_scoped(host_root, &first_party_root, &sibling_worker)
+        .expect("derive virtual-module sibling worker companion filename")
 }
 
 fn run_and_assert_reroot_host_production(host_root: &Path, esbuild: &Path) {
@@ -1041,12 +1071,29 @@ fn run_and_assert_reroot_host_production(host_root: &Path, esbuild: &Path) {
     let client_entry = read_text(&find_single_asset(&client_dir, "reroot-"));
     assert_contains_all(
         &client_entry,
-        &["ZFB_REROOT_CLIENT_ENTRY", REROOT_ENTRY_RAW],
+        &[
+            "ZFB_REROOT_CLIENT_ENTRY",
+            REROOT_ENTRY_RAW,
+            REROOT_VMODULE_ENTRY_MARKER,
+            REROOT_VMODULE_RAW,
+            REROOT_VMODULE_GLOB_ONE,
+            REROOT_VMODULE_GLOB_TWO,
+        ],
         "reroot host production client entry",
     );
     assert_contains_none(
         &client_entry,
-        &["?raw"],
+        &[
+            "?raw",
+            "import.meta.glob(",
+            REROOT_VMODULE_WORKER_ORIGINAL_URL,
+        ],
+        "reroot host production client entry",
+    );
+    let vmodule_worker_filename = reroot_vmodule_worker_filename(host_root);
+    assert_parent_worker_url(
+        &client_entry,
+        &vmodule_worker_filename,
         "reroot host production client entry",
     );
 
@@ -1057,6 +1104,24 @@ fn run_and_assert_reroot_host_production(host_root: &Path, esbuild: &Path) {
         "reroot host production worker",
     );
     assert_contains_none(&worker, &["?raw"], "reroot host production worker");
+
+    let vmodule_worker_path = client_dir.join(&vmodule_worker_filename);
+    assert!(
+        vmodule_worker_path.is_file(),
+        "reroot host production build must emit the virtual-module sibling worker companion at {}",
+        vmodule_worker_path.display(),
+    );
+    let vmodule_worker = read_text(&vmodule_worker_path);
+    assert_contains_all(
+        &vmodule_worker,
+        &[REROOT_VMODULE_WORKER_MARKER],
+        "reroot host production virtual-module sibling worker",
+    );
+    assert_contains_none(
+        &vmodule_worker,
+        &["?raw", "import.meta.glob("],
+        "reroot host production virtual-module sibling worker",
+    );
 }
 
 async fn run_and_assert_reroot_host_development(host_root: &Path, esbuild: &Path) {
@@ -1079,12 +1144,28 @@ async fn run_and_assert_reroot_host_development(host_root: &Path, esbuild: &Path
     .await;
     assert_contains_all(
         &client_entry,
-        &[REROOT_ENTRY_RAW],
+        &[
+            REROOT_ENTRY_RAW,
+            REROOT_VMODULE_ENTRY_MARKER,
+            REROOT_VMODULE_RAW,
+            REROOT_VMODULE_GLOB_ONE,
+            REROOT_VMODULE_GLOB_TWO,
+        ],
         "reroot host development client entry",
     );
     assert_contains_none(
         &client_entry,
-        &["?raw"],
+        &[
+            "?raw",
+            "import.meta.glob(",
+            REROOT_VMODULE_WORKER_ORIGINAL_URL,
+        ],
+        "reroot host development client entry",
+    );
+    let vmodule_worker_filename = reroot_vmodule_worker_filename(host_root);
+    assert_parent_worker_url(
+        &client_entry,
+        &vmodule_worker_filename,
         "reroot host development client entry",
     );
 
@@ -1103,6 +1184,20 @@ async fn run_and_assert_reroot_host_development(host_root: &Path, esbuild: &Path
         "reroot host development worker",
     );
     assert_contains_none(&worker, &["?raw"], "reroot host development worker");
+
+    let vmodule_worker = poll_body(
+        &client,
+        &format!("{origin}/assets/client/{vmodule_worker_filename}"),
+        REROOT_VMODULE_WORKER_MARKER,
+        "reroot host development virtual-module sibling worker",
+        &session,
+    )
+    .await;
+    assert_contains_none(
+        &vmodule_worker,
+        &["?raw", "import.meta.glob("],
+        "reroot host development virtual-module sibling worker",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

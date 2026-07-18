@@ -6,6 +6,13 @@
 // the sibling as "outside the mirrorable project tree".
 import panel from "../../reroot-shared/panel.frag?raw";
 
+// Issue #1701 (Wave 2): pulls in a registered virtual module whose OWN
+// source absolute-imports a THIRD sibling package — proving the workspace
+// tier of `remap_virtual_module_project_imports_to_shadow` (#1699/#1700)
+// carries a virtual-module edge through `?raw`/glob/nested-worker
+// preprocessing, not just the plain relative sibling import above.
+import "virtual:reroot-vmodule-host";
+
 console.info("ZFB_REROOT_CLIENT_ENTRY", panel);
 
 // Browser-only worker registration, capability-guarded so importing this
