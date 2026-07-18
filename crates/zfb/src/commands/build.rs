@@ -9610,6 +9610,64 @@ mod tests {
         );
     }
 
+    /// Issue #1708, Stage Escape Guards confirm pass — Guard (a)
+    /// end-to-end: the test above hand-builds `ScanMeta` to exercise the
+    /// check in isolation; this test instead drives the REAL islands
+    /// scanner (`scan_islands_with_meta`) against a genuine
+    /// `node_modules` workspace-package symlink fixture (the same
+    /// `link_workspace_package` helper the client-script counterpart below
+    /// uses), so `workspace_package_edges_from_islands` is populated by
+    /// production code, not injected by the test. The island bare-imports
+    /// `@acme/shared` and also needs `?raw` staging, so this proves the
+    /// full real-scan → real-staging-check path a real build takes — and
+    /// it never reaches esbuild.
+    #[cfg(unix)]
+    #[test]
+    fn materialise_islands_shadow_hard_errors_on_workspace_package_edge_from_real_scan() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        link_workspace_package(root);
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        let island_src = root.join("components/gallery.tsx");
+        std::fs::write(
+            &island_src,
+            "'use client';\n\
+             import { helper } from '@acme/shared';\n\
+             import text from './message.txt?raw';\n\
+             export function Gallery() { console.log(helper, text); return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("components/message.txt"), "hello").unwrap();
+
+        let (islands, scan_meta) =
+            scan_islands_with_meta(std::slice::from_ref(&island_src), &FsResolver::new()).unwrap();
+        assert_eq!(
+            islands.len(),
+            1,
+            "the \"use client\" component must be discovered as a real island"
+        );
+        assert_eq!(
+            scan_meta.workspace_package_edges_from_islands.len(),
+            1,
+            "the real scanner must record the bare @acme/shared import as a workspace-package \
+             edge"
+        );
+
+        let error = materialise_islands_shadow(root, &islands, &scan_meta)
+            .err()
+            .expect("Guard (a) must reject the real-scanned workspace-package edge");
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/shared"), "{message}");
+        assert!(
+            message.contains(island_src.display().to_string().as_str()),
+            "{message}"
+        );
+        assert!(
+            message.contains("not supported once staging is active"),
+            "{message}"
+        );
+    }
+
     #[test]
     fn materialise_islands_shadow_copies_nearest_config_and_relative_extends_chain() {
         let tmp = tempdir().unwrap();
