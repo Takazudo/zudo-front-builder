@@ -945,22 +945,29 @@ fn build_job_resolver_inputs(
     })
 }
 
-/// Compute the unique stage-audit metafile path for one job, or `None` when
-/// no policy is configured. Shared by every real-subprocess call site so
-/// each job's `--metafile` flag and its post-success audit read the exact
-/// same file. `job_stem` must be a bare filename fragment (no path
-/// separators) unique among the other jobs writing into `out_dir` — the
-/// existing filename-validation callers (`validate_chunk_filename`,
-/// `validate_module_worker_entries`, the client-script `output_stem`) already
-/// guarantee this for worker/client-script jobs; the fixed `"entry"` stem
-/// used by the main per-invocation job is unique because it is the only job
-/// writing directly into a fresh `out_dir`.
-fn stage_audit_metafile_path(
+/// Allocate a scratch `--metafile` location for one real-subprocess job, or
+/// `None` when no stage-audit policy is configured.
+///
+/// **Must NOT live inside the subprocess's `--outdir` (`out_dir`)**: the
+/// strict output read-back (`read_back_outdir_with_resource_oracle`,
+/// `read_back_client_script_outdir`) treats `out_dir` as esbuild's exact
+/// promised output set and only special-cases the resource-contract pass's
+/// own `meta.json` — any other stray file left inside `out_dir` (this one
+/// included) is rejected as an unrecognised output. A dedicated system-temp
+/// file sidesteps that trust boundary entirely; dropping the returned
+/// `NamedTempFile` deletes it once the caller is done auditing.
+fn stage_audit_metafile(
     policy: Option<&StageAuditPolicy>,
-    out_dir: &Path,
-    job_stem: &str,
-) -> Option<PathBuf> {
-    policy.map(|_| out_dir.join(format!(".zfb-stage-audit-{job_stem}.json")))
+) -> Result<Option<tempfile::NamedTempFile>> {
+    if policy.is_none() {
+        return Ok(None);
+    }
+    tempfile::Builder::new()
+        .prefix(".zfb-stage-audit-")
+        .suffix(".json")
+        .tempfile()
+        .context("failed to allocate stage-audit metafile")
+        .map(Some)
 }
 
 /// Run the guard (b) stage-escape audit against a just-emitted metafile and
@@ -1359,22 +1366,21 @@ impl EsbuildSubprocessBundler {
              Drives plugin-registered alias / virtual-module \
             exact-match resolution through compilerOptions.paths.",
         )?;
-        // Unique stage-audit metafile for THIS job. `resource_contract`
+        // Scratch metafile for THIS job's stage-escape audit. `resource_contract`
         // (`== splitting`, see `build_esbuild_args`) already forces its own
         // `--metafile=meta.json` when `splitting` is true, so this one is
         // only actually requested by the args builder in the `splitting ==
         // false` (per-island / runtime) case — see
         // `build_esbuild_args_with_entry_name_and_resource_contract`'s
         // `stage_audit_metafile` doc comment.
-        let stage_audit_metafile =
-            stage_audit_metafile_path(self.config.stage_audit.as_ref(), out_dir.path(), "entry");
+        let entry_stage_audit_metafile = stage_audit_metafile(self.config.stage_audit.as_ref())?;
         let args = build_esbuild_args(
             config,
             &self.config.extra_args,
             out_dir.path(),
             entry_tmp.path(),
             splitting,
-            stage_audit_metafile.as_deref(),
+            entry_stage_audit_metafile.as_ref().map(|f| f.path()),
         );
         let mut cmd = Command::new(&self.config.binary_path);
         cmd.current_dir(&self.config.working_dir);
@@ -1441,9 +1447,13 @@ impl EsbuildSubprocessBundler {
             let metafile_path = if splitting {
                 out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME)
             } else {
-                stage_audit_metafile
-                    .clone()
-                    .expect("stage_audit_metafile is Some whenever config.stage_audit is Some")
+                entry_stage_audit_metafile
+                    .as_ref()
+                    .expect(
+                        "entry_stage_audit_metafile is Some whenever config.stage_audit is Some",
+                    )
+                    .path()
+                    .to_path_buf()
             };
             run_stage_escape_audit(policy, &metafile_path, &self.config.working_dir, job_label)?;
         }
@@ -1464,11 +1474,8 @@ impl EsbuildSubprocessBundler {
                     &self.config.alias_entries,
                     &self.config.virtual_modules,
                 )?;
-                let worker_stage_audit_metafile = stage_audit_metafile_path(
-                    self.config.stage_audit.as_ref(),
-                    out_dir.path(),
-                    worker.entry_name_template(),
-                );
+                let worker_stage_audit_metafile =
+                    stage_audit_metafile(self.config.stage_audit.as_ref())?;
                 let worker_args = build_esbuild_args_with_entry_name(
                     config,
                     &self.config.extra_args,
@@ -1476,7 +1483,7 @@ impl EsbuildSubprocessBundler {
                     worker.source_path(),
                     false,
                     worker.entry_name_template(),
-                    worker_stage_audit_metafile.as_deref(),
+                    worker_stage_audit_metafile.as_ref().map(|f| f.path()),
                 );
                 let mut worker_cmd = Command::new(&self.config.binary_path);
                 worker_cmd.current_dir(&self.config.working_dir);
@@ -1520,12 +1527,12 @@ impl EsbuildSubprocessBundler {
                 }
 
                 if let Some(policy) = &self.config.stage_audit {
-                    let metafile_path = worker_stage_audit_metafile.clone().expect(
+                    let metafile_path = worker_stage_audit_metafile.as_ref().expect(
                         "worker_stage_audit_metafile is Some whenever config.stage_audit is Some",
                     );
                     run_stage_escape_audit(
                         policy,
-                        &metafile_path,
+                        metafile_path.path(),
                         &self.config.working_dir,
                         &format!("shared worker {}", worker.filename()),
                     )?;
@@ -2927,11 +2934,7 @@ impl EsbuildSubprocessBundler {
                 &self.config.alias_entries,
                 &self.config.virtual_modules,
             )?;
-            let job_stage_audit_metafile = stage_audit_metafile_path(
-                self.config.stage_audit.as_ref(),
-                out_dir.path(),
-                &output_stem,
-            );
+            let job_stage_audit_metafile = stage_audit_metafile(self.config.stage_audit.as_ref())?;
             // Every entry is self-contained (`splitting=false`). Worker URL
             // edges have already been rewritten to sibling contract names.
             let args = build_esbuild_args_with_entry_name(
@@ -2941,7 +2944,7 @@ impl EsbuildSubprocessBundler {
                 &source_path,
                 false,
                 &output_stem,
-                job_stage_audit_metafile.as_deref(),
+                job_stage_audit_metafile.as_ref().map(|f| f.path()),
             );
             let mut cmd = Command::new(&self.config.binary_path);
             cmd.current_dir(&self.config.working_dir);
@@ -2982,11 +2985,11 @@ impl EsbuildSubprocessBundler {
 
             if let Some(policy) = &self.config.stage_audit {
                 let metafile_path = job_stage_audit_metafile
-                    .clone()
+                    .as_ref()
                     .expect("job_stage_audit_metafile is Some whenever config.stage_audit is Some");
                 run_stage_escape_audit(
                     policy,
-                    &metafile_path,
+                    metafile_path.path(),
                     &self.config.working_dir,
                     &format!("{label} {source_path:?}"),
                 )?;
@@ -4124,26 +4127,30 @@ mod tests {
     }
 
     #[test]
-    fn stage_audit_metafile_path_is_none_without_a_policy() {
-        assert_eq!(
-            stage_audit_metafile_path(None, Path::new("/tmp/zfb-out"), "entry"),
-            None
-        );
+    fn stage_audit_metafile_is_none_without_a_policy() {
+        assert!(stage_audit_metafile(None).unwrap().is_none());
     }
 
+    /// `stage_audit_metafile` deliberately takes no `out_dir` parameter — a
+    /// codex review finding on the first version of this wiring flagged that
+    /// nesting the scratch metafile inside an esbuild `--outdir` makes the
+    /// strict output read-back (`read_back_outdir_with_resource_oracle`,
+    /// `read_back_client_script_outdir`) reject it as an unrecognised
+    /// output on every job type except the resource-contract pass. Dropping
+    /// the parameter makes that bug class structurally unreachable; this
+    /// test pins the remaining per-job contract: every call allocates a
+    /// distinct, real, on-disk file.
     #[test]
-    fn stage_audit_metafile_path_is_unique_per_job_stem_under_the_same_out_dir() {
+    fn stage_audit_metafile_allocates_a_distinct_real_file_per_call() {
         let policy = StageAuditPolicy {
             stage_roots: vec![PathBuf::from("/stage")],
             first_party_root: PathBuf::from("/workspace"),
         };
-        let out_dir = Path::new("/tmp/zfb-out");
-        let entry_metafile = stage_audit_metafile_path(Some(&policy), out_dir, "entry").unwrap();
-        let worker_metafile =
-            stage_audit_metafile_path(Some(&policy), out_dir, "worker-x").unwrap();
-        assert_ne!(entry_metafile, worker_metafile);
-        assert!(entry_metafile.starts_with(out_dir));
-        assert!(worker_metafile.starts_with(out_dir));
+        let entry_metafile = stage_audit_metafile(Some(&policy)).unwrap().unwrap();
+        let worker_metafile = stage_audit_metafile(Some(&policy)).unwrap().unwrap();
+        assert_ne!(entry_metafile.path(), worker_metafile.path());
+        assert!(entry_metafile.path().is_file());
+        assert!(worker_metafile.path().is_file());
     }
 
     /// The six job types (shared entry, per-island, runtime, shared worker,
