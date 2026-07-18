@@ -1575,8 +1575,8 @@ fn stable_virtual_module_source(source: &str, project_root: &Path) -> String {
             // absolute imports keep their historical "./rel" form; workspace
             // -sibling absolute imports (issue #1664) get a NUL-tagged
             // workspace-relative form so the hash stops embedding the
-            // checkout location. The shadow REMAP path deliberately does not
-            // use the workspace tier — see
+            // checkout location. This is a distinct cache-key concern from
+            // the shadow REMAP path's own workspace tier (issue #1700) — see
             // `remap_virtual_module_project_imports_to_shadow`.
             let stable = stable_project_virtual_specifier(&occurrence.specifier, project_root)
                 .or_else(|| {
@@ -1599,13 +1599,25 @@ fn stable_virtual_module_source(source: &str, project_root: &Path) -> String {
     stable
 }
 
-/// Remap literal absolute imports that resolve inside the project to the
-/// project-relative spelling used by a virtual module materialized at the
-/// bundler shadow root. Bare packages and paths outside the project stay
-/// untouched, so only the live-project escape hatch is closed.
+/// Remap literal absolute imports inside a virtual module to a spelling that
+/// resolves through the bundler shadow layout. Two tiers, mutually exclusive
+/// by construction (issue #1700):
+///
+/// - under `project_root` → the project-relative `"./rel"` spelling used by
+///   a virtual module materialized at the shadow root.
+/// - under `first_party_root` but OUTSIDE `project_root` (a workspace
+///   sibling) → its absolute staged spelling under `work_root`, so the
+///   sibling `?raw` / `import.meta.glob` / worker rewrites staged in the
+///   work mirror actually apply through a virtual-module import. Inert when
+///   `first_party_root == project_root` (no workspace).
+///
+/// Bare packages and paths outside both roots stay untouched, so only the
+/// live-project/live-workspace escape hatch is closed.
 pub(crate) fn remap_virtual_module_project_imports_to_shadow(
     source: &str,
     project_root: &Path,
+    first_party_root: &Path,
+    work_root: &Path,
 ) -> String {
     let virtual_path = project_root.join(".zfb-worker-virtual-module.mjs");
     let Ok((module, base, unresolved_ctxt)) = parse_module(&virtual_path, source) else {
@@ -1615,7 +1627,15 @@ pub(crate) fn remap_virtual_module_project_imports_to_shadow(
         .into_iter()
         .filter(|occurrence| Path::new(&occurrence.specifier).is_absolute())
         .filter_map(|occurrence| {
-            let remapped = stable_project_virtual_specifier(&occurrence.specifier, project_root)?;
+            let remapped = stable_project_virtual_specifier(&occurrence.specifier, project_root)
+                .or_else(|| {
+                    workspace_sibling_virtual_specifier(
+                        &occurrence.specifier,
+                        project_root,
+                        first_party_root,
+                        work_root,
+                    )
+                })?;
             let replacement = serde_json::to_string(&remapped).ok()?;
             Some((occurrence.lo, occurrence.hi, replacement))
         })
@@ -1630,6 +1650,61 @@ pub(crate) fn remap_virtual_module_project_imports_to_shadow(
         remapped.replace_range(lo..hi, &replacement);
     }
     remapped
+}
+
+/// Workspace-sibling tier for `remap_virtual_module_project_imports_to_shadow`
+/// (issue #1700): an absolute import that resolves under `first_party_root`
+/// but OUTSIDE `project_root` is rewritten to its staged absolute spelling
+/// under `work_root`, reusing [`shadow_path_for_project_path`] for the join
+/// so this stays byte-identical to how the plugin-alias remap and tsconfig
+/// rebase already stage sibling targets. Purely lexical (no disk probe,
+/// unlike the project tier) — a virtual module can reference a sibling file
+/// that only exists in the work mirror once staging has rewritten it, so
+/// requiring the source file to exist on the live tree would be wrong here.
+/// A `?query`/`#fragment` suffix is split off before remapping the path and
+/// reattached to the remapped result, since the path resolvers this tier
+/// builds on cannot see through such a suffix.
+fn workspace_sibling_virtual_specifier(
+    specifier: &str,
+    project_root: &Path,
+    first_party_root: &Path,
+    work_root: &Path,
+) -> Option<String> {
+    let project_root = normalize_path_lexical(project_root);
+    let first_party_root = normalize_path_lexical(first_party_root);
+    if first_party_root == project_root {
+        return None;
+    }
+    let (path_part, suffix) = specifier
+        .find(['?', '#'])
+        .map(|index| (&specifier[..index], &specifier[index..]))
+        .unwrap_or((specifier, ""));
+    let specifier_path = Path::new(path_part);
+    if !specifier_path.is_absolute() {
+        return None;
+    }
+    let candidate = normalize_path_lexical(specifier_path);
+    if is_inside_node_modules(&candidate) {
+        return None;
+    }
+    if candidate.strip_prefix(&project_root).is_ok() {
+        return None;
+    }
+    if candidate.strip_prefix(&first_party_root).is_err() {
+        return None;
+    }
+    let remapped = crate::bundler::shadow_path_for_project_path(
+        &candidate,
+        &project_root,
+        &first_party_root,
+        work_root,
+        work_root,
+        None,
+    );
+    if remapped == candidate {
+        return None;
+    }
+    Some(format!("{}{suffix}", remapped.to_string_lossy()))
 }
 
 /// Cache-identity spelling for a virtual-module import of a workspace-sibling
@@ -3255,7 +3330,12 @@ mod tests {
             serde_json::to_string(&outside.path().to_string_lossy()).unwrap(),
         );
 
-        let remapped = remap_virtual_module_project_imports_to_shadow(&source, project.path());
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        );
 
         assert!(
             remapped.contains("export { bindings } from \"./src/host-bindings.tsx\";"),
@@ -3266,6 +3346,190 @@ mod tests {
             "{remapped}"
         );
         assert!(remapped.contains("from \"fixture-package\""), "{remapped}");
+    }
+
+    #[test]
+    fn workspace_sibling_virtual_import_is_remapped_to_work_root() {
+        let workspace = tempfile::tempdir().unwrap();
+        let project_root = workspace.path().join("packages/app");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let sibling = workspace.path().join("packages/shared/util.ts");
+        write(&sibling, "export const util = 1;\n");
+        let work_root = workspace.path().join(".zfb-work");
+        let source = format!(
+            "export {{ util }} from {};\n",
+            serde_json::to_string(&sibling.to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            &project_root,
+            workspace.path(),
+            &work_root,
+        );
+
+        let expected = work_root.join("packages/shared/util.ts");
+        let expected_specifier = serde_json::to_string(&expected.to_string_lossy()).unwrap();
+        assert!(
+            remapped.contains(&format!("export {{ util }} from {expected_specifier};")),
+            "{remapped}"
+        );
+    }
+
+    #[test]
+    fn workspace_sibling_virtual_import_keeps_query_and_fragment_suffix() {
+        let workspace = tempfile::tempdir().unwrap();
+        let project_root = workspace.path().join("packages/app");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let sibling = workspace.path().join("packages/shared/payload.txt");
+        write(&sibling, "payload\n");
+        let work_root = workspace.path().join(".zfb-work");
+
+        let raw_specifier = format!("{}?raw", sibling.to_string_lossy());
+        let raw_source = format!(
+            "import raw from {};\n",
+            serde_json::to_string(&raw_specifier).unwrap()
+        );
+        let raw_remapped = remap_virtual_module_project_imports_to_shadow(
+            &raw_source,
+            &project_root,
+            workspace.path(),
+            &work_root,
+        );
+        let expected_raw = format!(
+            "{}?raw",
+            work_root
+                .join("packages/shared/payload.txt")
+                .to_string_lossy()
+        );
+        assert!(
+            raw_remapped.contains(&serde_json::to_string(&expected_raw).unwrap()),
+            "{raw_remapped}"
+        );
+
+        let frag_specifier = format!("{}#frag", sibling.to_string_lossy());
+        let frag_source = format!(
+            "import frag from {};\n",
+            serde_json::to_string(&frag_specifier).unwrap()
+        );
+        let frag_remapped = remap_virtual_module_project_imports_to_shadow(
+            &frag_source,
+            &project_root,
+            workspace.path(),
+            &work_root,
+        );
+        let expected_frag = format!(
+            "{}#frag",
+            work_root
+                .join("packages/shared/payload.txt")
+                .to_string_lossy()
+        );
+        assert!(
+            frag_remapped.contains(&serde_json::to_string(&expected_frag).unwrap()),
+            "{frag_remapped}"
+        );
+
+        // The bare (unsuffixed) form still remaps to the same path shape, with no suffix.
+        let bare_source = format!(
+            "import bare from {};\n",
+            serde_json::to_string(&sibling.to_string_lossy()).unwrap()
+        );
+        let bare_remapped = remap_virtual_module_project_imports_to_shadow(
+            &bare_source,
+            &project_root,
+            workspace.path(),
+            &work_root,
+        );
+        let expected_bare = work_root.join("packages/shared/payload.txt");
+        assert!(
+            bare_remapped
+                .contains(&serde_json::to_string(&expected_bare.to_string_lossy()).unwrap()),
+            "{bare_remapped}"
+        );
+    }
+
+    #[test]
+    fn absolute_import_beyond_the_workspace_stays_untouched() {
+        let workspace = tempfile::tempdir().unwrap();
+        let project_root = workspace.path().join("packages/app");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let work_root = workspace.path().join(".zfb-work");
+        let source = format!(
+            "export {{ external }} from {};\n",
+            serde_json::to_string(&outside.path().to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            &project_root,
+            workspace.path(),
+            &work_root,
+        );
+
+        assert_eq!(remapped, source);
+    }
+
+    #[test]
+    fn workspace_sibling_node_modules_import_stays_untouched() {
+        // Sibling mirroring omits node_modules (only the workspace-root
+        // work/node_modules symlink exists, not per-package nested copies —
+        // codex-review, issue #1700), so a sibling package's own installed
+        // dependency must stay on the live absolute path rather than being
+        // rewritten to a work_root location that was never staged.
+        let workspace = tempfile::tempdir().unwrap();
+        let project_root = workspace.path().join("packages/app");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let installed = workspace
+            .path()
+            .join("packages/shared/node_modules/dep/index.js");
+        write(&installed, "export default 1;\n");
+        let work_root = workspace.path().join(".zfb-work");
+        let source = format!(
+            "export {{ default as dep }} from {};\n",
+            serde_json::to_string(&installed.to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            &project_root,
+            workspace.path(),
+            &work_root,
+        );
+
+        assert_eq!(remapped, source);
+    }
+
+    #[test]
+    fn workspace_tier_is_inert_without_a_workspace_marker() {
+        // Standalone project (first_party_root == project_root, issue #1700):
+        // a sibling-shaped absolute import outside project_root must stay
+        // untouched, mirroring `bundle_exclude_sibling_tier_is_inert_without_a_workspace`.
+        let project = tempfile::tempdir().unwrap();
+        let host = project.path().join("src/host-bindings.tsx");
+        write(&host, "export const bindings = {};\n");
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let source = format!(
+            "export {{ bindings }} from {};\nexport {{ external }} from {};\n",
+            serde_json::to_string(&host.to_string_lossy()).unwrap(),
+            serde_json::to_string(&outside.path().to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        );
+
+        assert!(
+            remapped.contains("export { bindings } from \"./src/host-bindings.tsx\";"),
+            "{remapped}"
+        );
+        assert!(
+            remapped.contains(&serde_json::to_string(&outside.path().to_string_lossy()).unwrap()),
+            "{remapped}"
+        );
     }
 
     #[test]
