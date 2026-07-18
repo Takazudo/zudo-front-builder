@@ -69,7 +69,7 @@ use zfb_islands::{
     build_production_client_scripts_with_workers, build_production_islands_asset,
     discover_client_scripts, scan_islands_with_meta, scan_reachable_modules_with_meta,
     BundleConfig, ClientScriptWorkerEntry, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
-    FrameworkKind, FsResolver,
+    FrameworkKind, FsResolver, StageAuditPolicy,
 };
 use zfb_router::Router;
 
@@ -3039,6 +3039,79 @@ pub(crate) fn build_default_islands_payload(
     )
 }
 
+/// Issue #1707 (Stage Escape Guards): build the guard (b) stage-escape audit
+/// policy for an islands / client-scripts esbuild config — but ONLY when the
+/// staging root widened past `project_root`, i.e. this is a pnpm-workspace
+/// first-party build where `first_party_root != project_root`.
+///
+/// Outside a workspace `first_party_root_for(project_root)` returns
+/// `normalize_path_lexical(project_root)` verbatim, so the widened check
+/// compares against the *normalized* project root — a raw `!= project_root`
+/// would false-positive whenever `project_root` carries a `.`, trailing
+/// slash, or `..` that normalization strips. When not widened, the wholesale
+/// `node_modules` symlink the stage sets up can only reach the project's OWN
+/// dependency tree (no first-party workspace-sibling to escape to), so the
+/// audit would be pure overhead — the dev loop is latency-sensitive
+/// (`dev_sibling_watch_1678_e2e` guards this pipeline) — and the policy stays
+/// `None`, leaving the argv byte-identical (no `--metafile`).
+///
+/// When widened, the audit is armed with `stage_root` as the sole stage
+/// boundary (every legitimately staged input — the mirrored project plus the
+/// wholesale-mirrored siblings — lives under it) and `first_party_root` as the
+/// live-source boundary a package-name escape climbs to. `metafile_cwd` is not
+/// passed here: [`EsbuildSubprocessConfig`] already runs esbuild from — and
+/// audits against — its `working_dir` (the stage's `bundle_working_dir`,
+/// nested below `stage_root`), wired in issue #1705.
+fn stage_escape_audit_policy(
+    project_root: &Path,
+    first_party_root: &Path,
+    stage_root: &Path,
+) -> Option<StageAuditPolicy> {
+    if first_party_root == zfb_types::normalize_path_lexical(project_root) {
+        return None;
+    }
+    Some(StageAuditPolicy {
+        stage_roots: vec![stage_root.to_path_buf()],
+        first_party_root: first_party_root.to_path_buf(),
+    })
+}
+
+#[cfg(test)]
+mod stage_escape_audit_policy_tests {
+    use super::*;
+
+    #[test]
+    fn none_when_not_widened_even_with_an_unnormalized_project_root() {
+        // Outside a workspace `first_party_root_for` hands back the NORMALIZED
+        // project root, so the widened check compares against that — a raw
+        // `!= project_root` would false-positive on an unnormalized path. An
+        // unnormalized project_root that normalizes to the first-party root is
+        // NOT widened → no policy → no `--metafile` in the argv.
+        let project_root = Path::new("/proj/./sub/..");
+        let first_party_root = zfb_types::normalize_path_lexical(project_root); // "/proj"
+        assert!(stage_escape_audit_policy(
+            project_root,
+            &first_party_root,
+            Path::new("/tmp/stage")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn some_with_correct_roots_when_widened() {
+        // A pnpm-workspace build: first_party_root is a proper ancestor of
+        // project_root → the stage widened → audit armed with the stage root
+        // as the boundary and the workspace root as the first-party root.
+        let project_root = Path::new("/ws/packages/app");
+        let first_party_root = Path::new("/ws");
+        let stage_root = Path::new("/tmp/zfb-stage-abc/ws");
+        let policy = stage_escape_audit_policy(project_root, first_party_root, stage_root)
+            .expect("a stage widened past project_root must arm the audit");
+        assert_eq!(policy.stage_roots, vec![stage_root.to_path_buf()]);
+        assert_eq!(policy.first_party_root, first_party_root.to_path_buf());
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // 10 params: #1497 added bundle mode/config + raw_invalidation; each param carries its own routing contract (see per-param comments), a struct would just shuffle the same fields
 pub(crate) fn build_default_islands_payload_with_bundle_options(
     // The project root — used for esbuild's working dir (tsconfig
@@ -3400,6 +3473,23 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         .unwrap_or_else(|| project_root.to_path_buf());
     let mut esbuild_cfg =
         EsbuildSubprocessConfig::default().with_working_dir(islands_bundler_working_dir);
+    // Issue #1707: arm the guard (b) stage-escape audit for the islands shadow
+    // when the stage widened past project_root (a pnpm-workspace build). The
+    // shadow root (`_tempdir`) is the boundary every staged input lives under;
+    // esbuild's cwd (`bundle_working_dir`) is nested below it and is what #1705
+    // audits metafile keys against.
+    if let Some(islands_stage_root) = _islands_shadow
+        .as_ref()
+        .map(|shadow| shadow._tempdir.path())
+    {
+        if let Some(policy) = stage_escape_audit_policy(
+            project_root,
+            &zfb_types::first_party_root_for(project_root),
+            islands_stage_root,
+        ) {
+            esbuild_cfg = esbuild_cfg.with_stage_audit(policy);
+        }
+    }
     if let Some(boundary) = islands_tsconfig_boundary {
         esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
     }
@@ -4537,6 +4627,20 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    // Issue #1707: arm the guard (b) stage-escape audit for the client-script
+    // stage when it widened past project_root (a pnpm-workspace build). Same
+    // shape as the islands shadow — `stage.root` is the staged-input boundary;
+    // esbuild's cwd (`bundle_working_dir`) nested below it is what #1705 audits
+    // metafile keys against.
+    if let Some(client_stage_root) = preprocess_stage.as_ref().map(|stage| stage.root.as_path()) {
+        if let Some(policy) = stage_escape_audit_policy(
+            project_root,
+            &zfb_types::first_party_root_for(project_root),
+            client_stage_root,
+        ) {
+            esbuild_cfg = esbuild_cfg.with_stage_audit(policy);
+        }
+    }
     let client_alias_entries = preprocess_stage
         .as_ref()
         .map(|stage| {
@@ -4869,6 +4973,20 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    // Issue #1707: arm the guard (b) stage-escape audit for the client-script
+    // stage when it widened past project_root (a pnpm-workspace build). Same
+    // shape as the islands shadow — `stage.root` is the staged-input boundary;
+    // esbuild's cwd (`bundle_working_dir`) nested below it is what #1705 audits
+    // metafile keys against.
+    if let Some(client_stage_root) = preprocess_stage.as_ref().map(|stage| stage.root.as_path()) {
+        if let Some(policy) = stage_escape_audit_policy(
+            project_root,
+            &zfb_types::first_party_root_for(project_root),
+            client_stage_root,
+        ) {
+            esbuild_cfg = esbuild_cfg.with_stage_audit(policy);
+        }
+    }
     let client_alias_entries = preprocess_stage
         .as_ref()
         .map(|stage| {
