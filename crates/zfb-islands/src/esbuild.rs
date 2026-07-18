@@ -4026,10 +4026,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Stage-escape audit policy (#1705): argv gating, metafile naming, and
-    // job-identity propagation. These are pure/no-subprocess tests — the
-    // `[perpetual]` real-esbuild proof of the wiring lives in the
-    // `env-gate: esbuild binary` integration tests (`tests/integration.rs`).
+    // Stage-escape audit policy (#1705): argv gating, metafile allocation,
+    // and job-identity propagation. These are pure/no-subprocess tests —
+    // a real-esbuild end-to-end proof is left for a follow-up confirm pass
+    // (no pinned esbuild binary was available to author/verify one here).
     // -----------------------------------------------------------------------
 
     /// `splitting == false` (per-island / runtime / worker / client-script
