@@ -2471,6 +2471,31 @@ fn materialise_islands_shadow_with_worker_context(
     let root = first_party_root.as_path();
     let paths = IslandsShadowPaths::new(root);
 
+    // Issue #1703, Stage Escape Guards — Guard (a): a bare package-name
+    // import of a first-party workspace sibling resolves through the
+    // wholesale `node_modules` symlink this shadow sets up below straight
+    // to the UNPROCESSED source, silently bypassing whatever `?raw` /
+    // module-worker / `import.meta.glob` rewrite this shadow exists to
+    // stage. `scan_meta.workspace_package_edges_from_islands` is already
+    // scoped to the island-reachable graph (never a server-only import —
+    // it is projected by the same forward walk as
+    // `raw_import_edges_from_islands`), and this function only ever runs
+    // once the caller has determined staging is needed for this closure,
+    // so a project with no glob/raw/worker preprocessing never reaches
+    // this check.
+    if let Some(edge) = scan_meta.workspace_package_edges_from_islands.first() {
+        return Err(anyhow!(
+            "island module {} imports \"{}\" by its workspace-package name, but this island \
+             graph requires `?raw`/module-worker/`import.meta.glob` shadow staging; a \
+             package-name import resolves through the live node_modules symlink to the \
+             unprocessed source and silently bypasses the staged rewrite — use a tsconfig \
+             alias or relative import to reach a workspace sibling; package-name imports of \
+             first-party siblings are not supported once staging is active",
+            edge.importer.display(),
+            edge.specifier
+        ));
+    }
+
     // --- Pre-flight: every glob module must be shadow-expandable. ---------
     // A glob module outside the mirrorable tree (outside project_root, or
     // under node_modules) would be reached through the whole `node_modules`
@@ -3722,6 +3747,26 @@ fn stage_client_script_preprocessing_with_worker_context(
         return Ok(None);
     }
 
+    // Issue #1703, Stage Escape Guards — Guard (a): same escape as the
+    // islands shadow above, on the client-script preprocessing path. `graph`
+    // is already scoped to this closure's client-entry roots (it's the
+    // reachable-modules scan seeded from `entries` alone), so a server-only
+    // workspace-package import never appears here. This check only runs
+    // once the gate above has already established `?raw`/module-worker
+    // staging is active for this closure.
+    if let Some(edge) = graph.workspace_package_edges.first() {
+        return Err(anyhow!(
+            "client-script module {} imports \"{}\" by its workspace-package name, but this \
+             client-script graph requires `?raw`/module-worker preprocessing; a package-name \
+             import resolves through the live node_modules symlink to the unprocessed source \
+             and silently bypasses the staged rewrite — use a tsconfig alias or relative \
+             import to reach a workspace sibling; package-name imports of first-party \
+             siblings are not supported once staging is active",
+            edge.importer.display(),
+            edge.specifier
+        ));
+    }
+
     // Issue #1669/#1674: re-root the client-script preprocessing stage at the
     // workspace first-party boundary, mirroring the islands shadow
     // (`materialise_islands_shadow_with_worker_context`). Without a workspace
@@ -4204,11 +4249,15 @@ fn stage_client_script_preprocessing_with_worker_context(
     // Without a workspace both collapse to the single root-level symlink,
     // byte-identical to the pre-#1674 behavior.
     //
-    // Known limitation (issue #1682, shared with the islands shadow): a sibling
-    // imported through its pnpm PACKAGE NAME resolves through this live
-    // node_modules link to the unprocessed source, bypassing the staged
-    // rewrite. Sibling reach via tsconfig alias / relative path (what #1674
-    // covers) resolves to the staged files instead.
+    // Issue #1682 (shared with the islands shadow): a sibling imported
+    // through its pnpm PACKAGE NAME resolves through this live node_modules
+    // link to the unprocessed source, bypassing the staged rewrite. Sibling
+    // reach via tsconfig alias / relative path (what #1674 covers) resolves
+    // to the staged files instead. Guard (a) (issue #1703, checked earlier
+    // in this function) hard-errors before this symlink is even created
+    // when staging is active and a package-name escape was detected, so by
+    // the time we get here either no such edge exists or staging was never
+    // active for this closure in the first place.
     if let Some(node_modules) = &first_party_node_modules {
         shadow_symlink(node_modules, &root.join("node_modules")).with_context(|| {
             format!(
@@ -9333,6 +9382,7 @@ mod tests {
             ],
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
@@ -9381,6 +9431,59 @@ mod tests {
         assert!(
             std::fs::symlink_metadata(shadow_root.join("components/widgets/a.tsx")).is_ok(),
             "glob target must be present in the shadow"
+        );
+    }
+
+    /// Issue #1703, Stage Escape Guards — Guard (a): once this shadow is
+    /// materialised at all (some other preprocessing need — glob, `?raw`,
+    /// or a module worker — already made staging necessary), any bare
+    /// package-name import of a workspace sibling recorded on `scan_meta`
+    /// must hard-error naming the offending specifier and importer. The
+    /// wholesale `node_modules` symlink this shadow creates below would
+    /// otherwise let the import resolve straight to unprocessed source,
+    /// silently bypassing every rewrite the shadow exists to stage.
+    /// `scan_meta.workspace_package_edges_from_islands` is set directly
+    /// here (rather than produced by a real scan) since production only
+    /// ever calls this function once the caller's own glob/raw/worker gate
+    /// already determined staging is needed — this test exercises Guard
+    /// (a)'s check in isolation.
+    #[test]
+    fn materialise_islands_shadow_hard_errors_on_workspace_package_edge() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("components")).unwrap();
+        let island_src = project_root.join("components/gallery.tsx");
+        std::fs::write(
+            &island_src,
+            "\"use client\";\nexport function Gallery() { return null; }\n",
+        )
+        .unwrap();
+
+        let islands = vec![zfb_islands::Island::new("Gallery", island_src.clone())];
+        let scan_meta = zfb_islands::ScanMeta {
+            uses_client_router: false,
+            near_miss_candidates: 0,
+            glob_reachable_from_islands: Vec::new(),
+            island_reachable_modules: vec![island_src.clone()],
+            raw_import_edges_from_islands: Vec::new(),
+            module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: vec![zfb_islands::WorkspacePackageImportEdge {
+                importer: island_src.clone(),
+                specifier: "@acme/shared".to_string(),
+                package_dir: project_root.join("node_modules/@acme/shared"),
+            }],
+        };
+
+        let error = materialise_islands_shadow(project_root, &islands, &scan_meta).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/shared"), "{message}");
+        assert!(
+            message.contains(island_src.display().to_string().as_str()),
+            "{message}"
+        );
+        assert!(
+            message.contains("not supported once staging is active"),
+            "{message}"
         );
     }
 
@@ -11341,6 +11444,99 @@ mod tests {
         assert!(error.contains("unsupported import query"), "{error}");
     }
 
+    // ---- Issue #1703, Stage Escape Guards — Guard (a): a bare
+    // package-name import of a workspace sibling. --------------------------
+
+    /// Set up `<root>/node_modules/@acme/shared` as a pnpm-workspace-style
+    /// symlink into `<root>/workspace/shared` (a real directory outside
+    /// `node_modules`), mirroring the fixture
+    /// `pnpm_workspace_consumer_fixture_yields_workspace_package_islands`
+    /// sets up at install time in `crates/zfb-islands/tests/integration.rs`
+    /// — enough for `FsResolver`'s bare-specifier probe to resolve
+    /// `@acme/shared` as a genuine workspace package (symlink whose
+    /// canonical target carries no `node_modules` path segment).
+    #[cfg(unix)]
+    fn link_workspace_package(root: &Path) {
+        let pkg = root.join("workspace/shared");
+        std::fs::create_dir_all(pkg.join("src")).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"@acme/shared","source":"src/index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(pkg.join("src/index.ts"), "export const helper = 1;\n").unwrap();
+        let scope_dir = root.join("node_modules/@acme");
+        std::fs::create_dir_all(&scope_dir).unwrap();
+        std::os::unix::fs::symlink(&pkg, scope_dir.join("shared")).unwrap();
+    }
+
+    /// Acceptance criterion (issue #1703): a package-name import of a
+    /// workspace sibling with NO `?raw`/module-worker preprocessing active
+    /// for the closure keeps its historical behaviour unchanged — the
+    /// existing fast path returns `Ok(None)` before Guard (a)'s check ever
+    /// runs, so nothing is staged and the plain `node_modules` symlink an
+    /// unshadowed build already relies on stays the supported path.
+    #[cfg(unix)]
+    #[test]
+    fn client_script_bare_workspace_package_import_without_raw_stays_supported() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        link_workspace_package(root);
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        let entry = root.join("pages/widget.client.ts");
+        std::fs::write(
+            &entry,
+            "import { helper } from '@acme/shared';\nconsole.log(helper);\n",
+        )
+        .unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        assert!(stage_client_script_preprocessing(root, &entries)
+            .unwrap()
+            .is_none());
+    }
+
+    /// Acceptance criterion (issue #1703): the same package-name import,
+    /// but this closure ALSO needs `?raw` preprocessing — so the stage IS
+    /// materialised, and the wholesale `node_modules` symlink it creates
+    /// would otherwise let `@acme/shared` resolve straight to unprocessed
+    /// source, silently bypassing the staged `?raw` rewrite. Guard (a) must
+    /// hard-error naming the offending specifier before any stage is
+    /// written to disk.
+    #[cfg(unix)]
+    #[test]
+    fn client_script_bare_workspace_package_import_hard_errors_once_raw_staging_is_active() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        link_workspace_package(root);
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let entry = root.join("pages/widget.client.ts");
+        std::fs::write(
+            &entry,
+            "import { helper } from '@acme/shared';\n\
+             import text from '../src/message.txt?raw';\n\
+             console.log(helper, text);\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/message.txt"), "hello").unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        let error = stage_client_script_preprocessing(root, &entries).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/shared"), "{message}");
+        assert!(
+            message.contains("not supported once staging is active"),
+            "{message}"
+        );
+    }
+
     // ---- Issue #1674: workspace-first-party re-rooting of the client stage. --
 
     fn write_reroot_ws_file(root: &Path, rel: &str, body: &str) -> PathBuf {
@@ -11775,6 +11971,7 @@ mod tests {
             ],
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
@@ -12037,6 +12234,7 @@ mod tests {
             island_reachable_modules: island_reachable,
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
         (islands, scan_meta)
     }
@@ -12121,6 +12319,7 @@ mod tests {
             island_reachable_modules: vec![island_src, glob_src],
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(&project_root, &islands, &scan_meta)

@@ -11,10 +11,19 @@ The on-disk layout mirrors what pnpm produces in a real consumer:
 - `workspace/zfb-blog-islands/` — the workspace package itself
   (`package.json`, `src/index.tsx`). Lives outside `node_modules/` so
   the `node_modules/<pkg>` entry can be a symlink to it.
-- `node_modules/@takazudo/zfb-blog-islands` — created at test runtime
-  as a symlink to `../../workspace/zfb-blog-islands`. Checked-in
-  symlinks are awkward across OSes and git settings, so the
-  integration test wires the symlink up itself before scanning.
+- `workspace/zfb-blog-shared/` — a SECOND workspace sibling
+  (`package.json`, `src/index.ts`) that `zfb-blog-islands/src/index.tsx`
+  itself imports by its bare package name (issue #1703, Guard (a)
+  fixture extension). This is the shape Guard (a) detects: a bare
+  package-name import reached from INSIDE an island, as opposed to the
+  page-level import of `zfb-blog-islands` above (which is the ordinary,
+  fully-supported "consume a workspace package as your islands source"
+  pattern and does not trip the guard).
+- `node_modules/@takazudo/zfb-blog-islands` and
+  `node_modules/@takazudo/zfb-blog-shared` — created at test runtime as
+  symlinks to their respective `../../workspace/<pkg>` directories.
+  Checked-in symlinks are awkward across OSes and git settings, so the
+  integration test wires the symlinks up itself before scanning.
 
 The scanner must:
 
