@@ -1613,7 +1613,7 @@ fn stable_virtual_module_source(source: &str, project_root: &Path) -> String {
 ///
 /// Bare packages and paths outside both roots stay untouched, so only the
 /// live-project/live-workspace escape hatch is closed.
-pub(crate) fn remap_virtual_module_project_imports_to_shadow(
+pub fn remap_virtual_module_project_imports_to_shadow(
     source: &str,
     project_root: &Path,
     first_party_root: &Path,

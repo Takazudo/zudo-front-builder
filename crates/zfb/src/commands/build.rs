@@ -1539,6 +1539,42 @@ fn remap_project_plugin_aliases_to_shadow(
         .collect()
 }
 
+/// Client-preprocess analog of the `zfb-build` bundler's virtual-module remap
+/// (issue #1701, closing the gap #1699/#1700 left in this parallel flow): a
+/// registered virtual module whose source absolute-imports a workspace-sibling
+/// file must point esbuild at the sibling's STAGED copy under the
+/// client-preprocess shadow (`stage_root`), not the live first-party tree.
+/// Without this, the client-script esbuild bundles the unprocessed live
+/// sibling and its `?raw` / `import.meta.glob` / nested-worker macros reach
+/// esbuild literally, even though the sibling closure above already stages an
+/// expanded copy. Mirrors `remap_project_plugin_aliases_to_shadow` for the
+/// virtual-module side, reusing the exact
+/// `remap_virtual_module_project_imports_to_shadow` `run_esbuild` applies so
+/// the two bundling flows stay consistent — the stage root plays the role of
+/// the bundler's work-mirror root. Bare/relative imports and paths outside the
+/// first-party root are left untouched by the underlying remap.
+fn remap_project_plugin_virtual_modules_to_shadow(
+    project_root: &Path,
+    stage_root: &Path,
+    virtual_modules: &[(String, String)],
+) -> Vec<(String, String)> {
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    virtual_modules
+        .iter()
+        .map(|(specifier, source)| {
+            (
+                specifier.clone(),
+                zfb_build::remap_virtual_module_project_imports_to_shadow(
+                    source,
+                    project_root,
+                    &first_party_root,
+                    stage_root,
+                ),
+            )
+        })
+        .collect()
+}
+
 /// Outcome of attempting to build the islands shadow for a project whose
 /// scan reported `import.meta.glob` reachable from an island.
 enum IslandsShadowOutcome {
@@ -4445,8 +4481,18 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     if !client_alias_entries.is_empty() {
         esbuild_cfg = esbuild_cfg.with_alias_entries(client_alias_entries);
     }
-    if !plugin_config.virtual_modules.is_empty() {
-        esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
+    let client_virtual_modules = preprocess_stage
+        .as_ref()
+        .map(|stage| {
+            remap_project_plugin_virtual_modules_to_shadow(
+                project_root,
+                &stage.root,
+                &plugin_config.virtual_modules,
+            )
+        })
+        .unwrap_or_else(|| plugin_config.virtual_modules.clone());
+    if !client_virtual_modules.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_virtual_modules(client_virtual_modules);
     }
     if let Some(boundary) = client_tsconfig_boundary {
         esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
@@ -4767,8 +4813,18 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     if !client_alias_entries.is_empty() {
         esbuild_cfg = esbuild_cfg.with_alias_entries(client_alias_entries);
     }
-    if !plugin_config.virtual_modules.is_empty() {
-        esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
+    let client_virtual_modules = preprocess_stage
+        .as_ref()
+        .map(|stage| {
+            remap_project_plugin_virtual_modules_to_shadow(
+                project_root,
+                &stage.root,
+                &plugin_config.virtual_modules,
+            )
+        })
+        .unwrap_or_else(|| plugin_config.virtual_modules.clone());
+    if !client_virtual_modules.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_virtual_modules(client_virtual_modules);
     }
     if let Some(boundary) = client_tsconfig_boundary {
         esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);

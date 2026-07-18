@@ -1032,15 +1032,21 @@ const REROOT_WORKER_RAW: &str = "ZFB_REROOT_SIBLING_WORKER_RAW_PAYLOAD";
 // Issue #1701 (Wave 2 confirm pass): the registered virtual module
 // `virtual:reroot-vmodule-host` (`sub-packages/reroot-host/preset.mjs`)
 // absolute-imports `sub-packages/vmodule-sibling/vmodule-host.ts`, which
-// itself exercises all three sibling rewrite kinds — `?raw`, an eager
-// `import.meta.glob`, and a nested module worker — so the workspace tier of
-// `remap_virtual_module_project_imports_to_shadow` (#1699/#1700) is proven
-// to carry every preprocessing pass through a virtual-module edge, not just
-// the plain relative sibling `?raw` the rest of this test already covers.
+// exercises the sibling rewrite kinds the CLIENT-script pipeline supports —
+// a `?raw` import and a nested module worker — so the workspace tier of
+// `remap_virtual_module_project_imports_to_shadow` (#1699/#1700/#1701) is
+// proven to carry those preprocessing passes through a virtual-module edge,
+// not just the plain relative sibling `?raw` the rest of this test covers.
+//
+// `import.meta.glob` is deliberately absent from that sibling: client scripts
+// do not expand `import.meta.glob` at all (issue #1404), so a glob reached
+// through this CLIENT virtual-module edge would ship unexpanded regardless of
+// the remap — that boundary is #1404's, not this epic's. The
+// `assert_contains_none` calls below still guard that no unexpanded
+// `import.meta.glob(` leaks into a client bundle. Glob expansion for a
+// virtual-module sibling is an SSR/bundler-path concern (`run_esbuild`).
 const REROOT_VMODULE_ENTRY_MARKER: &str = "ZFB_VMODULE_SIBLING_ENTRY";
 const REROOT_VMODULE_RAW: &str = "ZFB_VMODULE_SIBLING_RAW_PAYLOAD";
-const REROOT_VMODULE_GLOB_ONE: &str = "ZFB_VMODULE_GLOB_ITEM_ONE";
-const REROOT_VMODULE_GLOB_TWO: &str = "ZFB_VMODULE_GLOB_ITEM_TWO";
 const REROOT_VMODULE_WORKER_MARKER: &str = "ZFB_VMODULE_WORKER_ENTRY";
 const REROOT_VMODULE_WORKER_ORIGINAL_URL: &str = "./vmodule-worker.ts";
 
@@ -1076,8 +1082,6 @@ fn run_and_assert_reroot_host_production(host_root: &Path, esbuild: &Path) {
             REROOT_ENTRY_RAW,
             REROOT_VMODULE_ENTRY_MARKER,
             REROOT_VMODULE_RAW,
-            REROOT_VMODULE_GLOB_ONE,
-            REROOT_VMODULE_GLOB_TWO,
         ],
         "reroot host production client entry",
     );
@@ -1148,8 +1152,6 @@ async fn run_and_assert_reroot_host_development(host_root: &Path, esbuild: &Path
             REROOT_ENTRY_RAW,
             REROOT_VMODULE_ENTRY_MARKER,
             REROOT_VMODULE_RAW,
-            REROOT_VMODULE_GLOB_ONE,
-            REROOT_VMODULE_GLOB_TWO,
         ],
         "reroot host development client entry",
     );
