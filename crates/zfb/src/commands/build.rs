@@ -9474,7 +9474,12 @@ mod tests {
             }],
         };
 
-        let error = materialise_islands_shadow(project_root, &islands, &scan_meta).unwrap_err();
+        // `.err().expect(...)` rather than `.unwrap_err()`: the Ok type
+        // `IslandsShadowOutcome` is not `Debug`, which `Result::unwrap_err`
+        // would require.
+        let error = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .err()
+            .expect("Guard (a) must reject the workspace-package edge once staging is active");
         let message = format!("{error:#}");
         assert!(message.contains("@acme/shared"), "{message}");
         assert!(
