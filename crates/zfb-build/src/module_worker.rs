@@ -1613,11 +1613,60 @@ fn stable_virtual_module_source(source: &str, project_root: &Path) -> String {
 ///
 /// Bare packages and paths outside both roots stay untouched, so only the
 /// live-project/live-workspace escape hatch is closed.
+///
+/// This full-both-tiers form is the SSR bundler's (`run_esbuild`) and keeps
+/// the pre-#1700 project-tier behaviour. Callers that newly gain a remap and
+/// only need the workspace tier (the command-layer client-preprocess/islands
+/// flows, issue #1701) should use
+/// [`remap_virtual_module_workspace_sibling_imports_to_shadow`] instead, so
+/// they do not inherit the project tier's `<project>/pruned-dir/x.ts` →
+/// `"./pruned-dir/x.ts"` rewrite for a directory their stage prunes.
 pub fn remap_virtual_module_project_imports_to_shadow(
     source: &str,
     project_root: &Path,
     first_party_root: &Path,
     work_root: &Path,
+) -> String {
+    remap_virtual_module_imports_to_shadow_inner(
+        source,
+        project_root,
+        first_party_root,
+        work_root,
+        true,
+    )
+}
+
+/// Workspace-tier-only variant of
+/// [`remap_virtual_module_project_imports_to_shadow`] (issue #1701): remaps
+/// ONLY the workspace-sibling absolute imports (under `first_party_root`,
+/// outside `project_root`) to their staged `work_root` copy, and leaves
+/// under-`project_root` absolute imports untouched. Used by the command-layer
+/// client-preprocess and islands bundlers, whose stage roots prune hidden /
+/// `dist` / `target` dirs — applying the project tier there would rewrite an
+/// under-project absolute import into a `"./rel"` that resolves to an
+/// unstaged (pruned) path. The epic (#1699 "Workspace tier") is scoped to the
+/// sibling tier, so those flows adopt exactly that and nothing more.
+pub fn remap_virtual_module_workspace_sibling_imports_to_shadow(
+    source: &str,
+    project_root: &Path,
+    first_party_root: &Path,
+    work_root: &Path,
+) -> String {
+    remap_virtual_module_imports_to_shadow_inner(
+        source,
+        project_root,
+        first_party_root,
+        work_root,
+        false,
+    )
+}
+
+fn remap_virtual_module_imports_to_shadow_inner(
+    source: &str,
+    project_root: &Path,
+    first_party_root: &Path,
+    work_root: &Path,
+    include_project_tier: bool,
 ) -> String {
     let virtual_path = project_root.join(".zfb-worker-virtual-module.mjs");
     let Ok((module, base, unresolved_ctxt)) = parse_module(&virtual_path, source) else {
@@ -1627,15 +1676,20 @@ pub fn remap_virtual_module_project_imports_to_shadow(
         .into_iter()
         .filter(|occurrence| Path::new(&occurrence.specifier).is_absolute())
         .filter_map(|occurrence| {
-            let remapped = stable_project_virtual_specifier(&occurrence.specifier, project_root)
-                .or_else(|| {
-                    workspace_sibling_virtual_specifier(
-                        &occurrence.specifier,
-                        project_root,
-                        first_party_root,
-                        work_root,
-                    )
-                })?;
+            let sibling = || {
+                workspace_sibling_virtual_specifier(
+                    &occurrence.specifier,
+                    project_root,
+                    first_party_root,
+                    work_root,
+                )
+            };
+            let remapped = if include_project_tier {
+                stable_project_virtual_specifier(&occurrence.specifier, project_root)
+                    .or_else(sibling)
+            } else {
+                sibling()
+            }?;
             let replacement = serde_json::to_string(&remapped).ok()?;
             Some((occurrence.lo, occurrence.hi, replacement))
         })

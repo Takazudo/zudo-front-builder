@@ -1539,20 +1539,25 @@ fn remap_project_plugin_aliases_to_shadow(
         .collect()
 }
 
-/// Client-preprocess analog of the `zfb-build` bundler's virtual-module remap
-/// (issue #1701, closing the gap #1699/#1700 left in this parallel flow): a
+/// Command-layer analog of the `zfb-build` bundler's virtual-module remap
+/// (issue #1701, closing the gap #1699/#1700 left in these parallel flows): a
 /// registered virtual module whose source absolute-imports a workspace-sibling
-/// file must point esbuild at the sibling's STAGED copy under the
-/// client-preprocess shadow (`stage_root`), not the live first-party tree.
-/// Without this, the client-script esbuild bundles the unprocessed live
-/// sibling and its `?raw` / `import.meta.glob` / nested-worker macros reach
-/// esbuild literally, even though the sibling closure above already stages an
-/// expanded copy. Mirrors `remap_project_plugin_aliases_to_shadow` for the
-/// virtual-module side, reusing the exact
-/// `remap_virtual_module_project_imports_to_shadow` `run_esbuild` applies so
-/// the two bundling flows stay consistent — the stage root plays the role of
-/// the bundler's work-mirror root. Bare/relative imports and paths outside the
-/// first-party root are left untouched by the underlying remap.
+/// file must point esbuild at the sibling's STAGED copy under the shadow
+/// (`stage_root`), not the live first-party tree. Without this, the esbuild
+/// pass bundles the unprocessed live sibling and its `?raw` / nested-worker
+/// macros reach esbuild literally, even though the sibling closure above
+/// already stages an expanded copy. Mirrors `remap_project_plugin_aliases_to_shadow`
+/// for the virtual-module side. Used by all three command-layer esbuild flows:
+/// client-script preprocess (production build + dev) and the islands shadow.
+///
+/// Uses the WORKSPACE-SIBLING-ONLY remap variant (not the SSR bundler's
+/// both-tiers form): these flows' stage roots prune hidden / `dist` / `target`
+/// dirs, so the project tier's `<project>/pruned/x.ts` → `"./pruned/x.ts"`
+/// rewrite would resolve to an unstaged path. The epic is scoped to the
+/// workspace tier, so that is exactly what these flows adopt; under-project
+/// absolute virtual imports keep their prior (unremapped) behaviour.
+/// Bare/relative imports and paths outside the first-party root are left
+/// untouched by the underlying remap.
 fn remap_project_plugin_virtual_modules_to_shadow(
     project_root: &Path,
     stage_root: &Path,
@@ -1564,7 +1569,7 @@ fn remap_project_plugin_virtual_modules_to_shadow(
         .map(|(specifier, source)| {
             (
                 specifier.clone(),
-                zfb_build::remap_virtual_module_project_imports_to_shadow(
+                zfb_build::remap_virtual_module_workspace_sibling_imports_to_shadow(
                     source,
                     project_root,
                     &first_party_root,
@@ -3427,8 +3432,23 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     if !islands_alias_entries.is_empty() {
         esbuild_cfg = esbuild_cfg.with_alias_entries(islands_alias_entries);
     }
-    if !plugin_config.virtual_modules.is_empty() {
-        esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
+    // Issue #1701: the islands bundler is the THIRD parallel esbuild flow (with
+    // the SSR bundler and the client-script preprocess); like the client sites
+    // it must point a virtual module's absolute workspace-sibling import at the
+    // sibling's staged copy in the islands shadow, not the live tree. Aliases
+    // were already remapped above; the virtual-module sources were not.
+    let islands_virtual_modules = _islands_shadow
+        .as_ref()
+        .map(|shadow| {
+            remap_project_plugin_virtual_modules_to_shadow(
+                project_root,
+                shadow._tempdir.path(),
+                &plugin_config.virtual_modules,
+            )
+        })
+        .unwrap_or_else(|| plugin_config.virtual_modules.clone());
+    if !islands_virtual_modules.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_virtual_modules(islands_virtual_modules);
     }
 
     let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
