@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use zfb_islands::{
     bundle_link_href, manifest_json, module_worker_filename, scan_islands, scan_islands_with_meta,
     BundleConfig, BundleOutput, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
-    FsResolver, Island, Manifest, ModuleWorkerBundleEntry, NativeRustBundler,
+    FsResolver, Island, Manifest, ModuleWorkerBundleEntry, NativeRustBundler, StageAuditPolicy,
     WorkspacePackageImportEdge,
 };
 
@@ -384,6 +384,96 @@ fn stage_minimal_node_modules(root: &Path) {
         "export function h() {}\nexport function hydrate() {}\nexport function render() {}\n",
     )
     .unwrap();
+}
+
+/// Issue #1708, Stage Escape Guards confirm pass — Guard (b) real-esbuild
+/// proof. Guard (a) (`crates/zfb/src/commands/build.rs`, issue #1703) is a
+/// scan-time pre-flight check one layer ABOVE this crate — it never runs
+/// here, so no test-only bypass is needed. This test drives the bundler
+/// directly (the "lower-level bundler invocation" issue #1708 calls for):
+/// a component bare-imports a workspace-sibling package through a genuine
+/// `node_modules` symlink (mirroring `link_workspace_package` in
+/// `build.rs` and `pnpm_workspace_consumer_fixture_yields_workspace_package_islands`
+/// above), REAL esbuild resolves it and produces a REAL metafile, and
+/// Guard (b)'s `StageAuditPolicy` audit (issue #1705,
+/// `zfb_build::metafile_deps::audit_metafile_stage_escape`) must reject it.
+/// An (a)-only e2e proves nothing about (b) — both paths must be proven
+/// independently, and this is the (b) half.
+///
+/// Observed shape (verified against the pinned esbuild binary): without
+/// `--preserve-symlinks`, esbuild follows the symlink and records the
+/// input as a `..`-climbing relative path out of `metafile_cwd` (e.g.
+/// `../workspace/shared/index.js`), not a `node_modules/…` key — this is
+/// `audit_metafile_stage_escape`'s documented "case 4" (no staged spelling
+/// was ever produced), not "case 2" (a `node_modules`-shaped key). Both
+/// cases are covered by unit tests in `zfb-build`; this test's job is only
+/// to prove a REAL esbuild run lands in the audited set at all.
+#[cfg(unix)]
+#[test]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
+fn stage_escape_audit_rejects_workspace_package_symlink_escape() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let app_dir = root.path().join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    // The synthesized shared-bundle entry imports `mountIslands` from
+    // `@takazudo/zfb/runtime` and Preact's hydration glue — stage those
+    // the same way `subprocess_bundler_against_real_binary` does.
+    stage_minimal_node_modules(&app_dir);
+
+    // A genuine pnpm-workspace-style sibling package living OUTSIDE
+    // node_modules, symlinked into `app/node_modules/@acme/shared` — the
+    // exact shape pnpm produces on disk.
+    let sibling_pkg = root.path().join("workspace/shared");
+    std::fs::create_dir_all(&sibling_pkg).unwrap();
+    std::fs::write(
+        sibling_pkg.join("package.json"),
+        r#"{"name":"@acme/shared","main":"index.js"}"#,
+    )
+    .unwrap();
+    std::fs::write(sibling_pkg.join("index.js"), "export const helper = 1;\n").unwrap();
+    let scope_dir = app_dir.join("node_modules/@acme");
+    std::fs::create_dir_all(&scope_dir).unwrap();
+    std::os::unix::fs::symlink(&sibling_pkg, scope_dir.join("shared")).unwrap();
+
+    // The component bare-imports the workspace sibling by package name —
+    // exactly the escape Guard (a) exists to reject before staging ever
+    // reaches esbuild.
+    let component = app_dir.join("component.tsx");
+    std::fs::write(
+        &component,
+        "import { helper } from '@acme/shared';\n\
+         export const Counter = () => { console.log(helper); return null; };\n",
+    )
+    .unwrap();
+
+    let policy = StageAuditPolicy {
+        stage_roots: vec![app_dir.clone()],
+        first_party_root: root.path().to_path_buf(),
+    };
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default()
+            .with_working_dir(&app_dir)
+            .with_stage_audit(policy),
+    );
+    let bundle_cfg = BundleConfig::production().with_outdir(app_dir.join("dist"));
+
+    let err = bundler
+        .bundle(&[Island::new("Counter", component)], &bundle_cfg)
+        .expect_err(
+            "guard (b) must reject the real esbuild metafile once it resolved the bare \
+             workspace-package import through the node_modules symlink to live sibling source",
+        );
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("stage-escape audit"),
+        "expected a stage-escape audit failure, got: {message}"
+    );
+    assert!(
+        message.contains("workspace/shared/index.js"),
+        "expected the escaped sibling package's resolved path in the error, got: {message}"
+    );
 }
 
 /// Acceptance (#806): an island with a dynamic `import()` of a local module
