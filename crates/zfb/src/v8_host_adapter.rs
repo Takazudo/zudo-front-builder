@@ -314,6 +314,203 @@ impl ThreadedV8Host {
             thread: Some(thread_handle),
         }))
     }
+
+    /// Dev-only variant of [`Self::new_with_hooks`]. Instead of running the
+    /// bundle at `bundle_path` as the main module, it registers those
+    /// **untouched** bundle bytes under the in-memory inner specifier
+    /// (`file:///zfb/<bundle-basename>`) and runs `wrapper_source` — the tiny
+    /// content-provenance ESM module produced by
+    /// `commands::dev::wrap_dev_bundle_with_content_trace` — as the main
+    /// module. The wrapper imports the inner bundle by that specifier,
+    /// installs the `getCollection()` observer, and re-exports the inner
+    /// worker's `fetch`. The bundle file on disk is never rewritten.
+    ///
+    /// The inner specifier is derived from the bundle basename exactly as the
+    /// wrapper's import specifier is (both use `file:///zfb/<basename>`), which
+    /// is what makes the wrapper's `import` resolve to the registered bytes.
+    pub fn new_with_dev_content_trace_wrapper(
+        bundle_path: &Path,
+        hooks: PluginRegistryHooks,
+        wrapper_source: String,
+    ) -> Result<Box<dyn EmbeddedV8Host>, RendererError> {
+        // Rendezvous channels: same single-in-flight contract as new_with_hooks.
+        let (tx, rx) = mpsc::sync_channel::<HostRequest>(0);
+        let (boot_tx, boot_rx) = mpsc::sync_channel::<Result<(), String>>(0);
+
+        let bundle_path_owned = bundle_path.to_path_buf();
+        let bundle_asset_root = bundle_path_owned
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+
+        let thread_handle = thread::Builder::new()
+            .name("zfb-v8-host".into())
+            .spawn(move || {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        let _ = boot_tx.send(Err(format!("tokio runtime build failed: {e}")));
+                        return;
+                    }
+                };
+
+                rt.block_on(async move {
+                    // Read the UNTOUCHED bundle bytes — esbuild's real output,
+                    // never rewritten by the dev content-trace seam.
+                    let bundle_src = match std::fs::read_to_string(&bundle_path_owned) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ = boot_tx.send(Err(format!(
+                                "could not read bundle {}: {e}",
+                                bundle_path_owned.display()
+                            )));
+                            return;
+                        }
+                    };
+                    let bundle_name = bundle_path_owned
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("bundle.mjs");
+                    let inner_specifier = format!("file:///zfb/{bundle_name}");
+
+                    let loader = BundleModuleLoader::new()
+                        .with_plugin_hooks(hooks)
+                        .with_bundle_asset_root(bundle_asset_root);
+                    // Register the inner bundle BEFORE the loader moves into the
+                    // host, so the wrapper's `import ... from
+                    // "file:///zfb/<basename>"` resolves to these in-memory bytes
+                    // rather than a disk read.
+                    loader.register_module(&inner_specifier, bundle_src);
+                    let mut host = match EmbeddedV8RenderHost::with_loader(loader) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            let _ = boot_tx.send(Err(format!("V8 host init failed: {e}")));
+                            return;
+                        }
+                    };
+                    // Run the wrapper as the main module. `execute_module`
+                    // turns this name into the fixed specifier
+                    // `file:///zfb/__zfb_dev_content_trace_wrapper.mjs`; loading
+                    // it pulls in the registered inner bundle as a dependency,
+                    // and installs the wrapper's default export as the host's
+                    // dispatch target.
+                    use zfb_render::RenderHost as _;
+                    if let Err(e) = host
+                        .execute_module(DEV_CONTENT_TRACE_WRAPPER_MODULE_NAME, &wrapper_source)
+                        .await
+                    {
+                        let console_logs = host.drain_console_logs();
+                        let msg = if console_logs.trim().is_empty() {
+                            format!("bundle load failed: {e}")
+                        } else {
+                            format!(
+                                "bundle load failed: {e}\n\
+                                 worker console output during bundle load:\n{console_logs}"
+                            )
+                        };
+                        let _ = boot_tx.send(Err(msg));
+                        return;
+                    }
+
+                    let _ = boot_tx.send(Ok(()));
+                    drop(boot_tx);
+
+                    // Serve requests one at a time until the channel closes.
+                    serve_v8_host_requests(host, rx).await;
+                });
+            })
+            .map_err(|e| {
+                RendererError::EmbeddedV8(format!("could not spawn V8 host thread: {e}"))
+            })?;
+
+        match boot_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(msg)) => {
+                let _ = thread_handle.join();
+                return Err(RendererError::EmbeddedV8(msg));
+            }
+            Err(_) => {
+                let _ = thread_handle.join();
+                return Err(RendererError::EmbeddedV8(
+                    "V8 host thread exited during boot without signalling".into(),
+                ));
+            }
+        }
+
+        Ok(Box::new(ThreadedV8Host {
+            tx: Some(tx),
+            thread: Some(thread_handle),
+        }))
+    }
+}
+
+/// Basename of the dev content-trace wrapper's synthetic main module. The V8
+/// host's `execute_module` turns this into the fixed specifier
+/// `file:///zfb/__zfb_dev_content_trace_wrapper.mjs`.
+const DEV_CONTENT_TRACE_WRAPPER_MODULE_NAME: &str = "__zfb_dev_content_trace_wrapper.mjs";
+
+/// The V8 host thread's request loop: serve exactly one [`HostRequest`] at a
+/// time off the rendezvous channel until it closes, then return so the thread
+/// exits cleanly.
+///
+/// Extracted so the dev content-trace constructor can reuse it verbatim.
+/// [`ThreadedV8Host::new_with_hooks`] keeps its own inline copy so the
+/// production path stays byte-for-byte frozen.
+async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiver<HostRequest>) {
+    for host_req in rx {
+        let req = match host_req {
+            HostRequest::Dispatch(req) => req,
+            HostRequest::DrainConsoleLogs { reply } => {
+                // Runs on the isolate thread between dispatches — the
+                // rendezvous channel guarantees no render request is in
+                // flight (issue #700's re-entrancy rule).
+                let _ = reply.send(host.drain_console_logs());
+                continue;
+            }
+        };
+        let body_opt = if req.body.is_empty() {
+            None
+        } else {
+            Some(req.body)
+        };
+        // Issue #367: lower-case headers on the way into the V8 host so the
+        // JS `Headers` object sees a canonical shape regardless of the axum
+        // casing the caller passed in.
+        let mut headers = std::collections::BTreeMap::new();
+        for (k, v) in req.headers {
+            headers.insert(k.to_ascii_lowercase(), v);
+        }
+        let http_req = HttpRequestLike {
+            url: format!("http://localhost{}", req.url_path),
+            method: req.method,
+            headers,
+            body: body_opt,
+        };
+        let result = host
+            .dispatch_fetch(http_req)
+            .await
+            .map(|resp| {
+                let content_type = resp
+                    .headers
+                    .get("content-type")
+                    .cloned()
+                    .unwrap_or_default();
+                HttpResponseLike {
+                    status: resp.status,
+                    content_type,
+                    headers: resp.headers.into_iter().collect(),
+                    body: resp.body,
+                }
+            })
+            .map_err(|e| RendererError::EmbeddedV8(e.to_string()));
+        // Best-effort: the caller may have already timed out; ignore send errors.
+        let _ = req.reply.send(result);
+    }
+    // rx is closed (ThreadedV8Host was dropped); exit cleanly.
 }
 
 impl EmbeddedV8Host for ThreadedV8Host {
@@ -415,6 +612,27 @@ pub fn make_v8_host_factory_with_hooks(
 ) -> zfb_build::renderer::EmbeddedV8HostFactory {
     std::sync::Arc::new(move |bundle_path: &Path| {
         ThreadedV8Host::new_with_hooks(bundle_path, hooks.clone())
+    })
+}
+
+/// Dev-only factory: same plugin-hooks wiring as
+/// [`make_v8_host_factory_with_hooks`], but the constructed host registers the
+/// untouched bundle bytes under the inner specifier and runs `wrapper_source`
+/// — the content-provenance wrapper produced by
+/// `commands::dev::wrap_dev_bundle_with_content_trace` — as its main module
+/// (see [`ThreadedV8Host::new_with_dev_content_trace_wrapper`]). The wrapper
+/// source is cloned per host construction so a dev refresh that rebuilds the
+/// host reuses the same wrapper.
+pub fn make_v8_host_factory_with_dev_content_trace_wrapper(
+    hooks: PluginRegistryHooks,
+    wrapper_source: String,
+) -> zfb_build::renderer::EmbeddedV8HostFactory {
+    std::sync::Arc::new(move |bundle_path: &Path| {
+        ThreadedV8Host::new_with_dev_content_trace_wrapper(
+            bundle_path,
+            hooks.clone(),
+            wrapper_source.clone(),
+        )
     })
 }
 
@@ -559,6 +777,92 @@ mod tests {
             msg.contains("[log] pre-crash detail"),
             "console output from the failed bundle load must be embedded \
              in the boot error: {msg}"
+        );
+    }
+
+    /// Real adapter integration proof for the dev content-trace wrapper seam
+    /// (issue #1713). Boots the factory with the two-module setup — an
+    /// UNTOUCHED inner bundle registered under `file:///zfb/bundle.mjs` plus a
+    /// wrapper run as the main module that imports it by that specifier — then
+    /// dispatches through the live host. Source-string assertions can't prove
+    /// this: only executing the artifact shows the inner module registered,
+    /// the wrapper's `import` resolved to it, and the wrapper's default export
+    /// installed as the dispatch target. Finally it confirms the on-disk
+    /// bundle is byte-identical after boot + dispatch (never rewritten).
+    #[test]
+    fn dev_content_trace_wrapper_boots_registers_inner_and_leaves_bundle_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        // Inner bundle: a workerd-shape default export. Written once, never
+        // rewritten by the wrapper seam.
+        let inner_bytes = concat!(
+            "const worker = {\n",
+            "  fetch(request) {\n",
+            "    return new Response(\"inner-ok:\" + new URL(request.url).pathname, { status: 201 });\n",
+            "  },\n",
+            "};\n",
+            "export { worker as default };\n",
+        );
+        let bundle_path = dir.path().join("bundle.mjs");
+        std::fs::write(&bundle_path, inner_bytes).expect("write inner bundle");
+        let original = std::fs::read(&bundle_path).expect("read inner bundle");
+
+        // Wrapper: imports the inner bundle by the SAME specifier the adapter
+        // registers it under, answers a private trace endpoint, and otherwise
+        // delegates to the inner worker. This mirrors the real wrapper's
+        // import + default-export + trace-endpoint shape.
+        let wrapper_source = concat!(
+            "import __zfb_inner_worker from \"file:///zfb/bundle.mjs\";\n",
+            "const __zfb_trace_endpoint = \"/__zfb_content_trace\";\n",
+            "export default {\n",
+            "  async fetch(request) {\n",
+            "    const pathname = new URL(request.url).pathname;\n",
+            "    if (pathname === __zfb_trace_endpoint) {\n",
+            "      return new Response(JSON.stringify({ ready: true }), {\n",
+            "        status: 200,\n",
+            "        headers: { \"Content-Type\": \"application/json\" },\n",
+            "      });\n",
+            "    }\n",
+            "    return __zfb_inner_worker.fetch(request);\n",
+            "  },\n",
+            "};\n",
+        )
+        .to_string();
+
+        let factory = make_v8_host_factory_with_dev_content_trace_wrapper(
+            PluginRegistryHooks::default(),
+            wrapper_source,
+        );
+        let mut host = factory(&bundle_path).expect("dev content-trace host boot");
+
+        // Normal path: reaches the wrapper's default export, which delegates
+        // to the imported inner worker — proving registration + import +
+        // default-export installation all threaded through.
+        let inner_resp = host.dispatch_fetch("/hello").expect("dispatch normal path");
+        assert_eq!(inner_resp.status, 201, "inner worker status must survive");
+        assert_eq!(
+            inner_resp.body, b"inner-ok:/hello",
+            "the wrapper must delegate unmatched paths to the inner worker"
+        );
+
+        // Trace endpoint: answered by the wrapper itself — proving the wrapper
+        // (not the inner bundle) is the installed dispatch target.
+        let trace_resp = host
+            .dispatch_fetch("/__zfb_content_trace")
+            .expect("dispatch trace endpoint");
+        assert_eq!(trace_resp.status, 200, "wrapper trace endpoint must answer");
+        assert!(
+            String::from_utf8_lossy(&trace_resp.body).contains("\"ready\":true"),
+            "trace endpoint body must come from the wrapper: {:?}",
+            trace_resp.body
+        );
+
+        // The bundle file on disk must be byte-identical — the wrapper is a
+        // separate in-memory module, never spliced into the bundle.
+        drop(host);
+        let after = std::fs::read(&bundle_path).expect("re-read inner bundle");
+        assert_eq!(
+            after, original,
+            "the on-disk bundle must stay byte-identical (never rewritten)"
         );
     }
 }
