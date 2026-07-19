@@ -69,7 +69,7 @@ use zfb_islands::{
     build_production_client_scripts_with_workers, build_production_islands_asset,
     discover_client_scripts, scan_islands_with_meta, scan_reachable_modules_with_meta,
     BundleConfig, ClientScriptWorkerEntry, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
-    FrameworkKind, FsResolver,
+    FrameworkKind, FsResolver, StageAuditPolicy,
 };
 use zfb_router::Router;
 
@@ -705,9 +705,14 @@ impl BuildRunner for DefaultRunner {
         // bytes. Either slot independently returns `None` when the
         // project doesn't exercise it (Tailwind disabled, no
         // `"use client"` components, etc.).
-        let css =
-            build_default_css_payload(project_root, outdir, config, package_route_entrypoints)
-                .context("CSS emitter (DefaultRunner) failed")?;
+        let css = build_default_css_payload(
+            project_root,
+            outdir,
+            config,
+            package_route_entrypoints,
+            &self.islands_plugin_config.alias_entries,
+        )
+        .context("CSS emitter (DefaultRunner) failed")?;
         let (islands, registered_marker_names) = build_default_islands_payload_with_bundle_options(
             project_root,
             user_pages_dir,
@@ -776,6 +781,12 @@ pub(crate) fn build_default_css_payload(
     // dirs) are scanned and not silently pruned from the emitted stylesheet.
     // Empty on the no-package-route path (byte-identical parity).
     package_route_entrypoints: &[PathBuf],
+    // Sibling Mirror (issue #1691/#1696): tsconfig/plugin alias targets
+    // (claim source b), forwarded to `discover_css_source_files` so a
+    // claimed workspace-sibling package's own source files join the CSS
+    // Modules scan. Empty on the no-workspace / no-alias path (byte-identical
+    // parity).
+    plugin_alias_entries: &[(String, String)],
 ) -> Result<Option<AssetEmitterPayload>> {
     // `tailwind: { enabled: false }` disables only the Tailwind layers,
     // not the authored-CSS pipeline. Route to the Tailwind-free path so
@@ -791,10 +802,15 @@ pub(crate) fn build_default_css_payload(
 
     let tailwind_enabled = config.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
     if !tailwind_enabled {
-        return build_authored_only_css_payload(project_root, outdir, framework_css);
+        return build_authored_only_css_payload(
+            project_root,
+            outdir,
+            framework_css,
+            plugin_alias_entries,
+        );
     }
 
-    let sources = discover_css_source_files(project_root);
+    let sources = discover_css_source_files(project_root, plugin_alias_entries);
     if sources.is_empty() {
         // No scannable surface — Tailwind would emit only its
         // preflight + reset bytes, which still yields a non-empty
@@ -983,9 +999,17 @@ fn run_css_emitter<E: CssEngine>(
         // class-map writer when `class_map_dir` is `Some`. Pin it to
         // the configured outdir for forward-compat.
         output_root: outdir.to_path_buf(),
-        // Hash root shared with `compute_css_module_class_maps` via
-        // `CssModulesConfig::for_project_root` (issue #825).
-        modules_config: zfb_css::modules::CssModulesConfig::for_project_root(project_root),
+        // Hash root shared with `compute_css_module_class_maps` via the
+        // workspace-aware `for_project_and_first_party_roots` constructor
+        // (issues #825/#1694) — a claimed sibling `.module.css` (issue
+        // #1696) hashes off its `first_party_root`-relative path here too,
+        // so its scoped `[hash]` prefix agrees with the class map.
+        // `first_party_root == project_root` outside a workspace, so this
+        // is byte-identical to the old `for_project_root` call there.
+        modules_config: zfb_css::modules::CssModulesConfig::for_project_and_first_party_roots(
+            project_root,
+            &zfb_types::first_party_root_for(project_root),
+        ),
         // zfb-hi.css default token stylesheet, class-mode only (#1533).
         // Computed once by the caller (`build_default_css_payload`) and
         // threaded down as a plain `Option<String>`, so both the Tailwind
@@ -1031,6 +1055,7 @@ fn build_authored_only_css_payload(
     project_root: &Path,
     outdir: &Path,
     framework_css: Option<String>,
+    plugin_alias_entries: &[(String, String)],
 ) -> Result<Option<AssetEmitterPayload>> {
     let authored_css = match resolve_input_global_css(project_root) {
         Some(path) => {
@@ -1047,7 +1072,7 @@ fn build_authored_only_css_payload(
         None => String::new(),
     };
 
-    let sources = discover_css_source_files(project_root);
+    let sources = discover_css_source_files(project_root, plugin_alias_entries);
     let engine = AuthoredCssEngine::new(authored_css);
 
     let payload = run_css_emitter(engine, project_root, outdir, sources, framework_css)?;
@@ -1141,6 +1166,37 @@ pub(crate) fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Infra directories skipped when wholesale-walking a claimed sibling
+/// mirror root for CSS-scan sources (issue #1696). Mirrors
+/// `zfb_build::bundler`'s own `MIRROR_SKIP_DIRS` used to wholesale-mirror
+/// the same root into the SSR shadow, so the CSS-side walk and the
+/// bundler's real mirror agree on what counts as infra vs. source.
+const CSS_SIBLING_MIRROR_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "dist",
+    ".git",
+    "target",
+    ".turbo",
+    ".next",
+    ".vercel",
+];
+
+/// Push `path` onto `out` iff its extension (case-insensitively) is one of
+/// `extensions`. Shared by both walk loops in [`discover_css_source_files`]
+/// so the project-root walk (`walkdir`) and the sibling-mirror-root walk
+/// (`ignore`) apply the identical filter.
+fn push_if_matching_extension(path: PathBuf, extensions: &[&str], out: &mut Vec<PathBuf>) {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    if let Some(ext) = ext {
+        if extensions.contains(&ext.as_str()) {
+            out.push(path);
+        }
+    }
+}
+
 /// Walk the conventional CSS-content roots (`pages/`, `components/`,
 /// `layouts/`, `content/`) and return every TSX/TS/JSX/JS/MDX/MD
 /// source file beneath them. Used as the `sources` field for the
@@ -1152,7 +1208,24 @@ pub(crate) fn resolve_input_global_css(project_root: &Path) -> Option<PathBuf> {
 /// Order is filesystem walk order — the CSS pipeline's discovery
 /// step de-dupes against an internal HashSet, so determinism is the
 /// pipeline's responsibility, not this helper's.
-fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
+///
+/// Sibling Mirror (issue #1691/#1696): a project file can reach a
+/// workspace-sibling COMPONENT through a claimed tsconfig/plugin alias
+/// (e.g. `@shared/Button` -> a sibling package). That component's own
+/// relative `import styles from "./Button.module.css"` is only found by
+/// the scanner below when the component file itself is a scan source —
+/// so every claimed [`zfb_build::SiblingMirrorPlan`] mirror root is
+/// additionally walked wholesale, same as the bundler's own wholesale
+/// sibling mirror. The plan is built from claim source (b) only
+/// (tsconfig / plugin alias targets): claim sources (a)/(c) key off the
+/// bundler's preprocessing-discovery graph, which does not exist yet at
+/// this pre-bundle command-layer call site. Empty (and inert) for a
+/// standalone project, so a non-workspace build walks exactly the same
+/// files as before.
+fn discover_css_source_files(
+    project_root: &Path,
+    plugin_alias_entries: &[(String, String)],
+) -> Vec<std::path::PathBuf> {
     let mut out: Vec<std::path::PathBuf> = Vec::new();
     let extensions = ["tsx", "ts", "jsx", "js", "mdx", "md"];
     for root in zfb_css::engine::DEFAULT_CONTENT_ROOTS {
@@ -1167,16 +1240,41 @@ fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
             if !entry.file_type().is_file() {
                 continue;
             }
-            let ext = entry
-                .path()
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_ascii_lowercase());
-            if let Some(ext) = ext {
-                if extensions.contains(&ext.as_str()) {
-                    out.push(entry.into_path());
+            push_if_matching_extension(entry.into_path(), &extensions, &mut out);
+        }
+    }
+
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let tsconfig_paths = read_tsconfig_paths(project_root);
+    let plan = zfb_build::SiblingMirrorPlan::compute(
+        project_root,
+        &first_party_root,
+        &std::collections::BTreeSet::new(),
+        &tsconfig_paths,
+        plugin_alias_entries,
+    );
+    for mirror_root in plan.mirror_roots() {
+        let walker = ignore::WalkBuilder::new(mirror_root)
+            .standard_filters(true) // .gitignore + .git/info/exclude + global gitignore + hidden
+            .require_git(false) // honor .gitignore even when the sibling isn't a git repo
+            .filter_entry(|entry| {
+                if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                    let name = entry.file_name().to_string_lossy();
+                    if CSS_SIBLING_MIRROR_SKIP_DIRS
+                        .iter()
+                        .any(|skip| name == *skip)
+                    {
+                        return false;
+                    }
                 }
+                true
+            })
+            .build();
+        for entry in walker.flatten() {
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                continue;
             }
+            push_if_matching_extension(entry.into_path(), &extensions, &mut out);
         }
     }
     out
@@ -1194,9 +1292,10 @@ fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
 ///
 /// The scoped class names produced here MUST be byte-identical to the
 /// ones in the emitted `styles-<hash>.css` — both sides run
-/// `CssModulesProcessor` with `CssModulesConfig::default()` (the same
-/// config `CssPipeline` uses inside `build_emitter`), so the scoped
-/// names agree without a shared channel.
+/// `CssModulesProcessor` with the same workspace-aware hash root (issue
+/// #1694's `for_project_and_first_party_roots`, the same config
+/// `run_css_emitter` feeds its pipeline), so the scoped names agree
+/// without a shared channel.
 ///
 /// Returns an empty map when no `.module.css` files are reachable — the
 /// build then behaves exactly as before.
@@ -1207,12 +1306,25 @@ fn discover_css_source_files(project_root: &Path) -> Vec<std::path::PathBuf> {
 /// so the class-map rewrite must run in lockstep or the HTML `class`
 /// attributes would reference classes that never appear in the
 /// stylesheet.
+///
+/// Sibling Mirror (issue #1691/#1696): a resolved module outside
+/// `project_root` is kept only when the [`zfb_build::SiblingMirrorPlan`]
+/// actually claims it. `discover_css_source_files` already restricts scan
+/// *sources* to project files + claimed sibling files, but a claimed
+/// sibling source can still contain a stray relative import that escapes
+/// its own claimed region (e.g. `../../another-unclaimed-lib/x.module.css`)
+/// — the real SSR shadow never mirrors that region, so including it here
+/// would desync the class map from the emitted stylesheet. This is the
+/// gate that makes an unclaimed sibling `.module.css` a no-op for CSS
+/// output, matching the epic invariant that esbuild-visible reachability
+/// (staged trees) is the only thing that ships.
 pub(crate) fn compute_css_module_class_maps(
     project_root: &Path,
+    plugin_alias_entries: &[(String, String)],
 ) -> Result<std::collections::HashMap<PathBuf, std::collections::HashMap<String, String>>> {
     use std::collections::HashMap;
 
-    let sources = discover_css_source_files(project_root);
+    let sources = discover_css_source_files(project_root, plugin_alias_entries);
     if sources.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1220,21 +1332,42 @@ pub(crate) fn compute_css_module_class_maps(
     let scan =
         zfb_css::scan_css_module_imports(&sources).context("CSS Modules import scan failed")?;
 
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let project_root_norm = zfb_types::normalize_path_lexical(project_root);
+    let plan = zfb_build::SiblingMirrorPlan::compute(
+        project_root,
+        &first_party_root,
+        &std::collections::BTreeSet::new(),
+        &read_tsconfig_paths(project_root),
+        plugin_alias_entries,
+    );
+
     // Auto-discovered modules: keep only resolved paths that exist on
     // disk — mirrors `CssPipeline::collect_modules`. Bare specifiers
     // (`@org/pkg/x.module.css`) cannot be compiled by lightningcss and
-    // are dropped here too.
-    let module_files: Vec<PathBuf> = scan.modules.into_iter().filter(|m| m.exists()).collect();
+    // are dropped here too. A path outside `project_root` is kept only
+    // when the claim plan stages that sibling region — see the doc
+    // comment above.
+    let module_files: Vec<PathBuf> = scan
+        .modules
+        .into_iter()
+        .filter(|m| m.exists())
+        .filter(|m| m.starts_with(&project_root_norm) || plan.claims_path(m))
+        .collect();
     if module_files.is_empty() {
         return Ok(HashMap::new());
     }
 
-    // Hash scoped names off the project-relative path via the shared
-    // `for_project_root` constructor (issue #825) — the same config
+    // Hash scoped names off the project-relative (or, for a claimed
+    // sibling, workspace-sibling-relative) path via the shared
+    // workspace-aware constructor (issues #825/#1694) — the same config
     // `run_css_emitter` feeds its pipeline, so the scoped names baked into
     // the JSX rewrite match the ones in the emitted `styles-<hash>.css`.
     let processor = zfb_css::CssModulesProcessor::new(
-        zfb_css::modules::CssModulesConfig::for_project_root(project_root),
+        zfb_css::modules::CssModulesConfig::for_project_and_first_party_roots(
+            project_root,
+            &first_party_root,
+        ),
     );
     let out = processor
         .process(&module_files)
@@ -1402,6 +1535,47 @@ fn remap_project_plugin_aliases_to_shadow(
                 .filter(|candidate| candidate.is_file())
                 .unwrap_or_else(|| target_path.to_path_buf());
             (specifier.clone(), remapped.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
+/// Command-layer analog of the `zfb-build` bundler's virtual-module remap
+/// (issue #1701, closing the gap #1699/#1700 left in these parallel flows): a
+/// registered virtual module whose source absolute-imports a workspace-sibling
+/// file must point esbuild at the sibling's STAGED copy under the shadow
+/// (`stage_root`), not the live first-party tree. Without this, the esbuild
+/// pass bundles the unprocessed live sibling and its `?raw` / nested-worker
+/// macros reach esbuild literally, even though the sibling closure above
+/// already stages an expanded copy. Mirrors `remap_project_plugin_aliases_to_shadow`
+/// for the virtual-module side. Used by all three command-layer esbuild flows:
+/// client-script preprocess (production build + dev) and the islands shadow.
+///
+/// Uses the WORKSPACE-SIBLING-ONLY remap variant (not the SSR bundler's
+/// both-tiers form): these flows' stage roots prune hidden / `dist` / `target`
+/// dirs, so the project tier's `<project>/pruned/x.ts` → `"./pruned/x.ts"`
+/// rewrite would resolve to an unstaged path. The epic is scoped to the
+/// workspace tier, so that is exactly what these flows adopt; under-project
+/// absolute virtual imports keep their prior (unremapped) behaviour.
+/// Bare/relative imports and paths outside the first-party root are left
+/// untouched by the underlying remap.
+fn remap_project_plugin_virtual_modules_to_shadow(
+    project_root: &Path,
+    stage_root: &Path,
+    virtual_modules: &[(String, String)],
+) -> Vec<(String, String)> {
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    virtual_modules
+        .iter()
+        .map(|(specifier, source)| {
+            (
+                specifier.clone(),
+                zfb_build::remap_virtual_module_workspace_sibling_imports_to_shadow(
+                    source,
+                    project_root,
+                    &first_party_root,
+                    stage_root,
+                ),
+            )
         })
         .collect()
 }
@@ -2297,6 +2471,31 @@ fn materialise_islands_shadow_with_worker_context(
     let root = first_party_root.as_path();
     let paths = IslandsShadowPaths::new(root);
 
+    // Issue #1703, Stage Escape Guards — Guard (a): a bare package-name
+    // import of a first-party workspace sibling resolves through the
+    // wholesale `node_modules` symlink this shadow sets up below straight
+    // to the UNPROCESSED source, silently bypassing whatever `?raw` /
+    // module-worker / `import.meta.glob` rewrite this shadow exists to
+    // stage. `scan_meta.workspace_package_edges_from_islands` is already
+    // scoped to the island-reachable graph (never a server-only import —
+    // it is projected by the same forward walk as
+    // `raw_import_edges_from_islands`), and this function only ever runs
+    // once the caller has determined staging is needed for this closure,
+    // so a project with no glob/raw/worker preprocessing never reaches
+    // this check.
+    if let Some(edge) = scan_meta.workspace_package_edges_from_islands.first() {
+        return Err(anyhow!(
+            "island module {} imports \"{}\" by its workspace-package name, but this island \
+             graph requires `?raw`/module-worker/`import.meta.glob` shadow staging; a \
+             package-name import resolves through the live node_modules symlink to the \
+             unprocessed source and silently bypasses the staged rewrite — use a tsconfig \
+             alias or relative import to reach a workspace sibling; package-name imports of \
+             first-party siblings are not supported once staging is active",
+            edge.importer.display(),
+            edge.specifier
+        ));
+    }
+
     // --- Pre-flight: every glob module must be shadow-expandable. ---------
     // A glob module outside the mirrorable tree (outside project_root, or
     // under node_modules) would be reached through the whole `node_modules`
@@ -2708,6 +2907,18 @@ fn materialise_islands_shadow_with_worker_context(
     // each shadow file to the nearest mirrored `node_modules`. In a widened
     // workspace shadow, both the workspace-root install and the project's
     // nested install are linked so nearest-package precedence is preserved.
+    //
+    // Issue #1682 (shared with the client-script preprocessing stage below):
+    // a sibling imported through its pnpm PACKAGE NAME resolves through this
+    // live node_modules symlink to the unprocessed source, bypassing the
+    // staged rewrite. Sibling reach via tsconfig alias / relative path
+    // (what #1674 covers) resolves to the staged files instead. Guarded by
+    // this epic (#1702): guard (a) (issue #1703, checked earlier in this
+    // function against `scan_meta.workspace_package_edges_from_islands`)
+    // pre-flight rejects the escape before this symlink is even created;
+    // guard (b) (issue #1705/#1707) is the esbuild-time backstop — a
+    // per-subprocess metafile audit that rejects it even if a lower-level
+    // bundler invocation ever bypassed guard (a).
     if let Some(nm) = first_party_node_modules {
         let shadow_nm = shadow_root.join("node_modules");
         shadow_symlink(&nm, &shadow_nm).with_context(|| {
@@ -2838,6 +3049,79 @@ pub(crate) fn build_default_islands_payload(
         islands_glob_policy,
         raw_invalidation,
     )
+}
+
+/// Issue #1707 (Stage Escape Guards): build the guard (b) stage-escape audit
+/// policy for an islands / client-scripts esbuild config — but ONLY when the
+/// staging root widened past `project_root`, i.e. this is a pnpm-workspace
+/// first-party build where `first_party_root != project_root`.
+///
+/// Outside a workspace `first_party_root_for(project_root)` returns
+/// `normalize_path_lexical(project_root)` verbatim, so the widened check
+/// compares against the *normalized* project root — a raw `!= project_root`
+/// would false-positive whenever `project_root` carries a `.`, trailing
+/// slash, or `..` that normalization strips. When not widened, the wholesale
+/// `node_modules` symlink the stage sets up can only reach the project's OWN
+/// dependency tree (no first-party workspace-sibling to escape to), so the
+/// audit would be pure overhead — the dev loop is latency-sensitive
+/// (`dev_sibling_watch_1678_e2e` guards this pipeline) — and the policy stays
+/// `None`, leaving the argv byte-identical (no `--metafile`).
+///
+/// When widened, the audit is armed with `stage_root` as the sole stage
+/// boundary (every legitimately staged input — the mirrored project plus the
+/// wholesale-mirrored siblings — lives under it) and `first_party_root` as the
+/// live-source boundary a package-name escape climbs to. `metafile_cwd` is not
+/// passed here: [`EsbuildSubprocessConfig`] already runs esbuild from — and
+/// audits against — its `working_dir` (the stage's `bundle_working_dir`,
+/// nested below `stage_root`), wired in issue #1705.
+fn stage_escape_audit_policy(
+    project_root: &Path,
+    first_party_root: &Path,
+    stage_root: &Path,
+) -> Option<StageAuditPolicy> {
+    if first_party_root == zfb_types::normalize_path_lexical(project_root) {
+        return None;
+    }
+    Some(StageAuditPolicy {
+        stage_roots: vec![stage_root.to_path_buf()],
+        first_party_root: first_party_root.to_path_buf(),
+    })
+}
+
+#[cfg(test)]
+mod stage_escape_audit_policy_tests {
+    use super::*;
+
+    #[test]
+    fn none_when_not_widened_even_with_an_unnormalized_project_root() {
+        // Outside a workspace `first_party_root_for` hands back the NORMALIZED
+        // project root, so the widened check compares against that — a raw
+        // `!= project_root` would false-positive on an unnormalized path. An
+        // unnormalized project_root that normalizes to the first-party root is
+        // NOT widened → no policy → no `--metafile` in the argv.
+        let project_root = Path::new("/proj/./sub/..");
+        let first_party_root = zfb_types::normalize_path_lexical(project_root); // "/proj"
+        assert!(stage_escape_audit_policy(
+            project_root,
+            &first_party_root,
+            Path::new("/tmp/stage")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn some_with_correct_roots_when_widened() {
+        // A pnpm-workspace build: first_party_root is a proper ancestor of
+        // project_root → the stage widened → audit armed with the stage root
+        // as the boundary and the workspace root as the first-party root.
+        let project_root = Path::new("/ws/packages/app");
+        let first_party_root = Path::new("/ws");
+        let stage_root = Path::new("/tmp/zfb-stage-abc/ws");
+        let policy = stage_escape_audit_policy(project_root, first_party_root, stage_root)
+            .expect("a stage widened past project_root must arm the audit");
+        assert_eq!(policy.stage_roots, vec![stage_root.to_path_buf()]);
+        assert_eq!(policy.first_party_root, first_party_root.to_path_buf());
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // 10 params: #1497 added bundle mode/config + raw_invalidation; each param carries its own routing contract (see per-param comments), a struct would just shuffle the same fields
@@ -3201,6 +3485,23 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
         .unwrap_or_else(|| project_root.to_path_buf());
     let mut esbuild_cfg =
         EsbuildSubprocessConfig::default().with_working_dir(islands_bundler_working_dir);
+    // Issue #1707: arm the guard (b) stage-escape audit for the islands shadow
+    // when the stage widened past project_root (a pnpm-workspace build). The
+    // shadow root (`_tempdir`) is the boundary every staged input lives under;
+    // esbuild's cwd (`bundle_working_dir`) is nested below it and is what #1705
+    // audits metafile keys against.
+    if let Some(islands_stage_root) = _islands_shadow
+        .as_ref()
+        .map(|shadow| shadow._tempdir.path())
+    {
+        if let Some(policy) = stage_escape_audit_policy(
+            project_root,
+            &zfb_types::first_party_root_for(project_root),
+            islands_stage_root,
+        ) {
+            esbuild_cfg = esbuild_cfg.with_stage_audit(policy);
+        }
+    }
     if let Some(boundary) = islands_tsconfig_boundary {
         esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
     }
@@ -3258,8 +3559,23 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     if !islands_alias_entries.is_empty() {
         esbuild_cfg = esbuild_cfg.with_alias_entries(islands_alias_entries);
     }
-    if !plugin_config.virtual_modules.is_empty() {
-        esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
+    // Issue #1701: the islands bundler is the THIRD parallel esbuild flow (with
+    // the SSR bundler and the client-script preprocess); like the client sites
+    // it must point a virtual module's absolute workspace-sibling import at the
+    // sibling's staged copy in the islands shadow, not the live tree. Aliases
+    // were already remapped above; the virtual-module sources were not.
+    let islands_virtual_modules = _islands_shadow
+        .as_ref()
+        .map(|shadow| {
+            remap_project_plugin_virtual_modules_to_shadow(
+                project_root,
+                shadow._tempdir.path(),
+                &plugin_config.virtual_modules,
+            )
+        })
+        .unwrap_or_else(|| plugin_config.virtual_modules.clone());
+    if !islands_virtual_modules.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_virtual_modules(islands_virtual_modules);
     }
 
     let bundler = EsbuildSubprocessBundler::new(esbuild_cfg);
@@ -3409,6 +3725,12 @@ struct ClientScriptsPreprocessStage {
     preserve_symlinks: bool,
     raw_targets: std::collections::BTreeSet<PathBuf>,
     worker_targets: std::collections::BTreeSet<PathBuf>,
+    /// Workspace-sibling plain modules (neither a terminal `?raw` target nor a
+    /// worker dependency) materialised into this stage. Issue #1710: without
+    /// this set a sibling normal module is invisible to dev invalidation at
+    /// both the watcher and the `mark_client_scripts()` gates, so editing it
+    /// serves stale output until a restart.
+    client_script_siblings: std::collections::BTreeSet<PathBuf>,
     workers_by_entry: std::collections::BTreeMap<String, Vec<ClientScriptWorkerEntry>>,
 }
 
@@ -3531,6 +3853,26 @@ fn stage_client_script_preprocessing_with_worker_context(
         && plugin_preprocessing.worker_edges.is_empty()
     {
         return Ok(None);
+    }
+
+    // Issue #1703, Stage Escape Guards — Guard (a): same escape as the
+    // islands shadow above, on the client-script preprocessing path. `graph`
+    // is already scoped to this closure's client-entry roots (it's the
+    // reachable-modules scan seeded from `entries` alone), so a server-only
+    // workspace-package import never appears here. This check only runs
+    // once the gate above has already established `?raw`/module-worker
+    // staging is active for this closure.
+    if let Some(edge) = graph.workspace_package_edges.first() {
+        return Err(anyhow!(
+            "client-script module {} imports \"{}\" by its workspace-package name, but this \
+             client-script graph requires `?raw`/module-worker preprocessing; a package-name \
+             import resolves through the live node_modules symlink to the unprocessed source \
+             and silently bypasses the staged rewrite — use a tsconfig alias or relative \
+             import to reach a workspace sibling; package-name imports of first-party \
+             siblings are not supported once staging is active",
+            edge.importer.display(),
+            edge.specifier
+        ));
     }
 
     // Issue #1669/#1674: re-root the client-script preprocessing stage at the
@@ -4008,6 +4350,21 @@ fn stage_client_script_preprocessing_with_worker_context(
         )?;
     }
 
+    // Issue #1710: track every sibling in this closure (not just the `?raw`
+    // targets / worker dependencies already captured above) for dev
+    // invalidation. Converted to the logical (watched) spelling — the same
+    // identity space `raw_targets` and `worker_targets` already use — via
+    // `logical_project_path`, which is a no-op unless a symlink sits in the
+    // physical ancestry.
+    let client_script_siblings: std::collections::BTreeSet<PathBuf> = sibling_closure
+        .iter()
+        .map(|physical| {
+            paths
+                .logical_project_path(physical)
+                .unwrap_or_else(|| physical.clone())
+        })
+        .collect();
+
     materialise_shadow_typescript_configs(&first_party_root, &root, &client_configs)?;
 
     // Workspace-hoisted install at the stage root (the tsconfig search
@@ -4015,11 +4372,16 @@ fn stage_client_script_preprocessing_with_worker_context(
     // Without a workspace both collapse to the single root-level symlink,
     // byte-identical to the pre-#1674 behavior.
     //
-    // Known limitation (issue #1682, shared with the islands shadow): a sibling
-    // imported through its pnpm PACKAGE NAME resolves through this live
-    // node_modules link to the unprocessed source, bypassing the staged
-    // rewrite. Sibling reach via tsconfig alias / relative path (what #1674
-    // covers) resolves to the staged files instead.
+    // Issue #1682 (shared with the islands shadow above): a sibling imported
+    // through its pnpm PACKAGE NAME resolves through this live node_modules
+    // link to the unprocessed source, bypassing the staged rewrite. Sibling
+    // reach via tsconfig alias / relative path (what #1674 covers) resolves
+    // to the staged files instead. Guarded by this epic (#1702): guard (a)
+    // (issue #1703, checked earlier in this function against
+    // `graph.workspace_package_edges`) pre-flight rejects the escape before
+    // this symlink is even created; guard (b) (issue #1705/#1707) is the
+    // esbuild-time backstop — a per-subprocess metafile audit that rejects
+    // it even if a lower-level bundler invocation ever bypassed guard (a).
     if let Some(node_modules) = &first_party_node_modules {
         shadow_symlink(node_modules, &root.join("node_modules")).with_context(|| {
             format!(
@@ -4153,6 +4515,7 @@ fn stage_client_script_preprocessing_with_worker_context(
         preserve_symlinks: !copy_mode,
         raw_targets,
         worker_targets,
+        client_script_siblings,
         workers_by_entry,
     }))
 }
@@ -4299,6 +4662,20 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    // Issue #1707: arm the guard (b) stage-escape audit for the client-script
+    // stage when it widened past project_root (a pnpm-workspace build). Same
+    // shape as the islands shadow — `stage.root` is the staged-input boundary;
+    // esbuild's cwd (`bundle_working_dir`) nested below it is what #1705 audits
+    // metafile keys against.
+    if let Some(client_stage_root) = preprocess_stage.as_ref().map(|stage| stage.root.as_path()) {
+        if let Some(policy) = stage_escape_audit_policy(
+            project_root,
+            &zfb_types::first_party_root_for(project_root),
+            client_stage_root,
+        ) {
+            esbuild_cfg = esbuild_cfg.with_stage_audit(policy);
+        }
+    }
     let client_alias_entries = preprocess_stage
         .as_ref()
         .map(|stage| {
@@ -4312,8 +4689,18 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     if !client_alias_entries.is_empty() {
         esbuild_cfg = esbuild_cfg.with_alias_entries(client_alias_entries);
     }
-    if !plugin_config.virtual_modules.is_empty() {
-        esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
+    let client_virtual_modules = preprocess_stage
+        .as_ref()
+        .map(|stage| {
+            remap_project_plugin_virtual_modules_to_shadow(
+                project_root,
+                &stage.root,
+                &plugin_config.virtual_modules,
+            )
+        })
+        .unwrap_or_else(|| plugin_config.virtual_modules.clone());
+    if !client_virtual_modules.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_virtual_modules(client_virtual_modules);
     }
     if let Some(boundary) = client_tsconfig_boundary {
         esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
@@ -4456,15 +4843,26 @@ fn prune_dev_client_script_outputs(
     changed
 }
 
-/// Outcome of a dev client-scripts bundle pass: (any output changed, live
-/// output basenames for next-pass pruning, `?raw` targets, module-worker
-/// targets — the last two feed raw/worker watch invalidation).
-type DevClientScriptsOutcome = (
-    bool,
-    std::collections::HashSet<String>,
-    std::collections::BTreeSet<PathBuf>,
-    std::collections::BTreeSet<PathBuf>,
-);
+/// Outcome of a dev client-scripts bundle pass.
+pub(crate) struct DevClientScriptsOutcome {
+    /// `true` when at least one file was written with new or changed bytes
+    /// (or any stale file was pruned). The dev-server wires this to a
+    /// `ReloadEvent::Page`.
+    pub(crate) changed: bool,
+    /// Entry and worker output basenames that were just written — pass as
+    /// `prev_output_filenames` on the next call.
+    pub(crate) output_filenames: std::collections::HashSet<String>,
+    /// The logical original terminal-target set for dev invalidation; the
+    /// shared registry retains lexical + canonical aliases.
+    pub(crate) raw_targets: std::collections::BTreeSet<PathBuf>,
+    /// The complete first-party worker dependency closure; edits to any
+    /// member must rerun the client-script pipeline.
+    pub(crate) worker_targets: std::collections::BTreeSet<PathBuf>,
+    /// Workspace-sibling plain modules (neither a `?raw` target nor a worker
+    /// dependency) materialised into the preprocess stage (issue #1710) — an
+    /// edit to any member must also rerun the client-script pipeline.
+    pub(crate) client_script_siblings: std::collections::BTreeSet<PathBuf>,
+}
 
 #[cfg(test)]
 pub(crate) fn build_dev_client_scripts_to_disk(
@@ -4587,31 +4985,40 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     );
 
     if entries.is_empty() {
-        return Ok((
-            any_changed,
-            current_output_filenames,
-            std::collections::BTreeSet::new(),
-            std::collections::BTreeSet::new(),
-        ));
+        return Ok(DevClientScriptsOutcome {
+            changed: any_changed,
+            output_filenames: current_output_filenames,
+            raw_targets: std::collections::BTreeSet::new(),
+            worker_targets: std::collections::BTreeSet::new(),
+            client_script_siblings: std::collections::BTreeSet::new(),
+        });
     }
 
-    let (bundle_entries, bundler_working_dir, preserve_symlinks, raw_targets, worker_targets) =
-        match preprocess_stage.as_ref() {
-            Some(stage) => (
-                stage.entries.as_slice(),
-                stage.bundle_working_dir.clone(),
-                stage.preserve_symlinks,
-                stage.raw_targets.clone(),
-                stage.worker_targets.clone(),
-            ),
-            None => (
-                entries.as_slice(),
-                project_root.to_path_buf(),
-                false,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-        };
+    let (
+        bundle_entries,
+        bundler_working_dir,
+        preserve_symlinks,
+        raw_targets,
+        worker_targets,
+        client_script_siblings,
+    ) = match preprocess_stage.as_ref() {
+        Some(stage) => (
+            stage.entries.as_slice(),
+            stage.bundle_working_dir.clone(),
+            stage.preserve_symlinks,
+            stage.raw_targets.clone(),
+            stage.worker_targets.clone(),
+            stage.client_script_siblings.clone(),
+        ),
+        None => (
+            entries.as_slice(),
+            project_root.to_path_buf(),
+            false,
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::new(),
+        ),
+    };
     // The tsconfig search boundary stays the stage root even though esbuild's
     // cwd is the mirrored project dir (issue #1674).
     let client_tsconfig_boundary = preprocess_stage.as_ref().map(|stage| stage.root.clone());
@@ -4621,6 +5028,20 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
     let _embedded_nm_handle: Option<tempfile::TempDir>;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
+    // Issue #1707: arm the guard (b) stage-escape audit for the client-script
+    // stage when it widened past project_root (a pnpm-workspace build). Same
+    // shape as the islands shadow — `stage.root` is the staged-input boundary;
+    // esbuild's cwd (`bundle_working_dir`) nested below it is what #1705 audits
+    // metafile keys against.
+    if let Some(client_stage_root) = preprocess_stage.as_ref().map(|stage| stage.root.as_path()) {
+        if let Some(policy) = stage_escape_audit_policy(
+            project_root,
+            &zfb_types::first_party_root_for(project_root),
+            client_stage_root,
+        ) {
+            esbuild_cfg = esbuild_cfg.with_stage_audit(policy);
+        }
+    }
     let client_alias_entries = preprocess_stage
         .as_ref()
         .map(|stage| {
@@ -4634,8 +5055,18 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     if !client_alias_entries.is_empty() {
         esbuild_cfg = esbuild_cfg.with_alias_entries(client_alias_entries);
     }
-    if !plugin_config.virtual_modules.is_empty() {
-        esbuild_cfg = esbuild_cfg.with_virtual_modules(plugin_config.virtual_modules.clone());
+    let client_virtual_modules = preprocess_stage
+        .as_ref()
+        .map(|stage| {
+            remap_project_plugin_virtual_modules_to_shadow(
+                project_root,
+                &stage.root,
+                &plugin_config.virtual_modules,
+            )
+        })
+        .unwrap_or_else(|| plugin_config.virtual_modules.clone());
+    if !client_virtual_modules.is_empty() {
+        esbuild_cfg = esbuild_cfg.with_virtual_modules(client_virtual_modules);
     }
     if let Some(boundary) = client_tsconfig_boundary {
         esbuild_cfg = esbuild_cfg.with_tsconfig_search_boundary(boundary);
@@ -4755,12 +5186,13 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
         }
     }
 
-    Ok((
-        any_changed,
-        current_output_filenames,
+    Ok(DevClientScriptsOutcome {
+        changed: any_changed,
+        output_filenames: current_output_filenames,
         raw_targets,
         worker_targets,
-    ))
+        client_script_siblings,
+    })
 }
 
 /// Drive the build for a fully-resolved input set. Returns the number
@@ -8127,7 +8559,7 @@ mod tests {
             ..Config::default()
         };
         let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
                 .expect("should not error")
                 .expect(
                     "expected Some payload: authored CSS + module must ship even with tailwind off",
@@ -8155,7 +8587,7 @@ mod tests {
 
         // And the class-map producer must run in lockstep so the HTML
         // `class` attributes reference classes that actually ship.
-        let maps = compute_css_module_class_maps(project_root).expect("class maps");
+        let maps = compute_css_module_class_maps(project_root, &[]).expect("class maps");
         assert!(
             !maps.is_empty(),
             "CSS Modules class maps must be non-empty when tailwind is disabled",
@@ -8189,7 +8621,7 @@ mod tests {
             ..Config::default()
         };
         let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
                 .expect("should not error");
         assert!(
             payload.is_none(),
@@ -8216,7 +8648,7 @@ mod tests {
             ..Config::default()
         };
         let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
                 .expect("should not error")
                 .expect("authored CSS must still ship");
         let css = String::from_utf8(payload.bytes).unwrap();
@@ -8269,7 +8701,7 @@ mod tests {
             code_highlight: Some(code_highlight_config(CodeHighlightMode::Class, true, "hi-")),
             ..Config::default()
         };
-        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
             .expect("should not error")
             .expect(
                 "expected Some payload: default_hi_css() is non-empty so class mode always ships a payload",
@@ -8312,7 +8744,7 @@ mod tests {
             ..Config::default()
         };
         let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
                 .expect("should not error")
                 .expect("authored global CSS keeps the payload non-empty");
 
@@ -8344,7 +8776,7 @@ mod tests {
             ..Config::default()
         };
         let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[])
+            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
                 .expect("should not error")
                 .expect("authored global CSS keeps the payload non-empty");
 
@@ -8352,6 +8784,168 @@ mod tests {
         assert!(
             !css.contains("--zfb-hi-kw"),
             "inline mode (default) must never ship the class-mode token stylesheet; got:\n{css}",
+        );
+    }
+
+    // ── Sibling Mirror (issue #1691/#1696): sibling `.module.css` class
+    // maps + CSS emission through the claim plan ─────────────────────────
+
+    /// Workspace + claimed-sibling-alias fixture shared by the sibling CSS
+    /// Modules tests below. Layout:
+    ///
+    /// ```text
+    /// <ws>/pnpm-workspace.yaml              packages: ['.', 'sub-packages/*']
+    /// <ws>/sub-packages/host/                the project (host)
+    /// <ws>/sub-packages/host/tsconfig.json   "@shared/*" -> "../../lib/shared/*"
+    /// <ws>/lib/shared/Button.tsx             relatively imports ./Button.module.css
+    /// <ws>/lib/shared/Button.module.css      the CLAIMED sibling module
+    /// ```
+    ///
+    /// The wildcard tsconfig alias is claim source (b) of
+    /// `zfb_build::SiblingMirrorPlan` — no `package.json` sits between
+    /// `lib/shared` and the workspace root, so the mirror root resolves to
+    /// the claim's own directory (`resolve_mirror_root`'s bare-dir branch).
+    /// Returns `(TempDir, project_root)`; the guard must stay alive for the
+    /// fixture files to keep existing.
+    fn sibling_css_workspace_fixture() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::write(
+            ws.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+
+        let project = ws.join("sub-packages/host");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("tsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"@shared/*":["../../lib/shared/*"]}}}"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(ws.join("lib/shared")).unwrap();
+        std::fs::write(
+            ws.join("lib/shared/Button.tsx"),
+            "import styles from \"./Button.module.css\";\n\
+             export default function Button() { return styles.root; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("lib/shared/Button.module.css"),
+            ".root { color: blue; }\n",
+        )
+        .unwrap();
+
+        (tmp, project)
+    }
+
+    /// Acceptance: a sibling `.module.css` reached through a claimed
+    /// tsconfig wildcard alias (`@shared/*`) gets a class map keyed by its
+    /// physical path — `discover_css_source_files` walked the sibling's own
+    /// `Button.tsx` (since it sits under a claimed
+    /// `SiblingMirrorPlan` mirror root), and the scanner resolved its
+    /// relative `./Button.module.css` import from there.
+    #[test]
+    fn compute_css_module_class_maps_includes_claimed_sibling_module() {
+        let (_tmp, project) = sibling_css_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap();
+        let sibling_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/shared/Button.module.css"));
+
+        let maps = compute_css_module_class_maps(&project, &[]).expect("class maps");
+        let names = maps.get(&sibling_module).unwrap_or_else(|| {
+            panic!(
+                "claimed sibling .module.css must get a class map keyed by its physical path \
+                 {}; got keys: {:?}",
+                sibling_module.display(),
+                maps.keys().collect::<Vec<_>>()
+            )
+        });
+        assert!(
+            names.contains_key("root"),
+            "scoped class for `.root` must appear in the sibling's class map; got: {names:?}",
+        );
+    }
+
+    /// Acceptance: with Tailwind disabled (hermetic — no tailwind binary
+    /// required), the emitted stylesheet contains the scoped sibling class
+    /// AND its name matches the one `compute_css_module_class_maps`
+    /// (the bundler's JSX-rewrite producer) computed — proving the CSS
+    /// emission path and the class-map path agree on a claimed sibling,
+    /// driven end-to-end through the real command-layer functions (not a
+    /// manually-supplied map).
+    #[test]
+    fn css_payload_emits_claimed_sibling_module_css_and_matches_class_map() {
+        let (_tmp, project) = sibling_css_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            ..Config::default()
+        };
+        let payload = build_default_css_payload(&project, &project.join("dist"), &cfg, &[], &[])
+            .expect("should not error")
+            .expect("claimed sibling module must ship a non-empty payload");
+        let css = String::from_utf8(payload.bytes).unwrap();
+
+        let sibling_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/shared/Button.module.css"));
+        let maps = compute_css_module_class_maps(&project, &[]).expect("class maps");
+        let scoped = maps
+            .get(&sibling_module)
+            .and_then(|names| names.get("root"))
+            .cloned()
+            .expect("bundler map must contain the scoped `.root` class for the sibling module");
+
+        assert!(
+            css.contains(&format!(".{scoped}")),
+            "emitted CSS must contain the scoped sibling class `.{scoped}`; got:\n{css}",
+        );
+    }
+
+    /// Acceptance: an UNCLAIMED sibling `.module.css` — no tsconfig/plugin
+    /// alias targets its directory, so no `SiblingMirrorPlan` mirror root
+    /// covers it — must not change CSS output. `discover_css_source_files`
+    /// never walks it (nothing claims the directory), so it never becomes a
+    /// scan source and the class map stays exactly as if the file did not
+    /// exist. The CLAIMED sibling from the shared fixture is asserted
+    /// present too, so the negative result is provably due to the missing
+    /// claim, not a wholesale regression.
+    #[test]
+    fn compute_css_module_class_maps_ignores_unclaimed_sibling_module() {
+        let (_tmp, project) = sibling_css_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap().to_path_buf();
+
+        std::fs::create_dir_all(ws.join("lib/other")).unwrap();
+        std::fs::write(
+            ws.join("lib/other/Widget.tsx"),
+            "import styles from \"./Widget.module.css\";\n\
+             export default function Widget() { return styles.root; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("lib/other/Widget.module.css"),
+            ".root { color: green; }\n",
+        )
+        .unwrap();
+
+        let maps = compute_css_module_class_maps(&project, &[]).expect("class maps");
+
+        let unclaimed_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/other/Widget.module.css"));
+        assert!(
+            !maps.contains_key(&unclaimed_module),
+            "an unclaimed sibling .module.css must not appear in the class map; got keys: {:?}",
+            maps.keys().collect::<Vec<_>>()
+        );
+
+        let claimed_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/shared/Button.module.css"));
+        assert!(
+            maps.contains_key(&claimed_module),
+            "the claimed sibling from the fixture must still be present; got keys: {:?}",
+            maps.keys().collect::<Vec<_>>()
         );
     }
 
@@ -8962,6 +9556,7 @@ mod tests {
             ],
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
@@ -9010,6 +9605,122 @@ mod tests {
         assert!(
             std::fs::symlink_metadata(shadow_root.join("components/widgets/a.tsx")).is_ok(),
             "glob target must be present in the shadow"
+        );
+    }
+
+    /// Issue #1703, Stage Escape Guards — Guard (a): once this shadow is
+    /// materialised at all (some other preprocessing need — glob, `?raw`,
+    /// or a module worker — already made staging necessary), any bare
+    /// package-name import of a workspace sibling recorded on `scan_meta`
+    /// must hard-error naming the offending specifier and importer. The
+    /// wholesale `node_modules` symlink this shadow creates below would
+    /// otherwise let the import resolve straight to unprocessed source,
+    /// silently bypassing every rewrite the shadow exists to stage.
+    /// `scan_meta.workspace_package_edges_from_islands` is set directly
+    /// here (rather than produced by a real scan) since production only
+    /// ever calls this function once the caller's own glob/raw/worker gate
+    /// already determined staging is needed — this test exercises Guard
+    /// (a)'s check in isolation.
+    #[test]
+    fn materialise_islands_shadow_hard_errors_on_workspace_package_edge() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("components")).unwrap();
+        let island_src = project_root.join("components/gallery.tsx");
+        std::fs::write(
+            &island_src,
+            "\"use client\";\nexport function Gallery() { return null; }\n",
+        )
+        .unwrap();
+
+        let islands = vec![zfb_islands::Island::new("Gallery", island_src.clone())];
+        let scan_meta = zfb_islands::ScanMeta {
+            uses_client_router: false,
+            near_miss_candidates: 0,
+            glob_reachable_from_islands: Vec::new(),
+            island_reachable_modules: vec![island_src.clone()],
+            raw_import_edges_from_islands: Vec::new(),
+            module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: vec![zfb_islands::WorkspacePackageImportEdge {
+                importer: island_src.clone(),
+                specifier: "@acme/shared".to_string(),
+                package_dir: project_root.join("node_modules/@acme/shared"),
+            }],
+        };
+
+        // `.err().expect(...)` rather than `.unwrap_err()`: the Ok type
+        // `IslandsShadowOutcome` is not `Debug`, which `Result::unwrap_err`
+        // would require.
+        let error = materialise_islands_shadow(project_root, &islands, &scan_meta)
+            .err()
+            .expect("Guard (a) must reject the workspace-package edge once staging is active");
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/shared"), "{message}");
+        assert!(
+            message.contains(island_src.display().to_string().as_str()),
+            "{message}"
+        );
+        assert!(
+            message.contains("not supported once staging is active"),
+            "{message}"
+        );
+    }
+
+    /// Issue #1708, Stage Escape Guards confirm pass — Guard (a)
+    /// end-to-end: the test above hand-builds `ScanMeta` to exercise the
+    /// check in isolation; this test instead drives the REAL islands
+    /// scanner (`scan_islands_with_meta`) against a genuine
+    /// `node_modules` workspace-package symlink fixture (the same
+    /// `link_workspace_package` helper the client-script counterpart below
+    /// uses), so `workspace_package_edges_from_islands` is populated by
+    /// production code, not injected by the test. The island bare-imports
+    /// `@acme/shared` and also needs `?raw` staging, so this proves the
+    /// full real-scan → real-staging-check path a real build takes — and
+    /// it never reaches esbuild.
+    #[cfg(unix)]
+    #[test]
+    fn materialise_islands_shadow_hard_errors_on_workspace_package_edge_from_real_scan() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        link_workspace_package(root);
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        let island_src = root.join("components/gallery.tsx");
+        std::fs::write(
+            &island_src,
+            "'use client';\n\
+             import { helper } from '@acme/shared';\n\
+             import text from './message.txt?raw';\n\
+             export function Gallery() { console.log(helper, text); return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("components/message.txt"), "hello").unwrap();
+
+        let (islands, scan_meta) =
+            scan_islands_with_meta(std::slice::from_ref(&island_src), &FsResolver::new()).unwrap();
+        assert_eq!(
+            islands.len(),
+            1,
+            "the \"use client\" component must be discovered as a real island"
+        );
+        assert_eq!(
+            scan_meta.workspace_package_edges_from_islands.len(),
+            1,
+            "the real scanner must record the bare @acme/shared import as a workspace-package \
+             edge"
+        );
+
+        let error = materialise_islands_shadow(root, &islands, &scan_meta)
+            .err()
+            .expect("Guard (a) must reject the real-scanned workspace-package edge");
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/shared"), "{message}");
+        assert!(
+            message.contains(island_src.display().to_string().as_str()),
+            "{message}"
+        );
+        assert!(
+            message.contains("not supported once staging is active"),
+            "{message}"
         );
     }
 
@@ -9842,17 +10553,20 @@ mod tests {
         assert!(client_companions.contains_key(&plugin_worker_filename));
 
         let dev_assets_root = root.join("dev-assets");
-        let (dev_changed, dev_outputs, dev_raw_targets, dev_worker_targets) =
-            build_dev_client_scripts_to_disk_with_plugin_config(
-                root,
-                &dev_assets_root,
-                crate::config::Framework::Preact,
-                None,
-                &std::collections::HashSet::new(),
-                &zfb_build::ClientEntryList::new(),
-                &plugin_config,
-            )
-            .expect("dev client preprocessing shadow must bundle with plugins");
+        let dev_outcome = build_dev_client_scripts_to_disk_with_plugin_config(
+            root,
+            &dev_assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &std::collections::HashSet::new(),
+            &zfb_build::ClientEntryList::new(),
+            &plugin_config,
+        )
+        .expect("dev client preprocessing shadow must bundle with plugins");
+        let dev_changed = dev_outcome.changed;
+        let dev_outputs = dev_outcome.output_filenames;
+        let dev_raw_targets = dev_outcome.raw_targets;
+        let dev_worker_targets = dev_outcome.worker_targets;
         assert!(dev_changed);
         assert!(dev_outputs.contains("widget.js"));
         assert!(dev_outputs.contains(&primary_filename));
@@ -10743,16 +11457,19 @@ mod tests {
 
         let assets_root = root.join("dev-assets");
         let registered = zfb_build::ClientEntryList::new();
-        let (first_changed, first_outputs, first_raw, first_worker_targets) =
-            build_dev_client_scripts_to_disk(
-                root,
-                &assets_root,
-                crate::config::Framework::Preact,
-                None,
-                &std::collections::HashSet::new(),
-                &registered,
-            )
-            .unwrap();
+        let first_outcome = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &std::collections::HashSet::new(),
+            &registered,
+        )
+        .unwrap();
+        let first_changed = first_outcome.changed;
+        let first_outputs = first_outcome.output_filenames;
+        let first_raw = first_outcome.raw_targets;
+        let first_worker_targets = first_outcome.worker_targets;
         assert!(first_changed);
         assert!(first_raw.is_empty());
         assert!(first_worker_targets.contains(&importer));
@@ -10790,16 +11507,19 @@ mod tests {
             "constructor importer must remain an invalidation target until the next build"
         );
 
-        let (second_changed, second_outputs, second_raw, second_worker_targets) =
-            build_dev_client_scripts_to_disk(
-                root,
-                &assets_root,
-                crate::config::Framework::Preact,
-                None,
-                &first_outputs,
-                &registered,
-            )
-            .unwrap();
+        let second_outcome = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &first_outputs,
+            &registered,
+        )
+        .unwrap();
+        let second_changed = second_outcome.changed;
+        let second_outputs = second_outcome.output_filenames;
+        let second_raw = second_outcome.raw_targets;
+        let second_worker_targets = second_outcome.worker_targets;
         assert!(second_changed, "stale worker pruning is an asset change");
         assert!(second_raw.is_empty());
         assert!(second_worker_targets.is_empty());
@@ -10970,6 +11690,99 @@ mod tests {
         assert!(error.contains("unsupported import query"), "{error}");
     }
 
+    // ---- Issue #1703, Stage Escape Guards — Guard (a): a bare
+    // package-name import of a workspace sibling. --------------------------
+
+    /// Set up `<root>/node_modules/@acme/shared` as a pnpm-workspace-style
+    /// symlink into `<root>/workspace/shared` (a real directory outside
+    /// `node_modules`), mirroring the fixture
+    /// `pnpm_workspace_consumer_fixture_yields_workspace_package_islands`
+    /// sets up at install time in `crates/zfb-islands/tests/integration.rs`
+    /// — enough for `FsResolver`'s bare-specifier probe to resolve
+    /// `@acme/shared` as a genuine workspace package (symlink whose
+    /// canonical target carries no `node_modules` path segment).
+    #[cfg(unix)]
+    fn link_workspace_package(root: &Path) {
+        let pkg = root.join("workspace/shared");
+        std::fs::create_dir_all(pkg.join("src")).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"@acme/shared","source":"src/index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(pkg.join("src/index.ts"), "export const helper = 1;\n").unwrap();
+        let scope_dir = root.join("node_modules/@acme");
+        std::fs::create_dir_all(&scope_dir).unwrap();
+        std::os::unix::fs::symlink(&pkg, scope_dir.join("shared")).unwrap();
+    }
+
+    /// Acceptance criterion (issue #1703): a package-name import of a
+    /// workspace sibling with NO `?raw`/module-worker preprocessing active
+    /// for the closure keeps its historical behaviour unchanged — the
+    /// existing fast path returns `Ok(None)` before Guard (a)'s check ever
+    /// runs, so nothing is staged and the plain `node_modules` symlink an
+    /// unshadowed build already relies on stays the supported path.
+    #[cfg(unix)]
+    #[test]
+    fn client_script_bare_workspace_package_import_without_raw_stays_supported() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        link_workspace_package(root);
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        let entry = root.join("pages/widget.client.ts");
+        std::fs::write(
+            &entry,
+            "import { helper } from '@acme/shared';\nconsole.log(helper);\n",
+        )
+        .unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        assert!(stage_client_script_preprocessing(root, &entries)
+            .unwrap()
+            .is_none());
+    }
+
+    /// Acceptance criterion (issue #1703): the same package-name import,
+    /// but this closure ALSO needs `?raw` preprocessing — so the stage IS
+    /// materialised, and the wholesale `node_modules` symlink it creates
+    /// would otherwise let `@acme/shared` resolve straight to unprocessed
+    /// source, silently bypassing the staged `?raw` rewrite. Guard (a) must
+    /// hard-error naming the offending specifier before any stage is
+    /// written to disk.
+    #[cfg(unix)]
+    #[test]
+    fn client_script_bare_workspace_package_import_hard_errors_once_raw_staging_is_active() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        link_workspace_package(root);
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let entry = root.join("pages/widget.client.ts");
+        std::fs::write(
+            &entry,
+            "import { helper } from '@acme/shared';\n\
+             import text from '../src/message.txt?raw';\n\
+             console.log(helper, text);\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/message.txt"), "hello").unwrap();
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: entry,
+        }];
+
+        let error = stage_client_script_preprocessing(root, &entries).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/shared"), "{message}");
+        assert!(
+            message.contains("not supported once staging is active"),
+            "{message}"
+        );
+    }
+
     // ---- Issue #1674: workspace-first-party re-rooting of the client stage. --
 
     fn write_reroot_ws_file(root: &Path, rel: &str, body: &str) -> PathBuf {
@@ -11077,6 +11890,75 @@ mod tests {
                 .any(|target| target.ends_with("lib/shared/panel.frag")),
             "the sibling raw target must be tracked for dev invalidation: {:?}",
             stage.raw_targets
+        );
+
+        // Issue #1710: the sibling PLAIN module (`plain.ts` — neither a
+        // terminal `?raw` target nor a worker dependency) and the sibling
+        // `?raw` importer (`helper.ts`) must both land in the new
+        // invalidation set, or editing either serves stale dev output until
+        // a restart.
+        assert!(
+            stage
+                .client_script_siblings
+                .iter()
+                .any(|target| target.ends_with("lib/shared/plain.ts")),
+            "the sibling plain module must be tracked for dev invalidation: {:?}",
+            stage.client_script_siblings
+        );
+        assert!(
+            stage
+                .client_script_siblings
+                .iter()
+                .any(|target| target.ends_with("lib/shared/helper.ts")),
+            "the sibling `?raw` importer must be tracked for dev invalidation: {:?}",
+            stage.client_script_siblings
+        );
+    }
+
+    #[test]
+    fn build_dev_client_scripts_to_disk_returns_sibling_plain_module_in_outcome() {
+        // Issue #1710, build-layer assertion: staging-struct coverage alone
+        // doesn't prove the outcome plumbing threads the sibling closure all
+        // the way out to the dev caller (`zfb dev`'s watcher wiring). The
+        // entry lives under `pages/`, a discovery root, so it is picked up by
+        // `discover_client_scripts` without needing a registered entry.
+        //
+        // Forced into copy mode (workspace node_modules + a project tsconfig
+        // with `paths`, same recipe as
+        // `client_script_stage_widened_root_uses_copy_mode_for_sibling`):
+        // symlink mode stages the sibling as a real symlink back to the live
+        // tree, which the embedded (non-system) esbuild binary used by this
+        // non-ignored test resolves to its real path and the stage-escape
+        // audit (#1705) then rejects as unstaged — the same real-esbuild-vs-
+        // workspace-symlink gap the `client_bundling_cross_pipeline` env-gate
+        // tests exist to cover with a real system esbuild instead.
+        let workspace = tempdir().unwrap();
+        let (project_root, _entries) = write_reroot_workspace_client_fixture(workspace.path());
+        std::fs::create_dir_all(workspace.path().join("node_modules")).unwrap();
+        write_reroot_ws_file(
+            workspace.path(),
+            "sub-packages/host/tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@shared/*":["../../lib/shared/*"]}}}"#,
+        );
+        let assets_root = project_root.join("dev-assets");
+        let registered = zfb_build::ClientEntryList::new();
+        let outcome = build_dev_client_scripts_to_disk(
+            &project_root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &std::collections::HashSet::new(),
+            &registered,
+        )
+        .expect("dev bundle of the workspace-reroot sibling fixture must succeed");
+        assert!(outcome.changed);
+        assert!(
+            outcome
+                .client_script_siblings
+                .iter()
+                .any(|target| target.ends_with("lib/shared/plain.ts")),
+            "the dev outcome must carry the sibling plain module: {:?}",
+            outcome.client_script_siblings
         );
     }
 
@@ -11404,6 +12286,7 @@ mod tests {
             ],
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(project_root, &islands, &scan_meta)
@@ -11666,6 +12549,7 @@ mod tests {
             island_reachable_modules: island_reachable,
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
         (islands, scan_meta)
     }
@@ -11750,6 +12634,7 @@ mod tests {
             island_reachable_modules: vec![island_src, glob_src],
             raw_import_edges_from_islands: Vec::new(),
             module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
         };
 
         let outcome = materialise_islands_shadow(&project_root, &islands, &scan_meta)

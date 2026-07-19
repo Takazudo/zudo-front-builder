@@ -982,6 +982,24 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             missing.display(),
         ));
     }
+    // Issue #1718 (Watcher Liveness epic #1716) — snapshot the effective
+    // watch surface now, while `watch_roots` + `extra_watch_paths` are
+    // both fully finalised (nothing pushes to either after this point).
+    // The watcher-liveness probe (spawned after the listener binds, well
+    // below) uses this to keep its own marker writes out of every
+    // resolved watch root / `extraWatchPaths` entry — see
+    // `resolve_probe_parent_dir`'s doc comment for why that isolation
+    // matters.
+    let probe_effective_watch_targets: Vec<PathBuf> = watch_roots
+        .iter()
+        .map(|root| project_root.join(root))
+        .chain(extra_watch_paths.iter().cloned())
+        .collect();
+    // `project_root` itself is moved into `ServeOpts` further down (see
+    // `spawn_redirects_watch`'s neighbouring comment), well before the
+    // probe is spawned — snapshot the clone the probe needs now, while
+    // it's still cheap and available.
+    let probe_project_root = project_root.clone();
     // Configured collection roots classify as Content ahead of the
     // standard root-segment walk — without this, a collection under
     // `src/` (e.g. `src/mdx/notes`) classifies as Module and wastefully
@@ -1153,6 +1171,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &dev_assets_root,
         &cfg,
         &[],
+        &islands_plugin_config.alias_entries,
     ) {
         Ok(Some(payload)) => {
             // Write the bytes to the isolated dev-assets root (issue #1189)
@@ -1199,6 +1218,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // Issue #1189: build + write CSS into the isolated dev-assets root.
         let dev_assets_root_for_css = dev_assets_root.clone();
         let cfg_for_css = cfg.clone();
+        let plugin_alias_entries_for_css = islands_plugin_config.alias_entries.clone();
         let url_prefix = dev_css_url_prefix.clone();
         let url_handle = Arc::clone(&css_bundle_url_handle);
         Some(Arc::new(move || -> Result<bool> {
@@ -1207,6 +1227,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &dev_assets_root_for_css,
                 &cfg_for_css,
                 &[],
+                &plugin_alias_entries_for_css,
             )?;
             let mut guard = url_handle.write().unwrap_or_else(|p| {
                 tracing::warn!(
@@ -1266,12 +1287,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &registered_client_entries,
         &islands_plugin_config,
     ) {
-        Ok((_, outputs, raw_targets, worker_targets)) => {
+        Ok(outcome) => {
             if let Ok(mut guard) = live_client_script_outputs.lock() {
-                *guard = outputs;
+                *guard = outcome.output_filenames;
             }
-            raw_import_invalidation.replace_client_scripts(raw_targets);
-            raw_import_invalidation.replace_client_script_workers(worker_targets);
+            raw_import_invalidation.replace_client_scripts(outcome.raw_targets);
+            raw_import_invalidation.replace_client_script_workers(outcome.worker_targets);
+            raw_import_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
         }
         Err(err) => {
             output::warn(format!(
@@ -1304,7 +1326,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     p.into_inner()
                 })
                 .clone();
-            let (changed, new_outputs, raw_targets, worker_targets) =
+            let outcome =
                 crate::commands::build::build_dev_client_scripts_to_disk_with_plugin_config(
                     &project_root_for_cs,
                     &dev_assets_root_for_cs,
@@ -1321,10 +1343,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 );
                 p.into_inner()
             });
-            *guard = new_outputs;
-            raw_invalidation.replace_client_scripts(raw_targets);
-            raw_invalidation.replace_client_script_workers(worker_targets);
-            Ok(changed)
+            *guard = outcome.output_filenames;
+            raw_invalidation.replace_client_scripts(outcome.raw_targets);
+            raw_invalidation.replace_client_script_workers(outcome.worker_targets);
+            raw_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
+            Ok(outcome.changed)
         }))
     };
 
@@ -1962,6 +1985,20 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
     });
 
+    // Issue #1718 (Watcher Liveness epic #1716) — spawn the watcher-
+    // liveness self-check now that the listener is bound, for the same
+    // reason `boot_handle` above is deferred: nothing here may precede or
+    // delay the ready banner printed just below. The ENTIRE lifecycle —
+    // scratch-dir creation, stale-session sweeping, the 10s handshake,
+    // any warning, and teardown — lives inside `spawn_watcher_liveness_probe`
+    // itself; `run()` only retains the handle so a graceful Ctrl+C can
+    // cancel + await it below rather than leaking an orphaned probe dir.
+    let liveness_probe_handle = spawn_watcher_liveness_probe(
+        probe_project_root,
+        probe_effective_watch_targets,
+        zfb_watcher::LivenessOpts::default(),
+    );
+
     // Announce the ACTUAL bound port, not the requested one: with
     // `--port 0` the OS picks an ephemeral port, and printing the literal
     // `0` makes the banner unparseable for callers that need to discover
@@ -1980,6 +2017,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let result = tokio::select! {
         res = serve_with_listener(opts, listener, ctrl_c) => {
             boot_handle.abort();
+            // Issue #1718 — cancel the liveness probe's OUTER task and reap
+            // it. Since the probe body now runs inside `spawn_blocking`
+            // (see `run_watcher_liveness_probe_inner`), this abort cancels
+            // the outer future at its `.await` and returns promptly — it does
+            // NOT itself wait out the handshake, so server shutdown is never
+            // held up here. The detached blocking closure keeps running and
+            // its `ProbeSessionGuard` drop (unlock + remove the scratch dir)
+            // completes on its own thread; the `#[tokio::main]` runtime then
+            // awaits that blocking task at drop on process exit, bounded by
+            // the probe deadline (10s). Worst case on a broken-watcher host:
+            // exit is delayed up to that bound, or the detached body loses a
+            // race with exit and leaves a scratch dir for the next boot's
+            // stale sweep. Both are bounded and self-healing.
+            liveness_probe_handle.abort();
+            let _ = liveness_probe_handle.await;
             res
         }
     };
@@ -2434,6 +2486,444 @@ fn resolve_extra_watch_paths(raw: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     resolved
+}
+
+// ---------------------------------------------------------------------------
+// Watcher liveness probe (issue #1718, Watcher Liveness epic #1716)
+// ---------------------------------------------------------------------------
+
+/// Decide where the watcher-liveness probe's scratch parent directory
+/// should live for this dev session.
+///
+/// Defaults to a project-local scratch dir alongside this file's other
+/// `.zfb-build/` scratch roots (`dev_html_root_for`, `dev_assets_root_for`)
+/// — no `extraWatchPaths` config needed. But the probe's own marker writes
+/// must never be observable by the REAL orchestrator watcher: an overlap
+/// would classify a probe marker as a project change (`PathClass::External`
+/// in zfb-build's policy.rs) and trigger a spurious full-rebuild storm on
+/// every liveness check. So before settling on the project-local default,
+/// this checks it for overlap against every resolved watch root /
+/// `extraWatchPaths` entry the caller already computed
+/// (`probe_effective_watch_targets` in `run()`); on overlap (e.g. a
+/// misconfigured `extraWatchPaths` entry covering the whole project root),
+/// it relocates to a dedicated subdirectory of the OS temp dir instead,
+/// which the orchestrator's watcher can never reach.
+///
+/// Returns `Some((parent_dir, relocated))`; `relocated` exists only so tests
+/// can assert on the decision — production callers don't need to branch on
+/// it. Returns `None` when NEITHER candidate location is provably isolated
+/// (see the last check below) — the caller must skip the probe entirely
+/// rather than guess.
+fn resolve_probe_parent_dir(
+    project_root: &Path,
+    effective_watch_targets: &[PathBuf],
+) -> Option<(PathBuf, bool)> {
+    // Canonicalise once: a watch target can itself be a symlink whose REAL
+    // location is an ancestor of the probe dir even though the raw path
+    // strings don't lexically look like it — e.g. a collection or
+    // `extraWatchPaths` entry that is a symlink back up to the project
+    // root. `zfb_watcher::Watcher` canonicalises every root it registers
+    // internally (`watch_aliases`), so comparing only the raw strings here
+    // could miss overlap the real watcher actually has. A target that
+    // doesn't exist yet fails to canonicalise; fall back to a LEXICAL
+    // `..`-collapse via `canonicalize_or_lexical` (the same helper used
+    // elsewhere in this file). A raw fallback that kept literal `..`
+    // components would weaken the `starts_with` overlap checks below —
+    // e.g. `project_root/../project` would not lexically start with
+    // `project_root`.
+    let canonical_targets: Vec<PathBuf> = effective_watch_targets
+        .iter()
+        .map(|t| canonicalize_or_lexical(t))
+        .collect();
+
+    // The candidate side needs the same treatment: `project_root` (or the
+    // OS temp dir) can itself sit behind a symlinked ancestor — e.g. macOS
+    // resolves `/tmp` to `/private/tmp` and `/var` to `/private/var`, which
+    // is exactly where `std::env::temp_dir()` and many project checkouts
+    // live. Comparing a canonical target against a non-canonical candidate
+    // (or vice versa) would silently miss a real overlap, so canonicalise
+    // the base each candidate is built from before joining the scratch
+    // subpath — the base always exists (it's `project_root` /
+    // `std::env::temp_dir()`), so this canonicalisation is expected to
+    // succeed; `canonicalize_or_lexical` falls back to a LEXICAL
+    // `..`-collapse (not the raw base) if it doesn't, keeping the overlap
+    // checks below robust for the same reason as the targets above.
+    let canonical_project_root = canonicalize_or_lexical(project_root);
+    let temp_dir = std::env::temp_dir();
+    let canonical_temp_dir = canonicalize_or_lexical(&temp_dir);
+
+    let overlaps = |candidate: &Path, canonical_candidate: &Path| {
+        effective_watch_targets
+            .iter()
+            .chain(canonical_targets.iter())
+            .any(|target| {
+                candidate.starts_with(target)
+                    || target.starts_with(candidate)
+                    || canonical_candidate.starts_with(target)
+                    || target.starts_with(canonical_candidate)
+            })
+    };
+
+    let default_parent = project_root
+        .join(".zfb-build")
+        .join("watcher-liveness-probe");
+    let canonical_default_parent = canonical_project_root
+        .join(".zfb-build")
+        .join("watcher-liveness-probe");
+    if !overlaps(&default_parent, &canonical_default_parent) {
+        return Some((default_parent, false));
+    }
+
+    // Asymmetry worth calling out: unlike the project-local default (one
+    // `.zfb-build/` per checkout), this relocated temp parent is a single
+    // fixed path SHARED by every `zfb dev` process on the host — across
+    // different projects, not just concurrent runs of this one. That is
+    // safe: `sweep_stale_probe_sessions` decides staleness purely by the
+    // per-session advisory lock, never by project identity, so one project's
+    // sweep reclaiming another dead project's abandoned session dir here is
+    // correct, not a cross-project leak.
+    let temp_parent = temp_dir.join("zfb-dev-watcher-liveness-probe");
+    let canonical_temp_parent = canonical_temp_dir.join("zfb-dev-watcher-liveness-probe");
+    if !overlaps(&temp_parent, &canonical_temp_parent) {
+        return Some((temp_parent, true));
+    }
+
+    // Both the project-local default AND the OS temp-dir fallback overlap
+    // the resolved watch surface (e.g. an adversarial `extraWatchPaths`
+    // entry covering `/` or the OS temp dir itself) — there is no location
+    // we can prove is isolated. Skip the probe entirely rather than risk
+    // its own marker writes triggering the rebuild storm it exists to
+    // detect, not cause.
+    None
+}
+
+/// Generate a unique probe-session subdirectory name: `session-<pid>-<serial>-<nanos>`.
+///
+/// The pid makes ownership legible to a human inspecting `.zfb-build/`;
+/// actual uniqueness (needed because a project can run more than one
+/// `zfb dev` concurrently) comes from a per-process serial counter plus a
+/// nanosecond timestamp — mirroring `make_dev_content_trace_token`'s nonce
+/// shape elsewhere in this file.
+fn unique_probe_session_dir_name() -> String {
+    static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let serial = NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!("session-{}-{serial}-{nanos}", std::process::id())
+}
+
+/// Sweep `parent_dir` for orphaned probe-session directories left behind by
+/// a `zfb dev` process that never got to run its own cleanup (e.g. `SIGKILL`,
+/// a host crash) — never a directory belonging to another `zfb dev` that is
+/// still genuinely running its probe.
+///
+/// Staleness is decided with an advisory file lock, not by parsing the pid
+/// out of the directory name and signalling it: a raw `kill(pid, 0)`-style
+/// check would need a new production dependency (this crate's only `libc`
+/// dependency is Unix-only and test-only today) AND is vulnerable to pid
+/// reuse — a dead session's pid can be recycled by an unrelated live
+/// process between that session dying and this sweep running, which would
+/// make a truly-stale directory look alive. Every probe session creates a
+/// `.owner.lock` file inside its own directory and holds an exclusive lock
+/// on it (via `std::fs::File::try_lock`, stable since Rust 1.89) for the
+/// directory's entire lifetime; the OS releases that lock unconditionally
+/// when the owning process dies, however abruptly. So: if this sweep can
+/// itself acquire the lock, no live owner holds it — remove the directory.
+/// If the lock attempt is refused, a live session owns it — leave it alone.
+///
+/// Deliberately only matches the final `session-`-prefixed name, never a
+/// `.staging-`-prefixed one (see `run_watcher_liveness_probe_inner`'s
+/// staging-then-rename sequence): a `session-` name only exists once its
+/// owner already holds the lock, so this sweep never has to reason about
+/// a same-named directory that's still mid-construction. An abandoned
+/// staging dir (a genuine crash between its creation and the rename) is
+/// left as a small, bounded leak rather than risk this sweep racing a
+/// sibling process's own in-progress construction.
+fn sweep_stale_probe_sessions(parent_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(parent_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let is_probe_session = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("session-"))
+            .unwrap_or(false);
+        if !is_probe_session {
+            continue;
+        }
+        let lock_path = path.join(".owner.lock");
+        match std::fs::File::open(&lock_path) {
+            Ok(lock_file) => match lock_file.try_lock() {
+                Ok(()) => {
+                    // We just acquired it ourselves -> no live owner.
+                    let _ = lock_file.unlock();
+                    drop(lock_file);
+                    let _ = std::fs::remove_dir_all(&path);
+                }
+                Err(_) => {
+                    // Either genuinely held by a live session (WouldBlock)
+                    // or an ambiguous platform error — either way, never
+                    // risk deleting a directory we can't prove is dead.
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Lock file genuinely absent: either a crash landed between
+                // mkdir and creating the lock (a directory that was never
+                // actually watched, safe to remove), or something unrelated
+                // created a same-shaped name. Both are safe to remove —
+                // nothing holding a lock means nothing to race.
+                let _ = std::fs::remove_dir_all(&path);
+            }
+            Err(error) => {
+                // The lock file EXISTS but we could not open it — e.g. fd
+                // exhaustion (EMFILE) or a permission error (EACCES). This
+                // says nothing about whether a live probe owns the session;
+                // treating it as "stale" would let a transient open failure
+                // delete a locked directory from under its running owner.
+                // Skip the entry and leave it for a future sweep instead.
+                tracing::debug!(
+                    path = %lock_path.display(),
+                    %error,
+                    "watcher liveness sweep: could not open session lock file; leaving session dir untouched"
+                );
+            }
+        }
+    }
+}
+
+/// RAII guard for a live probe-session directory: unlocks + closes the
+/// `.owner.lock` file first (some platforms refuse to delete an open file),
+/// then removes the whole directory. This is a plain destructor, so it
+/// still runs if the owning task is `.abort()`ed mid-handshake (Ctrl+C
+/// during the deadline) — the task's stack still unwinds and drops its
+/// locals even on cancellation, unlike cleanup code written after an
+/// `.await` that a cancellation can skip entirely.
+struct ProbeSessionGuard {
+    dir: PathBuf,
+    lock_file: Option<std::fs::File>,
+}
+
+impl Drop for ProbeSessionGuard {
+    fn drop(&mut self) {
+        if let Some(f) = self.lock_file.take() {
+            let _ = f.unlock();
+            drop(f);
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Pure decision: what should happen for a given liveness verdict?
+///
+/// Returns `Some(warning_text)` only for `TimedOut` — the loud "hot-reload
+/// looks dead" case. `Live` has nothing to report; `SetupFailed` gets its
+/// own quiet `tracing::debug!` side effect in
+/// [`react_to_liveness_outcome`] instead, because a probe SETUP failure
+/// (can't create a scratch dir, can't start a watcher) says nothing about
+/// whether the real FSEvents/inotify stream is alive — reporting it as a
+/// dead-watcher warning would misattribute a disk/permission problem.
+///
+/// Kept as a pure function (mirroring the `fmt_*` / print split in
+/// `crate::output`) so a test can assert on the decision for each verdict
+/// by injecting it directly, without booting a real dev server or
+/// simulating a broken host.
+fn watcher_liveness_warning_for(outcome: &zfb_watcher::LivenessOutcome) -> Option<String> {
+    match outcome {
+        zfb_watcher::LivenessOutcome::TimedOut => Some(output::fmt_watcher_liveness_timed_out()),
+        zfb_watcher::LivenessOutcome::Live | zfb_watcher::LivenessOutcome::SetupFailed(_) => None,
+    }
+}
+
+/// Print/log the side effect for a completed liveness check.
+fn react_to_liveness_outcome(outcome: zfb_watcher::LivenessOutcome) {
+    if let Some(warning) = watcher_liveness_warning_for(&outcome) {
+        output::warn(warning);
+    }
+    match outcome {
+        zfb_watcher::LivenessOutcome::Live => {
+            tracing::debug!("watcher liveness probe: OK (observed its own probe marker)");
+        }
+        zfb_watcher::LivenessOutcome::TimedOut => {}
+        zfb_watcher::LivenessOutcome::SetupFailed(reason) => {
+            tracing::debug!(
+                reason = %reason,
+                "watcher liveness probe: setup failed; skipping dead-watcher verdict"
+            );
+        }
+    }
+}
+
+/// Core probe body, factored out from [`spawn_watcher_liveness_probe`] so a
+/// test can `.await` it directly with an injected `sleep_before` instead of
+/// booting a real dev server — proving the ready banner is never delayed by
+/// a slow probe without depending on real notify/FSEvents timing (which
+/// resolves fast on a healthy host and so can't be used to deterministically
+/// simulate "slow").
+///
+/// `sleep_before` is always `Duration::ZERO` in production
+/// ([`spawn_watcher_liveness_probe`]); a nonzero value exists only for that
+/// test.
+async fn run_watcher_liveness_probe_inner(
+    project_root: PathBuf,
+    effective_watch_targets: Vec<PathBuf>,
+    opts: zfb_watcher::LivenessOpts,
+    sleep_before: std::time::Duration,
+) {
+    if !sleep_before.is_zero() {
+        tokio::time::sleep(sleep_before).await;
+    }
+
+    // The probe body is entirely synchronous filesystem + advisory-lock I/O
+    // (canonicalize, create_dir_all, read_dir, File::create/try_lock, rename,
+    // remove_dir_all) plus the up-to-`opts.deadline` handshake in
+    // `check_liveness`. Run all of it on a dedicated blocking thread so it
+    // never parks a tokio async worker. `check_liveness` is itself async (it
+    // sleeps between marker writes), so the blocking body drives it to
+    // completion via the captured runtime handle's `block_on` — permitted
+    // because a `spawn_blocking` thread is outside any async context.
+    //
+    // Shutdown (issue #1718): `spawn_blocking` is NOT cancellable. `run()`'s
+    // Ctrl+C path `abort()`s the OUTER task; that promptly cancels THIS
+    // future at the `.await` below (so server drain / shutdown is never held
+    // up), but the blocking closure detaches and keeps running to completion
+    // on its own thread, where `ProbeSessionGuard` still unlocks + removes
+    // the session dir. The residual cost is at PROCESS EXIT: the
+    // `#[tokio::main]` runtime waits for started `spawn_blocking` tasks when
+    // it is dropped, so a Ctrl+C landing mid-handshake can delay exit by up
+    // to `opts.deadline` (10s default). That is bounded (never an indefinite
+    // hang) and only materializes on a genuinely broken-watcher host, where
+    // the healthy-host handshake would instead have resolved in well under a
+    // second. Cleanup is never skipped: the detached body finishes its guard
+    // drop, and at worst the next boot's stale sweep reclaims a session dir
+    // that outlived the process by a few syscalls. This bounded-await
+    // tradeoff is a deliberate consequence of running the whole handshake off
+    // the async workers; a cancellable handshake would require threading a
+    // cancel signal through the `zfb-watcher` primitive (tracked separately,
+    // issue #1738).
+    let handle = tokio::runtime::Handle::current();
+    let _ = tokio::task::spawn_blocking(move || {
+        run_watcher_liveness_probe_blocking(&handle, project_root, effective_watch_targets, opts);
+    })
+    .await;
+}
+
+/// Synchronous body of [`run_watcher_liveness_probe_inner`], run on a
+/// `spawn_blocking` thread so its blocking `std::fs` / flock / `remove_dir_all`
+/// calls and the up-to-`opts.deadline` handshake never park an async worker.
+///
+/// Drives the async [`zfb_watcher::check_liveness`] to completion via
+/// `handle.block_on` — safe here because a blocking-pool thread is not an
+/// async execution context. `handle` must belong to a multi-threaded runtime
+/// (production runs under `#[tokio::main]`; the direct tests use the
+/// `multi_thread` flavor) — a `current_thread` runtime whose sole thread is
+/// already parked awaiting this closure's `JoinHandle` would deadlock on the
+/// nested `block_on`.
+fn run_watcher_liveness_probe_blocking(
+    handle: &tokio::runtime::Handle,
+    project_root: PathBuf,
+    effective_watch_targets: Vec<PathBuf>,
+    opts: zfb_watcher::LivenessOpts,
+) {
+    let Some((parent_dir, _relocated)) =
+        resolve_probe_parent_dir(&project_root, &effective_watch_targets)
+    else {
+        tracing::debug!(
+            "watcher liveness probe: no isolated scratch location available; skipping this run's self-check"
+        );
+        return;
+    };
+    if std::fs::create_dir_all(&parent_dir).is_err() {
+        tracing::debug!(
+            path = %parent_dir.display(),
+            "watcher liveness probe: failed to create scratch parent dir; skipping this run's self-check"
+        );
+        return;
+    }
+
+    sweep_stale_probe_sessions(&parent_dir);
+
+    // Build the session under a hidden staging name FIRST, acquire the
+    // lock there, and only THEN atomically rename it to the
+    // `session-`-prefixed name `sweep_stale_probe_sessions` matches (code
+    // review finding, issue #1718). Without this, a concurrently-starting
+    // sibling `zfb dev` process's own sweep could observe a `session-`
+    // directory in the brief window after `create_dir_all` but before its
+    // lock file exists — see the "no lock file present" branch in
+    // `sweep_stale_probe_sessions` — and delete a session that was about
+    // to go live. Renaming means no observer ever sees a `session-`-named
+    // directory whose lock isn't already held. The residual race (another
+    // sweep landing in the couple of syscalls between staging-dir creation
+    // and lock acquisition) is left unguarded on purpose: the staging name
+    // is never matched by the sweep at all, so the worst case is a tiny
+    // abandoned staging dir on a genuine crash mid-construction — a bounded
+    // leak, not a live session getting deleted.
+    let session_name = unique_probe_session_dir_name();
+    let staging_dir = parent_dir.join(format!(".staging-{session_name}"));
+    if std::fs::create_dir_all(&staging_dir).is_err() {
+        tracing::debug!(
+            path = %staging_dir.display(),
+            "watcher liveness probe: failed to create session scratch dir; skipping this run's self-check"
+        );
+        return;
+    }
+    let lock_path = staging_dir.join(".owner.lock");
+    let lock_file = match std::fs::File::create(&lock_path) {
+        Ok(f) => f,
+        Err(_) => {
+            let _ = std::fs::remove_dir_all(&staging_dir);
+            return;
+        }
+    };
+    if lock_file.try_lock().is_err() {
+        // Vanishingly unlikely for a freshly-generated unique dir, but
+        // never proceed without proof of exclusive ownership.
+        drop(lock_file);
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        return;
+    }
+    let session_dir = parent_dir.join(session_name);
+    if std::fs::rename(&staging_dir, &session_dir).is_err() {
+        drop(lock_file);
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        return;
+    }
+    let _guard = ProbeSessionGuard {
+        dir: session_dir.clone(),
+        lock_file: Some(lock_file),
+    };
+
+    let outcome = handle.block_on(zfb_watcher::check_liveness(&session_dir, opts));
+    react_to_liveness_outcome(outcome);
+    // `_guard` drops here on every return path above: unlocks + removes
+    // `session_dir` regardless of verdict. Because this runs on a
+    // `spawn_blocking` thread — which is NOT cancelled when `run()`'s
+    // shutdown `abort()`s the outer task — the drop still executes even on a
+    // mid-handshake Ctrl+C, so cleanup is never skipped by cancellation.
+}
+
+/// Spawn the watcher-liveness self-check (issue #1718, epic #1716) as a
+/// standalone background task. See `run()`'s call site for the ordering
+/// contract this must uphold (spawned AFTER the listener binds, never
+/// awaited before the ready banner) and the shutdown wiring that cancels +
+/// awaits the returned handle.
+fn spawn_watcher_liveness_probe(
+    project_root: PathBuf,
+    effective_watch_targets: Vec<PathBuf>,
+    opts: zfb_watcher::LivenessOpts,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(run_watcher_liveness_probe_inner(
+        project_root,
+        effective_watch_targets,
+        opts,
+        std::time::Duration::ZERO,
+    ))
 }
 
 /// Resolve the project's CSS `@import` graph to canonicalised real paths the
@@ -4247,7 +4737,7 @@ impl DevRenderSession {
         let p1_snapshot_ms = bundle_result.sub_timing.as_ref().map(|t| t.snapshot_ms);
         let p1_assemble_ms = bundle_result.sub_timing.as_ref().map(|t| t.assemble_ms);
         let p1_bundle_ms = bundle_result.sub_timing.as_ref().map(|t| t.bundle_ms);
-        let mut bundler_out = bundle_result.output;
+        let bundler_out = bundle_result.output;
 
         // #1284/#1287 — populate per-route `DepKind::Module` edges from the
         // bundle's metafile so a component edit (direct or transitive, incl. a
@@ -4296,9 +4786,11 @@ impl DevRenderSession {
 
         // Keep the skip key over esbuild's real output. The dev-only wrapper
         // carries a fresh private trace nonce, so hashing it would turn every
-        // otherwise-identical refresh into a false miss.
-        let trace_token = wrap_dev_bundle_with_content_trace(&mut bundler_out, router.routes())
-            .context("dev refresh: install content-provenance worker wrapper failed")?;
+        // otherwise-identical refresh into a false miss. The bundle file is
+        // left untouched; the wrapper imports it by specifier instead.
+        let (trace_token, trace_wrapper_source) =
+            wrap_dev_bundle_with_content_trace(&bundler_out, router.routes())
+                .context("dev refresh: build content-provenance worker wrapper failed")?;
 
         // P2 — V8 host boot, mutex swap, old-host shutdown (three separate
         //      sub-timers: boot vs eval vs teardown; split matters for the
@@ -4313,9 +4805,11 @@ impl DevRenderSession {
             bundle_path: bundler_out.bundle_path.clone(),
             sourcemap_path: bundler_out.sourcemap_path.clone(),
             backend: Backend::EmbeddedV8 {
-                host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
-                    inputs.v8_plugin_hooks.clone(),
-                ),
+                host_factory:
+                    crate::v8_host_adapter::make_v8_host_factory_with_dev_content_trace_wrapper(
+                        inputs.v8_plugin_hooks.clone(),
+                        trace_wrapper_source,
+                    ),
             },
             request_timeout: None,
         })
@@ -4700,32 +5194,40 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Wrap a dev worker bundle with a private, transparent `getCollection()`
-/// observer.
+/// Build a dev-only content-provenance wrapper module for the current
+/// worker bundle.
 ///
-/// The runtime content package already resolves reads through
-/// `globalThis.__zfb.contentSnapshot.collections`. The embedded V8 host only
-/// loads its configured source string, so the observer is appended to that
-/// self-contained bundle rather than importing it from a sidecar module. For
+/// The runtime content package resolves reads through
+/// `globalThis.__zfb.contentSnapshot.collections`. This wrapper is a tiny
+/// real ESM module that imports the UNTOUCHED worker bundle by its in-memory
+/// inner specifier (`file:///zfb/<bundle-basename>`), installs a transparent
+/// `getCollection()` observer over the shared content snapshot, and
+/// re-exports a `fetch` handler that delegates to the inner worker. For
 /// ordinary requests it returns the inner worker response unchanged. The
 /// wrapper is dev-only and exists solely to feed the dependency graph with
 /// observations made by the running worker.
+///
+/// The inner bundle is registered under that same specifier in the V8 host's
+/// module loader before this wrapper runs as the main module — see
+/// [`crate::v8_host_adapter::ThreadedV8Host::new_with_dev_content_trace_wrapper`].
+/// The bundle file on disk is never rewritten, so the refresh skip-key (which
+/// hashes the inner bundle bytes only, excluding the fresh nonce this
+/// function mints) stays structurally correct.
+///
+/// Returns `(token, wrapper_source)`: the opaque trace-drain nonce and the
+/// generated wrapper ESM source.
 #[cfg(feature = "embed_v8")]
 fn wrap_dev_bundle_with_content_trace(
-    output: &mut BundlerOutput,
+    output: &BundlerOutput,
     routes: &[zfb_router::Route],
-) -> Result<String> {
-    let bundle_path = output.bundle_path.clone();
-    let original_source = std::fs::read_to_string(&bundle_path)
-        .with_context(|| format!("reading dev worker bundle {}", bundle_path.display()))?;
-    let (mut source, inner_worker_binding) = rewrite_dev_bundle_default_export(&original_source)
-        .with_context(|| {
-            format!(
-                "rewriting default export in dev worker bundle {}",
-                bundle_path.display()
-            )
-        })?;
-    let token = make_dev_content_trace_token(&bundle_path);
+) -> Result<(String, String)> {
+    let bundle_path = &output.bundle_path;
+    // The inner specifier must match the key the V8 host registers the
+    // untouched bundle bytes under (`ThreadedV8Host::
+    // new_with_dev_content_trace_wrapper`); the shared helper is the single
+    // derivation point both call sites use.
+    let inner_specifier = crate::v8_host_adapter::inner_bundle_specifier(bundle_path);
+    let token = make_dev_content_trace_token(bundle_path);
     let descriptors: Vec<DevContentTraceRoute> = routes
         .iter()
         .filter(|route| !route.static_html)
@@ -4739,15 +5241,16 @@ fn wrap_dev_bundle_with_content_trace(
         .context("serializing dev content-trace route descriptors")?;
     let token_json =
         serde_json::to_string(&token).context("serializing dev content-trace nonce")?;
+    let inner_specifier_json = serde_json::to_string(&inner_specifier)
+        .context("serializing dev content-trace inner-bundle specifier")?;
     let endpoint_json = serde_json::to_string(DEV_CONTENT_TRACE_ENDPOINT)
         .context("serializing dev content-trace endpoint")?;
     let header_json = serde_json::to_string(DEV_CONTENT_TRACE_HEADER)
         .context("serializing dev content-trace header")?;
 
-    source.push_str(&format!(
-        r#"
-// Generated by zfb dev. Private content-provenance observer.
-const __zfb_inner_worker = {inner_worker_binding};
+    let wrapper_source = format!(
+        r#"// Generated by zfb dev. Private content-provenance observer.
+import __zfb_inner_worker from {inner_specifier_json};
 const __zfb_trace_routes = {routes_json};
 const __zfb_trace_token = {token_json};
 const __zfb_trace_endpoint = {endpoint_json};
@@ -4874,119 +5377,9 @@ export default {{
   }},
 }};
 "#,
-    ));
+    );
 
-    std::fs::write(&bundle_path, source).with_context(|| {
-        format!(
-            "writing self-contained dev content-trace bundle {}",
-            bundle_path.display()
-        )
-    })?;
-    Ok(token)
-}
-
-/// Find the right-most occurrence of `needle` strictly before byte offset
-/// `before` that begins at the start of a line (immediately preceded by
-/// `\n`, or at offset 0 of `source`).
-///
-/// Real esbuild `--format=esm` output always starts a top-level export
-/// statement at column 0; rendered content embedded in a string literal
-/// (e.g. a code sample on a styleguide page) never does. Anchoring scans to
-/// line starts is what keeps such decoy text out of
-/// `rewrite_dev_bundle_default_export` below (issue #1666). Taking a
-/// `before` bound lets that function retry earlier anchored occurrences
-/// when the right-most one turns out not to be the default-export clause
-/// (e.g. esbuild can place a preserved legal comment, itself capable of
-/// containing a line-anchored `export {`, after the real one).
-#[cfg(feature = "embed_v8")]
-fn rfind_line_anchored(source: &str, needle: &str, before: usize) -> Option<usize> {
-    let mut search_end = before;
-    loop {
-        let candidate = source[..search_end].rfind(needle)?;
-        if candidate == 0 || source.as_bytes()[candidate - 1] == b'\n' {
-            return Some(candidate);
-        }
-        search_end = candidate;
-    }
-}
-
-/// Replace the final Workers default export so a dev-only wrapper can expose
-/// it under a private local binding in the same ESM source string.
-///
-/// esbuild normally emits `export { worker as default }`, while unbundled
-/// test seams can retain `export default ...`; supporting both keeps this
-/// boundary independent of an emitter implementation detail. The alias form
-/// is tried first because real `--format=esm` bundles always carry it; the
-/// direct `export default` scan is a fallback for the unbundled test-seam
-/// case only. Both scans are line-anchored (`rfind_line_anchored`) and the
-/// alias scan is additionally bounded to the matched `export { ... }`
-/// clause, so a string-literal decoy containing the literal text
-/// `"export default"` or `" as default"` can never be mistaken for the real
-/// export statement (issue #1666). The alias scan also retries earlier
-/// anchored `export {` occurrences when the right-most one has no default
-/// alias — esbuild can place a preserved legal comment (itself capable of
-/// containing a line-anchored `export {`) after the real clause.
-#[cfg(feature = "embed_v8")]
-fn rewrite_dev_bundle_default_export(source: &str) -> Result<(String, String)> {
-    const PRIVATE_EXPORT: &str = "__zfb_content_trace_inner_default";
-    const DEFAULT_ALIAS: &str = " as default";
-
-    let mut search_end = source.len();
-    while let Some(export_start) = rfind_line_anchored(source, "export {", search_end) {
-        let clause_end = source[export_start..]
-            .find('}')
-            .map(|offset| export_start + offset);
-        let alias_start = clause_end
-            .and_then(|clause_end| source[export_start..clause_end].find(DEFAULT_ALIAS))
-            .map(|offset| export_start + offset);
-
-        let Some(alias_start) = alias_start else {
-            search_end = export_start;
-            continue;
-        };
-
-        let alias_end = alias_start + DEFAULT_ALIAS.len();
-        match source[alias_end..].trim_start().chars().next() {
-            Some(',' | '}') => {}
-            _ => anyhow::bail!("default export alias has an unsupported ESM shape"),
-        }
-
-        let binding_end = alias_start;
-        let mut binding_start = binding_end;
-        let bytes = source.as_bytes();
-        while binding_start > 0
-            && matches!(
-                bytes[binding_start - 1],
-                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'$'
-            )
-        {
-            binding_start -= 1;
-        }
-        if binding_start == binding_end {
-            anyhow::bail!("default export alias has no local worker binding");
-        }
-
-        let binding = source[binding_start..binding_end].to_string();
-        let mut rewritten = String::with_capacity(source.len() + PRIVATE_EXPORT.len());
-        rewritten.push_str(&source[..alias_start]);
-        rewritten.push_str(" as ");
-        rewritten.push_str(PRIVATE_EXPORT);
-        rewritten.push_str(&source[alias_end..]);
-        return Ok((rewritten, binding));
-    }
-
-    if let Some(export_start) = rfind_line_anchored(source, "export default", source.len()) {
-        let export_end = export_start + "export default".len();
-        let mut rewritten = String::with_capacity(source.len() + PRIVATE_EXPORT.len());
-        rewritten.push_str(&source[..export_start]);
-        rewritten.push_str("const ");
-        rewritten.push_str(PRIVATE_EXPORT);
-        rewritten.push_str(" =");
-        rewritten.push_str(&source[export_end..]);
-        return Ok((rewritten, PRIVATE_EXPORT.to_string()));
-    }
-
-    anyhow::bail!("worker bundle has no default export")
+    Ok((token, wrapper_source))
 }
 
 // ---------------------------------------------------------------------------
@@ -6063,7 +6456,7 @@ fn boot_dev_renderer(
 
         // Boot path — timing not collected here (one-shot at startup, not a
         // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
-        let mut bundler_out: BundlerOutput = assemble_and_bundle_dev(
+        let bundler_out: BundlerOutput = assemble_and_bundle_dev(
             project_root,
             cfg,
             plugin_alias_entries,
@@ -6077,7 +6470,8 @@ fn boot_dev_renderer(
             rebuild_inputs.injected_pages_root(),
         )?
         .output;
-        let trace_token = wrap_dev_bundle_with_content_trace(&mut bundler_out, router.routes())?;
+        let (trace_token, trace_wrapper_source) =
+            wrap_dev_bundle_with_content_trace(&bundler_out, router.routes())?;
         // #1284/#1287 — capture the boot bundle's per-route Module deps for
         // post-graph seeding (the graph does not exist yet at this point).
         boot_route_module_deps = bundler_out.route_module_deps.clone();
@@ -6086,9 +6480,11 @@ fn boot_dev_renderer(
             bundle_path: bundler_out.bundle_path.clone(),
             sourcemap_path: bundler_out.sourcemap_path.clone(),
             backend: Backend::EmbeddedV8 {
-                host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
-                    v8_plugin_hooks,
-                ),
+                host_factory:
+                    crate::v8_host_adapter::make_v8_host_factory_with_dev_content_trace_wrapper(
+                        v8_plugin_hooks,
+                        trace_wrapper_source,
+                    ),
             },
             request_timeout: None,
         })
@@ -7469,6 +7865,571 @@ pub(crate) fn stub_session_for_adapter_tests(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // -----------------------------------------------------------------
+    // Watcher liveness probe (issue #1718, epic #1716)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn probe_parent_stays_in_project_when_no_overlap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+
+        let (parent, relocated) = resolve_probe_parent_dir(&project_root, &[]).unwrap();
+
+        assert!(!relocated, "no overlap should never relocate");
+        assert!(
+            parent.starts_with(&project_root),
+            "default probe parent must live under the project root: {parent:?}"
+        );
+        assert!(
+            parent.ends_with("watcher-liveness-probe"),
+            "expected the documented scratch dir name: {parent:?}"
+        );
+    }
+
+    #[test]
+    fn probe_parent_relocates_when_it_overlaps_an_extra_watch_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        // Adversarial config: an `extraWatchPaths` entry covering the ENTIRE
+        // project root would otherwise swallow the default
+        // `.zfb-build/watcher-liveness-probe` location into the
+        // orchestrator's watch set.
+        let effective_targets = vec![project_root.clone()];
+
+        let (parent, relocated) =
+            resolve_probe_parent_dir(&project_root, &effective_targets).unwrap();
+
+        assert!(relocated, "an overlapping extraWatchPaths must relocate");
+        assert!(
+            !parent.starts_with(&project_root),
+            "a relocated probe parent must escape the project root entirely: {parent:?}"
+        );
+        assert!(
+            parent.starts_with(std::env::temp_dir()),
+            "a relocated probe parent must live under the OS temp dir: {parent:?}"
+        );
+    }
+
+    #[test]
+    fn probe_parent_relocates_when_a_relative_watch_root_covers_it() {
+        // Mirrors the overlap check using a project-relative watch root
+        // (joined against `project_root` the same way `run()` does before
+        // calling this), not just an already-absolute `extraWatchPaths`
+        // entry.
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let effective_targets = vec![project_root.join(".zfb-build")];
+
+        let (_parent, relocated) =
+            resolve_probe_parent_dir(&project_root, &effective_targets).unwrap();
+
+        assert!(
+            relocated,
+            "a watch root covering `.zfb-build` must relocate the probe"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_parent_relocates_when_a_symlinked_watch_root_resolves_to_an_ancestor() {
+        // Code-review finding (issue #1718): a watch root can be a symlink
+        // whose REAL location is an ancestor of `.zfb-build` even though the
+        // raw path string doesn't lexically look like it — e.g. a
+        // collection or `extraWatchPaths` entry that is a symlink back up
+        // to the project root. A lexical-only overlap check would miss
+        // this even though the real watcher (which canonicalises every
+        // root it registers) would cover the probe dir.
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let alias = project_root.join("current");
+        std::os::unix::fs::symlink(&project_root, &alias).unwrap();
+
+        let (_parent, relocated) = resolve_probe_parent_dir(&project_root, &[alias]).unwrap();
+
+        assert!(
+            relocated,
+            "a symlinked watch root resolving to an ancestor of `.zfb-build` must relocate the probe"
+        );
+    }
+
+    #[test]
+    fn probe_skips_entirely_when_both_candidate_locations_overlap() {
+        // Code-review finding (issue #1718): the OS-temp-dir fallback
+        // itself needs to be checked for overlap too — an adversarial
+        // `extraWatchPaths` entry covering the whole project root AND the
+        // OS temp dir leaves no isolated location to relocate to.
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let effective_targets = vec![project_root.clone(), std::env::temp_dir()];
+
+        let result = resolve_probe_parent_dir(&project_root, &effective_targets);
+
+        assert!(
+            result.is_none(),
+            "with no isolated candidate location, the probe must be skipped, not guess: {result:?}"
+        );
+    }
+
+    #[test]
+    fn probe_session_dir_names_are_unique() {
+        let a = unique_probe_session_dir_name();
+        let b = unique_probe_session_dir_name();
+        assert_ne!(a, b, "two calls in the same process must not collide");
+        assert!(a.starts_with("session-"), "got: {a}");
+    }
+
+    #[test]
+    fn stale_sweep_removes_dead_session_but_keeps_live_locked_session() {
+        let parent = tempfile::tempdir().unwrap();
+
+        // "Dead": a session dir whose lock file exists but is NOT held by
+        // anyone right now — simulates a process that died without
+        // releasing it (the OS releases the lock unconditionally on exit).
+        let dead_dir = parent.path().join("session-dead-1-1");
+        std::fs::create_dir_all(&dead_dir).unwrap();
+        std::fs::File::create(dead_dir.join(".owner.lock")).unwrap();
+
+        // "Live": a session dir whose lock file IS held for the duration
+        // of this test, simulating a concurrently-running `zfb dev`. Use a
+        // deliberately different fake pid in the name to prove staleness is
+        // decided by the lock, not by matching this test process's own pid.
+        let live_dir = parent.path().join("session-999999999-2-2");
+        std::fs::create_dir_all(&live_dir).unwrap();
+        let live_lock = std::fs::File::create(live_dir.join(".owner.lock")).unwrap();
+        live_lock.try_lock().expect("test process holds the lock");
+
+        // A directory that doesn't match the `session-` prefix must never
+        // be touched by the sweep, regardless of its contents.
+        let unrelated_dir = parent.path().join("not-a-probe-session");
+        std::fs::create_dir_all(&unrelated_dir).unwrap();
+
+        sweep_stale_probe_sessions(parent.path());
+
+        assert!(!dead_dir.exists(), "a dead session's dir must be removed");
+        assert!(live_dir.exists(), "a live session's dir must survive");
+        assert!(
+            unrelated_dir.exists(),
+            "a non-`session-`-prefixed dir must never be touched"
+        );
+
+        drop(live_lock);
+    }
+
+    /// Regression: the stale sweep must only treat a GENUINELY-ABSENT lock
+    /// file (`NotFound`) as "safe to remove". If `File::open` fails for any
+    /// other reason — fd exhaustion (EMFILE), a permission error (EACCES) —
+    /// a LIVE, locked session's dir could be removed from under its running
+    /// probe. Simulate a non-`NotFound` open failure with an unreadable
+    /// (mode 000) lock file and assert the session dir survives.
+    #[cfg(unix)]
+    #[test]
+    fn stale_sweep_keeps_session_when_lock_open_fails_non_notfound() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let session_dir = parent.path().join("session-locked-1-1");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let lock_path = session_dir.join(".owner.lock");
+        std::fs::File::create(&lock_path).unwrap();
+
+        let mut perms = std::fs::metadata(&lock_path).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&lock_path, perms).unwrap();
+
+        // Some environments (root, certain sandboxes) bypass file-permission
+        // checks entirely. Only assert when the open actually fails with a
+        // non-`NotFound` error, so this test skips rather than false-passing
+        // where it can't exercise the path it targets.
+        let enforced = matches!(
+            std::fs::File::open(&lock_path),
+            Err(ref e) if e.kind() != std::io::ErrorKind::NotFound
+        );
+
+        if enforced {
+            sweep_stale_probe_sessions(parent.path());
+            assert!(
+                session_dir.exists(),
+                "a session whose lock file can't be opened (non-NotFound, e.g. EACCES/EMFILE) \
+                 must survive the sweep"
+            );
+        }
+
+        // Restore perms so the tempdir's own Drop cleanup can remove it.
+        let mut perms = std::fs::metadata(&lock_path).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&lock_path, perms).unwrap();
+    }
+
+    #[test]
+    fn timed_out_verdict_produces_the_loud_warning_text() {
+        let warning = watcher_liveness_warning_for(&zfb_watcher::LivenessOutcome::TimedOut);
+        let text = warning.expect("TimedOut must produce a warning");
+        assert!(text.contains("hot-reload"), "got: {text}");
+    }
+
+    #[test]
+    fn live_and_setup_failed_verdicts_produce_no_warning() {
+        assert!(watcher_liveness_warning_for(&zfb_watcher::LivenessOutcome::Live).is_none());
+        assert!(
+            watcher_liveness_warning_for(&zfb_watcher::LivenessOutcome::SetupFailed(
+                "disk full".to_string()
+            ))
+            .is_none()
+        );
+    }
+
+    /// Deterministic proof that spawning the probe never delays whatever
+    /// runs right after it (the ready banner, in `run()`) — even when the
+    /// probe body itself is slow. Uses an injected `sleep_before` rather
+    /// than a real broken-watcher scenario: a real `check_liveness` call
+    /// resolves fast (`Live`) on a healthy CI host (see
+    /// `zfb-watcher`'s own `live_fast_on_a_healthy_host` test), so it can't
+    /// be used to deterministically simulate "slow" without flaking.
+    // multi_thread flavor: the probe body now drives `check_liveness` via
+    // `Handle::block_on` inside `spawn_blocking`, which deadlocks on a
+    // single-threaded runtime whose only thread is parked awaiting the
+    // blocking JoinHandle. Production runs multi_thread (`#[tokio::main]`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ready_banner_ordering_is_not_delayed_by_a_slow_probe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let events_for_probe = Arc::clone(&events);
+        let probe_project_root = project_root.clone();
+        let handle = tokio::spawn(async move {
+            run_watcher_liveness_probe_inner(
+                probe_project_root,
+                Vec::new(),
+                zfb_watcher::LivenessOpts::default(),
+                std::time::Duration::from_millis(200),
+            )
+            .await;
+            events_for_probe.lock().unwrap().push("probe_done");
+        });
+
+        // Mirrors `run()`'s ordering exactly: the probe is spawned above
+        // WITHOUT being awaited, then the next statement (standing in for
+        // `output::ready_with_interfaces`) records immediately.
+        events.lock().unwrap().push("ready_banner");
+
+        handle.await.unwrap();
+
+        let order = events.lock().unwrap().clone();
+        assert_eq!(
+            order,
+            vec!["ready_banner", "probe_done"],
+            "the ready banner must be recorded before a slow probe completes"
+        );
+    }
+
+    /// End-to-end lifecycle proof: a real probe run against a healthy host
+    /// creates its scratch parent, resolves (fast — `Live`, per
+    /// `zfb-watcher`'s own healthy-host test), and cleans up its OWN
+    /// session dir afterward without needing the caller to do anything.
+    // multi_thread flavor: see `ready_banner_ordering_is_not_delayed_by_a_slow_probe`
+    // — the probe drives `check_liveness` via `Handle::block_on` inside
+    // `spawn_blocking`, which needs a runtime that isn't the single blocked thread.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_watcher_liveness_probe_cleans_up_its_session_dir_on_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+
+        let handle = spawn_watcher_liveness_probe(
+            project_root.clone(),
+            Vec::new(),
+            zfb_watcher::LivenessOpts::new(std::time::Duration::from_secs(10))
+                .with_marker_interval(std::time::Duration::from_millis(100))
+                .with_poll_interval(std::time::Duration::from_millis(10)),
+        );
+        handle.await.unwrap();
+
+        let (parent_dir, relocated) = resolve_probe_parent_dir(&project_root, &[]).unwrap();
+        assert!(!relocated);
+        assert!(
+            parent_dir.exists(),
+            "the scratch parent dir itself is left in place for the next session"
+        );
+        let leftover_sessions: Vec<_> = std::fs::read_dir(&parent_dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert!(
+            leftover_sessions.is_empty(),
+            "the completed session's own scratch dir must be cleaned up: {leftover_sessions:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // No-spurious-rebuild proof (issue #1719, epic #1716)
+    // -----------------------------------------------------------------
+    //
+    // Two independent guarantees, proven separately rather than folded
+    // into one test:
+    //
+    // 1. The probe's resolved scratch location — default AND relocated —
+    //    is provably disjoint from the exact absolute watch surface
+    //    (`watch_roots` joined against `project_root`, plus
+    //    `extraWatchPaths`) that `zfb_watcher::Watcher::start_with_extras`
+    //    registers. `notify` therefore never has a subscription anywhere
+    //    along the probe's path, so the orchestrator's `Change` channel
+    //    can never receive an event for it — this IS the actual mechanism
+    //    that prevents a probe-caused tick, for BOTH locations.
+    // 2. For the DEFAULT (in-root, non-relocated) location specifically,
+    //    the granularity policy ALSO classifies probe-shaped paths as a
+    //    no-op independently of watch-surface membership — proven by
+    //    injecting the probe's own marker/lock-file paths, with
+    //    representative Created/Removed kinds, straight into a real
+    //    `BuildOrchestrator::tick_with_kinds` (the actual entry point
+    //    `run()` uses, not the simpler `tick`) with a pipeline that
+    //    panics on any `apply` call.
+    // 3. The RELOCATED (out-of-root, adversarial-overlap) location does
+    //    NOT get that second, classification-level guarantee — an
+    //    out-of-root path with a non-whitelisted extension classifies as
+    //    `PathClass::External` and requests a full rebuild (policy.rs, PR
+    //    #376), and the probe's extensionless marker/lock filenames are
+    //    no exception. A dedicated test pins that known behavior instead
+    //    of asserting a false no-op claim: for the relocated case, (1) —
+    //    disjointness from the real watch surface — is the ONLY thing
+    //    that prevents a probe-caused tick in production.
+
+    /// The exact absolute watch surface `Watcher::start_with_extras` would
+    /// register for `(project_root, watch_roots, extra_watch_paths)` —
+    /// built independently of `resolve_probe_parent_dir`'s own overlap
+    /// closure so this is a proof against the real subscription set, not
+    /// the implementation checking itself.
+    fn real_watch_surface(
+        project_root: &Path,
+        watch_roots: &[PathBuf],
+        extra_watch_paths: &[PathBuf],
+    ) -> Vec<PathBuf> {
+        watch_roots
+            .iter()
+            .map(|root| project_root.join(root))
+            .chain(extra_watch_paths.iter().cloned())
+            .collect()
+    }
+
+    /// True iff `candidate` neither sits under, nor is an ancestor of, any
+    /// entry in `surface` — i.e. `notify` would never register a
+    /// subscription that covers `candidate`.
+    fn disjoint_from_watch_surface(candidate: &Path, surface: &[PathBuf]) -> bool {
+        surface
+            .iter()
+            .all(|root| !candidate.starts_with(root) && !root.starts_with(candidate))
+    }
+
+    #[test]
+    fn probe_default_location_never_enters_the_real_watch_surface() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let watch_roots = derive_watch_roots(&config::Config::default());
+
+        let (probe_parent, relocated) = resolve_probe_parent_dir(&project_root, &[]).unwrap();
+        assert!(!relocated, "no overlap must never relocate");
+
+        let surface = real_watch_surface(&project_root, &watch_roots, &[]);
+        assert!(
+            disjoint_from_watch_surface(&probe_parent, &surface),
+            "the default probe location {probe_parent:?} must never overlap the real watch surface {surface:?}"
+        );
+    }
+
+    /// Adversarial config: an `extraWatchPaths` entry covering the entire
+    /// project root forces `resolve_probe_parent_dir` to relocate to the
+    /// OS temp dir (#1718). Prove the relocated location is STILL provably
+    /// disjoint from the exact watch surface the real
+    /// `Watcher::start_with_extras` would register — the relocation isn't
+    /// just "elsewhere", it lands specifically somewhere the orchestrator's
+    /// watcher never looks.
+    #[test]
+    fn probe_relocated_location_never_enters_the_real_watch_surface_under_adversarial_overlap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let watch_roots = derive_watch_roots(&config::Config::default());
+        let extra_watch_paths = vec![project_root.clone()];
+
+        let (probe_parent, relocated) =
+            resolve_probe_parent_dir(&project_root, &extra_watch_paths).unwrap();
+        assert!(
+            relocated,
+            "an extraWatchPaths entry covering the project root must relocate"
+        );
+
+        let surface = real_watch_surface(&project_root, &watch_roots, &extra_watch_paths);
+        assert!(
+            disjoint_from_watch_surface(&probe_parent, &surface),
+            "the relocated probe location {probe_parent:?} must never overlap the real watch surface {surface:?}"
+        );
+    }
+
+    /// Pipeline that panics on any `apply` call — used by the injection
+    /// tests below so a probe-attributable rebuild is a HARD failure
+    /// rather than a soft assertion that a future edit could quietly
+    /// weaken (issue #1719's mandate).
+    struct PanicsOnApplyPipeline;
+
+    impl zfb_build::AssetPipeline for PanicsOnApplyPipeline {
+        fn apply(
+            &self,
+            plan: &zfb_build::RebuildPlan,
+            _ctx: &zfb_build::BuildContext,
+        ) -> anyhow::Result<zfb_build::BuildOutcome> {
+            panic!(
+                "watcher-liveness probe activity must never reach the pipeline, \
+                 but a rebuild was attempted: {plan:?}"
+            );
+        }
+    }
+
+    fn noop_build_ctx(dist: &Path) -> zfb_build::BuildContext {
+        zfb_build::BuildContext {
+            dist_root: dist.to_path_buf(),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: None,
+        }
+    }
+
+    /// Injection-level proof: feed the probe's own marker + lock-file
+    /// paths, in its DEFAULT (non-relocated) location, straight into a
+    /// real `BuildOrchestrator::tick_with_kinds` — NOT the simpler `tick`
+    /// (codex review finding, issue #1719): the watcher-driven dev loop's
+    /// `run()` always calls `tick_with_kinds` (kind-aware, with the #659
+    /// discovery hook and the #1581 removal handling `tick` skips
+    /// entirely), so a regression in either of those paths could refresh
+    /// or rebuild on probe activity while a `tick`-only test stayed green.
+    ///
+    /// Exercises the two ChangeKinds a real probe lifecycle produces:
+    /// each marker write is a genuinely NEW file (`Created`, matching
+    /// `check_liveness`'s per-iteration incrementing filename), and the
+    /// whole session directory (lock file + markers) is deleted on
+    /// cleanup (`Removed`) via `ProbeSessionGuard`'s drop. `discover` is
+    /// `None` — no content collection would ever map a probe path to a
+    /// discoverable route. Any resulting rebuild is a hard failure (the
+    /// pipeline panics).
+    #[test]
+    fn probe_marker_activity_in_default_location_never_causes_an_orchestrator_tick() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let watch_roots = derive_watch_roots(&config::Config::default());
+
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(project_root.clone(), watch_roots),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            PanicsOnApplyPipeline,
+        );
+
+        let (probe_parent, relocated) = resolve_probe_parent_dir(&project_root, &[]).unwrap();
+        assert!(!relocated);
+        let session_dir = probe_parent.join(unique_probe_session_dir_name());
+        let lock_path = session_dir.join(".owner.lock");
+        let marker0 = session_dir.join(".zfb-liveness-probe-0");
+        let marker1 = session_dir.join(".zfb-liveness-probe-1");
+
+        let dist = tempfile::tempdir().unwrap();
+
+        let created = orch
+            .tick_with_kinds(
+                vec![
+                    (lock_path.clone(), zfb_watcher::ChangeKind::Created),
+                    (marker0.clone(), zfb_watcher::ChangeKind::Created),
+                    (marker1.clone(), zfb_watcher::ChangeKind::Created),
+                ],
+                &noop_build_ctx(dist.path()),
+                None,
+            )
+            .unwrap();
+        assert!(
+            created.is_none(),
+            "probe marker/lock-file creation must never produce a rebuild outcome"
+        );
+
+        let removed = orch
+            .tick_with_kinds(
+                vec![
+                    (lock_path, zfb_watcher::ChangeKind::Removed),
+                    (marker0, zfb_watcher::ChangeKind::Removed),
+                    (marker1, zfb_watcher::ChangeKind::Removed),
+                ],
+                &noop_build_ctx(dist.path()),
+                None,
+            )
+            .unwrap();
+        assert!(
+            removed.is_none(),
+            "the probe's own session-dir cleanup (a Removed batch) must never produce a rebuild outcome"
+        );
+    }
+
+    /// Honest coverage of the RELOCATED probe path at the classification
+    /// layer (codex review finding, issue #1719): under the adversarial
+    /// config that forces relocation (`extraWatchPaths` covering the whole
+    /// project root), the resolved probe location sits OUTSIDE
+    /// `project_root`. Fed directly into `plan_for_changes`, such a path
+    /// does NOT classify as a no-op — `classify_change_with_content_roots`
+    /// routes any out-of-root path with a non-whitelisted extension (the
+    /// probe's extensionless marker/lock filenames included) to
+    /// `PathClass::External`, which conservatively requests a full
+    /// `PageSelection::All` rebuild (see `policy.rs`, PR #376). That is
+    /// the correct, unrelated behavior for a genuine opted-in
+    /// `extraWatchPaths` external file — it does not special-case probe
+    /// paths, and this test deliberately does NOT claim it does.
+    ///
+    /// The real safety guarantee for the relocated case is NOT
+    /// classification — it's that this exact location is proven disjoint
+    /// from the real orchestrator watch surface
+    /// (`probe_relocated_location_never_enters_the_real_watch_surface_under_adversarial_overlap`
+    /// above), so `zfb_watcher::Watcher::start_with_extras` never
+    /// registers a subscription there and `plan_for_changes`/
+    /// `tick_with_kinds` never actually receives an event for it in
+    /// production. This test pins the classification result so a future
+    /// reader doesn't mistake the policy layer for that safety net.
+    #[test]
+    fn probe_relocated_location_would_not_no_op_if_ever_injected_directly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let watch_roots = derive_watch_roots(&config::Config::default());
+        let extra_watch_paths = vec![project_root.clone()];
+
+        let (probe_parent, relocated) =
+            resolve_probe_parent_dir(&project_root, &extra_watch_paths).unwrap();
+        assert!(
+            relocated,
+            "an extraWatchPaths entry covering the project root must relocate"
+        );
+        assert!(
+            !probe_parent.starts_with(&project_root),
+            "the relocated location must be genuinely out-of-root: {probe_parent:?}"
+        );
+
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(project_root.clone(), watch_roots)
+                .with_extra_watch_paths(extra_watch_paths),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            PanicsOnApplyPipeline,
+        );
+
+        let session_dir = probe_parent.join(unique_probe_session_dir_name());
+        let marker_paths = vec![
+            session_dir.join(".owner.lock"),
+            session_dir.join(".zfb-liveness-probe-0"),
+        ];
+
+        let plan = orch.plan_for_changes(marker_paths);
+        assert!(
+            plan.pages.is_all() && plan.ssr_reload_needed,
+            "known current behavior: an out-of-root probe-shaped path classifies as \
+             PathClass::External and requests a full rebuild — this path is never actually \
+             fed to the orchestrator in production because it is proven disjoint from the \
+             real watch surface, not because classification treats it specially"
+        );
+    }
 
     #[cfg(feature = "embed_v8")]
     #[test]
@@ -10175,114 +11136,6 @@ mod tests {
                 "a render that makes no collection read must not erase the route's prior paths() evidence",
             );
         }
-
-        #[test]
-        fn self_contained_wrapper_rewrites_both_supported_default_export_shapes() {
-            let named_export = "const worker = { fetch() {} };\nexport { worker as default };\n";
-            let (rewritten_named, named_binding) =
-                rewrite_dev_bundle_default_export(named_export).unwrap();
-            assert_eq!(named_binding, "worker");
-            assert!(rewritten_named.contains("worker as __zfb_content_trace_inner_default"));
-            assert!(!rewritten_named.contains(" as default"));
-
-            let direct_export = "const value = 1;\nexport default { fetch() {} };\n";
-            let (rewritten_direct, direct_binding) =
-                rewrite_dev_bundle_default_export(direct_export).unwrap();
-            assert_eq!(direct_binding, "__zfb_content_trace_inner_default");
-            assert!(rewritten_direct
-                .contains("const __zfb_content_trace_inner_default = { fetch() {} };"));
-            assert!(!rewritten_direct.contains("export default"));
-        }
-
-        /// Repro for issue #1666: a page rendering a code sample whose text
-        /// contains the literal string `"export default"` used to hijack the
-        /// (then-first) bare `export default` scan, splicing inside the
-        /// string literal and leaving the real `export { worker as default
-        /// };` clause untouched — `wrap_dev_bundle_with_content_trace` then
-        /// appended a second `export default {...}`, producing "Duplicate
-        /// export of 'default'" in V8. This fails before the fix (the
-        /// returned binding is the private name, not `worker`, and the
-        /// decoy string literal is corrupted) and passes after (the alias
-        /// clause is found first and the decoy is left untouched).
-        #[test]
-        fn bare_export_default_decoy_inside_string_literal_does_not_hijack_the_alias_clause() {
-            let decoy_literal = "\"export default function Demo() {}\"";
-            let bundle = format!(
-                "const sample = {decoy_literal};\nconst worker = {{ fetch() {{}} }};\nexport {{ worker as default }};\n"
-            );
-
-            let (rewritten, binding) = rewrite_dev_bundle_default_export(&bundle).unwrap();
-            assert_eq!(
-                binding, "worker",
-                "must resolve the real alias clause's binding, not the string-literal decoy"
-            );
-            assert!(
-                rewritten.contains(decoy_literal),
-                "the decoy string literal must survive untouched"
-            );
-            assert!(
-                rewritten.contains("worker as __zfb_content_trace_inner_default"),
-                "the real alias clause must be the one that gets rewritten"
-            );
-        }
-
-        /// Sibling decoy for the alias branch itself: a string literal
-        /// containing `" as default"` (not a bare `"export default"`),
-        /// positioned after the real `export { worker as default };`
-        /// clause so an unanchored right-most scan for `" as default"`
-        /// would match the decoy instead of the real clause. Before the
-        /// fix this aborts with "default export is outside its ESM export
-        /// list"; after the fix the alias scan is bounded to the matched
-        /// `export { ... }` clause, so the trailing decoy can't match.
-        #[test]
-        fn as_default_decoy_inside_string_literal_does_not_hijack_the_alias_clause() {
-            let decoy_literal = "\"trailing text as default\"";
-            let bundle = format!(
-                "const worker = {{ fetch() {{}} }};\nexport {{ worker as default }};\nconst sample = {decoy_literal};\n"
-            );
-
-            let (rewritten, binding) = rewrite_dev_bundle_default_export(&bundle).unwrap();
-            assert_eq!(
-                binding, "worker",
-                "must resolve the real alias clause's binding, not the string-literal decoy"
-            );
-            assert!(
-                rewritten.contains(decoy_literal),
-                "the trailing decoy string literal must survive untouched"
-            );
-            assert!(
-                rewritten.contains("worker as __zfb_content_trace_inner_default"),
-                "the real alias clause must be the one that gets rewritten"
-            );
-        }
-
-        /// Codex review finding on #1671: esbuild can preserve a "legal
-        /// comment" (`/*! ... */`) after the real default-export clause,
-        /// and such a comment can itself contain a line-anchored `export {
-        /// ... };` with no default alias (e.g. quoting a code sample in a
-        /// license header). A single rightmost-anchored-clause lookup would
-        /// pick the comment's clause, find no default alias in it, and
-        /// then wrongly report "no default export" on a valid bundle. The
-        /// alias scan must retry earlier anchored `export {` occurrences
-        /// until it finds the one that actually carries `as default`.
-        #[test]
-        fn preserved_legal_comment_after_default_export_does_not_hijack_the_alias_clause() {
-            let bundle = "const worker = { fetch() {} };\nexport { worker as default };\n/*!\nexport { example };\n*/\n";
-
-            let (rewritten, binding) = rewrite_dev_bundle_default_export(bundle).unwrap();
-            assert_eq!(
-                binding, "worker",
-                "must fall back to the earlier real alias clause, not bail on the comment's clause"
-            );
-            assert!(
-                rewritten.contains("worker as __zfb_content_trace_inner_default"),
-                "the real alias clause must be the one that gets rewritten"
-            );
-            assert!(
-                rewritten.contains("export { example };"),
-                "the preserved legal comment must survive untouched"
-            );
-        }
     }
 
     /// Deep-review regression (PR #376): `Route::template()` emits
@@ -10681,6 +11534,56 @@ mod tests {
         let k2 = compute_bundle_skip_key(&out1, &[]);
 
         assert_ne!(k1, k2, "changed bundle bytes must change the skip key");
+    }
+
+    /// Two successive wraps of the SAME bundle mint different trace tokens
+    /// and different wrapper sources (a fresh nonce each call), yet the
+    /// bundle file on disk is never touched and `compute_bundle_skip_key`
+    /// stays identical. Under the wrapper-as-module design (issue #1713)
+    /// the skip key hashes the inner bundle bytes only, so the per-wrap
+    /// nonce can never turn an otherwise-identical refresh into a false
+    /// miss — the invariant is now structural (the bundle is never
+    /// rewritten) rather than upheld by hashing pre-wrap.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn wrap_dev_bundle_keeps_bundle_bytes_and_skip_key_stable_across_nonces() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_bytes: &[u8] =
+            b"const worker = { fetch() {} };\nexport { worker as default };\n";
+        let out = make_bundler_out(write_temp_bundle(&dir, bundle_bytes));
+
+        let routes: &[zfb_router::Route] = &[];
+        let (token1, wrapper1) =
+            wrap_dev_bundle_with_content_trace(&out, routes).expect("first wrap");
+        let key1 = compute_bundle_skip_key(&out, routes);
+        let after_first = std::fs::read(&out.bundle_path).unwrap();
+
+        let (token2, wrapper2) =
+            wrap_dev_bundle_with_content_trace(&out, routes).expect("second wrap");
+        let key2 = compute_bundle_skip_key(&out, routes);
+        let after_second = std::fs::read(&out.bundle_path).unwrap();
+
+        assert_ne!(token1, token2, "each wrap must mint a fresh trace nonce");
+        assert_ne!(
+            wrapper1, wrapper2,
+            "the wrapper source embeds the nonce, so it must differ per wrap"
+        );
+        assert_eq!(
+            after_first, bundle_bytes,
+            "wrapping must not rewrite the bundle file on disk"
+        );
+        assert_eq!(
+            after_second, bundle_bytes,
+            "a second wrap must still leave the bundle file untouched"
+        );
+        assert_eq!(
+            key1, key2,
+            "skip key must be independent of the per-wrap nonce"
+        );
+        assert!(
+            wrapper1.contains(r#"import __zfb_inner_worker from "file:///zfb/bundle.js""#),
+            "wrapper must import the inner bundle by its name-derived specifier: {wrapper1}"
+        );
     }
 
     /// A `pages/` route change (different source paths) defeats the skip even

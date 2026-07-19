@@ -189,6 +189,35 @@ pub struct ModuleWorkerEdge {
     pub source_path: PathBuf,
 }
 
+/// A resolved bare-specifier import edge that reached a first-party
+/// workspace package through the pnpm `node_modules/<pkg>` symlink, rather
+/// than a relative import or a tsconfig path alias (issue #1703, Stage
+/// Escape Guards — Guard (a)).
+///
+/// Island-shadow and client-script staging symlink `node_modules` wholesale
+/// while mirroring sibling rewrites (`?raw`, module workers, expanded globs)
+/// at workspace-relative slots. A bare first-party package-name import
+/// (`import { x } from "@scope/shared"`) resolves through that live
+/// `node_modules` symlink straight to the UNPROCESSED source, silently
+/// bypassing whatever staged rewrite the same closure needed. This edge is
+/// the detection signal consumers hard-error on once staging is active for
+/// the closure that recorded it — see
+/// `materialise_islands_shadow_with_worker_context` and
+/// `stage_client_script_preprocessing_with_worker_context` in
+/// `crates/zfb/src/commands/build.rs`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WorkspacePackageImportEdge {
+    /// Parsed JS/TS module containing the bare package-name import.
+    pub importer: PathBuf,
+    /// The exact bare specifier as written in source (e.g. `@scope/shared`
+    /// or `@scope/shared/subpath`).
+    pub specifier: String,
+    /// The resolved `node_modules/<pkg>` workspace-package root directory
+    /// (before any subpath), canonicalised the same way
+    /// [`Resolver::resolve`] canonicalises its own results.
+    pub package_dir: PathBuf,
+}
+
 /// Metadata returned by [`scan_reachable_modules_with_meta`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReachableModulesMeta {
@@ -202,6 +231,11 @@ pub struct ReachableModulesMeta {
     /// inserted into [`Self::modules`]. Installed `node_modules` graphs are a
     /// documented boundary and are skipped.
     pub module_worker_edges: Vec<ModuleWorkerEdge>,
+    /// Sorted, deduplicated bare package-name import edges discovered in the
+    /// ordinary closure and its browser-only first-party worker graphs that
+    /// resolved through a workspace-package `node_modules` symlink (issue
+    /// #1703, Guard (a)). See [`WorkspacePackageImportEdge`].
+    pub workspace_package_edges: Vec<WorkspacePackageImportEdge>,
 }
 
 /// Side-channel metadata gathered during a scan that is not itself an
@@ -345,6 +379,26 @@ pub struct ScanMeta {
     /// SSR graph cannot accidentally execute them. Worker syntax inside real
     /// `node_modules` dependency trees is intentionally not traversed.
     pub module_worker_edges_from_islands: Vec<ModuleWorkerEdge>,
+
+    /// Sorted, deduplicated bare package-name import edges reachable from a
+    /// `"use client"` island, including inside its browser-only worker
+    /// graphs, that resolved through a workspace-package `node_modules`
+    /// symlink rather than a relative import or tsconfig path alias (issue
+    /// #1703, Stage Escape Guards — Guard (a)). Scoped exactly like
+    /// [`Self::raw_import_edges_from_islands`]: only edges reachable from an
+    /// island root make it here, so a server-only-reachable workspace-package
+    /// import is never recorded. Empty for the overwhelming common case (no
+    /// package-name import of a first-party workspace sibling anywhere in
+    /// the island graph).
+    ///
+    /// The caller (`materialise_islands_shadow_with_worker_context` /
+    /// `stage_client_script_preprocessing_with_worker_context` in
+    /// `crates/zfb/src/commands/build.rs`) hard-errors on a non-empty set —
+    /// but only once shadow/preprocessing staging is already active for the
+    /// closure, since staging is exactly the condition under which this
+    /// edge silently bypasses the staged rewrite. See
+    /// [`WorkspacePackageImportEdge`].
+    pub workspace_package_edges_from_islands: Vec<WorkspacePackageImportEdge>,
 }
 
 /// Abstraction over module resolution + source reading.
@@ -380,6 +434,26 @@ pub trait Resolver {
     /// bare/absolute/query-bearing specifier. `new URL(...)` names a concrete
     /// browser entry and the naming contract is derived from that exact file.
     fn resolve_worker(&self, _importer_dir: &Path, _specifier: &str) -> Option<PathBuf> {
+        None
+    }
+
+    /// Report the workspace-package root directory when `specifier` is a
+    /// bare specifier that [`Resolver::resolve`] would resolve through a
+    /// pnpm-workspace `node_modules/<pkg>` symlink — as opposed to a
+    /// relative import, a tsconfig path alias/baseUrl match, or a regular
+    /// installed npm dependency (issue #1703, Stage Escape Guards —
+    /// Guard (a)).
+    ///
+    /// Called by the scanner alongside [`Resolver::resolve`] for every
+    /// resolved module edge; a `Some` return records a
+    /// [`WorkspacePackageImportEdge`] the shadow-staging consumers in
+    /// `crates/zfb/src/commands/build.rs` hard-error on once staging is
+    /// active for the closure. The default implementation returns `None`,
+    /// preserving existing `Resolver` semantics for implementations that
+    /// don't distinguish workspace packages from other bare specifiers
+    /// (e.g. [`InMemoryResolver`], unless configured via
+    /// [`InMemoryResolver::with_workspace_package`]).
+    fn workspace_package_root(&self, _importer_dir: &Path, _specifier: &str) -> Option<PathBuf> {
         None
     }
 
@@ -1458,6 +1532,34 @@ impl Resolver for FsResolver {
         candidate.is_file().then_some(candidate)
     }
 
+    fn workspace_package_root(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
+        if !is_bare_specifier(specifier) {
+            return None;
+        }
+        // A tsconfig path alias or baseUrl match takes priority in
+        // `resolve()` above and never touches `node_modules` — mirror that
+        // precedence so an aliased bare specifier is never misreported as a
+        // workspace-package edge.
+        if self
+            .try_resolve_tsconfig_alias(importer_dir, specifier)
+            .is_some()
+            || self
+                .try_resolve_tsconfig_base_url(importer_dir, specifier)
+                .is_some()
+        {
+            return None;
+        }
+        if !self.workspace_probe_enabled {
+            return None;
+        }
+        let (pkg_name, _subpath) = Self::split_bare_specifier(specifier);
+        let pkg_dir = Self::locate_node_modules_pkg(importer_dir, &pkg_name)?;
+        if !Self::is_workspace_package(&pkg_dir) {
+            return None;
+        }
+        pkg_dir.canonicalize().ok()
+    }
+
     fn read(&self, path: &Path) -> std::result::Result<String, String> {
         std::fs::read_to_string(path).map_err(|e| e.to_string())
     }
@@ -1480,6 +1582,17 @@ pub struct InMemoryResolver {
     pub files: HashMap<PathBuf, String>,
     /// Probe extensions; mirrors [`FsResolver::probe_exts`].
     pub probe_exts: Vec<String>,
+    /// Bare specifiers that simulate resolving through a pnpm-workspace
+    /// `node_modules` symlink (issue #1703, Guard (a)): maps the exact
+    /// specifier to `(resolved entry file, workspace-package root dir)`.
+    /// `resolve()` returns the entry file; `workspace_package_root()`
+    /// reports the root dir. Lets tests exercise
+    /// [`Resolver::workspace_package_root`] without touching the real
+    /// filesystem, unlike [`FsResolver`] (which derives this from an actual
+    /// `node_modules/<pkg>` symlink). A bare specifier absent from this map
+    /// still resolves to `None`, preserving the historical "no
+    /// node_modules probing" in-memory behavior.
+    pub workspace_packages: HashMap<String, (PathBuf, PathBuf)>,
 }
 
 impl InMemoryResolver {
@@ -1493,6 +1606,7 @@ impl InMemoryResolver {
                 ".jsx".to_string(),
                 ".js".to_string(),
             ],
+            workspace_packages: HashMap::new(),
         }
     }
 
@@ -1506,12 +1620,30 @@ impl InMemoryResolver {
     pub fn insert(&mut self, path: impl Into<PathBuf>, source: impl Into<String>) {
         self.files.insert(path.into(), source.into());
     }
+
+    /// Register a bare specifier as resolving through a simulated
+    /// pnpm-workspace `node_modules` symlink (chainable). `entry` is what
+    /// `resolve()` returns; `package_dir` is the workspace-package root
+    /// [`Resolver::workspace_package_root`] reports.
+    pub fn with_workspace_package(
+        mut self,
+        specifier: impl Into<String>,
+        entry: impl Into<PathBuf>,
+        package_dir: impl Into<PathBuf>,
+    ) -> Self {
+        self.workspace_packages
+            .insert(specifier.into(), (entry.into(), package_dir.into()));
+        self
+    }
 }
 
 impl Resolver for InMemoryResolver {
     fn resolve(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
         if is_bare_specifier(specifier) {
-            return None;
+            return self
+                .workspace_packages
+                .get(specifier)
+                .map(|(entry, _package_dir)| entry.clone());
         }
         // Lexically normalise the candidate so `pages/../components/x`
         // matches the same key the test wrote with `components/x`.
@@ -1572,6 +1704,12 @@ impl Resolver for InMemoryResolver {
         self.files.contains_key(&candidate).then_some(candidate)
     }
 
+    fn workspace_package_root(&self, _importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
+        self.workspace_packages
+            .get(specifier)
+            .map(|(_entry, package_dir)| package_dir.clone())
+    }
+
     fn read(&self, path: &Path) -> std::result::Result<String, String> {
         self.files
             .get(path)
@@ -1630,6 +1768,12 @@ pub fn scan_reachable_modules_with_meta<R: Resolver>(
 ) -> ScanResult<ReachableModulesMeta> {
     let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
     let mut raw_import_edges: BTreeSet<RawImportEdge> = BTreeSet::new();
+    // Issue #1703, Guard (a): bare package-name imports reachable from
+    // these client-entry roots that resolved through a workspace-package
+    // `node_modules` symlink. Per-scan state — the resolver is reused
+    // across several client-entry scans, so accumulating this on the
+    // resolver itself would leak edges between calls.
+    let mut workspace_package_edges: BTreeSet<WorkspacePackageImportEdge> = BTreeSet::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut stack: Vec<PathBuf> = roots.to_vec();
 
@@ -1664,6 +1808,15 @@ pub fn scan_reachable_modules_with_meta<R: Resolver>(
             match edge {
                 CollectedImportEdge::Module(specifier) => {
                     if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                        if let Some(package_dir) =
+                            resolver.workspace_package_root(&importer_dir, &specifier)
+                        {
+                            workspace_package_edges.insert(WorkspacePackageImportEdge {
+                                importer: current.clone(),
+                                specifier: specifier.clone(),
+                                package_dir,
+                            });
+                        }
                         if !visited.contains(&resolved) {
                             stack.push(resolved);
                         }
@@ -1690,10 +1843,12 @@ pub fn scan_reachable_modules_with_meta<R: Resolver>(
     let modules: Vec<PathBuf> = reachable.into_iter().collect();
     let worker_discovery = discover_module_workers(&modules, resolver)?;
     raw_import_edges.extend(worker_discovery.raw_import_edges);
+    workspace_package_edges.extend(worker_discovery.workspace_package_edges);
     Ok(ReachableModulesMeta {
         modules,
         raw_import_edges: raw_import_edges.into_iter().collect(),
         module_worker_edges: worker_discovery.worker_edges,
+        workspace_package_edges: workspace_package_edges.into_iter().collect(),
     })
 }
 
@@ -1733,6 +1888,13 @@ pub fn scan_islands_with_meta<R: Resolver>(
     // Typed terminal raw edges, keyed by importer. They participate in the
     // later island-reachability projection but never extend the DFS frontier.
     let mut raw_edges: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+    // Issue #1703, Guard (a): bare package-name import edges that resolved
+    // through a workspace-package `node_modules` symlink, keyed by
+    // importer (specifier, resolved package dir). Mirrors `raw_edges`:
+    // recorded for every resolved specifier during the main DFS, then
+    // filtered down to the island-reachable subset by the forward walk
+    // below. Per-scan state only — never accumulated on the resolver.
+    let mut workspace_package_edges: HashMap<PathBuf, Vec<(String, PathBuf)>> = HashMap::new();
     // Per-module "does this file's source contain an `import.meta.glob`
     // call anywhere" fact, recorded once per parsed module (issue #1387).
     let mut glob_by_path: HashMap<PathBuf, bool> = HashMap::new();
@@ -1847,6 +2009,16 @@ pub fn scan_islands_with_meta<R: Resolver>(
                             .entry(current.clone())
                             .or_default()
                             .push(resolved.clone());
+                        // Issue #1703, Guard (a): same "record regardless of
+                        // visited" rationale as above.
+                        if let Some(package_dir) =
+                            resolver.workspace_package_root(&importer_dir, &specifier)
+                        {
+                            workspace_package_edges
+                                .entry(current.clone())
+                                .or_default()
+                                .push((specifier.clone(), package_dir));
+                        }
                         if !visited.contains(&resolved) {
                             stack.push(resolved);
                         }
@@ -1885,6 +2057,12 @@ pub fn scan_islands_with_meta<R: Resolver>(
     let mut island_reachable_modules: std::collections::BTreeSet<PathBuf> =
         std::collections::BTreeSet::new();
     let mut raw_import_edges_from_islands: BTreeSet<RawImportEdge> = BTreeSet::new();
+    // Issue #1703, Guard (a): the island-reachable subset of
+    // `workspace_package_edges` above, projected by the same forward walk
+    // that scopes `raw_import_edges_from_islands` — so a workspace-package
+    // import reachable ONLY from server-only code never lands here.
+    let mut workspace_package_edges_from_islands: BTreeSet<WorkspacePackageImportEdge> =
+        BTreeSet::new();
     let mut island_reach_visited: HashSet<PathBuf> = HashSet::new();
     let mut island_reach_stack: Vec<PathBuf> = island_paths.into_iter().collect();
     while let Some(node) = island_reach_stack.pop() {
@@ -1903,6 +2081,15 @@ pub fn scan_islands_with_meta<R: Resolver>(
                 });
             }
         }
+        if let Some(targets) = workspace_package_edges.get(&node) {
+            for (specifier, package_dir) in targets {
+                workspace_package_edges_from_islands.insert(WorkspacePackageImportEdge {
+                    importer: node.clone(),
+                    specifier: specifier.clone(),
+                    package_dir: package_dir.clone(),
+                });
+            }
+        }
         if let Some(children) = edges.get(&node) {
             for child in children {
                 if !island_reach_visited.contains(child) {
@@ -1915,6 +2102,7 @@ pub fn scan_islands_with_meta<R: Resolver>(
     let island_reachable_modules: Vec<PathBuf> = island_reachable_modules.into_iter().collect();
     let worker_discovery = discover_module_workers(&island_reachable_modules, resolver)?;
     raw_import_edges_from_islands.extend(worker_discovery.raw_import_edges);
+    workspace_package_edges_from_islands.extend(worker_discovery.workspace_package_edges);
 
     Ok((
         found.into_values().collect(),
@@ -1925,6 +2113,9 @@ pub fn scan_islands_with_meta<R: Resolver>(
             island_reachable_modules,
             raw_import_edges_from_islands: raw_import_edges_from_islands.into_iter().collect(),
             module_worker_edges_from_islands: worker_discovery.worker_edges,
+            workspace_package_edges_from_islands: workspace_package_edges_from_islands
+                .into_iter()
+                .collect(),
         },
     ))
 }
@@ -2152,6 +2343,7 @@ fn path_is_inside_node_modules(path: &Path) -> bool {
 struct ModuleWorkerDiscovery {
     worker_edges: Vec<ModuleWorkerEdge>,
     raw_import_edges: Vec<RawImportEdge>,
+    workspace_package_edges: Vec<WorkspacePackageImportEdge>,
 }
 
 fn collect_global_require_specifiers(
@@ -2209,6 +2401,9 @@ fn discover_module_workers<R: Resolver>(
 ) -> ScanResult<ModuleWorkerDiscovery> {
     let mut found: BTreeSet<ModuleWorkerEdge> = BTreeSet::new();
     let mut raw_import_edges: BTreeSet<RawImportEdge> = BTreeSet::new();
+    // Issue #1703, Guard (a): per-scan accumulator, mirroring
+    // `raw_import_edges` above — never accumulated on the resolver itself.
+    let mut workspace_package_edges: BTreeSet<WorkspacePackageImportEdge> = BTreeSet::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut stack = roots.to_vec();
 
@@ -2274,6 +2469,15 @@ fn discover_module_workers<R: Resolver>(
             match edge {
                 CollectedImportEdge::Module(specifier) => {
                     if let Some(resolved) = resolver.resolve(&importer_dir, &specifier) {
+                        if let Some(package_dir) =
+                            resolver.workspace_package_root(&importer_dir, &specifier)
+                        {
+                            workspace_package_edges.insert(WorkspacePackageImportEdge {
+                                importer: current.clone(),
+                                specifier: specifier.clone(),
+                                package_dir,
+                            });
+                        }
                         if !visited.contains(&resolved) {
                             stack.push(resolved);
                         }
@@ -2306,6 +2510,7 @@ fn discover_module_workers<R: Resolver>(
     Ok(ModuleWorkerDiscovery {
         worker_edges: found.into_iter().collect(),
         raw_import_edges: raw_import_edges.into_iter().collect(),
+        workspace_package_edges: workspace_package_edges.into_iter().collect(),
     })
 }
 
@@ -6797,6 +7002,13 @@ mod tests {
             fn resolve_raw(&self, importer_dir: &Path, specifier: &str) -> Option<PathBuf> {
                 self.inner.resolve_raw(importer_dir, specifier)
             }
+            fn workspace_package_root(
+                &self,
+                importer_dir: &Path,
+                specifier: &str,
+            ) -> Option<PathBuf> {
+                self.inner.workspace_package_root(importer_dir, specifier)
+            }
             fn read(&self, path: &Path) -> std::result::Result<String, String> {
                 self.inner.read(path)
             }
@@ -8324,6 +8536,230 @@ mod tests {
         let (_islands, meta) =
             scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
         assert!(meta.raw_import_edges_from_islands.is_empty());
+    }
+
+    // --- workspace-package import edges (issue #1703, Guard (a)) --------
+
+    #[test]
+    fn workspace_package_root_reports_only_configured_specifiers() {
+        let resolver = InMemoryResolver::new().with_workspace_package(
+            "@acme/shared",
+            root().join("node_modules/@acme/shared/src/index.ts"),
+            root().join("node_modules/@acme/shared"),
+        );
+        assert_eq!(
+            resolver.resolve(&root(), "@acme/shared"),
+            Some(root().join("node_modules/@acme/shared/src/index.ts"))
+        );
+        assert_eq!(
+            resolver.workspace_package_root(&root(), "@acme/shared"),
+            Some(root().join("node_modules/@acme/shared"))
+        );
+        // An unregistered bare specifier resolves to `None` on both methods
+        // — the historical InMemoryResolver "no node_modules probing"
+        // behavior is unchanged for anything not explicitly configured.
+        assert_eq!(resolver.resolve(&root(), "preact"), None);
+        assert_eq!(resolver.workspace_package_root(&root(), "preact"), None);
+    }
+
+    #[test]
+    fn workspace_package_edge_reachable_from_island_is_recorded() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Demo } from "../components/demo";
+                   export default function Home() { return <Demo/>; }"#,
+            )
+            .with_file(
+                root().join("components/demo.tsx"),
+                r#""use client";
+                   import { helper } from "@acme/shared";
+                   export function Demo() { return helper; }"#,
+            )
+            // The resolved entry is pushed onto the DFS like any other
+            // module edge (that's the whole point of the #122 workspace
+            // probe — real workspace-package source gets scanned for its
+            // own islands), so it needs real, readable content here too.
+            .with_file(
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                "export const helper = 1;",
+            )
+            .with_workspace_package(
+                "@acme/shared",
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                root().join("node_modules/@acme/shared"),
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            meta.workspace_package_edges_from_islands,
+            vec![WorkspacePackageImportEdge {
+                importer: root().join("components/demo.tsx"),
+                specifier: "@acme/shared".to_string(),
+                package_dir: root().join("node_modules/@acme/shared"),
+            }]
+        );
+    }
+
+    #[test]
+    fn workspace_package_edge_reachable_only_from_server_code_is_not_island_metadata() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { helper } from "@acme/shared";
+                   import { Demo } from "../components/demo";
+                   export default function Home() { return helper + Demo(); }"#,
+            )
+            .with_file(
+                root().join("components/demo.tsx"),
+                r#""use client"; export function Demo() { return null; }"#,
+            )
+            .with_file(
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                "export const helper = 1;",
+            )
+            .with_workspace_package(
+                "@acme/shared",
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                root().join("node_modules/@acme/shared"),
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert!(
+            meta.workspace_package_edges_from_islands.is_empty(),
+            "a workspace-package import reachable only from server-only code must not \
+             surface as island metadata: {:?}",
+            meta.workspace_package_edges_from_islands
+        );
+    }
+
+    #[test]
+    fn workspace_package_edge_inside_island_worker_closure_is_recorded() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Demo } from "../components/demo";
+                   export default function Home() { return <Demo/>; }"#,
+            )
+            .with_file(
+                root().join("components/demo.tsx"),
+                r#""use client";
+                   const worker = new Worker(new URL("./demo-worker.ts", import.meta.url), { type: "module" });
+                   export function Demo() { return worker; }"#,
+            )
+            .with_file(
+                root().join("components/demo-worker.ts"),
+                r#"import { helper } from "@acme/shared";
+                   self.postMessage(helper);"#,
+            )
+            .with_workspace_package(
+                "@acme/shared",
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                root().join("node_modules/@acme/shared"),
+            );
+
+        let (_islands, meta) =
+            scan_islands_with_meta(&[root().join("pages/home.tsx")], &resolver).unwrap();
+        assert_eq!(
+            meta.workspace_package_edges_from_islands,
+            vec![WorkspacePackageImportEdge {
+                importer: root().join("components/demo-worker.ts"),
+                specifier: "@acme/shared".to_string(),
+                package_dir: root().join("node_modules/@acme/shared"),
+            }],
+            "a package-name import inside an island's worker graph must be recorded too"
+        );
+    }
+
+    #[test]
+    fn scan_reachable_modules_with_meta_records_workspace_package_edge() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/widget.client.ts"),
+                r#"import { helper } from "../src/helper";
+                   console.log(helper);"#,
+            )
+            .with_file(
+                root().join("src/helper.ts"),
+                r#"import { shared } from "@acme/shared";
+                   export const helper = shared;"#,
+            )
+            .with_file(
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                "export const shared = 1;",
+            )
+            .with_workspace_package(
+                "@acme/shared",
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                root().join("node_modules/@acme/shared"),
+            );
+        let meta =
+            scan_reachable_modules_with_meta(&[root().join("pages/widget.client.ts")], &resolver)
+                .unwrap();
+        assert_eq!(
+            meta.workspace_package_edges,
+            vec![WorkspacePackageImportEdge {
+                importer: root().join("src/helper.ts"),
+                specifier: "@acme/shared".to_string(),
+                package_dir: root().join("node_modules/@acme/shared"),
+            }]
+        );
+    }
+
+    /// Issue #1703, Guard (a): "per-scan state, not resolver-global
+    /// accumulation" is the explicit design constraint — the same
+    /// `FsResolver`/`InMemoryResolver` is reused across several
+    /// client-entry scans in production. Run two scans against the SAME
+    /// resolver instance, back to back: the second scan's roots never
+    /// reach the workspace-package import the first scan's roots do, so
+    /// its result must come back empty — proving the edge set is local to
+    /// each call, not accumulated across calls.
+    #[test]
+    fn repeated_scans_on_one_resolver_do_not_leak_workspace_package_edges() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("a/entry.client.ts"),
+                r#"import { helper } from "@acme/shared";
+                   console.log(helper);"#,
+            )
+            .with_file(
+                root().join("b/entry.client.ts"),
+                r#"console.log("no workspace-package import here");"#,
+            )
+            .with_file(
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                "export const helper = 1;",
+            )
+            .with_workspace_package(
+                "@acme/shared",
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                root().join("node_modules/@acme/shared"),
+            );
+
+        let first =
+            scan_reachable_modules_with_meta(&[root().join("a/entry.client.ts")], &resolver)
+                .unwrap();
+        assert_eq!(
+            first.workspace_package_edges,
+            vec![WorkspacePackageImportEdge {
+                importer: root().join("a/entry.client.ts"),
+                specifier: "@acme/shared".to_string(),
+                package_dir: root().join("node_modules/@acme/shared"),
+            }]
+        );
+
+        let second =
+            scan_reachable_modules_with_meta(&[root().join("b/entry.client.ts")], &resolver)
+                .unwrap();
+        assert!(
+            second.workspace_package_edges.is_empty(),
+            "the second scan's own roots never reach a workspace-package import; a leaked \
+             edge from the first scan would mean the accumulator lives on the resolver \
+             instead of being scoped to this call: {:?}",
+            second.workspace_package_edges
+        );
     }
 
     #[test]

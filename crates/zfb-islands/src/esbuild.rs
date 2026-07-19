@@ -49,6 +49,7 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use zfb_build::metafile_deps::audit_metafile_stage_escape_at_path;
 use zfb_types::json_string;
 
 use crate::bundler::{
@@ -428,6 +429,38 @@ pub struct EsbuildSubprocessConfig {
     /// synthetic tsconfig entry — zero-registration builds are
     /// byte-identical to today.
     pub virtual_modules: Vec<(String, String)>,
+
+    /// Optional per-subprocess stage-escape audit policy (issue #1705,
+    /// epic #1702's guard (b) wiring wave). When `Some`, every REAL
+    /// (non-mock) esbuild subprocess this bundler spawns emits a metafile
+    /// and is audited immediately after it succeeds via
+    /// [`zfb_build::metafile_deps::audit_metafile_stage_escape`] — the
+    /// same fail-closed check the sibling-mirror epic's guard (b)
+    /// primitive implements, catching a bare first-party package-name
+    /// import that climbed a staged `node_modules` symlink to a live
+    /// workspace sibling.
+    ///
+    /// `None` (the default) skips both metafile emission and auditing for
+    /// every job type, keeping argv and behavior byte-identical to a
+    /// build without this policy. Mock subprocesses never emit or require
+    /// a metafile regardless of this setting.
+    pub stage_audit: Option<StageAuditPolicy>,
+}
+
+/// Per-subprocess stage-escape audit policy consumed by
+/// [`EsbuildSubprocessConfig::stage_audit`]. Mirrors the parameter shape of
+/// [`zfb_build::metafile_deps::audit_metafile_stage_escape`] directly — the
+/// bundler passes these fields through unchanged for every real subprocess
+/// it audits.
+#[derive(Debug, Clone)]
+pub struct StageAuditPolicy {
+    /// Roots a resolved input may legitimately live under. A build can
+    /// stage into more than one root (e.g. a shadow root plus a
+    /// separately wholesale-mirrored sibling root).
+    pub stage_roots: Vec<PathBuf>,
+    /// Outer boundary of "this build's own source" — the project root, or
+    /// the widened workspace root for a sibling-mirrored build.
+    pub first_party_root: PathBuf,
 }
 
 impl Default for EsbuildSubprocessConfig {
@@ -464,6 +497,7 @@ impl EsbuildSubprocessConfig {
             env_vars: Vec::new(),
             alias_entries: Vec::new(),
             virtual_modules: Vec::new(),
+            stage_audit: None,
         }
     }
 }
@@ -532,6 +566,15 @@ impl EsbuildSubprocessConfig {
     /// [`zfb_build::PluginHost::invoke_virtual_loader`]).
     pub fn with_virtual_modules(mut self, vms: Vec<(String, String)>) -> Self {
         self.virtual_modules = vms;
+        self
+    }
+
+    /// Set the stage-escape audit policy (chainable). See
+    /// [`StageAuditPolicy`]. When set, every real subprocess this bundler
+    /// spawns emits a metafile and is audited immediately after it
+    /// succeeds; mock subprocesses are unaffected.
+    pub fn with_stage_audit(mut self, policy: StageAuditPolicy) -> Self {
+        self.stage_audit = Some(policy);
         self
     }
 }
@@ -902,6 +945,51 @@ fn build_job_resolver_inputs(
     })
 }
 
+/// Allocate a scratch `--metafile` location for one real-subprocess job, or
+/// `None` when no stage-audit policy is configured.
+///
+/// **Must NOT live inside the subprocess's `--outdir` (`out_dir`)**: the
+/// strict output read-back (`read_back_outdir_with_resource_oracle`,
+/// `read_back_client_script_outdir`) treats `out_dir` as esbuild's exact
+/// promised output set and only special-cases the resource-contract pass's
+/// own `meta.json` — any other stray file left inside `out_dir` (this one
+/// included) is rejected as an unrecognised output. A dedicated system-temp
+/// file sidesteps that trust boundary entirely; dropping the returned
+/// `NamedTempFile` deletes it once the caller is done auditing.
+fn stage_audit_metafile(
+    policy: Option<&StageAuditPolicy>,
+) -> Result<Option<tempfile::NamedTempFile>> {
+    if policy.is_none() {
+        return Ok(None);
+    }
+    tempfile::Builder::new()
+        .prefix(".zfb-stage-audit-")
+        .suffix(".json")
+        .tempfile()
+        .context("failed to allocate stage-audit metafile")
+        .map(Some)
+}
+
+/// Run the guard (b) stage-escape audit against a just-emitted metafile and
+/// attach the owning job's identity to any failure. Called immediately after
+/// each real esbuild subprocess succeeds (never for mock subprocesses, and
+/// only when [`EsbuildSubprocessConfig::stage_audit`] is `Some`).
+fn run_stage_escape_audit(
+    policy: &StageAuditPolicy,
+    metafile_path: &Path,
+    metafile_cwd: &Path,
+    job_label: &str,
+) -> Result<()> {
+    let stage_roots: Vec<&Path> = policy.stage_roots.iter().map(PathBuf::as_path).collect();
+    audit_metafile_stage_escape_at_path(
+        metafile_path,
+        metafile_cwd,
+        &stage_roots,
+        &policy.first_party_root,
+    )
+    .with_context(|| format!("zfb-islands: stage-escape audit failed for {job_label}"))
+}
+
 impl EsbuildSubprocessBundler {
     /// Construct a new bundler with the given config.
     pub fn new(config: EsbuildSubprocessConfig) -> Self {
@@ -948,7 +1036,7 @@ impl EsbuildSubprocessBundler {
         // Shared-bundle path: splitting ON. This is the ONLY path that ships
         // and serves chunks (#806/#808/#809) — `OneEntryOutput::chunks` is
         // threaded into `BundleOutput` here.
-        self.bundle_one_entry(&entry_source, config, true)
+        self.bundle_one_entry(&entry_source, config, true, "shared entry")
     }
 
     /// Per-island bundle pass.
@@ -1035,7 +1123,10 @@ impl EsbuildSubprocessBundler {
             //    `import("./heavy")` would emit a dangling
             //    `import("./islands-chunk-*.js")` to a chunk this path never
             //    writes.)
-            let bundled_js = self.bundle_one_entry(&entry_source, config, false)?.js;
+            let job_label = format!("per-island {}", island.component_name);
+            let bundled_js = self
+                .bundle_one_entry(&entry_source, config, false, &job_label)?
+                .js;
 
             // Stable sequential filename: `<outdir>/islands/island-{i}.js`.
             // Using an index (not marker_name) guarantees collision-freedom:
@@ -1086,7 +1177,7 @@ impl EsbuildSubprocessBundler {
         // per-island entries above — dynamic imports inline, no chunks emitted,
         // take only the entry JS.
         let runtime_js = self
-            .bundle_one_entry(&runtime_entry_source, config, false)?
+            .bundle_one_entry(&runtime_entry_source, config, false, "runtime")?
             .js;
         let runtime_asset_path = islands_dir.join("islands-runtime.js");
         std::fs::write(&runtime_asset_path, runtime_js.as_bytes())
@@ -1103,11 +1194,17 @@ impl EsbuildSubprocessBundler {
     /// Internal: bundle a single in-memory entry source. Writes the
     /// source to a temp file (because esbuild expects entry points on
     /// disk), runs the subprocess, returns the bundled JS string.
+    ///
+    /// `job_label` identifies this invocation for
+    /// [`EsbuildSubprocessConfig::stage_audit`] failure messages (e.g.
+    /// `"shared entry"`, `"per-island Counter"`, `"runtime"`); it is unused
+    /// when no stage-audit policy is configured.
     fn bundle_one_entry(
         &self,
         entry_source: &str,
         config: &BundleConfig,
         splitting: bool,
+        job_label: &str,
     ) -> Result<OneEntryOutput> {
         if splitting {
             validate_module_worker_entries(&config.module_workers)?;
@@ -1269,12 +1366,21 @@ impl EsbuildSubprocessBundler {
              Drives plugin-registered alias / virtual-module \
             exact-match resolution through compilerOptions.paths.",
         )?;
+        // Scratch metafile for THIS job's stage-escape audit. `resource_contract`
+        // (`== splitting`, see `build_esbuild_args`) already forces its own
+        // `--metafile=meta.json` when `splitting` is true, so this one is
+        // only actually requested by the args builder in the `splitting ==
+        // false` (per-island / runtime) case — see
+        // `build_esbuild_args_with_entry_name_and_resource_contract`'s
+        // `stage_audit_metafile` doc comment.
+        let entry_stage_audit_metafile = stage_audit_metafile(self.config.stage_audit.as_ref())?;
         let args = build_esbuild_args(
             config,
             &self.config.extra_args,
             out_dir.path(),
             entry_tmp.path(),
             splitting,
+            entry_stage_audit_metafile.as_ref().map(|f| f.path()),
         );
         let mut cmd = Command::new(&self.config.binary_path);
         cmd.current_dir(&self.config.working_dir);
@@ -1332,6 +1438,26 @@ impl EsbuildSubprocessBundler {
             ));
         }
 
+        // Guard (b) wiring (#1705): audit immediately after this subprocess
+        // succeeds, before touching its output. The resource-contract pass
+        // (`splitting == true`) already wrote `meta.json` above regardless
+        // of this policy; every other pass wrote the dedicated
+        // `stage_audit_metafile` requested above.
+        if let Some(policy) = &self.config.stage_audit {
+            let metafile_path = if splitting {
+                out_dir.path().join(ESBUILD_RESOURCE_METAFILE_FILENAME)
+            } else {
+                entry_stage_audit_metafile
+                    .as_ref()
+                    .expect(
+                        "entry_stage_audit_metafile is Some whenever config.stage_audit is Some",
+                    )
+                    .path()
+                    .to_path_buf()
+            };
+            run_stage_escape_audit(policy, &metafile_path, &self.config.working_dir, job_label)?;
+        }
+
         // Issue #1501: esbuild does not discover `new Worker(new URL(...))`
         // as another entry. Run one explicit browser bundle per locked #1500
         // worker entry into the SAME staging outdir as `islands.js`. Each
@@ -1348,6 +1474,8 @@ impl EsbuildSubprocessBundler {
                     &self.config.alias_entries,
                     &self.config.virtual_modules,
                 )?;
+                let worker_stage_audit_metafile =
+                    stage_audit_metafile(self.config.stage_audit.as_ref())?;
                 let worker_args = build_esbuild_args_with_entry_name(
                     config,
                     &self.config.extra_args,
@@ -1355,6 +1483,7 @@ impl EsbuildSubprocessBundler {
                     worker.source_path(),
                     false,
                     worker.entry_name_template(),
+                    worker_stage_audit_metafile.as_ref().map(|f| f.path()),
                 );
                 let mut worker_cmd = Command::new(&self.config.binary_path);
                 worker_cmd.current_dir(&self.config.working_dir);
@@ -1395,6 +1524,18 @@ impl EsbuildSubprocessBundler {
                         worker.source_path().display(),
                         friendly.trim()
                     ));
+                }
+
+                if let Some(policy) = &self.config.stage_audit {
+                    let metafile_path = worker_stage_audit_metafile.as_ref().expect(
+                        "worker_stage_audit_metafile is Some whenever config.stage_audit is Some",
+                    );
+                    run_stage_escape_audit(
+                        policy,
+                        metafile_path.path(),
+                        &self.config.working_dir,
+                        &format!("shared worker {}", worker.filename()),
+                    )?;
                 }
             }
         }
@@ -1937,6 +2078,7 @@ pub(crate) fn build_esbuild_args(
     out_dir: &Path,
     entry_path: &Path,
     splitting: bool,
+    stage_audit_metafile: Option<&Path>,
 ) -> Vec<OsString> {
     // The entry-name template must produce exactly `STABLE_ISLANDS_FILENAME`
     // (esbuild appends `.js`), or the read-back won't recognise the entry.
@@ -1954,6 +2096,7 @@ pub(crate) fn build_esbuild_args(
         splitting,
         ESBUILD_ENTRY_NAME_TEMPLATE,
         splitting,
+        stage_audit_metafile,
     )
 }
 
@@ -1971,6 +2114,7 @@ pub(crate) fn build_esbuild_args_with_entry_name(
     entry_path: &Path,
     splitting: bool,
     entry_name_template: &str,
+    stage_audit_metafile: Option<&Path>,
 ) -> Vec<OsString> {
     build_esbuild_args_with_entry_name_and_resource_contract(
         config,
@@ -1980,12 +2124,21 @@ pub(crate) fn build_esbuild_args_with_entry_name(
         splitting,
         entry_name_template,
         false,
+        stage_audit_metafile,
     )
 }
 
 /// Private variant that enables the locked resource contract only for the
 /// shared splitting islands pass. Per-island, worker, and client-script
 /// outputs deliberately keep their existing argv/read-back policy.
+///
+/// `stage_audit_metafile`, when `Some`, is only honoured when
+/// `resource_contract` is `false` — the resource-contract pass already emits
+/// its own mandatory `--metafile=meta.json` below, esbuild accepts only one
+/// `--metafile` flag per invocation, and that pre-existing metafile is
+/// exactly what the stage-escape audit needs, so the caller reuses it rather
+/// than requesting a second one here.
+#[allow(clippy::too_many_arguments)] // 8 params: #1705 added stage_audit_metafile; both public wrappers (build_esbuild_args, build_esbuild_args_with_entry_name) already collapse most of these for callers, a struct here would just shuffle the same threaded fields
 fn build_esbuild_args_with_entry_name_and_resource_contract(
     config: &BundleConfig,
     extra_args: &[OsString],
@@ -1994,6 +2147,7 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
     splitting: bool,
     entry_name_template: &str,
     resource_contract: bool,
+    stage_audit_metafile: Option<&Path>,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     args.push(OsString::from("--bundle"));
@@ -2179,6 +2333,11 @@ fn build_esbuild_args_with_entry_name_and_resource_contract(
             "--metafile={}",
             out_dir.join(ESBUILD_RESOURCE_METAFILE_FILENAME).display()
         )));
+    } else if let Some(metafile) = stage_audit_metafile {
+        // Stage-escape audit policy (#1705): every other real pass has no
+        // metafile of its own, so request a dedicated one here when the
+        // caller configured a stage-audit policy.
+        args.push(OsString::from(format!("--metafile={}", metafile.display())));
     }
     args.push(OsString::from(entry_path.as_os_str()));
     args
@@ -2775,6 +2934,7 @@ impl EsbuildSubprocessBundler {
                 &self.config.alias_entries,
                 &self.config.virtual_modules,
             )?;
+            let job_stage_audit_metafile = stage_audit_metafile(self.config.stage_audit.as_ref())?;
             // Every entry is self-contained (`splitting=false`). Worker URL
             // edges have already been rewritten to sibling contract names.
             let args = build_esbuild_args_with_entry_name(
@@ -2784,6 +2944,7 @@ impl EsbuildSubprocessBundler {
                 &source_path,
                 false,
                 &output_stem,
+                job_stage_audit_metafile.as_ref().map(|f| f.path()),
             );
             let mut cmd = Command::new(&self.config.binary_path);
             cmd.current_dir(&self.config.working_dir);
@@ -2820,6 +2981,18 @@ impl EsbuildSubprocessBundler {
                     source_path,
                     friendly.trim()
                 ));
+            }
+
+            if let Some(policy) = &self.config.stage_audit {
+                let metafile_path = job_stage_audit_metafile
+                    .as_ref()
+                    .expect("job_stage_audit_metafile is Some whenever config.stage_audit is Some");
+                run_stage_escape_audit(
+                    policy,
+                    metafile_path.path(),
+                    &self.config.working_dir,
+                    &format!("{label} {source_path:?}"),
+                )?;
             }
         }
 
@@ -3846,10 +4019,248 @@ mod tests {
     fn args_as_strings(config: &BundleConfig, splitting: bool) -> Vec<String> {
         let entry = PathBuf::from("/tmp/entry.tsx");
         let out_dir = PathBuf::from("/tmp/zfb-out");
-        build_esbuild_args(config, &[], &out_dir, &entry, splitting)
+        build_esbuild_args(config, &[], &out_dir, &entry, splitting, None)
             .into_iter()
             .map(|os| os.to_string_lossy().into_owned())
             .collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Stage-escape audit policy (#1705): argv gating, metafile allocation,
+    // and job-identity propagation. These are pure/no-subprocess tests —
+    // a real-esbuild end-to-end proof is left for a follow-up confirm pass
+    // (no pinned esbuild binary was available to author/verify one here).
+    // -----------------------------------------------------------------------
+
+    /// `splitting == false` (per-island / runtime / worker / client-script
+    /// passes) is the ONLY case that honours `stage_audit_metafile` — no
+    /// `--metafile` appears at all without a policy.
+    #[test]
+    fn build_esbuild_args_omits_metafile_without_a_stage_audit_policy() {
+        let args = args_as_strings(&BundleConfig::production(), false);
+        assert!(
+            !args.iter().any(|a| a.starts_with("--metafile")),
+            "no policy configured, no --metafile flag expected: {args:?}"
+        );
+    }
+
+    #[test]
+    fn build_esbuild_args_emits_requested_metafile_when_stage_audit_metafile_is_some() {
+        let cfg = BundleConfig::production();
+        let out_dir = PathBuf::from("/tmp/zfb-out");
+        let entry = PathBuf::from("/tmp/entry.tsx");
+        let metafile = out_dir.join(".zfb-stage-audit-entry.json");
+        let args: Vec<String> =
+            build_esbuild_args(&cfg, &[], &out_dir, &entry, false, Some(&metafile))
+                .into_iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+        assert!(
+            args.iter()
+                .any(|a| *a == format!("--metafile={}", metafile.display())),
+            "expected the requested stage-audit metafile flag: {args:?}"
+        );
+    }
+
+    /// The resource-contract pass (`splitting == true`) already emits its
+    /// own mandatory `--metafile=meta.json`; a caller-supplied
+    /// `stage_audit_metafile` must be silently ignored there so the
+    /// invocation never carries two `--metafile` flags (esbuild accepts
+    /// only one).
+    #[test]
+    fn build_esbuild_args_resource_contract_pass_never_duplicates_metafile_flag() {
+        let cfg = BundleConfig::production();
+        let out_dir = PathBuf::from("/tmp/zfb-out");
+        let entry = PathBuf::from("/tmp/entry.tsx");
+        let would_be_stage_audit_metafile = out_dir.join(".zfb-stage-audit-entry.json");
+        let args: Vec<String> = build_esbuild_args(
+            &cfg,
+            &[],
+            &out_dir,
+            &entry,
+            true,
+            Some(&would_be_stage_audit_metafile),
+        )
+        .into_iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+        let metafile_flags: Vec<&String> = args
+            .iter()
+            .filter(|a| a.starts_with("--metafile="))
+            .collect();
+        assert_eq!(
+            metafile_flags,
+            vec![&format!(
+                "--metafile={}",
+                out_dir.join(ESBUILD_RESOURCE_METAFILE_FILENAME).display()
+            )],
+            "exactly one --metafile flag, reusing the resource-contract metafile: {args:?}"
+        );
+    }
+
+    /// `build_esbuild_args_with_entry_name` is the shared builder for the
+    /// worker loop and the client-script jobs loop — same gating contract
+    /// as `build_esbuild_args`.
+    #[test]
+    fn build_esbuild_args_with_entry_name_emits_metafile_when_stage_audit_metafile_is_some() {
+        let cfg = BundleConfig::production();
+        let out_dir = PathBuf::from("/tmp/zfb-out");
+        let entry = PathBuf::from("/tmp/worker.ts");
+        let metafile = out_dir.join(".zfb-stage-audit-worker-src-s-search-d-worker-d-ts.json");
+        let args: Vec<String> = build_esbuild_args_with_entry_name(
+            &cfg,
+            &[],
+            &out_dir,
+            &entry,
+            false,
+            "worker-src-s-search-d-worker-d-ts",
+            Some(&metafile),
+        )
+        .into_iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+        assert!(
+            args.iter()
+                .any(|a| *a == format!("--metafile={}", metafile.display())),
+            "expected the requested stage-audit metafile flag: {args:?}"
+        );
+    }
+
+    #[test]
+    fn stage_audit_metafile_is_none_without_a_policy() {
+        assert!(stage_audit_metafile(None).unwrap().is_none());
+    }
+
+    /// `stage_audit_metafile` deliberately takes no `out_dir` parameter — a
+    /// codex review finding on the first version of this wiring flagged that
+    /// nesting the scratch metafile inside an esbuild `--outdir` makes the
+    /// strict output read-back (`read_back_outdir_with_resource_oracle`,
+    /// `read_back_client_script_outdir`) reject it as an unrecognised
+    /// output on every job type except the resource-contract pass. Dropping
+    /// the parameter makes that bug class structurally unreachable; this
+    /// test pins the remaining per-job contract: every call allocates a
+    /// distinct, real, on-disk file.
+    #[test]
+    fn stage_audit_metafile_allocates_a_distinct_real_file_per_call() {
+        let policy = StageAuditPolicy {
+            stage_roots: vec![PathBuf::from("/stage")],
+            first_party_root: PathBuf::from("/workspace"),
+        };
+        let entry_metafile = stage_audit_metafile(Some(&policy)).unwrap().unwrap();
+        let worker_metafile = stage_audit_metafile(Some(&policy)).unwrap().unwrap();
+        assert_ne!(entry_metafile.path(), worker_metafile.path());
+        assert!(entry_metafile.path().is_file());
+        assert!(worker_metafile.path().is_file());
+    }
+
+    /// The six job types (shared entry, per-island, runtime, shared worker,
+    /// client script, client-script module worker) share one audit helper —
+    /// this pins that an audit failure always carries the caller's
+    /// `job_label` verbatim, mirroring the exact label shapes each of the
+    /// six production call sites constructs (see `bundle_one_entry`,
+    /// `bundle_per_island`, and `bundle_client_script_file_with_workers`).
+    #[test]
+    fn run_stage_escape_audit_failure_surfaces_owning_job_identity_for_every_job_type() {
+        let policy = StageAuditPolicy {
+            stage_roots: vec![PathBuf::from("/nonexistent/stage")],
+            first_party_root: PathBuf::from("/nonexistent/workspace"),
+        };
+        // A metafile that does not exist deterministically fails the audit
+        // (via `audit_metafile_stage_escape_at_path`'s own read step) without
+        // needing a real esbuild subprocess or a crafted offending metafile.
+        let missing_metafile = PathBuf::from("/nonexistent/.zfb-stage-audit-missing.json");
+        let job_labels = [
+            "shared entry".to_string(),
+            "per-island Counter".to_string(),
+            "runtime".to_string(),
+            format!("shared worker {}", "worker-src-s-search-d-worker-d-ts.js"),
+            format!(
+                "client script {:?}",
+                PathBuf::from("/proj/pages/search-widget.client.ts")
+            ),
+            format!(
+                "client-script module worker {:?}",
+                PathBuf::from("/proj/pages/search.worker.ts")
+            ),
+        ];
+        for job_label in job_labels {
+            let err = run_stage_escape_audit(
+                &policy,
+                &missing_metafile,
+                Path::new("/nonexistent"),
+                &job_label,
+            )
+            .expect_err("a missing metafile must fail the audit");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&job_label),
+                "expected job identity {job_label:?} in error, got: {msg}"
+            );
+        }
+    }
+
+    /// Mock subprocesses never emit or require a metafile, even when a
+    /// stage-audit policy is configured — covers the shared entry, per-island,
+    /// and runtime job types (all routed through `bundle_one_entry`'s mock
+    /// early-return). Pointing the policy at nonexistent paths means any
+    /// accidental real audit attempt would fail loudly instead of silently
+    /// passing.
+    #[test]
+    fn mock_subprocess_bundle_skips_stage_audit_entirely() {
+        let policy = StageAuditPolicy {
+            stage_roots: vec![PathBuf::from("/nonexistent/stage")],
+            first_party_root: PathBuf::from("/nonexistent/workspace"),
+        };
+        let cfg = EsbuildSubprocessConfig::default()
+            .with_mock_output("export const Counter = () => null;\n")
+            .with_stage_audit(policy);
+        let bundler = EsbuildSubprocessBundler::new(cfg);
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle_cfg = BundleConfig::production().with_outdir(tmp.path());
+        let result = bundler.bundle(
+            &[Island::new(
+                "Counter",
+                PathBuf::from("components/counter.tsx"),
+            )],
+            &bundle_cfg,
+        );
+        assert!(
+            result.is_ok(),
+            "mock mode must skip the stage-escape audit entirely: {result:?}"
+        );
+    }
+
+    /// Mirrors the mock-mode guarantee above for the client-script path
+    /// (covers the client entry and client-script module worker job types).
+    #[test]
+    fn mock_subprocess_client_script_skips_stage_audit_entirely() {
+        let policy = StageAuditPolicy {
+            stage_roots: vec![PathBuf::from("/nonexistent/stage")],
+            first_party_root: PathBuf::from("/nonexistent/workspace"),
+        };
+        let cfg = EsbuildSubprocessConfig::default()
+            .with_mock_output("// bundled")
+            .with_stage_audit(policy);
+        let bundler = EsbuildSubprocessBundler::new(cfg);
+        let dir = tempfile::tempdir().unwrap();
+        let entry = dir.path().join("widget.client.ts");
+        let worker = dir.path().join("worker.ts");
+        std::fs::write(&entry, "console.log('entry');\n").unwrap();
+        std::fs::write(&worker, "self.postMessage('worker');\n").unwrap();
+        let workers = vec![ClientScriptWorkerEntry {
+            filename: "worker-worker-d-ts.js".into(),
+            source_path: worker,
+        }];
+        let result = bundler.bundle_client_script_file_with_workers(
+            "widget",
+            &entry,
+            &workers,
+            &BundleConfig::production(),
+        );
+        assert!(
+            result.is_ok(),
+            "mock mode must skip the stage-escape audit entirely: {result:?}"
+        );
     }
 
     fn write_resource_metafile(metafile_path: &Path, outputs: &[(PathBuf, &str)]) -> Result<()> {
@@ -4067,6 +4478,7 @@ mod tests {
             Path::new("/app/src/search.worker.ts"),
             false,
             "worker-src-s-search-d-worker-d-ts",
+            None,
         )
         .into_iter()
         .map(|arg| arg.to_string_lossy().into_owned())
@@ -4544,6 +4956,7 @@ mod tests {
             &PathBuf::from("/tmp/widget.client.ts"),
             false,
             "widget",
+            None,
         )
         .into_iter()
         .map(|arg| arg.to_string_lossy().into_owned())

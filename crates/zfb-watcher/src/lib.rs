@@ -45,6 +45,9 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+mod self_check;
+pub use self_check::{check_liveness, LivenessOpts, LivenessOutcome};
+
 /// Default debounce window. Chosen short enough to feel instant in dev
 /// (~one frame at 60fps + a bit) but long enough to coalesce typical
 /// editor save bursts on Linux/macOS/Windows.

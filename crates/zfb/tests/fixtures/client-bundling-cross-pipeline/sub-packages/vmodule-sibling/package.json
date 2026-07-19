@@ -1,0 +1,5 @@
+{
+  "name": "@zfb-test/vmodule-sibling",
+  "private": true,
+  "type": "module"
+}

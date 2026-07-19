@@ -740,6 +740,152 @@ async fn dev_e2e_edit_during_boot_render_window_is_observed() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 4 — decoy export-syntax strings in a route's SSR body (issue
+// #1715, Dev Wrapper Module confirm pass).
+//
+// The pre-#1713 splice-based dev content-trace wrapper text-searched the
+// COMPILED BUNDLE for the literal substrings "export default" and
+// " as default" to locate the real default-export statement it needed to
+// rewrite. `pages/js-syntax-note.tsx` is a route whose own rendered
+// content is prose ABOUT JS export syntax, so its compiled bundle
+// contains those exact substrings twice: once as the actual
+// `export { ... as default }` statement the old rewrite hunted for, and
+// once inside this route's rendered HTML string literal — precisely the
+// shape a naive text search could latch onto incorrectly and corrupt.
+// The wrapper-as-module design (#1713) never text-searches the bundle at
+// all (it imports the untouched inner bundle as a real ESM module), so
+// this route's decoy content must be fully inert: it serves its real
+// body unchanged, and the rest of the dev session (which shares the same
+// wrapped bundle) keeps serving correctly alongside it.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_e2e_decoy_export_syntax_strings_in_ssr_body_do_not_confuse_wrapper() {
+    // Cross-binary lock acquired BEFORE the in-binary SERIAL guard — see
+    // the lock-ordering note in zfb-test-utils/src/cross_binary_lock.rs.
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[dev_serve_e2e] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("create tempdir for dev-loop-basic fixture");
+    let mut session = spawn_dev(&tmp, &esbuild, &[]);
+    let pgid = session.guard.pgid;
+
+    let body = async {
+        let Some((base, client)) = boot_and_handshake(&mut session).await else {
+            return ScenarioOutcome::Skipped;
+        };
+        let decoy_url = format!("{base}/js-syntax-note/");
+
+        // The boot render is eager (the boot latch, #1025), so the decoy
+        // route is already rendered by the time the handshake completes;
+        // poll anyway for the same reason every other scenario here does
+        // (warmup ticks may still be settling).
+        poll_until_contains(
+            &client,
+            &decoy_url,
+            "export default",
+            SCENARIO_DEADLINE,
+            "decoy route serves the \"export default\" literal",
+            &session,
+        )
+        .await;
+
+        // The route was already proven to contain "export default" above
+        // (via poll_until_contains, which also proved status 200); a
+        // single follow-up GET is enough to check the second literal —
+        // no further render can have happened without an edit.
+        match client.get(&decoy_url).send().await {
+            Ok(resp) => {
+                let served = resp.text().await.unwrap_or_default();
+                assert!(
+                    served.contains(" as default"),
+                    "decoy route body lost the \" as default\" literal — served body:\n{served}\n{}",
+                    session.logs(),
+                );
+            }
+            Err(e) => panic!("final GET {decoy_url} failed: {e}\n{}", session.logs()),
+        }
+
+        // The rest of the dev session — sharing the same wrapped bundle —
+        // must keep serving and tracing correctly alongside the decoy
+        // route: proof the decoy substrings never confused which real
+        // default export the wrapper's ESM import resolves to, nor which
+        // route the content-trace drain attributes a render to.
+        poll_until_contains(
+            &client,
+            &format!("{base}/posts/a/"),
+            "V1-MARKER-A",
+            SCENARIO_DEADLINE,
+            "sibling route /posts/a/ still serves correctly alongside the decoy route",
+            &session,
+        )
+        .await;
+        poll_until_contains(
+            &client,
+            &format!("{base}/"),
+            "dev-loop-basic",
+            SCENARIO_DEADLINE,
+            "index route still serves correctly alongside the decoy route",
+            &session,
+        )
+        .await;
+
+        // Prove the content-trace mechanism itself is unconfused, not just
+        // serving: a frontmatter edit must still reach the index listing
+        // (the same invalidation path scenario 3 in run_shared_scenarios
+        // exercises), with the decoy bundle in play the whole time.
+        let sse = subscribe_sse(&client, &base).await;
+        fs::write(
+            session.root.join("content/posts/a.md"),
+            "---\ntitle: DECOY-CONFIRM-TITLE-A\ndate: 2026-01-01\n---\n\n\
+             V2-MARKER-A body for the alpha post.\n",
+        )
+        .expect("edit a.md frontmatter");
+        let ev = next_sse_event_name(sse, SSE_DEADLINE)
+            .await
+            .expect("read SSE stream after frontmatter edit");
+        assert_eq!(
+            ev.as_deref(),
+            Some("page"),
+            "a frontmatter edit must broadcast an SSE `page` event even with the decoy \
+             route present.\n{}",
+            session.logs(),
+        );
+        poll_until_contains(
+            &client,
+            &format!("{base}/"),
+            "DECOY-CONFIRM-TITLE-A",
+            SCENARIO_DEADLINE,
+            "frontmatter edit still reaches the index listing alongside the decoy route",
+            &session,
+        )
+        .await;
+
+        ScenarioOutcome::Completed
+    };
+
+    let outcome = tokio::time::timeout(OVERALL_DEADLINE_EAGER, body).await;
+    match outcome {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => {
+            panic!(
+                "[watchdog] dev E2E (decoy export-syntax strings) did not finish within {}s — \
+                 this indicates a hang. Process group {pgid} will be killed.\n{}",
+                OVERALL_DEADLINE_EAGER.as_secs(),
+                session.logs(),
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Boot + handshake
 // ---------------------------------------------------------------------------
 

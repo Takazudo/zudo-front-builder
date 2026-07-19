@@ -28,7 +28,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use zfb_islands::{scan_islands, FsResolver, Manifest};
+use zfb_islands::{scan_islands, scan_islands_with_meta, FsResolver, Manifest};
 
 /// Write `body` to `path`, creating parent directories first.
 fn write(path: &Path, body: &str) {
@@ -121,6 +121,65 @@ fn pnpm_symlinked_regular_package_use_client_module_is_registered() {
     );
 
     assert_eq!(scan_component_names(&page), vec!["Widget".to_string()]);
+}
+
+/// Issue #1703, Guard (a): a bare-specifier import that resolves into a
+/// REGULAR (non-workspace) npm package — laid out flat, the shape a plain
+/// npm/yarn install produces — must never be misreported as a
+/// workspace-package edge, even though (per this file's own tests above)
+/// the scanner DOES follow and read it. Only a bare import that resolves
+/// through a genuine pnpm-workspace symlink (canonical target OUTSIDE
+/// `node_modules`) trips Guard (a); framework/third-party deps must never
+/// trip it.
+#[test]
+fn regular_npm_package_import_from_island_is_not_a_workspace_package_edge() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    // A flat (non-workspace) regular npm package — a real directory, not a
+    // pnpm symlink.
+    let pkg = root.join("node_modules/@acme/utils");
+    write(
+        &pkg.join("package.json"),
+        r#"{ "name": "@acme/utils", "type": "module", "main": "index.js" }"#,
+    );
+    write(&pkg.join("index.js"), "export const helper = 1;\n");
+
+    // Project-source island imports the regular package directly (not the
+    // page — the import must happen from an island-reachable module for
+    // Guard (a)'s detection to even have a chance to fire).
+    let island = root.join("components/gallery.tsx");
+    write(
+        &island,
+        r#""use client";
+        import { helper } from "@acme/utils";
+        export function Gallery() { return helper; }
+        "#,
+    );
+    let page = root.join("pages/home.tsx");
+    write(
+        &page,
+        r#"import { Gallery } from "../components/gallery";
+        export default function Home() { return null; }
+        "#,
+    );
+
+    let resolver = FsResolver::new();
+    let (islands, meta) = scan_islands_with_meta(&[page], &resolver).expect("scan");
+    assert_eq!(
+        islands
+            .iter()
+            .map(|i| i.component_name.clone())
+            .collect::<Vec<_>>(),
+        vec!["Gallery".to_string()],
+        "the regular package import IS followed (issue #999)"
+    );
+    assert!(
+        meta.workspace_package_edges_from_islands.is_empty(),
+        "a regular (non-workspace) npm package import from an island must never be flagged \
+         as a workspace-package edge: {:?}",
+        meta.workspace_package_edges_from_islands
+    );
 }
 
 /// The barrel case (the decisive shape from the real `@takazudo/zudo-doc`

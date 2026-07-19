@@ -74,7 +74,7 @@ pub use atomic::{atomic_write, atomic_write_string, validate_output_path};
 pub use bundler::{
     bundle, bundle_with_session, resolve_esbuild_binary_with_env, BundleManifest, BundleMode,
     BundlerInput, BundlerOutput, ContentCollectionSpec, OnBrokenLinks, ResolveMarkdownLinksRoute,
-    ResolveMarkdownLinksSpec, RouteEntry, ShadowSession, DEFAULT_ESBUILD_SLOT,
+    ResolveMarkdownLinksSpec, RouteEntry, ShadowSession, SiblingMirrorPlan, DEFAULT_ESBUILD_SLOT,
 };
 pub use content_provenance::{
     ContentCollectionId, ContentCollectionMembership, ContentEdgeGroup, ContentProvenance,
@@ -87,7 +87,9 @@ pub use head_inject::{
 pub use metafile_deps::{route_module_deps, RouteEntryRef, RouteModuleDeps};
 pub use module_worker::{
     discover_module_preprocessing_with_context,
-    discover_registered_virtual_preprocessing_with_context, rewrite_module_worker_urls,
+    discover_registered_virtual_preprocessing_with_context,
+    remap_virtual_module_project_imports_to_shadow,
+    remap_virtual_module_workspace_sibling_imports_to_shadow, rewrite_module_worker_urls,
     rewrite_module_worker_urls_with_context, ModulePreprocessingDiscovery,
     ModuleWorkerBuildContext, ModuleWorkerDependency, ModuleWorkerEdge, ModuleWorkerRawImportEdge,
     ModuleWorkerRewrite,
