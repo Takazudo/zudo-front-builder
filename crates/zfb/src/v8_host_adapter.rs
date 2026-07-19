@@ -325,9 +325,9 @@ impl ThreadedV8Host {
     /// installs the `getCollection()` observer, and re-exports the inner
     /// worker's `fetch`. The bundle file on disk is never rewritten.
     ///
-    /// The inner specifier is derived from the bundle basename exactly as the
-    /// wrapper's import specifier is (both use `file:///zfb/<basename>`), which
-    /// is what makes the wrapper's `import` resolve to the registered bytes.
+    /// The inner specifier comes from the shared [`inner_bundle_specifier`]
+    /// helper, exactly as the wrapper's import string does, which is what makes
+    /// the wrapper's `import` resolve to the registered bytes.
     pub fn new_with_dev_content_trace_wrapper(
         bundle_path: &Path,
         hooks: PluginRegistryHooks,
@@ -371,11 +371,7 @@ impl ThreadedV8Host {
                             return;
                         }
                     };
-                    let bundle_name = bundle_path_owned
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("bundle.mjs");
-                    let inner_specifier = format!("file:///zfb/{bundle_name}");
+                    let inner_specifier = inner_bundle_specifier(&bundle_path_owned);
 
                     let loader = BundleModuleLoader::new()
                         .with_plugin_hooks(hooks)
@@ -452,6 +448,49 @@ impl ThreadedV8Host {
 /// host's `execute_module` turns this into the fixed specifier
 /// `file:///zfb/__zfb_dev_content_trace_wrapper.mjs`.
 const DEV_CONTENT_TRACE_WRAPPER_MODULE_NAME: &str = "__zfb_dev_content_trace_wrapper.mjs";
+
+/// The single derivation point for the in-memory specifier the dev
+/// content-trace seam uses for the UNTOUCHED inner bundle. Both the V8 host's
+/// module-loader registration key
+/// ([`ThreadedV8Host::new_with_dev_content_trace_wrapper`]) and the wrapper's
+/// literal `import ... from "…"` string
+/// ([`crate::commands::dev::wrap_dev_bundle_with_content_trace`]) MUST be this
+/// exact value, or the wrapper's import cannot resolve to the registered bytes.
+///
+/// The bundle basename is percent-encoded with the same safe set
+/// `zfb_render::embedded_v8::synthesise_specifier` uses (it is what turns a
+/// module name into its `file:///zfb/…` specifier). Encoding here keeps three
+/// spellings in agreement even when the basename carries a byte outside that
+/// set: the registration key, the wrapper's literal import string, and
+/// deno_core's URL-normalized lookup of that import. Without it a raw `#`
+/// would start a URL fragment and a raw space would be percent-encoded on
+/// only one side, so the import would miss the registered module.
+pub(crate) fn inner_bundle_specifier(bundle_path: &Path) -> String {
+    let bundle_name = bundle_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("bundle.mjs");
+    let mut out = String::from("file:///zfb/");
+    for byte in bundle_name.bytes() {
+        match byte {
+            b'a'..=b'z'
+            | b'A'..=b'Z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b'/'
+            | b'['
+            | b']' => out.push(byte as char),
+            other => {
+                out.push('%');
+                out.push_str(&format!("{other:02X}"));
+            }
+        }
+    }
+    out
+}
 
 /// The V8 host thread's request loop: serve exactly one [`HostRequest`] at a
 /// time off the rendezvous channel until it closes, then return so the thread
@@ -685,6 +724,27 @@ mod tests {
         let path = dir.path().join("bundle.mjs");
         std::fs::write(&path, source).expect("write bundle");
         path
+    }
+
+    #[test]
+    fn inner_bundle_specifier_percent_encodes_unsafe_bytes() {
+        // Ordinary basename: safe bytes pass through unchanged.
+        assert_eq!(
+            inner_bundle_specifier(Path::new("dist/.zfb-dev/bundle-a1b2.mjs")),
+            "file:///zfb/bundle-a1b2.mjs"
+        );
+        // Space -> %20, `#` -> %23, matching `synthesise_specifier`'s safe set;
+        // this is the exact spelling the renderer's frame filter percent-decodes
+        // back to the raw basename.
+        assert_eq!(
+            inner_bundle_specifier(Path::new("bundle #1.mjs")),
+            "file:///zfb/bundle%20%231.mjs"
+        );
+        // No file-name component -> the shared `"bundle.mjs"` fallback.
+        assert_eq!(
+            inner_bundle_specifier(Path::new("/")),
+            "file:///zfb/bundle.mjs"
+        );
     }
 
     #[test]

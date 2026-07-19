@@ -4739,13 +4739,9 @@ fn wrap_dev_bundle_with_content_trace(
     let bundle_path = &output.bundle_path;
     // The inner specifier must match the key the V8 host registers the
     // untouched bundle bytes under (`ThreadedV8Host::
-    // new_with_dev_content_trace_wrapper`); both derive it from the same
-    // bundle basename.
-    let bundle_name = bundle_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("bundle.mjs");
-    let inner_specifier = format!("file:///zfb/{bundle_name}");
+    // new_with_dev_content_trace_wrapper`); the shared helper is the single
+    // derivation point both call sites use.
+    let inner_specifier = crate::v8_host_adapter::inner_bundle_specifier(bundle_path);
     let token = make_dev_content_trace_token(bundle_path);
     let descriptors: Vec<DevContentTraceRoute> = routes
         .iter()
