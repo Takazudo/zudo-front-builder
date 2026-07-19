@@ -76,7 +76,7 @@ fn fmt_ready(url: &str) -> String {
 pub(crate) fn fmt_watcher_liveness_timed_out() -> String {
     "hot-reload looks dead on this machine: the dev server's own watcher \
      self-check did not observe a filesystem change within its deadline, \
-     so editing pages/, content/, components/, styles/, or src/ may not \
+     so editing files in your project's watched directories may not \
      trigger a rebuild until you restart `zfb dev`.\n  Common causes: a \
      stalled fseventsd (macOS — try `sudo killall fseventsd`), a \
      Dropbox/OneDrive/iCloud-synced project directory intercepting file \
@@ -604,6 +604,16 @@ mod tests {
         assert!(
             lower.contains("antivirus") || lower.contains("edr"),
             "got: {text}"
+        );
+        // The wording must stay generic — no hardcoded default watch-dir
+        // list that would drift from a project's customized watch roots.
+        assert!(
+            lower.contains("watched directories"),
+            "expected generic 'watched directories' phrasing, got: {text}"
+        );
+        assert!(
+            !text.contains("pages/, content/"),
+            "must not hardcode the default watch-dir list, got: {text}"
         );
     }
 

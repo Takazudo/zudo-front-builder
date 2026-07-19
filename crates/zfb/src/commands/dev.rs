@@ -1996,7 +1996,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let liveness_probe_handle = spawn_watcher_liveness_probe(
         probe_project_root,
         probe_effective_watch_targets,
-        zfb_watcher::SelfCheckOpts::default(),
+        zfb_watcher::LivenessOpts::default(),
     );
 
     // Announce the ACTUAL bound port, not the requested one: with
@@ -2017,14 +2017,19 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let result = tokio::select! {
         res = serve_with_listener(opts, listener, ctrl_c) => {
             boot_handle.abort();
-            // Issue #1718 — cancel the liveness probe too, then AWAIT it
-            // (unlike `boot_handle` above) so its `ProbeSessionGuard`
-            // drop — which unlocks + removes the probe's scratch dir —
-            // has definitely run before shutdown proceeds. `abort()`
-            // alone only schedules cancellation; without the `.await`, a
-            // Ctrl+C that lands mid-handshake could race process exit
-            // and leave an orphaned probe dir for the next boot's stale
-            // sweep to clean up instead.
+            // Issue #1718 — cancel the liveness probe's OUTER task and reap
+            // it. Since the probe body now runs inside `spawn_blocking`
+            // (see `run_watcher_liveness_probe_inner`), this abort cancels
+            // the outer future at its `.await` and returns promptly — it does
+            // NOT itself wait out the handshake, so server shutdown is never
+            // held up here. The detached blocking closure keeps running and
+            // its `ProbeSessionGuard` drop (unlock + remove the scratch dir)
+            // completes on its own thread; the `#[tokio::main]` runtime then
+            // awaits that blocking task at drop on process exit, bounded by
+            // the probe deadline (10s). Worst case on a broken-watcher host:
+            // exit is delayed up to that bound, or the detached body loses a
+            // race with exit and leaves a scratch dir for the next boot's
+            // stale sweep. Both are bounded and self-healing.
             liveness_probe_handle.abort();
             let _ = liveness_probe_handle.await;
             res
@@ -2520,12 +2525,15 @@ fn resolve_probe_parent_dir(
     // root. `zfb_watcher::Watcher` canonicalises every root it registers
     // internally (`watch_aliases`), so comparing only the raw strings here
     // could miss overlap the real watcher actually has. A target that
-    // doesn't exist yet fails to canonicalise; fall back to its raw form
-    // (the same `canonicalize_or_lexical` pattern used elsewhere in this
-    // file).
+    // doesn't exist yet fails to canonicalise; fall back to a LEXICAL
+    // `..`-collapse via `canonicalize_or_lexical` (the same helper used
+    // elsewhere in this file). A raw fallback that kept literal `..`
+    // components would weaken the `starts_with` overlap checks below —
+    // e.g. `project_root/../project` would not lexically start with
+    // `project_root`.
     let canonical_targets: Vec<PathBuf> = effective_watch_targets
         .iter()
-        .map(|t| t.canonicalize().unwrap_or_else(|_| t.clone()))
+        .map(|t| canonicalize_or_lexical(t))
         .collect();
 
     // The candidate side needs the same treatment: `project_root` (or the
@@ -2537,12 +2545,12 @@ fn resolve_probe_parent_dir(
     // the base each candidate is built from before joining the scratch
     // subpath — the base always exists (it's `project_root` /
     // `std::env::temp_dir()`), so this canonicalisation is expected to
-    // succeed; fall back to the raw base if it doesn't.
-    let canonical_project_root = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
+    // succeed; `canonicalize_or_lexical` falls back to a LEXICAL
+    // `..`-collapse (not the raw base) if it doesn't, keeping the overlap
+    // checks below robust for the same reason as the targets above.
+    let canonical_project_root = canonicalize_or_lexical(project_root);
     let temp_dir = std::env::temp_dir();
-    let canonical_temp_dir = temp_dir.canonicalize().unwrap_or_else(|_| temp_dir.clone());
+    let canonical_temp_dir = canonicalize_or_lexical(&temp_dir);
 
     let overlaps = |candidate: &Path, canonical_candidate: &Path| {
         effective_watch_targets
@@ -2566,6 +2574,14 @@ fn resolve_probe_parent_dir(
         return Some((default_parent, false));
     }
 
+    // Asymmetry worth calling out: unlike the project-local default (one
+    // `.zfb-build/` per checkout), this relocated temp parent is a single
+    // fixed path SHARED by every `zfb dev` process on the host — across
+    // different projects, not just concurrent runs of this one. That is
+    // safe: `sweep_stale_probe_sessions` decides staleness purely by the
+    // per-session advisory lock, never by project identity, so one project's
+    // sweep reclaiming another dead project's abandoned session dir here is
+    // correct, not a cross-project leak.
     let temp_parent = temp_dir.join("zfb-dev-watcher-liveness-probe");
     let canonical_temp_parent = canonical_temp_dir.join("zfb-dev-watcher-liveness-probe");
     if !overlaps(&temp_parent, &canonical_temp_parent) {
@@ -2657,13 +2673,26 @@ fn sweep_stale_probe_sessions(parent_dir: &Path) {
                     // risk deleting a directory we can't prove is dead.
                 }
             },
-            Err(_) => {
-                // No lock file: either a crash landed between mkdir and
-                // creating the lock (a directory that was never actually
-                // watched, safe to remove), or something unrelated created
-                // a same-shaped name. Both are safe to remove — nothing
-                // holding a lock means nothing to race.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Lock file genuinely absent: either a crash landed between
+                // mkdir and creating the lock (a directory that was never
+                // actually watched, safe to remove), or something unrelated
+                // created a same-shaped name. Both are safe to remove —
+                // nothing holding a lock means nothing to race.
                 let _ = std::fs::remove_dir_all(&path);
+            }
+            Err(error) => {
+                // The lock file EXISTS but we could not open it — e.g. fd
+                // exhaustion (EMFILE) or a permission error (EACCES). This
+                // says nothing about whether a live probe owns the session;
+                // treating it as "stale" would let a transient open failure
+                // delete a locked directory from under its running owner.
+                // Skip the entry and leave it for a future sweep instead.
+                tracing::debug!(
+                    path = %lock_path.display(),
+                    %error,
+                    "watcher liveness sweep: could not open session lock file; leaving session dir untouched"
+                );
             }
         }
     }
@@ -2744,13 +2773,64 @@ fn react_to_liveness_outcome(outcome: zfb_watcher::LivenessOutcome) {
 async fn run_watcher_liveness_probe_inner(
     project_root: PathBuf,
     effective_watch_targets: Vec<PathBuf>,
-    opts: zfb_watcher::SelfCheckOpts,
+    opts: zfb_watcher::LivenessOpts,
     sleep_before: std::time::Duration,
 ) {
     if !sleep_before.is_zero() {
         tokio::time::sleep(sleep_before).await;
     }
 
+    // The probe body is entirely synchronous filesystem + advisory-lock I/O
+    // (canonicalize, create_dir_all, read_dir, File::create/try_lock, rename,
+    // remove_dir_all) plus the up-to-`opts.deadline` handshake in
+    // `check_liveness`. Run all of it on a dedicated blocking thread so it
+    // never parks a tokio async worker. `check_liveness` is itself async (it
+    // sleeps between marker writes), so the blocking body drives it to
+    // completion via the captured runtime handle's `block_on` — permitted
+    // because a `spawn_blocking` thread is outside any async context.
+    //
+    // Shutdown (issue #1718): `spawn_blocking` is NOT cancellable. `run()`'s
+    // Ctrl+C path `abort()`s the OUTER task; that promptly cancels THIS
+    // future at the `.await` below (so server drain / shutdown is never held
+    // up), but the blocking closure detaches and keeps running to completion
+    // on its own thread, where `ProbeSessionGuard` still unlocks + removes
+    // the session dir. The residual cost is at PROCESS EXIT: the
+    // `#[tokio::main]` runtime waits for started `spawn_blocking` tasks when
+    // it is dropped, so a Ctrl+C landing mid-handshake can delay exit by up
+    // to `opts.deadline` (10s default). That is bounded (never an indefinite
+    // hang) and only materializes on a genuinely broken-watcher host, where
+    // the healthy-host handshake would instead have resolved in well under a
+    // second. Cleanup is never skipped: the detached body finishes its guard
+    // drop, and at worst the next boot's stale sweep reclaims a session dir
+    // that outlived the process by a few syscalls. This bounded-await
+    // tradeoff is a deliberate consequence of running the whole handshake off
+    // the async workers; a cancellable handshake would require threading a
+    // cancel signal through the `zfb-watcher` primitive (tracked separately,
+    // issue #1738).
+    let handle = tokio::runtime::Handle::current();
+    let _ = tokio::task::spawn_blocking(move || {
+        run_watcher_liveness_probe_blocking(&handle, project_root, effective_watch_targets, opts);
+    })
+    .await;
+}
+
+/// Synchronous body of [`run_watcher_liveness_probe_inner`], run on a
+/// `spawn_blocking` thread so its blocking `std::fs` / flock / `remove_dir_all`
+/// calls and the up-to-`opts.deadline` handshake never park an async worker.
+///
+/// Drives the async [`zfb_watcher::check_liveness`] to completion via
+/// `handle.block_on` — safe here because a blocking-pool thread is not an
+/// async execution context. `handle` must belong to a multi-threaded runtime
+/// (production runs under `#[tokio::main]`; the direct tests use the
+/// `multi_thread` flavor) — a `current_thread` runtime whose sole thread is
+/// already parked awaiting this closure's `JoinHandle` would deadlock on the
+/// nested `block_on`.
+fn run_watcher_liveness_probe_blocking(
+    handle: &tokio::runtime::Handle,
+    project_root: PathBuf,
+    effective_watch_targets: Vec<PathBuf>,
+    opts: zfb_watcher::LivenessOpts,
+) {
     let Some((parent_dir, _relocated)) =
         resolve_probe_parent_dir(&project_root, &effective_watch_targets)
     else {
@@ -2819,10 +2899,13 @@ async fn run_watcher_liveness_probe_inner(
         lock_file: Some(lock_file),
     };
 
-    let outcome = zfb_watcher::check_liveness(&session_dir, opts).await;
+    let outcome = handle.block_on(zfb_watcher::check_liveness(&session_dir, opts));
     react_to_liveness_outcome(outcome);
-    // `_guard` drops here on every path above (including a mid-handshake
-    // `.abort()`): unlocks + removes `session_dir` regardless of verdict.
+    // `_guard` drops here on every return path above: unlocks + removes
+    // `session_dir` regardless of verdict. Because this runs on a
+    // `spawn_blocking` thread — which is NOT cancelled when `run()`'s
+    // shutdown `abort()`s the outer task — the drop still executes even on a
+    // mid-handshake Ctrl+C, so cleanup is never skipped by cancellation.
 }
 
 /// Spawn the watcher-liveness self-check (issue #1718, epic #1716) as a
@@ -2833,7 +2916,7 @@ async fn run_watcher_liveness_probe_inner(
 fn spawn_watcher_liveness_probe(
     project_root: PathBuf,
     effective_watch_targets: Vec<PathBuf>,
-    opts: zfb_watcher::SelfCheckOpts,
+    opts: zfb_watcher::LivenessOpts,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(run_watcher_liveness_probe_inner(
         project_root,
@@ -7934,6 +8017,51 @@ mod tests {
         drop(live_lock);
     }
 
+    /// Regression: the stale sweep must only treat a GENUINELY-ABSENT lock
+    /// file (`NotFound`) as "safe to remove". If `File::open` fails for any
+    /// other reason — fd exhaustion (EMFILE), a permission error (EACCES) —
+    /// a LIVE, locked session's dir could be removed from under its running
+    /// probe. Simulate a non-`NotFound` open failure with an unreadable
+    /// (mode 000) lock file and assert the session dir survives.
+    #[cfg(unix)]
+    #[test]
+    fn stale_sweep_keeps_session_when_lock_open_fails_non_notfound() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let session_dir = parent.path().join("session-locked-1-1");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let lock_path = session_dir.join(".owner.lock");
+        std::fs::File::create(&lock_path).unwrap();
+
+        let mut perms = std::fs::metadata(&lock_path).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&lock_path, perms).unwrap();
+
+        // Some environments (root, certain sandboxes) bypass file-permission
+        // checks entirely. Only assert when the open actually fails with a
+        // non-`NotFound` error, so this test skips rather than false-passing
+        // where it can't exercise the path it targets.
+        let enforced = matches!(
+            std::fs::File::open(&lock_path),
+            Err(ref e) if e.kind() != std::io::ErrorKind::NotFound
+        );
+
+        if enforced {
+            sweep_stale_probe_sessions(parent.path());
+            assert!(
+                session_dir.exists(),
+                "a session whose lock file can't be opened (non-NotFound, e.g. EACCES/EMFILE) \
+                 must survive the sweep"
+            );
+        }
+
+        // Restore perms so the tempdir's own Drop cleanup can remove it.
+        let mut perms = std::fs::metadata(&lock_path).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&lock_path, perms).unwrap();
+    }
+
     #[test]
     fn timed_out_verdict_produces_the_loud_warning_text() {
         let warning = watcher_liveness_warning_for(&zfb_watcher::LivenessOutcome::TimedOut);
@@ -7959,7 +8087,11 @@ mod tests {
     /// resolves fast (`Live`) on a healthy CI host (see
     /// `zfb-watcher`'s own `live_fast_on_a_healthy_host` test), so it can't
     /// be used to deterministically simulate "slow" without flaking.
-    #[tokio::test]
+    // multi_thread flavor: the probe body now drives `check_liveness` via
+    // `Handle::block_on` inside `spawn_blocking`, which deadlocks on a
+    // single-threaded runtime whose only thread is parked awaiting the
+    // blocking JoinHandle. Production runs multi_thread (`#[tokio::main]`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ready_banner_ordering_is_not_delayed_by_a_slow_probe() {
         let tmp = tempfile::tempdir().unwrap();
         let project_root = tmp.path().to_path_buf();
@@ -7971,7 +8103,7 @@ mod tests {
             run_watcher_liveness_probe_inner(
                 probe_project_root,
                 Vec::new(),
-                zfb_watcher::SelfCheckOpts::default(),
+                zfb_watcher::LivenessOpts::default(),
                 std::time::Duration::from_millis(200),
             )
             .await;
@@ -7997,7 +8129,10 @@ mod tests {
     /// creates its scratch parent, resolves (fast — `Live`, per
     /// `zfb-watcher`'s own healthy-host test), and cleans up its OWN
     /// session dir afterward without needing the caller to do anything.
-    #[tokio::test]
+    // multi_thread flavor: see `ready_banner_ordering_is_not_delayed_by_a_slow_probe`
+    // — the probe drives `check_liveness` via `Handle::block_on` inside
+    // `spawn_blocking`, which needs a runtime that isn't the single blocked thread.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn spawn_watcher_liveness_probe_cleans_up_its_session_dir_on_success() {
         let tmp = tempfile::tempdir().unwrap();
         let project_root = tmp.path().to_path_buf();
@@ -8005,7 +8140,7 @@ mod tests {
         let handle = spawn_watcher_liveness_probe(
             project_root.clone(),
             Vec::new(),
-            zfb_watcher::SelfCheckOpts::new(std::time::Duration::from_secs(10))
+            zfb_watcher::LivenessOpts::new(std::time::Duration::from_secs(10))
                 .with_marker_interval(std::time::Duration::from_millis(100))
                 .with_poll_interval(std::time::Duration::from_millis(10)),
         );
