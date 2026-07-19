@@ -8028,6 +8028,274 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------
+    // No-spurious-rebuild proof (issue #1719, epic #1716)
+    // -----------------------------------------------------------------
+    //
+    // Two independent guarantees, proven separately rather than folded
+    // into one test:
+    //
+    // 1. The probe's resolved scratch location — default AND relocated —
+    //    is provably disjoint from the exact absolute watch surface
+    //    (`watch_roots` joined against `project_root`, plus
+    //    `extraWatchPaths`) that `zfb_watcher::Watcher::start_with_extras`
+    //    registers. `notify` therefore never has a subscription anywhere
+    //    along the probe's path, so the orchestrator's `Change` channel
+    //    can never receive an event for it — this IS the actual mechanism
+    //    that prevents a probe-caused tick, for BOTH locations.
+    // 2. For the DEFAULT (in-root, non-relocated) location specifically,
+    //    the granularity policy ALSO classifies probe-shaped paths as a
+    //    no-op independently of watch-surface membership — proven by
+    //    injecting the probe's own marker/lock-file paths, with
+    //    representative Created/Removed kinds, straight into a real
+    //    `BuildOrchestrator::tick_with_kinds` (the actual entry point
+    //    `run()` uses, not the simpler `tick`) with a pipeline that
+    //    panics on any `apply` call.
+    // 3. The RELOCATED (out-of-root, adversarial-overlap) location does
+    //    NOT get that second, classification-level guarantee — an
+    //    out-of-root path with a non-whitelisted extension classifies as
+    //    `PathClass::External` and requests a full rebuild (policy.rs, PR
+    //    #376), and the probe's extensionless marker/lock filenames are
+    //    no exception. A dedicated test pins that known behavior instead
+    //    of asserting a false no-op claim: for the relocated case, (1) —
+    //    disjointness from the real watch surface — is the ONLY thing
+    //    that prevents a probe-caused tick in production.
+
+    /// The exact absolute watch surface `Watcher::start_with_extras` would
+    /// register for `(project_root, watch_roots, extra_watch_paths)` —
+    /// built independently of `resolve_probe_parent_dir`'s own overlap
+    /// closure so this is a proof against the real subscription set, not
+    /// the implementation checking itself.
+    fn real_watch_surface(
+        project_root: &Path,
+        watch_roots: &[PathBuf],
+        extra_watch_paths: &[PathBuf],
+    ) -> Vec<PathBuf> {
+        watch_roots
+            .iter()
+            .map(|root| project_root.join(root))
+            .chain(extra_watch_paths.iter().cloned())
+            .collect()
+    }
+
+    /// True iff `candidate` neither sits under, nor is an ancestor of, any
+    /// entry in `surface` — i.e. `notify` would never register a
+    /// subscription that covers `candidate`.
+    fn disjoint_from_watch_surface(candidate: &Path, surface: &[PathBuf]) -> bool {
+        surface
+            .iter()
+            .all(|root| !candidate.starts_with(root) && !root.starts_with(candidate))
+    }
+
+    #[test]
+    fn probe_default_location_never_enters_the_real_watch_surface() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let watch_roots = derive_watch_roots(&config::Config::default());
+
+        let (probe_parent, relocated) = resolve_probe_parent_dir(&project_root, &[]).unwrap();
+        assert!(!relocated, "no overlap must never relocate");
+
+        let surface = real_watch_surface(&project_root, &watch_roots, &[]);
+        assert!(
+            disjoint_from_watch_surface(&probe_parent, &surface),
+            "the default probe location {probe_parent:?} must never overlap the real watch surface {surface:?}"
+        );
+    }
+
+    /// Adversarial config: an `extraWatchPaths` entry covering the entire
+    /// project root forces `resolve_probe_parent_dir` to relocate to the
+    /// OS temp dir (#1718). Prove the relocated location is STILL provably
+    /// disjoint from the exact watch surface the real
+    /// `Watcher::start_with_extras` would register — the relocation isn't
+    /// just "elsewhere", it lands specifically somewhere the orchestrator's
+    /// watcher never looks.
+    #[test]
+    fn probe_relocated_location_never_enters_the_real_watch_surface_under_adversarial_overlap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let watch_roots = derive_watch_roots(&config::Config::default());
+        let extra_watch_paths = vec![project_root.clone()];
+
+        let (probe_parent, relocated) =
+            resolve_probe_parent_dir(&project_root, &extra_watch_paths).unwrap();
+        assert!(
+            relocated,
+            "an extraWatchPaths entry covering the project root must relocate"
+        );
+
+        let surface = real_watch_surface(&project_root, &watch_roots, &extra_watch_paths);
+        assert!(
+            disjoint_from_watch_surface(&probe_parent, &surface),
+            "the relocated probe location {probe_parent:?} must never overlap the real watch surface {surface:?}"
+        );
+    }
+
+    /// Pipeline that panics on any `apply` call — used by the injection
+    /// tests below so a probe-attributable rebuild is a HARD failure
+    /// rather than a soft assertion that a future edit could quietly
+    /// weaken (issue #1719's mandate).
+    struct PanicsOnApplyPipeline;
+
+    impl zfb_build::AssetPipeline for PanicsOnApplyPipeline {
+        fn apply(
+            &self,
+            plan: &zfb_build::RebuildPlan,
+            _ctx: &zfb_build::BuildContext,
+        ) -> anyhow::Result<zfb_build::BuildOutcome> {
+            panic!(
+                "watcher-liveness probe activity must never reach the pipeline, \
+                 but a rebuild was attempted: {plan:?}"
+            );
+        }
+    }
+
+    fn noop_build_ctx(dist: &Path) -> zfb_build::BuildContext {
+        zfb_build::BuildContext {
+            dist_root: dist.to_path_buf(),
+            render_pages: Arc::new(|_, _| Ok(vec![])),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: None,
+        }
+    }
+
+    /// Injection-level proof: feed the probe's own marker + lock-file
+    /// paths, in its DEFAULT (non-relocated) location, straight into a
+    /// real `BuildOrchestrator::tick_with_kinds` — NOT the simpler `tick`
+    /// (codex review finding, issue #1719): the watcher-driven dev loop's
+    /// `run()` always calls `tick_with_kinds` (kind-aware, with the #659
+    /// discovery hook and the #1581 removal handling `tick` skips
+    /// entirely), so a regression in either of those paths could refresh
+    /// or rebuild on probe activity while a `tick`-only test stayed green.
+    ///
+    /// Exercises the two ChangeKinds a real probe lifecycle produces:
+    /// each marker write is a genuinely NEW file (`Created`, matching
+    /// `check_liveness`'s per-iteration incrementing filename), and the
+    /// whole session directory (lock file + markers) is deleted on
+    /// cleanup (`Removed`) via `ProbeSessionGuard`'s drop. `discover` is
+    /// `None` — no content collection would ever map a probe path to a
+    /// discoverable route. Any resulting rebuild is a hard failure (the
+    /// pipeline panics).
+    #[test]
+    fn probe_marker_activity_in_default_location_never_causes_an_orchestrator_tick() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let watch_roots = derive_watch_roots(&config::Config::default());
+
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(project_root.clone(), watch_roots),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            PanicsOnApplyPipeline,
+        );
+
+        let (probe_parent, relocated) = resolve_probe_parent_dir(&project_root, &[]).unwrap();
+        assert!(!relocated);
+        let session_dir = probe_parent.join(unique_probe_session_dir_name());
+        let lock_path = session_dir.join(".owner.lock");
+        let marker0 = session_dir.join(".zfb-liveness-probe-0");
+        let marker1 = session_dir.join(".zfb-liveness-probe-1");
+
+        let dist = tempfile::tempdir().unwrap();
+
+        let created = orch
+            .tick_with_kinds(
+                vec![
+                    (lock_path.clone(), zfb_watcher::ChangeKind::Created),
+                    (marker0.clone(), zfb_watcher::ChangeKind::Created),
+                    (marker1.clone(), zfb_watcher::ChangeKind::Created),
+                ],
+                &noop_build_ctx(dist.path()),
+                None,
+            )
+            .unwrap();
+        assert!(
+            created.is_none(),
+            "probe marker/lock-file creation must never produce a rebuild outcome"
+        );
+
+        let removed = orch
+            .tick_with_kinds(
+                vec![
+                    (lock_path, zfb_watcher::ChangeKind::Removed),
+                    (marker0, zfb_watcher::ChangeKind::Removed),
+                    (marker1, zfb_watcher::ChangeKind::Removed),
+                ],
+                &noop_build_ctx(dist.path()),
+                None,
+            )
+            .unwrap();
+        assert!(
+            removed.is_none(),
+            "the probe's own session-dir cleanup (a Removed batch) must never produce a rebuild outcome"
+        );
+    }
+
+    /// Honest coverage of the RELOCATED probe path at the classification
+    /// layer (codex review finding, issue #1719): under the adversarial
+    /// config that forces relocation (`extraWatchPaths` covering the whole
+    /// project root), the resolved probe location sits OUTSIDE
+    /// `project_root`. Fed directly into `plan_for_changes`, such a path
+    /// does NOT classify as a no-op — `classify_change_with_content_roots`
+    /// routes any out-of-root path with a non-whitelisted extension (the
+    /// probe's extensionless marker/lock filenames included) to
+    /// `PathClass::External`, which conservatively requests a full
+    /// `PageSelection::All` rebuild (see `policy.rs`, PR #376). That is
+    /// the correct, unrelated behavior for a genuine opted-in
+    /// `extraWatchPaths` external file — it does not special-case probe
+    /// paths, and this test deliberately does NOT claim it does.
+    ///
+    /// The real safety guarantee for the relocated case is NOT
+    /// classification — it's that this exact location is proven disjoint
+    /// from the real orchestrator watch surface
+    /// (`probe_relocated_location_never_enters_the_real_watch_surface_under_adversarial_overlap`
+    /// above), so `zfb_watcher::Watcher::start_with_extras` never
+    /// registers a subscription there and `plan_for_changes`/
+    /// `tick_with_kinds` never actually receives an event for it in
+    /// production. This test pins the classification result so a future
+    /// reader doesn't mistake the policy layer for that safety net.
+    #[test]
+    fn probe_relocated_location_would_not_no_op_if_ever_injected_directly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().to_path_buf();
+        let watch_roots = derive_watch_roots(&config::Config::default());
+        let extra_watch_paths = vec![project_root.clone()];
+
+        let (probe_parent, relocated) =
+            resolve_probe_parent_dir(&project_root, &extra_watch_paths).unwrap();
+        assert!(
+            relocated,
+            "an extraWatchPaths entry covering the project root must relocate"
+        );
+        assert!(
+            !probe_parent.starts_with(&project_root),
+            "the relocated location must be genuinely out-of-root: {probe_parent:?}"
+        );
+
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(project_root.clone(), watch_roots)
+                .with_extra_watch_paths(extra_watch_paths),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            PanicsOnApplyPipeline,
+        );
+
+        let session_dir = probe_parent.join(unique_probe_session_dir_name());
+        let marker_paths = vec![
+            session_dir.join(".owner.lock"),
+            session_dir.join(".zfb-liveness-probe-0"),
+        ];
+
+        let plan = orch.plan_for_changes(marker_paths);
+        assert!(
+            plan.pages.is_all() && plan.ssr_reload_needed,
+            "known current behavior: an out-of-root probe-shaped path classifies as \
+             PathClass::External and requests a full rebuild — this path is never actually \
+             fed to the orchestrator in production because it is proven disjoint from the \
+             real watch surface, not because classification treats it specially"
+        );
+    }
+
     #[cfg(feature = "embed_v8")]
     #[test]
     fn zero_pages_without_injected_routes_keeps_missing_pages_error() {
