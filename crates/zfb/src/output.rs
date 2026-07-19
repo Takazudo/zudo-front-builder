@@ -61,6 +61,29 @@ fn fmt_ready(url: &str) -> String {
     format!("{} ready on {}", arrow, url_styled)
 }
 
+/// Format the loud "watcher may be dead" warning for a `TimedOut`
+/// watcher-liveness self-check verdict (issue #1718, epic #1716).
+///
+/// This is FSEvents-motivated (a stalled macOS FSEvents stream silently
+/// killing hot-reload is the reported symptom, issue #1687), but the
+/// self-check itself is backend-agnostic — it runs the identical handshake
+/// against inotify on Linux — so the wording names the hot-reload
+/// consequence plus the common real-world causes rather than blaming
+/// FSEvents specifically. `pub(crate)` (not private, unlike the other
+/// `fmt_*` helpers above) because `commands::dev` reuses this exact text
+/// as the decision output of its own pure verdict-to-warning mapping — see
+/// `commands::dev::watcher_liveness_warning_for`.
+pub(crate) fn fmt_watcher_liveness_timed_out() -> String {
+    "hot-reload looks dead on this machine: the dev server's own watcher \
+     self-check did not observe a filesystem change within its deadline, \
+     so editing pages/, content/, components/, styles/, or src/ may not \
+     trigger a rebuild until you restart `zfb dev`.\n  Common causes: a \
+     stalled fseventsd (macOS — try `sudo killall fseventsd`), a \
+     Dropbox/OneDrive/iCloud-synced project directory intercepting file \
+     events, or antivirus/EDR software hooking filesystem calls."
+        .to_string()
+}
+
 /// Print an informational status message to `stdout`.
 ///
 /// Output: `info <msg>` with the `info` label rendered in cyan when colours
@@ -568,6 +591,20 @@ mod tests {
         warn("");
         error("");
         ready("");
+    }
+
+    #[test]
+    fn fmt_watcher_liveness_timed_out_names_hot_reload_and_common_causes() {
+        let text = fmt_watcher_liveness_timed_out();
+        let lower = text.to_lowercase();
+        assert!(text.contains("hot-reload"), "got: {text}");
+        assert!(text.contains("restart `zfb dev`"), "got: {text}");
+        assert!(lower.contains("fseventsd"), "got: {text}");
+        assert!(lower.contains("dropbox"), "got: {text}");
+        assert!(
+            lower.contains("antivirus") || lower.contains("edr"),
+            "got: {text}"
+        );
     }
 
     #[test]
