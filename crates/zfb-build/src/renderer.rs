@@ -1241,15 +1241,16 @@ fn load_sourcemap(path: &Path) -> Option<sourcemap::SourceMap> {
 
 /// Basename of the inner bundle module (e.g. `bundle_path` =
 /// `dist/.zfb-dev/bundle-a1b2.mjs` → `"bundle-a1b2.mjs"`), used to filter
-/// stack frames during re-projection. Falls back to an empty string when
-/// `bundle_path` has no file-name component (e.g. `""` or `/`) — an empty
-/// expected basename never matches a real frame specifier, so
-/// re-projection is simply skipped rather than mis-attributed.
+/// stack frames during re-projection. Falls back to `"bundle.mjs"` when
+/// `bundle_path` has no file-name component (e.g. `""` or `/`), matching the
+/// `zfb` crate's `inner_bundle_specifier` helper — the seam that registers the
+/// inner bundle under `file:///zfb/bundle.mjs` for that same degenerate path,
+/// so a frame produced against it still resolves.
 fn inner_bundle_basename(bundle_path: &Path) -> String {
     bundle_path
         .file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or_default()
+        .unwrap_or("bundle.mjs")
         .to_string()
 }
 
@@ -1384,12 +1385,10 @@ fn find_frame_candidates(body: &str) -> Vec<FrameCandidate> {
             let col: u32 = body[mid..j].parse().unwrap_or(0);
             // Require the digit pair to be preceded by something that
             // looks like a path. We're strict-ish: insist on a `.mjs`
-            // or `.js` immediately before, OR explicitly `bundle`.
-            // This dodges random `key:value` pairs like `status: 500`.
+            // or `.js` immediately before. This dodges random `key:value`
+            // pairs like `status: 500`.
             let prefix = &body[..start];
-            let looks_like_frame = prefix.ends_with(".mjs:")
-                || prefix.ends_with(".js:")
-                || prefix.ends_with("bundle:");
+            let looks_like_frame = prefix.ends_with(".mjs:") || prefix.ends_with(".js:");
             if line > 0 && col > 0 && looks_like_frame {
                 // The specifier ends right before the colon that
                 // introduces the line number (already confirmed by
@@ -2275,6 +2274,20 @@ mod tests {
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].line, 42);
         assert_eq!(cands[0].col, 7);
+        // `find_specifier_start` walks back from the pre-`:` byte to the `(`
+        // delimiter, capturing only the bare filename token.
+        assert_eq!(cands[0].specifier, "bundle.mjs");
+
+        // A full `file://` specifier: `find_specifier_start` must let the
+        // scheme's own `:` bytes through (they are not delimiters) and stop at
+        // the `(`, capturing the whole URL — this is the specifier text the
+        // basename filter later compares against.
+        let url_body = "TypeError: boom\n  at fetch (file:///zfb/bundle.mjs:10:5)\n";
+        let url_cands = find_frame_candidates(url_body);
+        assert_eq!(url_cands.len(), 1);
+        assert_eq!(url_cands[0].line, 10);
+        assert_eq!(url_cands[0].col, 5);
+        assert_eq!(url_cands[0].specifier, "file:///zfb/bundle.mjs");
     }
 
     // ---- strip_static_html_frontmatter (Sub 409) ---------------------------
