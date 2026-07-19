@@ -67,6 +67,7 @@
 //! the TCP round-trip overhead from unit tests. See the test module at the
 //! bottom of the file.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -647,6 +648,7 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
     }
 
     let timeout = request_timeout.unwrap_or(Duration::from_secs(60));
+    let expected_inner_bundle_basename = inner_bundle_basename(&bundle_path);
     let mut handle = launch(&backend, &bundle_path, timeout)?;
     let sourcemap = load_sourcemap(&sourcemap_path);
 
@@ -660,6 +662,7 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
             &dist_dir,
             &project_root,
             sourcemap.as_ref(),
+            &expected_inner_bundle_basename,
             prod_head_assets.as_ref(),
         ) {
             Ok(path) => {
@@ -707,6 +710,14 @@ pub fn render_all(input: RendererInput) -> Result<RendererOutput, RendererError>
 pub struct RendererState {
     sourcemap: Option<sourcemap::SourceMap>,
     handle: BackendHandle,
+    /// Basename of the inner bundle module (e.g. `"bundle.mjs"`), derived
+    /// from `bundle_path` at [`start`]. Frame candidates whose specifier
+    /// doesn't match this basename are excluded from re-projection — see
+    /// [`reproject_first_frame`]. Not part of the public input types: the
+    /// dev content-trace wrapper module (a separately-numbered `.mjs`, see
+    /// issue #1712) throws its own small `line:col` frames that must never
+    /// be mistaken for a bundle location.
+    expected_inner_bundle_basename: String,
 }
 
 impl std::fmt::Debug for RendererState {
@@ -714,6 +725,10 @@ impl std::fmt::Debug for RendererState {
         f.debug_struct("RendererState")
             .field("has_sourcemap", &self.sourcemap.is_some())
             .field("handle", &self.handle)
+            .field(
+                "expected_inner_bundle_basename",
+                &self.expected_inner_bundle_basename,
+            )
             .finish()
     }
 }
@@ -783,9 +798,14 @@ pub fn start(input: RendererStartInput) -> Result<RendererState, RendererError> 
         request_timeout,
     } = input;
     let timeout = request_timeout.unwrap_or(Duration::from_secs(30));
+    let expected_inner_bundle_basename = inner_bundle_basename(&bundle_path);
     let handle = launch(&backend, &bundle_path, timeout)?;
     let sourcemap = load_sourcemap(&sourcemap_path);
-    Ok(RendererState { sourcemap, handle })
+    Ok(RendererState {
+        sourcemap,
+        handle,
+        expected_inner_bundle_basename,
+    })
 }
 
 /// Drive one route against an existing dev-mode state and write it to
@@ -806,6 +826,7 @@ pub fn render_one(
         dist_dir,
         project_root,
         state.sourcemap.as_ref(),
+        &state.expected_inner_bundle_basename,
         // Dev mode never injects prod head assets — see the
         // `prod_head_assets` field doc on `RendererInput`.
         None,
@@ -916,6 +937,7 @@ fn render_one_inner(
     dist_dir: &Path,
     project_root: &Path,
     sourcemap: Option<&sourcemap::SourceMap>,
+    expected_inner_bundle_basename: &str,
     prod_head_assets: Option<&crate::head_inject::ProdHeadAssets>,
 ) -> Result<PathBuf, RendererError> {
     // Validate `output_path` before joining: the value comes from the
@@ -985,7 +1007,8 @@ fn render_one_inner(
 
     if !(200..300).contains(&status) {
         let body_str = String::from_utf8_lossy(&body).into_owned();
-        let user_location = sourcemap.and_then(|sm| reproject_first_frame(&body_str, sm));
+        let user_location = sourcemap
+            .and_then(|sm| reproject_first_frame(&body_str, sm, expected_inner_bundle_basename));
         return Err(RendererError::RenderFailed {
             url: url_for_err,
             status,
@@ -1216,6 +1239,63 @@ fn load_sourcemap(path: &Path) -> Option<sourcemap::SourceMap> {
     sourcemap::SourceMap::from_reader(raw.as_slice()).ok()
 }
 
+/// Basename of the inner bundle module (e.g. `bundle_path` =
+/// `dist/.zfb-dev/bundle-a1b2.mjs` → `"bundle-a1b2.mjs"`), used to filter
+/// stack frames during re-projection. Falls back to `"bundle.mjs"` when
+/// `bundle_path` has no file-name component (e.g. `""` or `/`), matching the
+/// `zfb` crate's `inner_bundle_specifier` helper — the seam that registers the
+/// inner bundle under `file:///zfb/bundle.mjs` for that same degenerate path,
+/// so a frame produced against it still resolves.
+fn inner_bundle_basename(bundle_path: &Path) -> String {
+    bundle_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bundle.mjs")
+        .to_string()
+}
+
+/// The final `/`-delimited (or `\`-delimited, for Windows-style paths)
+/// segment of a frame specifier — e.g. `file:///zfb/bundle.mjs` →
+/// `"bundle.mjs"`. Specifiers with no separator (a bare `"bundle.mjs"` or
+/// `"bundle"`) are returned unchanged.
+fn specifier_basename(specifier: &str) -> &str {
+    specifier.rsplit(['/', '\\']).next().unwrap_or(specifier)
+}
+
+/// Decode `%XX` escapes. `zfb_render::embedded_v8::synthesise_specifier`
+/// percent-encodes bytes outside its safe set (spaces, `#`, `%`,
+/// non-ASCII, …) when it turns a bundle basename into a `file:///zfb/…`
+/// specifier for V8 stack frames — so a raw basename like `"bundle #1.mjs"`
+/// is printed back as `"bundle%20%231.mjs"`. `expected_inner_bundle_basename`
+/// is always the undecoded filesystem name, so the basename comparison in
+/// [`reproject_first_frame`] must decode the frame's specifier first or a
+/// genuine inner-bundle frame with such a byte would never match.
+fn percent_decode(s: &str) -> Cow<'_, str> {
+    if !s.as_bytes().contains(&b'%') {
+        return Cow::Borrowed(s);
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push(((hi << 4) | lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    match String::from_utf8(out) {
+        Ok(decoded) => Cow::Owned(decoded),
+        Err(_) => Cow::Borrowed(s),
+    }
+}
+
 /// Walk the response body for the first `bundle.mjs:LINE:COL` style
 /// frame and re-project it through the source map. Returns
 /// `"<source>:line:col"` (1-based line numbers) when we find one,
@@ -1225,36 +1305,59 @@ fn load_sourcemap(path: &Path) -> Option<sourcemap::SourceMap> {
 /// originate in user code and the deepest user frame is typically the
 /// first in a workerd traceback. A multi-frame walk is reserved for
 /// the more sophisticated diagnostics layer T7+ may add.
-fn reproject_first_frame(body: &str, sm: &sourcemap::SourceMap) -> Option<String> {
+///
+/// `expected_inner_bundle_basename` (see [`inner_bundle_basename`])
+/// filters candidates to those whose own specifier resolves to the
+/// same basename. Once the dev content-trace wrapper became a
+/// separately-numbered ESM module (`file:///zfb/__zfb_dev_content_trace_wrapper.mjs`,
+/// issue #1712), a wrapper-thrown error's small `line:col` could
+/// otherwise spuriously resolve against the inner bundle's sourcemap —
+/// mis-attributing a wrapper bug to a bogus inner-bundle location.
+fn reproject_first_frame(
+    body: &str,
+    sm: &sourcemap::SourceMap,
+    expected_inner_bundle_basename: &str,
+) -> Option<String> {
     // Walk every candidate frame, not just the first parsed one: the
     // first frame in a workerd traceback is often `at fetch
     // (worker.js:1:1)` (the synthetic harness entry), not the user's
     // code. Take the first candidate that *resolves* to a source
     // mapping. If none resolves we return None and the caller leaves
     // `user_location` unset.
-    find_frame_candidates(body).into_iter().find_map(|cap| {
-        let token = sm.lookup_token(cap.line.saturating_sub(1), cap.col.saturating_sub(1))?;
-        let source = token
-            .get_source()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "<unknown>".to_string());
-        Some(format!(
-            "{source}:{line}:{col}",
-            line = token.get_src_line() + 1,
-            col = token.get_src_col() + 1,
-        ))
-    })
+    find_frame_candidates(body)
+        .into_iter()
+        .filter(|cap| {
+            let decoded = percent_decode(&cap.specifier);
+            specifier_basename(&decoded) == expected_inner_bundle_basename
+        })
+        .find_map(|cap| {
+            let token = sm.lookup_token(cap.line.saturating_sub(1), cap.col.saturating_sub(1))?;
+            let source = token
+                .get_source()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            Some(format!(
+                "{source}:{line}:{col}",
+                line = token.get_src_line() + 1,
+                col = token.get_src_col() + 1,
+            ))
+        })
 }
 
 #[derive(Debug)]
 struct FrameCandidate {
     line: u32,
     col: u32,
+    /// The path/URL text immediately preceding `:LINE:COL` — e.g.
+    /// `"bundle.mjs"` or `"file:///zfb/bundle.mjs"`. Used by
+    /// [`reproject_first_frame`] to reject frames that don't belong to
+    /// the inner bundle (see [`specifier_basename`]).
+    specifier: String,
 }
 
 /// Naive parser for `bundle.mjs:LINE:COL` substrings. Doesn't try to
 /// fully parse v8 / workerd stack frames; we only need a line+col
-/// hint that points at the bundle.
+/// hint plus the specifier text that precedes it.
 fn find_frame_candidates(body: &str) -> Vec<FrameCandidate> {
     let mut out = Vec::new();
     let bytes = body.as_bytes();
@@ -1282,14 +1385,22 @@ fn find_frame_candidates(body: &str) -> Vec<FrameCandidate> {
             let col: u32 = body[mid..j].parse().unwrap_or(0);
             // Require the digit pair to be preceded by something that
             // looks like a path. We're strict-ish: insist on a `.mjs`
-            // or `.js` immediately before, OR explicitly `bundle`.
-            // This dodges random `key:value` pairs like `status: 500`.
+            // or `.js` immediately before. This dodges random `key:value`
+            // pairs like `status: 500`.
             let prefix = &body[..start];
-            let looks_like_frame = prefix.ends_with(".mjs:")
-                || prefix.ends_with(".js:")
-                || prefix.ends_with("bundle:");
+            let looks_like_frame = prefix.ends_with(".mjs:") || prefix.ends_with(".js:");
             if line > 0 && col > 0 && looks_like_frame {
-                out.push(FrameCandidate { line, col });
+                // The specifier ends right before the colon that
+                // introduces the line number (already confirmed by
+                // `looks_like_frame`); walk backward from there to the
+                // start of the path/URL token.
+                let spec_end = start - 1;
+                let spec_start = find_specifier_start(body, spec_end);
+                out.push(FrameCandidate {
+                    line,
+                    col,
+                    specifier: body[spec_start..spec_end].to_string(),
+                });
             }
             i = j;
         } else {
@@ -1297,6 +1408,27 @@ fn find_frame_candidates(body: &str) -> Vec<FrameCandidate> {
         }
     }
     out
+}
+
+/// Scan backward from `spec_end` (byte offset, exclusive) to find the
+/// start of the path/URL token that ends there. Stops at whitespace or
+/// any of the common stack-trace delimiters (`(`, `)`, `[`, `]`, quotes,
+/// angle brackets) — none of which are legal path/URL characters, but
+/// `:` is deliberately allowed through since `file://` specifiers embed
+/// it.
+fn find_specifier_start(body: &str, spec_end: usize) -> usize {
+    let bytes = body.as_bytes();
+    let mut k = spec_end;
+    while k > 0 {
+        let c = bytes[k - 1];
+        if c.is_ascii_whitespace()
+            || matches!(c, b'(' | b')' | b'[' | b']' | b'"' | b'\'' | b'<' | b'>')
+        {
+            break;
+        }
+        k -= 1;
+    }
+    k
 }
 
 // ---------------------------------------------------------------------------
@@ -1857,11 +1989,80 @@ mod tests {
 
         // Body that mentions the bundle frame.
         let body = "TypeError: boom\n  at fetch (bundle.mjs:1:1)\n";
-        let projected = reproject_first_frame(body, &sm).expect("reprojection");
+        let projected = reproject_first_frame(body, &sm, "bundle.mjs").expect("reprojection");
         assert!(
             projected.starts_with("pages/error.tsx:5:"),
             "got {projected}"
         );
+    }
+
+    /// #1714: the dev content-trace wrapper is a separately-numbered ESM
+    /// module (`file:///zfb/__zfb_dev_content_trace_wrapper.mjs`, epic
+    /// #1712) loaded alongside the inner bundle. A wrapper-thrown error's
+    /// small `line:col` must not be mis-reprojected against the inner
+    /// bundle's sourcemap. The sourcemap here deliberately CAN resolve the
+    /// wrapper's coordinates (to a bogus source) — proving `None` comes
+    /// from specifier filtering, not from a plain lookup miss.
+    #[test]
+    fn reproject_first_frame_ignores_wrapper_only_frame() {
+        let mut builder = sourcemap::SourceMapBuilder::new(None);
+        let trap_id = builder.add_source("pages/should-not-resolve.tsx");
+        builder.set_source_contents(trap_id, Some("// trap"));
+        builder.add_raw(0, 0, 0, 0, Some(trap_id), None, false);
+        let sm = builder.into_sourcemap();
+
+        let body =
+            "TypeError: boom\n  at wrap (file:///zfb/__zfb_dev_content_trace_wrapper.mjs:1:1)\n";
+        let projected = reproject_first_frame(body, &sm, "bundle.mjs");
+        assert!(
+            projected.is_none(),
+            "wrapper-only frame must not be mis-reprojected, got {projected:?}"
+        );
+    }
+
+    /// #1714: a wrapper frame followed by a genuine inner-bundle frame —
+    /// the wrapper frame is skipped and the inner-bundle frame reprojects.
+    #[test]
+    fn reproject_first_frame_skips_wrapper_frame_and_resolves_inner_bundle_frame() {
+        let mut builder = sourcemap::SourceMapBuilder::new(None);
+        let trap_id = builder.add_source("pages/should-not-resolve.tsx");
+        builder.set_source_contents(trap_id, Some("// trap"));
+        builder.add_raw(0, 0, 0, 0, Some(trap_id), None, false);
+        let foo_id = builder.add_source("pages/foo.tsx");
+        builder.set_source_contents(foo_id, Some("// foo"));
+        // dst (bundle) line 10 col 5 (1-based) -> src pages/foo.tsx line 10
+        // col 5.
+        builder.add_raw(9, 4, 9, 4, Some(foo_id), None, false);
+        let sm = builder.into_sourcemap();
+
+        let body = "TypeError: boom\n  at wrap (file:///zfb/__zfb_dev_content_trace_wrapper.mjs:1:1)\n  at fetch (bundle.mjs:10:5)\n";
+        let projected = reproject_first_frame(body, &sm, "bundle.mjs")
+            .expect("inner-bundle frame should reproject");
+        assert!(
+            projected.starts_with("pages/foo.tsx:10:"),
+            "expected pages/foo.tsx:10:*, got {projected}"
+        );
+    }
+
+    /// #1714 (codex review follow-up): `zfb_render::embedded_v8::synthesise_specifier`
+    /// percent-encodes bytes outside its safe set (e.g. a space) when it
+    /// turns the raw bundle basename into a `file:///zfb/…` V8 specifier —
+    /// a bundle named `"bundle #1.mjs"` is printed back as
+    /// `"bundle%20%231.mjs"`. The basename comparison must decode that
+    /// before matching against `expected_inner_bundle_basename`, which is
+    /// always the raw filesystem name.
+    #[test]
+    fn reproject_first_frame_matches_percent_encoded_specifier() {
+        let mut builder = sourcemap::SourceMapBuilder::new(None);
+        let foo_id = builder.add_source("pages/foo.tsx");
+        builder.set_source_contents(foo_id, Some("// foo"));
+        builder.add_raw(0, 0, 4, 2, Some(foo_id), None, false);
+        let sm = builder.into_sourcemap();
+
+        let body = "TypeError: boom\n  at fetch (file:///zfb/bundle%20%231.mjs:1:1)\n";
+        let projected = reproject_first_frame(body, &sm, "bundle #1.mjs")
+            .expect("percent-encoded specifier should still match the raw basename");
+        assert!(projected.starts_with("pages/foo.tsx:5:"), "got {projected}");
     }
 
     #[test]
@@ -1984,7 +2185,10 @@ mod tests {
         }];
 
         let err = render_all(RendererInput {
-            bundle_path: PathBuf::from("/dev/null"),
+            // The basename here must match the `bundle.mjs:42:10` frame in
+            // the stub response below — reprojection now filters frames by
+            // the inner-bundle basename derived from `bundle_path` (#1714).
+            bundle_path: PathBuf::from("bundle.mjs"),
             sourcemap_path: map_path,
             manifest: dummy_manifest(),
             dist_dir: dist.path().to_path_buf(),
@@ -2070,6 +2274,20 @@ mod tests {
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].line, 42);
         assert_eq!(cands[0].col, 7);
+        // `find_specifier_start` walks back from the pre-`:` byte to the `(`
+        // delimiter, capturing only the bare filename token.
+        assert_eq!(cands[0].specifier, "bundle.mjs");
+
+        // A full `file://` specifier: `find_specifier_start` must let the
+        // scheme's own `:` bytes through (they are not delimiters) and stop at
+        // the `(`, capturing the whole URL — this is the specifier text the
+        // basename filter later compares against.
+        let url_body = "TypeError: boom\n  at fetch (file:///zfb/bundle.mjs:10:5)\n";
+        let url_cands = find_frame_candidates(url_body);
+        assert_eq!(url_cands.len(), 1);
+        assert_eq!(url_cands[0].line, 10);
+        assert_eq!(url_cands[0].col, 5);
+        assert_eq!(url_cands[0].specifier, "file:///zfb/bundle.mjs");
     }
 
     // ---- strip_static_html_frontmatter (Sub 409) ---------------------------

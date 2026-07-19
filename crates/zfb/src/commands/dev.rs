@@ -4252,7 +4252,7 @@ impl DevRenderSession {
         let p1_snapshot_ms = bundle_result.sub_timing.as_ref().map(|t| t.snapshot_ms);
         let p1_assemble_ms = bundle_result.sub_timing.as_ref().map(|t| t.assemble_ms);
         let p1_bundle_ms = bundle_result.sub_timing.as_ref().map(|t| t.bundle_ms);
-        let mut bundler_out = bundle_result.output;
+        let bundler_out = bundle_result.output;
 
         // #1284/#1287 — populate per-route `DepKind::Module` edges from the
         // bundle's metafile so a component edit (direct or transitive, incl. a
@@ -4301,9 +4301,11 @@ impl DevRenderSession {
 
         // Keep the skip key over esbuild's real output. The dev-only wrapper
         // carries a fresh private trace nonce, so hashing it would turn every
-        // otherwise-identical refresh into a false miss.
-        let trace_token = wrap_dev_bundle_with_content_trace(&mut bundler_out, router.routes())
-            .context("dev refresh: install content-provenance worker wrapper failed")?;
+        // otherwise-identical refresh into a false miss. The bundle file is
+        // left untouched; the wrapper imports it by specifier instead.
+        let (trace_token, trace_wrapper_source) =
+            wrap_dev_bundle_with_content_trace(&bundler_out, router.routes())
+                .context("dev refresh: build content-provenance worker wrapper failed")?;
 
         // P2 — V8 host boot, mutex swap, old-host shutdown (three separate
         //      sub-timers: boot vs eval vs teardown; split matters for the
@@ -4318,9 +4320,11 @@ impl DevRenderSession {
             bundle_path: bundler_out.bundle_path.clone(),
             sourcemap_path: bundler_out.sourcemap_path.clone(),
             backend: Backend::EmbeddedV8 {
-                host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
-                    inputs.v8_plugin_hooks.clone(),
-                ),
+                host_factory:
+                    crate::v8_host_adapter::make_v8_host_factory_with_dev_content_trace_wrapper(
+                        inputs.v8_plugin_hooks.clone(),
+                        trace_wrapper_source,
+                    ),
             },
             request_timeout: None,
         })
@@ -4705,32 +4709,40 @@ fn make_dev_content_trace_token(bundle_path: &Path) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Wrap a dev worker bundle with a private, transparent `getCollection()`
-/// observer.
+/// Build a dev-only content-provenance wrapper module for the current
+/// worker bundle.
 ///
-/// The runtime content package already resolves reads through
-/// `globalThis.__zfb.contentSnapshot.collections`. The embedded V8 host only
-/// loads its configured source string, so the observer is appended to that
-/// self-contained bundle rather than importing it from a sidecar module. For
+/// The runtime content package resolves reads through
+/// `globalThis.__zfb.contentSnapshot.collections`. This wrapper is a tiny
+/// real ESM module that imports the UNTOUCHED worker bundle by its in-memory
+/// inner specifier (`file:///zfb/<bundle-basename>`), installs a transparent
+/// `getCollection()` observer over the shared content snapshot, and
+/// re-exports a `fetch` handler that delegates to the inner worker. For
 /// ordinary requests it returns the inner worker response unchanged. The
 /// wrapper is dev-only and exists solely to feed the dependency graph with
 /// observations made by the running worker.
+///
+/// The inner bundle is registered under that same specifier in the V8 host's
+/// module loader before this wrapper runs as the main module — see
+/// [`crate::v8_host_adapter::ThreadedV8Host::new_with_dev_content_trace_wrapper`].
+/// The bundle file on disk is never rewritten, so the refresh skip-key (which
+/// hashes the inner bundle bytes only, excluding the fresh nonce this
+/// function mints) stays structurally correct.
+///
+/// Returns `(token, wrapper_source)`: the opaque trace-drain nonce and the
+/// generated wrapper ESM source.
 #[cfg(feature = "embed_v8")]
 fn wrap_dev_bundle_with_content_trace(
-    output: &mut BundlerOutput,
+    output: &BundlerOutput,
     routes: &[zfb_router::Route],
-) -> Result<String> {
-    let bundle_path = output.bundle_path.clone();
-    let original_source = std::fs::read_to_string(&bundle_path)
-        .with_context(|| format!("reading dev worker bundle {}", bundle_path.display()))?;
-    let (mut source, inner_worker_binding) = rewrite_dev_bundle_default_export(&original_source)
-        .with_context(|| {
-            format!(
-                "rewriting default export in dev worker bundle {}",
-                bundle_path.display()
-            )
-        })?;
-    let token = make_dev_content_trace_token(&bundle_path);
+) -> Result<(String, String)> {
+    let bundle_path = &output.bundle_path;
+    // The inner specifier must match the key the V8 host registers the
+    // untouched bundle bytes under (`ThreadedV8Host::
+    // new_with_dev_content_trace_wrapper`); the shared helper is the single
+    // derivation point both call sites use.
+    let inner_specifier = crate::v8_host_adapter::inner_bundle_specifier(bundle_path);
+    let token = make_dev_content_trace_token(bundle_path);
     let descriptors: Vec<DevContentTraceRoute> = routes
         .iter()
         .filter(|route| !route.static_html)
@@ -4744,15 +4756,16 @@ fn wrap_dev_bundle_with_content_trace(
         .context("serializing dev content-trace route descriptors")?;
     let token_json =
         serde_json::to_string(&token).context("serializing dev content-trace nonce")?;
+    let inner_specifier_json = serde_json::to_string(&inner_specifier)
+        .context("serializing dev content-trace inner-bundle specifier")?;
     let endpoint_json = serde_json::to_string(DEV_CONTENT_TRACE_ENDPOINT)
         .context("serializing dev content-trace endpoint")?;
     let header_json = serde_json::to_string(DEV_CONTENT_TRACE_HEADER)
         .context("serializing dev content-trace header")?;
 
-    source.push_str(&format!(
-        r#"
-// Generated by zfb dev. Private content-provenance observer.
-const __zfb_inner_worker = {inner_worker_binding};
+    let wrapper_source = format!(
+        r#"// Generated by zfb dev. Private content-provenance observer.
+import __zfb_inner_worker from {inner_specifier_json};
 const __zfb_trace_routes = {routes_json};
 const __zfb_trace_token = {token_json};
 const __zfb_trace_endpoint = {endpoint_json};
@@ -4879,119 +4892,9 @@ export default {{
   }},
 }};
 "#,
-    ));
+    );
 
-    std::fs::write(&bundle_path, source).with_context(|| {
-        format!(
-            "writing self-contained dev content-trace bundle {}",
-            bundle_path.display()
-        )
-    })?;
-    Ok(token)
-}
-
-/// Find the right-most occurrence of `needle` strictly before byte offset
-/// `before` that begins at the start of a line (immediately preceded by
-/// `\n`, or at offset 0 of `source`).
-///
-/// Real esbuild `--format=esm` output always starts a top-level export
-/// statement at column 0; rendered content embedded in a string literal
-/// (e.g. a code sample on a styleguide page) never does. Anchoring scans to
-/// line starts is what keeps such decoy text out of
-/// `rewrite_dev_bundle_default_export` below (issue #1666). Taking a
-/// `before` bound lets that function retry earlier anchored occurrences
-/// when the right-most one turns out not to be the default-export clause
-/// (e.g. esbuild can place a preserved legal comment, itself capable of
-/// containing a line-anchored `export {`, after the real one).
-#[cfg(feature = "embed_v8")]
-fn rfind_line_anchored(source: &str, needle: &str, before: usize) -> Option<usize> {
-    let mut search_end = before;
-    loop {
-        let candidate = source[..search_end].rfind(needle)?;
-        if candidate == 0 || source.as_bytes()[candidate - 1] == b'\n' {
-            return Some(candidate);
-        }
-        search_end = candidate;
-    }
-}
-
-/// Replace the final Workers default export so a dev-only wrapper can expose
-/// it under a private local binding in the same ESM source string.
-///
-/// esbuild normally emits `export { worker as default }`, while unbundled
-/// test seams can retain `export default ...`; supporting both keeps this
-/// boundary independent of an emitter implementation detail. The alias form
-/// is tried first because real `--format=esm` bundles always carry it; the
-/// direct `export default` scan is a fallback for the unbundled test-seam
-/// case only. Both scans are line-anchored (`rfind_line_anchored`) and the
-/// alias scan is additionally bounded to the matched `export { ... }`
-/// clause, so a string-literal decoy containing the literal text
-/// `"export default"` or `" as default"` can never be mistaken for the real
-/// export statement (issue #1666). The alias scan also retries earlier
-/// anchored `export {` occurrences when the right-most one has no default
-/// alias — esbuild can place a preserved legal comment (itself capable of
-/// containing a line-anchored `export {`) after the real clause.
-#[cfg(feature = "embed_v8")]
-fn rewrite_dev_bundle_default_export(source: &str) -> Result<(String, String)> {
-    const PRIVATE_EXPORT: &str = "__zfb_content_trace_inner_default";
-    const DEFAULT_ALIAS: &str = " as default";
-
-    let mut search_end = source.len();
-    while let Some(export_start) = rfind_line_anchored(source, "export {", search_end) {
-        let clause_end = source[export_start..]
-            .find('}')
-            .map(|offset| export_start + offset);
-        let alias_start = clause_end
-            .and_then(|clause_end| source[export_start..clause_end].find(DEFAULT_ALIAS))
-            .map(|offset| export_start + offset);
-
-        let Some(alias_start) = alias_start else {
-            search_end = export_start;
-            continue;
-        };
-
-        let alias_end = alias_start + DEFAULT_ALIAS.len();
-        match source[alias_end..].trim_start().chars().next() {
-            Some(',' | '}') => {}
-            _ => anyhow::bail!("default export alias has an unsupported ESM shape"),
-        }
-
-        let binding_end = alias_start;
-        let mut binding_start = binding_end;
-        let bytes = source.as_bytes();
-        while binding_start > 0
-            && matches!(
-                bytes[binding_start - 1],
-                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'$'
-            )
-        {
-            binding_start -= 1;
-        }
-        if binding_start == binding_end {
-            anyhow::bail!("default export alias has no local worker binding");
-        }
-
-        let binding = source[binding_start..binding_end].to_string();
-        let mut rewritten = String::with_capacity(source.len() + PRIVATE_EXPORT.len());
-        rewritten.push_str(&source[..alias_start]);
-        rewritten.push_str(" as ");
-        rewritten.push_str(PRIVATE_EXPORT);
-        rewritten.push_str(&source[alias_end..]);
-        return Ok((rewritten, binding));
-    }
-
-    if let Some(export_start) = rfind_line_anchored(source, "export default", source.len()) {
-        let export_end = export_start + "export default".len();
-        let mut rewritten = String::with_capacity(source.len() + PRIVATE_EXPORT.len());
-        rewritten.push_str(&source[..export_start]);
-        rewritten.push_str("const ");
-        rewritten.push_str(PRIVATE_EXPORT);
-        rewritten.push_str(" =");
-        rewritten.push_str(&source[export_end..]);
-        return Ok((rewritten, PRIVATE_EXPORT.to_string()));
-    }
-
-    anyhow::bail!("worker bundle has no default export")
+    Ok((token, wrapper_source))
 }
 
 // ---------------------------------------------------------------------------
@@ -6068,7 +5971,7 @@ fn boot_dev_renderer(
 
         // Boot path — timing not collected here (one-shot at startup, not a
         // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
-        let mut bundler_out: BundlerOutput = assemble_and_bundle_dev(
+        let bundler_out: BundlerOutput = assemble_and_bundle_dev(
             project_root,
             cfg,
             plugin_alias_entries,
@@ -6082,7 +5985,8 @@ fn boot_dev_renderer(
             rebuild_inputs.injected_pages_root(),
         )?
         .output;
-        let trace_token = wrap_dev_bundle_with_content_trace(&mut bundler_out, router.routes())?;
+        let (trace_token, trace_wrapper_source) =
+            wrap_dev_bundle_with_content_trace(&bundler_out, router.routes())?;
         // #1284/#1287 — capture the boot bundle's per-route Module deps for
         // post-graph seeding (the graph does not exist yet at this point).
         boot_route_module_deps = bundler_out.route_module_deps.clone();
@@ -6091,9 +5995,11 @@ fn boot_dev_renderer(
             bundle_path: bundler_out.bundle_path.clone(),
             sourcemap_path: bundler_out.sourcemap_path.clone(),
             backend: Backend::EmbeddedV8 {
-                host_factory: crate::v8_host_adapter::make_v8_host_factory_with_hooks(
-                    v8_plugin_hooks,
-                ),
+                host_factory:
+                    crate::v8_host_adapter::make_v8_host_factory_with_dev_content_trace_wrapper(
+                        v8_plugin_hooks,
+                        trace_wrapper_source,
+                    ),
             },
             request_timeout: None,
         })
@@ -10180,114 +10086,6 @@ mod tests {
                 "a render that makes no collection read must not erase the route's prior paths() evidence",
             );
         }
-
-        #[test]
-        fn self_contained_wrapper_rewrites_both_supported_default_export_shapes() {
-            let named_export = "const worker = { fetch() {} };\nexport { worker as default };\n";
-            let (rewritten_named, named_binding) =
-                rewrite_dev_bundle_default_export(named_export).unwrap();
-            assert_eq!(named_binding, "worker");
-            assert!(rewritten_named.contains("worker as __zfb_content_trace_inner_default"));
-            assert!(!rewritten_named.contains(" as default"));
-
-            let direct_export = "const value = 1;\nexport default { fetch() {} };\n";
-            let (rewritten_direct, direct_binding) =
-                rewrite_dev_bundle_default_export(direct_export).unwrap();
-            assert_eq!(direct_binding, "__zfb_content_trace_inner_default");
-            assert!(rewritten_direct
-                .contains("const __zfb_content_trace_inner_default = { fetch() {} };"));
-            assert!(!rewritten_direct.contains("export default"));
-        }
-
-        /// Repro for issue #1666: a page rendering a code sample whose text
-        /// contains the literal string `"export default"` used to hijack the
-        /// (then-first) bare `export default` scan, splicing inside the
-        /// string literal and leaving the real `export { worker as default
-        /// };` clause untouched — `wrap_dev_bundle_with_content_trace` then
-        /// appended a second `export default {...}`, producing "Duplicate
-        /// export of 'default'" in V8. This fails before the fix (the
-        /// returned binding is the private name, not `worker`, and the
-        /// decoy string literal is corrupted) and passes after (the alias
-        /// clause is found first and the decoy is left untouched).
-        #[test]
-        fn bare_export_default_decoy_inside_string_literal_does_not_hijack_the_alias_clause() {
-            let decoy_literal = "\"export default function Demo() {}\"";
-            let bundle = format!(
-                "const sample = {decoy_literal};\nconst worker = {{ fetch() {{}} }};\nexport {{ worker as default }};\n"
-            );
-
-            let (rewritten, binding) = rewrite_dev_bundle_default_export(&bundle).unwrap();
-            assert_eq!(
-                binding, "worker",
-                "must resolve the real alias clause's binding, not the string-literal decoy"
-            );
-            assert!(
-                rewritten.contains(decoy_literal),
-                "the decoy string literal must survive untouched"
-            );
-            assert!(
-                rewritten.contains("worker as __zfb_content_trace_inner_default"),
-                "the real alias clause must be the one that gets rewritten"
-            );
-        }
-
-        /// Sibling decoy for the alias branch itself: a string literal
-        /// containing `" as default"` (not a bare `"export default"`),
-        /// positioned after the real `export { worker as default };`
-        /// clause so an unanchored right-most scan for `" as default"`
-        /// would match the decoy instead of the real clause. Before the
-        /// fix this aborts with "default export is outside its ESM export
-        /// list"; after the fix the alias scan is bounded to the matched
-        /// `export { ... }` clause, so the trailing decoy can't match.
-        #[test]
-        fn as_default_decoy_inside_string_literal_does_not_hijack_the_alias_clause() {
-            let decoy_literal = "\"trailing text as default\"";
-            let bundle = format!(
-                "const worker = {{ fetch() {{}} }};\nexport {{ worker as default }};\nconst sample = {decoy_literal};\n"
-            );
-
-            let (rewritten, binding) = rewrite_dev_bundle_default_export(&bundle).unwrap();
-            assert_eq!(
-                binding, "worker",
-                "must resolve the real alias clause's binding, not the string-literal decoy"
-            );
-            assert!(
-                rewritten.contains(decoy_literal),
-                "the trailing decoy string literal must survive untouched"
-            );
-            assert!(
-                rewritten.contains("worker as __zfb_content_trace_inner_default"),
-                "the real alias clause must be the one that gets rewritten"
-            );
-        }
-
-        /// Codex review finding on #1671: esbuild can preserve a "legal
-        /// comment" (`/*! ... */`) after the real default-export clause,
-        /// and such a comment can itself contain a line-anchored `export {
-        /// ... };` with no default alias (e.g. quoting a code sample in a
-        /// license header). A single rightmost-anchored-clause lookup would
-        /// pick the comment's clause, find no default alias in it, and
-        /// then wrongly report "no default export" on a valid bundle. The
-        /// alias scan must retry earlier anchored `export {` occurrences
-        /// until it finds the one that actually carries `as default`.
-        #[test]
-        fn preserved_legal_comment_after_default_export_does_not_hijack_the_alias_clause() {
-            let bundle = "const worker = { fetch() {} };\nexport { worker as default };\n/*!\nexport { example };\n*/\n";
-
-            let (rewritten, binding) = rewrite_dev_bundle_default_export(bundle).unwrap();
-            assert_eq!(
-                binding, "worker",
-                "must fall back to the earlier real alias clause, not bail on the comment's clause"
-            );
-            assert!(
-                rewritten.contains("worker as __zfb_content_trace_inner_default"),
-                "the real alias clause must be the one that gets rewritten"
-            );
-            assert!(
-                rewritten.contains("export { example };"),
-                "the preserved legal comment must survive untouched"
-            );
-        }
     }
 
     /// Deep-review regression (PR #376): `Route::template()` emits
@@ -10686,6 +10484,56 @@ mod tests {
         let k2 = compute_bundle_skip_key(&out1, &[]);
 
         assert_ne!(k1, k2, "changed bundle bytes must change the skip key");
+    }
+
+    /// Two successive wraps of the SAME bundle mint different trace tokens
+    /// and different wrapper sources (a fresh nonce each call), yet the
+    /// bundle file on disk is never touched and `compute_bundle_skip_key`
+    /// stays identical. Under the wrapper-as-module design (issue #1713)
+    /// the skip key hashes the inner bundle bytes only, so the per-wrap
+    /// nonce can never turn an otherwise-identical refresh into a false
+    /// miss — the invariant is now structural (the bundle is never
+    /// rewritten) rather than upheld by hashing pre-wrap.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn wrap_dev_bundle_keeps_bundle_bytes_and_skip_key_stable_across_nonces() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_bytes: &[u8] =
+            b"const worker = { fetch() {} };\nexport { worker as default };\n";
+        let out = make_bundler_out(write_temp_bundle(&dir, bundle_bytes));
+
+        let routes: &[zfb_router::Route] = &[];
+        let (token1, wrapper1) =
+            wrap_dev_bundle_with_content_trace(&out, routes).expect("first wrap");
+        let key1 = compute_bundle_skip_key(&out, routes);
+        let after_first = std::fs::read(&out.bundle_path).unwrap();
+
+        let (token2, wrapper2) =
+            wrap_dev_bundle_with_content_trace(&out, routes).expect("second wrap");
+        let key2 = compute_bundle_skip_key(&out, routes);
+        let after_second = std::fs::read(&out.bundle_path).unwrap();
+
+        assert_ne!(token1, token2, "each wrap must mint a fresh trace nonce");
+        assert_ne!(
+            wrapper1, wrapper2,
+            "the wrapper source embeds the nonce, so it must differ per wrap"
+        );
+        assert_eq!(
+            after_first, bundle_bytes,
+            "wrapping must not rewrite the bundle file on disk"
+        );
+        assert_eq!(
+            after_second, bundle_bytes,
+            "a second wrap must still leave the bundle file untouched"
+        );
+        assert_eq!(
+            key1, key2,
+            "skip key must be independent of the per-wrap nonce"
+        );
+        assert!(
+            wrapper1.contains(r#"import __zfb_inner_worker from "file:///zfb/bundle.js""#),
+            "wrapper must import the inner bundle by its name-derived specifier: {wrapper1}"
+        );
     }
 
     /// A `pages/` route change (different source paths) defeats the skip even
