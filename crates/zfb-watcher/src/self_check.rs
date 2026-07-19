@@ -12,10 +12,13 @@
 //! first-class, production-facing primitive built directly on the public
 //! [`Watcher`] API.
 //!
-//! `zfb-watcher` deliberately does NOT depend on `zfb-test-utils` for
-//! this (that would risk a dependency cycle, since `zfb-test-utils` is a
-//! dev-dependency of this crate's own tests) — the loop shape is
-//! duplicated here as its own private, generic seam instead of shared.
+//! `zfb-watcher` deliberately does NOT reuse `zfb-test-utils`'s handshake
+//! helper for this: `zfb-test-utils` is a dev-only dependency of this
+//! crate (see `Cargo.toml`), so it is not available to the production code
+//! path `check_liveness` runs on — only to the crate's own tests. (There
+//! is no dependency cycle either way: `zfb-test-utils` does not depend on
+//! `zfb-watcher`.) The loop shape is therefore duplicated here as its own
+//! private, generic seam instead of shared.
 //!
 //! ## API shape
 //!
@@ -38,9 +41,35 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use tokio::sync::mpsc::error::TryRecvError;
 use tracing::warn;
 
 use crate::Watcher;
+
+/// What the injected signal source reports on a single poll from
+/// [`run_liveness_loop`].
+enum LivenessSignal {
+    /// A marker-triggered change was observed — the probe watcher is live.
+    Observed,
+    /// Nothing observed yet; the loop should keep waiting.
+    Waiting,
+    /// The signal source is permanently gone — the probe watcher's own
+    /// channel disconnected (its backend task died), so no further signal
+    /// can ever arrive. Distinct from `Waiting`: waiting longer is futile.
+    SourceGone,
+}
+
+/// Terminal result of [`run_liveness_loop`].
+enum LoopOutcome {
+    /// The signal source reported [`LivenessSignal::Observed`] before the
+    /// deadline.
+    Observed,
+    /// The deadline elapsed with the source still only [`LivenessSignal::Waiting`].
+    TimedOut,
+    /// The signal source reported [`LivenessSignal::SourceGone`] before the
+    /// deadline — the probe watcher backend died.
+    SourceGone,
+}
 
 /// Cadence + deadline knobs for [`check_liveness`].
 ///
@@ -49,7 +78,7 @@ use crate::Watcher;
 /// independent copy — see the module docs for why this crate does not
 /// share that type.
 #[derive(Debug, Clone)]
-pub struct SelfCheckOpts {
+pub struct LivenessOpts {
     /// Overall wall-clock budget. When it elapses without observing a
     /// marker, the check gives up and reports [`LivenessOutcome::TimedOut`].
     pub deadline: Duration,
@@ -61,7 +90,7 @@ pub struct SelfCheckOpts {
     pub poll_interval: Duration,
 }
 
-impl SelfCheckOpts {
+impl LivenessOpts {
     /// New options with the given overall `deadline` and default
     /// cadences (400ms marker interval, 25ms poll interval) — the same
     /// defaults as the test-only handshake helper.
@@ -86,7 +115,7 @@ impl SelfCheckOpts {
     }
 }
 
-impl Default for SelfCheckOpts {
+impl Default for LivenessOpts {
     fn default() -> Self {
         Self::new(Duration::from_secs(10))
     }
@@ -140,7 +169,7 @@ pub enum LivenessOutcome {
 ///
 /// This function never panics: every fallible step (directory creation,
 /// watcher startup, marker writes, cleanup) is handled explicitly.
-pub async fn check_liveness<P: AsRef<Path>>(probe_dir: P, opts: SelfCheckOpts) -> LivenessOutcome {
+pub async fn check_liveness<P: AsRef<Path>>(probe_dir: P, opts: LivenessOpts) -> LivenessOutcome {
     let probe_dir = probe_dir.as_ref();
     let dir_pre_existed = probe_dir.exists();
 
@@ -172,7 +201,7 @@ pub async fn check_liveness<P: AsRef<Path>>(probe_dir: P, opts: SelfCheckOpts) -
     let mut last_write_error: Option<String> = None;
     let mut written_markers: Vec<std::path::PathBuf> = Vec::new();
 
-    let live = run_liveness_loop(
+    let loop_outcome = run_liveness_loop(
         &opts,
         |idx| {
             let marker = probe_dir.join(format!(".zfb-liveness-probe-{idx}"));
@@ -201,7 +230,14 @@ pub async fn check_liveness<P: AsRef<Path>>(probe_dir: P, opts: SelfCheckOpts) -
                 }
             }
         },
-        || rx.try_recv().is_ok(),
+        || match rx.try_recv() {
+            Ok(_) => LivenessSignal::Observed,
+            Err(TryRecvError::Empty) => LivenessSignal::Waiting,
+            // The probe watcher's channel disconnected — its backend task
+            // died, so no marker will ever be delivered. This is a setup/
+            // infrastructure failure, NOT a dead OS-notification verdict.
+            Err(TryRecvError::Disconnected) => LivenessSignal::SourceGone,
+        },
     )
     .await;
 
@@ -221,14 +257,27 @@ pub async fn check_liveness<P: AsRef<Path>>(probe_dir: P, opts: SelfCheckOpts) -
         );
     }
 
-    if live {
-        LivenessOutcome::Live
-    } else if !any_write_succeeded {
-        LivenessOutcome::SetupFailed(last_write_error.unwrap_or_else(|| {
-            "no watcher liveness probe marker could be written before the deadline".to_string()
-        }))
-    } else {
-        LivenessOutcome::TimedOut
+    match loop_outcome {
+        LoopOutcome::Observed => LivenessOutcome::Live,
+        // The probe watcher's channel disconnected before any marker was
+        // observed: report a setup failure, never a `TimedOut` dead-watcher
+        // verdict — the backend dying says nothing about whether a healthy
+        // FSEvents/inotify stream would have delivered the event.
+        LoopOutcome::SourceGone => LivenessOutcome::SetupFailed(
+            "watcher liveness probe channel disconnected before observing a marker: \
+             the probe watcher backend stopped"
+                .to_string(),
+        ),
+        LoopOutcome::TimedOut => {
+            if !any_write_succeeded {
+                LivenessOutcome::SetupFailed(last_write_error.unwrap_or_else(|| {
+                    "no watcher liveness probe marker could be written before the deadline"
+                        .to_string()
+                }))
+            } else {
+                LivenessOutcome::TimedOut
+            }
+        }
     }
 }
 
@@ -239,26 +288,31 @@ pub async fn check_liveness<P: AsRef<Path>>(probe_dir: P, opts: SelfCheckOpts) -
 /// module docs for why that helper isn't reused directly).
 ///
 /// `signal_seen` is checked once up front so an already-live signal
-/// source returns `true` immediately without writing any marker.
+/// source returns [`LoopOutcome::Observed`] immediately without writing any
+/// marker. A [`LivenessSignal::SourceGone`] report short-circuits to
+/// [`LoopOutcome::SourceGone`] the moment it is seen — waiting out the
+/// remaining deadline would be futile once the source is permanently gone.
 async fn run_liveness_loop<W, S>(
-    opts: &SelfCheckOpts,
+    opts: &LivenessOpts,
     mut write_marker: W,
     mut signal_seen: S,
-) -> bool
+) -> LoopOutcome
 where
     W: FnMut(u32),
-    S: FnMut() -> bool,
+    S: FnMut() -> LivenessSignal,
 {
     let start = Instant::now();
 
-    if signal_seen() {
-        return true;
+    match signal_seen() {
+        LivenessSignal::Observed => return LoopOutcome::Observed,
+        LivenessSignal::SourceGone => return LoopOutcome::SourceGone,
+        LivenessSignal::Waiting => {}
     }
 
     let mut markers: u32 = 0;
     loop {
         if start.elapsed() >= opts.deadline {
-            return false;
+            return LoopOutcome::TimedOut;
         }
 
         write_marker(markers);
@@ -266,12 +320,14 @@ where
 
         let next_marker_at = Instant::now() + opts.marker_interval;
         loop {
-            if signal_seen() {
-                return true;
+            match signal_seen() {
+                LivenessSignal::Observed => return LoopOutcome::Observed,
+                LivenessSignal::SourceGone => return LoopOutcome::SourceGone,
+                LivenessSignal::Waiting => {}
             }
             let now = Instant::now();
             if start.elapsed() >= opts.deadline {
-                return false;
+                return LoopOutcome::TimedOut;
             }
             if now >= next_marker_at {
                 break;
@@ -307,20 +363,23 @@ mod tests {
             let writes = Arc::new(AtomicU32::new(0));
             let writes_w = Arc::clone(&writes);
 
-            let opts = SelfCheckOpts::new(Duration::from_millis(120))
+            let opts = LivenessOpts::new(Duration::from_millis(120))
                 .with_marker_interval(Duration::from_millis(20))
                 .with_poll_interval(Duration::from_millis(5));
 
-            let live = run_liveness_loop(
+            let outcome = run_liveness_loop(
                 &opts,
                 move |_idx| {
                     writes_w.fetch_add(1, Ordering::SeqCst);
                 },
-                || false,
+                || LivenessSignal::Waiting,
             )
             .await;
 
-            assert!(!live, "signal never arrives -> not live");
+            assert!(
+                matches!(outcome, LoopOutcome::TimedOut),
+                "signal never arrives -> timed out"
+            );
             assert!(
                 writes.load(Ordering::SeqCst) > 0,
                 "the loop keeps writing markers while it waits"
@@ -335,34 +394,93 @@ mod tests {
             let writes_w = Arc::clone(&writes);
             let seen = Arc::clone(&writes);
 
-            let opts = SelfCheckOpts::new(Duration::from_secs(5))
+            let opts = LivenessOpts::new(Duration::from_secs(5))
                 .with_marker_interval(Duration::from_millis(10))
                 .with_poll_interval(Duration::from_millis(1));
 
-            let live = run_liveness_loop(
+            let outcome = run_liveness_loop(
                 &opts,
                 move |_idx| {
                     writes_w.fetch_add(1, Ordering::SeqCst);
                 },
-                move || seen.load(Ordering::SeqCst) >= 3,
+                move || {
+                    if seen.load(Ordering::SeqCst) >= 3 {
+                        LivenessSignal::Observed
+                    } else {
+                        LivenessSignal::Waiting
+                    }
+                },
             )
             .await;
 
-            assert!(live, "handshake should observe the simulated signal");
+            assert!(
+                matches!(outcome, LoopOutcome::Observed),
+                "handshake should observe the simulated signal"
+            );
         });
     }
 
     #[test]
     fn loop_already_live_writes_no_markers() {
         rt().block_on(async {
-            let live = run_liveness_loop(
-                &SelfCheckOpts::default(),
+            let outcome = run_liveness_loop(
+                &LivenessOpts::default(),
                 |_idx| panic!("must not write any marker when already live"),
-                || true,
+                || LivenessSignal::Observed,
             )
             .await;
 
-            assert!(live);
+            assert!(matches!(outcome, LoopOutcome::Observed));
+        });
+    }
+
+    #[test]
+    fn loop_reports_source_gone_when_signal_source_disconnects() {
+        rt().block_on(async {
+            // A source that is permanently gone from the first poll must
+            // short-circuit to `SourceGone` — never `TimedOut` — so the
+            // caller can map it to `SetupFailed` rather than a dead-watcher
+            // verdict. Uses a long deadline to prove the loop returns
+            // immediately rather than waiting it out.
+            let outcome = run_liveness_loop(
+                &LivenessOpts::new(Duration::from_secs(30)),
+                |_idx| {},
+                || LivenessSignal::SourceGone,
+            )
+            .await;
+
+            assert!(matches!(outcome, LoopOutcome::SourceGone));
+        });
+    }
+
+    /// A source that only reports `SourceGone` AFTER a few `Waiting` polls
+    /// (the realistic case: the backend task dies mid-handshake) must still
+    /// short-circuit to `SourceGone` from inside the wait loop, not run out
+    /// the deadline as a `TimedOut`.
+    #[test]
+    fn loop_reports_source_gone_when_source_disconnects_mid_handshake() {
+        rt().block_on(async {
+            let polls = Arc::new(AtomicU32::new(0));
+            let polls_s = Arc::clone(&polls);
+
+            let opts = LivenessOpts::new(Duration::from_secs(30))
+                .with_marker_interval(Duration::from_millis(20))
+                .with_poll_interval(Duration::from_millis(1));
+
+            let outcome = run_liveness_loop(
+                &opts,
+                |_idx| {},
+                move || {
+                    if polls_s.fetch_add(1, Ordering::SeqCst) >= 3 {
+                        LivenessSignal::SourceGone
+                    } else {
+                        LivenessSignal::Waiting
+                    }
+                },
+            )
+            .await;
+
+            assert!(matches!(outcome, LoopOutcome::SourceGone));
         });
     }
 
@@ -385,7 +503,7 @@ mod tests {
         let probe_dir = blocking_file.join("probe");
 
         let outcome =
-            check_liveness(&probe_dir, SelfCheckOpts::new(Duration::from_millis(50))).await;
+            check_liveness(&probe_dir, LivenessOpts::new(Duration::from_millis(50))).await;
 
         match outcome {
             LivenessOutcome::SetupFailed(_) => {}
@@ -404,7 +522,7 @@ mod tests {
 
         let outcome = check_liveness(
             &probe_dir,
-            SelfCheckOpts::new(Duration::from_secs(10))
+            LivenessOpts::new(Duration::from_secs(10))
                 .with_marker_interval(Duration::from_millis(100))
                 .with_poll_interval(Duration::from_millis(10)),
         )
@@ -431,7 +549,7 @@ mod tests {
 
         let outcome = check_liveness(
             &probe_dir,
-            SelfCheckOpts::new(Duration::from_secs(10))
+            LivenessOpts::new(Duration::from_secs(10))
                 .with_marker_interval(Duration::from_millis(100))
                 .with_poll_interval(Duration::from_millis(10)),
         )
@@ -477,7 +595,7 @@ mod tests {
         if enforced {
             let outcome = check_liveness(
                 &probe_dir,
-                SelfCheckOpts::new(Duration::from_millis(200))
+                LivenessOpts::new(Duration::from_millis(200))
                     .with_marker_interval(Duration::from_millis(30))
                     .with_poll_interval(Duration::from_millis(10)),
             )
