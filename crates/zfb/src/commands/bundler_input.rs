@@ -491,7 +491,9 @@ pub(crate) fn assemble_bundler_input(
     // `crates/zfb/binaries/esbuild/` slot don't blow up.
     // Skip when an explicit override is in play (input field or env var).
     let _esbuild_handle: Option<tempfile::TempDir>;
-    if bundler_input.esbuild_binary.is_none() && std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+    if bundler_input.esbuild_binary.is_none()
+        && std::env::var_os("ZFB_ESBUILD_BIN").is_none_or(|v| v.is_empty())
+    {
         if let Some(path) = pre_resolved_esbuild {
             // #994 item A — the caller already extracted the embedded
             // esbuild binary and keeps its tempdir alive beyond this

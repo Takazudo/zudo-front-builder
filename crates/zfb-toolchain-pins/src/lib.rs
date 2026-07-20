@@ -126,9 +126,12 @@ pub fn exe_suffix_for_target(target: &str) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinarySource {
     /// The override env var was set to a non-empty value. Carries the raw
-    /// (unvalidated) path string — build.rs is responsible for requiring
-    /// it to be absolute, existing, and a regular file before staging it.
-    Override(String),
+    /// (unvalidated) path — build.rs is responsible for requiring it to be
+    /// absolute, existing, and a regular file before staging it. Kept as
+    /// an `OsString` rather than `String` so a legally non-UTF-8 Unix path
+    /// survives intact; converting it lossily this early would corrupt the
+    /// bytes before validation ever sees them.
+    Override(std::ffi::OsString),
     /// No override; the existing slot already holds a binary matching the
     /// pinned SHA-256 — no download needed.
     Slot,
@@ -146,21 +149,23 @@ pub enum BinarySource {
 /// facts:
 ///
 /// - `override_env_value`: the raw env var value, if the var is set at all
-///   (`None` = unset). An empty string is treated the same as unset, per
-///   the documented override contract in `BUILDING.md`.
+///   (`None` = unset). An empty value is treated the same as unset, per
+///   the documented override contract in `BUILDING.md`. Taken as `&OsStr`
+///   (not `&str`) so a legally non-UTF-8 Unix path is never lossily
+///   converted before validation.
 /// - `platform_supported`: whether `VendorPlatform::from_target_triple`
 ///   resolved the current `TARGET`.
 /// - `slot_already_correct`: whether the existing slot file (if any)
 ///   already matches the pinned SHA-256. Irrelevant (and ignored) once an
 ///   override wins, or when the platform is unsupported.
 pub fn resolve_binary_source(
-    override_env_value: Option<&str>,
+    override_env_value: Option<&std::ffi::OsStr>,
     platform_supported: bool,
     slot_already_correct: bool,
 ) -> BinarySource {
     if let Some(value) = override_env_value {
         if !value.is_empty() {
-            return BinarySource::Override(value.to_string());
+            return BinarySource::Override(value.to_os_string());
         }
     }
     if !platform_supported {
@@ -176,22 +181,24 @@ pub fn resolve_binary_source(
 #[cfg(test)]
 mod override_policy_tests {
     use super::*;
+    use std::ffi::{OsStr, OsString};
 
     #[test]
     fn valid_override_wins_regardless_of_platform_or_slot_state() {
+        let path = OsStr::new("/abs/path/to/esbuild");
         assert_eq!(
-            resolve_binary_source(Some("/abs/path/to/esbuild"), true, false),
-            BinarySource::Override("/abs/path/to/esbuild".to_string())
+            resolve_binary_source(Some(path), true, false),
+            BinarySource::Override(OsString::from("/abs/path/to/esbuild"))
         );
         assert_eq!(
-            resolve_binary_source(Some("/abs/path/to/esbuild"), true, true),
-            BinarySource::Override("/abs/path/to/esbuild".to_string())
+            resolve_binary_source(Some(path), true, true),
+            BinarySource::Override(OsString::from("/abs/path/to/esbuild"))
         );
         // Wins even when the platform is unsupported — this is exactly the
         // escape hatch overrides exist for.
         assert_eq!(
-            resolve_binary_source(Some("/abs/path/to/esbuild"), false, false),
-            BinarySource::Override("/abs/path/to/esbuild".to_string())
+            resolve_binary_source(Some(path), false, false),
+            BinarySource::Override(OsString::from("/abs/path/to/esbuild"))
         );
     }
 
@@ -211,9 +218,28 @@ mod override_policy_tests {
         let synthetic_target = "riscv64gc-unknown-linux-gnu";
         let supported = VendorPlatform::from_target_triple(synthetic_target).is_some();
         assert_eq!(
-            resolve_binary_source(Some("/abs/riscv-esbuild"), supported, false),
-            BinarySource::Override("/abs/riscv-esbuild".to_string())
+            resolve_binary_source(Some(OsStr::new("/abs/riscv-esbuild")), supported, false),
+            BinarySource::Override(OsString::from("/abs/riscv-esbuild"))
         );
+    }
+
+    #[test]
+    fn non_utf8_override_path_survives_intact_on_unix() {
+        // A legally non-UTF-8 Unix path (arbitrary bytes are valid in a
+        // filename) must come back byte-for-byte, not lossily mangled —
+        // this is the whole reason BinarySource::Override carries an
+        // OsString instead of a String.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let raw_bytes = b"/abs/esbuild-\xffbin";
+            let path = OsStr::from_bytes(raw_bytes);
+            let BinarySource::Override(resolved) = resolve_binary_source(Some(path), true, false)
+            else {
+                panic!("expected Override");
+            };
+            assert_eq!(resolved.as_bytes(), raw_bytes);
+        }
     }
 
     #[test]
@@ -240,16 +266,17 @@ mod override_policy_tests {
 
     #[test]
     fn empty_string_env_value_is_treated_as_unset() {
+        let empty = OsStr::new("");
         assert_eq!(
-            resolve_binary_source(Some(""), true, true),
+            resolve_binary_source(Some(empty), true, true),
             BinarySource::Slot
         );
         assert_eq!(
-            resolve_binary_source(Some(""), true, false),
+            resolve_binary_source(Some(empty), true, false),
             BinarySource::NeedsDownload
         );
         assert_eq!(
-            resolve_binary_source(Some(""), false, false),
+            resolve_binary_source(Some(empty), false, false),
             BinarySource::Unsupported
         );
     }
@@ -271,9 +298,12 @@ mod override_policy_tests {
     fn mixed_override_and_download_are_independent_per_binary() {
         // esbuild overridden, tailwind still needs a download — the
         // documented per-binary independence contract.
-        let esbuild = resolve_binary_source(Some("/abs/esbuild"), true, false);
+        let esbuild = resolve_binary_source(Some(OsStr::new("/abs/esbuild")), true, false);
         let tailwind = resolve_binary_source(None, true, false);
-        assert_eq!(esbuild, BinarySource::Override("/abs/esbuild".to_string()));
+        assert_eq!(
+            esbuild,
+            BinarySource::Override(OsString::from("/abs/esbuild"))
+        );
         assert_eq!(tailwind, BinarySource::NeedsDownload);
     }
 

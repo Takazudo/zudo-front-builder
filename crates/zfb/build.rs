@@ -555,30 +555,36 @@ fn with_exe_suffix(base: PathBuf, suffix: &str) -> PathBuf {
 /// **absolute** and must point at an existing regular file. SHA-256
 /// pinning is deliberately skipped for overrides — the operator supplying
 /// the path is responsible for having verified it.
-fn validate_override_path(env_var: &str, raw: &str) -> Result<PathBuf, String> {
+///
+/// Takes the raw `OsString` rather than a `String` so a legally non-UTF-8
+/// Unix path round-trips intact; `to_string_lossy()` is used only inside
+/// error/diagnostic messages, never to build the `Path` that's actually
+/// checked against the filesystem.
+fn validate_override_path(env_var: &str, raw: &std::ffi::OsStr) -> Result<PathBuf, String> {
     let path = Path::new(raw);
+    let display = raw.to_string_lossy();
     if !path.is_absolute() {
         return Err(format!(
-            "{env_var} must be an absolute path (got `{raw}`). Overrides stage \
+            "{env_var} must be an absolute path (got `{display}`). Overrides stage \
              a pre-verified binary directly into the vendor snapshot with no \
              SHA-256 check, so build.rs requires an unambiguous absolute path \
              rather than resolving a relative one against an arbitrary cwd."
         ));
     }
     let metadata = fs::metadata(path).map_err(|e| {
-        format!("{env_var} points at `{raw}`, which does not exist or is not readable: {e}")
+        format!("{env_var} points at `{display}`, which does not exist or is not readable: {e}")
     })?;
     if !metadata.is_file() {
         return Err(format!(
-            "{env_var} points at `{raw}`, which is not a regular file."
+            "{env_var} points at `{display}`, which is not a regular file."
         ));
     }
     println!(
-        "cargo:warning={env_var} is set — staging `{raw}` directly into the vendor \
+        "cargo:warning={env_var} is set — staging `{display}` directly into the vendor \
          snapshot. SHA-256 pinning is skipped for override binaries; verifying \
          the binary is the operator's responsibility (see BUILDING.md)."
     );
-    println!("cargo:rerun-if-changed={raw}");
+    println!("cargo:rerun-if-changed={}", path.display());
     Ok(path.to_path_buf())
 }
 
@@ -594,7 +600,7 @@ fn resolve_vendor_source(
     slot_path: &Path,
     expected_sha256: impl Fn(VendorPlatform) -> &'static str,
 ) -> BinarySource {
-    let raw = std::env::var_os(env_var).map(|v| v.to_string_lossy().into_owned());
+    let raw = std::env::var_os(env_var);
     let override_present = raw.as_deref().is_some_and(|s| !s.is_empty());
 
     let slot_already_correct = if override_present {
