@@ -234,17 +234,22 @@ async fn matched_url_dispatches_through_ssr_layer() {
 }
 
 /// Multi-valued `Set-Cookie` survives end-to-end through the SSR seam
-/// (sub #1144). An SSR handler returning two distinct `Set-Cookie`
-/// values must reach the wire as two separate headers, not a single
-/// collapsed value — the dev router `append`s onto the `HeaderMap`
-/// rather than `insert`ing, and `SsrResponse.headers` is an ordered
-/// `Vec` that preserves the duplicates upstream.
+/// (sub #1144). An SSR handler returning three distinct `Set-Cookie`
+/// values — one carrying an `Expires` attribute whose value itself
+/// contains a comma — must reach the wire as three separate headers, not
+/// a single collapsed value (sub-issue #1760): the dev router `append`s
+/// onto the `HeaderMap` rather than `insert`ing, and `SsrResponse.headers`
+/// is an ordered `Vec` that preserves the duplicates upstream.
 #[tokio::test]
 async fn multiple_set_cookie_survive_ssr_seam() {
     let headers = vec![
         ("content-type".into(), "text/html; charset=utf-8".into()),
         ("set-cookie".into(), "a=1; Path=/; HttpOnly".into()),
         ("set-cookie".into(), "b=2; Path=/; HttpOnly".into()),
+        (
+            "set-cookie".into(),
+            "c=3; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/".into(),
+        ),
     ];
     let canned = SsrResponse {
         status: 200,
@@ -263,9 +268,10 @@ async fn multiple_set_cookie_survive_ssr_seam() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
 
-    // `get_all` yields every `Set-Cookie` value; both must be present and
-    // distinct. A last-value-wins collapse anywhere in the seam would
-    // drop one of them.
+    // `get_all` yields every `Set-Cookie` value; all three must be present
+    // and distinct. A last-value-wins collapse anywhere in the seam would
+    // drop some of them; a naive comma-join would corrupt the third
+    // cookie's `Expires` attribute (which itself contains a comma).
     let cookies: Vec<String> = resp
         .headers()
         .get_all(reqwest::header::SET_COOKIE)
@@ -275,8 +281,8 @@ async fn multiple_set_cookie_survive_ssr_seam() {
         .collect();
     assert_eq!(
         cookies.len(),
-        2,
-        "both Set-Cookie headers must survive; got {cookies:?}"
+        3,
+        "all three Set-Cookie headers must survive; got {cookies:?}"
     );
     assert!(
         cookies.iter().any(|c| c.contains("a=1")),
@@ -286,6 +292,64 @@ async fn multiple_set_cookie_survive_ssr_seam() {
         cookies.iter().any(|c| c.contains("b=2")),
         "second cookie missing; got {cookies:?}"
     );
+    assert!(
+        cookies
+            .iter()
+            .any(|c| c == "c=3; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/"),
+        "third cookie (with a comma inside its Expires attribute) must \
+         survive byte-for-byte, uncorrupted by any comma-join; got {cookies:?}"
+    );
+
+    server.abort();
+}
+
+/// Sub-issue #1761: a `text/plain` SSR response must NOT be given the
+/// HTML5 doctype prepend. Before the `Response` BodyInit content-type
+/// defaulting landed, a bundle handler that returned a bare string
+/// with no explicit header left `content-type` empty, so
+/// `dispatch_ssr`'s "default to text/html" fallback (routes.rs) kicked
+/// in and the doctype-prepend gate saw `text/html` — mutating a plain
+/// body. Now the JS `Response` constructor itself defaults a string
+/// body to `text/plain;charset=UTF-8`, so this canned response (built
+/// directly as an `SsrResponse`, mirroring what the JS bridge would
+/// produce) must round-trip byte-for-byte.
+#[tokio::test]
+async fn text_plain_ssr_response_is_not_given_a_doctype() {
+    let headers = vec![("content-type".into(), "text/plain;charset=UTF-8".into())];
+    let canned = SsrResponse {
+        status: 200,
+        headers,
+        body: b"plain body, no html here".to_vec(),
+    };
+    let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
+    let set = ssr_set("/plain", dispatcher.clone() as Arc<dyn SsrDispatcher>);
+    let (addr, _pages, server, _tmp) = boot(Some(set), None).await;
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .get(format!("http://{addr}/plain"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        ct.starts_with("text/plain"),
+        "expected text/plain, got {ct}"
+    );
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        body, "plain body, no html here",
+        "body must round-trip byte-for-byte, no doctype prepend and no \
+         livereload script injection"
+    );
+    assert!(!body.contains("<!doctype"));
+    assert!(!body.contains("/__zfb/livereload.js"));
 
     server.abort();
 }

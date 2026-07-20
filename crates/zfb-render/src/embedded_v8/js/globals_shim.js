@@ -175,11 +175,16 @@ globalThis.__zfb = {
     // Materialise the body up front so the host doesn't have to
     // poke at ReadableStream.
     const buf = await resp.arrayBuffer();
-    const headers = {};
+    // Ordered `[name, value]` pairs, not a `Record` — `resp.headers.entries()`
+    // already applies the Fetch "sort and combine" view (duplicate
+    // `set-cookie` values kept as separate entries, everything else
+    // comma-joined), so a single-valued object here would silently
+    // collapse repeated headers back down to one.
+    const headers = [];
     for (const [k, v] of resp.headers.entries()) {
       // Headers iteration already lowercases keys per spec, but
       // be defensive.
-      headers[k.toLowerCase()] = v;
+      headers.push([k.toLowerCase(), v]);
     }
     return {
       status: resp.status,

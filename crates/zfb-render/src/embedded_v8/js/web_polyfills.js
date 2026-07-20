@@ -49,10 +49,20 @@
   // mirror that.
   class Headers {
     constructor(init) {
-      this._map = new Map();
+      // Raw ordered list of `[lowercaseName, value]` pairs. Every
+      // `append()` (including ones the constructor drives) pushes a new
+      // pair rather than comma-joining immediately — this is what lets
+      // duplicate `set-cookie` values (whose own `Expires` attribute may
+      // itself contain a comma) survive untouched. Ordinary headers are
+      // combined lazily by `get()`/iteration instead — see
+      // `_combinedEntries()`, which mirrors the WHATWG Fetch "sort and
+      // combine" algorithm.
+      this._pairs = [];
       if (init == null) return;
       if (init instanceof Headers) {
-        for (const [k, v] of init._map) this._map.set(k, v);
+        // Clone: copy the raw pairs so duplicate set-cookie entries in
+        // `init` survive into the clone too.
+        this._pairs = init._pairs.map((pair) => [pair[0], pair[1]]);
         return;
       }
       if (Array.isArray(init)) {
@@ -73,40 +83,96 @@
       throw new TypeError("Invalid Headers init");
     }
     append(name, value) {
-      const k = String(name).toLowerCase();
-      const v = String(value);
-      const prev = this._map.get(k);
-      this._map.set(k, prev == null ? v : prev + ", " + v);
+      this._pairs.push([String(name).toLowerCase(), String(value)]);
     }
     delete(name) {
-      this._map.delete(String(name).toLowerCase());
+      const k = String(name).toLowerCase();
+      this._pairs = this._pairs.filter(([n]) => n !== k);
     }
     get(name) {
-      const v = this._map.get(String(name).toLowerCase());
-      return v == null ? null : v;
+      const k = String(name).toLowerCase();
+      const values = this._pairs.filter(([n]) => n === k).map(([, v]) => v);
+      if (values.length === 0) return null;
+      // Per the Fetch `Headers.get()` algorithm this comma-joins
+      // unconditionally, `set-cookie` included — even though an
+      // `Expires` attribute's own comma can make that join ambiguous.
+      // That's a known, spec-sanctioned wart: `getSetCookie()` is the
+      // lossless API for callers that need every value uncombined.
+      return values.join(", ");
+    }
+    // WHATWG addition (not in the original Fetch `Headers.get` steps):
+    // returns every `set-cookie` value uncombined, in append order. The
+    // only spec-correct way to read multiple Set-Cookie values back out.
+    getSetCookie() {
+      return this._pairs.filter(([n]) => n === "set-cookie").map(([, v]) => v);
     }
     has(name) {
-      return this._map.has(String(name).toLowerCase());
+      const k = String(name).toLowerCase();
+      return this._pairs.some(([n]) => n === k);
     }
     set(name, value) {
-      this._map.set(String(name).toLowerCase(), String(value));
+      const k = String(name).toLowerCase();
+      this._pairs = this._pairs.filter(([n]) => n !== k);
+      this._pairs.push([k, String(value)]);
     }
     forEach(cb, thisArg) {
-      for (const [k, v] of this._map) {
+      for (const [k, v] of this._liveCombinedEntries()) {
         cb.call(thisArg, v, k, this);
       }
     }
     *keys() {
-      for (const k of this._map.keys()) yield k;
+      for (const [k] of this._liveCombinedEntries()) yield k;
     }
     *values() {
-      for (const v of this._map.values()) yield v;
+      for (const [, v] of this._liveCombinedEntries()) yield v;
     }
     *entries() {
-      for (const [k, v] of this._map) yield [k, v];
+      for (const pair of this._liveCombinedEntries()) yield pair;
     }
     [Symbol.iterator]() {
       return this.entries();
+    }
+    // LIVE map iteration, per the WHATWG "iterate a map" semantics
+    // (https://infra.spec.whatwg.org/#map-iterate) that Fetch's `Headers`
+    // iterator inherits: iteration is index-based over the *current*
+    // combined view, re-derived at every step rather than snapshotted up
+    // front. So mutations made mid-traversal are observed — deleting a
+    // not-yet-visited header removes it from later steps (it is NOT
+    // yielded), and appending a header makes it visible to a later step
+    // (it IS yielded). Native `Headers` (and the previous Map-backed
+    // polyfill) behave this way; a snapshot would yield stale results.
+    // The non-mutating order is identical to the snapshot order because
+    // `_combinedEntries()` is deterministic, so existing iteration tests
+    // stay green.
+    *_liveCombinedEntries() {
+      let i = 0;
+      for (;;) {
+        const combined = this._combinedEntries();
+        if (i >= combined.length) return;
+        yield combined[i];
+        i++;
+      }
+    }
+    // WHATWG Fetch "sort and combine" algorithm
+    // (https://fetch.spec.whatwg.org/#concept-header-list-sort-and-combine):
+    // header names are visited in sorted order; `set-cookie` values are
+    // yielded uncombined (one entry per value, Expires-comma-safe) while
+    // every other name's values are comma-joined into a single entry.
+    // Backs get/entries/keys/values/forEach/Symbol.iterator (through
+    // `_liveCombinedEntries`) so all iteration surfaces agree.
+    _combinedEntries() {
+      const names = Array.from(new Set(this._pairs.map(([n]) => n))).sort();
+      const out = [];
+      for (const name of names) {
+        if (name === "set-cookie") {
+          for (const [n, v] of this._pairs) {
+            if (n === name) out.push([n, v]);
+          }
+        } else {
+          out.push([name, this.get(name)]);
+        }
+      }
+      return out;
     }
   }
 
@@ -115,7 +181,20 @@
   // We accept string / array / object init shapes (matching the
   // WHATWG spec). The actual parsing is done by splitting on '&'
   // / '=' — no encoding subtleties are required for the SSG path
-  // (router params are typically already encoded by the framework).
+  // (router params are typically already encoded by the framework),
+  // except for the `application/x-www-form-urlencoded` `+`-means-space
+  // rule, which callers rely on (e.g. HTML forms encode spaces as `+`).
+  //
+  // decode: `+` must become a space BEFORE decodeURIComponent runs,
+  // since decodeURIComponent leaves a literal `+` untouched.
+  function decodeFormUrlComponent(piece) {
+    return decodeURIComponent(piece.replace(/\+/g, " "));
+  }
+  // encode: encodeURIComponent renders a space as `%20`; form-urlencoded
+  // serialization renders it as `+` instead.
+  function encodeFormUrlComponent(str) {
+    return encodeURIComponent(str).replace(/%20/g, "+");
+  }
   class URLSearchParams {
     constructor(init) {
       this._pairs = [];
@@ -127,10 +206,10 @@
           if (piece === "") continue;
           const eq = piece.indexOf("=");
           if (eq < 0) {
-            this._pairs.push([decodeURIComponent(piece), ""]);
+            this._pairs.push([decodeFormUrlComponent(piece), ""]);
           } else {
-            const k = decodeURIComponent(piece.slice(0, eq));
-            const v = decodeURIComponent(piece.slice(eq + 1));
+            const k = decodeFormUrlComponent(piece.slice(0, eq));
+            const v = decodeFormUrlComponent(piece.slice(eq + 1));
             this._pairs.push([k, v]);
           }
         }
@@ -189,7 +268,7 @@
     }
     toString() {
       return this._pairs
-        .map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v))
+        .map(([k, v]) => encodeFormUrlComponent(k) + "=" + encodeFormUrlComponent(v))
         .join("&");
     }
   }
@@ -401,6 +480,20 @@
   // We treat the body as `Uint8Array` internally. Both Request and
   // Response need to expose `text()`, `json()`, `arrayBuffer()`.
 
+  // WHATWG Fetch "extract a body" step 5 (the BodyInit → default
+  // Content-Type table): a `string` body defaults to
+  // `text/plain;charset=UTF-8`, a `URLSearchParams` body defaults to
+  // `application/x-www-form-urlencoded;charset=UTF-8`. Typed arrays /
+  // `ArrayBuffer` get NO automatic type per spec. Returns `null` when
+  // no default applies (caller must supply an explicit header).
+  function bodyInitContentType(body) {
+    if (typeof body === "string") return "text/plain;charset=UTF-8";
+    if (body instanceof URLSearchParams) {
+      return "application/x-www-form-urlencoded;charset=UTF-8";
+    }
+    return null;
+  }
+
   function bodyToUint8Array(input) {
     if (input == null) return new Uint8Array(0);
     if (input instanceof Uint8Array) return input;
@@ -495,7 +588,18 @@
       this.status = i.status == null ? 200 : Number(i.status);
       this.statusText = i.statusText || statusText(this.status);
       this.ok = this.status >= 200 && this.status < 300;
-      this.headers = i.headers instanceof Headers ? i.headers : new Headers(i.headers);
+      // Always clone `init.headers` into a fresh `Headers` instance
+      // (the `Headers` constructor already copies pairs out of a
+      // `Headers` init) rather than aliasing the caller's object —
+      // otherwise the BodyInit default `set()` below would mutate a
+      // `Headers` instance the caller still holds a reference to.
+      this.headers = new Headers(i.headers);
+      if (!this.headers.has("content-type")) {
+        const defaultType = bodyInitContentType(body);
+        if (defaultType) {
+          this.headers.set("content-type", defaultType);
+        }
+      }
       this.type = "default";
       this.url = i.url || "";
       this.redirected = false;
@@ -521,11 +625,17 @@
     }
     static json(data, init) {
       const body = JSON.stringify(data);
-      const r = new Response(body, init);
-      if (!r.headers.has("content-type")) {
-        r.headers.set("content-type", "application/json");
+      const i = init || {};
+      // Install the JSON content-type BEFORE construction: the
+      // constructor now defaults a string body to
+      // `text/plain;charset=UTF-8` when no header is present, which
+      // would otherwise beat a post-hoc `set()` here since `has()`
+      // would already be true. An explicit caller header still wins.
+      const headers = new Headers(i.headers);
+      if (!headers.has("content-type")) {
+        headers.set("content-type", "application/json");
       }
-      return r;
+      return new Response(body, Object.assign({}, i, { headers }));
     }
   }
 
