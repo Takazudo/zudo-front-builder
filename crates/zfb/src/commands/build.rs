@@ -815,6 +815,13 @@ pub(crate) fn build_default_css_payload(
     let discovered_graph_files =
         discover_css_plugin_virtual_files(project_root, &virtual_worker_context)?;
 
+    // `.module.css` files a virtual module imports DIRECTLY (issue #1775
+    // follow-up): fed into CSS emission's explicit module slot so a direct
+    // virtual→sibling-CSS import ships its rules, matching the class map
+    // `compute_css_module_class_maps` produces for the same set. Empty on the
+    // no-virtual-module path.
+    let direct_css_modules = discovered_direct_css_modules(&discovered_graph_files);
+
     // `tailwind: { enabled: false }` disables only the Tailwind layers,
     // not the authored-CSS pipeline. Route to the Tailwind-free path so
     // global CSS + CSS Modules still ship (issue #824). Falling back to
@@ -835,6 +842,7 @@ pub(crate) fn build_default_css_payload(
             framework_css,
             plugin_alias_entries,
             &discovered_graph_files,
+            direct_css_modules,
         );
     }
 
@@ -930,7 +938,14 @@ pub(crate) fn build_default_css_payload(
     // Tailwind path always ships a payload — its preflight bytes are never
     // empty, so there is no whitespace-only guard here (unlike the
     // authored-only path).
-    let payload = run_css_emitter(engine, project_root, outdir, sources, framework_css)?;
+    let payload = run_css_emitter(
+        engine,
+        project_root,
+        outdir,
+        sources,
+        direct_css_modules,
+        framework_css,
+    )?;
     Ok(Some(payload))
 }
 
@@ -1053,10 +1068,19 @@ fn run_css_emitter<E: CssEngine>(
     project_root: &Path,
     outdir: &Path,
     sources: Vec<PathBuf>,
+    // `.module.css` files a registered virtual module imports DIRECTLY (issue
+    // #1775 follow-up, `discovered_direct_css_modules`). The pipeline's
+    // auto-discovery only reaches modules imported by a scan `source`; a
+    // direct virtual→CSS import has no such source, so these are handed to the
+    // explicit `css_modules` slot to be compiled and emitted. Auto-discovered
+    // modules are appended after, deduped by the pipeline. Empty on the
+    // no-virtual-module path (byte-identical parity).
+    explicit_css_modules: Vec<PathBuf>,
     framework_css: Option<String>,
 ) -> Result<AssetEmitterPayload> {
     let pipe_cfg = CssPipelineConfig {
         sources,
+        css_modules: explicit_css_modules,
         // The on-disk class-map JSON writer is not used: the build-time
         // CSS Modules rewrite consumes the maps in-memory instead.
         // `compute_css_module_class_maps` runs `CssModulesProcessor`
@@ -1133,6 +1157,12 @@ fn build_authored_only_css_payload(
     // not out of CSS (issue #824), so a virtual-only sibling CSS Module must
     // still be discovered here.
     discovered_graph_files: &std::collections::BTreeSet<PathBuf>,
+    // Direct virtual→`.module.css` imports (issue #1775 follow-up) — see
+    // `run_css_emitter`'s `explicit_css_modules` doc. The Tailwind-disabled
+    // path needs the same wiring: `enabled: false` opts out of Tailwind, not
+    // out of CSS (issue #824), so a directly-imported virtual-only sibling
+    // CSS Module must still be compiled and emitted here.
+    direct_css_modules: Vec<PathBuf>,
 ) -> Result<Option<AssetEmitterPayload>> {
     let authored_css = match resolve_input_global_css(project_root) {
         Some(path) => {
@@ -1153,7 +1183,14 @@ fn build_authored_only_css_payload(
         discover_css_source_files(project_root, plugin_alias_entries, discovered_graph_files);
     let engine = AuthoredCssEngine::new(authored_css);
 
-    let payload = run_css_emitter(engine, project_root, outdir, sources, framework_css)?;
+    let payload = run_css_emitter(
+        engine,
+        project_root,
+        outdir,
+        sources,
+        direct_css_modules,
+        framework_css,
+    )?;
 
     // Skip the link when there is nothing to ship. With Tailwind off and
     // no authored globals + no modules, `combine` yields only its `"\n"`
@@ -1367,6 +1404,46 @@ fn discover_css_source_files(
     out
 }
 
+/// `.module.css` files a registered virtual module's own source imports
+/// **directly** (issue #1775 follow-up).
+///
+/// The virtual-module discovery graph records every file esbuild reaches
+/// through a registered virtual module, including a `.module.css` imported
+/// with no intermediate JS/TS component. But [`discover_css_source_files`]
+/// only returns JS/TS/MD scan *sources*, and the virtual module's source is
+/// in-memory — never a scan source — so a direct virtual→sibling-`.module.css`
+/// import is otherwise dropped from both the class map and CSS emission while
+/// the bundler still rewrites the staged file to `export default {}` (a green
+/// build with missing classes and styles). Filtering the shared discovery set
+/// keeps it as the only oracle: these are esbuild-visible, already-shipped
+/// files, so they are added directly without re-deriving resolution. The
+/// [`CSS_SIBLING_MIRROR_SKIP_DIRS`] skip-dir filter matches the sibling walk
+/// in [`discover_css_source_files`] so an infra-dir CSS module
+/// (`node_modules/`, `dist/`, …) is never picked up. Empty (and inert) for a
+/// project with no registered virtual modules.
+fn discovered_direct_css_modules(
+    discovered_graph_files: &std::collections::BTreeSet<PathBuf>,
+) -> Vec<PathBuf> {
+    discovered_graph_files
+        .iter()
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".module.css"))
+        })
+        .filter(|p| {
+            !p.components().any(|c| match c {
+                std::path::Component::Normal(os) => CSS_SIBLING_MIRROR_SKIP_DIRS
+                    .iter()
+                    .any(|skip| os == std::ffi::OsStr::new(*skip)),
+                _ => false,
+            })
+        })
+        .filter(|p| p.exists())
+        .cloned()
+        .collect()
+}
+
 /// Compute the CSS Modules class-name maps for a project: discover
 /// `.module.css` imports under the conventional source roots, compile
 /// each with `lightningcss`, and return the
@@ -1418,14 +1495,18 @@ pub(crate) fn compute_css_module_class_maps(
 ) -> Result<std::collections::HashMap<PathBuf, std::collections::HashMap<String, String>>> {
     use std::collections::HashMap;
 
+    // `.module.css` files a virtual module imports DIRECTLY (no intermediate
+    // scan source) — added straight from the shared discovery oracle, see
+    // `discovered_direct_css_modules`. Computed up front so a project whose
+    // ONLY CSS Module is reached this way (no JS/TS scan sources at all) is
+    // not short-circuited by the `sources.is_empty()` gate below.
+    let direct_css_modules = discovered_direct_css_modules(discovered_graph_files);
+
     let sources =
         discover_css_source_files(project_root, plugin_alias_entries, discovered_graph_files);
-    if sources.is_empty() {
+    if sources.is_empty() && direct_css_modules.is_empty() {
         return Ok(HashMap::new());
     }
-
-    let scan =
-        zfb_css::scan_css_module_imports(&sources).context("CSS Modules import scan failed")?;
 
     let first_party_root = zfb_types::first_party_root_for(project_root);
     let project_root_norm = zfb_types::normalize_path_lexical(project_root);
@@ -1443,12 +1524,27 @@ pub(crate) fn compute_css_module_class_maps(
     // are dropped here too. A path outside `project_root` is kept only
     // when the claim plan stages that sibling region — see the doc
     // comment above.
-    let module_files: Vec<PathBuf> = scan
-        .modules
-        .into_iter()
-        .filter(|m| m.exists())
-        .filter(|m| m.starts_with(&project_root_norm) || plan.claims_path(m))
-        .collect();
+    let mut module_files: Vec<PathBuf> = if sources.is_empty() {
+        Vec::new()
+    } else {
+        let scan =
+            zfb_css::scan_css_module_imports(&sources).context("CSS Modules import scan failed")?;
+        scan.modules
+            .into_iter()
+            .filter(|m| m.exists())
+            .filter(|m| m.starts_with(&project_root_norm) || plan.claims_path(m))
+            .collect()
+    };
+
+    // Fold in the direct virtual→`.module.css` imports (deduped) — these are
+    // reachability-proven by the discovery graph, so they bypass the
+    // scan/claim gate above.
+    for m in direct_css_modules {
+        if !module_files.contains(&m) {
+            module_files.push(m);
+        }
+    }
+
     if module_files.is_empty() {
         return Ok(HashMap::new());
     }
@@ -9375,6 +9471,156 @@ mod tests {
             css.contains(&format!(".{scoped}")),
             "emitted CSS (Tailwind disabled) must contain the scoped virtual-only sibling class \
              `.{scoped}`; got:\n{css}",
+        );
+    }
+
+    /// Workspace fixture for the DIRECT virtual→`.module.css` case (issue
+    /// #1775 follow-up): a sibling `.module.css` with NO intermediate JS/TS
+    /// component importing it — the ONLY path that reaches it is a registered
+    /// virtual module whose source imports the CSS directly. Deliberately no
+    /// `.tsx` sibling and no tsconfig alias, so a passing test can only be
+    /// explained by the direct-CSS discovery wiring, not the mirror-root
+    /// scan-source walk or the alias claim path.
+    fn direct_virtual_css_module_workspace_fixture() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::write(
+            ws.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+
+        let project = ws.join("sub-packages/host");
+        std::fs::create_dir_all(&project).unwrap();
+
+        std::fs::create_dir_all(ws.join("lib/vdirect")).unwrap();
+        std::fs::write(
+            ws.join("lib/vdirect/styles.module.css"),
+            ".root { color: rebeccapurple; }\n",
+        )
+        .unwrap();
+
+        (tmp, project)
+    }
+
+    /// Register one virtual module, `virtual:direct-styles`, whose source
+    /// imports the fixture's sibling `.module.css` DIRECTLY — no intermediate
+    /// component. Mirrors what a real plugin's `addVirtualModule` callback
+    /// returns for a virtual module that re-exports a sibling stylesheet's
+    /// class map.
+    fn virtual_direct_css_module(ws: &Path) -> Vec<(String, String)> {
+        let sibling_css =
+            zfb_types::normalize_path_lexical(&ws.join("lib/vdirect/styles.module.css"));
+        let sibling_css_js_literal =
+            serde_json::to_string(&sibling_css.to_string_lossy()).expect("path must serialize");
+        vec![(
+            "virtual:direct-styles".to_string(),
+            format!("import styles from {sibling_css_js_literal};\nexport default styles;\n"),
+        )]
+    }
+
+    /// Regression (issue #1775 follow-up): a registered virtual module whose
+    /// source imports a sibling `.module.css` DIRECTLY (no intermediate JS/TS
+    /// component) must land the CSS file in the discovery graph AND get a
+    /// class map keyed by its physical path. Before the fix,
+    /// `discover_css_source_files` returned only JS/TS/MD sources and the
+    /// in-memory virtual source was never scanned, so the module silently
+    /// dropped out of the class map while the bundler rewrote it to
+    /// `export default {}`.
+    #[test]
+    fn compute_css_module_class_maps_includes_direct_virtual_css_module() {
+        let (_tmp, project) = direct_virtual_css_module_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap();
+        let sibling_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/vdirect/styles.module.css"));
+
+        let worker_context = module_worker_build_context(
+            false,
+            crate::config::Framework::Preact,
+            None,
+            &[],
+            &virtual_direct_css_module(ws),
+        );
+        let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
+            .expect("virtual discovery should not fail");
+        assert!(
+            discovered_graph_files.contains(&sibling_module),
+            "virtual-module discovery must reach the directly-imported .module.css {}; got: {:?}",
+            sibling_module.display(),
+            discovered_graph_files
+        );
+
+        let maps = compute_css_module_class_maps(&project, &[], &discovered_graph_files)
+            .expect("class maps");
+        let names = maps.get(&sibling_module).unwrap_or_else(|| {
+            panic!(
+                "direct virtual→CSS import must get a class map keyed by its physical path {}; \
+                 got keys: {:?}",
+                sibling_module.display(),
+                maps.keys().collect::<Vec<_>>()
+            )
+        });
+        assert!(
+            names.contains_key("root"),
+            "scoped class for `.root` must appear in the direct virtual CSS module's class map; \
+             got: {names:?}",
+        );
+    }
+
+    /// Regression (issue #1775 follow-up), Tailwind-DISABLED variant: the
+    /// authored-only path (`build_authored_only_css_payload`) must also
+    /// compile and emit a directly-imported virtual-only CSS Module —
+    /// `enabled: false` opts out of Tailwind, not out of CSS (issue #824). The
+    /// emitted scoped class must match the one `compute_css_module_class_maps`
+    /// produces, proving the emission and class-map paths agree on the direct
+    /// virtual CSS import.
+    #[test]
+    fn css_payload_emits_direct_virtual_css_module_with_tailwind_disabled() {
+        let (_tmp, project) = direct_virtual_css_module_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap();
+        let plugin_virtual_modules = virtual_direct_css_module(ws);
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            ..Config::default()
+        };
+        let payload = build_default_css_payload(
+            &project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &plugin_virtual_modules,
+        )
+        .expect("should not error")
+        .expect("direct virtual CSS module must ship a non-empty payload");
+        let css = String::from_utf8(payload.bytes).unwrap();
+
+        let worker_context = module_worker_build_context(
+            false,
+            crate::config::Framework::Preact,
+            None,
+            &[],
+            &plugin_virtual_modules,
+        );
+        let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
+            .expect("virtual discovery should not fail");
+        let maps = compute_css_module_class_maps(&project, &[], &discovered_graph_files)
+            .expect("class maps");
+        let sibling_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/vdirect/styles.module.css"));
+        let scoped = maps
+            .get(&sibling_module)
+            .and_then(|names| names.get("root"))
+            .cloned()
+            .expect(
+                "class map must contain the scoped `.root` class for the direct virtual module",
+            );
+
+        assert!(
+            css.contains(&format!(".{scoped}")),
+            "emitted CSS (Tailwind disabled) must contain the scoped direct virtual CSS module \
+             class `.{scoped}`; got:\n{css}",
         );
     }
 
