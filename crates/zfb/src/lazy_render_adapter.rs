@@ -245,8 +245,18 @@ impl LazyRenderAdapter {
                 // synthetic entry: decode first, then remove trailing slashes
                 // while preserving `/` (issue #1513). Keeping this local to
                 // the fallback avoids double-decoding normal index lookups.
-                let canonical_url = canonicalize_dynamic_injected_url(url_path);
-                match self.injected_routes.find_match(&canonical_url) {
+                //
+                // Match the injected PATTERN in the DECODED namespace (#1768):
+                // a pattern's literal segments are author-supplied and
+                // un-encoded (`/preset-café/[slug]`), so they compare against
+                // the decoded request path — the encoded canonical spelling
+                // (`/preset-caf%C3%A9/x`) would never equal the raw literal and
+                // the fallback would miss. The synthesized entry below still
+                // uses the ENCODED canonical URL so its `url_path`/`output_path`
+                // stay in the boundary namespace the serve waterfall re-encodes
+                // a request to.
+                let match_url = decode_and_trim_injected_url(url_path);
+                match self.injected_routes.find_match(&match_url) {
                     Some(rec) => {
                         // SSR-only injected routes (`prerender: false`) are
                         // NOT SSG-rendered/cached in dev — mirror S3's
@@ -260,6 +270,12 @@ impl LazyRenderAdapter {
                         if rec.prerender == Some(false) {
                             return LazyRenderOutcome::NoRoute;
                         }
+                        // Re-encode the matched (decoded) URL to the canonical
+                        // boundary spelling for the synthesized entry (#1768):
+                        // `url_path`, `output_path`, and the on-disk file all
+                        // live in the encoded namespace the serve waterfall
+                        // re-canonicalizes a request to.
+                        let canonical_url = zfb_render::paths::canonical_encode_path(&match_url);
                         // `output_path` derived by the same function as
                         // normal pages so trailing-slash + base-prefix
                         // parity is automatic (design record §3/§5).
@@ -455,26 +471,41 @@ impl LazyRenderAdapter {
     }
 }
 
-/// Canonicalize an injected dynamic-route request before synthesizing its
-/// [`RouteUniverseEntry`]. Mirrors the dev URL index's decode-then-trailing-
-/// slash convention, then re-encodes to the canonical form (issue #1768): the
-/// synthesized entry's `output_path` is derived from this URL and written to
-/// disk, and the serve waterfall re-canonicalizes the request before reading
-/// that file — so the rendered output MUST live in the encoded namespace
-/// (`preset-docs/caf%C3%A9/index.html`), matching every other route entry.
-/// Decoding first (exactly once) then re-encoding also collapses a
-/// double-encoded request to its single canonical spelling.
-///
-/// Stays local rather than reusing `commands::dev`'s index helper because that
-/// one is intentionally private to that module (issue #1513).
-fn canonicalize_dynamic_injected_url(url_path: &str) -> String {
+/// Decode an injected dynamic-route request exactly once and strip trailing
+/// slashes, yielding the DECODED-namespace URL used to match injected patterns
+/// (issue #1768). A pattern's literal segments are author-supplied and
+/// un-encoded, so matching happens here — before re-encoding — while `/` is
+/// preserved (only trailing slashes are trimmed) so the segment shape survives.
+/// Mirrors the dev URL index's decode-then-trailing-slash convention (issue
+/// #1513); kept local rather than reusing `commands::dev`'s index helper
+/// because that one is intentionally private to that module.
+fn decode_and_trim_injected_url(url_path: &str) -> String {
     let decoded = percent_decode_url(url_path);
     let trimmed = decoded.trim_end_matches('/');
     if trimmed.is_empty() {
         // Keep root as `/`; an empty URL is not a valid route value.
         return "/".to_string();
     }
-    zfb_render::paths::canonical_encode_path(trimmed)
+    trimmed.to_string()
+}
+
+/// Canonicalize an injected dynamic-route request into the ENCODED boundary
+/// namespace: decode exactly once, strip trailing slashes, then re-encode via
+/// the canonical segment codec (issue #1768). The synthesized entry's
+/// `output_path` is derived from this URL and written to disk, and the serve
+/// waterfall re-canonicalizes the request before reading that file — so the
+/// rendered output MUST live in the encoded namespace
+/// (`preset-docs/caf%C3%A9/index.html`), matching every other route entry.
+/// Decoding first (exactly once) then re-encoding also collapses a
+/// double-encoded request to its single canonical spelling.
+///
+/// Production derives the synthesized entry's `canonical_url` from the already
+/// decoded `match_url` (`canonical_encode_path(&match_url)`) to avoid decoding
+/// twice; this helper composes the two halves for the tests that pin the
+/// end-to-end request → canonical-spelling contract.
+#[cfg(test)]
+fn canonicalize_dynamic_injected_url(url_path: &str) -> String {
+    zfb_render::paths::canonical_encode_path(&decode_and_trim_injected_url(url_path))
 }
 
 /// Decode percent-encoded bytes when the result is valid UTF-8. Malformed
@@ -784,6 +815,56 @@ mod tests {
                 .claim_stale(Path::new("posts/a/index.html"))
                 .is_none(),
             "claim cleared after a successful render+write"
+        );
+    }
+
+    /// #1768 serve waterfall: a dynamic page under a non-ASCII literal
+    /// directory (`pages/café/[slug].tsx`) resolves — through the `paths()`
+    /// URL choke point (`build_url`) — to the ENCODED canonical `url_path`
+    /// `/caf%C3%A9/x`, is served via that percent-encoded request path, and
+    /// materializes the canonical output file `caf%C3%A9/x/index.html`. Before
+    /// the fix `build_url` left the literal `café` raw, so the entry served at
+    /// `/café/x` while the boundary re-canonicalized the request to
+    /// `/caf%C3%A9/x` and 404'd.
+    #[tokio::test]
+    async fn dynamic_page_under_non_ascii_literal_dir_serves_canonical_output() {
+        use zfb_render::paths::{resolve_paths, PathsCache, Segment};
+
+        // The URL choke point encodes the literal `café` directory segment.
+        let mut cache = PathsCache::new();
+        let segs = vec![
+            Segment::Static("café".to_string()),
+            Segment::Dynamic("slug".to_string()),
+        ];
+        let export = serde_json::json!([{ "params": { "slug": "x" } }]);
+        let resolved = resolve_paths(&mut cache, "café/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(resolved[0].url, "/caf%C3%A9/x");
+
+        let output_path = build_output_path_for_resolved_url(&resolved[0].url, None);
+        assert_eq!(output_path, PathBuf::from("caf%C3%A9/x/index.html"));
+
+        let route_entry = RouteUniverseEntry {
+            url_path: resolved[0].url.clone(),
+            output_path: output_path.clone(),
+            route_key: "café/[slug].tsx".into(),
+            static_html: false,
+            source_path: None,
+        };
+        let routes = vec![(PathBuf::from("pages/café/[slug].tsx"), vec![route_entry])];
+        let h = harness(
+            routes,
+            html_response("<html><body>fresh-cafe</body></html>"),
+        );
+        h.session.mark_routes_stale([output_path.clone()]);
+
+        // Serve via the percent-encoded request path (what the boundary sends).
+        h.adapter.render_if_stale("/caf%C3%A9/x").await;
+
+        let written = h.html_root.path().join(&output_path);
+        let body = std::fs::read_to_string(&written).expect("canonical output file must exist");
+        assert!(
+            body.contains("fresh-cafe"),
+            "rendered body reached the encoded output path: {body}"
         );
     }
 
@@ -1417,6 +1498,40 @@ mod tests {
         assert_eq!(
             canonicalize_dynamic_injected_url("/x/a%252Fb"),
             "/x/a%252Fb"
+        );
+    }
+
+    /// #1768: an injected dynamic route under a non-ASCII literal directory
+    /// (`/preset-café/[slug]`) must match a percent-encoded request
+    /// (`/preset-caf%C3%A9/getting-started`) — matching happens in the DECODED
+    /// namespace where the raw literal lives — and materialize the ENCODED
+    /// canonical output path. A raw-UTF-8 request resolves to the same file.
+    #[tokio::test]
+    async fn dynamic_fallback_matches_non_ascii_literal_segment() {
+        let s = InjectedRouteSet::new(vec![injected_rec("/preset-café/[slug]")]);
+        let h = injected_harness(s, html_response("<html><body>doc</body></html>"));
+
+        // Encoded request matches the raw-literal injected pattern.
+        assert_ne!(
+            h.adapter
+                .render_stale_route("/preset-caf%C3%A9/getting-started"),
+            LazyRenderOutcome::NoRoute,
+            "encoded request must match the non-ASCII literal injected pattern"
+        );
+        let expected = h
+            .html_root
+            .path()
+            .join("preset-caf%C3%A9/getting-started/index.html");
+        assert!(
+            expected.exists(),
+            "output must land under the encoded literal directory: {expected:?}"
+        );
+
+        // A raw-UTF-8 request resolves the SAME pattern and canonical output.
+        assert_ne!(
+            h.adapter.render_stale_route("/preset-café/getting-started"),
+            LazyRenderOutcome::NoRoute,
+            "raw-UTF-8 request must match the same injected pattern"
         );
     }
 
