@@ -854,30 +854,37 @@ pub(crate) fn build_default_css_payload(
     // onto the project root absolute path so the synthesised entry
     // CSS picks up sources regardless of where the user invoked
     // `zfb build`.
-    let mut content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
+    let default_content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
         .iter()
         .map(|root| project_root.join(root).to_string_lossy().into_owned())
         .collect::<Vec<_>>();
 
-    // fix-A [5] (#1191): a package-route page's entrypoint lives OUTSIDE the
-    // conventional project content roots (node_modules / a workspace package),
-    // and the overlay re-export module carries no class strings — so Tailwind's
-    // `@source` scan would never see the package page's utility classes and
-    // would prune them from `styles-<hash>.css` (green build, unstyled page).
-    // Add each entrypoint's parent directory as an extra `@source` root so its
-    // classes (and those of files it imports from the same package dir) are
-    // scanned. De-duped to keep the directive list stable.
-    {
-        let mut seen: std::collections::HashSet<String> = content_globs.iter().cloned().collect();
-        for entry in package_route_entrypoints {
-            if let Some(dir) = entry.parent() {
-                let glob = dir.to_string_lossy().into_owned();
-                if seen.insert(glob.clone()) {
-                    content_globs.push(glob);
-                }
-            }
-        }
-    }
+    // Sibling Mirror (issue #1691/#1776): the same claim plan
+    // `discover_css_source_files` above just used to wholesale-walk sibling
+    // source files is recomputed here (cheap — it only iterates the already-
+    // collected `discovered_graph_files` / alias sets) so its mirror roots
+    // can extend Tailwind's own `@source` scan. Without this, a utility
+    // class used ONLY inside a claimed sibling file is scanned for CSS
+    // Modules discovery but never reaches Tailwind's content scan, so the
+    // class would silently never be emitted (green build, unstyled page —
+    // the same failure shape fix-A [5] closed for package routes below).
+    let sibling_mirror_roots: Vec<PathBuf> = zfb_build::SiblingMirrorPlan::compute(
+        project_root,
+        &zfb_types::first_party_root_for(project_root),
+        &discovered_graph_files,
+        &read_tsconfig_paths(project_root),
+        plugin_alias_entries,
+    )
+    .mirror_roots()
+    .map(Path::to_path_buf)
+    .collect();
+
+    let content_globs = assemble_css_content_globs(
+        &default_content_globs,
+        package_route_entrypoints,
+        &sibling_mirror_roots,
+    );
+    let _ = &sibling_mirror_roots;
 
     let mut tw_cfg = TailwindSubprocessConfig::default()
         .with_working_dir(project_root.to_path_buf())
@@ -925,6 +932,41 @@ pub(crate) fn build_default_css_payload(
     // authored-only path).
     let payload = run_css_emitter(engine, project_root, outdir, sources, framework_css)?;
     Ok(Some(payload))
+}
+
+/// Assemble the Tailwind `@source` content-glob list for a project:
+/// `defaults` (the rebased [`zfb_css::engine::DEFAULT_CONTENT_ROOTS`])
+/// extended with each package-route entrypoint's parent directory
+/// (fix-A [5], #1191) and each Sibling Mirror
+/// [`zfb_build::SiblingMirrorPlan`] mirror root (issue #1776), in that
+/// order, de-duped. Package-route dirs and mirror roots share one `seen`
+/// set so a mirror root that happens to coincide with a package-route dir
+/// (or a default root) is not emitted twice. Extracted as a standalone
+/// function so this wiring — as opposed to "does `@source` become CSS
+/// output" (covered by `zfb-css`'s own tests) — is unit-testable without a
+/// real project tree.
+fn assemble_css_content_globs(
+    defaults: &[String],
+    package_route_entrypoints: &[PathBuf],
+    sibling_mirror_roots: &[PathBuf],
+) -> Vec<String> {
+    let mut content_globs = defaults.to_vec();
+    let mut seen: std::collections::HashSet<String> = content_globs.iter().cloned().collect();
+    for entry in package_route_entrypoints {
+        if let Some(dir) = entry.parent() {
+            let glob = dir.to_string_lossy().into_owned();
+            if seen.insert(glob.clone()) {
+                content_globs.push(glob);
+            }
+        }
+    }
+    for root in sibling_mirror_roots {
+        let glob = root.to_string_lossy().into_owned();
+        if seen.insert(glob.clone()) {
+            content_globs.push(glob);
+        }
+    }
+    content_globs
 }
 
 /// Resolve the `framework_css` block ([`CssPipelineConfig::framework_css`])
@@ -8630,6 +8672,66 @@ mod tests {
         assert_eq!(
             role_classes_inline_sources(&cfg),
             role_classes_inline_sources(&cfg)
+        );
+    }
+
+    /// Issue #1776: `assemble_css_content_globs` folds package-route
+    /// entrypoint parent dirs AND Sibling Mirror mirror roots into the
+    /// content-glob list, in that order, and de-dupes against the
+    /// defaults (and against each other). Pure logic — no project tree,
+    /// no Tailwind binary.
+    #[test]
+    fn assemble_css_content_globs_appends_mirror_roots_deduped_after_defaults() {
+        let defaults = vec!["/proj/pages".to_string(), "/proj/components".to_string()];
+        let package_route_entrypoints = vec![PathBuf::from("/proj/.zfb-package-routes/blog/page")];
+        let sibling_mirror_roots = vec![
+            // Duplicate of a default root — must not be re-added.
+            PathBuf::from("/proj/pages"),
+            PathBuf::from("/workspace/lib/shared"),
+        ];
+
+        let globs = assemble_css_content_globs(
+            &defaults,
+            &package_route_entrypoints,
+            &sibling_mirror_roots,
+        );
+
+        assert_eq!(
+            globs,
+            vec![
+                "/proj/pages".to_string(),
+                "/proj/components".to_string(),
+                "/proj/.zfb-package-routes/blog".to_string(),
+                "/workspace/lib/shared".to_string(),
+            ],
+            "expected defaults, then the package-route entrypoint's parent dir, \
+             then the sibling mirror root (dup of a default dropped): {globs:?}"
+        );
+    }
+
+    /// A mirror root that happens to coincide with a package-route
+    /// entrypoint's parent dir is de-duped too — the `seen` set is shared
+    /// across both extension passes, not reset between them.
+    #[test]
+    fn assemble_css_content_globs_dedupes_mirror_root_against_package_route_dir() {
+        let defaults = vec!["/proj/pages".to_string()];
+        let package_route_entrypoints = vec![PathBuf::from("/workspace/lib/shared/page.tsx")];
+        let sibling_mirror_roots = vec![PathBuf::from("/workspace/lib/shared")];
+
+        let globs = assemble_css_content_globs(
+            &defaults,
+            &package_route_entrypoints,
+            &sibling_mirror_roots,
+        );
+
+        assert_eq!(
+            globs,
+            vec![
+                "/proj/pages".to_string(),
+                "/workspace/lib/shared".to_string(),
+            ],
+            "the mirror root duplicating the package-route parent dir must \
+             appear exactly once: {globs:?}"
         );
     }
 

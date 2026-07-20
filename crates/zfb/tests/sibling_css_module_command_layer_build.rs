@@ -438,3 +438,162 @@ fn sibling_module_css_reached_only_via_virtual_module_is_discovered_and_emitted(
         );
     }
 }
+
+/// A pnpm workspace whose `sub-packages/uhost` member reaches a sibling
+/// component (`<ws_root>/lib/ushared/Badge.tsx`) through a wildcard
+/// tsconfig alias, exactly like `write_fixture` above — but the sibling's
+/// only reference to a Tailwind utility class is an arbitrary-value class
+/// (`bg-[#1a2b3c]`) that appears NOWHERE under `project_root` itself.
+/// Issue #1776: proving this utility's compiled CSS actually ships requires
+/// the sibling's `SiblingMirrorPlan` mirror root to be fed into Tailwind's
+/// own `@source` content-glob scan (`assemble_css_content_globs` in
+/// `crates/zfb/src/commands/build.rs`), not just the CSS Modules discovery
+/// walk `write_fixture`'s test already covers.
+fn write_utility_only_sibling_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
+    fs::write(
+        ws_root.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'sub-packages/*'\n",
+    )
+    .unwrap();
+    let (nm_handle, embedded_nm_path) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    std::os::unix::fs::symlink(&embedded_nm_path, ws_root.join("node_modules"))
+        .expect("symlink workspace node_modules");
+
+    let project = ws_root.join("sub-packages/uhost");
+    fs::create_dir_all(project.join("pages")).unwrap();
+
+    // A real project's `.gitignore` excludes zfb's own build artifacts
+    // (`.zfb-build/`, `dist/`). Tailwind v4's default automatic content
+    // detection (active here since the synthesised entry never adds
+    // `source(none)`) respects `.gitignore` — WITHOUT this file it would
+    // find the sibling-only `bg-[#1a2b3c]` utility through the compiled
+    // `.zfb-build/bundle.mjs` (esbuild inlines the JSX class string
+    // literally), masking whether the `@source` mirror-root wiring under
+    // test actually did anything. This file removes that confound so the
+    // assertion below is a real proof, not a false positive.
+    fs::write(
+        project.join(".gitignore"),
+        ".zfb-build/\ndist/\nnode_modules/\n",
+    )
+    .unwrap();
+
+    // No `tailwind` key -> CSS (and hence the Tailwind utility scan) is
+    // enabled by default.
+    fs::write(
+        project.join("zfb.config.json"),
+        r#"{
+  "framework": "preact"
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("tsconfig.json"),
+        r#"{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "@ushared/*": ["../../lib/ushared/*"] }
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"import Badge from "@ushared/Badge";
+
+export default function HomePage() {
+  return (
+    <main>
+      <Badge />
+    </main>
+  );
+}
+"#,
+    )
+    .unwrap();
+
+    let sibling = ws_root.join("lib/ushared");
+    fs::create_dir_all(&sibling).unwrap();
+    // The `bg-[#1a2b3c]` arbitrary-value utility is used ONLY here — no
+    // file under `project_root` references it, so it can only reach the
+    // emitted stylesheet if Tailwind's `@source` scan walks this sibling
+    // mirror root.
+    fs::write(
+        sibling.join("Badge.tsx"),
+        r#"export default function Badge() {
+  return <span class="bg-[#1a2b3c]">badge</span>;
+}
+"#,
+    )
+    .unwrap();
+
+    (project, nm_handle)
+}
+
+/// Issue #1776: a Tailwind utility class used ONLY inside a sibling file
+/// reached through a claimed tsconfig alias (no direct project-root
+/// reference at all) is scanned and emitted in the real `zfb build`
+/// stylesheet — proving `SiblingMirrorPlan` mirror roots feed
+/// `TailwindSubprocessConfig::content_globs` / the engine's `@source`
+/// directives, not just the CSS Modules source walk.
+#[test]
+#[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb --test \
+            sibling_css_module_command_layer_build -- --ignored \
+            (ZFB_TAILWIND_BIN or the staged crates/zfb/binaries/tailwindcss-v4 \
+            slot; also needs ZFB_ESBUILD_BIN or an esbuild on PATH)"]
+fn sibling_only_utility_class_reaches_tailwind_source_scan_and_is_emitted() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (project, _nm_handle) = write_utility_only_sibling_fixture(tmp.path());
+
+    let output = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(&project)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .output()
+        .expect("spawn `zfb build`");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected `zfb build` to succeed for a sibling-only Tailwind utility \
+         class; got status={:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        output.status,
+    );
+
+    let dist = project.join("dist");
+    let assets_dir = dist.join("assets");
+    let css_paths = collect_files(&assets_dir, "css");
+    let styles_css = css_paths
+        .iter()
+        .find(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.starts_with("styles-") && n.ends_with(".css"))
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| {
+            panic!("expected dist/assets/styles-<hash>.css to be emitted; got: {css_paths:#?}")
+        });
+    let css_body = fs::read_to_string(styles_css).unwrap();
+    assert!(
+        css_body.contains("1a2b3c"),
+        "expected the sibling-only `bg-[#1a2b3c]` utility's compiled bytes in \
+         {}; a missing hex value means the sibling mirror root never reached \
+         Tailwind's `@source` content-glob scan.\n--- css ---\n{}",
+        styles_css.display(),
+        truncate(&css_body, 1200),
+    );
+}
