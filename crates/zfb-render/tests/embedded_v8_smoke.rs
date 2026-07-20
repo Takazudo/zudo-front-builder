@@ -985,3 +985,143 @@ async fn headers_entries_nonmutating_order_is_sorted_and_combined() {
         "non-mutating iteration must keep sorted+combined order (set-cookie uncombined)"
     );
 }
+
+/// Sub-issue #1764: strict main-worker load contract.
+///
+/// [`EmbeddedV8RenderHost::execute_worker_module`] REQUIRES the loaded
+/// module to satisfy the workerd shape — `export default { fetch }` with
+/// a callable `fetch` — and fails loudly, at load time, with a
+/// case-distinct diagnostic when it doesn't. This is the strict
+/// counterpart to the tolerant `RenderHost::execute_module` trait method
+/// (still used to load utility modules that carry no `default` export at
+/// all — case 6 below).
+mod worker_load_contract {
+    use super::workerd_shaped_bundle;
+    use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
+
+    /// Case 1: no `default` export at all.
+    #[tokio::test]
+    async fn missing_default_export_fails_strict_load_with_missing_default_diagnostic() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = r#"export const notDefault = 1;"#;
+        let err = host
+            .execute_worker_module("bundle.mjs", bundle)
+            .await
+            .expect_err("strict load must reject a module with no default export");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("has no `default` export"),
+            "unexpected diagnostic: {msg}"
+        );
+    }
+
+    /// Case 2: `default` export exists but is not an object (covers a
+    /// primitive default AND `export default null`).
+    #[tokio::test]
+    async fn non_object_default_fails_strict_load_with_non_object_diagnostic() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = r#"export default "not-an-object";"#;
+        let err = host
+            .execute_worker_module("bundle.mjs", bundle)
+            .await
+            .expect_err("strict load must reject a non-object default export");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("`default` export is not an object"),
+            "unexpected diagnostic: {msg}"
+        );
+    }
+
+    /// Case 2b: `export default null` — `null` is a distinct JS value
+    /// from `undefined` (case 1) but must land on the same "non-object"
+    /// diagnostic as any other non-object default, per the task's
+    /// absent/undefined/null distinction.
+    #[tokio::test]
+    async fn null_default_fails_strict_load_with_non_object_diagnostic() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = r#"export default null;"#;
+        let err = host
+            .execute_worker_module("bundle.mjs", bundle)
+            .await
+            .expect_err("strict load must reject a null default export");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("`default` export is not an object"),
+            "unexpected diagnostic: {msg}"
+        );
+    }
+
+    /// Case 3: `default` is an object but has no `fetch` property.
+    #[tokio::test]
+    async fn object_without_fetch_fails_strict_load_with_missing_fetch_diagnostic() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = r#"export default { notFetch: 1 };"#;
+        let err = host
+            .execute_worker_module("bundle.mjs", bundle)
+            .await
+            .expect_err("strict load must reject an object default with no fetch property");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("has no `fetch` property"),
+            "unexpected diagnostic: {msg}"
+        );
+    }
+
+    /// Case 4: `default.fetch` exists but is not callable.
+    #[tokio::test]
+    async fn non_callable_fetch_fails_strict_load_with_not_callable_diagnostic() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = r#"export default { fetch: "not-a-function" };"#;
+        let err = host
+            .execute_worker_module("bundle.mjs", bundle)
+            .await
+            .expect_err("strict load must reject a non-callable fetch");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("`default.fetch` is not callable"),
+            "unexpected diagnostic: {msg}"
+        );
+    }
+
+    /// Case 5: a genuinely valid worker loads via the strict entrypoint
+    /// and serves a dispatch, proving `execute_worker_module` isn't
+    /// merely stricter but still functionally equivalent to the
+    /// tolerant path for a well-shaped bundle.
+    #[tokio::test]
+    async fn valid_worker_loads_strict_and_serves() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = workerd_shaped_bundle(r#"return new Response("ok", { status: 200 });"#);
+        host.execute_worker_module("bundle.mjs", &bundle)
+            .await
+            .expect("strict load of a well-shaped worker must succeed");
+        let resp = host
+            .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+            .await
+            .expect("dispatch");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body_utf8(), Some("ok"));
+    }
+
+    /// Case 6: the tolerant `RenderHost::execute_module` trait method
+    /// keeps today's behavior for utility modules with no `default`
+    /// export — load succeeds, no bundle is installed, and the failure
+    /// is deferred into `last_install_error` (surfaced by a later
+    /// `dispatch_fetch` call rather than failing the load itself).
+    #[tokio::test]
+    async fn utility_module_without_default_stays_non_fatal_via_tolerant_path() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let utility = r#"export function helper() { return 1; }"#;
+        host.execute_module("utility.mjs", utility)
+            .await
+            .expect("tolerant execute_module must not fail for a non-workerd-shaped module");
+        let err = host
+            .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+            .await
+            .expect_err("dispatch_fetch must still fail — no shaped bundle was ever installed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("last install error") && msg.contains("has no `default` export"),
+            "deferred diagnostic must surface the original shape-validation error: {msg}"
+        );
+    }
+}
