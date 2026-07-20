@@ -73,6 +73,15 @@
 //! "could not be read" error rather than falling through to the generic
 //! unresolved-module error.
 //!
+//! Because containment is decided on canonical paths, an authorised alias
+//! module is served with its **found** URL set to the canonical target (a
+//! deno_core module redirect). That found URL is the base deno_core resolves
+//! the module's own relative imports against, so a `./sibling.js` from a
+//! file-symlink alias target resolves beside the CANONICAL file — the same
+//! directory the authority check compares against — instead of beside the
+//! symlink spelling (which would be denied). The module map stays keyed on the
+//! URL the bundle imported.
+//!
 //! This closes the static-symlink escape. It does not close a TOCTOU race
 //! against an attacker who can mutate the authorised directory *concurrently
 //! with the build* (canonicalise-then-read is inherently a check/read pair);
@@ -560,6 +569,30 @@ fn ok_js(specifier: &ModuleSpecifier, src: &str) -> ModuleLoadResponse {
     )))
 }
 
+/// Build a `ModuleLoadResponse::Sync` carrying a JavaScript module whose
+/// **found** URL is the canonical `found_path` (see [`read_alias_target`]).
+/// deno_core resolves this module's relative imports against the found URL, so
+/// a file-symlink alias target's `./sibling.js` resolves beside the canonical
+/// file rather than beside the symlink spelling. If `found_path` cannot be
+/// expressed as a `file://` URL (should not happen — it is always an absolute
+/// canonical path) or already equals `specifier`, this behaves like [`ok_js`].
+fn ok_js_redirected(
+    specifier: &ModuleSpecifier,
+    found_path: &Path,
+    src: &str,
+) -> ModuleLoadResponse {
+    let Some(found) = ModuleSpecifier::from_file_path(found_path).ok() else {
+        return ok_js(specifier, src);
+    };
+    ModuleLoadResponse::Sync(Ok(ModuleSource::new_with_redirect(
+        ModuleType::JavaScript,
+        ModuleSourceCode::String(src.to_string().into()),
+        specifier,
+        &found,
+        None,
+    )))
+}
+
 /// Build the workerd-parity ESM wrapper for a copied Wasm binary.
 ///
 /// Deno's native `ModuleType::Wasm` exports an instance's exports, which is a
@@ -775,11 +808,18 @@ fn alias_disk_read_authority(
 }
 
 /// Read an alias-authorised module from `path` and wrap it as a JavaScript
-/// `ModuleSource` keyed on the original `specifier` (so deno_core's module map
-/// stays keyed on the imported URL while the bytes come from the canonical
-/// path). `plugin` is used only for diagnostics. Rejects TS/TSX targets — the
-/// V8 host does not transpile — and surfaces read failures with the plugin
-/// attribution.
+/// `ModuleSource`. The module stays keyed on the imported `specifier` (so
+/// deno_core's module map is keyed on the URL the bundle asked for), but its
+/// **found** URL is set to `path`'s canonical `file://` URL. That found URL is
+/// the base against which deno_core resolves this module's own relative
+/// imports, so a `./sibling.js` from a file-symlink alias target resolves
+/// beside the CANONICAL target — matching [`alias_disk_read_authority`]'s
+/// canonical same-parent-directory check. Without this redirect, relative
+/// imports would resolve beside the symlink spelling and be denied. When
+/// `path` is already the specifier's own path (the common no-symlink case),
+/// `new_with_redirect` collapses to a no-op redirect. `plugin` is used only
+/// for diagnostics. Rejects TS/TSX targets — the V8 host does not transpile —
+/// and surfaces read failures with the plugin attribution.
 fn read_alias_target(specifier: &ModuleSpecifier, path: &Path, plugin: &str) -> ModuleLoadResponse {
     // v1 limitation: the V8 host does not transpile TS/TSX. Reject these
     // targets with a clear error rather than letting V8 cough up an opaque
@@ -796,7 +836,7 @@ fn read_alias_target(specifier: &ModuleSpecifier, path: &Path, plugin: &str) -> 
         }
     }
     match std::fs::read_to_string(path) {
-        Ok(src) => ok_js(specifier, &src),
+        Ok(src) => ok_js_redirected(specifier, path, &src),
         Err(e) => ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(format!(
             "embedded V8 host: alias-rooted file `{}` (under plugin \
              `{plugin}`'s alias) could not be read: {e}",

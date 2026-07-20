@@ -426,6 +426,105 @@ async fn symlinked_configured_target_is_trusted() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn symlinked_file_target_relative_import_resolves_beside_canonical() {
+    use std::os::unix::fs::symlink;
+
+    // The CONFIGURED alias target is a FILE symlink (not a whole directory):
+    // `linkdir/foo.js` -> `real/foo.js`. `foo.js` does a relative `./bar.js`
+    // import of a sibling that sits next to the CANONICAL target (`real/`), and
+    // `linkdir` has no `bar.js`. The module must be served with its canonical
+    // found URL so `./bar.js` resolves beside `real/foo.js` and is authorised.
+    let root = TempDir::new().expect("root dir");
+    let real_dir = root.path().join("real");
+    std::fs::create_dir(&real_dir).expect("real dir");
+    std::fs::write(
+        real_dir.join("foo.js"),
+        r#"
+        import { b } from "./bar.js";
+        export const greeting = "from-file-symlink-" + b;
+        "#,
+    )
+    .expect("write foo.js");
+    std::fs::write(real_dir.join("bar.js"), r#"export const b = "sib";"#).expect("write bar.js");
+
+    // The symlink-spelling directory holds ONLY the file symlink to foo.js —
+    // no bar.js sits beside the symlink spelling.
+    let link_dir = root.path().join("linkdir");
+    std::fs::create_dir(&link_dir).expect("linkdir");
+    let link_foo = link_dir.join("foo.js");
+    symlink(real_dir.join("foo.js"), &link_foo).expect("symlink linkdir/foo.js -> real/foo.js");
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@filesym/lib", link_foo, "filesym-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@filesym/lib", "greeting");
+    host.execute_module("bundle.mjs", &bundle).await.expect(
+        "file-symlink alias target's relative sibling should resolve via the canonical dir",
+    );
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("from-file-symlink-sib"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_file_target_does_not_reach_sibling_beside_symlink_spelling() {
+    use std::os::unix::fs::symlink;
+
+    // Mirror of the case above: the sibling sits beside the SYMLINK spelling
+    // (`linkdir/bar.js`) but NOT beside the canonical target (`real/` has no
+    // bar.js). Relative resolution keyed on the canonical found URL must look
+    // in `real/`, find nothing, and keep the plugin-attributed read error — it
+    // must NOT pick up `linkdir/bar.js`.
+    let root = TempDir::new().expect("root dir");
+    let real_dir = root.path().join("real");
+    std::fs::create_dir(&real_dir).expect("real dir");
+    std::fs::write(
+        real_dir.join("foo.js"),
+        r#"
+        import { b } from "./bar.js";
+        export const greeting = b;
+        "#,
+    )
+    .expect("write foo.js");
+
+    let link_dir = root.path().join("linkdir");
+    std::fs::create_dir(&link_dir).expect("linkdir");
+    // A decoy sibling next to the symlink spelling — must be unreachable.
+    std::fs::write(link_dir.join("bar.js"), r#"export const b = "WRONG";"#).expect("write decoy");
+    let link_foo = link_dir.join("foo.js");
+    symlink(real_dir.join("foo.js"), &link_foo).expect("symlink linkdir/foo.js -> real/foo.js");
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@filesym/lib", link_foo, "filesym-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@filesym/lib", "greeting");
+    let err = host
+        .execute_module("bundle.mjs", &bundle)
+        .await
+        .expect_err("a sibling beside only the symlink spelling must be unreachable");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("filesym-plugin"),
+        "missing canonical sibling must keep the plugin-attributed read error, got: {msg}"
+    );
+    assert!(
+        !msg.contains("WRONG"),
+        "the decoy beside the symlink spelling must never be loaded, got: {msg}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn read_uses_canonical_path_not_symlink_spelling() {
     use std::os::unix::fs::symlink;
 
