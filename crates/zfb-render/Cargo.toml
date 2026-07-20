@@ -99,6 +99,9 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+# Canonical URL-segment codec for `paths()` resolution (issue #1767). Already
+# vendored via zfb-server's dependency graph — no new fetch.
+percent-encoding = "2"
 
 [dev-dependencies]
 serde_json = { workspace = true }

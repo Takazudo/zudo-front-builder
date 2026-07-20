@@ -8,12 +8,34 @@
 //! URLs (`ResolvedPath`s) and caches the result keyed by the route template
 //! and the JSON shape of the export.
 //!
+//! # URL encoding (issue #1767)
+//!
+//! Every segment — each dynamic/catch-all value AND each literal (`Static`)
+//! directory segment from the route template — is run through one canonical
+//! segment codec before it lands in a resolved URL: the RFC 3986 *unreserved*
+//! set (`A-Z a-z 0-9 - . _ ~`) passes through bare, everything else — including
+//! a literal `%`, which is always encoded so the codec is injective — is
+//! percent-encoded. Catch-all values are encoded **per path component**,
+//! never as the joined string (that would encode away the separating `/`).
+//! `ResolvedPath.params` keeps the raw, un-encoded author value; only the
+//! `url` field carries the encoded form. `.` and `..` components are
+//! rejected outright rather than encoded, since a dot-segment changes what
+//! the URL *means*, not just how a byte is spelled.
+//!
+//! **Portability caveat:** Windows reserved device names (`CON`, `PRN`,
+//! `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`) and components with trailing
+//! dots or spaces are accepted as-is — common-SSG stance, matching how most
+//! static-site generators treat `paths()`/route-param values. If a project
+//! needs Windows-safe output filenames it must sanitize those cases itself
+//! before returning them from `paths()`.
+//!
 //! See issue #4 (Sub 5).
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -322,6 +344,13 @@ fn dynamic_string(val: &Value, name: &str, route: &str) -> Result<String, PathsE
             route: route.to_string(),
         });
     }
+    if is_dot_segment(s) {
+        return Err(PathsError::InvalidParamType {
+            name: name.to_string(),
+            reason: format!("dynamic param must not be a dot-segment (`.` or `..`), got `{s}`"),
+            route: route.to_string(),
+        });
+    }
     Ok(s.to_string())
 }
 
@@ -360,6 +389,16 @@ fn catchall_string(
                 return Err(PathsError::InvalidParamType {
                     name: name.to_string(),
                     reason: "catchall param string must not contain empty segments".to_string(),
+                    route: route.to_string(),
+                });
+            }
+            if let Some(bad) = trimmed.split('/').find(|part| is_dot_segment(part)) {
+                return Err(PathsError::InvalidParamType {
+                    name: name.to_string(),
+                    reason: format!(
+                        "catchall param must not contain a dot-segment component \
+                         (`.` or `..`), got `{bad}`"
+                    ),
                     route: route.to_string(),
                 });
             }
@@ -404,6 +443,16 @@ fn catchall_string(
                         route: route.to_string(),
                     });
                 }
+                if is_dot_segment(s) {
+                    return Err(PathsError::InvalidParamType {
+                        name: name.to_string(),
+                        reason: format!(
+                            "catchall param array element {i} must not be a dot-segment \
+                             (`.` or `..`), got `{s}`"
+                        ),
+                        route: route.to_string(),
+                    });
+                }
                 parts.push(s.to_string());
             }
             Ok(parts.join("/"))
@@ -419,15 +468,99 @@ fn catchall_string(
     }
 }
 
-/// Reassemble a URL from a route's segments and the resolved params map.
+/// True for a path component that is exactly `.` or `..` — reserved so a
+/// resolved URL can never spell a dot-segment (which would otherwise let a
+/// `paths()` entry produce a self- or parent-referencing path component).
+fn is_dot_segment(s: &str) -> bool {
+    s == "." || s == ".."
+}
+
+/// The canonical segment codec (issue #1767): RFC 3986 *unreserved* set
+/// (`A-Z a-z 0-9 - . _ ~`) is left bare; every other byte of the UTF-8 value
+/// — including `%` itself — is percent-encoded. Encoding `%` unconditionally
+/// makes the codec injective: a literal `%2F` in an author-supplied value
+/// becomes `%252F` in the URL, never collapsing into a real `/`.
+///
+/// `NON_ALPHANUMERIC` already percent-encodes every ASCII byte outside
+/// `[A-Za-z0-9]`, including `%`; removing the four unreserved punctuation
+/// bytes from it yields exactly the RFC 3986 unreserved set. Bytes outside
+/// the ASCII range (i.e. any non-ASCII UTF-8 byte) are always percent-encoded
+/// by `utf8_percent_encode` regardless of the `AsciiSet`, so non-ASCII text
+/// is covered without listing it explicitly.
+const SEGMENT_UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// Percent-encode a single path component (a value with no internal `/`)
+/// under the canonical codec.
+fn encode_segment_component(s: &str) -> String {
+    utf8_percent_encode(s, SEGMENT_UNRESERVED).to_string()
+}
+
+/// Re-canonicalize an already-**decoded** URL path so it can be compared
+/// byte-for-byte against a `ResolvedPath.url` / `RouteUniverseEntry.url_path`
+/// (the boundary invariant of issue #1768).
+///
+/// The URL choke point (`build_url`) stores every route URL in the encoded
+/// canonical form, but every consumer downstream of the HTTP layer receives
+/// a path that has been **decoded exactly once** — axum's `Path` extractor
+/// and the dev server's `percent_decode_url` both decode a single level.
+/// Applying the canonical segment codec per component turns that decoded path
+/// back into the exact spelling the choke point produced, establishing
+/// `canonical_encode_path(decoded_request_path) == entry.url_path`.
+///
+/// Splitting on `/` and encoding each component preserves the path
+/// separators (a component's own encoded bytes can never introduce a new `/`,
+/// since `/` is itself always encoded to `%2F`); leading, trailing, and empty
+/// segments are preserved so trailing-slash normalisation stays the caller's
+/// job. This is a pure re-encode — it never decodes, so a caller that has
+/// decoded once and calls this exactly once has performed exactly one decode.
+pub fn canonical_encode_path(decoded_path: &str) -> String {
+    decoded_path
+        .split('/')
+        .map(encode_segment_component)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Percent-encode a catch-all value **per component**, then rejoin with `/`.
+/// The joined string is never encoded as a whole — that would percent-encode
+/// the separating `/` itself and collapse every segment into one.
+fn encode_catchall_value(joined: &str) -> String {
+    if joined.is_empty() {
+        return String::new();
+    }
+    joined
+        .split('/')
+        .map(encode_segment_component)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Reassemble a URL from a route's segments and the resolved (raw,
+/// author-supplied) params map, applying the canonical segment codec to
+/// every segment — dynamic/catch-all values AND literal (`Static`) directory
+/// segments. A literal component from the route template (`pages/café/[slug]`
+/// → `Segment::Static("café")`) must land in the SAME encoded namespace the
+/// serving boundary re-canonicalizes a request to (issue #1768); leaving it
+/// raw makes `/café/x` on disk unreachable via the boundary's `/caf%C3%A9/x`
+/// and de-syncs collision detection. `params` itself stays raw — encoding only
+/// ever applies to the URL form built here.
 fn build_url(route_segments: &[Segment], params: &HashMap<String, String>) -> String {
-    let mut parts: Vec<&str> = Vec::with_capacity(route_segments.len());
+    let mut parts: Vec<String> = Vec::with_capacity(route_segments.len());
     for seg in route_segments {
         match seg {
-            Segment::Static(s) => parts.push(s.as_str()),
-            Segment::Dynamic(name) | Segment::Catchall(name) => {
+            Segment::Static(s) => parts.push(encode_segment_component(s)),
+            Segment::Dynamic(name) => {
                 if let Some(v) = params.get(name) {
-                    parts.push(v.as_str());
+                    parts.push(encode_segment_component(v));
+                }
+            }
+            Segment::Catchall(name) => {
+                if let Some(v) = params.get(name) {
+                    parts.push(encode_catchall_value(v));
                 }
             }
             Segment::OptionalCatchall(name) => {
@@ -436,7 +569,7 @@ fn build_url(route_segments: &[Segment], params: &HashMap<String, String>) -> St
                 // `/docs/` with a dangling separator.
                 if let Some(v) = params.get(name) {
                     if !v.is_empty() {
-                        parts.push(v.as_str());
+                        parts.push(encode_catchall_value(v));
                     }
                 }
             }
@@ -1047,5 +1180,261 @@ mod tests {
 
         let err = resolve_paths(&mut cache, "docs/[...slug].tsx", &segs, &export).unwrap_err();
         assert!(matches!(err, PathsError::InvalidParamType { .. }));
+    }
+
+    // ---- canonical segment codec (#1767) ------------------------------
+
+    #[test]
+    fn dynamic_param_percent_encodes_question_mark() {
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "a?b" } }]);
+
+        let out = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/blog/a%3Fb");
+        // params stays raw, not encoded.
+        assert_eq!(out[0].params.get("slug").unwrap(), "a?b");
+    }
+
+    #[test]
+    fn dynamic_param_percent_encodes_hash() {
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "a#b" } }]);
+
+        let out = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/blog/a%23b");
+    }
+
+    #[test]
+    fn dynamic_param_percent_encodes_literal_percent() {
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "a%b" } }]);
+
+        let out = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/blog/a%25b");
+    }
+
+    #[test]
+    fn dynamic_param_percent_encodes_space() {
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "a b" } }]);
+
+        let out = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/blog/a%20b");
+    }
+
+    #[test]
+    fn dynamic_param_percent_encodes_non_ascii() {
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "\u{3042}" } }]); // "あ"
+
+        let out = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/blog/%E3%81%82");
+    }
+
+    #[test]
+    fn dynamic_param_literal_percent_2f_is_lossless_not_a_slash() {
+        // A literal "%2F" in the author-supplied value must not decode into
+        // a real path separator: the `%` is itself encoded, so the value
+        // round-trips losslessly as `%252F`.
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "a%2Fb" } }]);
+
+        let out = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/blog/a%252Fb");
+    }
+
+    #[test]
+    fn dynamic_param_percent_encodes_backslash() {
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "a\\b" } }]);
+
+        let out = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/blog/a%5Cb");
+    }
+
+    #[test]
+    fn dynamic_param_percent_encodes_control_byte() {
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "a\u{0007}b" } }]); // BEL
+
+        let out = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/blog/a%07b");
+    }
+
+    #[test]
+    fn dynamic_param_rejects_dot_segment() {
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "." } }]);
+
+        let err = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap_err();
+        match err {
+            PathsError::InvalidParamType { reason, .. } => {
+                assert!(reason.contains("dot-segment"), "got: {reason}");
+            }
+            other => unreachable!("expected InvalidParamType, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dynamic_param_rejects_dot_dot_segment() {
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": ".." } }]);
+
+        let err = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap_err();
+        assert!(matches!(err, PathsError::InvalidParamType { .. }));
+    }
+
+    #[test]
+    fn catchall_string_encodes_per_component_not_joined() {
+        let mut cache = PathsCache::new();
+        let segs = route_docs_catchall();
+        let export = json!([{ "params": { "slug": "a?b/c#d" } }]);
+
+        let out = resolve_paths(&mut cache, "docs/[...slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/docs/a%3Fb/c%23d");
+        // Raw params stays the un-encoded, slash-joined string.
+        assert_eq!(out[0].params.get("slug").unwrap(), "a?b/c#d");
+    }
+
+    #[test]
+    fn catchall_array_encodes_each_element() {
+        let mut cache = PathsCache::new();
+        let segs = route_docs_catchall();
+        let export = json!([{ "params": { "slug": ["a b", "c%d"] } }]);
+
+        let out = resolve_paths(&mut cache, "docs/[...slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/docs/a%20b/c%25d");
+    }
+
+    #[test]
+    fn catchall_string_rejects_dot_segment_component() {
+        let mut cache = PathsCache::new();
+        let segs = route_docs_catchall();
+        let export = json!([{ "params": { "slug": "a/../b" } }]);
+
+        let err = resolve_paths(&mut cache, "docs/[...slug].tsx", &segs, &export).unwrap_err();
+        match err {
+            PathsError::InvalidParamType { reason, .. } => {
+                assert!(reason.contains("dot-segment"), "got: {reason}");
+            }
+            other => unreachable!("expected InvalidParamType, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn catchall_array_rejects_dot_segment_element() {
+        let mut cache = PathsCache::new();
+        let segs = route_docs_catchall();
+        let export = json!([{ "params": { "slug": ["a", "."] } }]);
+
+        let err = resolve_paths(&mut cache, "docs/[...slug].tsx", &segs, &export).unwrap_err();
+        assert!(matches!(err, PathsError::InvalidParamType { .. }));
+    }
+
+    #[test]
+    fn optional_catchall_still_encodes_when_non_empty() {
+        let mut cache = PathsCache::new();
+        let segs = route_docs_optional_catchall();
+        let export = json!([{ "params": { "slug": ["a b"] } }]);
+
+        let out = resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/docs/a%20b");
+    }
+
+    #[test]
+    fn static_literal_directory_segment_is_canonically_encoded() {
+        // A dynamic route under a non-unreserved literal directory
+        // (`pages/café/[slug].tsx`) must encode the LITERAL segment too, so
+        // the resolved URL lands in the same encoded namespace the serving
+        // boundary re-canonicalizes a request to (#1768). Otherwise `/café/x`
+        // is written to disk but `/caf%C3%A9/x` (the boundary spelling) 404s.
+        let mut cache = PathsCache::new();
+        let segs = vec![
+            Segment::Static("café".to_string()),
+            Segment::Dynamic("slug".to_string()),
+        ];
+        let export = json!([{ "params": { "slug": "x" } }]);
+
+        let out = resolve_paths(&mut cache, "café/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/caf%C3%A9/x");
+    }
+
+    #[test]
+    fn static_literal_segment_encoded_in_catchall_route() {
+        // The same literal encoding applies when the dynamic tail is a
+        // catch-all: `pages/café/[...rest].tsx` → `/caf%C3%A9/a/b`.
+        let mut cache = PathsCache::new();
+        let segs = vec![
+            Segment::Static("café".to_string()),
+            Segment::Catchall("rest".to_string()),
+        ];
+        let export = json!([{ "params": { "rest": ["a", "b"] } }]);
+
+        let out = resolve_paths(&mut cache, "café/[...rest].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/caf%C3%A9/a/b");
+    }
+
+    #[test]
+    fn unreserved_characters_pass_through_unencoded() {
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "Hello-World_v1.2~3" } }]);
+
+        let out = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/blog/Hello-World_v1.2~3");
+    }
+
+    // ── canonical_encode_path (issue #1768 boundary) ────────────────────────
+
+    /// The boundary encoder is the inverse of one decode: a resolved URL,
+    /// decoded once and re-canonicalized, reproduces itself exactly.
+    #[test]
+    fn canonical_encode_path_round_trips_resolved_url() {
+        // slug with `?`, space, and non-ASCII — the three acceptance chars.
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "a?b c\u{e9}" } }]);
+        let resolved = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
+        let url = &resolved[0].url;
+        assert_eq!(url, "/blog/a%3Fb%20c%C3%A9");
+
+        // Decode once (what axum / percent_decode_url do at the boundary)…
+        let decoded =
+            String::from_utf8(percent_encoding::percent_decode_str(url).collect::<Vec<u8>>())
+                .unwrap();
+        assert_eq!(decoded, "/blog/a?b c\u{e9}");
+        // …then re-canonicalize back to the stored spelling.
+        assert_eq!(&canonical_encode_path(&decoded), url);
+    }
+
+    /// A literal `%2F` in the decoded path survives as `%252F` — the `%` is
+    /// re-encoded, so the segment structure is preserved (no new `/`).
+    #[test]
+    fn canonical_encode_path_reencodes_percent_preserving_segments() {
+        // Decoded form after a SINGLE decode of a `%252F` request.
+        assert_eq!(canonical_encode_path("/blog/a%2Fb"), "/blog/a%252Fb");
+    }
+
+    /// Separators, leading slash, and trailing slash are all preserved.
+    #[test]
+    fn canonical_encode_path_preserves_path_shape() {
+        assert_eq!(canonical_encode_path("/"), "/");
+        assert_eq!(canonical_encode_path("/posts/a/"), "/posts/a/");
+        assert_eq!(canonical_encode_path("posts/hello"), "posts/hello");
+        // Already-unreserved paths are a no-op (the common case).
+        assert_eq!(
+            canonical_encode_path("/blog/Hello-World_v1.2~3"),
+            "/blog/Hello-World_v1.2~3"
+        );
     }
 }
