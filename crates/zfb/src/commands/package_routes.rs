@@ -125,8 +125,8 @@ pub(crate) struct OverlayResolution {
 pub(crate) struct StaticInjectedSeed {
     /// The injected pattern (== the concrete URL for a static route).
     pub(crate) pattern: String,
-    /// The seed route-universe entry (`url_path`/`route_key` = the
-    /// pattern, `output_path` from
+    /// The seed route-universe entry (`url_path` = the canonically-encoded
+    /// pattern, `route_key` = the RAW pattern, `output_path` from
     /// [`crate::render_pipeline::build_output_path_for_resolved_url`],
     /// `static_html = false`, `source_path = None`).
     pub(crate) seed_entry: zfb_build::renderer::RouteUniverseEntry,
@@ -148,9 +148,12 @@ impl StaticInjectedSeed {
 /// segment, so the URL equals the pattern and the route is a normal
 /// static SSG page once staged into the dev bundle (S2). This function
 /// derives the concrete [`RouteUniverseEntry`] for each such survivor:
-/// `url_path` = `route_key` = the pattern, `output_path` =
-/// [`crate::render_pipeline::build_output_path_for_resolved_url`] (the
-/// SAME derivation `zfb build` uses, so the dev output layout matches),
+/// `url_path` = the canonically-encoded pattern (#1768 — the encoded boundary
+/// namespace `lookup_by_url` resolves into), `route_key` = the RAW pattern,
+/// `output_path` =
+/// [`crate::render_pipeline::build_output_path_for_resolved_url`] over the
+/// encoded URL (the SAME derivation `zfb build` uses, so the dev output layout
+/// matches),
 /// `static_html = false` (V8-rendered like any SSG route), `source_path =
 /// None`.
 ///
@@ -202,14 +205,25 @@ pub(crate) fn static_injected_seeds(
             // as the normal dynamic-route path does (`/feed.xml` keeps its
             // bare path; `/preset-about` → `preset-about/index.html`).
             let extension = url_path_extension(&mr.pattern);
+            // Canonically encode the pattern (#1768): a static injected route
+            // whose literal carries a non-unreserved byte (`/preset-café`) must
+            // seed its `url_path`/`output_path` in the SAME encoded namespace
+            // the serve/lookup boundary re-canonicalizes a request to —
+            // otherwise `lookup_by_url` re-encodes `/preset-caf%C3%A9` and
+            // misses the raw `/preset-café` seed. This mirrors the static-page
+            // route path (`build_route_universe`): `url_path` is encoded while
+            // `route_key` stays the RAW pattern (the prerender map + Hono lookup
+            // key on it). The extension is detected on the raw pattern (its `.`
+            // is unreserved, so encoding is a no-op there anyway).
+            let canonical_url = zfb_render::paths::canonical_encode_path(&mr.pattern);
             let output_path = crate::render_pipeline::build_output_path_for_resolved_url(
-                &mr.pattern,
+                &canonical_url,
                 extension.as_deref(),
             );
             StaticInjectedSeed {
                 pattern: mr.pattern.clone(),
                 seed_entry: zfb_build::renderer::RouteUniverseEntry {
-                    url_path: mr.pattern.clone(),
+                    url_path: canonical_url,
                     output_path,
                     route_key: mr.pattern.clone(),
                     static_html: false,
@@ -2003,6 +2017,44 @@ export default function Page() { return null; }
         assert!(!s.seed_entry.static_html);
         assert!(s.seed_entry.source_path.is_none());
         assert_eq!(s.output_path(), Path::new("preset-about/index.html"));
+    }
+
+    #[test]
+    fn static_seed_canonicalizes_non_unreserved_literal() {
+        // #1768: a static injected route whose literal segment carries a
+        // non-unreserved byte (`/preset-café`) must seed its `url_path` and
+        // `output_path` in the ENCODED boundary namespace so `lookup_by_url`
+        // (which re-canonicalizes a request to `/preset-caf%C3%A9`) resolves
+        // it. `route_key` stays the RAW pattern, mirroring the static-page
+        // route path. Built from records directly to avoid non-ASCII on-disk
+        // filenames — `static_injected_seeds` only reads `pattern`/`prerender`.
+        let routes = vec![route("/preset-café", "/pkg/cafe.tsx")];
+        let materialized = vec![MaterializedRoute {
+            pattern: "/preset-café".into(),
+            pages_rel: PathBuf::from("preset-café.tsx"),
+            entrypoint: PathBuf::from("/pkg/cafe.tsx"),
+        }];
+
+        let seeds = static_injected_seeds(&routes, &materialized);
+        assert_eq!(seeds.len(), 1);
+        let s = &seeds[0];
+        assert_eq!(
+            s.pattern, "/preset-café",
+            "the log-facing pattern stays raw"
+        );
+        assert_eq!(
+            s.seed_entry.url_path, "/preset-caf%C3%A9",
+            "url_path is the encoded boundary spelling"
+        );
+        assert_eq!(
+            s.seed_entry.route_key, "/preset-café",
+            "route_key stays the raw pattern (prerender map / Hono key)"
+        );
+        assert_eq!(
+            s.output_path(),
+            Path::new("preset-caf%C3%A9/index.html"),
+            "the on-disk file lands under the encoded directory"
+        );
     }
 
     #[test]

@@ -10,9 +10,10 @@
 //!
 //! # URL encoding (issue #1767)
 //!
-//! Every dynamic/catch-all value is run through one canonical segment codec
-//! before it lands in a resolved URL: the RFC 3986 *unreserved* set
-//! (`A-Z a-z 0-9 - . _ ~`) passes through bare, everything else — including
+//! Every segment — each dynamic/catch-all value AND each literal (`Static`)
+//! directory segment from the route template — is run through one canonical
+//! segment codec before it lands in a resolved URL: the RFC 3986 *unreserved*
+//! set (`A-Z a-z 0-9 - . _ ~`) passes through bare, everything else — including
 //! a literal `%`, which is always encoded so the codec is injective — is
 //! percent-encoded. Catch-all values are encoded **per path component**,
 //! never as the joined string (that would encode away the separating `/`).
@@ -540,13 +541,18 @@ fn encode_catchall_value(joined: &str) -> String {
 
 /// Reassemble a URL from a route's segments and the resolved (raw,
 /// author-supplied) params map, applying the canonical segment codec to
-/// every dynamic/catch-all value. `params` itself stays raw — encoding only
+/// every segment — dynamic/catch-all values AND literal (`Static`) directory
+/// segments. A literal component from the route template (`pages/café/[slug]`
+/// → `Segment::Static("café")`) must land in the SAME encoded namespace the
+/// serving boundary re-canonicalizes a request to (issue #1768); leaving it
+/// raw makes `/café/x` on disk unreachable via the boundary's `/caf%C3%A9/x`
+/// and de-syncs collision detection. `params` itself stays raw — encoding only
 /// ever applies to the URL form built here.
 fn build_url(route_segments: &[Segment], params: &HashMap<String, String>) -> String {
     let mut parts: Vec<String> = Vec::with_capacity(route_segments.len());
     for seg in route_segments {
         match seg {
-            Segment::Static(s) => parts.push(s.clone()),
+            Segment::Static(s) => parts.push(encode_segment_component(s)),
             Segment::Dynamic(name) => {
                 if let Some(v) = params.get(name) {
                     parts.push(encode_segment_component(v));
@@ -1343,6 +1349,39 @@ mod tests {
 
         let out = resolve_paths(&mut cache, "docs/[[...slug]].tsx", &segs, &export).unwrap();
         assert_eq!(out[0].url, "/docs/a%20b");
+    }
+
+    #[test]
+    fn static_literal_directory_segment_is_canonically_encoded() {
+        // A dynamic route under a non-unreserved literal directory
+        // (`pages/café/[slug].tsx`) must encode the LITERAL segment too, so
+        // the resolved URL lands in the same encoded namespace the serving
+        // boundary re-canonicalizes a request to (#1768). Otherwise `/café/x`
+        // is written to disk but `/caf%C3%A9/x` (the boundary spelling) 404s.
+        let mut cache = PathsCache::new();
+        let segs = vec![
+            Segment::Static("café".to_string()),
+            Segment::Dynamic("slug".to_string()),
+        ];
+        let export = json!([{ "params": { "slug": "x" } }]);
+
+        let out = resolve_paths(&mut cache, "café/[slug].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/caf%C3%A9/x");
+    }
+
+    #[test]
+    fn static_literal_segment_encoded_in_catchall_route() {
+        // The same literal encoding applies when the dynamic tail is a
+        // catch-all: `pages/café/[...rest].tsx` → `/caf%C3%A9/a/b`.
+        let mut cache = PathsCache::new();
+        let segs = vec![
+            Segment::Static("café".to_string()),
+            Segment::Catchall("rest".to_string()),
+        ];
+        let export = json!([{ "params": { "rest": ["a", "b"] } }]);
+
+        let out = resolve_paths(&mut cache, "café/[...rest].tsx", &segs, &export).unwrap();
+        assert_eq!(out[0].url, "/caf%C3%A9/a/b");
     }
 
     #[test]
