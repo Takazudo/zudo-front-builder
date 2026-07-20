@@ -5491,6 +5491,14 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     static_routes.extend(runtime_expansion.resolved);
     warn_deferred_dynamic(&runtime_expansion.deferred);
 
+    // Global collision check (issue #1768): now that the static and both
+    // dynamic-expansion phases are folded into one universe, fail the build if
+    // any two routes share a canonical `url_path` or an `output_path` — one
+    // would otherwise silently clobber the other on disk.
+    if let Err(msg) = crate::render_pipeline::validate_no_route_collisions(&static_routes) {
+        anyhow::bail!(msg);
+    }
+
     if static_routes.is_empty() {
         output::warn("no routes to render after runtime paths() evaluation; dist will be empty");
         return Ok((0, zfb_build::PostBuildRouteManifest::empty()));

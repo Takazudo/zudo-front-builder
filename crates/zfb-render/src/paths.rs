@@ -498,6 +498,32 @@ fn encode_segment_component(s: &str) -> String {
     utf8_percent_encode(s, SEGMENT_UNRESERVED).to_string()
 }
 
+/// Re-canonicalize an already-**decoded** URL path so it can be compared
+/// byte-for-byte against a `ResolvedPath.url` / `RouteUniverseEntry.url_path`
+/// (the boundary invariant of issue #1768).
+///
+/// The URL choke point (`build_url`) stores every route URL in the encoded
+/// canonical form, but every consumer downstream of the HTTP layer receives
+/// a path that has been **decoded exactly once** — axum's `Path` extractor
+/// and the dev server's `percent_decode_url` both decode a single level.
+/// Applying the canonical segment codec per component turns that decoded path
+/// back into the exact spelling the choke point produced, establishing
+/// `canonical_encode_path(decoded_request_path) == entry.url_path`.
+///
+/// Splitting on `/` and encoding each component preserves the path
+/// separators (a component's own encoded bytes can never introduce a new `/`,
+/// since `/` is itself always encoded to `%2F`); leading, trailing, and empty
+/// segments are preserved so trailing-slash normalisation stays the caller's
+/// job. This is a pure re-encode — it never decodes, so a caller that has
+/// decoded once and calls this exactly once has performed exactly one decode.
+pub fn canonical_encode_path(decoded_path: &str) -> String {
+    decoded_path
+        .split('/')
+        .map(encode_segment_component)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Percent-encode a catch-all value **per component**, then rejoin with `/`.
 /// The joined string is never encoded as a whole — that would percent-encode
 /// the separating `/` itself and collapse every segment into one.
@@ -1327,5 +1353,49 @@ mod tests {
 
         let out = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
         assert_eq!(out[0].url, "/blog/Hello-World_v1.2~3");
+    }
+
+    // ── canonical_encode_path (issue #1768 boundary) ────────────────────────
+
+    /// The boundary encoder is the inverse of one decode: a resolved URL,
+    /// decoded once and re-canonicalized, reproduces itself exactly.
+    #[test]
+    fn canonical_encode_path_round_trips_resolved_url() {
+        // slug with `?`, space, and non-ASCII — the three acceptance chars.
+        let mut cache = PathsCache::new();
+        let segs = route_blog_slug();
+        let export = json!([{ "params": { "slug": "a?b c\u{e9}" } }]);
+        let resolved = resolve_paths(&mut cache, "blog/[slug].tsx", &segs, &export).unwrap();
+        let url = &resolved[0].url;
+        assert_eq!(url, "/blog/a%3Fb%20c%C3%A9");
+
+        // Decode once (what axum / percent_decode_url do at the boundary)…
+        let decoded =
+            String::from_utf8(percent_encoding::percent_decode_str(url).collect::<Vec<u8>>())
+                .unwrap();
+        assert_eq!(decoded, "/blog/a?b c\u{e9}");
+        // …then re-canonicalize back to the stored spelling.
+        assert_eq!(&canonical_encode_path(&decoded), url);
+    }
+
+    /// A literal `%2F` in the decoded path survives as `%252F` — the `%` is
+    /// re-encoded, so the segment structure is preserved (no new `/`).
+    #[test]
+    fn canonical_encode_path_reencodes_percent_preserving_segments() {
+        // Decoded form after a SINGLE decode of a `%252F` request.
+        assert_eq!(canonical_encode_path("/blog/a%2Fb"), "/blog/a%252Fb");
+    }
+
+    /// Separators, leading slash, and trailing slash are all preserved.
+    #[test]
+    fn canonical_encode_path_preserves_path_shape() {
+        assert_eq!(canonical_encode_path("/"), "/");
+        assert_eq!(canonical_encode_path("/posts/a/"), "/posts/a/");
+        assert_eq!(canonical_encode_path("posts/hello"), "posts/hello");
+        // Already-unreserved paths are a no-op (the common case).
+        assert_eq!(
+            canonical_encode_path("/blog/Hello-World_v1.2~3"),
+            "/blog/Hello-World_v1.2~3"
+        );
     }
 }
