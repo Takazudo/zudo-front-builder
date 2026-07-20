@@ -471,6 +471,44 @@ async fn read_uses_canonical_path_not_symlink_spelling() {
     );
 }
 
+#[tokio::test]
+async fn missing_sibling_in_authorized_dir_keeps_plugin_attributed_error() {
+    // A missing `./sibling.js` inside an authorised alias directory must keep
+    // the plugin-attributed "could not be read" error, not degrade to the
+    // generic unresolved-module message. (No symlinks — works on all
+    // platforms.)
+    let dir = TempDir::new().expect("tempdir");
+    let lib_path = write_temp_file(
+        &dir,
+        "lib.js",
+        r#"
+        import { gone } from "./missing.js";
+        export const greeting = gone;
+        "#,
+    );
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@sib/lib", lib_path, "sib-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@sib/lib", "greeting");
+    let err = host
+        .execute_module("bundle.mjs", &bundle)
+        .await
+        .expect_err("missing sibling must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("sib-plugin"),
+        "missing sibling should keep the plugin attribution, got: {msg}"
+    );
+    assert!(
+        msg.contains("could not be read"),
+        "missing sibling should keep the read-failure error, got: {msg}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Virtual module tests
 // ---------------------------------------------------------------------------

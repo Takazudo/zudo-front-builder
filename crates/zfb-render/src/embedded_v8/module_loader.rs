@@ -73,6 +73,13 @@
 //! "could not be read" error rather than falling through to the generic
 //! unresolved-module error.
 //!
+//! This closes the static-symlink escape. It does not close a TOCTOU race
+//! against an attacker who can mutate the authorised directory *concurrently
+//! with the build* (canonicalise-then-read is inherently a check/read pair);
+//! aliases are registered by trusted plugin `setup`, and the build owns its
+//! output tree, so that residual boundary is out of scope here — a
+//! descriptor-relative no-follow open would be the fix if it ever matters.
+//!
 //! ### TS/TSX caveat (v1 limitation)
 //!
 //! The V8 host expects ESM-compatible JavaScript at this layer; it
@@ -703,30 +710,51 @@ fn alias_disk_read_authority(
     // Resolve the candidate's full symlink chain once. `None` means the file
     // does not exist (a missing target, or a dangling/absent sibling).
     let canonical_candidate = std::fs::canonicalize(&candidate_path).ok();
+    // When the candidate file itself is missing, its directory usually still
+    // exists; canonicalise that so a missing *sibling* import inside an
+    // authorised directory keeps the plugin-attributed "could not be read"
+    // error instead of degrading to the generic unresolved-module message.
+    // This is still canonical-to-canonical, so it does not widen containment.
+    let canonical_candidate_parent = if canonical_candidate.is_none() {
+        candidate_path
+            .parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok())
+    } else {
+        None
+    };
     let mut missing_target: Option<String> = None;
     for entry in hooks.aliases.values() {
         match std::fs::canonicalize(&entry.target) {
             Ok(canonical_target) => {
-                let Some(canonical_candidate) = canonical_candidate.as_ref() else {
-                    continue;
-                };
-                // Canonical exact-target match takes precedence in attribution.
-                if *canonical_candidate == canonical_target {
-                    return AliasDiskAuthority::Authorized {
-                        canonical_path: canonical_candidate.clone(),
-                        plugin: entry.plugin.clone(),
-                    };
-                }
-                // Canonical same-parent-directory match (transitive sibling
-                // imports inside the alias-rooted module folder).
-                if let (Some(candidate_dir), Some(target_dir)) =
-                    (canonical_candidate.parent(), canonical_target.parent())
-                {
-                    if candidate_dir == target_dir {
+                if let Some(canonical_candidate) = canonical_candidate.as_ref() {
+                    // Canonical exact-target match takes precedence in attribution.
+                    if *canonical_candidate == canonical_target {
                         return AliasDiskAuthority::Authorized {
                             canonical_path: canonical_candidate.clone(),
                             plugin: entry.plugin.clone(),
                         };
+                    }
+                    // Canonical same-parent-directory match (transitive sibling
+                    // imports inside the alias-rooted module folder).
+                    if let (Some(candidate_dir), Some(target_dir)) =
+                        (canonical_candidate.parent(), canonical_target.parent())
+                    {
+                        if candidate_dir == target_dir {
+                            return AliasDiskAuthority::Authorized {
+                                canonical_path: canonical_candidate.clone(),
+                                plugin: entry.plugin.clone(),
+                            };
+                        }
+                    }
+                } else if let (Some(candidate_dir), Some(target_dir)) = (
+                    canonical_candidate_parent.as_deref(),
+                    canonical_target.parent(),
+                ) {
+                    // Candidate file is missing but its (existing) directory is
+                    // the alias target's canonical directory: an absent sibling
+                    // import. Keep the plugin-attributed read error.
+                    if candidate_dir == target_dir {
+                        missing_target.get_or_insert_with(|| entry.plugin.clone());
                     }
                 }
             }
