@@ -99,6 +99,31 @@ async fn boot_with_plugins(
     tokio::task::JoinHandle<anyhow::Result<()>>,
     tempfile::TempDir,
 ) {
+    boot_with_plugins_and_host_validation(
+        handlers,
+        ssr,
+        plugins,
+        zfb_server::HostValidation::disabled(),
+    )
+    .await
+}
+
+/// Same as [`boot_with_plugins`] but threads an explicit
+/// [`zfb_server::HostValidation`] instead of always disabling it —
+/// needed to cover the Host/Origin allowlist reaching the embed
+/// handler surface (issue #1770), since `ServeOpts` (used by
+/// `host_validation_integration.rs`) always builds `embed_handlers:
+/// None` and can never exercise this dispatch path.
+async fn boot_with_plugins_and_host_validation(
+    handlers: EmbedHandlerSet,
+    ssr: SsrRouteSet,
+    plugins: Option<DevMiddlewareSet>,
+    host_validation: zfb_server::HostValidation,
+) -> (
+    SocketAddr,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tempfile::TempDir,
+) {
     let tmp = tempfile::tempdir().unwrap();
     let dist_root = tmp.path().join("dist");
     let public_root = tmp.path().join("public");
@@ -128,7 +153,7 @@ async fn boot_with_plugins(
         trailing_slash: false,
         islands_bundle_url: None,
         css_bundle_url: None,
-        host_validation: zfb_server::HostValidation::disabled(),
+        host_validation,
         render_on_request_hook: None,
         redirects: None,
         // Test uses temp dirs — canonical roots not precomputed.
@@ -248,6 +273,101 @@ async fn rust_handler_captures_path_params() {
         0,
         "SSR must be skipped when the Rust handler matches"
     );
+
+    server.abort();
+}
+
+/// Issue #1770: the embed handler dispatch surface (`AppState`'s
+/// `embed_handlers`) is gated by the same Origin check as SSR/plugin
+/// routes, and an IP-literal `Origin` does NOT ride the Host-only
+/// IP-literal always-allow rule. Embed callers have no `allowedHosts`
+/// config surface (see `serve_with_listener` in `embed.rs`), so their
+/// documented remedy is binding to a concrete LAN IP instead of
+/// `0.0.0.0` — that bound IP is seeded as an `Exact` rule by
+/// `HostValidation::for_bind` and its Origin is allowed through that
+/// rule, while an unrelated IP is rejected.
+#[tokio::test]
+async fn embed_handler_origin_gate_rejects_unrelated_ip_but_allows_bound_ip() {
+    let canned = SsrResponse {
+        status: 200,
+        headers: Vec::new(),
+        body: b"ssr".to_vec(),
+    };
+    let ssr_dispatcher = Arc::new(CountingSsrDispatcher::new(canned));
+    let ssr_set = SsrRouteSet::new(Vec::new(), ssr_dispatcher.clone() as Arc<dyn SsrDispatcher>);
+
+    let rust_handler_calls = Arc::new(AtomicU32::new(0));
+    let counter = Arc::clone(&rust_handler_calls);
+    let handlers = EmbedHandlerSet::new(vec![EmbedHandler {
+        pattern: "/api/echo".into(),
+        handler: erase_handler_for_test(move |_req, _params: RouteParams| {
+            let counter = Arc::clone(&counter);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                (StatusCode::OK, "rust-handler-body".to_string())
+            }
+        }),
+    }]);
+
+    // Simulates an embed server documented as bound to a concrete LAN
+    // IP (the #1770 remedy) rather than `0.0.0.0`; `bind_host_validation`
+    // is independent of the real test listener (which stays on
+    // loopback), mirroring the `local_url`-vs-`Host` pattern used by
+    // `host_validation_integration.rs`.
+    let bind_ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 5));
+    let host_validation =
+        zfb_server::HostValidation::for_bind(bind_ip, None, &[], zfb_server::ServerMode::Embed);
+
+    let (addr, server, _tmp) =
+        boot_with_plugins_and_host_validation(handlers, ssr_set, None, host_validation).await;
+
+    let client = reqwest::Client::builder().build().unwrap();
+
+    // Unrelated IP-literal Origin → 403, Rust handler never invoked.
+    for origin in ["http://192.168.1.9:3000", "http://[2001:db8::7]:3000"] {
+        let resp = client
+            .post(format!("http://{addr}/api/echo"))
+            .header(reqwest::header::HOST, "192.168.1.5")
+            .header(reqwest::header::ORIGIN, origin)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            403,
+            "origin {origin} must be rejected"
+        );
+    }
+    assert_eq!(
+        rust_handler_calls.load(Ordering::SeqCst),
+        0,
+        "embed handler must not run for an unrelated IP-literal origin"
+    );
+
+    // The bound IP's own Origin is allowed through its explicit `Exact`
+    // rule (not the removed IP-literal short-circuit).
+    let resp = client
+        .post(format!("http://{addr}/api/echo"))
+        .header(reqwest::header::HOST, "192.168.1.5")
+        .header(reqwest::header::ORIGIN, "http://192.168.1.5:8080")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(rust_handler_calls.load(Ordering::SeqCst), 1);
+
+    // Contrast: the Host header still allows ANY IP literal (the
+    // exemption stays Host-only) — an unrelated IP Host with a matching
+    // allowed Origin still dispatches.
+    let resp = client
+        .post(format!("http://{addr}/api/echo"))
+        .header(reqwest::header::HOST, "192.168.1.9")
+        .header(reqwest::header::ORIGIN, "http://192.168.1.5:8080")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(rust_handler_calls.load(Ordering::SeqCst), 2);
 
     server.abort();
 }
