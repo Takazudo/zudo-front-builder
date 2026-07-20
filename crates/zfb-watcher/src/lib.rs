@@ -1076,7 +1076,10 @@ mod tests {
                 }
             }
         }
-        assert!(filled > 0, "channel must accept changes before reporting Full");
+        assert!(
+            filled > 0,
+            "channel must accept changes before reporting Full"
+        );
 
         let (raw_tx, raw_rx) = std_mpsc::channel::<notify::Result<Event>>();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -1106,7 +1109,9 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
-            .expect("debouncer must exit after shutdown despite a saturated outbound channel (#1757)")
+            .expect(
+                "debouncer must exit after shutdown despite a saturated outbound channel (#1757)",
+            )
             .expect("debouncer task must not panic");
 
         // Only NOW release the receiver (see the doc comment).
