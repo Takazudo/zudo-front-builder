@@ -554,7 +554,12 @@
       this.status = i.status == null ? 200 : Number(i.status);
       this.statusText = i.statusText || statusText(this.status);
       this.ok = this.status >= 200 && this.status < 300;
-      this.headers = i.headers instanceof Headers ? i.headers : new Headers(i.headers);
+      // Always clone `init.headers` into a fresh `Headers` instance
+      // (the `Headers` constructor already copies pairs out of a
+      // `Headers` init) rather than aliasing the caller's object —
+      // otherwise the BodyInit default `set()` below would mutate a
+      // `Headers` instance the caller still holds a reference to.
+      this.headers = new Headers(i.headers);
       if (!this.headers.has("content-type")) {
         const defaultType = bodyInitContentType(body);
         if (defaultType) {

@@ -271,6 +271,38 @@ async fn response_clone_preserves_bodyinit_defaulted_content_type() {
     assert_eq!(resp.content_type(), Some("text/plain;charset=UTF-8"));
 }
 
+/// Deep-review fix: the `Response` constructor must clone a caller-
+/// supplied `Headers` instance rather than alias it — otherwise the
+/// BodyInit content-type default's `set()` call would mutate a
+/// `Headers` object the caller still holds a reference to. Pass the
+/// same `Headers` instance to two `Response`s and confirm the first
+/// construction's default doesn't leak into the second.
+#[tokio::test]
+async fn response_construction_does_not_mutate_caller_headers_object() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const shared = new Headers();
+        const first = new Response("plain body", { headers: shared });
+        // If `Response` aliased `shared`, it would now carry the
+        // text/plain default the first construction installed.
+        const stillEmpty = !shared.has("content-type");
+        return new Response(String(stillEmpty), { status: stillEmpty ? 200 : 500 });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(
+        resp.status, 200,
+        "constructing a Response must not mutate the caller's shared Headers object"
+    );
+}
+
 /// `Response.json()` must still install `application/json` even though
 /// its body is a stringified JSON string — the static helper installs
 /// the header BEFORE construction so it isn't beaten by the
