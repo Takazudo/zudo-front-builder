@@ -247,6 +247,30 @@ fn island_descendant_backslash_expression_does_not_fall_back() {
 }
 
 #[test]
+fn no_pipeline_path_backslash_expression_does_not_fall_back() {
+    // The legacy no-pipeline emitter (`mdx_to_jsx_module` → `JsxEmitter`)
+    // carries the same expression sinks and must not leak either.
+    let jsx = zfb_content::mdx_to_jsx_module(
+        "A raw template leaked at top level: <pre>{\\n}</pre>\n\nValid: {1 + 1}\n",
+        zfb_content::MdxJsxOptions::default(),
+    )
+    .expect("no-pipeline compile succeeds");
+    assert!(
+        !heuristic_says_jsx_breaks(&jsx),
+        "no-pipeline path must not trip the gate; emitted:\n{jsx}"
+    );
+    assert_swc_accepts(&jsx, "no-pipeline");
+    assert!(
+        jsx.contains(r#"{"\\n"}"#),
+        "recovered `\\n` bytes must remain present; emitted:\n{jsx}"
+    );
+    assert!(
+        jsx.contains("{1 + 1}"),
+        "valid expression must survive verbatim; emitted:\n{jsx}"
+    );
+}
+
+#[test]
 fn top_level_backslash_expression_does_not_fall_back() {
     let jsx = compile_body("top-level", TOP_LEVEL_FIXTURE);
     assert!(

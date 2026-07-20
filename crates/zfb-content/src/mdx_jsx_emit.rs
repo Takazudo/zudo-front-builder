@@ -909,8 +909,8 @@ impl JsxEmitter {
             MdastNode::MdxJsxTextElement(j) => {
                 self.emit_jsx(j.name.as_deref(), &j.attributes, &j.children)
             }
-            MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
-            MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
+            MdastNode::MdxFlowExpression(e) => emit_mdx_expression_braced(&e.value),
+            MdastNode::MdxTextExpression(e) => emit_mdx_expression_braced(&e.value),
             // remark-math `$$...$$` block. Mirrors the shape
             // markdown-rs's HTML serializer (`on_enter_raw_flow`)
             // produces — `<pre><code class="language-math math-display">`
