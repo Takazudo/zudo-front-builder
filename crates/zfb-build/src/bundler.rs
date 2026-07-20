@@ -1354,6 +1354,25 @@ pub struct ShadowSession {
     ///
     /// Cleared on the same dirty/copy_mode wipe as `content_skip`.
     source_skip: HashMap<PathBuf, SourceSkipEntry>,
+    /// Incremental sibling-mirror skip cache (issue #1777), keyed by the
+    /// DESTINATION shadow-relative path — same dest-keying rationale as
+    /// `source_skip`. Lets a later tick skip the wholesale raw byte copy
+    /// [`mirror_sibling_root`] performs for an unchanged sibling file.
+    ///
+    /// DELIBERATELY SEPARATE from `source_skip`, not a shared namespace:
+    /// `mirror_sibling_root` runs BEFORE the preprocessing-materialise pass
+    /// in the same tick, over the same dest paths a later
+    /// `materialise_source_file` call for a reachable sibling `?raw`/glob/
+    /// worker source can also target. If a mirror-skip entry lived in
+    /// `source_skip`, a later same-tick `materialise_source_file` lookup on
+    /// that dest could find it and wrongly skip — the mirror pass only ever
+    /// proves the RAW bytes are unchanged, never that no preprocessing
+    /// rewrite is owed (mirror copies are never glob/raw/worker-aware; see
+    /// [`mirror_sibling_root`]). Keeping the caches apart means a mirror
+    /// entry can never satisfy a materialise lookup or vice versa.
+    ///
+    /// Cleared on the same dirty/copy_mode wipe as `content_skip`.
+    mirror_skip: HashMap<PathBuf, MirrorSkipEntry>,
     /// The pipeline `config_fingerprint` of the LAST successful call —
     /// the wipe trigger for a config/route-map change (zfb#1148, Defect
     /// A). Both skip caches reuse a file's previous compiled output, but
@@ -1383,6 +1402,7 @@ impl ShadowSession {
             copy_mode: None,
             content_skip: HashMap::new(),
             source_skip: HashMap::new(),
+            mirror_skip: HashMap::new(),
             config_fingerprint: None,
         })
     }
@@ -1525,6 +1545,7 @@ impl<'s> ShadowWriter<'s> {
                     // (zfb#1148, rule 5).
                     s.content_skip.clear();
                     s.source_skip.clear();
+                    s.mirror_skip.clear();
                 }
                 // Config/route-map change wipe (zfb#1148, Defect A): a
                 // change to any compile-affecting knob — in particular the
@@ -1547,6 +1568,7 @@ impl<'s> ShadowWriter<'s> {
                 if s.config_fingerprint != config_fingerprint || config_fingerprint.is_none() {
                     s.content_skip.clear();
                     s.source_skip.clear();
+                    s.mirror_skip.clear();
                     s.config_fingerprint = config_fingerprint;
                 }
                 s.copy_mode = Some(copy_mode);
@@ -1791,6 +1813,36 @@ impl<'s> ShadowWriter<'s> {
     fn source_skip_remove(&self, dest_rel: &Path) {
         if let Some(cell) = &self.session {
             cell.borrow_mut().source_skip.remove(dest_rel);
+        }
+    }
+
+    /// Look up a sibling-mirror skip-cache entry by its DESTINATION
+    /// shadow-relative path (issue #1777; session mode only). Deliberately
+    /// a SEPARATE namespace from `source_skip_get` — see the field doc on
+    /// [`ShadowSession::mirror_skip`] for why the two caches must never
+    /// share entries. The caller validates the stored source `(mtime,
+    /// size)` and the dest existence before honouring the skip.
+    fn mirror_skip_get(&self, dest_rel: &Path) -> Option<MirrorSkipEntry> {
+        let cell = self.session.as_ref()?;
+        cell.borrow().mirror_skip.get(dest_rel).cloned()
+    }
+
+    /// Insert/update a sibling-mirror skip-cache entry keyed by its
+    /// DESTINATION shadow-relative path (session mode only; no-op in
+    /// passthrough).
+    fn mirror_skip_store(&self, dest_rel: PathBuf, entry: MirrorSkipEntry) {
+        if let Some(cell) = &self.session {
+            cell.borrow_mut().mirror_skip.insert(dest_rel, entry);
+        }
+    }
+
+    /// Drop a sibling-mirror skip-cache entry by its DESTINATION
+    /// shadow-relative path (session mode only; no-op in passthrough).
+    /// Called when the file's own stat cannot be taken after mirroring —
+    /// no sound skip key.
+    fn mirror_skip_remove(&self, dest_rel: &Path) {
+        if let Some(cell) = &self.session {
+            cell.borrow_mut().mirror_skip.remove(dest_rel);
         }
     }
 
@@ -4371,6 +4423,34 @@ fn mirror_sibling_root(
             work,
             node_modules_isolation_root,
         );
+        // Incremental mirror skip (issue #1777). Session mode ONLY, mirroring
+        // `materialise_source_file`'s `source_skip` fast path — but stored in
+        // the SEPARATE `mirror_skip` namespace (see
+        // [`ShadowSession::mirror_skip`]) so this can never satisfy a later
+        // same-tick `materialise_source_file` lookup for the same dest. A
+        // mirror copy is a pure function of the source's own bytes (no
+        // glob/`?raw`/worker expansion ever runs here), so an unchanged
+        // `(mtime, size)` with the dest still present is an exact skip.
+        let dest_rel = writer.rel_of(&dest).ok();
+        if writer.in_session() {
+            if let Some(dest_rel) = dest_rel.as_ref() {
+                if let Some((mtime, size)) = file_stat(&src) {
+                    if let Some(entry) = writer.mirror_skip_get(dest_rel) {
+                        let dest_exists = fs::symlink_metadata(&dest).is_ok();
+                        if entry.source == src
+                            && entry.mtime == mtime
+                            && entry.size == size
+                            && dest_exists
+                        {
+                            writer.record_visited(&dest).with_context(|| {
+                                format!("record visited (mirror skip) {}", dest.display())
+                            })?;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
         if let Some(parent) = dest.parent() {
             writer.ensure_dir(parent).with_context(|| {
                 format!("bundler: create sibling mirror dir {}", parent.display())
@@ -4383,6 +4463,22 @@ fn mirror_sibling_root(
                 dest.display()
             )
         })?;
+        if let Some(dest_rel) = dest_rel {
+            match file_stat(&src) {
+                Some((mtime, size)) => writer.mirror_skip_store(
+                    dest_rel,
+                    MirrorSkipEntry {
+                        source: src.clone(),
+                        mtime,
+                        size,
+                    },
+                ),
+                // Could not stat the source after copying it — no sound
+                // skip key (mirrors `store_source_skip_entry`'s posture for
+                // the analogous case).
+                None => writer.mirror_skip_remove(&dest_rel),
+            }
+        }
     }
     Ok(())
 }
@@ -5986,6 +6082,25 @@ struct SourceSkipEntry {
     /// hashes a separate browser-only graph, so the importer must be
     /// reprocessed even when its own stat is unchanged.
     has_worker: bool,
+}
+
+/// One sibling-mirror file's cached materialise state, keyed in
+/// [`ShadowSession::mirror_skip`] by its DESTINATION shadow-relative path
+/// (issue #1777). [`mirror_sibling_root`] always performs a plain raw byte
+/// copy — no glob/`?raw`/worker expansion ever runs on this pass (those
+/// rewrites are the LATER preprocessing-materialise pass's job) — so a
+/// mirrored file is skippable purely on its own `(mtime, size)` being
+/// unchanged, with no `has_glob`/`has_raw`/`has_worker` gate to carry.
+#[derive(Debug, Clone)]
+struct MirrorSkipEntry {
+    /// Absolute SOURCE path this dest was mirrored from. The dest is the
+    /// cache KEY; the skip check stats the source and re-confirms it
+    /// matches before honouring the skip.
+    source: PathBuf,
+    /// Source-file mtime at mirror time. With `size`, the skip key.
+    mtime: std::time::SystemTime,
+    /// Source-file byte length at mirror time.
+    size: u64,
 }
 
 /// What to do with the bridge import after a full MDX compile inside
@@ -13444,6 +13559,299 @@ mod tests {
                 deps[0].module_deps
             );
         }
+    }
+
+    /// Run ONE tick of `mirror_sibling_root` against `session`, mirroring
+    /// the writer lifecycle `run_source_tick` uses for
+    /// `materialise_source_file` (issue #1777). `first_party_root` doubles
+    /// as `session`'s work root's ancestor; `shadow`/`work` are both the
+    /// session's persistent shadow root — the project mirror is unused by
+    /// these tests, only the sibling-workspace-relative slot
+    /// (`shadow_path_for_project_path`'s first-party tier) is exercised.
+    fn run_mirror_tick(
+        session: &mut ShadowSession,
+        mirror_root: &Path,
+        project_root: &Path,
+        first_party_root: &Path,
+    ) {
+        let work = session.shadow_root().to_path_buf();
+        let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
+        let writer = ShadowWriter::new(work.clone(), Some(session), false, fingerprint)
+            .expect("session writer construction");
+        let bundle_exclude = BundleExcludeMatcher::new(&[]).expect("empty exclude matcher");
+        mirror_sibling_root(
+            mirror_root,
+            project_root,
+            first_party_root,
+            &work,
+            &work,
+            None,
+            &writer,
+            &bundle_exclude,
+        )
+        .expect("mirror_sibling_root tick");
+        writer.prune_stale().expect("prune");
+        writer.mark_clean();
+    }
+
+    /// Like `run_mirror_tick`, but ALSO runs `materialise_source_file` on
+    /// `preprocess_from` -> `preprocess_dest` immediately after the mirror
+    /// pass, in the same tick — mirroring the real `bundle_with_session`
+    /// ordering (2a-sibling mirror, THEN the preprocessing-materialise
+    /// pass) so a same-tick mirror-skip entry can be proven never to
+    /// satisfy the LATER preprocessing lookup. Returns the dest's final
+    /// contents.
+    fn run_mirror_then_materialise_tick(
+        session: &mut ShadowSession,
+        mirror_root: &Path,
+        project_root: &Path,
+        first_party_root: &Path,
+        preprocess_from: &Path,
+        preprocess_dest: &Path,
+    ) -> String {
+        let work = session.shadow_root().to_path_buf();
+        let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
+        let writer = ShadowWriter::new(work.clone(), Some(session), false, fingerprint)
+            .expect("session writer construction");
+        let bundle_exclude = BundleExcludeMatcher::new(&[]).expect("empty exclude matcher");
+        mirror_sibling_root(
+            mirror_root,
+            project_root,
+            first_party_root,
+            &work,
+            &work,
+            None,
+            &writer,
+            &bundle_exclude,
+        )
+        .expect("mirror_sibling_root tick");
+
+        let glob_matched_files = RefCell::new(BTreeSet::new());
+        let raw_import_edges = RefCell::new(BTreeSet::new());
+        let module_worker_dependencies = RefCell::new(BTreeSet::new());
+        materialise_source_file(
+            preprocess_from,
+            preprocess_from,
+            preprocess_dest,
+            &|_| false,
+            false,
+            &writer,
+            &glob_matched_files,
+            &raw_import_edges,
+            &RawImportAliasContext::empty(),
+            &module_worker_dependencies,
+            preprocess_from.parent().unwrap_or(preprocess_from),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect("materialise_source_file tick");
+
+        writer.prune_stale().expect("prune");
+        writer.mark_clean();
+        fs::read_to_string(preprocess_dest).expect("read materialised dest")
+    }
+
+    #[test]
+    fn mirror_skip_unchanged_css_module_is_skipped_on_second_tick() {
+        // A sibling `.module.css` that `mirror_sibling_root` wholesale-copies
+        // must be SKIPPED on tick 2 when unchanged (issue #1777) — zero
+        // writes, proven white-box exactly like
+        // `source_skip_plain_file_is_skipped_on_second_tick`: corrupt the
+        // dest + drop its `written` hash; a full re-copy would restore the
+        // real bytes, a skip leaves the corruption untouched.
+        let tmp = tempfile::tempdir().unwrap();
+        let first_party_root = tmp.path();
+        let project_root = first_party_root.join("app");
+        let mirror_root = first_party_root.join("pkg");
+        fs::create_dir_all(&mirror_root).unwrap();
+        fs::write(
+            mirror_root.join("button.module.css"),
+            ".btn { color: red; }\n",
+        )
+        .unwrap();
+
+        let mut session = ShadowSession::new(first_party_root).unwrap();
+        run_mirror_tick(&mut session, &mirror_root, &project_root, first_party_root);
+
+        let dest_rel = PathBuf::from("pkg/button.module.css");
+        let dest = session.shadow_root().join(&dest_rel);
+        assert!(
+            session.mirror_skip.contains_key(&dest_rel),
+            "a mirrored file must be entered into the mirror_skip cache"
+        );
+        assert!(
+            !session.source_skip.contains_key(&dest_rel),
+            "mirror_sibling_root must NEVER store into the shared source_skip \
+             namespace (issue #1777) — the two caches must stay separate"
+        );
+
+        // White-box: corrupt the dest + drop its `written` hash.
+        fs::remove_file(&dest).ok();
+        fs::write(&dest, b"__CORRUPT_NOT_THE_SOURCE__").unwrap();
+        session.written.remove(&dest_rel);
+
+        run_mirror_tick(&mut session, &mirror_root, &project_root, first_party_root);
+        assert_eq!(
+            fs::read(&dest).unwrap(),
+            b"__CORRUPT_NOT_THE_SOURCE__",
+            "an unchanged mirrored file must be SKIPPED on tick 2 — zero writes"
+        );
+    }
+
+    #[test]
+    fn mirror_skip_cache_never_satisfies_a_preprocessing_lookup() {
+        // Regression for issue #1777: a sibling source that needs
+        // `import.meta.glob` preprocessing must still be rewritten every
+        // applicable tick, EVEN THOUGH the mirror pass wholesale-copies its
+        // RAW (unexpanded) bytes into the same dest just beforehand, and
+        // even after that dest has a matching mirror_skip entry from a
+        // PRIOR tick. If the mirror fast path stored into (or was
+        // consulted from) the same namespace `materialise_source_file`
+        // reads, the second-tick preprocessing pass would wrongly skip and
+        // leave the literal macro text in place.
+        let tmp = tempfile::tempdir().unwrap();
+        let first_party_root = tmp.path();
+        let project_root = first_party_root.join("app");
+        let mirror_root = first_party_root.join("pkg");
+        fs::create_dir_all(mirror_root.join("widgets")).unwrap();
+        fs::write(mirror_root.join("widgets/a.tsx"), "export const a = 1;\n").unwrap();
+        let barrel = mirror_root.join("barrel.ts");
+        fs::write(
+            &barrel,
+            "const m = import.meta.glob('./widgets/*.tsx', { eager: true });\nexport default m;\n",
+        )
+        .unwrap();
+
+        let mut session = ShadowSession::new(first_party_root).unwrap();
+        let dest_rel = PathBuf::from("pkg/barrel.ts");
+
+        // Tick 1: mirror raw-copies barrel.ts, then the same-tick
+        // preprocessing pass immediately overwrites it with the expanded
+        // form.
+        let dest = session.shadow_root().join(&dest_rel);
+        let first = run_mirror_then_materialise_tick(
+            &mut session,
+            &mirror_root,
+            &project_root,
+            first_party_root,
+            &barrel,
+            &dest,
+        );
+        assert!(
+            !first.contains("import.meta.glob(") && first.contains("__glob_0"),
+            "tick 1 must expand the glob after the mirror raw-copy; got:\n{first}"
+        );
+        assert!(
+            session.mirror_skip.contains_key(&dest_rel),
+            "the mirror pass must still cache the raw-copy stat for this dest"
+        );
+        assert!(
+            session
+                .source_skip
+                .get(&dest_rel)
+                .is_some_and(|entry| entry.has_glob),
+            "the preprocessing pass must cache its own has_glob=true entry"
+        );
+
+        // Tick 2: barrel.ts is byte-unchanged, so the mirror pass's OWN
+        // copy is skippable — but the preprocessing pass must still
+        // re-expand (its `has_glob` gate refuses ANY skip).
+        let second = run_mirror_then_materialise_tick(
+            &mut session,
+            &mirror_root,
+            &project_root,
+            first_party_root,
+            &barrel,
+            &dest,
+        );
+        assert!(
+            !second.contains("import.meta.glob(") && second.contains("__glob_0"),
+            "tick 2 must STILL expand the glob, not reuse the mirror's raw copy; got:\n{second}"
+        );
+    }
+
+    #[test]
+    fn mirror_skip_changed_sibling_source_still_propagates() {
+        // A sibling source whose bytes change must take the full mirror
+        // copy path again — the dest reflects the new content. Uses a
+        // SIZE-changing edit (not just an mtime bump) so the skip-key miss
+        // is deterministic on coarse-mtime filesystems too, matching
+        // `source_skip_changed_plain_file_is_rematerialised`'s idiom.
+        let tmp = tempfile::tempdir().unwrap();
+        let first_party_root = tmp.path();
+        let project_root = first_party_root.join("app");
+        let mirror_root = first_party_root.join("pkg");
+        fs::create_dir_all(&mirror_root).unwrap();
+        let src = mirror_root.join("shared.ts");
+        fs::write(&src, "export const v = 1;\n").unwrap();
+
+        let mut session = ShadowSession::new(first_party_root).unwrap();
+        run_mirror_tick(&mut session, &mirror_root, &project_root, first_party_root);
+        let dest_rel = PathBuf::from("pkg/shared.ts");
+        let dest = session.shadow_root().join(&dest_rel);
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "export const v = 1;\n");
+
+        fs::write(&src, "export const v = 1;\nexport const w = 2;\n").unwrap();
+        run_mirror_tick(&mut session, &mirror_root, &project_root, first_party_root);
+        assert_eq!(
+            fs::read_to_string(&dest).unwrap(),
+            "export const v = 1;\nexport const w = 2;\n",
+            "a changed sibling source must still propagate through the mirror pass"
+        );
+    }
+
+    #[test]
+    fn mirror_skip_final_bytes_match_full_copy_pipeline() {
+        // Correctness-neutrality: a session that hits the mirror skip fast
+        // path on tick 2 must emit BYTE-IDENTICAL output to a session
+        // forced through the full copy path every tick (mirror_skip
+        // cleared between ticks) — proving the fast path changes nothing
+        // observable.
+        let tmp = tempfile::tempdir().unwrap();
+        let first_party_root = tmp.path();
+        let project_root = first_party_root.join("app");
+        let mirror_root = first_party_root.join("pkg");
+        fs::create_dir_all(&mirror_root).unwrap();
+        fs::write(mirror_root.join("data.json"), b"{\"a\":1}").unwrap();
+        let dest_rel = PathBuf::from("pkg/data.json");
+
+        let mut skipping_session = ShadowSession::new(first_party_root).unwrap();
+        run_mirror_tick(
+            &mut skipping_session,
+            &mirror_root,
+            &project_root,
+            first_party_root,
+        );
+        run_mirror_tick(
+            &mut skipping_session,
+            &mirror_root,
+            &project_root,
+            first_party_root,
+        );
+        let skip_bytes = fs::read(skipping_session.shadow_root().join(&dest_rel)).unwrap();
+
+        let mut forced_session = ShadowSession::new(first_party_root).unwrap();
+        run_mirror_tick(
+            &mut forced_session,
+            &mirror_root,
+            &project_root,
+            first_party_root,
+        );
+        // Force tick 2 through the full copy path by evicting the mirror
+        // skip cache — the ONLY difference from the skipping session above.
+        forced_session.mirror_skip.clear();
+        run_mirror_tick(
+            &mut forced_session,
+            &mirror_root,
+            &project_root,
+            first_party_root,
+        );
+        let forced_bytes = fs::read(forced_session.shadow_root().join(&dest_rel)).unwrap();
+
+        assert_eq!(
+            skip_bytes, forced_bytes,
+            "the mirror skip fast path must be byte-identical to the full copy path"
+        );
+        assert_eq!(skip_bytes, fs::read(mirror_root.join("data.json")).unwrap());
     }
 
     #[test]
