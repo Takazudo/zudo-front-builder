@@ -49,10 +49,20 @@
   // mirror that.
   class Headers {
     constructor(init) {
-      this._map = new Map();
+      // Raw ordered list of `[lowercaseName, value]` pairs. Every
+      // `append()` (including ones the constructor drives) pushes a new
+      // pair rather than comma-joining immediately — this is what lets
+      // duplicate `set-cookie` values (whose own `Expires` attribute may
+      // itself contain a comma) survive untouched. Ordinary headers are
+      // combined lazily by `get()`/iteration instead — see
+      // `_combinedEntries()`, which mirrors the WHATWG Fetch "sort and
+      // combine" algorithm.
+      this._pairs = [];
       if (init == null) return;
       if (init instanceof Headers) {
-        for (const [k, v] of init._map) this._map.set(k, v);
+        // Clone: copy the raw pairs so duplicate set-cookie entries in
+        // `init` survive into the clone too.
+        this._pairs = init._pairs.map((pair) => [pair[0], pair[1]]);
         return;
       }
       if (Array.isArray(init)) {
@@ -73,40 +83,75 @@
       throw new TypeError("Invalid Headers init");
     }
     append(name, value) {
-      const k = String(name).toLowerCase();
-      const v = String(value);
-      const prev = this._map.get(k);
-      this._map.set(k, prev == null ? v : prev + ", " + v);
+      this._pairs.push([String(name).toLowerCase(), String(value)]);
     }
     delete(name) {
-      this._map.delete(String(name).toLowerCase());
+      const k = String(name).toLowerCase();
+      this._pairs = this._pairs.filter(([n]) => n !== k);
     }
     get(name) {
-      const v = this._map.get(String(name).toLowerCase());
-      return v == null ? null : v;
+      const k = String(name).toLowerCase();
+      const values = this._pairs.filter(([n]) => n === k).map(([, v]) => v);
+      if (values.length === 0) return null;
+      // Per the Fetch `Headers.get()` algorithm this comma-joins
+      // unconditionally, `set-cookie` included — even though an
+      // `Expires` attribute's own comma can make that join ambiguous.
+      // That's a known, spec-sanctioned wart: `getSetCookie()` is the
+      // lossless API for callers that need every value uncombined.
+      return values.join(", ");
+    }
+    // WHATWG addition (not in the original Fetch `Headers.get` steps):
+    // returns every `set-cookie` value uncombined, in append order. The
+    // only spec-correct way to read multiple Set-Cookie values back out.
+    getSetCookie() {
+      return this._pairs.filter(([n]) => n === "set-cookie").map(([, v]) => v);
     }
     has(name) {
-      return this._map.has(String(name).toLowerCase());
+      const k = String(name).toLowerCase();
+      return this._pairs.some(([n]) => n === k);
     }
     set(name, value) {
-      this._map.set(String(name).toLowerCase(), String(value));
+      const k = String(name).toLowerCase();
+      this._pairs = this._pairs.filter(([n]) => n !== k);
+      this._pairs.push([k, String(value)]);
     }
     forEach(cb, thisArg) {
-      for (const [k, v] of this._map) {
+      for (const [k, v] of this._combinedEntries()) {
         cb.call(thisArg, v, k, this);
       }
     }
     *keys() {
-      for (const k of this._map.keys()) yield k;
+      for (const [k] of this._combinedEntries()) yield k;
     }
     *values() {
-      for (const v of this._map.values()) yield v;
+      for (const [, v] of this._combinedEntries()) yield v;
     }
     *entries() {
-      for (const [k, v] of this._map) yield [k, v];
+      for (const pair of this._combinedEntries()) yield pair;
     }
     [Symbol.iterator]() {
       return this.entries();
+    }
+    // WHATWG Fetch "sort and combine" algorithm
+    // (https://fetch.spec.whatwg.org/#concept-header-list-sort-and-combine):
+    // header names are visited in sorted order; `set-cookie` values are
+    // yielded uncombined (one entry per value, Expires-comma-safe) while
+    // every other name's values are comma-joined into a single entry.
+    // Backs get/entries/keys/values/forEach/Symbol.iterator so all
+    // iteration surfaces agree.
+    _combinedEntries() {
+      const names = Array.from(new Set(this._pairs.map(([n]) => n))).sort();
+      const out = [];
+      for (const name of names) {
+        if (name === "set-cookie") {
+          for (const [n, v] of this._pairs) {
+            if (n === name) out.push([n, v]);
+          }
+        } else {
+          out.push([name, this.get(name)]);
+        }
+      }
+      return out;
     }
   }
 

@@ -361,7 +361,10 @@ impl EmbeddedV8RenderHost {
         // event loop is being polled.
         //
         // Result shape:
-        //   { status: number, headers: Record<string, string>, body: Uint8Array }
+        //   { status: number, headers: Array<[string, string]>, body: Uint8Array }
+        // `headers` is an ordered pair array, not a `Record`, so duplicate
+        // names (notably `set-cookie`) survive the bridge instead of
+        // collapsing to their last value.
         let promise = self.invoke_dispatch_js(&request)?;
         let resolve_future = self.runtime.resolve(promise);
         let resolved = self
@@ -375,10 +378,16 @@ impl EmbeddedV8RenderHost {
         let parsed: DispatchResult = serde_v8::from_v8(scope, local).map_err(|e| {
             RenderError::Runtime(format!("failed to deserialise dispatch result: {e}"))
         })?;
-        let mut headers = BTreeMap::new();
-        for (k, v) in parsed.headers {
-            headers.insert(k.to_lowercase(), v);
-        }
+        // Defensive lower-casing only — the JS side's `Headers` polyfill
+        // already stores/iterates lowercase names. Kept as a `Vec`, not
+        // refolded into a `BTreeMap`, so duplicate names (e.g. multiple
+        // `set-cookie` values) survive rather than being collapsed by a
+        // map key collision.
+        let headers = parsed
+            .headers
+            .into_iter()
+            .map(|(k, v)| (k.to_lowercase(), v))
+            .collect();
         Ok(HttpResponseLike {
             status: parsed.status,
             headers,
@@ -769,6 +778,11 @@ fn tracing_warn(msg: &str) {
 
 /// Internal shape returned by `__zfb.dispatch(...)`.
 ///
+/// `headers` is an ordered pair list (mirroring the JS-side
+/// `[name, value]` array the host shim's `dispatch()` builds from
+/// `resp.headers.entries()`) rather than a map — a map would collapse
+/// duplicate names such as multiple `set-cookie` values down to one.
+///
 /// `body` is materialised as a `serde_v8::JsBuffer` so the
 /// `Uint8Array` from JS round-trips without a Vec<u8> coercion. We
 /// then copy out into `Vec<u8>` for the caller-facing
@@ -777,6 +791,6 @@ fn tracing_warn(msg: &str) {
 #[derive(Deserialize)]
 struct DispatchResult {
     status: u16,
-    headers: BTreeMap<String, String>,
+    headers: Vec<(String, String)>,
     body: deno_core::JsBuffer,
 }

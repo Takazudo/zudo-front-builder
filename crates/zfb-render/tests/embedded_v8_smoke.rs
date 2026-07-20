@@ -460,3 +460,152 @@ async fn dispatch_post_with_binary_body_round_trips() {
         "dispatched body must round-trip intact through base64 encode/atob decode"
     );
 }
+
+/// Bridge-seam proof for sub-issue #1760: a bundle that appends two distinct
+/// `Set-Cookie` values — one of them carrying an `Expires` attribute whose
+/// value itself contains a comma — must see both survive `dispatch_fetch` in
+/// order. Before #1760 the JS→Rust boundary (`globals_shim.js`'s dispatch,
+/// `DispatchResult.headers`, and `HttpResponseLike.headers`) collapsed
+/// same-name headers into a single-valued map, and the old `Headers.append`
+/// comma-joined `Set-Cookie` values on write — which would also have
+/// corrupted the Expires-comma cookie even before the map collapse.
+#[tokio::test]
+async fn dispatch_fetch_preserves_ordered_duplicate_set_cookie_headers() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("Set-Cookie", "a=1; Path=/");
+        headers.append(
+          "Set-Cookie",
+          "b=2; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/",
+        );
+        return new Response("ok", { status: 200, headers });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    let cookies: Vec<&str> = resp
+        .headers
+        .iter()
+        .filter(|(k, _)| k == "set-cookie")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(
+        cookies,
+        vec![
+            "a=1; Path=/",
+            "b=2; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/",
+        ],
+        "both Set-Cookie values (one containing a comma inside Expires) must \
+         survive dispatch_fetch in order, got {cookies:?}"
+    );
+}
+
+/// `Headers.set()` must replace every prior value for the name, not append
+/// alongside them (sub-issue #1760).
+#[tokio::test]
+async fn headers_set_replaces_all_prior_values_for_name() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("X-Trace", "one");
+        headers.append("X-Trace", "two");
+        headers.set("X-Trace", "final");
+        return new Response("ok", { status: 200, headers });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    let values: Vec<&str> = resp
+        .headers
+        .iter()
+        .filter(|(k, _)| k == "x-trace")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(
+        values,
+        vec!["final"],
+        "set() must replace all prior values for the name, got {values:?}"
+    );
+}
+
+/// Constructing a `Headers` from another `Headers` (the clone-init form)
+/// must preserve duplicate `Set-Cookie` values rather than collapsing them
+/// via the combined single-value view (sub-issue #1760).
+#[tokio::test]
+async fn headers_clone_from_headers_preserves_duplicate_set_cookie() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const original = new Headers();
+        original.append("Set-Cookie", "a=1; Path=/");
+        original.append("Set-Cookie", "b=2; Path=/");
+        const cloned = new Headers(original);
+        return new Response("ok", { status: 200, headers: cloned });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    let cookies: Vec<&str> = resp
+        .headers
+        .iter()
+        .filter(|(k, _)| k == "set-cookie")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(
+        cookies,
+        vec!["a=1; Path=/", "b=2; Path=/"],
+        "cloning a Headers must preserve duplicate set-cookie entries, got {cookies:?}"
+    );
+}
+
+/// Ordinary (non-`Set-Cookie`) headers still combine into a single
+/// comma-joined value per the Fetch "sort and combine" algorithm, even
+/// though `append` no longer joins eagerly at write time.
+#[tokio::test]
+async fn ordinary_headers_still_combine_with_comma_separator() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("Vary", "Accept-Encoding");
+        headers.append("Vary", "Accept-Language");
+        return new Response("ok", { status: 200, headers });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    let vary: Vec<&str> = resp
+        .headers
+        .iter()
+        .filter(|(k, _)| k == "vary")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(
+        vary,
+        vec!["Accept-Encoding, Accept-Language"],
+        "ordinary repeated headers must combine into one comma-joined entry, got {vary:?}"
+    );
+}
