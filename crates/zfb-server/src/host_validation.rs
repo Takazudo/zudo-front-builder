@@ -64,13 +64,25 @@
 //! - A leading-dot entry (`.example.com`) matches the bare domain AND
 //!   every subdomain (`example.com`, `api.example.com`) — but never a
 //!   non-boundary suffix like `notexample.com`. Mirrors Vite.
-//! - **IP-literal hosts (IPv4 or IPv6) are always allowed.** DNS
+//! - **IP-literal `Host` values (IPv4 or IPv6) are always allowed.** DNS
 //!   rebinding — the attack this layer exists for — requires a DNS
 //!   *name* the attacker controls; a raw-IP `Host` means the client
 //!   addressed the interface directly, e.g. the LAN URLs the startup
 //!   banner prints for a bind-all `--host`. Mirrors Vite, and without
 //!   it `--host 0.0.0.0` would 403 its own printed
-//!   `http://192.168.x.x:port/` URLs by default.
+//!   `http://192.168.x.x:port/` URLs by default. **This exemption does
+//!   NOT extend to `Origin`** (issue #1770): an Origin is only checked
+//!   against the explicit rule set (`match_rules` — the bound IP,
+//!   `allowedHosts` entries, and the built-in localhost forms), never
+//!   the IP-literal short-circuit. An unrelated IP scanning the LAN and
+//!   sending a cross-origin `Origin: http://192.168.x.y` is exactly the
+//!   CSRF-style vector the Origin check exists to catch, so it must not
+//!   get a free pass just because it's an IP. Dev/preview users add the
+//!   IP to `allowedHosts` to re-authorize its Origin; an embed server
+//!   (no `allowedHosts` config surface) should bind to a concrete LAN
+//!   IP rather than `0.0.0.0` — the bound IP becomes an `Exact` rule
+//!   automatically and its Origin is allowed through that rule, not the
+//!   removed short-circuit.
 //!
 //! Disallowed hosts get a `403` whose body follows the #926 policy:
 //! explanatory in Dev mode, generic in Preview/Embed (detail goes to
@@ -252,10 +264,26 @@ impl HostValidation {
         // IP-literal hosts are always allowed (Vite parity — see the
         // module docs): rebinding attacks ride on DNS names, and the
         // bind-all startup banner prints raw-IP LAN URLs that must work
-        // without manual `allowedHosts` entries.
+        // without manual `allowedHosts` entries. This short-circuit is
+        // `Host`-only — `origin_allowed` deliberately does not share it
+        // (issue #1770, see the module docs).
         if host.parse::<IpAddr>().is_ok() {
             return true;
         }
+        self.match_rules(&host)
+    }
+
+    /// Check an already-normalised host (lowercase, port/brackets
+    /// stripped — see [`host_without_port`]) against the configured
+    /// `Exact`/`Suffix` rules only. No IP-literal short-circuit: this is
+    /// the shared core [`host_allowed`] ORs with the IP-literal rule,
+    /// and [`origin_allowed`] uses alone (issue #1770 — an IP-literal
+    /// `Origin` must name an explicit rule, unlike an IP-literal
+    /// `Host`).
+    ///
+    /// [`host_allowed`]: Self::host_allowed
+    /// [`origin_allowed`]: Self::origin_allowed
+    fn match_rules(&self, host: &str) -> bool {
         self.rules.iter().any(|rule| match rule {
             AllowRule::Exact(e) => *e == host,
             AllowRule::Suffix(s) => {
@@ -268,10 +296,19 @@ impl HostValidation {
     }
 
     /// Check a raw `Origin` header value (`https://example.com:3000`)
-    /// against the same allowlist. Always `true` when enforcement is
-    /// off. `Origin: null` (opaque origins) and unparseable values fail
-    /// closed — a sandboxed-iframe POST to a LAN-exposed dev server is
-    /// exactly the cross-origin shape this guards against.
+    /// against the allowlist's explicit rules. Always `true` when
+    /// enforcement is off. `Origin: null` (opaque origins) and
+    /// unparseable values fail closed — a sandboxed-iframe POST to a
+    /// LAN-exposed dev server is exactly the cross-origin shape this
+    /// guards against.
+    ///
+    /// Unlike [`host_allowed`], this does **not** apply the IP-literal
+    /// always-allow short-circuit (issue #1770) — an IP-literal Origin
+    /// must match an explicit rule (bound IP, `allowedHosts` entry, or a
+    /// built-in localhost form). See the module docs' matching-rules
+    /// section for the rationale.
+    ///
+    /// [`host_allowed`]: Self::host_allowed
     pub fn origin_allowed(&self, origin: &str) -> bool {
         if !self.enforce {
             return true;
@@ -281,7 +318,10 @@ impl HostValidation {
             return false;
         };
         let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-        self.host_allowed(authority)
+        let Some(host) = host_without_port(authority) else {
+            return false;
+        };
+        self.match_rules(&host)
     }
 }
 
@@ -714,14 +754,50 @@ mod tests {
     }
 
     #[test]
-    fn origin_allowed_handles_ipv6_and_ip_literal_origins() {
-        // The Origin gate runs on the same allowlist as the Host check
-        // (#931 spec), so IP-literal origins share the always-allow rule.
+    fn origin_allowed_rejects_unrelated_ip_literal_origins() {
+        // Issue #1770: `origin_allowed` shares only `match_rules` with
+        // `host_allowed`, not the IP-literal always-allow short-circuit.
+        // An unrelated LAN IP scanning the network must not ride a free
+        // pass just because it's an IP literal — that's exactly the
+        // CSRF-style cross-origin vector this check exists to catch.
         let v = enforcing(&[]);
+        assert!(!v.origin_allowed("http://192.168.1.9:3000"));
+        assert!(!v.origin_allowed("http://[2001:db8::7]:3000"));
+        // Built-in localhost-form rules (`127.0.0.1`, `::1`) still cover
+        // their own Origins — those are explicit `Exact` rules, not the
+        // IP-literal short-circuit.
         assert!(v.origin_allowed("http://[::1]:3000"));
-        assert!(v.origin_allowed("http://[2001:db8::7]:3000"));
-        assert!(v.origin_allowed("http://192.168.1.9:3000"));
+        assert!(v.origin_allowed("http://127.0.0.1:3000"));
         assert!(!v.origin_allowed("https://evil.test"));
+    }
+
+    #[test]
+    fn origin_allowed_allows_the_bound_ip_via_its_explicit_rule() {
+        // The bound IP is seeded as an `Exact` rule by `for_bind`, so its
+        // Origin is allowed through `match_rules` — not the removed
+        // IP-literal short-circuit. This is the embed-server remedy: bind
+        // to a concrete LAN IP instead of `0.0.0.0` (issue #1770).
+        let v = HostValidation::for_bind(LAN_IP, None, &[], ServerMode::Dev);
+        assert!(v.origin_allowed("http://192.168.1.5:3000"));
+        // An unrelated IP not covered by any rule is still rejected.
+        assert!(!v.origin_allowed("http://192.168.1.9:3000"));
+    }
+
+    #[test]
+    fn allowed_hosts_ip_entry_reauthorizes_its_origin() {
+        // NEW (issue #1770): adding an IP literal to `allowedHosts`
+        // creates an explicit `Exact` rule, which re-authorizes both its
+        // Host (already true before the split) and now its Origin too —
+        // the documented dev/preview remedy for the regression this
+        // split accepts.
+        let v = enforcing(&["192.168.1.9"]);
+        assert!(v.host_allowed("192.168.1.9:3000"));
+        assert!(v.origin_allowed("http://192.168.1.9:3000"));
+        // A sibling IP not in `allowedHosts` keeps failing the Origin
+        // check (though it still passes the Host check via the
+        // IP-literal short-circuit).
+        assert!(v.host_allowed("192.168.1.10:3000"));
+        assert!(!v.origin_allowed("http://192.168.1.10:3000"));
     }
 
     // --- layer behaviour ---------------------------------------------------
