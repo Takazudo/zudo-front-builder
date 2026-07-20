@@ -283,6 +283,81 @@ fn top_level_backslash_expression_does_not_fall_back() {
     );
 }
 
+// -----------------------------------------------------------------------------
+// Valid-JS regex-literal recovery (codex P2)
+//
+// The byte scanner behind `emit_mdx_expression_braced` is only a heuristic:
+// it visits `{\letter}` bytes even when they sit inside a regex literal
+// (`/[{\d}]/`), which is perfectly valid JS. Stringifying such an
+// expression would silently turn executable JavaScript into a quoted
+// string. The recovery must therefore leave a VALID expression verbatim and
+// only string-wrap the genuinely-invalid `\d`-leak class.
+//
+// Because the recovered regex still contains the raw `{\d}` bytes, the
+// gate's byte mirror (`heuristic_says_jsx_breaks`) is expected to fire on
+// it — that is accepted and documented: it merely reproduces the
+// conservative pre-epic whole-page fallback for such a page. Preserving
+// valid-JS semantics takes priority over avoiding that fallback (the gate
+// itself is out of scope).
+// -----------------------------------------------------------------------------
+
+/// The verbatim JS text a valid regex-literal expression must keep.
+const REGEX_EXPR_SRC: &str = r"/[{\d}]/.test(value)";
+
+/// Compile an MDX body through the pipeline WITHOUT the `compile_body`
+/// heuristic assertion — the recovered-regex output is expected to trip the
+/// byte mirror (see the module comment above), so only the compile+SWC
+/// contract is enforced here.
+fn compile_body_allowing_heuristic(label: &str, body: &str) -> String {
+    let mut pipeline = Pipeline::with_defaults();
+    pipeline.reset_per_entry();
+    let compiled =
+        compile_mdx_to_jsx_module_cached(body, Path::new("t.mdx"), None, Some(&mut pipeline))
+            .unwrap_or_else(|e| panic!("compile failed for {label}: {e}"));
+    assert_swc_accepts(&compiled.jsx_source, label);
+    compiled.jsx_source
+}
+
+#[test]
+fn valid_regex_literal_expression_survives_verbatim_pipeline_path() {
+    let body = format!("A regex expression that must survive: {{{REGEX_EXPR_SRC}}}\n");
+    let jsx = compile_body_allowing_heuristic("regex-pipeline", &body);
+
+    // The regex source is emitted as executable JS, NOT wrapped as a string.
+    assert!(
+        jsx.contains(REGEX_EXPR_SRC),
+        "valid regex expression must survive verbatim as JS; emitted:\n{jsx}"
+    );
+    assert!(
+        !jsx.contains(r#"{"/["#),
+        "valid regex expression must NOT be string-wrapped; emitted:\n{jsx}"
+    );
+
+    // Documented, accepted consequence: the recovered regex keeps the raw
+    // `{\d}` bytes, so the gate's byte mirror fires. This reproduces the
+    // conservative pre-epic fallback rather than corrupting valid JS.
+    assert!(
+        heuristic_says_jsx_breaks(&jsx),
+        "the regex's raw `{{\\d}}` bytes are expected to trip the byte mirror; emitted:\n{jsx}"
+    );
+}
+
+#[test]
+fn valid_regex_literal_expression_survives_verbatim_no_pipeline_path() {
+    let body = format!("A regex expression that must survive: {{{REGEX_EXPR_SRC}}}\n");
+    let jsx = zfb_content::mdx_to_jsx_module(&body, zfb_content::MdxJsxOptions::default())
+        .expect("no-pipeline compile succeeds");
+    assert_swc_accepts(&jsx, "regex-no-pipeline");
+    assert!(
+        jsx.contains(REGEX_EXPR_SRC),
+        "valid regex expression must survive verbatim as JS on the no-pipeline path; emitted:\n{jsx}"
+    );
+    assert!(
+        !jsx.contains(r#"{"/["#),
+        "valid regex expression must NOT be string-wrapped on the no-pipeline path; emitted:\n{jsx}"
+    );
+}
+
 /// Snapshot↔bridge hash parity (f): the snapshot walker's
 /// `module_specifier` hash must equal an independent bundler-style
 /// compile hash, or `bridge.get(specifier)` misses and the page falls
