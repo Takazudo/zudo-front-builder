@@ -188,8 +188,14 @@ impl ThreadedV8Host {
                         .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("bundle.mjs");
-                    use zfb_render::RenderHost as _;
-                    if let Err(e) = host.execute_module(bundle_name, &bundle_src).await {
+                    // Strict load (sub-issue #1764): the main worker bundle
+                    // MUST satisfy the workerd-shape contract
+                    // (`export default { fetch }` with a callable `fetch`).
+                    // Unlike the tolerant `RenderHost::execute_module` trait
+                    // method, `execute_worker_module` propagates the ORIGINAL
+                    // shape-validation diagnostic here so a malformed worker
+                    // fails at boot, not later at first request.
+                    if let Err(e) = host.execute_worker_module(bundle_name, &bundle_src).await {
                         // Module evaluation may have console.logged before
                         // throwing — the console-capture shim is installed
                         // at host boot, before bundle execution. The host
@@ -390,15 +396,22 @@ impl ThreadedV8Host {
                             return;
                         }
                     };
-                    // Run the wrapper as the main module. `execute_module`
+                    // Run the wrapper as the main module. `execute_worker_module`
                     // turns this name into the fixed specifier
                     // `file:///zfb/__zfb_dev_content_trace_wrapper.mjs`; loading
                     // it pulls in the registered inner bundle as a dependency,
                     // and installs the wrapper's default export as the host's
-                    // dispatch target.
-                    use zfb_render::RenderHost as _;
+                    // dispatch target. Strict load (sub-issue #1764): the
+                    // wrapper re-exports the inner worker's `fetch`, so it
+                    // must satisfy the same workerd-shape contract as the
+                    // normal bundle boot — a malformed inner worker fails
+                    // here with the original diagnostic, not later at first
+                    // request.
                     if let Err(e) = host
-                        .execute_module(DEV_CONTENT_TRACE_WRAPPER_MODULE_NAME, &wrapper_source)
+                        .execute_worker_module(
+                            DEV_CONTENT_TRACE_WRAPPER_MODULE_NAME,
+                            &wrapper_source,
+                        )
                         .await
                     {
                         let console_logs = host.drain_console_logs();
@@ -843,6 +856,32 @@ mod tests {
             msg.contains("[log] pre-crash detail"),
             "console output from the failed bundle load must be embedded \
              in the boot error: {msg}"
+        );
+    }
+
+    /// Sub-issue #1764 adapter-level boot regression: a bundle that
+    /// evaluates cleanly but does not satisfy the workerd-shape contract
+    /// (no `default.fetch`) must fail BOOT through the real thread/boot
+    /// channel — not silently succeed and defer the failure to first
+    /// dispatch. Proves `execute_worker_module`'s strict load is actually
+    /// wired into `ThreadedV8Host::new`, not just unit-tested in isolation.
+    #[test]
+    fn malformed_worker_shape_fails_boot_through_real_thread_channel() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            export default { notFetch: 1 };
+            "#,
+        );
+        let err = ThreadedV8Host::new(&bundle_path)
+            .err()
+            .expect("boot must fail — no false Ok(()) for a malformed worker shape");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("has no `fetch` property"),
+            "boot error must carry the ORIGINAL shape-validation diagnostic, \
+             not a generic failure: {msg}"
         );
     }
 

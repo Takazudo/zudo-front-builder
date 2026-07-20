@@ -282,18 +282,58 @@ impl EmbeddedV8RenderHost {
         // Read `.default`.
         let key = v8::String::new(scope, "default")
             .ok_or_else(|| RenderError::Runtime("v8 string alloc failed".into()))?;
+        // `Object::get` only returns `None` on a thrown exception, not on a
+        // genuinely absent property — a missing `default` export reads back
+        // as the JS value `undefined`, same as an export explicitly set to
+        // `undefined`. So the `None` arm below is an exception path (should
+        // be unreachable for a plain namespace-object property read) and the
+        // "missing default" diagnostic is produced by the `is_undefined()`
+        // check that follows, not by this `ok_or_else`.
         let default_val = local_ns.get(scope, key.into()).ok_or_else(|| {
             RenderError::Runtime(format!(
-                "bundle `{specifier}` has no `default` export — \
-                 expected workerd shape `export default {{ fetch }}`"
+                "bundle `{specifier}` `default` export lookup failed unexpectedly"
             ))
         })?;
+        if default_val.is_undefined() {
+            return Err(RenderError::Runtime(format!(
+                "bundle `{specifier}` has no `default` export — \
+                 expected workerd shape `export default {{ fetch }}`"
+            )));
+        }
         if !default_val.is_object() {
+            // Covers `null` and any other non-object primitive default
+            // (string, number, boolean, …) — distinct from the
+            // "no default export at all" case above.
             return Err(RenderError::Runtime(format!(
                 "bundle `{specifier}` `default` export is not an object \
                  (workerd shape requires `export default {{ fetch }}`)"
             )));
         }
+        let default_obj: v8::Local<v8::Object> = default_val.try_into().map_err(|_| {
+            RenderError::Runtime(format!(
+                "bundle `{specifier}` `default` export could not be read as an object"
+            ))
+        })?;
+        let fetch_key = v8::String::new(scope, "fetch")
+            .ok_or_else(|| RenderError::Runtime("v8 string alloc failed".into()))?;
+        let fetch_val = default_obj.get(scope, fetch_key.into()).ok_or_else(|| {
+            RenderError::Runtime(format!(
+                "bundle `{specifier}` `default` export has no `fetch` property \
+                 (workerd shape requires `export default {{ fetch }}`)"
+            ))
+        })?;
+        if fetch_val.is_undefined() {
+            return Err(RenderError::Runtime(format!(
+                "bundle `{specifier}` `default` export has no `fetch` property \
+                 (workerd shape requires `export default {{ fetch }}`)"
+            )));
+        }
+        let _fetch_fn: v8::Local<v8::Function> = fetch_val.try_into().map_err(|_| {
+            RenderError::Runtime(format!(
+                "bundle `{specifier}` `default.fetch` is not callable \
+                 (workerd shape requires `export default {{ fetch }}`)"
+            ))
+        })?;
         // Look up `globalThis.__zfb.setBundle`.
         let global = scope.get_current_context().global(scope);
         let zfb_key = v8::String::new(scope, "__zfb")
@@ -503,11 +543,20 @@ impl EmbeddedV8RenderHost {
     fn module_id_for(&self, handle: &ModuleHandle) -> Option<ModuleId> {
         self.handles.borrow().get(&handle.name).map(|(_, id)| *id)
     }
-}
 
-#[async_trait(?Send)]
-impl RenderHost for EmbeddedV8RenderHost {
-    async fn execute_module(&mut self, name: &str, source: &str) -> Result<ModuleHandle> {
+    /// Shared load + evaluate logic used by both the tolerant
+    /// [`RenderHost::execute_module`] trait method and the strict
+    /// [`Self::execute_worker_module`] entrypoint. Registers `source`
+    /// as the main ESM module under `name`, evaluates it (awaiting
+    /// top-level await), and returns the resulting handle plus the
+    /// underlying `ModuleId`. Deliberately does NOT call
+    /// `install_bundle_default` — callers decide how strictly to
+    /// enforce the workerd-shape contract.
+    async fn load_and_evaluate_main_module(
+        &mut self,
+        name: &str,
+        source: &str,
+    ) -> Result<(ModuleHandle, ModuleId)> {
         // Pick a module URL — the caller's `name` is a display path
         // (e.g. `pages/index.tsx`) which isn't a valid `file://` URL
         // by itself. We synthesise a `file:///zfb/<name>` so v8 has
@@ -545,6 +594,46 @@ impl RenderHost for EmbeddedV8RenderHost {
         evaluate
             .await
             .map_err(|e| RenderError::Runtime(format!("module evaluation failed: {e}")))?;
+        let handle = self.allocate_handle(name);
+        self.handles
+            .borrow_mut()
+            .insert(handle.name.clone(), (handle.clone(), module_id));
+        Ok((handle, module_id))
+    }
+
+    /// Strict main-worker load entrypoint (sub-issue #1764). Loads
+    /// `source` as the main ESM module under `name` and REQUIRES it to
+    /// satisfy the workerd-shape contract — a `default` export that is
+    /// an object with a callable `fetch` — failing loudly with the
+    /// ORIGINAL [`install_bundle_default`] diagnostic when it doesn't.
+    ///
+    /// This differs from the tolerant [`RenderHost::execute_module`]
+    /// trait method, which callers also use to load utility modules
+    /// that carry no `default` export at all; that path swallows a
+    /// bad/missing `default` into `last_install_error` so
+    /// `dispatch_fetch` fails later, at first request, with a generic
+    /// "no bundle loaded" message. Production main-worker boot sites
+    /// (`zfb`'s `v8_host_adapter.rs`: the normal bundle boot and the
+    /// dev content-trace wrapper boot) call this instead so a
+    /// malformed worker fails at startup with the precise reason.
+    pub async fn execute_worker_module(
+        &mut self,
+        name: &str,
+        source: &str,
+    ) -> Result<ModuleHandle> {
+        let (handle, module_id) = self.load_and_evaluate_main_module(name, source).await?;
+        self.install_bundle_default(module_id, name)?;
+        // Mirrors the tolerant path's success bookkeeping: clear any
+        // stale failure recorded from an earlier module.
+        *self.last_install_error.borrow_mut() = None;
+        Ok(handle)
+    }
+}
+
+#[async_trait(?Send)]
+impl RenderHost for EmbeddedV8RenderHost {
+    async fn execute_module(&mut self, name: &str, source: &str) -> Result<ModuleHandle> {
+        let (handle, module_id) = self.load_and_evaluate_main_module(name, source).await?;
         // Wire the bundle's default export into the host shim so
         // dispatch_fetch can find it. This is the workerd-shape
         // contract; if the module isn't shaped that way the call
@@ -572,10 +661,6 @@ impl RenderHost for EmbeddedV8RenderHost {
                 ));
             }
         }
-        let handle = self.allocate_handle(name);
-        self.handles
-            .borrow_mut()
-            .insert(handle.name.clone(), (handle.clone(), module_id));
         Ok(handle)
     }
 
