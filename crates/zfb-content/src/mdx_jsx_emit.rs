@@ -1638,8 +1638,8 @@ fn jsx_raw_recursive(node: &MdastNode, ctx: &SlugCtx) -> String {
         MdastNode::MdxJsxTextElement(j) => {
             jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
         }
-        MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
-        MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
+        MdastNode::MdxFlowExpression(e) => emit_mdx_expression_braced(&e.value),
+        MdastNode::MdxTextExpression(e) => emit_mdx_expression_braced(&e.value),
         // Defensive — `mdast_to_hast_with`'s strategy callback only
         // fires for the JSX-shaped arms above, but if the contract
         // ever changes we fall back to the recursive child renderer
@@ -1694,8 +1694,8 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
     match node {
         MdastNode::Text(t) => jsx_text_escape(&t.value),
         MdastNode::Html(h) => h.value.clone(),
-        MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
-        MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
+        MdastNode::MdxFlowExpression(e) => emit_mdx_expression_braced(&e.value),
+        MdastNode::MdxTextExpression(e) => emit_mdx_expression_braced(&e.value),
         MdastNode::MdxJsxFlowElement(j) => {
             jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
         }
@@ -1948,9 +1948,7 @@ fn render_jsx_attrs(attrs: &[AttributeContent]) -> String {
                     }
                     Some(AttributeValue::Expression(e)) => {
                         out.push('=');
-                        out.push('{');
-                        out.push_str(&e.value);
-                        out.push('}');
+                        out.push_str(&emit_mdx_expression_braced(&e.value));
                     }
                 }
             }
@@ -2000,6 +1998,122 @@ fn escape_attr_literal(s: &str) -> String {
 /// processing does not have to special-case whitespace or `<`/`>`.
 fn js_string_literal_in_braces(s: &str) -> String {
     format!("{{{}}}", js_string_literal(s))
+}
+
+/// Emit an MDX expression node as a JSX `{…}` fragment, recovering the
+/// one shape that silently degrades a whole page (zfb#1729).
+///
+/// MDX expression nodes (`MdxFlowExpression` / `MdxTextExpression`) and
+/// expression-valued attributes are emitted verbatim so that valid MDX
+/// expressions — `{1 + 1}`, `count={1 + 2}`, spreads `{...rest}`, JSX
+/// comments `{/* … */}` — reach the downstream JSX/TSX compiler intact.
+/// But when an expression's value begins with a backslash-escape (`\n`,
+/// `\d`, …) it renders a bare `{\letter}` fragment. That is never a
+/// valid *bare* JS expression, and it is the exact shape the bundler's
+/// `jsx_likely_breaks_downstream_parser` gate rejects — a single such
+/// fragment makes esbuild reject the module and the bundler degrade the
+/// ENTIRE page to the `<pre data-zfb-content-fallback>` shape.
+///
+/// So: if emitting `{value}` verbatim would trip that gate, recover the
+/// value as a JS string literal (`{"…escaped…"}`) instead. The bytes
+/// stay visibly present and the module parses. Only the breaking shape
+/// is recovered — [`expression_fragment_breaks_downstream_parser`] is
+/// string/comment-aware, so every valid expression, spread, comment,
+/// and numeric attribute stays `false` and is emitted verbatim.
+fn emit_mdx_expression_braced(value: &str) -> String {
+    let verbatim = format!("{{{value}}}");
+    if expression_fragment_breaks_downstream_parser(&verbatim) {
+        js_string_literal_in_braces(value)
+    } else {
+        verbatim
+    }
+}
+
+/// Local mirror of `zfb_build::bundler::jsx_likely_breaks_downstream_parser`
+/// applied to a single emitted JSX fragment.
+///
+/// `zfb-build` depends on `zfb-content` (not the reverse), so the gate
+/// cannot be imported here; this is the same string/line-comment/
+/// block-comment-aware scan for a `{` (optionally `-`) directly followed
+/// by `\` + an ASCII letter — the byte pattern a leaked string-escape
+/// produces outside any JS string. **Keep in sync with the gate in
+/// `crates/zfb-build/src/bundler.rs`.** A visible divergence is caught
+/// by the `heuristic_says_jsx_breaks` mirror in
+/// `crates/zfb-content/tests/large_mdx_fallback_regression.rs` and the
+/// gate's own unit tests in zfb-build.
+fn expression_fragment_breaks_downstream_parser(jsx: &str) -> bool {
+    let bytes = jsx.as_bytes();
+    let mut in_string: Option<u8> = None;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+
+        if in_line_comment {
+            if c == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if c == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if let Some(q) = in_string {
+            if c == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        if c == b'/' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'/' => {
+                    in_line_comment = true;
+                    i += 2;
+                    continue;
+                }
+                b'*' => {
+                    in_block_comment = true;
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        if c == b'"' || c == b'\'' || c == b'`' {
+            in_string = Some(c);
+            i += 1;
+            continue;
+        }
+
+        if c == b'{' {
+            let mut j = i + 1;
+            if j < bytes.len() && bytes[j] == b'-' {
+                j += 1;
+            }
+            if j + 1 < bytes.len() && bytes[j] == b'\\' && bytes[j + 1].is_ascii_alphabetic() {
+                return true;
+            }
+        }
+
+        i += 1;
+    }
+    false
 }
 
 /// Format `s` as a JS string literal (double-quoted, with the minimal
