@@ -7018,6 +7018,22 @@ fn materialise_source_file(
 /// Session mode only (no-op in passthrough — `dest_rel` is `None` /
 /// the writer has no session). `has_glob` records whether this file used
 /// `import.meta.glob` so the skip-check can refuse to skip it.
+///
+/// Also EVICTS any [`ShadowSession::mirror_skip`] entry at the same
+/// `dest_rel` (issue #1777 codex-review finding). This function only ever
+/// runs after `materialise_source_file` took its full (non-skip) path,
+/// which means it just WROTE to `dest_rel` — e.g. expanding a
+/// `?raw`/glob/worker sibling that `mirror_sibling_root` had earlier
+/// wholesale-mirrored raw into the same slot. Without this eviction, a
+/// stale `mirror_skip` entry recorded before this write would still
+/// describe the source's `(mtime, size)` as unchanged; if the file later
+/// falls OUT of the reachable/preprocessing set on some later tick (so
+/// `materialise_source_file` is no longer called for it) while its own
+/// bytes stay untouched, the mirror pass's skip check would find that
+/// stale entry, see the dest still present, and skip its raw re-copy —
+/// permanently preserving this tick's EXPANDED bytes instead of the raw
+/// mirror copy a fresh build would produce there. Evicting here is a no-op
+/// when no such entry exists (the common case), so this stays cheap.
 fn store_source_skip_entry(
     writer: &ShadowWriter<'_>,
     dest_rel: Option<PathBuf>,
@@ -7030,6 +7046,7 @@ fn store_source_skip_entry(
         return;
     }
     let Some(dest_rel) = dest_rel else { return };
+    writer.mirror_skip_remove(&dest_rel);
     match file_stat(from) {
         Some((mtime, size)) => writer.source_skip_store(
             dest_rel,
@@ -13741,8 +13758,11 @@ mod tests {
             "tick 1 must expand the glob after the mirror raw-copy; got:\n{first}"
         );
         assert!(
-            session.mirror_skip.contains_key(&dest_rel),
-            "the mirror pass must still cache the raw-copy stat for this dest"
+            !session.mirror_skip.contains_key(&dest_rel),
+            "the same-tick preprocessing overwrite must EVICT the mirror_skip \
+             entry the raw-copy step just stored — otherwise a later tick could \
+             skip a stale mirror re-copy over this dest's expanded content \
+             (issue #1777 codex-review finding)"
         );
         assert!(
             session
@@ -13766,6 +13786,87 @@ mod tests {
         assert!(
             !second.contains("import.meta.glob(") && second.contains("__glob_0"),
             "tick 2 must STILL expand the glob, not reuse the mirror's raw copy; got:\n{second}"
+        );
+    }
+
+    #[test]
+    fn mirror_skip_does_not_preserve_stale_preprocessing_output_once_unreachable() {
+        // Regression for a codex-review finding on issue #1777: a sibling
+        // file that WAS preprocessed (glob-expanded) in an earlier tick,
+        // then falls OUT of the reachable/preprocessing set on a later
+        // tick (nothing calls `materialise_source_file` for it anymore)
+        // while its own bytes stay byte-unchanged, must NOT have its stale
+        // expanded dest preserved by the mirror pass's skip check — a
+        // fresh build would raw-copy it (mirror_sibling_root never expands
+        // anything), so the incremental path must converge to the same
+        // raw bytes, not freeze on whatever the last preprocessing pass
+        // wrote there.
+        let tmp = tempfile::tempdir().unwrap();
+        let first_party_root = tmp.path();
+        let project_root = first_party_root.join("app");
+        let mirror_root = first_party_root.join("pkg");
+        fs::create_dir_all(mirror_root.join("widgets")).unwrap();
+        fs::write(mirror_root.join("widgets/a.tsx"), "export const a = 1;\n").unwrap();
+        let barrel = mirror_root.join("barrel.ts");
+        fs::write(
+            &barrel,
+            "const m = import.meta.glob('./widgets/*.tsx', { eager: true });\nexport default m;\n",
+        )
+        .unwrap();
+
+        let mut session = ShadowSession::new(first_party_root).unwrap();
+        let dest_rel = PathBuf::from("pkg/barrel.ts");
+        let dest = session.shadow_root().join(&dest_rel);
+
+        // Tick 1: barrel.ts is reachable — mirror raw-copies, then the
+        // preprocessing pass expands it in place.
+        let tick1 = run_mirror_then_materialise_tick(
+            &mut session,
+            &mirror_root,
+            &project_root,
+            first_party_root,
+            &barrel,
+            &dest,
+        );
+        assert!(
+            tick1.contains("__glob_0"),
+            "tick 1 must hold the expanded form; got:\n{tick1}"
+        );
+
+        // Tick 2: barrel.ts's bytes are UNCHANGED, but it is now
+        // UNREACHABLE — nothing calls `materialise_source_file` for it
+        // this tick (only the mirror pass runs, exactly like a real
+        // `bundle_with_session` tick where discovery no longer reaches
+        // this file). Without the eviction fix this would find a stale
+        // `mirror_skip` hit and leave the tick-1 expanded bytes in place;
+        // with the fix, tick 1's preprocessing overwrite already evicted
+        // the entry, so this falls through to a full raw re-copy.
+        run_mirror_tick(&mut session, &mirror_root, &project_root, first_party_root);
+        let tick2 = fs::read_to_string(&dest).unwrap();
+        assert!(
+            tick2.contains("import.meta.glob(") && !tick2.contains("__glob_0"),
+            "tick 2 (unreachable, mirror-only) must restore the RAW mirror \
+             copy, not preserve tick 1's stale expanded output; got:\n{tick2}"
+        );
+        assert_eq!(
+            tick2,
+            fs::read_to_string(&barrel).unwrap(),
+            "the raw re-copy must be byte-identical to the live source"
+        );
+
+        // Tick 3: still unreachable, still byte-unchanged — the mirror
+        // pass's OWN entry from tick 2 is now valid, so THIS tick is a
+        // genuine skip (white-box: corrupt the dest + drop its `written`
+        // hash first; a full re-copy would restore the real bytes).
+        fs::remove_file(&dest).ok();
+        fs::write(&dest, b"__CORRUPT_NOT_THE_SOURCE__").unwrap();
+        session.written.remove(&dest_rel);
+        run_mirror_tick(&mut session, &mirror_root, &project_root, first_party_root);
+        assert_eq!(
+            fs::read(&dest).unwrap(),
+            b"__CORRUPT_NOT_THE_SOURCE__",
+            "tick 3 must be a genuine skip once the mirror's own raw-copy \
+             entry is fresh again"
         );
     }
 
