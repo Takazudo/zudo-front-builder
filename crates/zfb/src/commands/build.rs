@@ -9140,12 +9140,15 @@ mod tests {
     /// — the same shape a real plugin's `addVirtualModule` callback returns.
     fn virtual_panel_module(ws: &Path) -> Vec<(String, String)> {
         let sibling_tsx = zfb_types::normalize_path_lexical(&ws.join("lib/vshared/Panel.tsx"));
+        // `serde_json::to_string` (not manual quoting) so the path round-trips
+        // as a valid JS string literal even on Windows, where a raw
+        // `to_string_lossy()` path contains `\` that would otherwise land as
+        // unintended escapes inside the double-quoted source below.
+        let sibling_tsx_js_literal =
+            serde_json::to_string(&sibling_tsx.to_string_lossy()).expect("path must serialize");
         vec![(
             "virtual:panel".to_string(),
-            format!(
-                "export {{ default }} from \"{}\";\n",
-                sibling_tsx.to_string_lossy()
-            ),
+            format!("export {{ default }} from {sibling_tsx_js_literal};\n"),
         )]
     }
 
