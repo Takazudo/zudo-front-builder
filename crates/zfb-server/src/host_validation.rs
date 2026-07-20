@@ -285,7 +285,22 @@ impl HostValidation {
     /// [`origin_allowed`]: Self::origin_allowed
     fn match_rules(&self, host: &str) -> bool {
         self.rules.iter().any(|rule| match rule {
-            AllowRule::Exact(e) => *e == host,
+            // Beyond the plain string comparison, also compare through
+            // `IpAddr` when both sides parse as one: an `allowedHosts`
+            // entry like `2001:0db8::1` and a browser-serialized Origin
+            // host `2001:db8::1` denote the same address but differ
+            // textually (leading zeros, `::` compression). Now that
+            // IP-literal Origins require an explicit rule (issue #1770,
+            // no more IP-literal short-circuit), this re-authorization
+            // path must not depend on the config author having typed the
+            // canonical form.
+            AllowRule::Exact(e) => {
+                *e == host
+                    || matches!(
+                        (e.parse::<IpAddr>(), host.parse::<IpAddr>()),
+                        (Ok(a), Ok(b)) if a == b
+                    )
+            }
             AllowRule::Suffix(s) => {
                 host == *s
                     || (host.len() > s.len()
@@ -781,6 +796,22 @@ mod tests {
         assert!(v.origin_allowed("http://192.168.1.5:3000"));
         // An unrelated IP not covered by any rule is still rejected.
         assert!(!v.origin_allowed("http://192.168.1.9:3000"));
+    }
+
+    #[test]
+    fn allowed_hosts_noncanonical_ipv6_entry_reauthorizes_canonical_origin() {
+        // Codex review finding (issue #1770 review pass): a config author
+        // may write an IPv6 `allowedHosts` entry in a non-canonical form
+        // (leading zeros, no `::` compression) while browsers always
+        // serialize the Origin host canonically. `match_rules` must
+        // compare through `IpAddr`, not just the raw string, or this
+        // re-authorization path silently fails for anything but an
+        // exact textual match.
+        let v = enforcing(&["2001:0db8:0000:0000:0000:0000:0000:0001"]);
+        assert!(v.origin_allowed("http://[2001:db8::1]:3000"));
+        assert!(v.host_allowed("[2001:db8::1]:3000"));
+        // An unrelated address is still rejected.
+        assert!(!v.origin_allowed("http://[2001:db8::2]:3000"));
     }
 
     #[test]
