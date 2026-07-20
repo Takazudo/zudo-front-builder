@@ -2022,11 +2022,68 @@ fn js_string_literal_in_braces(s: &str) -> String {
 /// and numeric attribute stays `false` and is emitted verbatim.
 fn emit_mdx_expression_braced(value: &str) -> String {
     let verbatim = format!("{{{value}}}");
-    if expression_fragment_breaks_downstream_parser(&verbatim) {
+    // The scanner is only a byte-pattern heuristic: it visits `{\letter}`
+    // bytes even inside a regex literal (e.g. `{/[{\d}]/.test(x)}`), which
+    // are perfectly valid JS. Stringifying such an expression would
+    // silently change runtime behavior, so only recover when the value is
+    // genuinely NOT valid JS (the real `\d`-leak class). A valid-but-
+    // gate-tripping expression stays verbatim — it may still trip the real
+    // bundler gate downstream, reproducing the conservative pre-epic
+    // whole-page fallback for that page, which is the correct outcome (the
+    // gate is out of scope; never silently change valid-JS semantics).
+    if expression_fragment_breaks_downstream_parser(&verbatim) && !mdx_expression_is_valid_js(value)
+    {
         js_string_literal_in_braces(value)
     } else {
         verbatim
     }
+}
+
+/// True iff `value` (the inner content of an MDX `{…}` expression) parses
+/// as a single valid JS/TSX expression.
+///
+/// MDX expression bodies occupy a single expression position, so the value
+/// is wrapped in parentheses (`(value);`) and parsed as a module: a valid
+/// body yields exactly one expression statement whose expression is the
+/// wrapping parenthesis. Anything else — a parse failure, recovered parser
+/// errors, trailing tokens, or injected extra statements — is treated as
+/// invalid. Used by [`emit_mdx_expression_braced`] to distinguish a
+/// genuinely-broken `{\d}`-style leak (invalid → recover as a string) from
+/// a valid expression the byte scanner falsely flagged (e.g. a regex
+/// literal containing `{\d}` bytes → leave verbatim).
+fn mdx_expression_is_valid_js(value: &str) -> bool {
+    use swc_core::common::sync::Lrc;
+    use swc_core::common::{FileName, SourceMap};
+    use swc_core::ecma::ast::{EsVersion, Expr, ModuleItem, Stmt};
+    use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
+
+    let cm: Lrc<SourceMap> = Default::default();
+    let fm = cm.new_source_file(FileName::Anon.into(), format!("({value});"));
+    let lexer = Lexer::new(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            decorators: false,
+            dts: false,
+            no_early_errors: false,
+            disallow_ambiguous_jsx_like: false,
+        }),
+        EsVersion::Es2022,
+        StringInput::from(&*fm),
+        None,
+    );
+    let mut parser = Parser::new_from(lexer);
+    let Ok(module) = parser.parse_module() else {
+        return false;
+    };
+    // SWC's parser is error-recovering: it can return `Ok` on invalid input
+    // while stashing recoverable diagnostics. Reject those too.
+    if !parser.take_errors().is_empty() {
+        return false;
+    }
+    matches!(
+        module.body.as_slice(),
+        [ModuleItem::Stmt(Stmt::Expr(stmt))] if matches!(*stmt.expr, Expr::Paren(_))
+    )
 }
 
 /// Local mirror of `zfb_build::bundler::jsx_likely_breaks_downstream_parser`
