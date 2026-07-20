@@ -711,6 +711,7 @@ impl BuildRunner for DefaultRunner {
             config,
             package_route_entrypoints,
             &self.islands_plugin_config.alias_entries,
+            &self.islands_plugin_config.virtual_modules,
         )
         .context("CSS emitter (DefaultRunner) failed")?;
         let (islands, registered_marker_names) = build_default_islands_payload_with_bundle_options(
@@ -787,7 +788,33 @@ pub(crate) fn build_default_css_payload(
     // Modules scan. Empty on the no-workspace / no-alias path (byte-identical
     // parity).
     plugin_alias_entries: &[(String, String)],
+    // Virtual-module claim sources a+c (issue #1775): registered plugin
+    // virtual modules (`IslandsPluginConfig::virtual_modules`). A registered
+    // virtual module's own sibling closure is discovered via
+    // `discover_css_plugin_virtual_files` below and folded into the same
+    // `SiblingMirrorPlan` claim `discover_css_source_files` /
+    // `compute_css_module_class_maps` already consult for claim source b, so
+    // a sibling `.module.css` reached ONLY through a virtual module (no
+    // direct alias) is scanned and shipped too. Empty on the no-virtual-
+    // module path (byte-identical parity).
+    plugin_virtual_modules: &[(String, String)],
 ) -> Result<Option<AssetEmitterPayload>> {
+    // Build the same `ModuleWorkerBuildContext` shape esbuild will see for
+    // this project's plugin registrations, then discover the file set behind
+    // any registered virtual module (issue #1775). `production`/`sourcemap`
+    // semantics don't affect which files this discovery reaches (they only
+    // shape emitted worker bytes elsewhere), so `true` is fine for both the
+    // build and dev callers of this function.
+    let virtual_worker_context = module_worker_build_context(
+        true,
+        config.framework,
+        config.bundle.as_ref(),
+        plugin_alias_entries,
+        plugin_virtual_modules,
+    );
+    let discovered_graph_files =
+        discover_css_plugin_virtual_files(project_root, &virtual_worker_context)?;
+
     // `tailwind: { enabled: false }` disables only the Tailwind layers,
     // not the authored-CSS pipeline. Route to the Tailwind-free path so
     // global CSS + CSS Modules still ship (issue #824). Falling back to
@@ -807,10 +834,12 @@ pub(crate) fn build_default_css_payload(
             outdir,
             framework_css,
             plugin_alias_entries,
+            &discovered_graph_files,
         );
     }
 
-    let sources = discover_css_source_files(project_root, plugin_alias_entries);
+    let sources =
+        discover_css_source_files(project_root, plugin_alias_entries, &discovered_graph_files);
     if sources.is_empty() {
         // No scannable surface — Tailwind would emit only its
         // preflight + reset bytes, which still yields a non-empty
@@ -1056,6 +1085,12 @@ fn build_authored_only_css_payload(
     outdir: &Path,
     framework_css: Option<String>,
     plugin_alias_entries: &[(String, String)],
+    // Virtual-module claim sources a+c (issue #1775) — see
+    // `build_default_css_payload`'s parameter doc. The Tailwind-disabled
+    // path needs the same threading: `enabled: false` opts out of Tailwind,
+    // not out of CSS (issue #824), so a virtual-only sibling CSS Module must
+    // still be discovered here.
+    discovered_graph_files: &std::collections::BTreeSet<PathBuf>,
 ) -> Result<Option<AssetEmitterPayload>> {
     let authored_css = match resolve_input_global_css(project_root) {
         Some(path) => {
@@ -1072,7 +1107,8 @@ fn build_authored_only_css_payload(
         None => String::new(),
     };
 
-    let sources = discover_css_source_files(project_root, plugin_alias_entries);
+    let sources =
+        discover_css_source_files(project_root, plugin_alias_entries, discovered_graph_files);
     let engine = AuthoredCssEngine::new(authored_css);
 
     let payload = run_css_emitter(engine, project_root, outdir, sources, framework_css)?;
@@ -1225,6 +1261,15 @@ fn push_if_matching_extension(path: PathBuf, extensions: &[&str], out: &mut Vec<
 fn discover_css_source_files(
     project_root: &Path,
     plugin_alias_entries: &[(String, String)],
+    // Virtual-module claim sources a+c (issue #1775): every file the
+    // registered-virtual-module preprocessing graph reaches, from
+    // `discover_css_plugin_virtual_files`. Folded into the same
+    // `SiblingMirrorPlan::compute` call as the alias-target claim source
+    // (b) below so a sibling reached ONLY through a virtual module (no
+    // direct alias) still gets its mirror root wholesale-walked. Empty for
+    // a project with no registered virtual modules — byte-identical to
+    // before.
+    discovered_graph_files: &std::collections::BTreeSet<PathBuf>,
 ) -> Vec<std::path::PathBuf> {
     let mut out: Vec<std::path::PathBuf> = Vec::new();
     let extensions = ["tsx", "ts", "jsx", "js", "mdx", "md"];
@@ -1249,7 +1294,7 @@ fn discover_css_source_files(
     let plan = zfb_build::SiblingMirrorPlan::compute(
         project_root,
         &first_party_root,
-        &std::collections::BTreeSet::new(),
+        discovered_graph_files,
         &tsconfig_paths,
         plugin_alias_entries,
     );
@@ -1321,10 +1366,18 @@ fn discover_css_source_files(
 pub(crate) fn compute_css_module_class_maps(
     project_root: &Path,
     plugin_alias_entries: &[(String, String)],
+    // Virtual-module claim sources a+c (issue #1775) — see the parameter
+    // doc on `discover_css_source_files`. Threaded through to both the
+    // source-discovery walk below and this function's own
+    // `SiblingMirrorPlan::compute` call, so a `.module.css` resolved only
+    // through a registered virtual module's sibling closure is kept
+    // instead of silently dropped by the `plan.claims_path` gate below.
+    discovered_graph_files: &std::collections::BTreeSet<PathBuf>,
 ) -> Result<std::collections::HashMap<PathBuf, std::collections::HashMap<String, String>>> {
     use std::collections::HashMap;
 
-    let sources = discover_css_source_files(project_root, plugin_alias_entries);
+    let sources =
+        discover_css_source_files(project_root, plugin_alias_entries, discovered_graph_files);
     if sources.is_empty() {
         return Ok(HashMap::new());
     }
@@ -1337,7 +1390,7 @@ pub(crate) fn compute_css_module_class_maps(
     let plan = zfb_build::SiblingMirrorPlan::compute(
         project_root,
         &first_party_root,
-        &std::collections::BTreeSet::new(),
+        discovered_graph_files,
         &read_tsconfig_paths(project_root),
         plugin_alias_entries,
     );
@@ -1472,6 +1525,64 @@ impl PluginPreprocessingMeta {
         self.worker_edges.extend(graph.worker_edges);
         self.config_dependencies.extend(graph.config_dependencies);
     }
+}
+
+/// Construct the [`zfb_build::ModuleWorkerBuildContext`] shape esbuild will
+/// actually see, from the same bundle options and plugin registrations every
+/// caller already threads (mode, loaders, defines, framework JSX source,
+/// plugin aliases/virtual modules, output semantics). Shared by the islands
+/// bundler wiring and the command-layer CSS discovery pass (issue #1775) so
+/// the two flows cannot silently drift on what "the bundler's context"
+/// means — this is the ONE place that shape is assembled.
+pub(crate) fn module_worker_build_context(
+    production: bool,
+    framework: crate::config::Framework,
+    bundle_config: Option<&crate::config::BundleConfig>,
+    plugin_alias_entries: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+) -> zfb_build::ModuleWorkerBuildContext {
+    let jsx_import_source = match framework {
+        crate::config::Framework::Preact => zfb_islands::FrameworkKind::Preact,
+        crate::config::Framework::React => zfb_islands::FrameworkKind::React,
+    }
+    .jsx_import_source();
+    let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
+    let bundle_define = crate::config::resolve_bundle_define(bundle_config);
+    zfb_build::ModuleWorkerBuildContext::new(
+        production,
+        &bundle_loaders,
+        &bundle_define,
+        jsx_import_source,
+    )
+    .with_plugins(
+        plugin_alias_entries.to_vec(),
+        plugin_virtual_modules.to_vec(),
+    )
+    .with_output_semantics(production, !production)
+}
+
+/// Discover the file-reachability set behind registered plugin virtual
+/// modules (claim sources a+c of [`zfb_build::SiblingMirrorPlan`], issue
+/// #1775) for command-layer CSS discovery. Reuses
+/// [`discover_plugin_preprocessing`] with `include_registered_virtuals:
+/// true` and no extra roots — the SAME resolver-backed discovery the
+/// islands/client-script bundlers feed their own claim plans with, never
+/// re-derived here. Empty plugin registrations short-circuit inside
+/// `discover_plugin_preprocessing` and return an empty set, keeping the
+/// no-plugin path byte-identical.
+pub(crate) fn discover_css_plugin_virtual_files(
+    project_root: &Path,
+    worker_build_context: &zfb_build::ModuleWorkerBuildContext,
+) -> Result<std::collections::BTreeSet<PathBuf>> {
+    Ok(
+        discover_plugin_preprocessing(
+            project_root,
+            std::iter::empty(),
+            worker_build_context,
+            true,
+        )?
+        .files,
+    )
 }
 
 fn discover_plugin_preprocessing(
@@ -3267,19 +3378,12 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     .jsx_import_source();
     let bundle_loaders = crate::config::resolve_bundle_loaders(bundle_config);
     let bundle_define = crate::config::resolve_bundle_define(bundle_config);
-    let worker_build_context = zfb_build::ModuleWorkerBuildContext::new(
+    let worker_build_context = module_worker_build_context(
         matches!(bundle_mode, zfb_islands::BundleMode::Production),
-        &bundle_loaders,
-        &bundle_define,
-        islands_jsx_import_source,
-    )
-    .with_plugins(
-        plugin_config.alias_entries.clone(),
-        plugin_config.virtual_modules.clone(),
-    )
-    .with_output_semantics(
-        matches!(bundle_mode, zfb_islands::BundleMode::Production),
-        matches!(bundle_mode, zfb_islands::BundleMode::Development),
+        framework,
+        bundle_config,
+        &plugin_config.alias_entries,
+        &plugin_config.virtual_modules,
     );
     let plugin_preprocessing = discover_plugin_preprocessing(
         project_root,
@@ -8566,12 +8670,16 @@ mod tests {
             tailwind: Some(crate::config::TailwindConfig { enabled: false }),
             ..Config::default()
         };
-        let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
-                .expect("should not error")
-                .expect(
-                    "expected Some payload: authored CSS + module must ship even with tailwind off",
-                );
+        let payload = build_default_css_payload(
+            project_root,
+            &project_root.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+        )
+        .expect("should not error")
+        .expect("expected Some payload: authored CSS + module must ship even with tailwind off");
 
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
@@ -8595,7 +8703,9 @@ mod tests {
 
         // And the class-map producer must run in lockstep so the HTML
         // `class` attributes reference classes that actually ship.
-        let maps = compute_css_module_class_maps(project_root, &[]).expect("class maps");
+        let maps =
+            compute_css_module_class_maps(project_root, &[], &std::collections::BTreeSet::new())
+                .expect("class maps");
         assert!(
             !maps.is_empty(),
             "CSS Modules class maps must be non-empty when tailwind is disabled",
@@ -8628,9 +8738,15 @@ mod tests {
             tailwind: Some(crate::config::TailwindConfig { enabled: false }),
             ..Config::default()
         };
-        let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
-                .expect("should not error");
+        let payload = build_default_css_payload(
+            project_root,
+            &project_root.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+        )
+        .expect("should not error");
         assert!(
             payload.is_none(),
             "expected None when tailwind disabled and no authored CSS/modules; got {payload:?}",
@@ -8655,10 +8771,16 @@ mod tests {
             tailwind: Some(crate::config::TailwindConfig { enabled: false }),
             ..Config::default()
         };
-        let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
-                .expect("should not error")
-                .expect("authored CSS must still ship");
+        let payload = build_default_css_payload(
+            project_root,
+            &project_root.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+        )
+        .expect("should not error")
+        .expect("authored CSS must still ship");
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
             !css.contains("@import \"tailwindcss\""),
@@ -8709,7 +8831,7 @@ mod tests {
             code_highlight: Some(code_highlight_config(CodeHighlightMode::Class, true, "hi-")),
             ..Config::default()
         };
-        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
+        let payload = build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[], &[])
             .expect("should not error")
             .expect(
                 "expected Some payload: default_hi_css() is non-empty so class mode always ships a payload",
@@ -8751,10 +8873,16 @@ mod tests {
             )),
             ..Config::default()
         };
-        let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
-                .expect("should not error")
-                .expect("authored global CSS keeps the payload non-empty");
+        let payload = build_default_css_payload(
+            project_root,
+            &project_root.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+        )
+        .expect("should not error")
+        .expect("authored global CSS keeps the payload non-empty");
 
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
@@ -8783,10 +8911,16 @@ mod tests {
             // code_highlight: None => mode defaults to Inline.
             ..Config::default()
         };
-        let payload =
-            build_default_css_payload(project_root, &project_root.join("dist"), &cfg, &[], &[])
-                .expect("should not error")
-                .expect("authored global CSS keeps the payload non-empty");
+        let payload = build_default_css_payload(
+            project_root,
+            &project_root.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+        )
+        .expect("should not error")
+        .expect("authored global CSS keeps the payload non-empty");
 
         let css = String::from_utf8(payload.bytes).unwrap();
         assert!(
@@ -8861,7 +8995,8 @@ mod tests {
         let sibling_module =
             zfb_types::normalize_path_lexical(&ws.join("lib/shared/Button.module.css"));
 
-        let maps = compute_css_module_class_maps(&project, &[]).expect("class maps");
+        let maps = compute_css_module_class_maps(&project, &[], &std::collections::BTreeSet::new())
+            .expect("class maps");
         let names = maps.get(&sibling_module).unwrap_or_else(|| {
             panic!(
                 "claimed sibling .module.css must get a class map keyed by its physical path \
@@ -8892,14 +9027,16 @@ mod tests {
             tailwind: Some(crate::config::TailwindConfig { enabled: false }),
             ..Config::default()
         };
-        let payload = build_default_css_payload(&project, &project.join("dist"), &cfg, &[], &[])
-            .expect("should not error")
-            .expect("claimed sibling module must ship a non-empty payload");
+        let payload =
+            build_default_css_payload(&project, &project.join("dist"), &cfg, &[], &[], &[])
+                .expect("should not error")
+                .expect("claimed sibling module must ship a non-empty payload");
         let css = String::from_utf8(payload.bytes).unwrap();
 
         let sibling_module =
             zfb_types::normalize_path_lexical(&ws.join("lib/shared/Button.module.css"));
-        let maps = compute_css_module_class_maps(&project, &[]).expect("class maps");
+        let maps = compute_css_module_class_maps(&project, &[], &std::collections::BTreeSet::new())
+            .expect("class maps");
         let scoped = maps
             .get(&sibling_module)
             .and_then(|names| names.get("root"))
@@ -8938,7 +9075,8 @@ mod tests {
         )
         .unwrap();
 
-        let maps = compute_css_module_class_maps(&project, &[]).expect("class maps");
+        let maps = compute_css_module_class_maps(&project, &[], &std::collections::BTreeSet::new())
+            .expect("class maps");
 
         let unclaimed_module =
             zfb_types::normalize_path_lexical(&ws.join("lib/other/Widget.module.css"));
@@ -8954,6 +9092,208 @@ mod tests {
             maps.contains_key(&claimed_module),
             "the claimed sibling from the fixture must still be present; got keys: {:?}",
             maps.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// Workspace fixture for the virtual-module CSS discovery tests (issue
+    /// #1775): a sibling component reached ONLY through a registered plugin
+    /// virtual module (claim source c) — deliberately NO tsconfig/plugin
+    /// alias targets its directory (claim source b stays unused), so a
+    /// passing test here can only be explained by the virtual-module
+    /// discovery wiring, not the pre-existing alias claim path already
+    /// covered by `sibling_css_workspace_fixture` above.
+    ///
+    /// Returns `(TempDir, project_root)`; the guard must stay alive for the
+    /// fixture files to keep existing.
+    fn sibling_css_virtual_module_workspace_fixture() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::write(
+            ws.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+
+        let project = ws.join("sub-packages/host");
+        std::fs::create_dir_all(&project).unwrap();
+        // Deliberately NO tsconfig.json / alias here — the sibling below is
+        // reached ONLY via a registered virtual module in these tests.
+
+        std::fs::create_dir_all(ws.join("lib/vshared")).unwrap();
+        std::fs::write(
+            ws.join("lib/vshared/Panel.tsx"),
+            "import styles from \"./Panel.module.css\";\n\
+             export default function Panel() { return styles.root; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("lib/vshared/Panel.module.css"),
+            ".root { color: green; }\n",
+        )
+        .unwrap();
+
+        (tmp, project)
+    }
+
+    /// Build a registered-virtual-module list of one entry, `virtual:panel`,
+    /// whose source is a bare re-export of the fixture's sibling `Panel.tsx`
+    /// — the same shape a real plugin's `addVirtualModule` callback returns.
+    fn virtual_panel_module(ws: &Path) -> Vec<(String, String)> {
+        let sibling_tsx = zfb_types::normalize_path_lexical(&ws.join("lib/vshared/Panel.tsx"));
+        vec![(
+            "virtual:panel".to_string(),
+            format!(
+                "export {{ default }} from \"{}\";\n",
+                sibling_tsx.to_string_lossy()
+            ),
+        )]
+    }
+
+    /// Acceptance (issue #1775): `discover_css_plugin_virtual_files` reaches
+    /// a sibling source file through a registered virtual module alone —
+    /// the resolver-backed discovery the islands/client-script bundlers
+    /// already feed their own `SiblingMirrorPlan` claims with, reused here
+    /// unchanged for CSS.
+    #[test]
+    fn discover_css_plugin_virtual_files_reaches_virtual_module_sibling() {
+        let (_tmp, project) = sibling_css_virtual_module_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap();
+        let sibling_tsx = zfb_types::normalize_path_lexical(&ws.join("lib/vshared/Panel.tsx"));
+
+        let worker_context = module_worker_build_context(
+            false,
+            crate::config::Framework::Preact,
+            None,
+            &[],
+            &virtual_panel_module(ws),
+        );
+        let discovered = discover_css_plugin_virtual_files(&project, &worker_context)
+            .expect("virtual discovery should not fail");
+        assert!(
+            discovered.contains(&sibling_tsx),
+            "virtual-module discovery must reach the sibling source file {}; got: {:?}",
+            sibling_tsx.display(),
+            discovered
+        );
+    }
+
+    /// Acceptance (issue #1775): a sibling `.module.css` reached ONLY
+    /// through a registered virtual module (no direct alias) gets a class
+    /// map keyed by its physical path — the same outcome
+    /// `compute_css_module_class_maps_includes_claimed_sibling_module`
+    /// proves for the alias claim path, now proven for claim source c.
+    #[test]
+    fn compute_css_module_class_maps_includes_virtual_only_sibling_module() {
+        let (_tmp, project) = sibling_css_virtual_module_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap();
+        let sibling_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/vshared/Panel.module.css"));
+
+        let worker_context = module_worker_build_context(
+            false,
+            crate::config::Framework::Preact,
+            None,
+            &[],
+            &virtual_panel_module(ws),
+        );
+        let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
+            .expect("virtual discovery should not fail");
+
+        // No alias entries at all — proves the class map does not depend on
+        // claim source b for this fixture.
+        let maps = compute_css_module_class_maps(&project, &[], &discovered_graph_files)
+            .expect("class maps");
+        let names = maps.get(&sibling_module).unwrap_or_else(|| {
+            panic!(
+                "virtual-only sibling .module.css must get a class map keyed by its physical \
+                 path {}; got keys: {:?}",
+                sibling_module.display(),
+                maps.keys().collect::<Vec<_>>()
+            )
+        });
+        assert!(
+            names.contains_key("root"),
+            "scoped class for `.root` must appear in the virtual-only sibling's class map; \
+             got: {names:?}",
+        );
+    }
+
+    /// Acceptance (issue #1775): the Tailwind-DISABLED path
+    /// (`build_authored_only_css_payload`) must also discover a
+    /// virtual-only sibling CSS Module — `enabled: false` opts out of
+    /// Tailwind, not out of CSS (issue #824), and that invariant must hold
+    /// for claim source c too, not just the alias claim path
+    /// `css_payload_emits_claimed_sibling_module_css_and_matches_class_map`
+    /// already covers.
+    #[test]
+    fn css_payload_emits_virtual_only_sibling_module_css_with_tailwind_disabled() {
+        let (_tmp, project) = sibling_css_virtual_module_workspace_fixture();
+        let ws = project.parent().unwrap().parent().unwrap();
+        let plugin_virtual_modules = virtual_panel_module(ws);
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            ..Config::default()
+        };
+        let payload = build_default_css_payload(
+            &project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &plugin_virtual_modules,
+        )
+        .expect("should not error")
+        .expect("virtual-only sibling module must ship a non-empty payload");
+        let css = String::from_utf8(payload.bytes).unwrap();
+
+        let worker_context = module_worker_build_context(
+            false,
+            crate::config::Framework::Preact,
+            None,
+            &[],
+            &plugin_virtual_modules,
+        );
+        let discovered_graph_files = discover_css_plugin_virtual_files(&project, &worker_context)
+            .expect("virtual discovery should not fail");
+        let maps = compute_css_module_class_maps(&project, &[], &discovered_graph_files)
+            .expect("class maps");
+        let sibling_module =
+            zfb_types::normalize_path_lexical(&ws.join("lib/vshared/Panel.module.css"));
+        let scoped = maps
+            .get(&sibling_module)
+            .and_then(|names| names.get("root"))
+            .cloned()
+            .expect("class map must contain the scoped `.root` class for the virtual-only sibling");
+
+        assert!(
+            css.contains(&format!(".{scoped}")),
+            "emitted CSS (Tailwind disabled) must contain the scoped virtual-only sibling class \
+             `.{scoped}`; got:\n{css}",
+        );
+    }
+
+    /// Explicit empty-plugin parity test (issue #1775): with no registered
+    /// virtual modules, `discover_css_plugin_virtual_files` contributes
+    /// nothing even when an (unrelated) alias registration IS present —
+    /// claim source c never fires without an actual virtual-module
+    /// registration, so a project on the pre-#1775 alias-only path stays
+    /// byte-identical.
+    #[test]
+    fn discover_css_plugin_virtual_files_is_empty_with_no_virtual_modules() {
+        let (_tmp, project) = sibling_css_workspace_fixture();
+        let worker_context = module_worker_build_context(
+            true,
+            crate::config::Framework::Preact,
+            None,
+            &[("@shared/*".to_string(), "unused".to_string())],
+            &[],
+        );
+        let discovered = discover_css_plugin_virtual_files(&project, &worker_context)
+            .expect("virtual discovery should not fail");
+        assert!(
+            discovered.is_empty(),
+            "no registered virtual modules must contribute nothing to CSS discovery; got: {discovered:?}",
         );
     }
 

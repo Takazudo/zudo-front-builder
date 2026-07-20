@@ -338,11 +338,32 @@ pub(crate) fn assemble_bundler_input(
     //   fixed before `zfb build` proceeds.
     // - WarnAndEmpty (dev): log a warning and continue with an empty map so
     //   the dev server still boots even when CSS is temporarily broken.
+    // Virtual-module claim sources a+c (issue #1775): build the same
+    // `ModuleWorkerBuildContext` shape esbuild will see for this project's
+    // plugin registrations and discover the file set behind any registered
+    // virtual module, so a sibling `.module.css` reached ONLY through a
+    // virtual module (no direct alias) still lands in the class map. Folded
+    // into the same fallible chain as the class-map computation below so a
+    // discovery failure is handled by the identical `css_fail_mode` policy.
+    let css_worker_build_context = crate::commands::build::module_worker_build_context(
+        matches!(bundle_mode, BundleMode::Production),
+        config.framework,
+        config.bundle.as_ref(),
+        &plugin_alias_entries,
+        &plugin_virtual_modules,
+    );
     bundler_input.css_module_class_maps =
-        match crate::commands::build::compute_css_module_class_maps(
+        match crate::commands::build::discover_css_plugin_virtual_files(
             project_root,
-            &plugin_alias_entries,
-        ) {
+            &css_worker_build_context,
+        )
+        .and_then(|discovered_graph_files| {
+            crate::commands::build::compute_css_module_class_maps(
+                project_root,
+                &plugin_alias_entries,
+                &discovered_graph_files,
+            )
+        }) {
             Ok(maps) => maps,
             Err(e) => match css_fail_mode {
                 CssModuleFailMode::HardFail => {
