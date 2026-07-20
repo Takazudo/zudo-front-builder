@@ -158,7 +158,10 @@ impl Default for TailwindSubprocessConfig {
         //      sole caller that constructs this config and is the
         //      natural place to do the (potentially fallible) extract.
         //   3. workspace-relative fallback for in-workspace dev.
-        let env_override = std::env::var_os("ZFB_TAILWIND_BIN");
+        // An empty value (set but blank) is treated the same as unset,
+        // mirroring the build-time override contract in
+        // `crates/zfb/build.rs` / `BUILDING.md`.
+        let env_override = std::env::var_os("ZFB_TAILWIND_BIN").filter(|v| !v.is_empty());
         let binary_path = match env_override {
             Some(p) => PathBuf::from(p),
             None => PathBuf::from("crates/zfb/binaries/tailwindcss-v4"),
@@ -265,7 +268,8 @@ impl TailwindSubprocessConfig {
     /// `#[derive(Clone)]` keeps working — `tempfile::TempDir` is not
     /// itself `Clone`.
     pub fn with_embedded_binary(mut self, handle: tempfile::TempDir, path: PathBuf) -> Self {
-        if std::env::var_os("ZFB_TAILWIND_BIN").is_some() {
+        // Empty value = unset, matching `Self::default`'s check above.
+        if std::env::var_os("ZFB_TAILWIND_BIN").is_some_and(|v| !v.is_empty()) {
             // Env tier already won — drop the handle on the floor and
             // leave `binary_path` pointing at the env value.
             drop(handle);

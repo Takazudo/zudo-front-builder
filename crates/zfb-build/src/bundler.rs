@@ -9598,8 +9598,12 @@ where
         }
         return Ok((None, p.to_path_buf()));
     }
-    // Tier 2: ZFB_ESBUILD_BIN env var.
-    if let Some(env) = env_getter("ZFB_ESBUILD_BIN") {
+    // Tier 2: ZFB_ESBUILD_BIN env var. An empty value (set but blank) is
+    // treated the same as unset, mirroring the build-time override
+    // contract in `crates/zfb/build.rs` / `BUILDING.md` — otherwise a
+    // blank env var that build.rs treats as "no override" would still
+    // trip this tier and fail to resolve a binary at runtime.
+    if let Some(env) = env_getter("ZFB_ESBUILD_BIN").filter(|v| !v.is_empty()) {
         let p = PathBuf::from(env);
         if !p.exists() {
             bail!(

@@ -5938,7 +5938,7 @@ fn boot_dev_renderer(
         // condition would ignore the path anyway). Extraction failure
         // is non-fatal, matching the assemble-side handling: warn and
         // fall back to the per-tick extraction by passing `None`.
-        esbuild: if std::env::var_os("ZFB_ESBUILD_BIN").is_none() {
+        esbuild: if std::env::var_os("ZFB_ESBUILD_BIN").is_none_or(|v| v.is_empty()) {
             match crate::render_pipeline::embedded_binary("esbuild") {
                 Ok(pair) => Some(pair),
                 Err(e) => {
