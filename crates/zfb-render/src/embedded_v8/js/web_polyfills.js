@@ -160,7 +160,20 @@
   // We accept string / array / object init shapes (matching the
   // WHATWG spec). The actual parsing is done by splitting on '&'
   // / '=' — no encoding subtleties are required for the SSG path
-  // (router params are typically already encoded by the framework).
+  // (router params are typically already encoded by the framework),
+  // except for the `application/x-www-form-urlencoded` `+`-means-space
+  // rule, which callers rely on (e.g. HTML forms encode spaces as `+`).
+  //
+  // decode: `+` must become a space BEFORE decodeURIComponent runs,
+  // since decodeURIComponent leaves a literal `+` untouched.
+  function decodeFormUrlComponent(piece) {
+    return decodeURIComponent(piece.replace(/\+/g, " "));
+  }
+  // encode: encodeURIComponent renders a space as `%20`; form-urlencoded
+  // serialization renders it as `+` instead.
+  function encodeFormUrlComponent(str) {
+    return encodeURIComponent(str).replace(/%20/g, "+");
+  }
   class URLSearchParams {
     constructor(init) {
       this._pairs = [];
@@ -172,10 +185,10 @@
           if (piece === "") continue;
           const eq = piece.indexOf("=");
           if (eq < 0) {
-            this._pairs.push([decodeURIComponent(piece), ""]);
+            this._pairs.push([decodeFormUrlComponent(piece), ""]);
           } else {
-            const k = decodeURIComponent(piece.slice(0, eq));
-            const v = decodeURIComponent(piece.slice(eq + 1));
+            const k = decodeFormUrlComponent(piece.slice(0, eq));
+            const v = decodeFormUrlComponent(piece.slice(eq + 1));
             this._pairs.push([k, v]);
           }
         }
@@ -234,7 +247,7 @@
     }
     toString() {
       return this._pairs
-        .map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v))
+        .map(([k, v]) => encodeFormUrlComponent(k) + "=" + encodeFormUrlComponent(v))
         .join("&");
     }
   }

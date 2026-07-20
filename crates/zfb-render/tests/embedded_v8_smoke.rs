@@ -200,6 +200,93 @@ async fn response_urlsearchparams_body_defaults_to_form_urlencoded() {
     );
 }
 
+/// Sub-issue #1762: `URLSearchParams` must apply the
+/// `application/x-www-form-urlencoded` `+`-means-space convention on
+/// both parse and serialize, and a literal `+` (`%2B`) must round-trip
+/// as a real plus character. Each assertion's expected value is what
+/// the native (spec) `URLSearchParams` produces for the same input —
+/// this is a V8-eval parity check against the embedded polyfill, not
+/// a hand-picked string.
+#[tokio::test]
+async fn urlsearchparams_plus_space_form_encoding_matrix() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const failures = [];
+        function check(label, actual, expected) {
+          if (actual !== expected) {
+            failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+          }
+        }
+
+        // `+` decodes to space on parse.
+        check(
+          "plus-decodes-to-space",
+          new URLSearchParams("q=hello+world").get("q"),
+          "hello world",
+        );
+
+        // Space serializes to `+`.
+        const spaceParams = new URLSearchParams();
+        spaceParams.set("a", "x y");
+        check("space-serializes-to-plus", spaceParams.toString(), "a=x+y");
+
+        // Literal plus round-trips: `%2B` parses to a literal `+` and
+        // re-serializes as `%2B` (not a raw `+`, which would decode
+        // back to space).
+        const literalPlus = new URLSearchParams("k=a%2Bb");
+        check("percent-2b-parses-to-literal-plus", literalPlus.get("k"), "a+b");
+        check("literal-plus-reserializes-as-percent-2b", literalPlus.toString(), "k=a%2Bb");
+
+        // Empty keys and empty values parse and re-serialize per spec.
+        const empties = new URLSearchParams("=v&k=&k2&&");
+        check("empty-key-with-value", empties.get(""), "v");
+        check("key-with-empty-value", empties.get("k"), "");
+        check("bare-key-no-eq", empties.get("k2"), "");
+        check(
+          "empty-segments-and-bare-key-reserialize",
+          empties.toString(),
+          "=v&k=&k2=",
+        );
+
+        // Repeated keys: getAll preserves parse order; toString keeps
+        // deterministic first-insertion order.
+        const repeated = new URLSearchParams("r=1&r=2&r=3");
+        check(
+          "repeated-key-getall-order",
+          JSON.stringify(repeated.getAll("r")),
+          JSON.stringify(["1", "2", "3"]),
+        );
+        check("repeated-key-tostring-order", repeated.toString(), "r=1&r=2&r=3");
+
+        // Iterator behavior (entries/for..of) is unchanged for the
+        // plus/space + repeated-key cases above.
+        const iterFixture = new URLSearchParams("a=x+y&b=1&b=2");
+        const viaEntries = [...iterFixture.entries()].map(([k, v]) => `${k}=${v}`).join("&");
+        check("entries-iterator-order", viaEntries, "a=x y&b=1&b=2");
+        const viaForOf = [];
+        for (const [k, v] of iterFixture) {
+          viaForOf.push(`${k}=${v}`);
+        }
+        check("for-of-iterator-order", viaForOf.join("&"), "a=x y&b=1&b=2");
+
+        if (failures.length > 0) {
+          return new Response(failures.join("\n"), { status: 500 });
+        }
+        return new Response("OK", { status: 200 });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.body_utf8(), Some("OK"), "status={}", resp.status);
+    assert_eq!(resp.status, 200);
+}
+
 /// An `ArrayBuffer` body gets NO automatic content-type per the Fetch
 /// BodyInit table — typed arrays / `ArrayBuffer` are the one shape that
 /// stays opaque by default.
