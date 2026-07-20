@@ -886,3 +886,105 @@ async fn ordinary_headers_still_combine_with_comma_separator() {
         "ordinary repeated headers must combine into one comma-joined entry, got {vary:?}"
     );
 }
+
+/// Live iteration (WHATWG "iterate a map" semantics): deleting a
+/// not-yet-visited header during `forEach` must remove it from the
+/// remaining traversal — the deleted key is NOT yielded. A snapshot-based
+/// iterator would still visit the stale `b`.
+#[tokio::test]
+async fn headers_foreach_deleting_later_key_skips_it() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("a", "1");
+        headers.append("b", "2");
+        const visited = [];
+        headers.forEach((v, k) => {
+          visited.push(k);
+          if (k === "a") headers.delete("b");
+        });
+        return new Response(visited.join(","), { status: 200 });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(
+        resp.body_utf8(),
+        Some("a"),
+        "deleting a not-yet-visited header mid-forEach must skip it (live iteration)"
+    );
+}
+
+/// Live iteration: a header appended during `forEach` must become visible
+/// to a later step and IS yielded. A snapshot-based iterator would miss it.
+#[tokio::test]
+async fn headers_foreach_appending_key_visits_it() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("a", "1");
+        const visited = [];
+        headers.forEach((v, k) => {
+          visited.push(k);
+          if (k === "a") headers.append("c", "3");
+        });
+        return new Response(visited.join(","), { status: 200 });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(
+        resp.body_utf8(),
+        Some("a,c"),
+        "appending a header mid-forEach must make it visible to a later step (live iteration)"
+    );
+}
+
+/// Regression guard: non-mutating iteration keeps the exact sorted-combined
+/// order — header names in sorted order, `set-cookie` values yielded
+/// uncombined, every other name comma-joined into one entry. The live
+/// iterator must not disturb this order.
+#[tokio::test]
+async fn headers_entries_nonmutating_order_is_sorted_and_combined() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("b-two", "2");
+        headers.append("a-one", "1");
+        headers.append("Set-Cookie", "x=1");
+        headers.append("Set-Cookie", "y=2");
+        headers.append("vary", "Accept-Encoding");
+        headers.append("vary", "Accept-Language");
+        const parts = [];
+        for (const [k, v] of headers.entries()) parts.push(k + "=" + v);
+        return new Response(parts.join("|"), { status: 200 });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(
+        resp.body_utf8(),
+        Some(
+            "a-one=1|b-two=2|set-cookie=x=1|set-cookie=y=2|vary=Accept-Encoding, Accept-Language"
+        ),
+        "non-mutating iteration must keep sorted+combined order (set-cookie uncombined)"
+    );
+}

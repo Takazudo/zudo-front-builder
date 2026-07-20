@@ -116,29 +116,50 @@
       this._pairs.push([k, String(value)]);
     }
     forEach(cb, thisArg) {
-      for (const [k, v] of this._combinedEntries()) {
+      for (const [k, v] of this._liveCombinedEntries()) {
         cb.call(thisArg, v, k, this);
       }
     }
     *keys() {
-      for (const [k] of this._combinedEntries()) yield k;
+      for (const [k] of this._liveCombinedEntries()) yield k;
     }
     *values() {
-      for (const [, v] of this._combinedEntries()) yield v;
+      for (const [, v] of this._liveCombinedEntries()) yield v;
     }
     *entries() {
-      for (const pair of this._combinedEntries()) yield pair;
+      for (const pair of this._liveCombinedEntries()) yield pair;
     }
     [Symbol.iterator]() {
       return this.entries();
+    }
+    // LIVE map iteration, per the WHATWG "iterate a map" semantics
+    // (https://infra.spec.whatwg.org/#map-iterate) that Fetch's `Headers`
+    // iterator inherits: iteration is index-based over the *current*
+    // combined view, re-derived at every step rather than snapshotted up
+    // front. So mutations made mid-traversal are observed — deleting a
+    // not-yet-visited header removes it from later steps (it is NOT
+    // yielded), and appending a header makes it visible to a later step
+    // (it IS yielded). Native `Headers` (and the previous Map-backed
+    // polyfill) behave this way; a snapshot would yield stale results.
+    // The non-mutating order is identical to the snapshot order because
+    // `_combinedEntries()` is deterministic, so existing iteration tests
+    // stay green.
+    *_liveCombinedEntries() {
+      let i = 0;
+      for (;;) {
+        const combined = this._combinedEntries();
+        if (i >= combined.length) return;
+        yield combined[i];
+        i++;
+      }
     }
     // WHATWG Fetch "sort and combine" algorithm
     // (https://fetch.spec.whatwg.org/#concept-header-list-sort-and-combine):
     // header names are visited in sorted order; `set-cookie` values are
     // yielded uncombined (one entry per value, Expires-comma-safe) while
     // every other name's values are comma-joined into a single entry.
-    // Backs get/entries/keys/values/forEach/Symbol.iterator so all
-    // iteration surfaces agree.
+    // Backs get/entries/keys/values/forEach/Symbol.iterator (through
+    // `_liveCombinedEntries`) so all iteration surfaces agree.
     _combinedEntries() {
       const names = Array.from(new Set(this._pairs.map(([n]) => n))).sort();
       const out = [];
