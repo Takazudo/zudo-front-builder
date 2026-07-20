@@ -1,0 +1,26 @@
+---
+title: Token leak demo
+date: 2026-04-21
+description: Island component plus a code demo that used to degrade the whole page (zfb#1729).
+tags:
+  - intro
+  - tooling
+---
+
+This post mixes a custom JSX island component with a code demo whose
+highlighted template used to leak a bare expression, tripping the
+bundler's downstream-parser gate and degrading the whole page to the
+raw-body render shape.
+
+<Note title="Design token lint demo">
+
+  A demo whose highlighted template used to leak a bare expression:
+<pre><code>{\d}</code></pre>
+
+  A JSX comment that must survive verbatim: {/* design-token-lint-ignore */}
+
+</Note>
+
+Prose after the island — if the page had degraded to the raw-body render
+shape, this island and this sentence would both be replaced by a raw
+block instead of rendering as real content.
