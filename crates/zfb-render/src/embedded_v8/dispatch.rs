@@ -63,18 +63,28 @@ pub struct HttpResponseLike {
     /// surfaces non-200 to the caller (e.g. `404` for a missing page
     /// becomes a build error in `zfb-build`).
     pub status: u16,
-    /// Headers as returned by the JS-side `Response.headers`. Keys
-    /// are lowercase. The renderer reads `content-type` to decide
-    /// the on-disk extension; everything else is opaque.
-    pub headers: BTreeMap<String, String>,
+    /// Headers as returned by the JS-side `Response.headers`, as an
+    /// ordered list rather than a map: the JS side's `Headers` polyfill
+    /// already applies the Fetch "sort and combine" view (duplicate
+    /// `set-cookie` entries kept separate, everything else comma-joined),
+    /// so collapsing this into a `BTreeMap<String, String>` here would
+    /// silently drop repeated headers. Keys are lowercase. The renderer
+    /// reads `content-type` (via [`Self::content_type`]) to decide the
+    /// on-disk extension; everything else is opaque.
+    pub headers: Vec<(String, String)>,
     /// Body bytes (after `arrayBuffer()` materialisation).
     pub body: Vec<u8>,
 }
 
 impl HttpResponseLike {
     /// Convenience: read the `content-type` header (lowercase key).
+    /// Returns the first match if somehow duplicated (content-type is
+    /// not a multi-valued header in practice).
     pub fn content_type(&self) -> Option<&str> {
-        self.headers.get("content-type").map(|s| s.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
     }
 
     /// Convenience: decode the body as UTF-8. Returns `None` if the

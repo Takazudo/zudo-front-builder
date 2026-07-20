@@ -662,15 +662,21 @@ mod test_v8_host {
                                 .dispatch_fetch(http_req)
                                 .await
                                 .map(|resp| {
+                                    // `resp.headers` (zfb-render's own
+                                    // `HttpResponseLike`) is already
+                                    // `Vec<(String, String)>` (sub-issue
+                                    // #1760), matching this test host's own
+                                    // `HttpResponseLike.headers` shape.
                                     let content_type = resp
                                         .headers
-                                        .get("content-type")
-                                        .cloned()
+                                        .iter()
+                                        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                                        .map(|(_, v)| v.clone())
                                         .unwrap_or_default();
                                     HttpResponseLike {
                                         status: resp.status,
                                         content_type,
-                                        headers: resp.headers.into_iter().collect(),
+                                        headers: resp.headers,
                                         body: resp.body,
                                     }
                                 })

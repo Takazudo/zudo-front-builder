@@ -234,17 +234,22 @@ async fn matched_url_dispatches_through_ssr_layer() {
 }
 
 /// Multi-valued `Set-Cookie` survives end-to-end through the SSR seam
-/// (sub #1144). An SSR handler returning two distinct `Set-Cookie`
-/// values must reach the wire as two separate headers, not a single
-/// collapsed value — the dev router `append`s onto the `HeaderMap`
-/// rather than `insert`ing, and `SsrResponse.headers` is an ordered
-/// `Vec` that preserves the duplicates upstream.
+/// (sub #1144). An SSR handler returning three distinct `Set-Cookie`
+/// values — one carrying an `Expires` attribute whose value itself
+/// contains a comma — must reach the wire as three separate headers, not
+/// a single collapsed value (sub-issue #1760): the dev router `append`s
+/// onto the `HeaderMap` rather than `insert`ing, and `SsrResponse.headers`
+/// is an ordered `Vec` that preserves the duplicates upstream.
 #[tokio::test]
 async fn multiple_set_cookie_survive_ssr_seam() {
     let headers = vec![
         ("content-type".into(), "text/html; charset=utf-8".into()),
         ("set-cookie".into(), "a=1; Path=/; HttpOnly".into()),
         ("set-cookie".into(), "b=2; Path=/; HttpOnly".into()),
+        (
+            "set-cookie".into(),
+            "c=3; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/".into(),
+        ),
     ];
     let canned = SsrResponse {
         status: 200,
@@ -263,9 +268,10 @@ async fn multiple_set_cookie_survive_ssr_seam() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
 
-    // `get_all` yields every `Set-Cookie` value; both must be present and
-    // distinct. A last-value-wins collapse anywhere in the seam would
-    // drop one of them.
+    // `get_all` yields every `Set-Cookie` value; all three must be present
+    // and distinct. A last-value-wins collapse anywhere in the seam would
+    // drop some of them; a naive comma-join would corrupt the third
+    // cookie's `Expires` attribute (which itself contains a comma).
     let cookies: Vec<String> = resp
         .headers()
         .get_all(reqwest::header::SET_COOKIE)
@@ -275,8 +281,8 @@ async fn multiple_set_cookie_survive_ssr_seam() {
         .collect();
     assert_eq!(
         cookies.len(),
-        2,
-        "both Set-Cookie headers must survive; got {cookies:?}"
+        3,
+        "all three Set-Cookie headers must survive; got {cookies:?}"
     );
     assert!(
         cookies.iter().any(|c| c.contains("a=1")),
@@ -285,6 +291,13 @@ async fn multiple_set_cookie_survive_ssr_seam() {
     assert!(
         cookies.iter().any(|c| c.contains("b=2")),
         "second cookie missing; got {cookies:?}"
+    );
+    assert!(
+        cookies
+            .iter()
+            .any(|c| c == "c=3; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/"),
+        "third cookie (with a comma inside its Expires attribute) must \
+         survive byte-for-byte, uncorrupted by any comma-join; got {cookies:?}"
     );
 
     server.abort();

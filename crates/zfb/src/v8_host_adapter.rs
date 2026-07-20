@@ -264,19 +264,21 @@ impl ThreadedV8Host {
                                 // out as the renderer's hot-path field;
                                 // `headers` retains everything else as an
                                 // ordered `Vec` so multi-valued headers
-                                // (e.g. Set-Cookie) survive the seam. Any
-                                // residual collapse is upstream, at the JS
-                                // `Response.headers` → `Record` boundary
-                                // (`zfb-render` parses it into a BTreeMap).
+                                // (e.g. Set-Cookie) survive the seam —
+                                // `zfb-render`'s own `HttpResponseLike` is
+                                // already `Vec<(String, String)>`-shaped
+                                // (sub-issue #1760), so this is a
+                                // pass-through, not a refold.
                                 let content_type = resp
                                     .headers
-                                    .get("content-type")
-                                    .cloned()
+                                    .iter()
+                                    .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                                    .map(|(_, v)| v.clone())
                                     .unwrap_or_default();
                                 HttpResponseLike {
                                     status: resp.status,
                                     content_type,
-                                    headers: resp.headers.into_iter().collect(),
+                                    headers: resp.headers,
                                     body: resp.body,
                                 }
                             })
@@ -533,15 +535,19 @@ async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiv
             .dispatch_fetch(http_req)
             .await
             .map(|resp| {
+                // See the matching comment in `ThreadedV8Host::new_with_hooks`
+                // above: `resp.headers` is already `Vec<(String, String)>`
+                // (sub-issue #1760), so this is a pass-through.
                 let content_type = resp
                     .headers
-                    .get("content-type")
-                    .cloned()
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, v)| v.clone())
                     .unwrap_or_default();
                 HttpResponseLike {
                     status: resp.status,
                     content_type,
-                    headers: resp.headers.into_iter().collect(),
+                    headers: resp.headers,
                     body: resp.body,
                 }
             })
