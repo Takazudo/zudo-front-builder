@@ -909,8 +909,8 @@ impl JsxEmitter {
             MdastNode::MdxJsxTextElement(j) => {
                 self.emit_jsx(j.name.as_deref(), &j.attributes, &j.children)
             }
-            MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
-            MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
+            MdastNode::MdxFlowExpression(e) => emit_mdx_expression_braced(&e.value),
+            MdastNode::MdxTextExpression(e) => emit_mdx_expression_braced(&e.value),
             // remark-math `$$...$$` block. Mirrors the shape
             // markdown-rs's HTML serializer (`on_enter_raw_flow`)
             // produces — `<pre><code class="language-math math-display">`
@@ -1638,8 +1638,8 @@ fn jsx_raw_recursive(node: &MdastNode, ctx: &SlugCtx) -> String {
         MdastNode::MdxJsxTextElement(j) => {
             jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
         }
-        MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
-        MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
+        MdastNode::MdxFlowExpression(e) => emit_mdx_expression_braced(&e.value),
+        MdastNode::MdxTextExpression(e) => emit_mdx_expression_braced(&e.value),
         // Defensive — `mdast_to_hast_with`'s strategy callback only
         // fires for the JSX-shaped arms above, but if the contract
         // ever changes we fall back to the recursive child renderer
@@ -1694,8 +1694,8 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
     match node {
         MdastNode::Text(t) => jsx_text_escape(&t.value),
         MdastNode::Html(h) => h.value.clone(),
-        MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
-        MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
+        MdastNode::MdxFlowExpression(e) => emit_mdx_expression_braced(&e.value),
+        MdastNode::MdxTextExpression(e) => emit_mdx_expression_braced(&e.value),
         MdastNode::MdxJsxFlowElement(j) => {
             jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
         }
@@ -1948,9 +1948,7 @@ fn render_jsx_attrs(attrs: &[AttributeContent]) -> String {
                     }
                     Some(AttributeValue::Expression(e)) => {
                         out.push('=');
-                        out.push('{');
-                        out.push_str(&e.value);
-                        out.push('}');
+                        out.push_str(&emit_mdx_expression_braced(&e.value));
                     }
                 }
             }
@@ -2000,6 +1998,179 @@ fn escape_attr_literal(s: &str) -> String {
 /// processing does not have to special-case whitespace or `<`/`>`.
 fn js_string_literal_in_braces(s: &str) -> String {
     format!("{{{}}}", js_string_literal(s))
+}
+
+/// Emit an MDX expression node as a JSX `{…}` fragment, recovering the
+/// one shape that silently degrades a whole page (zfb#1729).
+///
+/// MDX expression nodes (`MdxFlowExpression` / `MdxTextExpression`) and
+/// expression-valued attributes are emitted verbatim so that valid MDX
+/// expressions — `{1 + 1}`, `count={1 + 2}`, spreads `{...rest}`, JSX
+/// comments `{/* … */}` — reach the downstream JSX/TSX compiler intact.
+/// But when an expression's value begins with a backslash-escape (`\n`,
+/// `\d`, …) it renders a bare `{\letter}` fragment. That is never a
+/// valid *bare* JS expression, and it is the exact shape the bundler's
+/// `jsx_likely_breaks_downstream_parser` gate rejects — a single such
+/// fragment makes esbuild reject the module and the bundler degrade the
+/// ENTIRE page to the `<pre data-zfb-content-fallback>` shape.
+///
+/// So: if emitting `{value}` verbatim would trip that gate, recover the
+/// value as a JS string literal (`{"…escaped…"}`) instead. The bytes
+/// stay visibly present and the module parses. Only the breaking shape
+/// is recovered — [`expression_fragment_breaks_downstream_parser`] is
+/// string/comment-aware, so every valid expression, spread, comment,
+/// and numeric attribute stays `false` and is emitted verbatim.
+fn emit_mdx_expression_braced(value: &str) -> String {
+    let verbatim = format!("{{{value}}}");
+    // The scanner is only a byte-pattern heuristic: it visits `{\letter}`
+    // bytes even inside a regex literal (e.g. `{/[{\d}]/.test(x)}`), which
+    // are perfectly valid JS. Stringifying such an expression would
+    // silently change runtime behavior, so only recover when the value is
+    // genuinely NOT valid JS (the real `\d`-leak class). A valid-but-
+    // gate-tripping expression stays verbatim — it may still trip the real
+    // bundler gate downstream, reproducing the conservative pre-epic
+    // whole-page fallback for that page, which is the correct outcome (the
+    // gate is out of scope; never silently change valid-JS semantics).
+    if expression_fragment_breaks_downstream_parser(&verbatim) && !mdx_expression_is_valid_js(value)
+    {
+        js_string_literal_in_braces(value)
+    } else {
+        verbatim
+    }
+}
+
+/// True iff `value` (the inner content of an MDX `{…}` expression) parses
+/// as a single valid JS/TSX expression.
+///
+/// MDX expression bodies occupy a single expression position, so the value
+/// is wrapped in parentheses (`(value);`) and parsed as a module: a valid
+/// body yields exactly one expression statement whose expression is the
+/// wrapping parenthesis. Anything else — a parse failure, recovered parser
+/// errors, trailing tokens, or injected extra statements — is treated as
+/// invalid. Used by [`emit_mdx_expression_braced`] to distinguish a
+/// genuinely-broken `{\d}`-style leak (invalid → recover as a string) from
+/// a valid expression the byte scanner falsely flagged (e.g. a regex
+/// literal containing `{\d}` bytes → leave verbatim).
+fn mdx_expression_is_valid_js(value: &str) -> bool {
+    use swc_core::common::sync::Lrc;
+    use swc_core::common::{FileName, SourceMap};
+    use swc_core::ecma::ast::{EsVersion, Expr, ModuleItem, Stmt};
+    use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
+
+    let cm: Lrc<SourceMap> = Default::default();
+    let fm = cm.new_source_file(FileName::Anon.into(), format!("({value});"));
+    let lexer = Lexer::new(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            decorators: false,
+            dts: false,
+            no_early_errors: false,
+            disallow_ambiguous_jsx_like: false,
+        }),
+        EsVersion::Es2022,
+        StringInput::from(&*fm),
+        None,
+    );
+    let mut parser = Parser::new_from(lexer);
+    let Ok(module) = parser.parse_module() else {
+        return false;
+    };
+    // SWC's parser is error-recovering: it can return `Ok` on invalid input
+    // while stashing recoverable diagnostics. Reject those too.
+    if !parser.take_errors().is_empty() {
+        return false;
+    }
+    matches!(
+        module.body.as_slice(),
+        [ModuleItem::Stmt(Stmt::Expr(stmt))] if matches!(*stmt.expr, Expr::Paren(_))
+    )
+}
+
+/// Local mirror of `zfb_build::bundler::jsx_likely_breaks_downstream_parser`
+/// applied to a single emitted JSX fragment.
+///
+/// `zfb-build` depends on `zfb-content` (not the reverse), so the gate
+/// cannot be imported here; this is the same string/line-comment/
+/// block-comment-aware scan for a `{` (optionally `-`) directly followed
+/// by `\` + an ASCII letter — the byte pattern a leaked string-escape
+/// produces outside any JS string. **Keep in sync with the gate in
+/// `crates/zfb-build/src/bundler.rs`.** A visible divergence is caught
+/// by the `heuristic_says_jsx_breaks` mirror in
+/// `crates/zfb-content/tests/large_mdx_fallback_regression.rs` and the
+/// gate's own unit tests in zfb-build.
+fn expression_fragment_breaks_downstream_parser(jsx: &str) -> bool {
+    let bytes = jsx.as_bytes();
+    let mut in_string: Option<u8> = None;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+
+        if in_line_comment {
+            if c == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if c == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if let Some(q) = in_string {
+            if c == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        if c == b'/' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'/' => {
+                    in_line_comment = true;
+                    i += 2;
+                    continue;
+                }
+                b'*' => {
+                    in_block_comment = true;
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        if c == b'"' || c == b'\'' || c == b'`' {
+            in_string = Some(c);
+            i += 1;
+            continue;
+        }
+
+        if c == b'{' {
+            let mut j = i + 1;
+            if j < bytes.len() && bytes[j] == b'-' {
+                j += 1;
+            }
+            if j + 1 < bytes.len() && bytes[j] == b'\\' && bytes[j + 1].is_ascii_alphabetic() {
+                return true;
+            }
+        }
+
+        i += 1;
+    }
+    false
 }
 
 /// Format `s` as a JS string literal (double-quoted, with the minimal

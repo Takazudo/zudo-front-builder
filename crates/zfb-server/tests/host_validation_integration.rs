@@ -428,6 +428,77 @@ async fn cross_origin_post_to_plugin_route_is_rejected_without_dispatch() {
     server.abort();
 }
 
+/// Issue #1770: an IP-literal `Origin` does NOT ride the Host-only
+/// IP-literal always-allow rule. A LAN scanner sending
+/// `Origin: http://192.168.1.9` (or an IPv6 literal) to a POST route
+/// must be rejected exactly like any other unrelated cross-origin
+/// request — the dispatcher stays unreached — and the Dev-mode body
+/// still names the `allowedHosts` remedy (add the IP explicitly to
+/// re-authorize its Origin).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cross_origin_post_with_ip_literal_origin_is_rejected_and_dev_body_names_allowed_hosts() {
+    let dispatcher = Arc::new(CountingPluginDispatcher::new());
+    let set = plugin_set("/api/echo", dispatcher.clone());
+    let (addr, _pages, server, _tmp) = boot(BootOpts {
+        allowed_hosts: vec!["allowed.test".to_string()],
+        plugin_set: Some(set),
+        ..Default::default()
+    })
+    .await;
+
+    for origin in ["http://192.168.1.9:3000", "http://[2001:db8::7]:3000"] {
+        let resp = client()
+            .post(local_url(addr, "/api/echo"))
+            .header(reqwest::header::HOST, "allowed.test")
+            .header(reqwest::header::ORIGIN, origin)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            403,
+            "origin {origin} must be rejected"
+        );
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("allowedHosts"), "body for {origin}: {body}");
+    }
+    assert_eq!(
+        dispatcher.count(),
+        0,
+        "plugin dispatcher must not run for an unrelated IP-literal origin"
+    );
+
+    server.abort();
+}
+
+/// Issue #1770's documented remedy: adding the IP literal to
+/// `allowedHosts` creates an explicit rule that re-authorizes its
+/// Origin (in addition to the Host allowlist it already satisfied via
+/// the IP-literal short-circuit before this split).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allowed_hosts_ip_entry_reauthorizes_its_cross_origin_post() {
+    let dispatcher = Arc::new(CountingPluginDispatcher::new());
+    let set = plugin_set("/api/echo", dispatcher.clone());
+    let (addr, _pages, server, _tmp) = boot(BootOpts {
+        allowed_hosts: vec!["192.168.1.9".to_string()],
+        plugin_set: Some(set),
+        ..Default::default()
+    })
+    .await;
+
+    let resp = client()
+        .post(local_url(addr, "/api/echo"))
+        .header(reqwest::header::HOST, "192.168.1.9")
+        .header(reqwest::header::ORIGIN, "http://192.168.1.9:3000")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(dispatcher.count(), 1);
+
+    server.abort();
+}
+
 /// Static read paths are exempt from the Origin check by construction:
 /// cross-origin GETs to assets succeed, and a cross-origin POST to a
 /// static path keeps its historical 405 (method policy) instead of

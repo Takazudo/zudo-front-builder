@@ -242,6 +242,373 @@ async fn alias_to_tsx_extension_rejected_with_clear_error() {
 }
 
 // ---------------------------------------------------------------------------
+// Canonical disk-authority containment (sub-issue #1765)
+//
+// Containment is decided on canonical paths: a symlink INSIDE the authorised
+// directory that resolves OUTSIDE it is denied, while a symlinked CONFIGURED
+// target (explicit plugin intent) is trusted. Symlink creation is privileged
+// on Windows, so these are Unix-only.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[tokio::test]
+async fn in_dir_symlink_escaping_outside_is_denied() {
+    use std::os::unix::fs::symlink;
+
+    // Authorised dir holds the alias target; a sibling symlink inside it
+    // points at a file OUTSIDE the dir. Canonicalisation must collapse the
+    // link and deny the read.
+    let auth = TempDir::new().expect("auth dir");
+    let outside = TempDir::new().expect("outside dir");
+    let secret = outside.path().join("secret.js");
+    std::fs::write(&secret, r#"export const secret = "leaked";"#).expect("write secret");
+    symlink(&secret, auth.path().join("evil.js")).expect("symlink evil.js -> outside secret");
+
+    let lib_path = write_temp_file(
+        &auth,
+        "lib.js",
+        r#"
+        import { secret } from "./evil.js";
+        export const greeting = secret;
+        "#,
+    );
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@esc/lib", lib_path, "esc-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@esc/lib", "greeting");
+    let err = host
+        .execute_module("bundle.mjs", &bundle)
+        .await
+        .expect_err("in-dir symlink escaping the authorised dir must be denied");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no in-memory source"),
+        "escape must fall through to the generic no-read error, got: {msg}"
+    );
+    assert!(
+        msg.contains("evil.js"),
+        "error should mention the denied specifier, got: {msg}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn nested_symlink_chain_escaping_outside_is_denied() {
+    use std::os::unix::fs::symlink;
+
+    // A dedicated multi-hop escape: in-dir symlink -> another symlink ->
+    // outside target. canonicalize resolves the whole chain; the read is
+    // denied because the final real parent is outside the authorised dir.
+    let auth = TempDir::new().expect("auth dir");
+    let outside = TempDir::new().expect("outside dir");
+    let secret = outside.path().join("secret.js");
+    std::fs::write(&secret, r#"export const secret = "leaked";"#).expect("write secret");
+    // hop2 (outside) -> secret (outside); hop1 (in auth) -> hop2.
+    let hop2 = outside.path().join("hop2.js");
+    symlink(&secret, &hop2).expect("symlink hop2 -> secret");
+    symlink(&hop2, auth.path().join("hop1.js")).expect("symlink hop1 -> hop2");
+
+    let lib_path = write_temp_file(
+        &auth,
+        "lib.js",
+        r#"
+        import { secret } from "./hop1.js";
+        export const greeting = secret;
+        "#,
+    );
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@chain/lib", lib_path, "chain-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@chain/lib", "greeting");
+    let err = host
+        .execute_module("bundle.mjs", &bundle)
+        .await
+        .expect_err("multi-hop symlink escape must be denied");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no in-memory source"),
+        "multi-hop escape must fall through to the generic no-read error, got: {msg}"
+    );
+    assert!(
+        msg.contains("hop1.js"),
+        "error should mention the denied specifier, got: {msg}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn in_dir_symlink_to_in_dir_file_is_allowed() {
+    use std::os::unix::fs::symlink;
+
+    // A symlink inside the authorised dir pointing at another file inside
+    // the same dir stays within the canonical parent and is allowed.
+    let auth = TempDir::new().expect("auth dir");
+    let _real = write_temp_file(&auth, "real.js", r#"export const v = "real-value";"#);
+    symlink(auth.path().join("real.js"), auth.path().join("link.js"))
+        .expect("symlink link.js -> real.js");
+
+    let lib_path = write_temp_file(
+        &auth,
+        "lib.js",
+        r#"
+        import { v } from "./link.js";
+        export const greeting = v;
+        "#,
+    );
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@in/lib", lib_path, "in-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@in/lib", "greeting");
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("in-dir symlink to an in-dir file should load");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("real-value"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_configured_target_is_trusted() {
+    use std::os::unix::fs::symlink;
+
+    // The CONFIGURED alias target passes through a symlinked directory —
+    // explicit plugin config = intent, so it is trusted, and both the target
+    // and its sibling resolve against the canonical location.
+    let root = TempDir::new().expect("root dir");
+    let real_dir = root.path().join("real");
+    std::fs::create_dir(&real_dir).expect("real dir");
+    std::fs::write(
+        real_dir.join("foo.js"),
+        r#"
+        import { b } from "./bar.js";
+        export const greeting = "from-symlinked-target-" + b;
+        "#,
+    )
+    .expect("write foo.js");
+    std::fs::write(real_dir.join("bar.js"), r#"export const b = "sib";"#).expect("write bar.js");
+    let link_dir = root.path().join("linkdir");
+    symlink(&real_dir, &link_dir).expect("symlink linkdir -> real");
+
+    let mut hooks = PluginRegistryHooks::new();
+    // Configure the alias THROUGH the symlinked directory.
+    hooks.add_alias("@sym/lib", link_dir.join("foo.js"), "sym-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@sym/lib", "greeting");
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("symlinked configured target should be trusted");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("from-symlinked-target-sib"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_file_target_relative_import_resolves_beside_canonical() {
+    use std::os::unix::fs::symlink;
+
+    // The CONFIGURED alias target is a FILE symlink (not a whole directory):
+    // `linkdir/foo.js` -> `real/foo.js`. `foo.js` does a relative `./bar.js`
+    // import of a sibling that sits next to the CANONICAL target (`real/`), and
+    // `linkdir` has no `bar.js`. The module must be served with its canonical
+    // found URL so `./bar.js` resolves beside `real/foo.js` and is authorised.
+    let root = TempDir::new().expect("root dir");
+    let real_dir = root.path().join("real");
+    std::fs::create_dir(&real_dir).expect("real dir");
+    std::fs::write(
+        real_dir.join("foo.js"),
+        r#"
+        import { b } from "./bar.js";
+        export const greeting = "from-file-symlink-" + b;
+        "#,
+    )
+    .expect("write foo.js");
+    std::fs::write(real_dir.join("bar.js"), r#"export const b = "sib";"#).expect("write bar.js");
+
+    // The symlink-spelling directory holds ONLY the file symlink to foo.js —
+    // no bar.js sits beside the symlink spelling.
+    let link_dir = root.path().join("linkdir");
+    std::fs::create_dir(&link_dir).expect("linkdir");
+    let link_foo = link_dir.join("foo.js");
+    symlink(real_dir.join("foo.js"), &link_foo).expect("symlink linkdir/foo.js -> real/foo.js");
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@filesym/lib", link_foo, "filesym-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@filesym/lib", "greeting");
+    host.execute_module("bundle.mjs", &bundle).await.expect(
+        "file-symlink alias target's relative sibling should resolve via the canonical dir",
+    );
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("from-file-symlink-sib"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_file_target_does_not_reach_sibling_beside_symlink_spelling() {
+    use std::os::unix::fs::symlink;
+
+    // Mirror of the case above: the sibling sits beside the SYMLINK spelling
+    // (`linkdir/bar.js`) but NOT beside the canonical target (`real/` has no
+    // bar.js). Relative resolution keyed on the canonical found URL must look
+    // in `real/`, find nothing, and keep the plugin-attributed read error — it
+    // must NOT pick up `linkdir/bar.js`.
+    let root = TempDir::new().expect("root dir");
+    let real_dir = root.path().join("real");
+    std::fs::create_dir(&real_dir).expect("real dir");
+    std::fs::write(
+        real_dir.join("foo.js"),
+        r#"
+        import { b } from "./bar.js";
+        export const greeting = b;
+        "#,
+    )
+    .expect("write foo.js");
+
+    let link_dir = root.path().join("linkdir");
+    std::fs::create_dir(&link_dir).expect("linkdir");
+    // A decoy sibling next to the symlink spelling — must be unreachable.
+    std::fs::write(link_dir.join("bar.js"), r#"export const b = "WRONG";"#).expect("write decoy");
+    let link_foo = link_dir.join("foo.js");
+    symlink(real_dir.join("foo.js"), &link_foo).expect("symlink linkdir/foo.js -> real/foo.js");
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@filesym/lib", link_foo, "filesym-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@filesym/lib", "greeting");
+    let err = host
+        .execute_module("bundle.mjs", &bundle)
+        .await
+        .expect_err("a sibling beside only the symlink spelling must be unreachable");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("filesym-plugin"),
+        "missing canonical sibling must keep the plugin-attributed read error, got: {msg}"
+    );
+    assert!(
+        !msg.contains("WRONG"),
+        "the decoy beside the symlink spelling must never be loaded, got: {msg}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn read_uses_canonical_path_not_symlink_spelling() {
+    use std::os::unix::fs::symlink;
+
+    // Proof the check + read operate on the CANONICAL path: a `.js`-spelled
+    // symlink inside the authorised dir points at a `.ts` file in the same
+    // dir. If the loader inspected the original `.js` spelling it would read
+    // it; because it inspects the canonical `.ts` path, the TS-extension
+    // guard fires. Same-dir, so this is authorised (not denied) — it can
+    // only reach the ext check by resolving the symlink.
+    let auth = TempDir::new().expect("auth dir");
+    std::fs::write(auth.path().join("real.ts"), r#"export const x = 1;"#).expect("write real.ts");
+    symlink(auth.path().join("real.ts"), auth.path().join("wrapper.js"))
+        .expect("symlink wrapper.js -> real.ts");
+
+    let lib_path = write_temp_file(
+        &auth,
+        "lib.js",
+        r#"
+        import { x } from "./wrapper.js";
+        export const greeting = String(x);
+        "#,
+    );
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@canon/lib", lib_path, "canon-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@canon/lib", "greeting");
+    let err = host
+        .execute_module("bundle.mjs", &bundle)
+        .await
+        .expect_err("canonical .ts target must hit the TS-extension guard");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("TypeScript extension"),
+        "ext check must run on the canonical .ts path, got: {msg}"
+    );
+    assert!(
+        msg.contains("real.ts"),
+        "error should name the canonical path, not the .js symlink spelling, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn missing_sibling_in_authorized_dir_keeps_plugin_attributed_error() {
+    // A missing `./sibling.js` inside an authorised alias directory must keep
+    // the plugin-attributed "could not be read" error, not degrade to the
+    // generic unresolved-module message. (No symlinks — works on all
+    // platforms.)
+    let dir = TempDir::new().expect("tempdir");
+    let lib_path = write_temp_file(
+        &dir,
+        "lib.js",
+        r#"
+        import { gone } from "./missing.js";
+        export const greeting = gone;
+        "#,
+    );
+
+    let mut hooks = PluginRegistryHooks::new();
+    hooks.add_alias("@sib/lib", lib_path, "sib-plugin");
+
+    let loader = BundleModuleLoader::new().with_plugin_hooks(hooks);
+    let mut host = EmbeddedV8RenderHost::with_loader(loader).expect("host boot");
+
+    let bundle = bundle_importing("@sib/lib", "greeting");
+    let err = host
+        .execute_module("bundle.mjs", &bundle)
+        .await
+        .expect_err("missing sibling must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("sib-plugin"),
+        "missing sibling should keep the plugin attribution, got: {msg}"
+    );
+    assert!(
+        msg.contains("could not be read"),
+        "missing sibling should keep the read-failure error, got: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Virtual module tests
 // ---------------------------------------------------------------------------
 

@@ -316,6 +316,11 @@ impl Watcher {
     /// Callers that cannot await (e.g. in a `Drop` impl) may simply drop
     /// the `Watcher` value instead — the `Drop` impl sends the shutdown
     /// signal as a best-effort fallback, but cannot await the flush.
+    ///
+    /// This call is **bounded**: the debouncer races every outbound send
+    /// against the shutdown signal, so a receiver that has stopped draining a
+    /// saturated channel can no longer park the flush forever (issue #1757).
+    /// See [`emit_ready_racing_shutdown`] for the post-shutdown drop policy.
     pub async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
@@ -331,7 +336,7 @@ impl Watcher {
 impl Drop for Watcher {
     fn drop(&mut self) {
         // Best-effort graceful shutdown: signal the debouncer so it can
-        // run its `flush_all` branch. We deliberately do NOT call
+        // run its shutdown-flush branch. We deliberately do NOT call
         // `abort()` here — that would race the shutdown signal and
         // cancel the task before it could flush. Instead, we drop the
         // JoinHandle which detaches the task; once shutdown fires (or
@@ -339,7 +344,7 @@ impl Drop for Watcher {
         // after this in field-drop order), the task will flush and exit
         // on its own. If the runtime itself is shutting down, the task
         // will be cancelled by the runtime; that's the unavoidable case
-        // where `flush_all` cannot run.
+        // where the shutdown flush cannot run.
         //
         // Prefer the async [`Watcher::shutdown`] method over relying on
         // `Drop` — `Drop` cannot await the flush so pending events may
@@ -349,7 +354,7 @@ impl Drop for Watcher {
         }
         // Detach the task by dropping its JoinHandle without aborting.
         // The task will see the shutdown signal (or the closed bridge
-        // channel) and run `flush_all` before exiting.
+        // channel) and flush pending events before exiting.
         let _ = self.debouncer.take();
     }
 }
@@ -550,7 +555,11 @@ async fn debouncer_task(
             // flush whatever we have and exit. Drop only signals — it no
             // longer aborts the task — so this is the graceful-exit path.
             _ = &mut shutdown => {
-                flush_all(&mut pending, &out_tx).await;
+                // Shutdown observed while idle: best-effort, NON-blocking
+                // flush. A saturated outbound channel must never park this
+                // path or `Watcher::shutdown()` would hang (issue #1757); see
+                // `drain_all_dropping` for the drop policy.
+                drain_all_dropping(&mut pending, &out_tx);
                 // Do NOT fall through to `let _ = bridge.await;` below: the
                 // bridge thread is parked in the synchronous `raw_rx.recv()`,
                 // which closes only after `_notify` drops — and `_notify`
@@ -565,9 +574,10 @@ async fn debouncer_task(
 
             maybe_evt = bridge_rx.recv() => {
                 let Some(res) = maybe_evt else {
-                    // Bridge closed (notify watcher dropped). Flush
-                    // anything still pending, then exit.
-                    flush_all(&mut pending, &out_tx).await;
+                    // Bridge closed (notify watcher dropped). Flush anything
+                    // still pending, then exit. The drain still races the
+                    // shutdown signal, so a saturated channel cannot park it.
+                    let _ = drain_all(&mut pending, &out_tx, &mut shutdown).await;
                     break;
                 };
                 match res {
@@ -598,10 +608,15 @@ async fn debouncer_task(
                             || now.duration_since(last_drain) >= debounce
                         {
                             last_drain = now;
-                            if drain_all(&mut pending, &out_tx).await.is_err() {
-                                // Receiver dropped; bail out of the loop.
-                                bridge.abort();
-                                return;
+                            match drain_all(&mut pending, &out_tx, &mut shutdown).await {
+                                DrainOutcome::Drained => {}
+                                // Receiver dropped or shutdown fired mid-drain;
+                                // bail out of the loop either way.
+                                DrainOutcome::ReceiverGone
+                                | DrainOutcome::ShutdownRequested => {
+                                    bridge.abort();
+                                    return;
+                                }
                             }
                         }
                     }
@@ -623,10 +638,10 @@ async fn debouncer_task(
                     pending.remove(path);
                 }
                 last_drain = now;
-                for (path, kind) in ready {
-                    let kind = resolve_emit_kind(&path, kind);
-                    if out_tx.send(Change { path, kind }).await.is_err() {
-                        // Receiver dropped; bail out of the loop.
+                match emit_ready_racing_shutdown(ready, &out_tx, &mut shutdown).await {
+                    DrainOutcome::Drained => {}
+                    // Receiver dropped or shutdown fired mid-drain; bail either way.
+                    DrainOutcome::ReceiverGone | DrainOutcome::ShutdownRequested => {
                         bridge.abort();
                         return;
                     }
@@ -639,25 +654,95 @@ async fn debouncer_task(
     let _ = bridge.await;
 }
 
-async fn flush_all(pending: &mut HashMap<PathBuf, Pending>, out_tx: &mpsc::Sender<Change>) {
-    let _ = drain_all(pending, out_tx).await;
+/// Outcome of an outbound-drain attempt that races the shutdown signal.
+enum DrainOutcome {
+    /// Every pending change was delivered with normal backpressured semantics.
+    Drained,
+    /// The outbound receiver was dropped mid-drain; the caller should bail.
+    ReceiverGone,
+    /// The shutdown signal fired while a send was blocked on a saturated
+    /// outbound channel. The remaining changes were handled per the
+    /// post-shutdown drop policy (see [`emit_ready_racing_shutdown`]); the
+    /// caller must exit the loop.
+    ShutdownRequested,
 }
 
 /// Drain and emit **every** pending entry, regardless of how recently it was
-/// last seen. Used by the recv-arm starvation/livelock guard (and, via
-/// [`flush_all`], by the shutdown / bridge-closed paths). Returns `Err(())`
-/// if the outbound receiver was dropped mid-drain so the caller can bail.
+/// last seen. Used by the recv-arm starvation/livelock guard and the
+/// bridge-closed exit path. Each blocking send races the shutdown signal — see
+/// [`emit_ready_racing_shutdown`] for the semantics and drop policy.
 async fn drain_all(
     pending: &mut HashMap<PathBuf, Pending>,
     out_tx: &mpsc::Sender<Change>,
-) -> Result<(), ()> {
-    for (path, p) in pending.drain() {
-        let kind = resolve_emit_kind(&path, p.kind);
-        if out_tx.send(Change { path, kind }).await.is_err() {
-            return Err(());
+    shutdown: &mut oneshot::Receiver<()>,
+) -> DrainOutcome {
+    let ready: Vec<(PathBuf, ChangeKind)> =
+        pending.drain().map(|(path, p)| (path, p.kind)).collect();
+    emit_ready_racing_shutdown(ready, out_tx, shutdown).await
+}
+
+/// Emit each `(path, kind)` — reconciling the on-disk kind via
+/// [`resolve_emit_kind`] — while racing every blocking send against `shutdown`.
+///
+/// Normal (pre-shutdown) delivery keeps today's ordered, backpressured
+/// `send().await` semantics: `shutdown` stays pending, so each send proceeds.
+///
+/// # Post-shutdown drop policy
+///
+/// A receiver that has stopped draining a full outbound channel would park a
+/// `send().await` forever, and because the debouncer's `select!` has already
+/// committed to the sending branch the shutdown arm can never preempt it — so
+/// `Watcher::shutdown()`, which awaits the debouncer task, would hang (issue
+/// #1757). To bound shutdown, every send is `select!`ed against `shutdown`.
+/// Once shutdown wins a blocked send, the change in flight is dropped and every
+/// remaining change is delivered best-effort with a non-blocking `try_send`
+/// (silently dropped if the channel is full or closed). This trades at most a
+/// tail of change notifications — the process is exiting anyway — for a
+/// shutdown that always completes.
+async fn emit_ready_racing_shutdown(
+    ready: Vec<(PathBuf, ChangeKind)>,
+    out_tx: &mpsc::Sender<Change>,
+    shutdown: &mut oneshot::Receiver<()>,
+) -> DrainOutcome {
+    let mut ready = std::collections::VecDeque::from(ready);
+    while let Some((path, kind)) = ready.pop_front() {
+        let kind = resolve_emit_kind(&path, kind);
+        let change = Change { path, kind };
+        tokio::select! {
+            biased;
+
+            // Shutdown fired while this send is (or would be) blocked on a
+            // saturated channel: drop the remaining tail per the policy above
+            // and report that shutdown won. The change moved into the cancelled
+            // `send` future below is dropped with it.
+            _ = &mut *shutdown => {
+                for (path, kind) in ready.drain(..) {
+                    let kind = resolve_emit_kind(&path, kind);
+                    let _ = out_tx.try_send(Change { path, kind });
+                }
+                return DrainOutcome::ShutdownRequested;
+            }
+
+            res = out_tx.send(change) => {
+                if res.is_err() {
+                    return DrainOutcome::ReceiverGone;
+                }
+            }
         }
     }
-    Ok(())
+    DrainOutcome::Drained
+}
+
+/// Best-effort, NON-blocking flush of every pending entry, used by the idle
+/// shutdown arm where the shutdown signal has already been observed. Follows
+/// the same post-shutdown drop policy as [`emit_ready_racing_shutdown`]: a
+/// change the saturated (or closed) channel cannot accept immediately is
+/// dropped rather than awaited, so this can never park `Watcher::shutdown()`.
+fn drain_all_dropping(pending: &mut HashMap<PathBuf, Pending>, out_tx: &mpsc::Sender<Change>) {
+    for (path, p) in pending.drain() {
+        let kind = resolve_emit_kind(&path, p.kind);
+        let _ = out_tx.try_send(Change { path, kind });
+    }
 }
 
 #[cfg(test)]
@@ -952,6 +1037,87 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(3), watcher.shutdown())
             .await
             .expect("Watcher::shutdown() must complete (circular-wait deadlock regression)");
+    }
+
+    /// Regression test for the saturated-outbound-channel shutdown hang (issue
+    /// #1757). Before the fix, the debouncer's flush sites (`tick` arm, recv-arm
+    /// forced flush, shutdown-arm flush) each did a bare `out_tx.send(..).await`.
+    /// A receiver that has stopped draining a full channel parks that send
+    /// forever, and because the `biased select!` has already committed to the
+    /// sending branch the shutdown arm can never preempt it — so
+    /// `Watcher::shutdown()` (which awaits the debouncer handle) hangs.
+    ///
+    /// This drives `debouncer_task` directly (the same synthetic-`raw_rx` seam
+    /// the coalescing tests use) so the saturation is deterministic — we fill
+    /// the outbound channel to its exact capacity barrier via `try_send`
+    /// (never assuming ">256 events happened") and hold a live, UNDRAINED
+    /// receiver throughout. Awaiting the spawned task under a 3s timeout is
+    /// exactly what `Watcher::shutdown()` does internally (signal, then await
+    /// the debouncer handle). The receiver is dropped only AFTER that assertion
+    /// — dropping it earlier would release the parked send and let a buggy
+    /// implementation pass.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_completes_when_outbound_channel_is_saturated() {
+        let (out_tx, out_rx) = mpsc::channel::<Change>(256);
+
+        // Deterministically saturate the channel via a clone the test keeps,
+        // stopping the instant `try_send` reports the capacity barrier (`Full`).
+        let filler = out_tx.clone();
+        let mut filled = 0usize;
+        loop {
+            match filler.try_send(Change {
+                path: PathBuf::from(format!("/synthetic/fill_{filled}.txt")),
+                kind: ChangeKind::Modified,
+            }) {
+                Ok(()) => filled += 1,
+                Err(mpsc::error::TrySendError::Full(_)) => break,
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    unreachable!("receiver is held, channel cannot be closed")
+                }
+            }
+        }
+        assert!(
+            filled > 0,
+            "channel must accept changes before reporting Full"
+        );
+
+        let (raw_tx, raw_rx) = std_mpsc::channel::<notify::Result<Event>>();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        // Short debounce so the fed event reaches a flush quickly; that flush
+        // then parks on the already-full channel.
+        let debounce = Duration::from_millis(20);
+        let task = tokio::spawn(debouncer_task(raw_rx, out_tx, debounce, shutdown_rx));
+
+        // Feed one event. Once the debouncer flushes it, the send parks on the
+        // saturated channel — the undrained receiver never releases a slot — so
+        // the task is committed to the sending `select!` branch (the exact
+        // pre-fix hang condition).
+        raw_tx
+            .send(modify_event(Path::new("/synthetic/hot.txt")))
+            .expect("feed synthetic event");
+
+        // The parked send is a stable state (a full channel with no draining
+        // receiver never unblocks), so a few debounce windows deterministically
+        // land the task in it before we signal.
+        tokio::time::sleep(debounce * 5).await;
+
+        // Signal shutdown. With the fix, every blocking send races this signal,
+        // so shutdown preempts the parked send and the task exits. Without it
+        // the send is an un-preemptible `.await` and the task hangs forever.
+        let _ = shutdown_tx.send(());
+
+        tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect(
+                "debouncer must exit after shutdown despite a saturated outbound channel (#1757)",
+            )
+            .expect("debouncer task must not panic");
+
+        // Only NOW release the receiver (see the doc comment).
+        drop(out_rx);
+        drop(filler);
+        drop(raw_tx);
     }
 
     // ---------------------------------------------------------------------------
@@ -1398,15 +1564,15 @@ mod tests {
     // These drive `debouncer_task` DIRECTLY through the same synthetic `raw_rx`
     // seam the two starvation tests above already use. No real `notify` watcher
     // and no dependence on OS event timing: we feed a fixed list of synthetic
-    // events, then CLOSE the raw channel to force the deterministic `flush_all`
-    // path (bridge closes → `bridge_rx.recv()` returns `None` → every pending
-    // entry drains regardless of the quiet window).
+    // events, then CLOSE the raw channel to force the deterministic
+    // bridge-closed drain path (bridge closes → `bridge_rx.recv()` returns
+    // `None` → every pending entry drains regardless of the quiet window).
     //
     // Determinism guarantee: the debounce is set to an hour, so NEITHER the
     // `tick` arm NOR the recv-arm forced flush (`now - last_drain >= debounce`
     // or `pending.len() >= 1024`) can fire within a test. The interval's
     // immediate first `tick` drains nothing (no entry is an hour old). So the
-    // ONLY non-empty emission path is the channel-close `flush_all`, making the
+    // ONLY non-empty emission path is the channel-close drain, making the
     // emitted set a pure function of the fed events — exactly the Level-1 seam
     // #1348 asks for: coalescing/dedup proven in sub-second unit tests instead
     // of a 200s e2e harness. No refactor of production code was needed; this
@@ -1462,8 +1628,8 @@ mod tests {
     }
 
     /// Drive `debouncer_task` with a fixed list of synthetic raw events, then
-    /// close the raw channel to force the deterministic `flush_all`, and
-    /// collect every emitted `Change`. See the section header for why this is
+    /// close the raw channel to force the deterministic bridge-closed drain,
+    /// and collect every emitted `Change`. See the section header for why this is
     /// timing-independent. The 5s timeout is a failsafe against a regression
     /// that fails to flush/close — the normal path completes in microseconds
     /// once the channel is closed; it is NOT a fixed warmup wait.

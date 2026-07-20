@@ -157,6 +157,282 @@ async fn supports_esm_imports_and_top_level_await() {
     assert_eq!(resp.body_utf8(), Some("hello from lib"));
 }
 
+/// Sub-issue #1761: `Response`'s BodyInit content-type defaulting
+/// (Fetch "extract a body" step 5). A `string` body with no explicit
+/// header defaults to `text/plain;charset=UTF-8` and the body bytes are
+/// untouched (no doctype prepend — that's a server-side concern gated
+/// on the header this test proves gets set).
+#[tokio::test]
+async fn response_string_body_defaults_to_text_plain() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(r#"return new Response("plain body");"#);
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("plain body"));
+    assert_eq!(resp.content_type(), Some("text/plain;charset=UTF-8"));
+}
+
+/// A `URLSearchParams` body defaults to the form-urlencoded type.
+#[tokio::test]
+async fn response_urlsearchparams_body_defaults_to_form_urlencoded() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle =
+        workerd_shaped_bundle(r#"return new Response(new URLSearchParams({ a: "1", b: "2" }));"#);
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("a=1&b=2"));
+    assert_eq!(
+        resp.content_type(),
+        Some("application/x-www-form-urlencoded;charset=UTF-8")
+    );
+}
+
+/// Sub-issue #1762: `URLSearchParams` must apply the
+/// `application/x-www-form-urlencoded` `+`-means-space convention on
+/// both parse and serialize, and a literal `+` (`%2B`) must round-trip
+/// as a real plus character. Each assertion's expected value is what
+/// the native (spec) `URLSearchParams` produces for the same input —
+/// this is a V8-eval parity check against the embedded polyfill, not
+/// a hand-picked string.
+#[tokio::test]
+async fn urlsearchparams_plus_space_form_encoding_matrix() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const failures = [];
+        function check(label, actual, expected) {
+          if (actual !== expected) {
+            failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+          }
+        }
+
+        // `+` decodes to space on parse.
+        check(
+          "plus-decodes-to-space",
+          new URLSearchParams("q=hello+world").get("q"),
+          "hello world",
+        );
+
+        // Space serializes to `+`.
+        const spaceParams = new URLSearchParams();
+        spaceParams.set("a", "x y");
+        check("space-serializes-to-plus", spaceParams.toString(), "a=x+y");
+
+        // Literal plus round-trips: `%2B` parses to a literal `+` and
+        // re-serializes as `%2B` (not a raw `+`, which would decode
+        // back to space).
+        const literalPlus = new URLSearchParams("k=a%2Bb");
+        check("percent-2b-parses-to-literal-plus", literalPlus.get("k"), "a+b");
+        check("literal-plus-reserializes-as-percent-2b", literalPlus.toString(), "k=a%2Bb");
+
+        // Empty keys and empty values parse and re-serialize per spec.
+        const empties = new URLSearchParams("=v&k=&k2&&");
+        check("empty-key-with-value", empties.get(""), "v");
+        check("key-with-empty-value", empties.get("k"), "");
+        check("bare-key-no-eq", empties.get("k2"), "");
+        check(
+          "empty-segments-and-bare-key-reserialize",
+          empties.toString(),
+          "=v&k=&k2=",
+        );
+
+        // Repeated keys: getAll preserves parse order; toString keeps
+        // deterministic first-insertion order.
+        const repeated = new URLSearchParams("r=1&r=2&r=3");
+        check(
+          "repeated-key-getall-order",
+          JSON.stringify(repeated.getAll("r")),
+          JSON.stringify(["1", "2", "3"]),
+        );
+        check("repeated-key-tostring-order", repeated.toString(), "r=1&r=2&r=3");
+
+        // Iterator behavior (entries/for..of) is unchanged for the
+        // plus/space + repeated-key cases above.
+        const iterFixture = new URLSearchParams("a=x+y&b=1&b=2");
+        const viaEntries = [...iterFixture.entries()].map(([k, v]) => `${k}=${v}`).join("&");
+        check("entries-iterator-order", viaEntries, "a=x y&b=1&b=2");
+        const viaForOf = [];
+        for (const [k, v] of iterFixture) {
+          viaForOf.push(`${k}=${v}`);
+        }
+        check("for-of-iterator-order", viaForOf.join("&"), "a=x y&b=1&b=2");
+
+        if (failures.length > 0) {
+          return new Response(failures.join("\n"), { status: 500 });
+        }
+        return new Response("OK", { status: 200 });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.body_utf8(), Some("OK"), "status={}", resp.status);
+    assert_eq!(resp.status, 200);
+}
+
+/// An `ArrayBuffer` body gets NO automatic content-type per the Fetch
+/// BodyInit table — typed arrays / `ArrayBuffer` are the one shape that
+/// stays opaque by default.
+#[tokio::test]
+async fn response_arraybuffer_body_gets_no_automatic_content_type() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const bytes = new Uint8Array([1, 2, 3, 4]);
+        return new Response(bytes.buffer);
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, vec![1u8, 2, 3, 4]);
+    assert_eq!(resp.content_type(), None);
+}
+
+/// An explicit `content-type` header always wins over the BodyInit
+/// default, regardless of body shape.
+#[tokio::test]
+async fn response_explicit_content_type_header_wins_over_bodyinit_default() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        return new Response("<h1>hi</h1>", {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.content_type(), Some("text/html; charset=utf-8"));
+}
+
+/// `clone()` preserves whatever content-type the original settled on —
+/// whether explicit or BodyInit-defaulted.
+#[tokio::test]
+async fn response_clone_preserves_bodyinit_defaulted_content_type() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const original = new Response("plain body");
+        const cloned = original.clone();
+        return cloned;
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("plain body"));
+    assert_eq!(resp.content_type(), Some("text/plain;charset=UTF-8"));
+}
+
+/// Deep-review fix: the `Response` constructor must clone a caller-
+/// supplied `Headers` instance rather than alias it — otherwise the
+/// BodyInit content-type default's `set()` call would mutate a
+/// `Headers` object the caller still holds a reference to. Pass the
+/// same `Headers` instance to two `Response`s and confirm the first
+/// construction's default doesn't leak into the second.
+#[tokio::test]
+async fn response_construction_does_not_mutate_caller_headers_object() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const shared = new Headers();
+        const first = new Response("plain body", { headers: shared });
+        // If `Response` aliased `shared`, it would now carry the
+        // text/plain default the first construction installed.
+        const stillEmpty = !shared.has("content-type");
+        return new Response(String(stillEmpty), { status: stillEmpty ? 200 : 500 });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(
+        resp.status, 200,
+        "constructing a Response must not mutate the caller's shared Headers object"
+    );
+}
+
+/// `Response.json()` must still install `application/json` even though
+/// its body is a stringified JSON string — the static helper installs
+/// the header BEFORE construction so it isn't beaten by the
+/// constructor's new string-body default.
+#[tokio::test]
+async fn response_json_still_sets_application_json_content_type() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(r#"return Response.json({ ok: true });"#);
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("{\"ok\":true}"));
+    assert_eq!(resp.content_type(), Some("application/json"));
+}
+
+/// `Response.json()` still honors an explicit caller-supplied
+/// content-type header instead of overwriting it with `application/json`.
+#[tokio::test]
+async fn response_json_honors_explicit_content_type_override() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        return Response.json(
+          { ok: true },
+          { headers: { "content-type": "application/ld+json" } },
+        );
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.content_type(), Some("application/ld+json"));
+}
+
 #[tokio::test]
 async fn surfaces_v8_stack_with_parseable_frame() {
     let mut host = EmbeddedV8RenderHost::new().expect("host boot");
@@ -459,4 +735,393 @@ async fn dispatch_post_with_binary_body_round_trips() {
         echoed, body,
         "dispatched body must round-trip intact through base64 encode/atob decode"
     );
+}
+
+/// Bridge-seam proof for sub-issue #1760: a bundle that appends two distinct
+/// `Set-Cookie` values — one of them carrying an `Expires` attribute whose
+/// value itself contains a comma — must see both survive `dispatch_fetch` in
+/// order. Before #1760 the JS→Rust boundary (`globals_shim.js`'s dispatch,
+/// `DispatchResult.headers`, and `HttpResponseLike.headers`) collapsed
+/// same-name headers into a single-valued map, and the old `Headers.append`
+/// comma-joined `Set-Cookie` values on write — which would also have
+/// corrupted the Expires-comma cookie even before the map collapse.
+#[tokio::test]
+async fn dispatch_fetch_preserves_ordered_duplicate_set_cookie_headers() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("Set-Cookie", "a=1; Path=/");
+        headers.append(
+          "Set-Cookie",
+          "b=2; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/",
+        );
+        return new Response("ok", { status: 200, headers });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    let cookies: Vec<&str> = resp
+        .headers
+        .iter()
+        .filter(|(k, _)| k == "set-cookie")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(
+        cookies,
+        vec![
+            "a=1; Path=/",
+            "b=2; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/",
+        ],
+        "both Set-Cookie values (one containing a comma inside Expires) must \
+         survive dispatch_fetch in order, got {cookies:?}"
+    );
+}
+
+/// `Headers.set()` must replace every prior value for the name, not append
+/// alongside them (sub-issue #1760).
+#[tokio::test]
+async fn headers_set_replaces_all_prior_values_for_name() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("X-Trace", "one");
+        headers.append("X-Trace", "two");
+        headers.set("X-Trace", "final");
+        return new Response("ok", { status: 200, headers });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    let values: Vec<&str> = resp
+        .headers
+        .iter()
+        .filter(|(k, _)| k == "x-trace")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(
+        values,
+        vec!["final"],
+        "set() must replace all prior values for the name, got {values:?}"
+    );
+}
+
+/// Constructing a `Headers` from another `Headers` (the clone-init form)
+/// must preserve duplicate `Set-Cookie` values rather than collapsing them
+/// via the combined single-value view (sub-issue #1760).
+#[tokio::test]
+async fn headers_clone_from_headers_preserves_duplicate_set_cookie() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const original = new Headers();
+        original.append("Set-Cookie", "a=1; Path=/");
+        original.append("Set-Cookie", "b=2; Path=/");
+        const cloned = new Headers(original);
+        return new Response("ok", { status: 200, headers: cloned });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    let cookies: Vec<&str> = resp
+        .headers
+        .iter()
+        .filter(|(k, _)| k == "set-cookie")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(
+        cookies,
+        vec!["a=1; Path=/", "b=2; Path=/"],
+        "cloning a Headers must preserve duplicate set-cookie entries, got {cookies:?}"
+    );
+}
+
+/// Ordinary (non-`Set-Cookie`) headers still combine into a single
+/// comma-joined value per the Fetch "sort and combine" algorithm, even
+/// though `append` no longer joins eagerly at write time.
+#[tokio::test]
+async fn ordinary_headers_still_combine_with_comma_separator() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("Vary", "Accept-Encoding");
+        headers.append("Vary", "Accept-Language");
+        return new Response("ok", { status: 200, headers });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    let vary: Vec<&str> = resp
+        .headers
+        .iter()
+        .filter(|(k, _)| k == "vary")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(
+        vary,
+        vec!["Accept-Encoding, Accept-Language"],
+        "ordinary repeated headers must combine into one comma-joined entry, got {vary:?}"
+    );
+}
+
+/// Live iteration (WHATWG "iterate a map" semantics): deleting a
+/// not-yet-visited header during `forEach` must remove it from the
+/// remaining traversal — the deleted key is NOT yielded. A snapshot-based
+/// iterator would still visit the stale `b`.
+#[tokio::test]
+async fn headers_foreach_deleting_later_key_skips_it() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("a", "1");
+        headers.append("b", "2");
+        const visited = [];
+        headers.forEach((v, k) => {
+          visited.push(k);
+          if (k === "a") headers.delete("b");
+        });
+        return new Response(visited.join(","), { status: 200 });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(
+        resp.body_utf8(),
+        Some("a"),
+        "deleting a not-yet-visited header mid-forEach must skip it (live iteration)"
+    );
+}
+
+/// Live iteration: a header appended during `forEach` must become visible
+/// to a later step and IS yielded. A snapshot-based iterator would miss it.
+#[tokio::test]
+async fn headers_foreach_appending_key_visits_it() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("a", "1");
+        const visited = [];
+        headers.forEach((v, k) => {
+          visited.push(k);
+          if (k === "a") headers.append("c", "3");
+        });
+        return new Response(visited.join(","), { status: 200 });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(
+        resp.body_utf8(),
+        Some("a,c"),
+        "appending a header mid-forEach must make it visible to a later step (live iteration)"
+    );
+}
+
+/// Regression guard: non-mutating iteration keeps the exact sorted-combined
+/// order — header names in sorted order, `set-cookie` values yielded
+/// uncombined, every other name comma-joined into one entry. The live
+/// iterator must not disturb this order.
+#[tokio::test]
+async fn headers_entries_nonmutating_order_is_sorted_and_combined() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const headers = new Headers();
+        headers.append("b-two", "2");
+        headers.append("a-one", "1");
+        headers.append("Set-Cookie", "x=1");
+        headers.append("Set-Cookie", "y=2");
+        headers.append("vary", "Accept-Encoding");
+        headers.append("vary", "Accept-Language");
+        const parts = [];
+        for (const [k, v] of headers.entries()) parts.push(k + "=" + v);
+        return new Response(parts.join("|"), { status: 200 });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(
+        resp.body_utf8(),
+        Some("a-one=1|b-two=2|set-cookie=x=1|set-cookie=y=2|vary=Accept-Encoding, Accept-Language"),
+        "non-mutating iteration must keep sorted+combined order (set-cookie uncombined)"
+    );
+}
+
+/// Sub-issue #1764: strict main-worker load contract.
+///
+/// [`EmbeddedV8RenderHost::execute_worker_module`] REQUIRES the loaded
+/// module to satisfy the workerd shape — `export default { fetch }` with
+/// a callable `fetch` — and fails loudly, at load time, with a
+/// case-distinct diagnostic when it doesn't. This is the strict
+/// counterpart to the tolerant `RenderHost::execute_module` trait method
+/// (still used to load utility modules that carry no `default` export at
+/// all — case 6 below).
+mod worker_load_contract {
+    use super::workerd_shaped_bundle;
+    use zfb_render::{EmbeddedV8RenderHost, HttpRequestLike, RenderHost};
+
+    /// Case 1: no `default` export at all.
+    #[tokio::test]
+    async fn missing_default_export_fails_strict_load_with_missing_default_diagnostic() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = r#"export const notDefault = 1;"#;
+        let err = host
+            .execute_worker_module("bundle.mjs", bundle)
+            .await
+            .expect_err("strict load must reject a module with no default export");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("has no `default` export"),
+            "unexpected diagnostic: {msg}"
+        );
+    }
+
+    /// Case 2: `default` export exists but is not an object (covers a
+    /// primitive default AND `export default null`).
+    #[tokio::test]
+    async fn non_object_default_fails_strict_load_with_non_object_diagnostic() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = r#"export default "not-an-object";"#;
+        let err = host
+            .execute_worker_module("bundle.mjs", bundle)
+            .await
+            .expect_err("strict load must reject a non-object default export");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("`default` export is not an object"),
+            "unexpected diagnostic: {msg}"
+        );
+    }
+
+    /// Case 2b: `export default null` — `null` is a distinct JS value
+    /// from `undefined` (case 1) but must land on the same "non-object"
+    /// diagnostic as any other non-object default, per the task's
+    /// absent/undefined/null distinction.
+    #[tokio::test]
+    async fn null_default_fails_strict_load_with_non_object_diagnostic() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = r#"export default null;"#;
+        let err = host
+            .execute_worker_module("bundle.mjs", bundle)
+            .await
+            .expect_err("strict load must reject a null default export");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("`default` export is not an object"),
+            "unexpected diagnostic: {msg}"
+        );
+    }
+
+    /// Case 3: `default` is an object but has no `fetch` property.
+    #[tokio::test]
+    async fn object_without_fetch_fails_strict_load_with_missing_fetch_diagnostic() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = r#"export default { notFetch: 1 };"#;
+        let err = host
+            .execute_worker_module("bundle.mjs", bundle)
+            .await
+            .expect_err("strict load must reject an object default with no fetch property");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("has no `fetch` property"),
+            "unexpected diagnostic: {msg}"
+        );
+    }
+
+    /// Case 4: `default.fetch` exists but is not callable.
+    #[tokio::test]
+    async fn non_callable_fetch_fails_strict_load_with_not_callable_diagnostic() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = r#"export default { fetch: "not-a-function" };"#;
+        let err = host
+            .execute_worker_module("bundle.mjs", bundle)
+            .await
+            .expect_err("strict load must reject a non-callable fetch");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("`default.fetch` is not callable"),
+            "unexpected diagnostic: {msg}"
+        );
+    }
+
+    /// Case 5: a genuinely valid worker loads via the strict entrypoint
+    /// and serves a dispatch, proving `execute_worker_module` isn't
+    /// merely stricter but still functionally equivalent to the
+    /// tolerant path for a well-shaped bundle.
+    #[tokio::test]
+    async fn valid_worker_loads_strict_and_serves() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let bundle = workerd_shaped_bundle(r#"return new Response("ok", { status: 200 });"#);
+        host.execute_worker_module("bundle.mjs", &bundle)
+            .await
+            .expect("strict load of a well-shaped worker must succeed");
+        let resp = host
+            .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+            .await
+            .expect("dispatch");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body_utf8(), Some("ok"));
+    }
+
+    /// Case 6: the tolerant `RenderHost::execute_module` trait method
+    /// keeps today's behavior for utility modules with no `default`
+    /// export — load succeeds, no bundle is installed, and the failure
+    /// is deferred into `last_install_error` (surfaced by a later
+    /// `dispatch_fetch` call rather than failing the load itself).
+    #[tokio::test]
+    async fn utility_module_without_default_stays_non_fatal_via_tolerant_path() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let utility = r#"export function helper() { return 1; }"#;
+        host.execute_module("utility.mjs", utility)
+            .await
+            .expect("tolerant execute_module must not fail for a non-workerd-shaped module");
+        let err = host
+            .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+            .await
+            .expect_err("dispatch_fetch must still fail — no shaped bundle was ever installed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("last install error") && msg.contains("has no `default` export"),
+            "deferred diagnostic must surface the original shape-validation error: {msg}"
+        );
+    }
 }

@@ -94,6 +94,7 @@ use axum::http::{header, Extensions, HeaderMap, HeaderValue, Method, Request, St
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, get};
 use axum::Router;
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use zfb_types::escape_html;
@@ -1123,7 +1124,14 @@ async fn serve_page(
 /// original request's `trimmed` (the common case) or a `_redirects`
 /// rewrite target's trimmed form.
 async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) -> Response {
-    let candidates = lookup_keys(trimmed);
+    // Boundary re-canonicalization (issue #1768): `trimmed` is the axum-decoded
+    // request path, but the page cache and rendered-output dirs (`html_root`,
+    // `dist_root`) key on the encoded canonical `url_path`/`output_path`. Encode
+    // per component so the lookup matches what the renderer wrote. A no-op for
+    // ordinary unreserved paths (`/blog/hello`); only special-char slugs differ.
+    // `public/` stays on the raw `trimmed` — those are authored file names.
+    let canonical = canonical_encode_path(trimmed);
+    let candidates = lookup_keys(&canonical);
     for key in &candidates {
         if let Some(entry) = state.pages.get(key).await {
             // Pick the Content-Type per the precedence rule:
@@ -1190,7 +1198,7 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
     // unchanged there.
     if let Some(bytes) = read_from_dist(
         &state.html_root,
-        trimmed,
+        &canonical,
         state.canonical_html_root.as_deref(),
     )
     .await
@@ -1292,7 +1300,7 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
     if matches!(state.mode, crate::ServerMode::Dev) {
         if let Some(bytes) = read_from_dist(
             &state.dist_root,
-            trimmed,
+            &canonical,
             state.canonical_dist_root.as_deref(),
         )
         .await
@@ -1375,14 +1383,27 @@ fn redirects_match_path(trimmed: &str, base_prefix: Option<&str>) -> String {
 /// probes pages/public files without the mount prefix. Query strings are
 /// not part of filesystem/page-cache lookup; preview splits them before
 /// calling its static waterfall, and dev mirrors that here.
+///
+/// The target is an author-written config string, so it is percent-DECODED
+/// here (a rewrite target cannot carry a literal space — that would break the
+/// `_redirects` line's field split — so a special char in the target arrives
+/// as `%3F`/`%20`). This puts it into the same DECODED contract axum's `Path`
+/// extractor hands a normal request, so `serve_from_waterfall`'s single
+/// re-canonicalization reproduces the encoded `url_path`/`output_path` the
+/// renderer wrote (issue #1768). Without the decode the `%` would be
+/// re-encoded to `%25`, missing the target route.
 fn waterfall_trimmed_for_rewrite_target(target: &str, base_prefix: Option<&str>) -> String {
     let path = target
         .split_once('?')
         .map(|(path, _)| path)
         .unwrap_or(target);
-    strip_prefix_from_path(path, base_prefix)
-        .trim_start_matches('/')
-        .to_string()
+    let stripped = strip_prefix_from_path(path, base_prefix).trim_start_matches('/');
+    percent_encoding::percent_decode_str(stripped)
+        .decode_utf8()
+        .map(|s| s.into_owned())
+        // Malformed percent-sequence → keep the raw form (graceful
+        // degradation; it almost certainly won't match, the right answer).
+        .unwrap_or_else(|_| stripped.to_string())
 }
 
 fn strip_prefix_from_path<'a>(path: &'a str, prefix: Option<&str>) -> &'a str {
@@ -1569,6 +1590,38 @@ async fn read_from_public(
 ///
 /// Mirrors `commands/preview.rs::is_safe_path` in the `zfb` crate; see
 /// that copy for the rationale.
+/// The RFC 3986 *unreserved* set — the zfb-server mirror of
+/// `zfb_render::paths`'s `SEGMENT_UNRESERVED` (issue #1767/#1768). zfb-server
+/// deliberately does not depend on the (V8/SWC-heavy) `zfb-render` crate, so
+/// the tiny canonical codec is duplicated here the same way `lookup_keys`
+/// mirrors dev.rs's `url_index_lookup_keys`. The two MUST stay in lock-step.
+const CANONICAL_UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// Re-canonicalize an already-decoded request path to the encoded canonical
+/// form the renderer wrote to disk (issue #1768).
+///
+/// Axum's `Path` extractor decodes the wildcard exactly once, so `trimmed` is
+/// the raw decoded path. Rendered-output lookups (page cache, `html_root`,
+/// `dist_root`) key on the encoded `url_path`/`output_path` the choke point
+/// produced, so the decoded request must be re-encoded per component to match
+/// — establishing `canonical_encode(decoded_request_path) == entry.url_path`.
+/// Verbatim `public/` files are authored file names, not renderer output, so
+/// that leg keeps using the raw decoded path instead.
+///
+/// Per-component encoding preserves the `/` separators; a component's own
+/// bytes never introduce a new `/` because `/` itself is always encoded.
+fn canonical_encode_path(decoded_path: &str) -> String {
+    decoded_path
+        .split('/')
+        .map(|seg| utf8_percent_encode(seg, CANONICAL_UNRESERVED).to_string())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn is_safe_url_path(url_path: &str) -> bool {
     let stripped = url_path.trim_start_matches('/');
     if stripped.is_empty() {
@@ -2347,6 +2400,111 @@ mod tests {
             resp.status(),
             StatusCode::NOT_FOUND,
             "the Dev-gated dist_root seed leg must NOT fire in Preview/Embed mode",
+        );
+    }
+
+    /// Boundary round-trip (issue #1768) through the REAL serve waterfall: a
+    /// slug carrying `?`, a space, and a non-ASCII char is stored on disk at
+    /// its canonical encoded output path (`blog/a%3Fb%20c%C3%A9/index.html`),
+    /// exactly as the renderer would write it. A request for the percent-
+    /// encoded URL must dispatch through the waterfall, re-canonicalize the
+    /// axum-decoded path, and serve those bytes.
+    ///
+    /// Falsifiability: dropping the `canonical_encode_path(trimmed)` step in
+    /// `serve_from_waterfall` makes the waterfall probe the decoded
+    /// `blog/a?b c\u{e9}` path, which does not exist on disk → dev 404.
+    #[tokio::test]
+    async fn serve_waterfall_round_trips_special_char_slug() {
+        use tempfile::TempDir;
+
+        let html_dir = TempDir::new().expect("html tempdir");
+        // Canonical output path for slug `a?b c\u{e9}` (`?`+space+non-ASCII).
+        let page_dir = html_dir.path().join("blog").join("a%3Fb%20c%C3%A9");
+        std::fs::create_dir_all(&page_dir).expect("mk canonical page dir");
+        std::fs::write(
+            page_dir.join("index.html"),
+            "<html><body>special-char-slug-page</body></html>",
+        )
+        .expect("write canonical html");
+
+        let mut state = test_state();
+        state.html_root = html_dir.path().to_path_buf();
+        state.dist_root = html_dir.path().to_path_buf();
+        let router = test_router(state);
+
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/blog/a%3Fb%20c%C3%A9")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("special-char-slug-page"),
+            "encoded request must resolve the canonical on-disk page; got:\n{body}",
+        );
+    }
+
+    /// EXACTLY ONE decode through the waterfall (issue #1768): a `%252F`
+    /// request decodes a single level to the literal `%2F`, which
+    /// re-canonicalizes to `%252F` and resolves the on-disk
+    /// `blog/a%252Fb/index.html`. A `%2F` (single-encoded slash) request is
+    /// decoded by axum into a real `/`, becomes the two-segment `blog/a/b`,
+    /// and must NOT resolve the single-segment page — proving no second decode
+    /// collapses the encoded slash.
+    #[tokio::test]
+    async fn serve_waterfall_double_encoded_slash_decodes_exactly_once() {
+        use tempfile::TempDir;
+
+        let html_dir = TempDir::new().expect("html tempdir");
+        let page_dir = html_dir.path().join("blog").join("a%252Fb");
+        std::fs::create_dir_all(&page_dir).expect("mk canonical page dir");
+        std::fs::write(
+            page_dir.join("index.html"),
+            "<html><body>double-encoded-slash-page</body></html>",
+        )
+        .expect("write canonical html");
+
+        let mut state = test_state();
+        state.html_root = html_dir.path().to_path_buf();
+        state.dist_root = html_dir.path().to_path_buf();
+        let router = test_router(state);
+
+        let ok = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/blog/a%252Fb")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let ok_body = body_string(ok).await;
+        assert!(
+            ok_body.contains("double-encoded-slash-page"),
+            "`%252F` must decode exactly once and resolve the `%2F` page; got:\n{ok_body}",
+        );
+
+        // `%2F` decodes to a real `/` at the axum layer → two segments → miss.
+        let miss = router
+            .oneshot(
+                Request::builder()
+                    .uri("/blog/a%2Fb")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            miss.status(),
+            StatusCode::NOT_FOUND,
+            "a single-encoded `%2F` must not resolve the single-segment page",
         );
     }
 

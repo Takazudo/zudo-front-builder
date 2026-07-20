@@ -15,3 +15,4 @@ pub mod package_routes;
 pub mod plugins;
 pub mod preview;
 pub mod resolve;
+pub(crate) mod watcher_liveness_probe;

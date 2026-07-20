@@ -9,8 +9,14 @@
 //! * **Idempotent.** If a binary already exists at its slot path and its
 //!   SHA-256 matches the pinned constant, the download is skipped. Re-runs
 //!   (incremental cargo builds) are a fast no-op.
-//! * **Escape hatches.** If `ZFB_ESBUILD_BIN` or `ZFB_TAILWIND_BIN` are set,
-//!   their respective download step is skipped entirely.
+//! * **Escape hatches.** If `ZFB_ESBUILD_BIN` or `ZFB_TAILWIND_BIN` is set to
+//!   a non-empty absolute path, that binary is staged directly into the
+//!   vendor snapshot in place of a download — each binary resolves its
+//!   source **independently**, so one can be overridden while the other
+//!   still downloads. Overrides skip SHA-256 pinning entirely (documented
+//!   trust boundary — see `BUILDING.md`). The pure decision of which source
+//!   each binary uses lives in `zfb_toolchain_pins::resolve_binary_source`
+//!   (unit-tested there); this file only does the I/O and validation.
 //! * **Hard SHA mismatch.** A checksum mismatch on a downloaded binary is a
 //!   build failure — we never silently accept a binary whose hash differs from
 //!   the pinned constant.
@@ -43,7 +49,10 @@ use std::path::{Path, PathBuf};
 /// Pinned esbuild version. Imported from `zfb-toolchain-pins`, the single
 /// source of truth for all external tool version pins. To bump, update
 /// `crates/zfb-toolchain-pins/src/lib.rs` and the SHA-256 table below.
-use zfb_toolchain_pins::EXPECTED_ESBUILD_VERSION;
+use zfb_toolchain_pins::{
+    exe_suffix_for_target, resolve_binary_source, BinarySource, VendorPlatform,
+    EXPECTED_ESBUILD_VERSION,
+};
 
 /// Pinned tailwindcss v4 version.  Mirror of `TAILWIND_VERSION` in
 /// `scripts/fetch-tailwind.mjs` — must be kept in sync.
@@ -123,47 +132,26 @@ const TAILWIND_SHA256_WIN_X64: &str =
 // ---------------------------------------------------------------------------
 // Platform detection
 // ---------------------------------------------------------------------------
+//
+// `VendorPlatform` (matched against Cargo's `TARGET` env var by **exact**
+// triple, not substring) lives in `zfb-toolchain-pins` so its policy
+// interactions with the override env vars can be unit-tested in that crate.
+// See `resolve_vendor_source` below for how it's combined with an override
+// env var and the on-disk slot state into a `BinarySource` decision.
 
-#[derive(Debug, Clone, Copy)]
-enum Platform {
-    LinuxX64,
-    LinuxArm64,
-    MacosArm64,
-    MacosX64,
-    WindowsX64,
-}
-
-/// Detect the current build platform from Cargo environment variables.
-///
-/// Returns `Err` with a helpful message when the target is not in the
-/// supported set. The user can still build by setting `ZFB_ESBUILD_BIN`
-/// and `ZFB_TAILWIND_BIN` to manually-fetched binaries.
-fn detect_platform() -> Result<Platform, String> {
-    // Cargo sets TARGET during build scripts.
-    let target = std::env::var("TARGET").unwrap_or_default();
-    // Match the Rust target triple patterns.
-    if target.contains("x86_64-unknown-linux") {
-        return Ok(Platform::LinuxX64);
-    }
-    if target.contains("aarch64-unknown-linux") {
-        return Ok(Platform::LinuxArm64);
-    }
-    if target.contains("aarch64-apple-darwin") {
-        return Ok(Platform::MacosArm64);
-    }
-    if target.contains("x86_64-apple-darwin") {
-        return Ok(Platform::MacosX64);
-    }
-    if target.contains("x86_64-pc-windows") {
-        return Ok(Platform::WindowsX64);
-    }
-    Err(format!(
+/// Build the error message for a binary that ended up `BinarySource::Unsupported`
+/// — no override was given for it, and `target` isn't one of the platforms the
+/// download-and-slot flow supports.
+fn unsupported_target_message(target: &str) -> String {
+    format!(
         "unsupported target triple `{target}`. \
-         Supported targets: x86_64-unknown-linux-*, aarch64-unknown-linux-*, \
-         aarch64-apple-darwin, x86_64-apple-darwin, x86_64-pc-windows-*. \
-         Set ZFB_ESBUILD_BIN and ZFB_TAILWIND_BIN to manually-fetched binaries \
-         to proceed on an unsupported platform."
-    ))
+         Supported targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, \
+         aarch64-apple-darwin, x86_64-apple-darwin, x86_64-pc-windows-msvc. \
+         Set ZFB_ESBUILD_BIN and/or ZFB_TAILWIND_BIN to absolute paths of \
+         pre-verified binaries to proceed on an unsupported platform — each \
+         binary resolves its source independently, so only the binaries \
+         lacking a supported platform need an override."
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -228,29 +216,29 @@ struct EsbuildPlatformMeta {
     expected_sha256: &'static str,
 }
 
-fn esbuild_platform_meta(platform: Platform) -> EsbuildPlatformMeta {
+fn esbuild_platform_meta(platform: VendorPlatform) -> EsbuildPlatformMeta {
     match platform {
-        Platform::LinuxX64 => EsbuildPlatformMeta {
+        VendorPlatform::LinuxX64Gnu => EsbuildPlatformMeta {
             npm_pkg: "@esbuild/linux-x64",
             tarball_binary_path: "package/bin/esbuild",
             expected_sha256: ESBUILD_SHA256_LINUX_X64,
         },
-        Platform::LinuxArm64 => EsbuildPlatformMeta {
+        VendorPlatform::LinuxArm64Gnu => EsbuildPlatformMeta {
             npm_pkg: "@esbuild/linux-arm64",
             tarball_binary_path: "package/bin/esbuild",
             expected_sha256: ESBUILD_SHA256_LINUX_ARM64,
         },
-        Platform::MacosArm64 => EsbuildPlatformMeta {
+        VendorPlatform::MacosArm64 => EsbuildPlatformMeta {
             npm_pkg: "@esbuild/darwin-arm64",
             tarball_binary_path: "package/bin/esbuild",
             expected_sha256: ESBUILD_SHA256_MACOS_ARM64,
         },
-        Platform::MacosX64 => EsbuildPlatformMeta {
+        VendorPlatform::MacosX64 => EsbuildPlatformMeta {
             npm_pkg: "@esbuild/darwin-x64",
             tarball_binary_path: "package/bin/esbuild",
             expected_sha256: ESBUILD_SHA256_MACOS_X64,
         },
-        Platform::WindowsX64 => EsbuildPlatformMeta {
+        VendorPlatform::Win32X64Msvc => EsbuildPlatformMeta {
             npm_pkg: "@esbuild/win32-x64",
             // Windows package: binary is at package/esbuild.exe (no bin/ subdir).
             tarball_binary_path: "package/esbuild.exe",
@@ -307,23 +295,11 @@ fn extract_from_tgz(tgz_bytes: &[u8], entry_path: &str) -> Result<Vec<u8>, Strin
 
 /// Download and stage the esbuild binary.
 ///
-/// No-op if `ZFB_ESBUILD_BIN` is set or if the binary is already present
-/// with the correct SHA-256.
-fn download_esbuild(platform: Platform, slot_path: &Path) -> Result<(), String> {
-    if std::env::var_os("ZFB_ESBUILD_BIN").is_some() {
-        println!("cargo:warning=ZFB_ESBUILD_BIN is set — skipping esbuild binary download.");
-        return Ok(());
-    }
-
+/// Caller (`resolve_vendor_source` in `download_binaries`) has already
+/// established that no override is set and the slot doesn't already hold
+/// the correct binary — this function unconditionally downloads.
+fn download_esbuild(platform: VendorPlatform, slot_path: &Path) -> Result<(), String> {
     let meta = esbuild_platform_meta(platform);
-
-    if binary_already_correct(slot_path, meta.expected_sha256) {
-        println!(
-            "cargo:warning=esbuild binary already present at {} with correct SHA-256 — skipping download.",
-            slot_path.display()
-        );
-        return Ok(());
-    }
 
     let url = esbuild_tarball_url(meta.npm_pkg, EXPECTED_ESBUILD_VERSION);
     println!("cargo:warning=Downloading esbuild {EXPECTED_ESBUILD_VERSION} from {url} ...");
@@ -386,37 +362,25 @@ fn download_esbuild(platform: Platform, slot_path: &Path) -> Result<(), String> 
 // ---------------------------------------------------------------------------
 
 /// Platform-specific asset name for the tailwindcss GitHub release.
-fn tailwindcss_asset_name(platform: Platform) -> (&'static str, &'static str) {
+fn tailwindcss_asset_name(platform: VendorPlatform) -> (&'static str, &'static str) {
     // Returns (asset_filename, expected_sha256).
     // Asset names match the tailwindlabs release convention.
     match platform {
-        Platform::LinuxX64 => ("tailwindcss-linux-x64", TAILWIND_SHA256_LINUX_X64),
-        Platform::LinuxArm64 => ("tailwindcss-linux-arm64", TAILWIND_SHA256_LINUX_ARM64),
-        Platform::MacosArm64 => ("tailwindcss-macos-arm64", TAILWIND_SHA256_MACOS_ARM64),
-        Platform::MacosX64 => ("tailwindcss-macos-x64", TAILWIND_SHA256_MACOS_X64),
-        Platform::WindowsX64 => ("tailwindcss-windows-x64.exe", TAILWIND_SHA256_WIN_X64),
+        VendorPlatform::LinuxX64Gnu => ("tailwindcss-linux-x64", TAILWIND_SHA256_LINUX_X64),
+        VendorPlatform::LinuxArm64Gnu => ("tailwindcss-linux-arm64", TAILWIND_SHA256_LINUX_ARM64),
+        VendorPlatform::MacosArm64 => ("tailwindcss-macos-arm64", TAILWIND_SHA256_MACOS_ARM64),
+        VendorPlatform::MacosX64 => ("tailwindcss-macos-x64", TAILWIND_SHA256_MACOS_X64),
+        VendorPlatform::Win32X64Msvc => ("tailwindcss-windows-x64.exe", TAILWIND_SHA256_WIN_X64),
     }
 }
 
 /// Download and stage the tailwindcss v4 binary.
 ///
-/// No-op if `ZFB_TAILWIND_BIN` is set or if the binary is already present
-/// with the correct SHA-256.
-fn download_tailwindcss(platform: Platform, slot_path: &Path) -> Result<(), String> {
-    if std::env::var_os("ZFB_TAILWIND_BIN").is_some() {
-        println!("cargo:warning=ZFB_TAILWIND_BIN is set — skipping tailwindcss binary download.");
-        return Ok(());
-    }
-
+/// Caller (`resolve_vendor_source` in `download_binaries`) has already
+/// established that no override is set and the slot doesn't already hold
+/// the correct binary — this function unconditionally downloads.
+fn download_tailwindcss(platform: VendorPlatform, slot_path: &Path) -> Result<(), String> {
     let (asset_name, expected_sha) = tailwindcss_asset_name(platform);
-
-    if binary_already_correct(slot_path, expected_sha) {
-        println!(
-            "cargo:warning=tailwindcss binary already present at {} with correct SHA-256 — skipping download.",
-            slot_path.display()
-        );
-        return Ok(());
-    }
 
     let release_base = format!(
         "https://github.com/tailwindlabs/tailwindcss/releases/download/v{TAILWIND_VERSION}"
@@ -571,7 +535,98 @@ fn find_workspace_root() -> PathBuf {
 // Entry points
 // ---------------------------------------------------------------------------
 
+/// Append `suffix` (e.g. `".exe"`, or `""`) to `base`'s filename as a real
+/// extension, replacing whatever extension (if any) `base` already has.
+/// Kept as a small helper so the two slot-path constructions in
+/// `download_binaries` stay one-liners.
+fn with_exe_suffix(base: PathBuf, suffix: &str) -> PathBuf {
+    if suffix.is_empty() {
+        return base;
+    }
+    let mut p = base;
+    p.set_extension(suffix.trim_start_matches('.'));
+    p
+}
+
+/// Validate a `ZFB_ESBUILD_BIN` / `ZFB_TAILWIND_BIN` override path and
+/// return it ready to stage.
+///
+/// Per the documented override contract (`BUILDING.md`), the path must be
+/// **absolute** and must point at an existing regular file. SHA-256
+/// pinning is deliberately skipped for overrides — the operator supplying
+/// the path is responsible for having verified it.
+///
+/// Takes the raw `OsString` rather than a `String` so a legally non-UTF-8
+/// Unix path round-trips intact; `to_string_lossy()` is used only inside
+/// error/diagnostic messages, never to build the `Path` that's actually
+/// checked against the filesystem.
+fn validate_override_path(env_var: &str, raw: &std::ffi::OsStr) -> Result<PathBuf, String> {
+    let path = Path::new(raw);
+    let display = raw.to_string_lossy();
+    if !path.is_absolute() {
+        return Err(format!(
+            "{env_var} must be an absolute path (got `{display}`). Overrides stage \
+             a pre-verified binary directly into the vendor snapshot with no \
+             SHA-256 check, so build.rs requires an unambiguous absolute path \
+             rather than resolving a relative one against an arbitrary cwd."
+        ));
+    }
+    let metadata = fs::metadata(path).map_err(|e| {
+        format!("{env_var} points at `{display}`, which does not exist or is not readable: {e}")
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "{env_var} points at `{display}`, which is not a regular file."
+        ));
+    }
+    println!(
+        "cargo:warning={env_var} is set — staging `{display}` directly into the vendor \
+         snapshot. SHA-256 pinning is skipped for override binaries; verifying \
+         the binary is the operator's responsibility (see BUILDING.md)."
+    );
+    println!("cargo:rerun-if-changed={}", path.display());
+    Ok(path.to_path_buf())
+}
+
+/// Combine an override env var, the resolved `VendorPlatform` (if any), and
+/// the on-disk slot state into a `BinarySource` decision via
+/// `zfb_toolchain_pins::resolve_binary_source`. The slot's SHA-256 is only
+/// checked when it could actually matter (no override present, and the
+/// platform is supported) — avoids hashing the ~75 MB tailwind slot file
+/// for no reason when it's about to be overridden anyway.
+fn resolve_vendor_source(
+    env_var: &str,
+    vendor_platform: Option<VendorPlatform>,
+    slot_path: &Path,
+    expected_sha256: impl Fn(VendorPlatform) -> &'static str,
+) -> BinarySource {
+    let raw = std::env::var_os(env_var);
+    let override_present = raw.as_deref().is_some_and(|s| !s.is_empty());
+
+    let slot_already_correct = if override_present {
+        false
+    } else {
+        vendor_platform
+            .map(|p| binary_already_correct(slot_path, expected_sha256(p)))
+            .unwrap_or(false)
+    };
+
+    resolve_binary_source(
+        raw.as_deref(),
+        vendor_platform.is_some(),
+        slot_already_correct,
+    )
+}
+
 /// Download and stage the esbuild and tailwindcss binaries.
+///
+/// Each binary resolves its source independently: an override wins
+/// unconditionally (staged as-is, no SHA-256 check); otherwise the
+/// existing download-and-slot flow runs, which itself requires a
+/// supported `TARGET`. `detect_platform`-equivalent errors are only raised
+/// when a binary actually needs the download flow and the platform isn't
+/// supported — an override-only build on an unsupported platform (e.g.
+/// musl) never hits that error.
 ///
 /// This is a separate function (not inlined into `main`) so that sub-#198
 /// (runtime embedding) can add its own top-level function without having to
@@ -580,83 +635,110 @@ fn download_binaries() -> Result<(), String> {
     let workspace_root = find_workspace_root();
     let binaries_dir = workspace_root.join("crates").join("zfb").join("binaries");
 
-    let esbuild_slot = binaries_dir.join("esbuild").join("esbuild");
-    // Windows binary slot carries a .exe suffix.
-    #[cfg(target_os = "windows")]
-    let esbuild_slot = {
-        let mut p = esbuild_slot;
-        p.set_extension("exe");
-        p
-    };
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let vendor_platform = VendorPlatform::from_target_triple(&target);
+    let exe_suffix = exe_suffix_for_target(&target);
 
-    let tailwind_slot = binaries_dir.join("tailwindcss-v4");
-    #[cfg(target_os = "windows")]
-    let tailwind_slot = {
-        let mut p = tailwind_slot;
-        p.set_extension("exe");
-        p
-    };
+    let esbuild_slot = with_exe_suffix(binaries_dir.join("esbuild").join("esbuild"), exe_suffix);
+    let tailwind_slot = with_exe_suffix(binaries_dir.join("tailwindcss-v4"), exe_suffix);
 
     // Emit rerun triggers so Cargo re-invokes the build script when the
-    // binary slots change (e.g. after a manual `rm` or after a fetch).
+    // binary slots or override env vars change (e.g. after a manual `rm`,
+    // after a fetch, or after pointing ZFB_*_BIN at a different file).
     println!("cargo:rerun-if-changed=crates/zfb-islands/src/esbuild.rs");
     println!("cargo:rerun-if-changed=scripts/fetch-tailwind.mjs");
-    // Also rerun when either binary slot file changes.
     println!("cargo:rerun-if-changed={}", esbuild_slot.display());
     println!("cargo:rerun-if-changed={}", tailwind_slot.display());
+    println!("cargo:rerun-if-env-changed=ZFB_ESBUILD_BIN");
+    println!("cargo:rerun-if-env-changed=ZFB_TAILWIND_BIN");
 
-    let platform = detect_platform()?;
+    let esbuild_source =
+        resolve_vendor_source("ZFB_ESBUILD_BIN", vendor_platform, &esbuild_slot, |p| {
+            esbuild_platform_meta(p).expected_sha256
+        });
+    let tailwind_source =
+        resolve_vendor_source("ZFB_TAILWIND_BIN", vendor_platform, &tailwind_slot, |p| {
+            tailwindcss_asset_name(p).1
+        });
 
-    download_esbuild(platform, &esbuild_slot)?;
-    download_tailwindcss(platform, &tailwind_slot)?;
+    if matches!(esbuild_source, BinarySource::Unsupported)
+        || matches!(tailwind_source, BinarySource::Unsupported)
+    {
+        return Err(unsupported_target_message(&target));
+    }
+
+    let esbuild_final = match esbuild_source {
+        BinarySource::Override(raw) => validate_override_path("ZFB_ESBUILD_BIN", &raw)?,
+        BinarySource::Slot => {
+            println!(
+                "cargo:warning=esbuild binary already present at {} with correct SHA-256 — skipping download.",
+                esbuild_slot.display()
+            );
+            esbuild_slot.clone()
+        }
+        BinarySource::NeedsDownload => {
+            let platform =
+                vendor_platform.expect("NeedsDownload implies platform_supported was true");
+            download_esbuild(platform, &esbuild_slot)?;
+            esbuild_slot.clone()
+        }
+        BinarySource::Unsupported => unreachable!("handled above"),
+    };
+
+    let tailwind_final = match tailwind_source {
+        BinarySource::Override(raw) => validate_override_path("ZFB_TAILWIND_BIN", &raw)?,
+        BinarySource::Slot => {
+            println!(
+                "cargo:warning=tailwindcss binary already present at {} with correct SHA-256 — skipping download.",
+                tailwind_slot.display()
+            );
+            tailwind_slot.clone()
+        }
+        BinarySource::NeedsDownload => {
+            let platform =
+                vendor_platform.expect("NeedsDownload implies platform_supported was true");
+            download_tailwindcss(platform, &tailwind_slot)?;
+            tailwind_slot.clone()
+        }
+        BinarySource::Unsupported => unreachable!("handled above"),
+    };
 
     // Sub #212 — also stage the binaries into `$OUT_DIR/vendor/bin/` so the
     // existing `include_dir!("$ZFB_VENDOR_DIR")` snapshot embeds them next to
     // `@takazudo/*` and the framework packages. Consumers without a
     // workspace-relative `crates/zfb/binaries/` dir can then extract them at
     // runtime via `embedded_binary()` in `crates/zfb/src/render_pipeline.rs`.
-    stage_binaries_into_vendor(&esbuild_slot, &tailwind_slot)?;
+    stage_binaries_into_vendor(&esbuild_final, &tailwind_final, exe_suffix)?;
 
     Ok(())
 }
 
-/// Copy the staged esbuild and tailwindcss binaries from
-/// `crates/zfb/binaries/` into `$OUT_DIR/vendor/bin/` so they ride along
-/// inside `EMBEDDED_VENDOR` (the `include_dir!` snapshot in
+/// Copy the resolved esbuild and tailwindcss binaries (each either a slot
+/// path or a validated override path) into `$OUT_DIR/vendor/bin/` so they
+/// ride along inside `EMBEDDED_VENDOR` (the `include_dir!` snapshot in
 /// `crates/zfb/src/render_pipeline.rs`). The `embedded_binary()` helper
 /// then extracts whichever name a caller asks for at runtime.
 ///
-/// Windows binaries ship with a `.exe` suffix; the destination filename
-/// preserves that suffix. The executable bit is set on Unix so the
-/// extracted file is invocable without an extra chmod.
-fn stage_binaries_into_vendor(esbuild_slot: &Path, tailwind_slot: &Path) -> Result<(), String> {
+/// `exe_suffix` (`".exe"` or `""`) names the canonical embedded filename —
+/// derived from Cargo's resolved `TARGET`, not the host's `cfg!(target_os)`,
+/// so a cross-compiling host never mis-names the target-platform entry.
+/// The executable bit is set on Unix so the extracted file is invocable
+/// without an extra chmod.
+fn stage_binaries_into_vendor(
+    esbuild_src: &Path,
+    tailwind_src: &Path,
+    exe_suffix: &str,
+) -> Result<(), String> {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let bin_dir = out_dir.join("vendor").join("bin");
     fs::create_dir_all(&bin_dir)
         .map_err(|e| format!("failed to create vendor bin dir {}: {e}", bin_dir.display()))?;
 
-    // Re-emit rerun triggers so a manual re-fetch of either binary refreshes
-    // the embedded snapshot on the next cargo build.
-    println!("cargo:rerun-if-changed={}", esbuild_slot.display());
-    println!("cargo:rerun-if-changed={}", tailwind_slot.display());
+    let esbuild_dst = bin_dir.join(format!("esbuild{exe_suffix}"));
+    copy_executable(esbuild_src, &esbuild_dst)?;
 
-    // Esbuild → vendor/bin/esbuild (or .exe on Windows).
-    let esbuild_dst_name = if cfg!(target_os = "windows") {
-        "esbuild.exe"
-    } else {
-        "esbuild"
-    };
-    let esbuild_dst = bin_dir.join(esbuild_dst_name);
-    copy_executable(esbuild_slot, &esbuild_dst)?;
-
-    // Tailwind → vendor/bin/tailwindcss-v4 (or .exe on Windows).
-    let tailwind_dst_name = if cfg!(target_os = "windows") {
-        "tailwindcss-v4.exe"
-    } else {
-        "tailwindcss-v4"
-    };
-    let tailwind_dst = bin_dir.join(tailwind_dst_name);
-    copy_executable(tailwind_slot, &tailwind_dst)?;
+    let tailwind_dst = bin_dir.join(format!("tailwindcss-v4{exe_suffix}"));
+    copy_executable(tailwind_src, &tailwind_dst)?;
 
     Ok(())
 }
