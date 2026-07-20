@@ -182,9 +182,8 @@ async fn response_string_body_defaults_to_text_plain() {
 #[tokio::test]
 async fn response_urlsearchparams_body_defaults_to_form_urlencoded() {
     let mut host = EmbeddedV8RenderHost::new().expect("host boot");
-    let bundle = workerd_shaped_bundle(
-        r#"return new Response(new URLSearchParams({ a: "1", b: "2" }));"#,
-    );
+    let bundle =
+        workerd_shaped_bundle(r#"return new Response(new URLSearchParams({ a: "1", b: "2" }));"#);
     host.execute_module("bundle.mjs", &bundle)
         .await
         .expect("execute bundle");
@@ -982,9 +981,7 @@ async fn headers_entries_nonmutating_order_is_sorted_and_combined() {
         .expect("dispatch");
     assert_eq!(
         resp.body_utf8(),
-        Some(
-            "a-one=1|b-two=2|set-cookie=x=1|set-cookie=y=2|vary=Accept-Encoding, Accept-Language"
-        ),
+        Some("a-one=1|b-two=2|set-cookie=x=1|set-cookie=y=2|vary=Accept-Encoding, Accept-Language"),
         "non-mutating iteration must keep sorted+combined order (set-cookie uncombined)"
     );
 }
