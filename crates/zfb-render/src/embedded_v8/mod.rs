@@ -268,6 +268,39 @@ impl EmbeddedV8RenderHost {
     /// [`Self::dispatch_fetch`] can find it. Called automatically by
     /// [`Self::execute_module`].
     fn install_bundle_default(&mut self, module_id: ModuleId, specifier: &str) -> Result<()> {
+        self.check_bundle_default_shape(module_id, specifier, true)
+    }
+
+    /// Strictly validate `module_id`'s `default` export against the
+    /// workerd-shape contract WITHOUT wiring it into
+    /// `globalThis.__zfb.setBundle` — i.e. without making it the
+    /// `dispatch_fetch` target. Used to validate a module that is
+    /// imported as a dependency (not run as the main module) — e.g.
+    /// the dev content-trace wrapper's inner worker, whose own
+    /// `default.fetch` is only touched lazily at dispatch time and so
+    /// isn't caught by validating the wrapper's (always well-shaped)
+    /// `default` export alone. See [`Self::validate_worker_module_shape`].
+    fn validate_bundle_default_shape_only(
+        &mut self,
+        module_id: ModuleId,
+        specifier: &str,
+    ) -> Result<()> {
+        self.check_bundle_default_shape(module_id, specifier, false)
+    }
+
+    /// Shared implementation for [`Self::install_bundle_default`] and
+    /// [`Self::validate_bundle_default_shape_only`]. Always runs the full
+    /// workerd-shape validation (missing/undefined default, non-object
+    /// default, object without `fetch`, non-callable `fetch`); when
+    /// `install` is `true`, additionally wires the validated `default`
+    /// export into `globalThis.__zfb.setBundle` and flips
+    /// `bundle_installed` so `dispatch_fetch` can find it.
+    fn check_bundle_default_shape(
+        &mut self,
+        module_id: ModuleId,
+        specifier: &str,
+        install: bool,
+    ) -> Result<()> {
         // Pull the bundle's namespace and read `default` off it.
         let namespace = self
             .runtime
@@ -334,6 +367,11 @@ impl EmbeddedV8RenderHost {
                  (workerd shape requires `export default {{ fetch }}`)"
             ))
         })?;
+        if !install {
+            // Shape-only validation (see `validate_bundle_default_shape_only`):
+            // do NOT wire this module in as the dispatch_fetch target.
+            return Ok(());
+        }
         // Look up `globalThis.__zfb.setBundle`.
         let global = scope.get_current_context().global(scope);
         let zfb_key = v8::String::new(scope, "__zfb")
@@ -627,6 +665,63 @@ impl EmbeddedV8RenderHost {
         // stale failure recorded from an earlier module.
         *self.last_install_error.borrow_mut() = None;
         Ok(handle)
+    }
+
+    /// Load `source` under `name` as a SIDE module (`load_side_es_module`)
+    /// rather than the runtime's main module. `deno_core`'s module map
+    /// caches modules by resolved specifier, so a later `import` of the
+    /// same specifier from a main module (e.g. a wrapper module) resolves
+    /// to this already-evaluated instance instead of re-fetching or
+    /// re-executing it — this is the documented purpose of
+    /// `load_side_es_module` ("utility code that might be later imported
+    /// by the main module").
+    async fn load_and_evaluate_side_module(
+        &mut self,
+        name: &str,
+        source: &str,
+    ) -> Result<ModuleId> {
+        let specifier = synthesise_specifier(name);
+        self.loader.register_module(specifier.as_str(), source);
+        let module_specifier = ModuleSpecifier::parse(specifier.as_str()).map_err(|e| {
+            RenderError::Runtime(format!(
+                "embedded V8 host: bad synthetic specifier `{specifier}`: {e}"
+            ))
+        })?;
+        let module_id = self
+            .runtime
+            .load_side_es_module(&module_specifier)
+            .await
+            .map_err(|e| RenderError::Runtime(format!("load_side_es_module failed: {e}")))?;
+        let evaluate = self.runtime.mod_evaluate(module_id);
+        self.runtime
+            .run_event_loop(PollEventLoopOptions::default())
+            .await
+            .map_err(|e| RenderError::Runtime(format_event_loop_error(&e)))?;
+        evaluate
+            .await
+            .map_err(|e| RenderError::Runtime(format!("module evaluation failed: {e}")))?;
+        Ok(module_id)
+    }
+
+    /// Strictly validate that `source` — loaded as a SIDE module under
+    /// `name` — satisfies the workerd-shape contract, WITHOUT installing
+    /// it as the `dispatch_fetch` target (sub-issue #1764 follow-up).
+    ///
+    /// Exists for the dev content-trace boot seam: the generated wrapper
+    /// module's own `default` export is always well-shaped and only
+    /// touches the INNER worker's `default.fetch` lazily, at dispatch
+    /// time. Validating just the wrapper (via [`Self::execute_worker_module`])
+    /// would let a malformed inner worker pass boot and only fail on the
+    /// first real request. Callers load-and-validate the inner worker
+    /// with this method FIRST (registering it under the exact specifier
+    /// the wrapper's `import` statement uses — pass a `file://` specifier
+    /// as `name` to reuse it verbatim, see [`synthesise_specifier`]), then
+    /// run the wrapper through `execute_worker_module` as the main module;
+    /// the wrapper's `import` resolves to this already-evaluated instance
+    /// rather than re-executing it.
+    pub async fn validate_worker_module_shape(&mut self, name: &str, source: &str) -> Result<()> {
+        let module_id = self.load_and_evaluate_side_module(name, source).await?;
+        self.validate_bundle_default_shape_only(module_id, name)
     }
 }
 

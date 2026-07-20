@@ -384,11 +384,6 @@ impl ThreadedV8Host {
                     let loader = BundleModuleLoader::new()
                         .with_plugin_hooks(hooks)
                         .with_bundle_asset_root(bundle_asset_root);
-                    // Register the inner bundle BEFORE the loader moves into the
-                    // host, so the wrapper's `import ... from
-                    // "file:///zfb/<basename>"` resolves to these in-memory bytes
-                    // rather than a disk read.
-                    loader.register_module(&inner_specifier, bundle_src);
                     let mut host = match EmbeddedV8RenderHost::with_loader(loader) {
                         Ok(h) => h,
                         Err(e) => {
@@ -396,6 +391,35 @@ impl ThreadedV8Host {
                             return;
                         }
                     };
+                    // Sub-issue #1764 follow-up: strictly validate the INNER
+                    // worker's shape BEFORE running the wrapper. The
+                    // generated wrapper's own `default` export is always
+                    // well-shaped ({ fetch(request) { ... } }) and only
+                    // touches `__zfb_inner_worker.fetch` lazily, at dispatch
+                    // time — so validating just the wrapper below would let
+                    // a malformed inner worker pass boot and only fail on
+                    // the first real request. This registers the inner
+                    // bundle under `inner_specifier` (via a strict SIDE
+                    // module load — see `validate_worker_module_shape`), so
+                    // the wrapper's `import ... from "file:///zfb/<basename>"`
+                    // resolves to this already-evaluated instance rather
+                    // than re-fetching or re-executing it.
+                    if let Err(e) = host
+                        .validate_worker_module_shape(&inner_specifier, &bundle_src)
+                        .await
+                    {
+                        let console_logs = host.drain_console_logs();
+                        let msg = if console_logs.trim().is_empty() {
+                            format!("bundle load failed: {e}")
+                        } else {
+                            format!(
+                                "bundle load failed: {e}\n\
+                                 worker console output during bundle load:\n{console_logs}"
+                            )
+                        };
+                        let _ = boot_tx.send(Err(msg));
+                        return;
+                    }
                     // Run the wrapper as the main module. `execute_worker_module`
                     // turns this name into the fixed specifier
                     // `file:///zfb/__zfb_dev_content_trace_wrapper.mjs`; loading
@@ -968,6 +992,50 @@ mod tests {
         assert_eq!(
             after, original,
             "the on-disk bundle must stay byte-identical (never rewritten)"
+        );
+    }
+
+    /// Sub-issue #1764 follow-up (codex review finding): the generated dev
+    /// content-trace wrapper's OWN `default` export is always well-shaped
+    /// (`{ async fetch(request) { ... } }`) and only touches the imported
+    /// inner worker's `default.fetch` lazily, at dispatch time. Validating
+    /// only the wrapper (as `execute_worker_module` does) would therefore
+    /// let a malformed INNER worker pass boot and blow up on the first real
+    /// request instead. This proves the dev content-trace boot site fails
+    /// at boot — through the real thread/boot channel — when the inner
+    /// bundle itself is malformed, even though the wrapper around it is
+    /// perfectly well-shaped.
+    #[test]
+    fn malformed_inner_worker_fails_dev_content_trace_boot_even_though_wrapper_is_well_shaped() {
+        let dir = tempfile::tempdir().unwrap();
+        // Inner bundle: malformed — `default` has no `fetch` at all.
+        let bundle_path = write_bundle(&dir, "export default { notFetch: 1 };\n");
+
+        // Wrapper: identical shape to the real generated wrapper — its own
+        // `default.fetch` is well-formed and only reaches into the inner
+        // worker lazily, inside the handler body.
+        let wrapper_source = concat!(
+            "import __zfb_inner_worker from \"file:///zfb/bundle.mjs\";\n",
+            "export default {\n",
+            "  async fetch(request) {\n",
+            "    return __zfb_inner_worker.fetch(request);\n",
+            "  },\n",
+            "};\n",
+        )
+        .to_string();
+
+        let factory = make_v8_host_factory_with_dev_content_trace_wrapper(
+            PluginRegistryHooks::default(),
+            wrapper_source,
+        );
+        let err = factory(&bundle_path).err().expect(
+            "boot must fail — the wrapper's own valid shape must not mask a malformed inner worker",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("has no `fetch` property"),
+            "boot error must carry the inner worker's ORIGINAL shape-validation \
+             diagnostic, not a generic failure or a wrapper-shape complaint: {msg}"
         );
     }
 }
