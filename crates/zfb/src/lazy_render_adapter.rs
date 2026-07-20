@@ -246,7 +246,7 @@ impl LazyRenderAdapter {
                 // while preserving `/` (issue #1513). Keeping this local to
                 // the fallback avoids double-decoding normal index lookups.
                 let canonical_url = canonicalize_dynamic_injected_url(url_path);
-                match self.injected_routes.find_match(canonical_url.as_ref()) {
+                match self.injected_routes.find_match(&canonical_url) {
                     Some(rec) => {
                         // SSR-only injected routes (`prerender: false`) are
                         // NOT SSG-rendered/cached in dev — mirror S3's
@@ -265,8 +265,7 @@ impl LazyRenderAdapter {
                         // parity is automatic (design record §3/§5).
                         // Injected routes are always HTML pages → extension
                         // `None` (defaults to "html").
-                        let output_path =
-                            build_output_path_for_resolved_url(canonical_url.as_ref(), None);
+                        let output_path = build_output_path_for_resolved_url(&canonical_url, None);
                         // Record this as a known dynamic injected output so a
                         // later content-edit tick can re-stale it (epic #1228,
                         // S5 #1233 / #1227 item (h)). Done UNCONDITIONALLY —
@@ -304,7 +303,7 @@ impl LazyRenderAdapter {
                             true // file exists; normal pre-check determines freshness
                         };
                         let entry = RouteUniverseEntry {
-                            url_path: canonical_url.into_owned(),
+                            url_path: canonical_url,
                             output_path,
                             route_key: rec.pattern.clone(),
                             static_html: false,
@@ -457,20 +456,25 @@ impl LazyRenderAdapter {
 }
 
 /// Canonicalize an injected dynamic-route request before synthesizing its
-/// [`RouteUniverseEntry`]. This mirrors the decode-then-trailing-slash lookup
-/// convention used by the dev URL index, but stays local because the index
-/// helper is intentionally private to `commands::dev` (issue #1513).
-fn canonicalize_dynamic_injected_url(url_path: &str) -> Cow<'_, str> {
+/// [`RouteUniverseEntry`]. Mirrors the dev URL index's decode-then-trailing-
+/// slash convention, then re-encodes to the canonical form (issue #1768): the
+/// synthesized entry's `output_path` is derived from this URL and written to
+/// disk, and the serve waterfall re-canonicalizes the request before reading
+/// that file — so the rendered output MUST live in the encoded namespace
+/// (`preset-docs/caf%C3%A9/index.html`), matching every other route entry.
+/// Decoding first (exactly once) then re-encoding also collapses a
+/// double-encoded request to its single canonical spelling.
+///
+/// Stays local rather than reusing `commands::dev`'s index helper because that
+/// one is intentionally private to that module (issue #1513).
+fn canonicalize_dynamic_injected_url(url_path: &str) -> String {
     let decoded = percent_decode_url(url_path);
     let trimmed = decoded.trim_end_matches('/');
     if trimmed.is_empty() {
         // Keep root as `/`; an empty URL is not a valid route value.
-        Cow::Borrowed("/")
-    } else if trimmed.len() == decoded.len() {
-        decoded
-    } else {
-        Cow::Owned(trimmed.to_string())
+        return "/".to_string();
     }
+    zfb_render::paths::canonical_encode_path(trimmed)
 }
 
 /// Decode percent-encoded bytes when the result is valid UTF-8. Malformed
@@ -1390,8 +1394,30 @@ mod tests {
 
     #[test]
     fn dynamic_fallback_canonicalization_preserves_root() {
-        assert_eq!(canonicalize_dynamic_injected_url("/").as_ref(), "/");
-        assert_eq!(canonicalize_dynamic_injected_url("////").as_ref(), "/");
+        assert_eq!(canonicalize_dynamic_injected_url("/"), "/");
+        assert_eq!(canonicalize_dynamic_injected_url("////"), "/");
+    }
+
+    /// #1768: a non-ASCII injected-route slug is re-encoded to the canonical
+    /// namespace so the synthesized output path matches what the serve
+    /// waterfall re-canonicalizes a request to (`preset-docs/caf%C3%A9`), and a
+    /// double-encoded request collapses to the same single canonical spelling.
+    #[test]
+    fn dynamic_fallback_reencodes_special_chars_to_canonical() {
+        assert_eq!(
+            canonicalize_dynamic_injected_url("/preset-docs/caf%C3%A9"),
+            "/preset-docs/caf%C3%A9"
+        );
+        // Raw-UTF-8 request encodes straight to the canonical form.
+        assert_eq!(
+            canonicalize_dynamic_injected_url("/preset-docs/café"),
+            "/preset-docs/caf%C3%A9"
+        );
+        // Double-encoded `%252F` decodes once to `%2F`, re-encodes to `%252F`.
+        assert_eq!(
+            canonicalize_dynamic_injected_url("/x/a%252Fb"),
+            "/x/a%252Fb"
+        );
     }
 
     /// Parity path: with an empty `InjectedRouteSet` and a url_index

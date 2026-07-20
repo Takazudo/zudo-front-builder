@@ -339,9 +339,17 @@ pub fn build_route_universe(routes: &[Route]) -> RouteUniversePlan {
         match route.kind {
             RouteKind::Static => {
                 let template = route.template();
+                // Canonical encoding (#1768): a static route whose filename
+                // carries a non-unreserved byte (e.g. `pages/café.tsx`) must
+                // land in the SAME encoded namespace the dynamic choke point
+                // (#1767) and the serve/lookup boundary use — otherwise the
+                // boundary re-encodes a request to `/caf%C3%A9` and misses the
+                // verbatim `/café` entry. `route_key` stays the RAW template
+                // (the prerender map + SSR detection key on it, matching how
+                // dynamic entries keep their raw `[slug]` pattern as route_key).
                 plan.static_routes.push(RouteUniverseEntry {
-                    url_path: template.clone(),
-                    output_path: route.output_filename(None),
+                    url_path: zfb_render::paths::canonical_encode_path(&template),
+                    output_path: canonical_encode_output_path(&route.output_filename(None)),
                     route_key: template,
                     static_html: route.static_html,
                     source_path: if route.static_html {
@@ -666,6 +674,22 @@ pub(crate) fn build_output_path_for_resolved_url(url: &str, extension: Option<&s
             PathBuf::from(trimmed)
         }
     }
+}
+
+/// Canonically encode each component of an on-disk output path (#1768) so a
+/// static route's file lives under the same encoded spelling the serve/disk
+/// boundary re-encodes a request to. Each path component is run through the
+/// canonical segment codec (a component has no internal `/`, so this is the
+/// per-segment encode); the trailing filename's `.`/extension bytes are
+/// unreserved and pass through unchanged (`index.html` stays `index.html`).
+fn canonical_encode_output_path(path: &Path) -> PathBuf {
+    path.iter()
+        .map(|comp| {
+            PathBuf::from(zfb_render::paths::canonical_encode_path(
+                &comp.to_string_lossy(),
+            ))
+        })
+        .collect()
 }
 
 /// Describe a route for a collision diagnostic: prefer the concrete source
@@ -1460,6 +1484,24 @@ mod tests {
             output_extension: None,
             static_html: false,
         }
+    }
+
+    /// #1768: a static route whose filename carries a non-ASCII byte is
+    /// stored in the canonical encoded namespace (both `url_path` and
+    /// `output_path`) so the serve/lookup boundary — which re-encodes a
+    /// decoded request — resolves it. `route_key` stays the RAW template.
+    #[test]
+    fn build_route_universe_canonicalizes_static_non_ascii_route() {
+        let routes = vec![static_route(vec!["café"], "pages/café.tsx")];
+        let plan = build_route_universe(&routes);
+        assert_eq!(plan.static_routes.len(), 1);
+        let entry = &plan.static_routes[0];
+        assert_eq!(entry.url_path, "/caf%C3%A9");
+        assert_eq!(entry.output_path, PathBuf::from("caf%C3%A9/index.html"));
+        assert_eq!(
+            entry.route_key, "/café",
+            "route_key must stay the raw template (prerender map keys on it)"
+        );
     }
 
     #[test]

@@ -1383,14 +1383,27 @@ fn redirects_match_path(trimmed: &str, base_prefix: Option<&str>) -> String {
 /// probes pages/public files without the mount prefix. Query strings are
 /// not part of filesystem/page-cache lookup; preview splits them before
 /// calling its static waterfall, and dev mirrors that here.
+///
+/// The target is an author-written config string, so it is percent-DECODED
+/// here (a rewrite target cannot carry a literal space — that would break the
+/// `_redirects` line's field split — so a special char in the target arrives
+/// as `%3F`/`%20`). This puts it into the same DECODED contract axum's `Path`
+/// extractor hands a normal request, so `serve_from_waterfall`'s single
+/// re-canonicalization reproduces the encoded `url_path`/`output_path` the
+/// renderer wrote (issue #1768). Without the decode the `%` would be
+/// re-encoded to `%25`, missing the target route.
 fn waterfall_trimmed_for_rewrite_target(target: &str, base_prefix: Option<&str>) -> String {
     let path = target
         .split_once('?')
         .map(|(path, _)| path)
         .unwrap_or(target);
-    strip_prefix_from_path(path, base_prefix)
-        .trim_start_matches('/')
-        .to_string()
+    let stripped = strip_prefix_from_path(path, base_prefix).trim_start_matches('/');
+    percent_encoding::percent_decode_str(stripped)
+        .decode_utf8()
+        .map(|s| s.into_owned())
+        // Malformed percent-sequence → keep the raw form (graceful
+        // degradation; it almost certainly won't match, the right answer).
+        .unwrap_or_else(|_| stripped.to_string())
 }
 
 fn strip_prefix_from_path<'a>(path: &'a str, prefix: Option<&str>) -> &'a str {
