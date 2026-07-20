@@ -303,6 +303,57 @@ async fn multiple_set_cookie_survive_ssr_seam() {
     server.abort();
 }
 
+/// Sub-issue #1761: a `text/plain` SSR response must NOT be given the
+/// HTML5 doctype prepend. Before the `Response` BodyInit content-type
+/// defaulting landed, a bundle handler that returned a bare string
+/// with no explicit header left `content-type` empty, so
+/// `dispatch_ssr`'s "default to text/html" fallback (routes.rs) kicked
+/// in and the doctype-prepend gate saw `text/html` — mutating a plain
+/// body. Now the JS `Response` constructor itself defaults a string
+/// body to `text/plain;charset=UTF-8`, so this canned response (built
+/// directly as an `SsrResponse`, mirroring what the JS bridge would
+/// produce) must round-trip byte-for-byte.
+#[tokio::test]
+async fn text_plain_ssr_response_is_not_given_a_doctype() {
+    let headers = vec![("content-type".into(), "text/plain;charset=UTF-8".into())];
+    let canned = SsrResponse {
+        status: 200,
+        headers,
+        body: b"plain body, no html here".to_vec(),
+    };
+    let dispatcher = Arc::new(RecordingSsrDispatcher::new(canned));
+    let set = ssr_set("/plain", dispatcher.clone() as Arc<dyn SsrDispatcher>);
+    let (addr, _pages, server, _tmp) = boot(Some(set), None).await;
+
+    let client = reqwest::Client::builder().build().unwrap();
+    let resp = client
+        .get(format!("http://{addr}/plain"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        ct.starts_with("text/plain"),
+        "expected text/plain, got {ct}"
+    );
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        body, "plain body, no html here",
+        "body must round-trip byte-for-byte, no doctype prepend and no \
+         livereload script injection"
+    );
+    assert!(!body.contains("<!doctype"));
+    assert!(!body.contains("/__zfb/livereload.js"));
+
+    server.abort();
+}
+
 #[tokio::test]
 async fn plugin_middleware_wins_over_ssr() {
     // Same path is claimed by both a plugin and the SSR set; the plugin

@@ -157,6 +157,196 @@ async fn supports_esm_imports_and_top_level_await() {
     assert_eq!(resp.body_utf8(), Some("hello from lib"));
 }
 
+/// Sub-issue #1761: `Response`'s BodyInit content-type defaulting
+/// (Fetch "extract a body" step 5). A `string` body with no explicit
+/// header defaults to `text/plain;charset=UTF-8` and the body bytes are
+/// untouched (no doctype prepend — that's a server-side concern gated
+/// on the header this test proves gets set).
+#[tokio::test]
+async fn response_string_body_defaults_to_text_plain() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(r#"return new Response("plain body");"#);
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("plain body"));
+    assert_eq!(resp.content_type(), Some("text/plain;charset=UTF-8"));
+}
+
+/// A `URLSearchParams` body defaults to the form-urlencoded type.
+#[tokio::test]
+async fn response_urlsearchparams_body_defaults_to_form_urlencoded() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"return new Response(new URLSearchParams({ a: "1", b: "2" }));"#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("a=1&b=2"));
+    assert_eq!(
+        resp.content_type(),
+        Some("application/x-www-form-urlencoded;charset=UTF-8")
+    );
+}
+
+/// An `ArrayBuffer` body gets NO automatic content-type per the Fetch
+/// BodyInit table — typed arrays / `ArrayBuffer` are the one shape that
+/// stays opaque by default.
+#[tokio::test]
+async fn response_arraybuffer_body_gets_no_automatic_content_type() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const bytes = new Uint8Array([1, 2, 3, 4]);
+        return new Response(bytes.buffer);
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body, vec![1u8, 2, 3, 4]);
+    assert_eq!(resp.content_type(), None);
+}
+
+/// An explicit `content-type` header always wins over the BodyInit
+/// default, regardless of body shape.
+#[tokio::test]
+async fn response_explicit_content_type_header_wins_over_bodyinit_default() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        return new Response("<h1>hi</h1>", {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.content_type(), Some("text/html; charset=utf-8"));
+}
+
+/// `clone()` preserves whatever content-type the original settled on —
+/// whether explicit or BodyInit-defaulted.
+#[tokio::test]
+async fn response_clone_preserves_bodyinit_defaulted_content_type() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const original = new Response("plain body");
+        const cloned = original.clone();
+        return cloned;
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("plain body"));
+    assert_eq!(resp.content_type(), Some("text/plain;charset=UTF-8"));
+}
+
+/// Deep-review fix: the `Response` constructor must clone a caller-
+/// supplied `Headers` instance rather than alias it — otherwise the
+/// BodyInit content-type default's `set()` call would mutate a
+/// `Headers` object the caller still holds a reference to. Pass the
+/// same `Headers` instance to two `Response`s and confirm the first
+/// construction's default doesn't leak into the second.
+#[tokio::test]
+async fn response_construction_does_not_mutate_caller_headers_object() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        const shared = new Headers();
+        const first = new Response("plain body", { headers: shared });
+        // If `Response` aliased `shared`, it would now carry the
+        // text/plain default the first construction installed.
+        const stillEmpty = !shared.has("content-type");
+        return new Response(String(stillEmpty), { status: stillEmpty ? 200 : 500 });
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(
+        resp.status, 200,
+        "constructing a Response must not mutate the caller's shared Headers object"
+    );
+}
+
+/// `Response.json()` must still install `application/json` even though
+/// its body is a stringified JSON string — the static helper installs
+/// the header BEFORE construction so it isn't beaten by the
+/// constructor's new string-body default.
+#[tokio::test]
+async fn response_json_still_sets_application_json_content_type() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(r#"return Response.json({ ok: true });"#);
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.body_utf8(), Some("{\"ok\":true}"));
+    assert_eq!(resp.content_type(), Some("application/json"));
+}
+
+/// `Response.json()` still honors an explicit caller-supplied
+/// content-type header instead of overwriting it with `application/json`.
+#[tokio::test]
+async fn response_json_honors_explicit_content_type_override() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = workerd_shaped_bundle(
+        r#"
+        return Response.json(
+          { ok: true },
+          { headers: { "content-type": "application/ld+json" } },
+        );
+        "#,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute bundle");
+    let resp = host
+        .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+        .await
+        .expect("dispatch");
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.content_type(), Some("application/ld+json"));
+}
+
 #[tokio::test]
 async fn surfaces_v8_stack_with_parseable_frame() {
     let mut host = EmbeddedV8RenderHost::new().expect("host boot");

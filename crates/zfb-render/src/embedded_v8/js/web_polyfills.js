@@ -446,6 +446,20 @@
   // We treat the body as `Uint8Array` internally. Both Request and
   // Response need to expose `text()`, `json()`, `arrayBuffer()`.
 
+  // WHATWG Fetch "extract a body" step 5 (the BodyInit → default
+  // Content-Type table): a `string` body defaults to
+  // `text/plain;charset=UTF-8`, a `URLSearchParams` body defaults to
+  // `application/x-www-form-urlencoded;charset=UTF-8`. Typed arrays /
+  // `ArrayBuffer` get NO automatic type per spec. Returns `null` when
+  // no default applies (caller must supply an explicit header).
+  function bodyInitContentType(body) {
+    if (typeof body === "string") return "text/plain;charset=UTF-8";
+    if (body instanceof URLSearchParams) {
+      return "application/x-www-form-urlencoded;charset=UTF-8";
+    }
+    return null;
+  }
+
   function bodyToUint8Array(input) {
     if (input == null) return new Uint8Array(0);
     if (input instanceof Uint8Array) return input;
@@ -540,7 +554,18 @@
       this.status = i.status == null ? 200 : Number(i.status);
       this.statusText = i.statusText || statusText(this.status);
       this.ok = this.status >= 200 && this.status < 300;
-      this.headers = i.headers instanceof Headers ? i.headers : new Headers(i.headers);
+      // Always clone `init.headers` into a fresh `Headers` instance
+      // (the `Headers` constructor already copies pairs out of a
+      // `Headers` init) rather than aliasing the caller's object —
+      // otherwise the BodyInit default `set()` below would mutate a
+      // `Headers` instance the caller still holds a reference to.
+      this.headers = new Headers(i.headers);
+      if (!this.headers.has("content-type")) {
+        const defaultType = bodyInitContentType(body);
+        if (defaultType) {
+          this.headers.set("content-type", defaultType);
+        }
+      }
       this.type = "default";
       this.url = i.url || "";
       this.redirected = false;
@@ -566,11 +591,17 @@
     }
     static json(data, init) {
       const body = JSON.stringify(data);
-      const r = new Response(body, init);
-      if (!r.headers.has("content-type")) {
-        r.headers.set("content-type", "application/json");
+      const i = init || {};
+      // Install the JSON content-type BEFORE construction: the
+      // constructor now defaults a string body to
+      // `text/plain;charset=UTF-8` when no header is present, which
+      // would otherwise beat a post-hoc `set()` here since `has()`
+      // would already be true. An explicit caller header still wins.
+      const headers = new Headers(i.headers);
+      if (!headers.has("content-type")) {
+        headers.set("content-type", "application/json");
       }
-      return r;
+      return new Response(body, Object.assign({}, i, { headers }));
     }
   }
 
