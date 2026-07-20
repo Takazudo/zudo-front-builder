@@ -77,8 +77,14 @@ committed to this repository. Instead:
   `pnpm fetch:tailwind` in environments that already have Node.js available.
 - The `ZFB_ESBUILD_BIN` and `ZFB_TAILWIND_BIN` env vars are the documented
   escape hatches for consumers and CI environments that supply their own
-  binaries or have no network access. When either is set, the build script
-  skips the corresponding download step entirely.
+  binaries or have no network access. Each resolves **independently** — one
+  binary can come from an override while the other still downloads. When set
+  to a non-empty absolute path to an existing regular file, the build script
+  stages that file directly into `$OUT_DIR/vendor/bin/` in place of a
+  download, and **skips SHA-256 verification** for it — the override is a
+  documented trust boundary; the operator supplying the path is responsible
+  for having verified it. See "`ZFB_ESBUILD_BIN` / `ZFB_TAILWIND_BIN`
+  override contract" in `BUILDING.md` for the full validation rules.
 
 ## Runtime resolution
 
