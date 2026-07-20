@@ -51,10 +51,34 @@
 //! already determined).
 //!
 //! Transitive `./sibling.js` imports from an aliased file are also
-//! disk-loaded: any `file://` URL whose path sits in the same
+//! disk-loaded: any `file://` URL that resolves into the same
 //! directory as a registered alias target is permitted. This is the
 //! minimum scope needed to support multi-file aliased libraries
 //! without widening disk access to the entire filesystem.
+//!
+//! ### Canonical containment + trust semantics
+//!
+//! Containment is decided on **canonical** paths (both the candidate and
+//! the configured target are `canonicalize`d, resolving symlinks fully).
+//! The authority is exactly two arms: a canonical exact-target match, or a
+//! canonical same-parent-directory match — never a bare `starts_with`
+//! prefix, which would silently widen same-directory reach to every
+//! descendant. An alias whose **configured** target is (or passes through)
+//! a symlink is trusted — explicit plugin config expresses intent — and its
+//! canonicalised location becomes the authority. The escape this closes is
+//! a symlink *inside* the authorised directory that resolves *outside* it:
+//! canonicalising the candidate collapses the whole chain, so its real
+//! parent no longer matches the target's real parent and the read is denied.
+//! A configured target that does not exist keeps the plugin-named
+//! "could not be read" error rather than falling through to the generic
+//! unresolved-module error.
+//!
+//! This closes the static-symlink escape. It does not close a TOCTOU race
+//! against an attacker who can mutate the authorised directory *concurrently
+//! with the build* (canonicalise-then-read is inherently a check/read pair);
+//! aliases are registered by trusted plugin `setup`, and the build owns its
+//! output tree, so that residual boundary is out of scope here — a
+//! descriptor-relative no-follow open would be the fix if it ever matters.
 //!
 //! ### TS/TSX caveat (v1 limitation)
 //!
@@ -468,48 +492,33 @@ impl ModuleLoader for BundleModuleLoader {
             }
             drop(modules);
             if let Some(hooks) = &self.hooks {
-                if let Some(plugin_name) = alias_disk_read_authority(hooks, module_specifier) {
-                    let path = match module_specifier.to_file_path() {
-                        Ok(p) => p,
-                        Err(_) => {
-                            return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
-                                format!(
-                                    "embedded V8 host: alias-rooted target `{spec_str}` \
-                                     is not a valid file:// URL"
-                                ),
-                            )));
-                        }
-                    };
-                    // v1 limitation: the V8 host does not transpile
-                    // TS/TSX. Reject these targets with a clear error
-                    // rather than letting V8 cough up an opaque syntax
-                    // error on the user's source.
-                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        if matches!(ext, "ts" | "tsx" | "mts" | "cts") {
-                            return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
-                                format!(
-                                    "embedded V8 host: alias target `{}` (plugin `{plugin_name}`) \
-                                     has a TypeScript extension, but the V8 host only accepts \
-                                     pre-compiled ESM JavaScript. Point the alias at a `.js` \
-                                     file or have your bundler pre-process the target.",
-                                    path.display()
-                                ),
-                            )));
-                        }
+                match alias_disk_read_authority(hooks, module_specifier) {
+                    AliasDiskAuthority::Authorized {
+                        canonical_path,
+                        plugin,
+                    } => {
+                        // Check the extension and read from the CANONICAL path
+                        // — canonicalise-for-check / read-original would be a
+                        // check/read race that weakens the containment fix.
+                        return read_alias_target(module_specifier, &canonical_path, &plugin);
                     }
-                    let src = match std::fs::read_to_string(&path) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
-                                format!(
-                                    "embedded V8 host: alias-rooted file `{}` (under plugin \
-                                     `{plugin_name}`'s alias) could not be read: {e}",
-                                    path.display()
-                                ),
-                            )));
-                        }
-                    };
-                    return ok_js(module_specifier, &src);
+                    AliasDiskAuthority::MissingTarget { plugin } => {
+                        // Read the original (missing) path so the failure keeps
+                        // the plugin-named "could not be read" diagnostic.
+                        let path = match module_specifier.to_file_path() {
+                            Ok(p) => p,
+                            Err(_) => {
+                                return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
+                                    format!(
+                                        "embedded V8 host: alias-rooted target `{spec_str}` \
+                                         is not a valid file:// URL"
+                                    ),
+                                )));
+                            }
+                        };
+                        return read_alias_target(module_specifier, &path, &plugin);
+                    }
+                    AliasDiskAuthority::Denied => {}
                 }
             }
             // file:// URL that is neither in-memory nor reachable from
@@ -646,37 +655,154 @@ fn url_from_path(path: &std::path::Path) -> Option<String> {
     Some(url.to_string())
 }
 
-/// Decide whether a `file://` URL is within an alias's authority — i.e.
-/// the URL points at an alias target file or any file in the same
-/// directory as a target. Returns the plugin name of the closest matching
-/// alias when authorised, so error messages can attribute disk-read
-/// failures to the plugin that effectively owns the directory.
+/// Outcome of deciding whether a `file://` URL is within an alias's
+/// disk-read authority. Richer than a bare bool so the loader can keep the
+/// plugin-attributed "could not be read" diagnostic for a missing configured
+/// target (rather than falling through to the generic unresolved-module
+/// error) while still denying a genuine containment escape.
+enum AliasDiskAuthority {
+    /// Authorised: read from this canonical path (symlinks already resolved).
+    /// `plugin` attributes the owning alias for diagnostics.
+    Authorized {
+        canonical_path: PathBuf,
+        plugin: String,
+    },
+    /// The candidate is a configured alias target that does not exist on disk
+    /// (nothing to canonicalise). The loader reads the original path so the
+    /// failure keeps the existing plugin-named "could not be read" error.
+    MissingTarget { plugin: String },
+    /// Not within any alias's authority — the loader denies the read.
+    Denied,
+}
+
+/// Decide whether a `file://` URL is within an alias's authority, deciding
+/// containment on **canonical** paths (symlinks resolved on both sides).
 ///
-/// Why parent-directory (not deeper-subtree) match: the conservative
-/// scope handles the common case ("alias points at one entry file, which
-/// imports siblings in the same folder") without expanding disk access
-/// to arbitrary descendants. If a real-world case needs deeper reach,
-/// widen this in a follow-up — but document the trust boundary first.
+/// Authority shape (the canonicalised counterparts of the two historical
+/// lexical arms):
+///  - **canonical exact-target match** — the candidate resolves to the same
+///    real file as a configured alias target; or
+///  - **canonical same-parent-directory match** — the candidate resolves into
+///    the same real directory as a configured alias target, so a top-level
+///    alias entry file can transitively `import './sibling.js'`.
+///
+/// Trust boundary: an alias whose **configured** target is (or passes through)
+/// a symlink is trusted — explicit plugin config expresses intent — and its
+/// canonicalised location becomes the authority. What is rejected is a symlink
+/// *inside* the authorised directory that resolves *outside* it: canonicalising
+/// the candidate collapses the whole chain, so its real parent no longer
+/// matches the target's real parent and the read is denied. This is
+/// deliberately NOT a `starts_with` prefix check — a prefix match would silently
+/// widen same-directory authority to every descendant of the target's folder.
+///
+/// Why parent-directory (not deeper-subtree) match: the conservative scope
+/// handles the common case ("alias points at one entry file, which imports
+/// siblings in the same folder") without expanding disk access to arbitrary
+/// descendants. If a real-world case needs deeper reach, widen this in a
+/// follow-up — but document the trust boundary first.
 fn alias_disk_read_authority(
     hooks: &PluginRegistryHooks,
     module_specifier: &ModuleSpecifier,
-) -> Option<String> {
-    let candidate_path = module_specifier.to_file_path().ok()?;
-    let candidate_dir = candidate_path.parent()?;
+) -> AliasDiskAuthority {
+    let Ok(candidate_path) = module_specifier.to_file_path() else {
+        return AliasDiskAuthority::Denied;
+    };
+    // Resolve the candidate's full symlink chain once. `None` means the file
+    // does not exist (a missing target, or a dangling/absent sibling).
+    let canonical_candidate = std::fs::canonicalize(&candidate_path).ok();
+    // When the candidate file itself is missing, its directory usually still
+    // exists; canonicalise that so a missing *sibling* import inside an
+    // authorised directory keeps the plugin-attributed "could not be read"
+    // error instead of degrading to the generic unresolved-module message.
+    // This is still canonical-to-canonical, so it does not widen containment.
+    let canonical_candidate_parent = if canonical_candidate.is_none() {
+        candidate_path
+            .parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok())
+    } else {
+        None
+    };
+    let mut missing_target: Option<String> = None;
     for entry in hooks.aliases.values() {
-        // Exact-target match takes precedence in attribution.
-        if entry.target == candidate_path {
-            return Some(entry.plugin.clone());
-        }
-        // Same-directory match (transitive imports inside the
-        // alias-rooted module folder).
-        if let Some(target_dir) = entry.target.parent() {
-            if target_dir == candidate_dir {
-                return Some(entry.plugin.clone());
+        match std::fs::canonicalize(&entry.target) {
+            Ok(canonical_target) => {
+                if let Some(canonical_candidate) = canonical_candidate.as_ref() {
+                    // Canonical exact-target match takes precedence in attribution.
+                    if *canonical_candidate == canonical_target {
+                        return AliasDiskAuthority::Authorized {
+                            canonical_path: canonical_candidate.clone(),
+                            plugin: entry.plugin.clone(),
+                        };
+                    }
+                    // Canonical same-parent-directory match (transitive sibling
+                    // imports inside the alias-rooted module folder).
+                    if let (Some(candidate_dir), Some(target_dir)) =
+                        (canonical_candidate.parent(), canonical_target.parent())
+                    {
+                        if candidate_dir == target_dir {
+                            return AliasDiskAuthority::Authorized {
+                                canonical_path: canonical_candidate.clone(),
+                                plugin: entry.plugin.clone(),
+                            };
+                        }
+                    }
+                } else if let (Some(candidate_dir), Some(target_dir)) = (
+                    canonical_candidate_parent.as_deref(),
+                    canonical_target.parent(),
+                ) {
+                    // Candidate file is missing but its (existing) directory is
+                    // the alias target's canonical directory: an absent sibling
+                    // import. Keep the plugin-attributed read error.
+                    if candidate_dir == target_dir {
+                        missing_target.get_or_insert_with(|| entry.plugin.clone());
+                    }
+                }
+            }
+            Err(_) => {
+                // Configured target does not exist. If the bundle imported this
+                // exact (still lexical, since there is nothing to canonicalise)
+                // target, keep the plugin-named read error instead of denying.
+                if candidate_path == entry.target {
+                    missing_target.get_or_insert_with(|| entry.plugin.clone());
+                }
             }
         }
     }
-    None
+    match missing_target {
+        Some(plugin) => AliasDiskAuthority::MissingTarget { plugin },
+        None => AliasDiskAuthority::Denied,
+    }
+}
+
+/// Read an alias-authorised module from `path` and wrap it as a JavaScript
+/// `ModuleSource` keyed on the original `specifier` (so deno_core's module map
+/// stays keyed on the imported URL while the bytes come from the canonical
+/// path). `plugin` is used only for diagnostics. Rejects TS/TSX targets — the
+/// V8 host does not transpile — and surfaces read failures with the plugin
+/// attribution.
+fn read_alias_target(specifier: &ModuleSpecifier, path: &Path, plugin: &str) -> ModuleLoadResponse {
+    // v1 limitation: the V8 host does not transpile TS/TSX. Reject these
+    // targets with a clear error rather than letting V8 cough up an opaque
+    // syntax error on the user's source.
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if matches!(ext, "ts" | "tsx" | "mts" | "cts") {
+            return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(format!(
+                "embedded V8 host: alias target `{}` (plugin `{plugin}`) \
+                 has a TypeScript extension, but the V8 host only accepts \
+                 pre-compiled ESM JavaScript. Point the alias at a `.js` \
+                 file or have your bundler pre-process the target.",
+                path.display()
+            ))));
+        }
+    }
+    match std::fs::read_to_string(path) {
+        Ok(src) => ok_js(specifier, &src),
+        Err(e) => ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(format!(
+            "embedded V8 host: alias-rooted file `{}` (under plugin \
+             `{plugin}`'s alias) could not be read: {e}",
+            path.display()
+        )))),
+    }
 }
 
 #[cfg(test)]
