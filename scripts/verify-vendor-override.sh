@@ -31,6 +31,18 @@ set -euo pipefail
 # build.rs (the thing under test) runs unconditionally regardless of that
 # feature.
 #
+# Unix hosts only (macOS/Linux, matching the CI runners this repo uses) —
+# relies on `ln -s`, `shasum`, and unsuffixed binary names as staged by
+# build.rs on those two platform families. Not Windows-portable.
+#
+# Prerequisite: a prior `cargo build --workspace` (or equivalent) in
+# $REPO_ROOT. This both stages the default override sources under
+# crates/zfb/binaries/ AND warms $CARGO_HOME's registry/git caches for
+# every workspace dependency — the isolated `cargo check --offline` run
+# below resolves crates from that cache, not the network, so a genuinely
+# empty $CARGO_HOME will fail at dependency resolution before the
+# override behavior is ever exercised.
+#
 # Usage:
 #   scripts/verify-vendor-override.sh
 #
@@ -49,10 +61,10 @@ pass() { printf '[PASS] %s\n' "$1"; }
 fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }
 
 if [[ ! -f "$ESBUILD_SRC" ]]; then
-  fail "override source esbuild binary not found at $ESBUILD_SRC — run \`cargo build --workspace\` in $REPO_ROOT first (or set ZFB_VERIFY_ESBUILD_SRC)."
+  fail "override source esbuild binary not found at $ESBUILD_SRC — run \`cargo build --workspace\` in $REPO_ROOT first (this also warms \$CARGO_HOME's registry cache, required for the --offline check below) (or set ZFB_VERIFY_ESBUILD_SRC)."
 fi
 if [[ ! -f "$TAILWIND_SRC" ]]; then
-  fail "override source tailwindcss binary not found at $TAILWIND_SRC — run \`cargo build --workspace\` in $REPO_ROOT first (or set ZFB_VERIFY_TAILWIND_SRC)."
+  fail "override source tailwindcss binary not found at $TAILWIND_SRC — run \`cargo build --workspace\` in $REPO_ROOT first (this also warms \$CARGO_HOME's registry cache, required for the --offline check below) (or set ZFB_VERIFY_TAILWIND_SRC)."
 fi
 
 # ── Scratch dirs ─────────────────────────────────────────────────────────
