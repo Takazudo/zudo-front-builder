@@ -158,6 +158,20 @@ fn end_to_end_basic_blog_build() {
     let root = tmp.path();
     copy_dir(&template_dir(), root).expect("copy templates/basic-blog into tempdir");
 
+    // Inject the zfb#1729 regression fixture: an MDX post that wraps the
+    // `<Note>` island around a code demo whose highlighted template used
+    // to leak a bare `{\d}` expression. Pre-fix that tripped the bundler's
+    // downstream-parser gate and degraded the WHOLE page to the
+    // `<pre data-zfb-content-fallback>` shape; the emitter now recovers the
+    // shape as a string literal so the page renders normally.
+    fs::write(
+        root.join("content")
+            .join("blog")
+            .join("token-leak-demo.mdx"),
+        include_str!("fixtures/token_leak_demo.mdx"),
+    )
+    .expect("write token-leak-demo fixture post");
+
     let output = Command::new(zfb_binary!())
         .arg("build")
         .current_dir(root)
@@ -204,4 +218,37 @@ fn end_to_end_basic_blog_build() {
         let path = dist.join("tags").join(tag).join("index.html");
         assert_page_has_nonempty_main(&path, &format!("tag page /tags/{tag}"));
     }
+
+    // zfb#1729 build-level proof: the token-leak-demo post's island +
+    // code demo must render as real content, NOT degrade to the
+    // whole-page fallback.
+    let leak_page = dist.join("blog").join("token-leak-demo").join("index.html");
+    assert_page_has_nonempty_main(&leak_page, "post page /blog/token-leak-demo");
+    let leak_html = fs::read_to_string(&leak_page)
+        .unwrap_or_else(|e| panic!("read {}: {e}", leak_page.display()));
+    assert!(
+        !leak_html.contains("data-zfb-content-fallback"),
+        "zfb#1729: token-leak-demo must NOT render the <pre data-zfb-content-fallback> \
+         shape — the emitter recovered the bare `{{\\d}}` expression, so the content \
+         bridge must have compiled cleanly.\n--- html ---\n{leak_html}"
+    );
+    assert!(
+        !leak_html.contains("[zfb fallback render]"),
+        "zfb#1729: token-leak-demo must NOT carry the raw-body fallback marker.\n\
+         --- html ---\n{leak_html}"
+    );
+    // The `<Note>` island actually rendered (proves real MDX evaluation,
+    // not the raw-body fallback which would omit the component entirely).
+    assert!(
+        leak_html.contains("data-component=\"note\""),
+        "zfb#1729: the <Note> island must render in token-leak-demo (its \
+         `data-component=\"note\"` hook must be present), proving the page did not \
+         fall back.\n--- html ---\n{leak_html}"
+    );
+    // The recovered code bytes survive to the rendered HTML.
+    assert!(
+        leak_html.contains("\\d"),
+        "zfb#1729: the recovered `\\d` code bytes must survive to the rendered HTML.\n\
+         --- html ---\n{leak_html}"
+    );
 }
