@@ -54,11 +54,25 @@ The default path is Cargo-driven. Any normal build that compiles `crates/zfb` ru
 - downloads the pinned Tailwind v4 standalone binary from the upstream GitHub release, verifies it against the `TAILWIND_SHA256_*` constants, and stages it as `crates/zfb/binaries/tailwindcss-v4` (or `.exe` on Windows);
 - copies both verified binaries into the embedded vendor snapshot so installed `zfb` binaries can run without a workspace checkout.
 
-Supported build platforms are `darwin-x64`, `darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, and `win32-x64-msvc`. For unsupported targets such as musl-libc Linux, set both `ZFB_ESBUILD_BIN` and `ZFB_TAILWIND_BIN` to absolute paths for pre-verified binaries.
+Supported build platforms are `darwin-x64`, `darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, and `win32-x64-msvc`, matched against Cargo's exact `TARGET` triple (not a substring match, so `x86_64-unknown-linux-musl` does not accidentally match the `-gnu` platform). For unsupported targets such as musl-libc Linux, set `ZFB_ESBUILD_BIN` and/or `ZFB_TAILWIND_BIN` to absolute paths for pre-verified binaries.
 
 `pnpm fetch:tailwind` still exists as a Tailwind-only developer convenience, but it is not part of first-build setup. Plain `cargo build --workspace` provisions both binaries.
 
+### `ZFB_ESBUILD_BIN` / `ZFB_TAILWIND_BIN` override contract
+
+Each binary resolves its source **independently** — you can override one and let the other download normally; there is no requirement to set both together. When an override env var is set to a non-empty value, `build.rs`:
+
+- requires the value to be an **absolute path** (relative paths are rejected with a clear error);
+- requires the path to exist and be a regular file;
+- stages that exact file into the embedded vendor snapshot in place of a download — **it skips SHA-256 pinning entirely**. Overrides are a documented trust boundary: the operator supplying the path is responsible for verifying it, the same way a locally-built or vendor-mirrored binary would be trusted. `build.rs` never downloads anything for a binary that has a valid override.
+
+An empty-string value (e.g. an env var that is set but blank) is treated as unset, not as an override.
+
+Cargo re-runs the build script when either override env var changes (`cargo:rerun-if-env-changed`), and — once an override path is validated — when that file's contents change (`cargo:rerun-if-changed=<path>`), so editing an override binary in place and rebuilding picks it up without a manual `touch`.
+
 See [`crates/zfb-css/README.md`](./crates/zfb-css/README.md) ("Getting the binary") for the Tailwind runtime contract and the [`crates/zfb/binaries/README.md`](./crates/zfb/binaries/README.md) for the runtime resolution layout.
+
+[`scripts/verify-vendor-override.sh`](./scripts/verify-vendor-override.sh) proves this contract end-to-end on a clean tree: it `git archive`s `HEAD` into a scratch directory (so no gitignored binary slot can be present), symlinks in `node_modules/` from the source checkout (an unrelated prerequisite — `build.rs` also embeds framework packages from `node_modules/.pnpm/`), then runs an offline, isolated-`$CARGO_TARGET_DIR` `cargo check -p zfb --no-default-features --offline` with both override env vars pointed at the source checkout's already-staged binaries. It asserts zero downloads occur, the staged `$OUT_DIR/vendor/bin/` bytes hash-equal the override sources, and a bogus override path fails with the direct path + var-naming error. Run it locally with `scripts/verify-vendor-override.sh` (defaults to `crates/zfb/binaries/esbuild/esbuild` and `crates/zfb/binaries/tailwindcss-v4` as override sources — populate them first with a plain `cargo build --workspace`, which also warms `$CARGO_HOME`'s registry cache so the script's isolated `--offline` check can resolve crates without network access; or point `ZFB_VERIFY_ESBUILD_SRC`/`ZFB_VERIFY_TAILWIND_SRC` at pre-staged binaries elsewhere). Unix hosts only (macOS/Linux). It is not wired into CI or `b4push` — it's a manual confirmation tool, several minutes per run (a cold, isolated `cargo check`).
 
 ## Embedded npm packages
 

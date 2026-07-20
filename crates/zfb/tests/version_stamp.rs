@@ -28,18 +28,35 @@ fn version_stamp_from_env() {
     let tmp = tempfile::tempdir().expect("failed to create temp dir for target isolation");
     let isolated_target = tmp.path().join("target");
 
+    // Suppress build.rs binary downloads: point the override env vars at the
+    // binaries already staged in the workspace-relative crates/zfb/binaries/
+    // directory so build.rs stages those (no network fetch) instead of
+    // attempting a download if run in an environment with no staged slot.
+    // build.rs requires override paths to be absolute (see BUILDING.md's
+    // "ZFB_ESBUILD_BIN / ZFB_TAILWIND_BIN override contract"), so these are
+    // resolved from CARGO_MANIFEST_DIR rather than the old bare `"skip"`
+    // sentinel, which relied on pre-#1772 behavior that never validated the
+    // override value.
+    let binaries_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries");
+    let esbuild_bin = binaries_dir.join("esbuild").join(if cfg!(windows) {
+        "esbuild.exe"
+    } else {
+        "esbuild"
+    });
+    let tailwind_bin = binaries_dir.join(if cfg!(windows) {
+        "tailwindcss-v4.exe"
+    } else {
+        "tailwindcss-v4"
+    });
+
     // env!("CARGO") is the path to the cargo binary that invoked this test,
     // guaranteed to exist and match the toolchain in use.
     let output = Command::new(env!("CARGO"))
         .args(["run", "--quiet", "--package", "zfb", "--", "--version"])
         .env("ZFB_RELEASE_VERSION", test_version)
         .env("CARGO_TARGET_DIR", &isolated_target)
-        // Suppress build.rs binary downloads: binaries already staged in the
-        // workspace-relative crates/zfb/binaries/ directory are reused, but
-        // setting these escape hatches prevents build.rs from attempting a
-        // network fetch if the staged binaries are missing in CI.
-        .env("ZFB_ESBUILD_BIN", "skip")
-        .env("ZFB_TAILWIND_BIN", "skip")
+        .env("ZFB_ESBUILD_BIN", &esbuild_bin)
+        .env("ZFB_TAILWIND_BIN", &tailwind_bin)
         .output()
         .expect("failed to spawn cargo run for version_stamp test");
 
