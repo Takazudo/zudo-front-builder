@@ -668,6 +668,62 @@ pub(crate) fn build_output_path_for_resolved_url(url: &str, extension: Option<&s
     }
 }
 
+/// Describe a route for a collision diagnostic: prefer the concrete source
+/// file when known (static + static-html routes carry it), else the route
+/// template that produced the entry (dynamic-resolved entries carry `None`).
+fn describe_route_source(entry: &RouteUniverseEntry) -> String {
+    match &entry.source_path {
+        Some(p) => format!("{} (route {})", p.display(), entry.route_key),
+        None => format!("route {}", entry.route_key),
+    }
+}
+
+/// Validate that no two routes in the combined universe claim the same
+/// canonical `url_path` or write the same on-disk `output_path` (issue #1768).
+///
+/// Both halves matter because the canonical codec is many-to-one at the
+/// *author* level: a static page authored at `pages/blog/a%3Fb.tsx` and a
+/// dynamic slug `a?b` both canonicalize to `url_path` `/blog/a%3Fb` and to the
+/// same `output_path`, so whichever renders last silently clobbers the other
+/// and one route vanishes from the build with no error. Failing here — after
+/// the static and dynamic universes are combined — surfaces the clash at build
+/// time, naming both sources, instead of as a mysteriously missing page in
+/// production.
+///
+/// SSR-only entries have an empty `output_path` (no disk output); they are
+/// skipped for the output-path check so two runtime routes never false-positive
+/// on the empty path. Their `url_path` is still checked.
+pub(crate) fn validate_no_route_collisions(routes: &[RouteUniverseEntry]) -> Result<(), String> {
+    use std::collections::HashMap;
+    let mut by_url: HashMap<&str, &RouteUniverseEntry> = HashMap::with_capacity(routes.len());
+    let mut by_output: HashMap<&Path, &RouteUniverseEntry> = HashMap::with_capacity(routes.len());
+    for entry in routes {
+        if let Some(prev) = by_url.insert(entry.url_path.as_str(), entry) {
+            return Err(format!(
+                "route URL collision: {:?} is claimed by both {} and {}. \
+                 Two routes resolve to the same canonical URL — rename one so \
+                 their URLs differ.",
+                entry.url_path,
+                describe_route_source(prev),
+                describe_route_source(entry),
+            ));
+        }
+        if !entry.output_path.as_os_str().is_empty() {
+            if let Some(prev) = by_output.insert(entry.output_path.as_path(), entry) {
+                return Err(format!(
+                    "route output-path collision: {} is written by both {} and {}. \
+                     Two routes render to the same file — rename one so their \
+                     output paths differ.",
+                    entry.output_path.display(),
+                    describe_route_source(prev),
+                    describe_route_source(entry),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Render a [`PathsError`] without the long `Display` prefixes, since
 /// the caller already prepends the source path and we don't want
 /// `route` strings doubled in the warning.
@@ -1287,6 +1343,70 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
     use zfb_router::{Route, RouteKind, Segment};
+
+    fn universe_entry(url_path: &str, output: &str, route_key: &str) -> RouteUniverseEntry {
+        RouteUniverseEntry {
+            url_path: url_path.into(),
+            output_path: PathBuf::from(output),
+            route_key: route_key.into(),
+            static_html: false,
+            source_path: None,
+        }
+    }
+
+    /// Distinct routes with distinct URLs + output paths pass (#1768).
+    #[test]
+    fn validate_no_route_collisions_accepts_distinct_routes() {
+        let routes = vec![
+            universe_entry("/about", "about/index.html", "/about"),
+            universe_entry("/blog/hello", "blog/hello/index.html", "/blog/:slug"),
+        ];
+        assert!(validate_no_route_collisions(&routes).is_ok());
+    }
+
+    /// A static `/blog/a%3Fb` and a dynamic slug `a?b` canonicalize to the
+    /// SAME url_path — the build must fail naming both sources (#1768).
+    #[test]
+    fn validate_no_route_collisions_rejects_duplicate_url() {
+        let routes = vec![
+            universe_entry("/blog/a%3Fb", "blog/a%3Fb/index.html", "/blog/a%3Fb"),
+            universe_entry("/blog/a%3Fb", "blog/a%3Fb/index.html", "/blog/:slug"),
+        ];
+        let err = validate_no_route_collisions(&routes).unwrap_err();
+        assert!(err.contains("collision"), "got: {err}");
+        assert!(
+            err.contains("/blog/a%3Fb"),
+            "diagnostic must name the URL: {err}"
+        );
+        assert!(
+            err.contains("/blog/:slug"),
+            "diagnostic must name both sources: {err}"
+        );
+    }
+
+    /// Two routes that write the same file (different url_paths, same output)
+    /// also collide (#1768).
+    #[test]
+    fn validate_no_route_collisions_rejects_duplicate_output_path() {
+        let routes = vec![
+            universe_entry("/a", "shared/index.html", "/a"),
+            universe_entry("/b", "shared/index.html", "/b"),
+        ];
+        let err = validate_no_route_collisions(&routes).unwrap_err();
+        assert!(err.contains("output-path collision"), "got: {err}");
+        assert!(err.contains("shared/index.html"), "got: {err}");
+    }
+
+    /// SSR-only entries carry an empty output_path; two of them must NOT
+    /// false-positive on the empty path (#1768).
+    #[test]
+    fn validate_no_route_collisions_ignores_empty_output_paths() {
+        let routes = vec![
+            universe_entry("/ssr-a", "", "/ssr-a"),
+            universe_entry("/ssr-b", "", "/ssr-b"),
+        ];
+        assert!(validate_no_route_collisions(&routes).is_ok());
+    }
 
     fn static_route(segments: Vec<&str>, source: &str) -> Route {
         let segs: Vec<Segment> = segments

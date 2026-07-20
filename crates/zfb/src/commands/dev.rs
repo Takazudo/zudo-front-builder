@@ -4059,8 +4059,9 @@ impl DevRenderSession {
     /// - Base-prefix-stripped (the server removes the prefix before
     ///   dispatching — the index never sees it).
     /// - May carry a query string (stripped here before lookup).
-    /// - May be percent-encoded (decoded here before lookup so
-    ///   `/posts/caf%C3%A9` resolves like `/posts/café`).
+    /// - May be percent-encoded (decoded once, then re-canonicalized to the
+    ///   encoded `url_path` form before lookup so `/posts/caf%C3%A9` resolves
+    ///   the `/posts/caf%C3%A9` route — issue #1768).
     ///
     /// Returns `Some(entry)` when a matching SSG route exists, `None` for
     /// SSR-only routes, dynamic routes that were never expanded, and any
@@ -4075,9 +4076,18 @@ impl DevRenderSession {
         // proceeds rather than panicking.
         let decoded = percent_decode_url(path_only);
 
+        // Boundary invariant (#1768): `url_index` is keyed on the encoded
+        // canonical `url_path` the choke point produced, but `decoded` is the
+        // raw form. Re-canonicalize with the same segment codec so
+        // `canonical_encode(decoded) == entry.url_path`. This is EXACTLY ONE
+        // decode (percent_decode_url above) followed by a pure re-encode —
+        // never a second decode, so `%252F` resolves the `%2F`-containing
+        // value with its segment structure intact.
+        let canonical = zfb_render::paths::canonical_encode_path(decoded.as_ref());
+
         // Strip a leading slash so `url_index_lookup_keys` can prepend it
         // uniformly (the function expects the path WITHOUT a leading slash).
-        let without_leading = decoded.trim_start_matches('/');
+        let without_leading = canonical.trim_start_matches('/');
 
         let tables = self.inner.routes.read().unwrap_or_else(|p| p.into_inner());
         for key in url_index_lookup_keys(without_leading) {
@@ -11200,12 +11210,38 @@ mod tests {
         assert_lookup(&session, "/posts/a?x=1&y=2", "/posts/a");
     }
 
-    /// Percent-encoded paths are decoded before lookup:
-    /// `/posts/caf%C3%A9` → decoded to `/posts/café` → resolves.
+    /// Canonical contract (#1768): the route universe stores the ENCODED
+    /// canonical `url_path`, and a request decodes once then re-canonicalizes
+    /// back to that spelling. A non-ASCII route lives under `/posts/caf%C3%A9`;
+    /// requesting either the encoded or the raw-UTF-8 form resolves it.
     #[test]
-    fn url_index_percent_encoding_decoded() {
-        let session = session_with_route("/posts/café");
-        assert_lookup(&session, "/posts/caf%C3%A9", "/posts/café");
+    fn url_index_percent_encoding_canonical_round_trip() {
+        let session = session_with_route("/posts/caf%C3%A9");
+        // Encoded request: decode once → `/posts/café` → re-encode → match.
+        assert_lookup(&session, "/posts/caf%C3%A9", "/posts/caf%C3%A9");
+        // Raw-UTF-8 request (no `%`): canonical-encodes straight to the entry.
+        assert_lookup(&session, "/posts/café", "/posts/caf%C3%A9");
+    }
+
+    /// EXACTLY ONE decode (#1768): a `%252F` request decodes a single level to
+    /// the literal `%2F`, which re-canonicalizes to `%252F` — the encoded
+    /// slash is preserved as one segment, never collapsed into a real `/`.
+    /// A second decode would wrongly resolve a two-segment `/blog/a/b` route.
+    #[test]
+    fn url_index_double_encoded_slash_decodes_exactly_once() {
+        let session = session_with_route("/blog/a%252Fb");
+        assert_lookup(&session, "/blog/a%252Fb", "/blog/a%252Fb");
+        // The once-decoded value must NOT match the entry (proves no double
+        // decode collapses `%2F` into a `/`).
+        assert_no_lookup(&session, "/blog/a%2Fb");
+    }
+
+    /// A slug with `?`, space, and non-ASCII stored in canonical encoded form
+    /// resolves when requested with its percent-encoded path (#1768).
+    #[test]
+    fn url_index_special_char_slug_resolves_encoded() {
+        let session = session_with_route("/blog/a%3Fb%20c%C3%A9");
+        assert_lookup(&session, "/blog/a%3Fb%20c%C3%A9", "/blog/a%3Fb%20c%C3%A9");
     }
 
     /// Non-HTML routes (e.g. `feed.xml`, `sitemap.xml`) are indexed verbatim
