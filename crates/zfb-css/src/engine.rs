@@ -107,6 +107,16 @@ pub struct TailwindSubprocessConfig {
     /// directives so an exclusion always has something to exclude *from*
     /// by the time Tailwind evaluates it.
     ///
+    /// Like `content_globs` / `framework_package_globs`, entries are
+    /// written verbatim — the engine does NOT rebase them onto
+    /// `working_dir`. Only `@source`/`@source not` lines parsed out of
+    /// user-authored `input_css` get that treatment (zfb#1327). Tailwind
+    /// resolves a relative directive against the synthesised entry's own
+    /// directory (see [`entry_dir`], which can differ from `working_dir`
+    /// when `input_css` is set), so callers populating this field must
+    /// supply already-absolute globs — exactly as `crates/zfb/src/commands/build.rs`
+    /// already does for `content_globs`.
+    ///
     /// Defaults to empty — no behavior change for callers that don't set
     /// it.
     pub negative_source_globs: Vec<String>,
