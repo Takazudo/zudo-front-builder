@@ -53,7 +53,9 @@ use crate::plan::{PageSelection, RebuildPlan};
 use crate::policy::{classify_change_with_content_roots, GranularityPolicy, PathClass};
 
 /// Register non-recursive parent watches for browser dependency closures
-/// discovered outside the configured recursive source roots.
+/// discovered outside the configured recursive source roots, AND reconcile
+/// the CSS sibling-mirror-root recursive-directory watch set (issue #1802,
+/// epic #1799) against the policy's current CSS source plan.
 ///
 /// The parents newly watched by a call are the out-of-recursive-root
 /// dependency directories that just entered the watch set — in a pnpm
@@ -67,13 +69,33 @@ use crate::policy::{classify_change_with_content_roots, GranularityPolicy, PathC
 /// `watch-extra registered:` line. It is the deterministic signal an e2e keys
 /// its "the sibling directory is now watched" wait on before editing the
 /// sibling (see the deflaking recipe's Step-5 escalation).
-fn register_dynamic_dependency_watches(watcher: &mut Watcher, policy: &GranularityPolicy) {
-    let newly_watched = watcher.watch_additional_files(policy.dynamic_dependency_paths());
+///
+/// The CSS mirror-root reconciliation (issue #1802) reuses the exact same
+/// `watch-extra registered:` signal: `Watcher::sync_recursive_dir_watches`
+/// (issue #1801) is called every tick with the policy's CURRENT full root
+/// set (replace semantics — a root the latest CSS recompute no longer
+/// claims is retired) and `css_mirror_skip_dir_names`, returning only the
+/// roots genuinely newly watched this call, so an unchanged plan is a
+/// cheap no-op that never re-emits the signal.
+///
+/// Returns the union of both newly-watched sets — every path this call
+/// caused to become watched for the first time — for callers (and tests)
+/// that want the signal without depending on the `ZFB_DEV_TIMING` env gate.
+fn register_dynamic_dependency_watches(
+    watcher: &mut Watcher,
+    policy: &GranularityPolicy,
+    css_mirror_skip_dir_names: &[String],
+) -> Vec<PathBuf> {
+    let mut newly_watched = watcher.watch_additional_files(policy.dynamic_dependency_paths());
+    let newly_watched_dirs = watcher
+        .sync_recursive_dir_watches(policy.css_mirror_root_paths(), css_mirror_skip_dir_names);
     if dev_timing_enabled() {
-        for dir in &newly_watched {
+        for dir in newly_watched.iter().chain(newly_watched_dirs.iter()) {
             eprintln!("[zfb-timing] watch-extra registered: {}", dir.display());
         }
     }
+    newly_watched.extend(newly_watched_dirs);
+    newly_watched
 }
 
 /// `ZFB_DEV_TIMING` gate for the per-tick kind/narrowing trace (issue #1058).
@@ -224,6 +246,16 @@ pub struct OrchestratorConfig {
     /// Granularity policy. Defaults to [`GranularityPolicy::default`].
     pub policy: GranularityPolicy,
 
+    /// Directory-name skip list applied to the CSS sibling-mirror-root
+    /// recursive-directory watch (issue #1802, epic #1799) —
+    /// [`zfb_watcher::Watcher::sync_recursive_dir_watches`]'s
+    /// `skip_dir_names` parameter. Owned by the `zfb` command layer
+    /// (`CSS_SIBLING_MIRROR_SKIP_DIRS`); this crate stores it opaquely and
+    /// knows nothing about CSS. Empty by default — an empty list means no
+    /// suppression, i.e. every file under a registered mirror root is
+    /// delivered.
+    pub css_mirror_skip_dir_names: Vec<String>,
+
     /// Optional override for the watcher debounce window. `None` =
     /// `zfb_watcher::DEFAULT_DEBOUNCE` (50ms).
     pub debounce: Option<Duration>,
@@ -247,6 +279,7 @@ impl std::fmt::Debug for OrchestratorConfig {
             .field("watch_roots", &self.watch_roots)
             .field("extra_watch_paths", &self.extra_watch_paths)
             .field("policy", &self.policy)
+            .field("css_mirror_skip_dir_names", &self.css_mirror_skip_dir_names)
             .field("debounce", &self.debounce)
             .field(
                 "external_invalidation",
@@ -266,6 +299,7 @@ impl OrchestratorConfig {
             watch_roots,
             extra_watch_paths: Vec::new(),
             policy: GranularityPolicy::default(),
+            css_mirror_skip_dir_names: Vec::new(),
             debounce: None,
             external_invalidation: None,
         }
@@ -274,6 +308,13 @@ impl OrchestratorConfig {
     /// Override the policy (chainable).
     pub fn with_policy(mut self, policy: GranularityPolicy) -> Self {
         self.policy = policy;
+        self
+    }
+
+    /// Set the CSS sibling-mirror-root skip-dir names (chainable, issue
+    /// #1802). See [`Self::css_mirror_skip_dir_names`].
+    pub fn with_css_mirror_skip_dir_names(mut self, names: Vec<String>) -> Self {
+        self.css_mirror_skip_dir_names = names;
         self
     }
 
@@ -433,6 +474,16 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     |p| graph.is_global(p),
                 );
                 if class == PathClass::Style {
+                    plan.mark_css();
+                }
+                // #1288/#1804 — the same unconditional Module→mark_css rule
+                // the main classified-path arm below applies (a `.tsx` edit
+                // may author a new Tailwind utility class) must also apply
+                // here: a narrowing hook only overrides the page SELECTION,
+                // not the asset-rebuild flags (see the comment above this
+                // arm), and without this line a hook-narrowed external
+                // Module edit silently dropped the CSS content rescan.
+                if matches!(class, PathClass::Module) {
                     plan.mark_css();
                 }
                 if matches!(class, PathClass::Module)
@@ -1166,7 +1217,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         // deletes, and recreations enter the same watcher channel. The
         // registry exposes the last successful closures, so a transient failed
         // rebuild never drops recovery watches.
-        register_dynamic_dependency_watches(&mut watcher, &self.config.policy);
+        register_dynamic_dependency_watches(
+            &mut watcher,
+            &self.config.policy,
+            &self.config.css_mirror_skip_dir_names,
+        );
 
         // Drain loop: wait for the first event, then drain everything
         // currently in the channel so we coalesce concurrent bursts
@@ -1231,7 +1286,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // dependency closures. Add newly-discovered parents before
             // waiting for the next event; the watcher deduplicates
             // existing/covered paths.
-            register_dynamic_dependency_watches(&mut watcher, &this.config.policy);
+            register_dynamic_dependency_watches(
+                &mut watcher,
+                &this.config.policy,
+                &this.config.css_mirror_skip_dir_names,
+            );
             match result {
                 Ok(Some(outcome)) => on_outcome(&outcome),
                 Ok(None) => {
@@ -1344,6 +1403,57 @@ mod tests {
         // emitted into `/assets/styles.css` without touching the CSS entry
         // (symptom C of #1284). This flipped from the previous `!rerun_css`.
         assert!(plan.rerun_css);
+    }
+
+    /// Issue #1804 (Tailwind Sibling Source epic #1799, Wave 3 confirm
+    /// pass): end-to-end proof of the invalidation chain a workspace-sibling
+    /// mirror root relies on, with NO `external_invalidation` hook
+    /// configured — the realistic zfb dev-server default (`grep -rn
+    /// with_external_invalidation crates/zfb/src` finds no call site; only
+    /// `zfb-build`'s own tests and the opt-in consumer API exercise the
+    /// hook). The chain:
+    ///
+    /// 1. An out-of-root `.tsx` classifies as `PathClass::Module` via
+    ///    extension sniff, NOT the in-tree root-segment walk — proven
+    ///    directly by `out_of_root_paths_skip_root_segment_walk` in
+    ///    `policy.rs` (`classify_change_with_content_roots`,
+    ///    `policy.rs:349-358` region).
+    /// 2. That `Module` classification hits the SAME unconditional #1288
+    ///    `mark_css` rule `shared_component_dirties_all_consumers` (just
+    ///    above) proves for an IN-root path — the main classified-path arm
+    ///    does not distinguish in-root from out-of-root, only `PathClass`.
+    /// 3. `plan.rerun_css` being set is what
+    ///    `pipeline::dev::tests::css_rerun_invokes_callback` proves drives
+    ///    `ctx.run_css()` (`pipeline/dev.rs`, the `if plan.rerun_css { .. }`
+    ///    block).
+    ///
+    /// **Scope boundary — read before assuming this covers content too:**
+    /// this chain holds for `.tsx` / `PathClass::Module` sibling edits
+    /// ONLY. An out-of-root `.md`/`.mdx` edit classifies as
+    /// `PathClass::Content` instead (see `classify_by_extension`), and
+    /// `mark_css` is gated on `PathClass::Module` alone — so a
+    /// Content-classified mirror-root edit does NOT rerun the Tailwind
+    /// scan today, even though `discover_css_source_files` also scans
+    /// `.md`/`.mdx`. That gap is tracked separately as issue #1819 (found
+    /// during this epic's Wave 2 codex review) and is deliberately NOT
+    /// fixed here — it shares planner logic with a much wider blast
+    /// radius and needs its own test-first pass.
+    #[test]
+    fn out_of_root_module_change_without_hook_still_reruns_css() {
+        let orch = make_orch(CountingPipeline::default());
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/lib/Utils.tsx")]);
+        assert!(
+            plan.pages.is_all(),
+            "the graph has no edges for an unknown out-of-root module, so the \
+             conservative PageSelection::All fallback applies here -- accepted \
+             in this epic (narrowing aggregate-page provenance is issue #1583's \
+             job, NOT this one); got {:?}",
+            plan.pages,
+        );
+        assert!(
+            plan.rerun_css,
+            "an out-of-root Module change must still rerun the CSS content scan (#1288)"
+        );
     }
 
     #[test]
@@ -1572,6 +1682,42 @@ mod tests {
         assert!(
             plan.rerun_islands,
             "narrowing an external islands module must still rerun the islands bundle"
+        );
+        assert!(plan.ssr_reload_needed);
+    }
+
+    /// Issue #1804 (Tailwind Sibling Source epic #1799, Wave 3 confirm
+    /// pass): the #1288 rule — a `Module` change may author a new Tailwind
+    /// utility class, so `mark_css` fires unconditionally on any
+    /// `Module`-classified change — was applied only in the main
+    /// classified-path arm, never in this external-override arm. A
+    /// narrowing hook could accept an out-of-root `.tsx` edit and the CSS
+    /// content scan would never re-run, leaving a newly-introduced utility
+    /// class unemitted from `dist/assets/styles-*.css`.
+    ///
+    /// `lib/` is deliberately NOT one of the default `islands_roots`
+    /// (`components`, `src`), so `rerun_islands` stays false here — this
+    /// isolates the CSS-only assertion from the islands rule the sibling
+    /// test above already covers.
+    #[test]
+    fn external_hook_narrowing_module_still_reruns_css() {
+        let hook: ExternalInvalidationHook =
+            Arc::new(|_path: &Path| Some(vec![pid("/proj/pages/a.tsx")]));
+        let orch = make_orch_with_external_hook(CountingPipeline::default(), hook);
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/srv/shared/lib/Utils.tsx")]);
+        match &plan.pages {
+            PageSelection::Specific(s) => {
+                assert_eq!(*s, BTreeSet::from([pid("/proj/pages/a.tsx")]));
+            }
+            other => unreachable!("expected PageSelection::Specific, got {other:?}"),
+        }
+        assert!(
+            plan.rerun_css,
+            "narrowing an external Module path must still rerun the CSS content scan (#1288)"
+        );
+        assert!(
+            !plan.rerun_islands,
+            "lib/ is not an islands root by default; only the CSS rule should fire here"
         );
         assert!(plan.ssr_reload_needed);
     }
@@ -2462,7 +2608,7 @@ mod tests {
             Duration::from_millis(50),
         )
         .unwrap();
-        register_dynamic_dependency_watches(&mut watcher, &policy);
+        register_dynamic_dependency_watches(&mut watcher, &policy, &[]);
 
         // `lib/` is deliberately absent from the recursive boot roots. The
         // client worker registry must add its parent as a dynamic watch.
@@ -2529,7 +2675,7 @@ mod tests {
             Duration::from_millis(50),
         )
         .unwrap();
-        register_dynamic_dependency_watches(&mut watcher, &policy);
+        register_dynamic_dependency_watches(&mut watcher, &policy, &[]);
 
         // `lib/` is deliberately absent from the recursive boot roots. The
         // client raw snapshot must register its parent dynamically and keep
@@ -2561,6 +2707,78 @@ mod tests {
             ),
             "watching the raw target parent must preserve recreate recovery"
         );
+        watcher.shutdown().await;
+    }
+
+    /// Issue #1802 (epic #1799, gap (a)): `register_dynamic_dependency_watches`
+    /// reconciles the policy's CSS sibling-mirror-root set through
+    /// `Watcher::sync_recursive_dir_watches` every tick. The first call over
+    /// a root outside the boot recursive roots must register it (the
+    /// `watch-extra registered:` signal, returned here directly rather than
+    /// scraped from `ZFB_DEV_TIMING` output) AND that registration must be
+    /// genuinely live, not just recorded. A second call against the
+    /// UNCHANGED policy must be a no-op: no re-emitted signal for a root
+    /// already known.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn css_mirror_root_reconciliation_is_idempotent_and_watches_new_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        let sibling = root.join("sibling");
+        std::fs::create_dir_all(&sibling).unwrap();
+
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_css_mirror_roots([sibling.clone()]);
+        let policy =
+            crate::policy::GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        assert!(policy.css_mirror_root_paths().contains(&sibling));
+
+        let (mut watcher, mut rx) = Watcher::start_with_debounce(
+            &root,
+            std::iter::once("pages"),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+
+        // `sibling/` is deliberately absent from the recursive boot roots
+        // (only `pages/` is watched at boot). The first reconciliation must
+        // report it as newly watched.
+        let first = register_dynamic_dependency_watches(&mut watcher, &policy, &[]);
+        assert!(
+            first.contains(&sibling),
+            "the first reconciliation must report the mirror root as newly watched: {first:?}"
+        );
+
+        // Prove it's genuinely live, not just recorded in a registration set
+        // — settle any boot-time notify noise first, matching the sibling
+        // tests above.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        while rx.try_recv().is_ok() {}
+        std::fs::write(sibling.join("marker.txt"), b"one").unwrap();
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            while let Some(change) = rx.recv().await {
+                if change.path.starts_with(&sibling) {
+                    return Some(change.kind);
+                }
+            }
+            None
+        })
+        .await
+        .expect("a write under the newly-registered mirror root must reach the watcher");
+        assert!(
+            matches!(observed, Some(ChangeKind::Created | ChangeKind::Modified)),
+            "expected a Created/Modified event under the mirror root, got {observed:?}"
+        );
+
+        // A second reconciliation against the SAME unchanged policy must not
+        // re-report the root — it is already known/watched.
+        let second = register_dynamic_dependency_watches(&mut watcher, &policy, &[]);
+        assert!(
+            second.is_empty(),
+            "reconciling an unchanged mirror-root set must not re-emit the \
+             `watch-extra registered:` signal: {second:?}"
+        );
+
         watcher.shutdown().await;
     }
 

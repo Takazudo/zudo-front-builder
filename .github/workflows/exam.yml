@@ -240,7 +240,9 @@ jobs:
               | test(=e2e_transitive_css_import_refreshes_stylesheet)
               | test(=e2e_new_utility_class_in_component_is_emitted)
               | test(=e2e_dev_watches_workspace_sibling_raw_and_worker_sources)
+              | test(=e2e_dev_sibling_tailwind_utility_class_refreshes_served_css)
               | test(=sibling_only_utility_class_reaches_tailwind_source_scan_and_is_emitted)
+              | test(=sibling_generated_dir_utility_class_is_excluded_from_tailwind_source_scan)
           ' 2>&1 | tee target/nextest-logs/exam-quarantine.log
           rc=${PIPESTATUS[0]}
           set -e

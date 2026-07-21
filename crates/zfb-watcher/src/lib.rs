@@ -35,9 +35,11 @@
 //!   already-watched parent is handled automatically by recursive
 //!   watching.)
 
-use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ffi::OsString;
+use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher};
@@ -87,7 +89,9 @@ pub struct Change {
 /// receiver end of the `Change` channel.
 pub struct Watcher {
     // Kept alive: dropping the notify watcher stops the OS-level watch.
-    _notify: RecommendedWatcher,
+    // Wrapped so a dependency-parent registration can never downgrade an
+    // active synced recursive root — see `GuardedNotifyWatcher`.
+    _notify: GuardedNotifyWatcher,
     // Some(_) until Drop fires the shutdown signal.
     shutdown: Option<oneshot::Sender<()>>,
     // Detached on drop (JoinHandle dropped without abort); the task
@@ -97,13 +101,187 @@ pub struct Watcher {
     /// skip any parent already covered by one of these roots.
     watched_recursive_roots: BTreeSet<PathBuf>,
     /// Exact directories registered non-recursively for live dependencies
-    /// discovered after boot.
-    watched_dependency_dirs: BTreeSet<PathBuf>,
+    /// discovered after boot. Interior-locked and shared with the notify
+    /// callback: the recursive-dir event filter exempts these dirs and their
+    /// direct children from skip-dir suppression and must observe additions
+    /// LIVE — see [`SharedPathSet`].
+    watched_dependency_dirs: SharedPathSet,
+    /// Delivery-time suppression state for the roots owned by
+    /// [`Watcher::sync_recursive_dir_watches`], shared with the notify
+    /// callback (which drops suppressed paths before the bridge channel).
+    recursive_dir_filter: Arc<Mutex<RecursiveDirFilterCore>>,
+    /// Recursive directory roots currently registered via
+    /// [`Watcher::sync_recursive_dir_watches`] (root as registered → its
+    /// alias spellings). Deliberately separate from
+    /// `watched_recursive_roots`: boot roots are permanent and unfiltered,
+    /// these are reconcilable (replace semantics) and skip-dir-filtered.
+    synced_recursive_dirs: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
 }
 
 fn watch_aliases(path: &Path) -> impl Iterator<Item = PathBuf> {
     let canonical = path.canonicalize().ok();
     std::iter::once(path.to_path_buf()).chain(canonical)
+}
+
+fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    // The critical sections guarded here are trivial set operations; a
+    // poisoned lock cannot leave them half-written, so recover the guard
+    // rather than panicking the notify callback thread.
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Path set shared between the [`Watcher`] handle and the notify-callback
+/// event filter.
+///
+/// Interior-locked so `watch_additional_files` additions are visible to the
+/// filter LIVE. A snapshot copied at `sync_recursive_dir_watches` time would
+/// leave a stale window in which a dependency parent registered AFTER the
+/// last sync loses its skip-dir exemption — suppressing events an existing
+/// consumer is entitled to (e.g. a first-party dependency file living inside
+/// a sibling package's `dist/`).
+#[derive(Clone, Default)]
+struct SharedPathSet {
+    inner: Arc<Mutex<BTreeSet<PathBuf>>>,
+}
+
+impl SharedPathSet {
+    fn contains(&self, path: &Path) -> bool {
+        lock_ignoring_poison(&self.inner).contains(path)
+    }
+
+    fn extend<I: IntoIterator<Item = PathBuf>>(&self, paths: I) {
+        lock_ignoring_poison(&self.inner).extend(paths);
+    }
+
+    /// Point-in-time copy, used by the retire-time collateral repair scan
+    /// (which must not hold the lock while issuing notify calls).
+    fn snapshot(&self) -> BTreeSet<PathBuf> {
+        lock_ignoring_poison(&self.inner).clone()
+    }
+}
+
+/// Thin wrapper around the notify watcher that protects active synced
+/// recursive roots from being silently downgraded.
+///
+/// notify backends REPLACE the registration for an exact path on a repeat
+/// `watch()` call, so a `watch_additional_files` invocation whose dependency
+/// parent IS a currently-synced recursive root would swap that root's
+/// registration to non-recursive and strip deep delivery while
+/// `synced_recursive_dirs` still records it as recursive. The recursive
+/// watch already delivers everything a non-recursive dir watch would (the
+/// dir itself plus direct children), so such a call is answered `Ok` without
+/// touching the OS watch. Dependency ownership still lands in
+/// `watched_dependency_dirs` (the caller's own bookkeeping line), which the
+/// retire path later uses to downgrade rather than unwatch — so the
+/// dependency consumer's coverage survives the whole lifecycle.
+///
+/// Everything else passes straight through.
+struct GuardedNotifyWatcher {
+    inner: RecommendedWatcher,
+    filter: Arc<Mutex<RecursiveDirFilterCore>>,
+}
+
+impl GuardedNotifyWatcher {
+    fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+        if matches!(mode, RecursiveMode::NonRecursive) {
+            let covered = {
+                let filter = lock_ignoring_poison(&self.filter);
+                // Ancestry, not exact equality (issue #1799 review): a
+                // recursive root covers everything BENEATH it, so a
+                // dependency parent nested under an active synced root is
+                // already fully delivered. Matching only the root itself
+                // let such a path through to a redundant OS watch —
+                // duplicate delivery on inotify, plus a spurious
+                // `watch-extra registered:` line that the dev e2e tests
+                // key their waits on.
+                watch_aliases(path).any(|alias| {
+                    filter
+                        .active_roots
+                        .iter()
+                        .any(|root| alias.starts_with(root))
+                })
+            };
+            if covered {
+                return Ok(());
+            }
+        }
+        self.inner.watch(path, mode)
+    }
+
+    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+        self.inner.unwatch(path)
+    }
+}
+
+/// Delivery-time suppression state for roots registered via
+/// [`Watcher::sync_recursive_dir_watches`].
+///
+/// A recursive `notify` registration cannot exclude subdirectories, so
+/// skip-directory suppression happens here, on event delivery, inside the
+/// notify callback — BEFORE the bridge channel and the debounced output
+/// channel, so a skip-dir flood (a cargo build writing into a watched
+/// sibling's `target/`, an npm install into its `node_modules/`) never
+/// reaches the debouncer at all. Matching is by exact path-component name,
+/// which also covers skip directories created AFTER the root was registered.
+///
+/// ## Safety invariant: delivery stays a superset of the pre-sync watcher
+///
+/// Suppression may only remove events that EXCLUSIVELY the
+/// `sync_recursive_dir_watches` registrations could have produced. Events
+/// covered by a boot recursive root, or by a dynamic dependency parent from
+/// `watch_additional_files` (the dir itself or a direct child — exactly the
+/// delivery a non-recursive dir watch provides), are exempt even when they
+/// sit inside a skip directory of an active root: those consumers received
+/// their events before this API existed, and silently narrowing their
+/// delivery would trade a perf feature for a correctness bug (the
+/// `PageSelection::All` trap — aggregate pages depend on over-broad
+/// delivery; issue #1583 owns narrowing).
+#[derive(Default)]
+struct RecursiveDirFilterCore {
+    /// Alias spellings (as-given + canonical) of every currently-active
+    /// recursive dir root owned by `sync_recursive_dir_watches`.
+    active_roots: BTreeSet<PathBuf>,
+    /// Caller-supplied skip directory names, matched as exact path
+    /// components (`dist` never suppresses `distress`).
+    skip_names: BTreeSet<OsString>,
+    /// Boot recursive roots (static after start) — exempt from suppression.
+    boot_roots: BTreeSet<PathBuf>,
+}
+
+impl RecursiveDirFilterCore {
+    /// `true` if `path` must not be delivered: it lies inside a skip-named
+    /// directory somewhere BELOW an active synced root (any depth, exact
+    /// component equality — the root's own name never counts), and no
+    /// pre-existing watch consumer (boot root / dependency dir) has a claim
+    /// on it. See the type docs for the superset invariant.
+    fn suppresses(&self, path: &Path, dependency_dirs: &SharedPathSet) -> bool {
+        if self.active_roots.is_empty() || self.skip_names.is_empty() {
+            return false;
+        }
+        let inside_skip_dir = self.active_roots.iter().any(|root| {
+            path.strip_prefix(root).is_ok_and(|rel| {
+                rel.components().any(|component| {
+                    matches!(component, Component::Normal(name) if self.skip_names.contains(name))
+                })
+            })
+        });
+        if !inside_skip_dir {
+            return false;
+        }
+        if self.boot_roots.iter().any(|root| path.starts_with(root)) {
+            return false;
+        }
+        if dependency_dirs.contains(path) {
+            return false;
+        }
+        if path
+            .parent()
+            .is_some_and(|parent| dependency_dirs.contains(parent))
+        {
+            return false;
+        }
+        true
+    }
 }
 
 impl Watcher {
@@ -180,7 +358,37 @@ impl Watcher {
 
         // notify hands us events on a sync channel from a thread it owns.
         let (raw_tx, raw_rx) = std_mpsc::channel::<notify::Result<Event>>();
-        let mut notify_watcher = notify::recommended_watcher(move |res| {
+        // Shared with the notify callback so `sync_recursive_dir_watches`
+        // skip-dir suppression happens on the notify thread, before the
+        // bridge channel — see `RecursiveDirFilterCore`. Empty until that
+        // API is first called, so the callback is a passthrough at boot.
+        let recursive_dir_filter = Arc::new(Mutex::new(RecursiveDirFilterCore::default()));
+        let watched_dependency_dirs = SharedPathSet::default();
+        let filter_for_events = Arc::clone(&recursive_dir_filter);
+        let dependency_dirs_for_events = watched_dependency_dirs.clone();
+        let mut notify_watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
+            let res = match res {
+                Ok(mut evt) => {
+                    if !evt.paths.is_empty() {
+                        {
+                            let filter = lock_ignoring_poison(&filter_for_events);
+                            evt.paths.retain(|path| {
+                                !filter.suppresses(path, &dependency_dirs_for_events)
+                            });
+                        }
+                        if evt.paths.is_empty() {
+                            // Every path sat inside a skip directory: drop
+                            // the event entirely so a skip-dir storm never
+                            // reaches the channel. (A born-pathless event
+                            // still passes through above — it is a no-op
+                            // downstream either way.)
+                            return;
+                        }
+                    }
+                    Ok(evt)
+                }
+                Err(error) => Err(error),
+            };
             // Best-effort send; if the receiver is gone the watcher is
             // shutting down and we should quietly stop pushing.
             let _ = raw_tx.send(res);
@@ -222,6 +430,13 @@ impl Watcher {
             }
         }
 
+        // The recursive-dir filter exempts anything under a boot recursive
+        // root from skip-dir suppression (see `RecursiveDirFilterCore`); the
+        // boot set is final from here on. Events arriving before this line
+        // are unaffected: the filter's active-root set is still empty, which
+        // short-circuits `suppresses` to false.
+        lock_ignoring_poison(&recursive_dir_filter).boot_roots = watched_recursive_roots.clone();
+
         // Outbound channel: bounded but generous. 256 should comfortably
         // absorb a `git checkout` burst that survived debouncing.
         let (out_tx, out_rx) = mpsc::channel::<Change>(256);
@@ -231,11 +446,16 @@ impl Watcher {
 
         Ok((
             Self {
-                _notify: notify_watcher,
+                _notify: GuardedNotifyWatcher {
+                    inner: notify_watcher,
+                    filter: Arc::clone(&recursive_dir_filter),
+                },
                 shutdown: Some(shutdown_tx),
                 debouncer: Some(debouncer),
                 watched_recursive_roots,
-                watched_dependency_dirs: BTreeSet::new(),
+                watched_dependency_dirs,
+                recursive_dir_filter,
+                synced_recursive_dirs: BTreeMap::new(),
             },
             out_rx,
         ))
@@ -300,6 +520,289 @@ impl Watcher {
                 newly_watched.push(parent.to_path_buf());
             }
         }
+        newly_watched
+    }
+
+    /// Reconcile the set of recursively-watched directory roots owned by
+    /// this API against `desired_roots`, suppressing delivery of events
+    /// under directories whose NAME matches one of `skip_dir_names`. Built
+    /// for CSS sibling mirror roots (epic #1799, issue #1801) but knows
+    /// nothing about CSS.
+    ///
+    /// **Replace semantics.** Each call supplies the FULL desired root set
+    /// (the consuming registry recomputes it per plan change). Roots present
+    /// in a previous call but absent from this one are retired — unwatched
+    /// at the OS level, so a root dropped by a plan change stops delivering
+    /// (and cannot storm). Roots present in both calls are kept untouched.
+    /// Returns the roots genuinely NEWLY watched by this call — the caller's
+    /// `watch-extra registered:` timing signal — so a repeat call with the
+    /// same set returns empty.
+    ///
+    /// **Skip names are caller-supplied by design**: the skip list (e.g.
+    /// `node_modules`/`dist`/`target`/…) belongs to the zfb command layer,
+    /// not to this crate. Names match exact path COMPONENTS at any depth
+    /// below a synced root (`dist` never suppresses `distress`; the root's
+    /// own name never counts), applied on delivery — so a skip directory
+    /// created AFTER registration is suppressed too. The set replaces the
+    /// previous call's set wholesale. Suppression can only remove events
+    /// that exclusively these registrations produce — boot-root and
+    /// dependency-dir traffic is never narrowed (see
+    /// `RecursiveDirFilterCore`'s superset invariant).
+    ///
+    /// Each desired root:
+    ///
+    /// - MUST be absolute (warned and skipped otherwise, matching
+    ///   [`Watcher::watch_additional_files`]).
+    /// - Is warned and skipped when missing on disk (the boot registration
+    ///   policy); a later call can pick it up once it exists.
+    /// - Is deduplicated — never watched again and never reported — when
+    ///   covered by a boot recursive root, by another desired root above it
+    ///   (overlapping roots collapse to the outermost), or, via canonical
+    ///   aliases, by a different spelling of an already-registered root.
+    /// - DOES register (and report) when previously watched only
+    ///   NON-recursively as a dependency parent: the recursive registration
+    ///   upgrades it in place, and retiring it later restores the
+    ///   non-recursive watch instead of unwatching, so the
+    ///   `watch_additional_files` consumer keeps its direct-children
+    ///   coverage (issue #1678) across the whole lifecycle.
+    ///
+    /// Ordering within a call leaves no window that could leak a skip-dir
+    /// storm from a NEW root or lose events from a still-covered subtree:
+    /// the filter learns the new roots before they are watched, and new
+    /// roots are watched before stale ones are unwatched (overlap, never a
+    /// gap). A retired root whose subtree a surviving root spans is not
+    /// unwatched at all — its coverage simply transfers.
+    ///
+    /// Retirement repairs its own collateral: notify's inotify backend
+    /// removes every watch entry underneath an unwatched recursive root,
+    /// including entries owned by other registrations, so after each real
+    /// unwatch any surviving synced root, boot root, or dependency parent
+    /// nested under the retired root is re-registered. (On FSEvents, where
+    /// registrations are independent streams, the re-registration is a
+    /// redundant stream rebuild — briefly re-entering that stream's startup
+    /// dead window — which is the accepted cost of keeping Linux coverage
+    /// correct.)
+    pub fn sync_recursive_dir_watches<I, P, N, S>(
+        &mut self,
+        desired_roots: I,
+        skip_dir_names: N,
+    ) -> Vec<PathBuf>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+        N: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let skip_names: BTreeSet<OsString> = skip_dir_names
+            .into_iter()
+            .map(|name| OsString::from(name.as_ref()))
+            .collect();
+
+        // Validate the desired roots.
+        let mut candidates: BTreeSet<PathBuf> = BTreeSet::new();
+        for root in desired_roots {
+            let root = root.as_ref();
+            if !root.is_absolute() {
+                warn!(path = %root.display(), "recursive dir root is not absolute; skipping");
+                continue;
+            }
+            if !root.is_dir() {
+                warn!(path = %root.display(), "recursive dir root missing or not a directory; skipping");
+                continue;
+            }
+            candidates.insert(root.to_path_buf());
+        }
+
+        // Rank candidates by CANONICAL path so ancestors are considered
+        // before their descendants across spellings — raw-path order would
+        // let a symlinked descendant (`/a-link/sub` canonicalizing under a
+        // later `/z-real`) be accepted before the root that covers it,
+        // producing a duplicate registration.
+        let mut ranked: Vec<(PathBuf, BTreeSet<PathBuf>, PathBuf)> = candidates
+            .into_iter()
+            .map(|root| {
+                let aliases: BTreeSet<PathBuf> = watch_aliases(&root).collect();
+                let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+                (root, aliases, canonical)
+            })
+            .collect();
+        ranked.sort_by(|a, b| a.2.cmp(&b.2));
+
+        // Reduce to the target registration plan: drop roots already covered
+        // by a boot recursive root or by an accepted target root above them.
+        let mut target: Vec<(PathBuf, BTreeSet<PathBuf>)> = Vec::new();
+        let mut target_aliases: BTreeSet<PathBuf> = BTreeSet::new();
+        for (root, aliases, _canonical) in ranked {
+            let boot_covered = aliases.iter().any(|alias| {
+                self.watched_recursive_roots
+                    .iter()
+                    .any(|boot| alias.starts_with(boot))
+            });
+            if boot_covered {
+                continue;
+            }
+            let covered_by_target = aliases
+                .iter()
+                .any(|alias| target_aliases.iter().any(|kept| alias.starts_with(kept)));
+            if covered_by_target {
+                continue;
+            }
+            target_aliases.extend(aliases.iter().cloned());
+            target.push((root, aliases));
+        }
+
+        // Filter grows first: a skip-dir flood inside a root that is about
+        // to be watched must never reach the channel unfiltered. Retired
+        // roots stay in the filter until after they are unwatched below.
+        {
+            let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
+            filter.skip_names = skip_names;
+            filter.active_roots.extend(target_aliases.iter().cloned());
+        }
+
+        // Watch target roots not already registered. Alias intersection
+        // makes a re-spelled root (canonical vs. symlinked) a kept root,
+        // not a new one.
+        let mut newly_watched = Vec::new();
+        let mut surviving: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
+        for (root, aliases) in target {
+            let kept_key = self
+                .synced_recursive_dirs
+                .iter()
+                .find(|(_, existing)| !existing.is_disjoint(&aliases))
+                .map(|(key, _)| key.clone());
+            if let Some(key) = kept_key {
+                let mut merged = self.synced_recursive_dirs[&key].clone();
+                merged.extend(aliases);
+                surviving.insert(key, merged);
+                continue;
+            }
+            match self._notify.watch(&root, RecursiveMode::Recursive) {
+                Ok(()) => {
+                    debug!(path = %root.display(), "watching recursive dir root");
+                    surviving.insert(root.clone(), aliases);
+                    newly_watched.push(root);
+                }
+                Err(error) => {
+                    warn!(path = %root.display(), %error, "failed to watch recursive dir root");
+                }
+            }
+        }
+
+        // Shrink the filter to exactly the surviving registrations BEFORE
+        // retiring the stale ones: the retire path may re-register a
+        // dependency-parent watch for a just-retired root, and the
+        // `GuardedNotifyWatcher` would no-op that call while the root still
+        // counted as active. The cost is a micro-window in which a dying
+        // root's skip-dir events are unfiltered but the root is still
+        // watched — at most a handful of stray changes, never a storm (the
+        // unwatch lands within this same call).
+        let surviving_aliases: BTreeSet<PathBuf> = surviving
+            .values()
+            .flat_map(|aliases| aliases.iter().cloned())
+            .collect();
+        {
+            let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
+            filter.active_roots = surviving_aliases.clone();
+        }
+
+        // Retire registrations that fell out of the target set — AFTER the
+        // new roots are live, so a subtree whose coverage merely moved to a
+        // different root never has a watch gap.
+        let previous = std::mem::take(&mut self.synced_recursive_dirs);
+        let dependency_dirs = self.watched_dependency_dirs.snapshot();
+        for (root, aliases) in previous {
+            if surviving.contains_key(&root) {
+                continue;
+            }
+            let covered_by_surviving = aliases
+                .iter()
+                .any(|alias| surviving_aliases.iter().any(|kept| alias.starts_with(kept)));
+            if covered_by_surviving {
+                // Coverage transfer: a surviving root spans this subtree.
+                // Leave the notify registration alone — its events are still
+                // wanted, and on inotify an unwatch here would strip watch
+                // descriptors the surviving root's coverage shares. The
+                // lingering entry is removed whenever the covering root is
+                // itself retired (its recursive unwatch spans this path).
+                continue;
+            }
+            if let Err(error) = self._notify.unwatch(&root) {
+                // Benign cases: the root itself was deleted (often exactly
+                // WHY it fell out of the desired set), or a previously
+                // retired ANCESTOR root's recursive unwatch already removed
+                // this entry on inotify (surfaced as WatchNotFound).
+                warn!(path = %root.display(), %error, "failed to unwatch retired recursive dir root");
+            }
+            if aliases.iter().any(|alias| dependency_dirs.contains(alias)) {
+                // This dir doubles as a `watch_additional_files` dependency
+                // parent (either upgraded by an earlier sync or claimed while
+                // synced). Restore the non-recursive watch the dependency
+                // consumer relies on. The unwatch above ran first so notify's
+                // per-path mode replacement cannot leave stale recursive
+                // descendant entries behind (inotify).
+                if let Err(error) = self._notify.watch(&root, RecursiveMode::NonRecursive) {
+                    warn!(
+                        path = %root.display(), %error,
+                        "failed to restore dependency-parent watch for retired recursive dir root"
+                    );
+                }
+            }
+            // Collateral repair (inotify): unwatching a recursive root
+            // removes every notify watch entry beneath it, including entries
+            // owned by OTHER registrations. Re-register any surviving synced
+            // root, boot root, or dependency parent nested under the retired
+            // root. On FSEvents these are independent streams the unwatch
+            // never touched, so the re-watch is a redundant rebuild — the
+            // accepted cross-platform cost (see the method docs).
+            let under_retired = |path: &Path| aliases.iter().any(|alias| path.starts_with(alias));
+            for (kept_root, kept_aliases) in surviving.iter() {
+                if kept_aliases.iter().any(|kept| under_retired(kept)) {
+                    if let Err(error) = self._notify.watch(kept_root, RecursiveMode::Recursive) {
+                        warn!(
+                            path = %kept_root.display(), %error,
+                            "failed to re-register surviving recursive dir root after retirement"
+                        );
+                    }
+                }
+            }
+            for boot in self
+                .watched_recursive_roots
+                .iter()
+                .filter(|boot| under_retired(boot))
+            {
+                if let Err(error) = self._notify.watch(boot, RecursiveMode::Recursive) {
+                    warn!(
+                        path = %boot.display(), %error,
+                        "failed to re-register boot root after retirement"
+                    );
+                }
+            }
+            // Compare against the retired root's ALIASES, not just its
+            // literal spelling (issue #1799 review): where `canonicalize()`
+            // differs from the as-given path, a `dep` equal to the root's
+            // other spelling slipped past a `dep != root` check and
+            // resurrected the just-retired root as a non-recursive watch.
+            let retired_aliases: Vec<PathBuf> = watch_aliases(root.as_path()).collect();
+            for dep in dependency_dirs.iter().filter(|dep| {
+                !retired_aliases
+                    .iter()
+                    .any(|alias| alias.as_path() == dep.as_path())
+                    && under_retired(dep)
+            }) {
+                // The guarded watcher no-ops this when `dep` is itself a
+                // surviving synced root (already re-registered recursively
+                // above), so the repair cannot downgrade one.
+                if let Err(error) = self._notify.watch(dep, RecursiveMode::NonRecursive) {
+                    warn!(
+                        path = %dep.display(), %error,
+                        "failed to re-register dependency-parent watch after retirement"
+                    );
+                }
+            }
+        }
+        self.synced_recursive_dirs = surviving;
+
         newly_watched
     }
 }
@@ -1947,5 +2450,68 @@ mod tests {
             changes.is_empty(),
             "error-only stream must emit nothing, got {changes:#?}",
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Recursive-dir delivery filter (`RecursiveDirFilterCore::suppresses`) —
+    // issue #1801. Pure Level-1 checks of the component-matching and
+    // exemption rules; the observable-delivery coverage (what actually
+    // reaches the debounced receiver) lives in tests/recursive_dirs.rs.
+    // ---------------------------------------------------------------------------
+
+    fn filter_with(roots: &[&str], skips: &[&str]) -> RecursiveDirFilterCore {
+        RecursiveDirFilterCore {
+            active_roots: roots.iter().map(|r| PathBuf::from(*r)).collect(),
+            skip_names: skips.iter().map(|s| OsString::from(*s)).collect(),
+            boot_roots: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn filter_matches_exact_components_at_any_depth() {
+        let deps = SharedPathSet::default();
+        let f = filter_with(&["/ws/sib"], &["dist", "node_modules"]);
+        // Depth 1 and deep below the root are both suppressed.
+        assert!(f.suppresses(Path::new("/ws/sib/dist/x.css"), &deps));
+        assert!(f.suppresses(Path::new("/ws/sib/a/b/node_modules/pkg/y.js"), &deps));
+        // Near-names must NOT match: component equality, never substring.
+        assert!(!f.suppresses(Path::new("/ws/sib/distress/x.css"), &deps));
+        assert!(!f.suppresses(Path::new("/ws/sib/my-dist/x.css"), &deps));
+        // Allowed content and paths outside every active root pass.
+        assert!(!f.suppresses(Path::new("/ws/sib/src/x.css"), &deps));
+        assert!(!f.suppresses(Path::new("/elsewhere/dist/x.css"), &deps));
+        // The root's OWN name is not a component below the root.
+        let g = filter_with(&["/ws/dist"], &["dist"]);
+        assert!(!g.suppresses(Path::new("/ws/dist/x.css"), &deps));
+    }
+
+    #[test]
+    fn filter_exempts_boot_roots_and_dependency_dirs() {
+        // The superset invariant: suppression may only remove events that
+        // EXCLUSIVELY the synced-root registrations could have produced.
+        let deps = SharedPathSet::default();
+        deps.extend([PathBuf::from("/ws/sib/dist/lib")]);
+        let mut f = filter_with(&["/ws"], &["dist"]);
+        f.boot_roots.insert(PathBuf::from("/ws/app/pages"));
+        // Under a boot root → never suppressed even though `dist` appears.
+        assert!(!f.suppresses(Path::new("/ws/app/pages/dist/page.mdx"), &deps));
+        // A dependency dir itself and its DIRECT children are exempt —
+        // exactly the delivery its non-recursive watch provides.
+        assert!(!f.suppresses(Path::new("/ws/sib/dist/lib"), &deps));
+        assert!(!f.suppresses(Path::new("/ws/sib/dist/lib/helper.ts"), &deps));
+        // Grandchildren were never delivered by a non-recursive parent
+        // watch, so they stay suppressed.
+        assert!(f.suppresses(Path::new("/ws/sib/dist/lib/deep/helper.ts"), &deps));
+        // Unrelated skip-dir traffic is still suppressed.
+        assert!(f.suppresses(Path::new("/ws/sib/dist/other.css"), &deps));
+    }
+
+    #[test]
+    fn filter_with_no_roots_or_no_names_passes_everything() {
+        let deps = SharedPathSet::default();
+        let empty_roots = filter_with(&[], &["dist"]);
+        assert!(!empty_roots.suppresses(Path::new("/ws/sib/dist/x.css"), &deps));
+        let empty_names = filter_with(&["/ws/sib"], &[]);
+        assert!(!empty_names.suppresses(Path::new("/ws/sib/dist/x.css"), &deps));
     }
 }

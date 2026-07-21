@@ -90,6 +90,37 @@ pub struct TailwindSubprocessConfig {
     /// [`Self::working_dir`].
     pub content_globs: Vec<String>,
 
+    /// Negative content globs (Tailwind v4 `@source not "<glob>";`
+    /// directives) that exclude subtrees from the explicit `@source` scan
+    /// established by `content_globs` / `framework_package_globs` — e.g.
+    /// an ungitignored generated subtree inside a workspace-sibling
+    /// mirror root (`node_modules`/`dist`/`.git`/`target`/`.turbo`/
+    /// `.next`/`.vercel`) that would otherwise leak stale class strings
+    /// into the emitted stylesheet.
+    ///
+    /// `@source not` is a Tailwind v4.1+ addition (the pinned v4.2.0
+    /// binary supports it); the engine already parses and rebases this
+    /// form when it appears in user-authored CSS — see
+    /// [`rebase_source_line`]'s `negated` handling. Each entry becomes
+    /// one `@source not "<glob>";` directive, emitted after the positive
+    /// `content_globs` / `framework_package_globs` / `inline_sources`
+    /// directives so an exclusion always has something to exclude *from*
+    /// by the time Tailwind evaluates it.
+    ///
+    /// Like `content_globs` / `framework_package_globs`, entries are
+    /// written verbatim — the engine does NOT rebase them onto
+    /// `working_dir`. Only `@source`/`@source not` lines parsed out of
+    /// user-authored `input_css` get that treatment (zfb#1327). Tailwind
+    /// resolves a relative directive against the synthesised entry's own
+    /// directory (see [`entry_dir`], which can differ from `working_dir`
+    /// when `input_css` is set), so callers populating this field must
+    /// supply already-absolute globs — exactly as `crates/zfb/src/commands/build.rs`
+    /// already does for `content_globs`.
+    ///
+    /// Defaults to empty — no behavior change for callers that don't set
+    /// it.
+    pub negative_source_globs: Vec<String>,
+
     /// Content globs for **framework packages** that must NOT be
     /// tree-shaken even though they live outside the user project (e.g.
     /// `packages/zudo-doc-v2/**` after the Phase B split-out). Each
@@ -173,6 +204,7 @@ impl Default for TailwindSubprocessConfig {
             input_css: None,
             extra_args: Vec::new(),
             content_globs: Vec::new(),
+            negative_source_globs: Vec::new(),
             framework_package_globs: Vec::new(),
             inline_sources: Vec::new(),
             theme_block: None,
@@ -217,6 +249,17 @@ impl TailwindSubprocessConfig {
         S: Into<String>,
     {
         self.content_globs = globs.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Replace the negative content globs (`@source not "..."`,
+    /// chainable). See [`Self::negative_source_globs`].
+    pub fn with_negative_source_globs<I, S>(mut self, globs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.negative_source_globs = globs.into_iter().map(Into::into).collect();
         self
     }
 
@@ -289,6 +332,16 @@ impl TailwindSubprocessConfig {
 /// value — escaping them would break pattern expansion.
 fn push_escaped_source(out: &mut String, value: &str) {
     out.push_str("@source \"");
+    push_escaped_css_string_value(out, value);
+    out.push_str("\";\n");
+}
+
+/// Append a single `@source not "<escaped_value>";\n` directive to `out`.
+/// Mirrors [`push_escaped_source`]'s escaping rules — only `"` and `\`
+/// are escaped; glob metacharacters pass through untouched so Tailwind's
+/// glob expansion still applies to the excluded pattern.
+fn push_escaped_negative_source(out: &mut String, value: &str) {
+    out.push_str("@source not \"");
     push_escaped_css_string_value(out, value);
     out.push_str("\";\n");
 }
@@ -528,7 +581,12 @@ pub fn is_tailwind_import_line(line: &str) -> bool {
 ///    `inline_sources` — the `codeHighlight.roleClasses` safelist
 ///    (zfb#1534). Emitted after the path-based `@source` directives so
 ///    it reads as an explicit appendix to the scanned-content list.
-/// 5. The contents of `input_css` if provided (the user's
+/// 5. `@source not "<glob>";` directives for every entry in
+///    `negative_source_globs`, excluding subtrees from the scan
+///    established by steps 2–4. Emitted last among the directive block
+///    so an exclusion always has a preceding positive `@source` to apply
+///    against.
+/// 6. The contents of `input_css` if provided (the user's
 ///    `styles/global.css`, typically including their own `@theme {…}`
 ///    and authored CSS rules). When the file already starts with
 ///    `@import "tailwindcss";`, the synthesiser drops the duplicate
@@ -537,7 +595,7 @@ pub fn is_tailwind_import_line(line: &str) -> bool {
 ///    absolute paths anchored at `working_dir` so the entry temp file's
 ///    location cannot change what they match (zfb#1327) — see
 ///    [`rebase_relative_source_globs`].
-/// 6. The inline `theme_block`, if any.
+/// 7. The inline `theme_block`, if any.
 ///
 /// The returned `String` is what the engine writes to a temp file and
 /// passes to `tailwindcss -i <tmp>`. It is also stashed on
@@ -579,11 +637,17 @@ pub fn build_synthesised_entry_css(
     for s in &cfg.inline_sources {
         push_escaped_inline_source(&mut out, s);
     }
+    // Then exclusions — `@source not` applies against the positive
+    // directives above, so it stays last in the directive block.
+    for g in &cfg.negative_source_globs {
+        push_escaped_negative_source(&mut out, g);
+    }
 
     if emitted_import
         || !cfg.content_globs.is_empty()
         || !cfg.framework_package_globs.is_empty()
         || !cfg.inline_sources.is_empty()
+        || !cfg.negative_source_globs.is_empty()
     {
         out.push('\n');
     }
@@ -1257,6 +1321,15 @@ mod tests {
         assert_eq!(out, "@source \"pages/**/*.{tsx,jsx}\";\n");
     }
 
+    /// The `@source not` negative form escapes the same way as the
+    /// positive form — mirrors [`push_escaped_source_escapes_double_quote`].
+    #[test]
+    fn push_escaped_negative_source_escapes_double_quote() {
+        let mut out = String::new();
+        push_escaped_negative_source(&mut out, r#"pages/"odd"/**"#);
+        assert_eq!(out, r#"@source not "pages/\"odd\"/**";"#.to_string() + "\n");
+    }
+
     // -----------------------------------------------------------------------
     // zfb#1327 — relative `@source` globs in inlined input CSS must be
     // rebased onto working_dir so the entry temp file's location cannot
@@ -1569,6 +1642,151 @@ mod tests {
             css.contains("@source inline(\"text-violet-600\");"),
             "inline source must be present verbatim; got:\n{css}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #1800 — negative-source (`@source not`) exclusion globs
+    // -----------------------------------------------------------------------
+
+    /// The synthesised entry CSS carries one `@source not "..."` directive
+    /// per configured `negative_source_globs` entry.
+    #[test]
+    fn synthesised_entry_emits_negative_source_directive() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_mock_output(String::new())
+            .with_negative_source_globs(["sibling/generated/**"]);
+        let css = build_synthesised_entry_css(&cfg, None);
+        assert!(
+            css.contains("@source not \"sibling/generated/**\";"),
+            "expected an @source not directive for sibling/generated/**; got:\n{css}"
+        );
+    }
+
+    /// `negative_source_globs` values are escaped the same way path-based
+    /// `@source` values are (only `"` and `\` — glob metacharacters pass
+    /// through untouched) — mirrors `synthesised_css_escapes_quotes_in_globs`.
+    #[test]
+    fn synthesised_css_escapes_quotes_in_negative_source_globs() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_mock_output(String::new())
+            .with_negative_source_globs([r#"sibling/"generated"/**"#]);
+        let css = build_synthesised_entry_css(&cfg, None);
+        assert!(
+            css.contains(r#"@source not "sibling/\"generated\"/**";"#),
+            "negative_source_globs quote not escaped; got:\n{css}"
+        );
+    }
+
+    /// `negative_source_globs` directives coexist with `content_globs`,
+    /// `framework_package_globs`, and `inline_sources` — and are emitted
+    /// after all of them, per the directive order contract (the exclusion
+    /// always has something preceding it to exclude from).
+    #[test]
+    fn synthesised_entry_negative_source_coexists_with_positive_globs() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_mock_output(String::new())
+            .with_content_globs(["pages/**/*.tsx"])
+            .with_framework_package_globs(["packages/zudo-doc-v2/**"])
+            .with_inline_sources(["text-violet-600"])
+            .with_negative_source_globs(["sibling/generated/**"]);
+        let css = build_synthesised_entry_css(&cfg, None);
+        let content_idx = css
+            .find("@source \"pages/**/*.tsx\";")
+            .expect("content glob must still be emitted");
+        let framework_idx = css
+            .find("@source \"packages/zudo-doc-v2/**\";")
+            .expect("framework glob must still be emitted");
+        let inline_idx = css
+            .find("@source inline(\"text-violet-600\");")
+            .expect("inline source must still be emitted");
+        let negative_idx = css
+            .find("@source not \"sibling/generated/**\";")
+            .expect("negative source glob must be emitted");
+        assert!(
+            content_idx < framework_idx && framework_idx < inline_idx && inline_idx < negative_idx,
+            "directive order (content -> framework -> inline -> negative) must be preserved; got:\n{css}"
+        );
+    }
+
+    /// `negative_source_globs` (config-driven) and a user-authored
+    /// `@source not "...";` line in `input_css` (parsed/rebased by
+    /// [`rebase_relative_source_globs`], zfb#1327) must coexist — the new
+    /// config-driven emission path must not interfere with the pre-existing
+    /// user-CSS parsing path.
+    #[test]
+    fn synthesised_entry_negative_source_coexists_with_user_authored_source_not() {
+        let base = rebase_test_base();
+        let cfg = TailwindSubprocessConfig::default()
+            .with_working_dir(base.clone())
+            .with_mock_output(String::new())
+            .with_negative_source_globs(["config-driven/exclude/**"]);
+        let input_css = "@source not \"legacy/**\";\nbody { margin: 0; }\n";
+        let css = build_synthesised_entry_css(&cfg, Some(input_css));
+        assert!(
+            css.contains("@source not \"config-driven/exclude/**\";"),
+            "config-driven negative source glob must be present; got:\n{css}"
+        );
+        let rebased = format!("@source not \"{}\";", rebased_value(&base, "legacy/**"));
+        assert!(
+            css.contains(&rebased),
+            "user-authored @source not must be rebased and preserved; got:\n{css}"
+        );
+        assert!(
+            css.contains("body { margin: 0; }"),
+            "non-@source user CSS must still be inlined verbatim; got:\n{css}"
+        );
+    }
+
+    /// No `negative_source_globs` configured (the common case) must not
+    /// emit a stray `@source not` directive or otherwise perturb the entry.
+    #[test]
+    fn synthesised_entry_omits_negative_source_directive_when_empty() {
+        let cfg = TailwindSubprocessConfig::default().with_mock_output(String::new());
+        let css = build_synthesised_entry_css(&cfg, None);
+        assert!(
+            !css.contains("@source not "),
+            "no negative source directive expected when negative_source_globs is empty; got:\n{css}"
+        );
+    }
+
+    /// Empty-field parity: this is the test that matters most. The
+    /// synthesised entry text feeds the CSS `hash_8` input, so an unset
+    /// `negative_source_globs` (every non-workspace project today) must
+    /// produce byte-identical output to what the pre-#1800 code emitted —
+    /// not merely "no `@source not` substring", but zero stray bytes of
+    /// any kind (no extra blank line, no extra whitespace). Asserted via
+    /// an exact `assert_eq!` against a hand-built expected string, not a
+    /// "looks the same" `contains` check.
+    #[test]
+    fn synthesised_entry_empty_negative_source_globs_is_byte_identical_to_pre_feature_output() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_mock_output(String::new())
+            .with_content_globs(["pages/**/*.tsx"])
+            .with_framework_package_globs(["packages/zudo-doc-v2/**"])
+            .with_inline_sources(["text-violet-600"]);
+        let css = build_synthesised_entry_css(&cfg, Some("body { margin: 0; }\n"));
+        let expected = concat!(
+            "@import \"tailwindcss\";\n",
+            "@source \"pages/**/*.tsx\";\n",
+            "@source \"packages/zudo-doc-v2/**\";\n",
+            "@source inline(\"text-violet-600\");\n",
+            "\n",
+            "body { margin: 0; }\n",
+        );
+        assert_eq!(
+            css, expected,
+            "empty negative_source_globs must not add or remove a single byte from the pre-#1800 output; got:\n{css}"
+        );
+    }
+
+    /// Same parity guarantee for the all-defaults case (no globs, no
+    /// input CSS at all) — the bare synthesised entry must stay exactly
+    /// `@import "tailwindcss";` plus the trailing blank-line separator.
+    #[test]
+    fn synthesised_entry_all_defaults_empty_negative_source_globs_is_byte_identical() {
+        let cfg = TailwindSubprocessConfig::default().with_mock_output(String::new());
+        let css = build_synthesised_entry_css(&cfg, None);
+        assert_eq!(css, "@import \"tailwindcss\";\n\n");
     }
 
     /// `default_source_directives` must escape a `"` in the project root.
