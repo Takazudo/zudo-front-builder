@@ -11,6 +11,9 @@ docs/dist/
 .playwright-cli/
 __inbox/
 docs/.zudo-doc/
+# Generated wasm-bindgen glue (crates/zfb-md-wasm/npm/.gitignore excludes
+# /src/wasm/). Only present on a dev tree that has built the wasm package.
+crates/zfb-md-wasm/npm/src/wasm/
 # Snapshot fixture for the .d.ts emitter — must match the emitter's
 # byte-exact output, so prettier (which would re-flow the inline
 # interfaces) is not allowed to touch it.
