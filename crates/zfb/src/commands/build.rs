@@ -869,7 +869,31 @@ pub(crate) fn build_default_css_payload_with_source_plan(
         plugin_virtual_modules,
     );
     let discovered_graph_files =
-        discover_css_plugin_virtual_files(project_root, &virtual_worker_context)?;
+        match discover_css_plugin_virtual_files(project_root, &virtual_worker_context) {
+            Ok(files) => files,
+            Err(err) => {
+                // Issue #1802 (review finding): even when virtual-module
+                // discovery itself fails — BEFORE the full mirror-root set
+                // below can be computed — publish the alias/tsconfig-derived
+                // claim on its own (an empty `discovered_graph_files`, so only
+                // claim source b, not the virtual-module claim sources a+c)
+                // rather than nothing at all. The same "a failed boot CSS
+                // build must still register sibling watches" contract this
+                // seam exists for applies to this earlier failure mode too.
+                let fallback_roots: Vec<PathBuf> = zfb_build::SiblingMirrorPlan::compute(
+                    project_root,
+                    &zfb_types::first_party_root_for(project_root),
+                    &std::collections::BTreeSet::new(),
+                    &read_tsconfig_paths(project_root),
+                    plugin_alias_entries,
+                )
+                .mirror_roots()
+                .map(Path::to_path_buf)
+                .collect();
+                on_source_plan(&fallback_roots);
+                return Err(err);
+            }
+        };
 
     // `.module.css` files a virtual module imports DIRECTLY (issue #1775
     // follow-up): fed into CSS emission's explicit module slot so a direct
@@ -877,6 +901,34 @@ pub(crate) fn build_default_css_payload_with_source_plan(
     // `compute_css_module_class_maps` produces for the same set. Empty on the
     // no-virtual-module path.
     let direct_css_modules = discovered_direct_css_modules(&discovered_graph_files);
+
+    // Sibling Mirror (issue #1691/#1776): computed here, BEFORE the
+    // Tailwind-enabled branch below, and published unconditionally (issue
+    // #1802) — `build_authored_only_css_payload` on the `tailwind.enabled =
+    // false` path ALSO discovers sibling `.module.css` files through this
+    // same claim plan (issue #824: disabling Tailwind opts out of the
+    // Tailwind layers, not CSS Modules), so the dev-watch registration
+    // needs this set on BOTH paths, not just the Tailwind-scan one. A
+    // review finding caught an earlier version of this seam publishing an
+    // empty set whenever Tailwind was disabled, which would have left a
+    // claimed sibling's CSS Modules unwatched.
+    let sibling_mirror_roots: Vec<PathBuf> = zfb_build::SiblingMirrorPlan::compute(
+        project_root,
+        &zfb_types::first_party_root_for(project_root),
+        &discovered_graph_files,
+        &read_tsconfig_paths(project_root),
+        plugin_alias_entries,
+    )
+    .mirror_roots()
+    .map(Path::to_path_buf)
+    .collect();
+
+    // Issue #1802 (epic #1799 gap (a)): publish the mirror roots NOW —
+    // before the Tailwind subprocess below ever runs (on the Tailwind-
+    // enabled path), and therefore even if that subprocess later fails. A
+    // failed boot CSS build must still register sibling watches, or there
+    // is no filesystem event through which recovery could ever trigger.
+    on_source_plan(&sibling_mirror_roots);
 
     // `tailwind: { enabled: false }` disables only the Tailwind layers,
     // not the authored-CSS pipeline. Route to the Tailwind-free path so
@@ -892,11 +944,6 @@ pub(crate) fn build_default_css_payload_with_source_plan(
 
     let tailwind_enabled = config.tailwind.as_ref().map(|t| t.enabled).unwrap_or(true);
     if !tailwind_enabled {
-        // No Tailwind `@source` scan runs on this path, so there is no
-        // mirror-root set to watch for it — publish empty so a project that
-        // toggles Tailwind off mid-session (replace semantics, issue #1802)
-        // doesn't leave a stale root registered forever.
-        on_source_plan(&[]);
         return build_authored_only_css_payload(
             project_root,
             outdir,
@@ -927,33 +974,6 @@ pub(crate) fn build_default_css_payload_with_source_plan(
         .iter()
         .map(|root| project_root.join(root).to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-
-    // Sibling Mirror (issue #1691/#1776): the same claim plan
-    // `discover_css_source_files` above just used to wholesale-walk sibling
-    // source files is recomputed here (cheap — it only iterates the already-
-    // collected `discovered_graph_files` / alias sets) so its mirror roots
-    // can extend Tailwind's own `@source` scan. Without this, a utility
-    // class used ONLY inside a claimed sibling file is scanned for CSS
-    // Modules discovery but never reaches Tailwind's content scan, so the
-    // class would silently never be emitted (green build, unstyled page —
-    // the same failure shape fix-A [5] closed for package routes below).
-    let sibling_mirror_roots: Vec<PathBuf> = zfb_build::SiblingMirrorPlan::compute(
-        project_root,
-        &zfb_types::first_party_root_for(project_root),
-        &discovered_graph_files,
-        &read_tsconfig_paths(project_root),
-        plugin_alias_entries,
-    )
-    .mirror_roots()
-    .map(Path::to_path_buf)
-    .collect();
-
-    // Issue #1802 (epic #1799 gap (a)): publish the mirror roots NOW —
-    // before the Tailwind subprocess below ever runs, and therefore even if
-    // that subprocess (or anything after this point) later fails. A failed
-    // boot CSS build must still register sibling watches, or there is no
-    // filesystem event through which recovery could ever trigger.
-    on_source_plan(&sibling_mirror_roots);
 
     let content_globs = assemble_css_content_globs(
         &default_content_globs,
@@ -15200,6 +15220,52 @@ mod tests {
             !observed.as_ref().unwrap().is_empty(),
             "this fixture claims a workspace sibling via a tsconfig alias, so the \
              published set must be non-empty: {observed:?}"
+        );
+    }
+
+    /// Review finding (issue #1802): `tailwind.enabled = false` opts out of
+    /// the Tailwind `@source` scan, NOT out of CSS Modules discovery — see
+    /// `css_payload_emits_claimed_sibling_module_css_and_matches_class_map`,
+    /// which proves `build_authored_only_css_payload` still ships a claimed
+    /// sibling's `.module.css` bytes on this exact path. An earlier version
+    /// of this seam published an EMPTY mirror-root set whenever Tailwind was
+    /// disabled, which would have left that same sibling directory
+    /// unwatched in dev — a claimed sibling's CSS Module edit would go
+    /// stale until restart even though Tailwind was never involved. The
+    /// observer must fire with the SAME non-empty set regardless of
+    /// `tailwind.enabled`.
+    #[test]
+    fn build_default_css_payload_with_source_plan_publishes_mirror_roots_with_tailwind_disabled() {
+        let (_tmp, project) = sibling_css_workspace_fixture();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            ..Config::default()
+        };
+        let observed: std::cell::RefCell<Option<Vec<PathBuf>>> = std::cell::RefCell::new(None);
+
+        let payload = build_default_css_payload_with_source_plan(
+            &project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+            &|roots| {
+                *observed.borrow_mut() = Some(roots.to_vec());
+            },
+        )
+        .expect("authored-only path must not error (hermetic, no tailwind binary required)");
+        assert!(payload.is_some());
+
+        let observed = observed.borrow();
+        let roots = observed
+            .as_ref()
+            .expect("the observer must fire on the tailwind-disabled path too");
+        assert!(
+            !roots.is_empty(),
+            "mirror roots must still be published with tailwind.enabled = false, since \
+             CSS Modules discovery still scans them: {roots:?}"
         );
     }
 }
