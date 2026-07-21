@@ -476,6 +476,101 @@ fn stage_escape_audit_rejects_workspace_package_symlink_escape() {
     );
 }
 
+/// Acceptance companion to `stage_escape_audit_rejects_workspace_package_symlink_escape`
+/// above — the ACCEPT half of the stage-escape audit's env-gated coverage
+/// (issue #1796, epic #1794). Where the rejection test proves guard (b)
+/// still flags a genuine escape, this test proves the Wave-1 discriminator
+/// fix (issue #1795 —
+/// `zfb_build::metafile_deps::logical_path_names_staged_entry`) stopped
+/// misclassifying a LEGITIMATE staged spelling as one.
+///
+/// Reproduces the real-world topology from the epic: on macOS `$TMPDIR` is
+/// spelled `/var/folders/…` while `/var` is a symlink to `/private/var`, so
+/// the process's `working_dir` spelling is one component SHALLOWER than
+/// where the kernel resolves it — the esbuild subprocess's `os.Getwd()`
+/// always returns the fully-resolved path, so its `..`-climbing metafile
+/// keys are computed against the RESOLVED depth, not the spelling Rust
+/// passed. Portable mirror of that (reproduces on Linux CI too, where
+/// `/tmp` is not aliased): `alias -> physical/real`, the exact
+/// depth-changing topology
+/// `stage_escape_allows_staged_symlink_reached_through_symlink_aliased_cwd`
+/// (`crates/zfb-build/src/metafile_deps.rs`) uses — a same-depth sibling
+/// alias would NOT reproduce the bug. `working_dir` is set to the ALIAS
+/// spelling; the island source is a SYMLINK inside the stage pointing at
+/// live first-party source outside it (mirroring how
+/// `materialise_islands_shadow` stages a real project-local island) — a
+/// physically staged (non-symlink) file would resolve inside the stage
+/// root trivially and never reach the discriminator this test proves.
+#[cfg(unix)]
+#[test]
+#[ignore = "env-gate: esbuild binary — cargo test -p zfb-islands -- --ignored \
+            (ZFB_ESBUILD_BIN, absolute path, or the staged \
+            crates/zfb/binaries/esbuild/esbuild slot; wired into health.yml)"]
+fn stage_escape_audit_accepts_staged_symlink_through_symlink_aliased_working_dir() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let base = root.path().canonicalize().expect("canonicalize tempdir");
+
+    std::fs::create_dir_all(base.join("physical/real")).unwrap();
+    std::os::unix::fs::symlink(base.join("physical/real"), base.join("alias")).unwrap();
+
+    // working_dir + stage root, spelled through the alias — one component
+    // SHALLOWER than its physical location. This depth mismatch is what
+    // trips the bug once esbuild's subprocess resolves its own cwd.
+    let app_dir = base.join("alias/app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    stage_minimal_node_modules(&app_dir);
+
+    // Live first-party source, entirely OUTSIDE the stage.
+    let first_party_root = base.join("workspace");
+    let real_component = first_party_root.join("packages/shared/src/Counter.tsx");
+    std::fs::create_dir_all(real_component.parent().unwrap()).unwrap();
+    std::fs::write(
+        &real_component,
+        "export const Counter = () => { return null; };\n",
+    )
+    .unwrap();
+
+    // Symlink-staged island source: a symlink INSIDE the stage root
+    // pointing at the live first-party file — the shape
+    // `materialise_islands_shadow` produces for a real project-local
+    // island.
+    let staged_component = app_dir.join("components/Counter.tsx");
+    std::fs::create_dir_all(staged_component.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&real_component, &staged_component).unwrap();
+
+    let policy = StageAuditPolicy {
+        stage_roots: vec![app_dir.clone()],
+        first_party_root: first_party_root.clone(),
+    };
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default()
+            .with_working_dir(&app_dir)
+            .with_stage_audit(policy),
+    );
+    // `with_preserve_symlinks(true)` is required — the default is `false`,
+    // under which esbuild would canonicalise the staged symlink itself and
+    // resolve straight to the live first-party file, never producing the
+    // staged-spelling metafile shape this test exercises (see
+    // `islands_shadow_preserve_symlinks_is_load_bearing` below for the
+    // same load-bearing contract in the glob-shadow tests).
+    let bundle_cfg = BundleConfig::production()
+        .with_outdir(app_dir.join("dist"))
+        .with_preserve_symlinks(true);
+
+    let out = bundler
+        .bundle(&[Island::new("Counter", staged_component)], &bundle_cfg)
+        .expect(
+            "a legitimately staged symlink reached through a symlink-aliased working_dir must \
+             be ACCEPTED by the stage-escape audit (issue #1795's discriminator fix) — before \
+             that fix this misclassified as a case-4 escape",
+        );
+    let js = String::from_utf8(out.bytes).expect("bundle is utf-8");
+    assert!(
+        js.contains("Counter"),
+        "island component must survive into the bundle:\n{js}"
+    );
+}
+
 /// Acceptance (#806): an island with a dynamic `import()` of a local module
 /// must split — the bundler output contains the stable `islands.js` entry
 /// PLUS at least one self-hashed chunk, and the dynamically-imported code
