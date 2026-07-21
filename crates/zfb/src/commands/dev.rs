@@ -2729,10 +2729,51 @@ fn resolve_lazy_dev_render(lazy_var: Option<&str>, eager_var: Option<&str>) -> b
     LAZY_DEV_RENDER_DEFAULT
 }
 
+/// Boot-lazy mode (issue #1057; extended to a 3-state switch by the Cold
+/// Lazy Boot epic, #1806/#1807): the resolved value of `ZFB_DEV_BOOT_LAZY`.
+///
+/// **Wave-1 coupling contract (issue #1807, THIS sub-issue):** `Cold`
+/// PARSES (see [`resolve_boot_lazy`]) but is deliberately inert — every
+/// operational predicate below goes through [`BootLazyMode::is_active`],
+/// which treats `Cold` exactly like `Off`. Activating Cold is issue
+/// #1808's job: flip the match arm inside `is_active`, not any call site —
+/// that's the whole point of routing every predicate through it now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootLazyMode {
+    /// Boot-lazy is off — the default `zfb dev` boot semantics ("every
+    /// route exists on disk before the server is ready") are preserved
+    /// exactly.
+    Off,
+    /// `ZFB_DEV_BOOT_LAZY=1|true` (issue #1057): boot-lazy only when a
+    /// servable prebuilt `dist/` seed exists (see
+    /// [`dist_is_servable_seed`]); falls back to the eager boot render
+    /// otherwise. Reproduces the pre-#1807 boolean switch's exact
+    /// semantics — this sub-issue is a no-behavior-change refactor.
+    Auto,
+    /// `ZFB_DEV_BOOT_LAZY=cold` (issue #1806): seedless boot-lazy — lazy
+    /// regardless of whether a `dist/` seed exists. Parsed by this
+    /// sub-issue but not yet active; see the coupling contract above.
+    Cold,
+}
+
+impl BootLazyMode {
+    /// Is this mode operationally boot-lazy TODAY?
+    ///
+    /// Wave 1 (#1807): only `Auto` is active. `Cold` parses but is
+    /// deliberately withheld until #1808 activates it — this is the ONE
+    /// match arm that sub-issue changes. Every caller below
+    /// ([`boot_lazy_enabled`], [`defer_dev_bundle_decision`]) reads the
+    /// mode through this method rather than matching it directly, so
+    /// activating Cold needs no reshaping at the call sites.
+    fn is_active(self) -> bool {
+        matches!(self, BootLazyMode::Auto)
+    }
+}
+
 /// Compile-time default for the opt-in boot-lazy switch (issue #1057). OFF —
 /// the default `zfb dev` boot semantics ("every route exists on disk before
 /// the server is ready") are preserved exactly.
-const BOOT_LAZY_DEFAULT: bool = false;
+const BOOT_LAZY_DEFAULT: BootLazyMode = BootLazyMode::Off;
 
 /// Resolve the opt-in boot-lazy switch once at boot (issue #1057).
 ///
@@ -2740,28 +2781,40 @@ const BOOT_LAZY_DEFAULT: bool = false;
 /// the request-time render-on-request hook (#1026), which is only installed
 /// when lazy rendering is on — so boot-lazy is force-disabled when lazy
 /// rendering is off (otherwise the prebuilt `dist/` would be served forever
-/// with no re-render). When enabled, the caller additionally requires a
-/// valid prebuilt `dist/` to seed from (see [`dist_is_servable_seed`]);
-/// absent that, it falls back to the eager boot render.
+/// with no re-render), for every [`BootLazyMode`] the env asks for (issue
+/// #1806: once Cold is active, `ZFB_DEV_EAGER=1` still wins over it too).
+/// When active ([`BootLazyMode::is_active`]), the caller additionally
+/// requires a valid prebuilt `dist/` to seed from (see
+/// [`dist_is_servable_seed`]); absent that, it falls back to the eager boot
+/// render.
 fn boot_lazy_enabled(lazy_render_on: bool) -> bool {
     boot_lazy_decision(
         lazy_render_on,
         std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
     )
+    .is_active()
 }
 
-/// Pure boot-lazy decision (issue #1057): on only when lazy rendering is on
-/// AND `ZFB_DEV_BOOT_LAZY` is truthy. Split from [`boot_lazy_enabled`] so the
-/// "requires lazy" rule is unit-testable without process-global env mutation.
-fn boot_lazy_decision(lazy_render_on: bool, boot_lazy_var: Option<&str>) -> bool {
-    lazy_render_on && resolve_boot_lazy(boot_lazy_var)
+/// Pure boot-lazy decision (issue #1057; mode-aware since #1807): resolves
+/// the [`BootLazyMode`] the env asked for via [`resolve_boot_lazy`], then
+/// forces it to `Off` when lazy rendering itself is off — the "requires
+/// lazy" rule applies uniformly to every mode, `Cold` included. Split from
+/// [`boot_lazy_enabled`] so the rule is unit-testable without
+/// process-global env mutation.
+fn boot_lazy_decision(lazy_render_on: bool, boot_lazy_var: Option<&str>) -> BootLazyMode {
+    if !lazy_render_on {
+        return BootLazyMode::Off;
+    }
+    resolve_boot_lazy(boot_lazy_var)
 }
 
 /// Pure decision for the deferred dev bundle (issue #1182): defer the eager
 /// `assemble_and_bundle_dev` (+ V8 host start + `paths()`-expanding route-table
 /// build) past `TcpListener::bind` only when
 ///
-/// 1. boot-lazy is active ([`boot_lazy_decision`]) — so the request-time
+/// 1. boot-lazy is active ([`boot_lazy_decision`] + [`BootLazyMode::is_active`],
+///    mode-aware since #1807 — `Cold` does NOT satisfy this conjunct yet, see
+///    the [`BootLazyMode`] coupling contract) — so the request-time
 ///    render-on-request hook (#1026) is installed and the prebuilt `dist/` is
 ///    the serving source for every route until the renderer is published, AND
 /// 2. a servable `dist/` seed is present ([`dist_is_servable_seed`]), AND
@@ -2804,19 +2857,29 @@ fn defer_dev_bundle_decision(
     dist_servable: bool,
     defer_var: Option<&str>,
 ) -> bool {
-    boot_lazy_decision(lazy_render_on, boot_lazy_var)
+    boot_lazy_decision(lazy_render_on, boot_lazy_var).is_active()
         && dist_servable
         && resolve_defer_bundle(defer_var)
 }
 
-/// Pure precedence rule for the boot-lazy switch (issue #1057):
-/// `ZFB_DEV_BOOT_LAZY=1|true` enables it; everything else (unset / `0` /
-/// unrecognized) falls back to [`BOOT_LAZY_DEFAULT`] (off).
-fn resolve_boot_lazy(var: Option<&str>) -> bool {
+/// Pure precedence rule for the boot-lazy mode (issue #1057; 3-state since
+/// the #1806/#1807 Cold Lazy Boot epic): `ZFB_DEV_BOOT_LAZY=1|true` →
+/// [`BootLazyMode::Auto`]; `=cold` (same case/whitespace insensitivity) →
+/// [`BootLazyMode::Cold`] — parses here, but see the [`BootLazyMode`]
+/// coupling contract for why it is not yet operationally active; everything
+/// else (unset / `0` / unrecognized) falls back to [`BOOT_LAZY_DEFAULT`]
+/// (`Off`).
+fn resolve_boot_lazy(var: Option<&str>) -> BootLazyMode {
     match var {
         Some(raw) => {
             let t = raw.trim();
-            t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
+            if t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true") {
+                BootLazyMode::Auto
+            } else if t.eq_ignore_ascii_case("cold") {
+                BootLazyMode::Cold
+            } else {
+                BOOT_LAZY_DEFAULT
+            }
         }
         None => BOOT_LAZY_DEFAULT,
     }
@@ -9389,46 +9452,121 @@ mod tests {
                 assert!(resolve_lazy_dev_render(Some("banana"), None));
             }
 
-            /// Issue #1057 — boot-lazy switch resolution: truthy only for
-            /// `1`/`true` (case/whitespace-insensitive); everything else
-            /// (unset, `0`, unrecognized) is off.
+            /// Issue #1057 — boot-lazy MODE resolution (3-state since the
+            /// #1806/#1807 Cold Lazy Boot epic): `1`/`true`
+            /// (case/whitespace-insensitive) → `Auto`; `cold` (same
+            /// insensitivity) → `Cold`; everything else (unset, `0`,
+            /// unrecognized) → `Off`.
             #[test]
             fn boot_lazy_switch_resolution() {
-                assert!(!resolve_boot_lazy(None));
-                assert!(!resolve_boot_lazy(Some("0")));
-                assert!(!resolve_boot_lazy(Some("false")));
-                assert!(!resolve_boot_lazy(Some("banana")));
-                assert!(resolve_boot_lazy(Some("1")));
-                assert!(resolve_boot_lazy(Some("true")));
-                assert!(resolve_boot_lazy(Some(" TRUE ")));
+                assert_eq!(resolve_boot_lazy(None), BootLazyMode::Off);
+                assert_eq!(resolve_boot_lazy(Some("0")), BootLazyMode::Off);
+                assert_eq!(resolve_boot_lazy(Some("false")), BootLazyMode::Off);
+                assert_eq!(resolve_boot_lazy(Some("banana")), BootLazyMode::Off);
+                assert_eq!(resolve_boot_lazy(Some("1")), BootLazyMode::Auto);
+                assert_eq!(resolve_boot_lazy(Some("true")), BootLazyMode::Auto);
+                assert_eq!(resolve_boot_lazy(Some(" TRUE ")), BootLazyMode::Auto);
+                // `cold` parses to its own distinct mode, same case/whitespace
+                // insensitivity as the other recognized values — its
+                // wave-1 "operationally inert" contract is a separate
+                // concern, pinned by `cold_mode_parses_but_is_inert_like_off`
+                // below.
+                assert_eq!(resolve_boot_lazy(Some("cold")), BootLazyMode::Cold);
+                assert_eq!(resolve_boot_lazy(Some("COLD")), BootLazyMode::Cold);
+                assert_eq!(resolve_boot_lazy(Some(" Cold ")), BootLazyMode::Cold);
             }
 
             /// Issue #1057 — boot-lazy REQUIRES lazy rendering (it reuses the
             /// request-time render-on-request hook, installed only when lazy
-            /// is on). With lazy off the mode is force-disabled even when the
-            /// env asks for it.
+            /// is on). With lazy off, [`boot_lazy_decision`] resolves to
+            /// `Off` regardless of the mode the env asked for — mode-aware
+            /// since #1807, including `cold` (issue #1806's contract:
+            /// `ZFB_DEV_EAGER=1` wins over Cold too, once Cold is active).
             #[test]
             fn boot_lazy_requires_lazy_rendering() {
-                // lazy on + env on => on.
-                assert!(boot_lazy_decision(true, Some("1")));
-                // lazy OFF + env on => OFF (the key invariant).
-                assert!(!boot_lazy_decision(false, Some("1")));
-                assert!(!boot_lazy_decision(false, Some("true")));
-                // lazy on but env off/unset => off.
-                assert!(!boot_lazy_decision(true, None));
-                assert!(!boot_lazy_decision(true, Some("0")));
+                // lazy on + env on => Auto.
+                assert_eq!(boot_lazy_decision(true, Some("1")), BootLazyMode::Auto);
+                // lazy on + env=cold => Cold (parses; its operational
+                // inertness is pinned separately, not by this test).
+                assert_eq!(boot_lazy_decision(true, Some("cold")), BootLazyMode::Cold);
+                // lazy OFF + env on => Off (the key invariant), for every mode.
+                assert_eq!(boot_lazy_decision(false, Some("1")), BootLazyMode::Off);
+                assert_eq!(boot_lazy_decision(false, Some("true")), BootLazyMode::Off);
+                assert_eq!(boot_lazy_decision(false, Some("cold")), BootLazyMode::Off);
+                // lazy on but env off/unset => Off.
+                assert_eq!(boot_lazy_decision(true, None), BootLazyMode::Off);
+                assert_eq!(boot_lazy_decision(true, Some("0")), BootLazyMode::Off);
+            }
+
+            /// #1807 — Wave 1's explicit coupling contract, pinned as a
+            /// regression guard: `cold` PARSES (`resolve_boot_lazy` returns
+            /// [`BootLazyMode::Cold`], a distinct variant, not `Off`) but is
+            /// operationally inert — [`BootLazyMode::is_active`] and every
+            /// predicate built on it ([`boot_lazy_decision`],
+            /// [`defer_dev_bundle_decision`]) treats a `cold`-parsed
+            /// decision IDENTICALLY to an `Off`-parsed one. Activating Cold
+            /// (#1808) means flipping `is_active`'s match arm; this test
+            /// exists so that flip fails loudly here if it happens by
+            /// accident before #1808.
+            #[test]
+            fn cold_mode_parses_but_is_inert_like_off() {
+                // It parses to its own variant, not silently collapsed to
+                // Off at the parse step...
+                assert_eq!(resolve_boot_lazy(Some("cold")), BootLazyMode::Cold);
+                assert_ne!(resolve_boot_lazy(Some("cold")), BootLazyMode::Off);
+                assert_eq!(boot_lazy_decision(true, Some("cold")), BootLazyMode::Cold);
+
+                // ...but is operationally inert: `is_active()` agrees with `Off`.
+                assert!(!BootLazyMode::Cold.is_active());
+                assert_eq!(
+                    BootLazyMode::Cold.is_active(),
+                    BootLazyMode::Off.is_active()
+                );
+
+                // Every downstream gate treats a `cold`-parsed decision
+                // identically to an `Off`-parsed one across the input space —
+                // bit-for-bit, not just "both false".
+                for lazy_render_on in [true, false] {
+                    for dist_servable in [true, false] {
+                        for defer_var in [None, Some("0"), Some("1")] {
+                            assert_eq!(
+                                defer_dev_bundle_decision(
+                                    lazy_render_on,
+                                    Some("cold"),
+                                    dist_servable,
+                                    defer_var
+                                ),
+                                defer_dev_bundle_decision(
+                                    lazy_render_on,
+                                    None,
+                                    dist_servable,
+                                    defer_var
+                                ),
+                                "cold must defer identically to Off for \
+                                 lazy_render_on={lazy_render_on}, \
+                                 dist_servable={dist_servable}, \
+                                 defer_var={defer_var:?}"
+                            );
+                        }
+                    }
+                }
             }
 
             /// Issue #1182 — the eager dev bundle is deferred past
-            /// `TcpListener::bind` ONLY when boot-lazy is active AND a servable
-            /// `dist/` seed is present AND the #1188 opt-out is not engaged. All
-            /// three conjuncts are load-bearing: drop boot-lazy and there is no
+            /// `TcpListener::bind` ONLY when boot-lazy is ACTIVE
+            /// ([`BootLazyMode::is_active`]) AND a servable `dist/` seed is
+            /// present AND the #1188 opt-out is not engaged. All three
+            /// conjuncts are load-bearing: drop boot-lazy and there is no
             /// request-time render-on-request hook to recover the deferred
             /// renderer; drop the servable seed and there is nothing to serve
             /// during the pre-renderer window; engage the opt-out and an SSR-heavy
             /// project asked for the eager pre-bind renderer. The gate is
-            /// `boot_lazy_decision(..) && dist_servable && resolve_defer_bundle(..)`.
+            /// `boot_lazy_decision(..).is_active() && dist_servable && resolve_defer_bundle(..)`.
             /// The 4th arg is the `ZFB_DEV_DEFER_BUNDLE` value (`None` = default on).
+            ///
+            /// Mode-aware since #1807: every pre-existing Auto/Off assertion
+            /// below — INCLUDING Auto's `dist_servable` conjunct — is
+            /// UNCHANGED; this test only adds `cold` coverage at the end.
             #[test]
             fn defer_dev_bundle_requires_boot_lazy_and_servable_dist() {
                 // boot-lazy on (lazy on + env on) + servable dist + default opt-in => defer.
@@ -9463,6 +9601,21 @@ mod tests {
                 assert!(!defer_dev_bundle_decision(false, Some("1"), true, None));
                 assert!(!defer_dev_bundle_decision(true, None, true, Some("true")));
                 assert!(!defer_dev_bundle_decision(true, Some("1"), false, None));
+
+                // #1807 — `cold` PARSES (`resolve_boot_lazy` returns `Cold`,
+                // not `Off`) but every conjunct here still evaluates false,
+                // identically to `Off`, because
+                // `boot_lazy_decision(..).is_active()` is false for `Cold`
+                // this wave — even with a servable dist and the deferral
+                // opted in.
+                assert!(!defer_dev_bundle_decision(true, Some("cold"), true, None));
+                assert!(!defer_dev_bundle_decision(
+                    true,
+                    Some("cold"),
+                    true,
+                    Some("1")
+                ));
+                assert!(!defer_dev_bundle_decision(true, Some("COLD"), true, None));
             }
 
             /// Issue #1188 — the dev-bundle deferral opt-out resolver is ON by
