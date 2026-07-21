@@ -486,8 +486,7 @@ fn dangling_symlink_under_extra_dir_does_not_abort_copy_mode_build() {
     let extra = project.join("e2e/fixtures");
     fs::create_dir_all(&extra).unwrap();
     write(&extra.join("present.ts"), "export const ok = true;\n");
-    std::os::unix::fs::symlink(extra.join("missing-target.ts"), extra.join("dangling.ts"))
-        .unwrap();
+    std::os::unix::fs::symlink(extra.join("missing-target.ts"), extra.join("dangling.ts")).unwrap();
 
     // Kept outside the project so it is never itself swept up as an "extra
     // top-level dir" (its name isn't `node_modules`, which is the only
