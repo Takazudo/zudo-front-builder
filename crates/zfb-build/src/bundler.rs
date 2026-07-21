@@ -923,6 +923,35 @@ const MIRROR_SKIP_DIRS: &[&str] = &[
     ".next",
     ".vercel",
 ];
+/// First-party dot-path staging allowlist (issue #1840): project-relative
+/// DIRECTORIES whose whole subtree is staged into the shadow even though every
+/// generic walker skips them (hidden at the top level, and conventionally
+/// gitignored — `enumerate_extra_top_level_dirs`'s `standard_filters` honors
+/// the consumer's `.gitignore`, so removing the dot-filter alone could never
+/// reach these). zudo-doc 4.x's `packageOwnedRoutes` mechanism generates REAL
+/// first-party route source into `<project>/.zudo-doc/routes-src/*.tsx`;
+/// without a staged spelling esbuild resolves the LIVE files via the
+/// dual-target tsconfig fallback and the (correct) stage-escape audit
+/// hard-fails with case 4 ("first-party input resolved outside every stage
+/// root, no staged spelling"). Staging the narrow compatibility surface makes
+/// the staged spelling exist so the audit's in-stage rule allows it naturally
+/// — the metafile stays the oracle; the audit itself is untouched.
+///
+/// Deliberately NOT the whole dot-dir (`.zudo-doc/` may hold caches / private
+/// metadata), and NOT a permanent contract — this is compatibility for the
+/// CURRENT zudo-doc 4.x mechanism; zfb's long-term plan is real injected
+/// routes (see `crates/zfb/tests/build_package_routes_consumer.rs`).
+const KNOWN_FIRST_PARTY_STAGING_DIRS: &[&str] = &[".zudo-doc/routes-src"];
+/// Companion to [`KNOWN_FIRST_PARTY_STAGING_DIRS`] (issue #1840): dot-dirs
+/// whose TOP-LEVEL `*.json` meta files are staged — zudo-doc's docHistory
+/// writes `<project>/.zfb/doc-history-meta.json`, imported by the generated
+/// route source above. Only depth-1 `*.json` files; anything else in the dir
+/// (caches, lockfiles, nested state) never reaches the stage. The staged
+/// basenames don't collide with `is_synthetic_input` (metafile_deps.rs — the
+/// `.zfb-` BASENAME prefix; `.zfb` here is a directory component) nor with
+/// `is_reserved_shadow_root_name` (reserved `.zfb-*` FILE names at the shadow
+/// root, not a `.zfb/` dir).
+const KNOWN_FIRST_PARTY_STAGING_JSON_DIRS: &[&str] = &[".zfb"];
 /// Filename of the project-root global override map (sub-issue #616). Both
 /// the on-disk source convention and the materialised shadow copy use this
 /// exact name; it is the public file-convention contract relied on by #618.
@@ -2393,6 +2422,16 @@ pub fn bundle_with_session(
             &input.project_root,
             KNOWN_SOURCE_DIRS,
         ));
+        // The dot-path staging allowlist (issue #1840) is staged like an extra
+        // source dir, so its files must seed the module graph too —
+        // `enumerate_extra_top_level_dirs` above can never see them (hidden +
+        // conventionally gitignored), and an import FROM `.zudo-doc/routes-src`
+        // would otherwise be missing from the staged-dependency closure.
+        source_graph_roots.extend(
+            enumerate_first_party_staging_dirs(&input.project_root)
+                .into_iter()
+                .map(|(src, _)| src),
+        );
         collect_project_source_module_graph_seed_files(
             &source_graph_roots,
             &project_root,
@@ -2512,6 +2551,7 @@ pub fn bundle_with_session(
     let shadow_components = shadow.join("components");
     let shadow_layouts = shadow.join("layouts");
     let extra_source_dirs = enumerate_extra_top_level_dirs(&input.project_root, KNOWN_SOURCE_DIRS);
+    let first_party_staging_dirs = enumerate_first_party_staging_dirs(&input.project_root);
 
     // Preflight every source root before materialising any of them. An
     // importer under a later root may target a JS-looking file under an
@@ -2538,6 +2578,12 @@ pub fn bundle_with_session(
             &shadow.join(src_dir.file_name().unwrap_or_default()),
             &mat_ctx,
         )?;
+    }
+    // Dot-path staging allowlist (issue #1840) — preflight the allowlisted
+    // trees like any other source root so a `?raw` edge from/into one is
+    // established before anything is materialised.
+    for (src_dir, rel) in &first_party_staging_dirs {
+        preflight_raw_tree(src_dir, &shadow.join(rel), &mat_ctx)?;
     }
     mat_ctx.raw_preflight_complete.set(true);
 
@@ -2788,6 +2834,67 @@ pub fn bundle_with_session(
             all_markdown_diagnostics.extend(md_diags);
             all_cross_file_links.extend(cfl);
             all_file_headings.extend(fh);
+        }
+    }
+
+    // 2a-dot. First-party dot-path staging allowlist (issue #1840). Stage the
+    // narrow zudo-doc 4.x compatibility surface — `.zudo-doc/routes-src/**`
+    // (generated first-party route source) and the top-level `.zfb/*.json`
+    // meta files — that every generic walker above deliberately skips (hidden
+    // dirs pruned; `.gitignore` honored). Materialised through the SAME
+    // `mat_ctx`/`ShadowWriter` machinery as the extra dirs so the session
+    // visited/prune bookkeeping applies: deleting `.zudo-doc/` live prunes the
+    // staged copy on the next session call. Additive only — the shared
+    // `is_pruned_infra_dir` semantics are untouched (each allowlisted dir is
+    // its own walk ROOT, which the depth-0 guard never prunes).
+    {
+        for (src_dir, rel) in &first_party_staging_dirs {
+            let dst_dir = shadow.join(rel);
+            let mut broken = Vec::new();
+            let mut md_diags = Vec::new();
+            let mut cfl = Vec::new();
+            let mut fh = Vec::new();
+            materialise_shadow(
+                src_dir,
+                &dst_dir,
+                &mut Vec::new(),
+                &mat_ctx,
+                &mut broken,
+                &mut md_diags,
+                &mut cfl,
+                &mut fh,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: failed materialising first-party staging dir {} into shadow",
+                    src_dir.display()
+                )
+            })?;
+            all_broken_links.extend(broken);
+            all_markdown_diagnostics.extend(md_diags);
+            all_cross_file_links.extend(cfl);
+            all_file_headings.extend(fh);
+        }
+        for (src, rel) in enumerate_first_party_staging_json_files(&input.project_root) {
+            if bundle_exclude.is_excluded(&src, &input.project_root) {
+                continue;
+            }
+            let dest = shadow.join(&rel);
+            if let Some(parent) = dest.parent() {
+                writer.ensure_dir(parent).with_context(|| {
+                    format!(
+                        "bundler: create first-party staging meta dir {}",
+                        parent.display()
+                    )
+                })?;
+            }
+            writer.copy_if_changed(&src, &dest).with_context(|| {
+                format!(
+                    "bundler: stage first-party meta file {} -> {}",
+                    src.display(),
+                    dest.display()
+                )
+            })?;
         }
     }
 
@@ -4174,6 +4281,61 @@ fn enumerate_extra_top_level_dirs(project_root: &Path, known_skip_list: &[&str])
     out
 }
 
+/// Enumerate the [`KNOWN_FIRST_PARTY_STAGING_DIRS`] allowlist entries that
+/// exist under `project_root` (issue #1840), as `(live absolute dir,
+/// project-relative path)` pairs. DELIBERATELY bypasses the hidden-dir and
+/// `.gitignore` filters every generic walker applies — that is the whole
+/// point: these paths are conventionally gitignored, yet hold real first-party
+/// source that must gain a staged spelling. Symlinked allowlist paths are NOT
+/// followed (a symlink here could alias arbitrary trees into the stage; the
+/// zudo-doc generator writes real directories).
+fn enumerate_first_party_staging_dirs(project_root: &Path) -> Vec<(PathBuf, PathBuf)> {
+    KNOWN_FIRST_PARTY_STAGING_DIRS
+        .iter()
+        .map(|rel| (project_root.join(rel), PathBuf::from(rel)))
+        .filter(|(src, _)| {
+            fs::symlink_metadata(src).is_ok_and(|meta| meta.is_dir())
+                && src
+                    .parent()
+                    .is_some_and(|p| fs::symlink_metadata(p).is_ok_and(|meta| meta.is_dir()))
+        })
+        .collect()
+}
+
+/// Enumerate the TOP-LEVEL `*.json` meta files inside each
+/// [`KNOWN_FIRST_PARTY_STAGING_JSON_DIRS`] dir (issue #1840), as `(live
+/// absolute file, project-relative path)` pairs. Same deliberate
+/// hidden/gitignore bypass as [`enumerate_first_party_staging_dirs`]; depth-1
+/// regular `*.json` files only — nested files, non-JSON files, and symlinks
+/// are never staged (narrow compatibility surface).
+fn enumerate_first_party_staging_json_files(project_root: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let mut out = Vec::new();
+    for dir_rel in KNOWN_FIRST_PARTY_STAGING_JSON_DIRS {
+        let dir = project_root.join(dir_rel);
+        // Same no-symlink boundary as the dir helper: `fs::read_dir` would
+        // FOLLOW a symlinked `.zfb`, staging meta files from an arbitrary
+        // external target.
+        if !fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir()) {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|ft| ft.is_file()) {
+                continue;
+            }
+            let name = entry.file_name();
+            if !name.to_string_lossy().ends_with(".json") {
+                continue;
+            }
+            out.push((entry.path(), Path::new(dir_rel).join(&name)));
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Walk `root` with the same `ignore::WalkBuilder` machinery
 /// [`enumerate_extra_top_level_dirs`] uses (`.gitignore` / `.git/info/exclude`
 /// / global-git honored via `standard_filters`, `require_git(false)` so the
@@ -5216,7 +5378,7 @@ fn materialise_isolated_exact_dir(
             })? {
                 Some(entry) => entry,
                 None => continue,
-            }
+            },
         };
         let physical = entry.path();
         let Ok(relative) = physical.strip_prefix(&physical_root) else {
@@ -13941,9 +14103,8 @@ mod tests {
         };
         let is_excluded = |_: &Path| false;
 
-        materialise_symlinked_dir(&symlinked_dir, &dest, &ctx, &is_excluded).expect(
-            "a dangling symlink inside a symlinked source dir must be skipped, not fatal",
-        );
+        materialise_symlinked_dir(&symlinked_dir, &dest, &ctx, &is_excluded)
+            .expect("a dangling symlink inside a symlinked source dir must be skipped, not fatal");
 
         assert!(
             dest.join("real.ts").is_file(),
@@ -17376,6 +17537,129 @@ mod tests {
             !names.contains(&".foo".to_string()),
             ".foo hidden dir must be excluded; got {names:?}"
         );
+    }
+
+    // ── issue #1840 first-party dot-path staging allowlist tests ─────────
+
+    /// The whole point of the allowlist: `.zudo-doc/routes-src` is enumerated
+    /// EVEN WHEN gitignored (and hidden), while the generic extra-dirs walker
+    /// keeps excluding the dot-dir — the allowlist is additive, not a filter
+    /// loosening.
+    #[test]
+    fn first_party_staging_dirs_included_even_when_gitignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join(".zudo-doc/routes-src")).unwrap();
+        fs::write(
+            root.join(".zudo-doc/routes-src/generated.tsx"),
+            "export default () => null;\n",
+        )
+        .unwrap();
+        fs::write(root.join(".gitignore"), ".zudo-doc/\n").unwrap();
+
+        let result = enumerate_first_party_staging_dirs(root);
+        assert_eq!(
+            result,
+            vec![(
+                root.join(".zudo-doc/routes-src"),
+                PathBuf::from(".zudo-doc/routes-src")
+            )],
+            "gitignored allowlisted dir must still be enumerated"
+        );
+
+        // The generic walker still prunes the hidden dir — unchanged behavior.
+        let extra = dir_names(enumerate_extra_top_level_dirs(root, &[]));
+        assert!(
+            !extra.contains(&".zudo-doc".to_string()),
+            ".zudo-doc must stay excluded from the generic extra-dirs pass; got {extra:?}"
+        );
+    }
+
+    /// Absent allowlist paths are not enumerated — `.zudo-doc` without a
+    /// `routes-src` child yields nothing, as does an empty project.
+    #[test]
+    fn first_party_staging_dirs_absent_paths_not_enumerated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(enumerate_first_party_staging_dirs(root).is_empty());
+        fs::create_dir_all(root.join(".zudo-doc/cache")).unwrap();
+        assert!(
+            enumerate_first_party_staging_dirs(root).is_empty(),
+            ".zudo-doc without routes-src must not be enumerated"
+        );
+    }
+
+    /// A symlinked allowlist path (or a symlinked parent) is never enumerated
+    /// — the allowlist stages real generated directories, not aliased trees.
+    #[cfg(unix)]
+    #[test]
+    fn first_party_staging_dirs_symlinked_paths_not_enumerated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let outside = tmp.path().join("outside-tree");
+        fs::create_dir_all(outside.join("routes-src")).unwrap();
+
+        // routes-src itself a symlink.
+        fs::create_dir_all(root.join("a/.zudo-doc")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.join("routes-src"),
+            root.join("a/.zudo-doc/routes-src"),
+        )
+        .unwrap();
+        assert!(enumerate_first_party_staging_dirs(&root.join("a")).is_empty());
+
+        // The parent `.zudo-doc` a symlink.
+        fs::create_dir_all(root.join("b")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("b/.zudo-doc")).unwrap();
+        assert!(enumerate_first_party_staging_dirs(&root.join("b")).is_empty());
+    }
+
+    /// `.zfb/*.json` enumeration: top-level regular `*.json` files only —
+    /// nested files, non-JSON files, and the gitignore are all irrelevant.
+    #[test]
+    fn first_party_staging_json_files_top_level_json_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join(".zfb/nested")).unwrap();
+        fs::write(root.join(".zfb/doc-history-meta.json"), "{}\n").unwrap();
+        fs::write(root.join(".zfb/cache.bin"), "binary\n").unwrap();
+        fs::write(root.join(".zfb/nested/deep.json"), "{}\n").unwrap();
+        fs::write(root.join(".gitignore"), ".zfb/\n").unwrap();
+
+        let result = enumerate_first_party_staging_json_files(root);
+        assert_eq!(
+            result,
+            vec![(
+                root.join(".zfb/doc-history-meta.json"),
+                PathBuf::from(".zfb/doc-history-meta.json")
+            )],
+            "only top-level .zfb/*.json must be enumerated (gitignore bypassed)"
+        );
+    }
+
+    /// A symlinked `.zfb` dir (or a symlinked `*.json` inside a real one) is
+    /// never enumerated — `fs::read_dir` would follow the dir symlink and
+    /// stage meta files from an arbitrary external target, breaking the
+    /// bounded staging surface.
+    #[cfg(unix)]
+    #[test]
+    fn first_party_staging_json_files_symlinked_paths_not_enumerated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let outside = tmp.path().join("outside-tree");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("leaked.json"), "{}\n").unwrap();
+
+        // `.zfb` itself a symlink.
+        fs::create_dir_all(root.join("a")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("a/.zfb")).unwrap();
+        assert!(enumerate_first_party_staging_json_files(&root.join("a")).is_empty());
+
+        // A symlinked json file inside a real `.zfb`.
+        fs::create_dir_all(root.join("b/.zfb")).unwrap();
+        std::os::unix::fs::symlink(outside.join("leaked.json"), root.join("b/.zfb/alias.json"))
+            .unwrap();
+        assert!(enumerate_first_party_staging_json_files(&root.join("b")).is_empty());
     }
 
     // ── issue #1692 claim-plan / wholesale-mirror helper tests ───────────
