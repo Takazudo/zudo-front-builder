@@ -226,14 +226,22 @@ fn real_esbuild_resolves_dot_path_staged_spellings_and_passes_stage_escape_audit
     let shadow = fs::canonicalize(session.shadow_root())
         .expect("canonicalize persistent shadow root")
         .join("sub-packages/host");
+    // EXACT match, not a substring check (codex review finding): esbuild's
+    // cwd is `shadow` (the project's own mirror root), so a genuinely staged
+    // input's key is byte-identical to its project-relative path. A
+    // `.contains()` check would also accept a live-tree escape, whose key is
+    // a `..`-climbing or absolute path that still CONTAINS this same
+    // trailing substring (e.g. `../../../<tmp>/host/.zfb/doc-history-meta.json`)
+    // — exactly the case-4 shape the audit above independently rejects, and
+    // exactly what this assertion must independently distinguish from too.
     let keys = metafile_input_keys(&shadow);
     for expected in [
         ".zudo-doc/routes-src/generated-route.tsx",
         ".zfb/doc-history-meta.json",
     ] {
         assert!(
-            keys.iter().any(|k| k.contains(expected)),
-            "metafile inputs must record the staged spelling {expected}; got {keys:?}"
+            keys.iter().any(|k| k == expected),
+            "metafile inputs must record the EXACT staged spelling {expected}; got {keys:?}"
         );
     }
 }
