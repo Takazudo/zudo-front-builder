@@ -778,6 +778,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         std::env::var("ZFB_DEV_DEFER_BUNDLE").ok().as_deref(),
     );
 
+    // Issue #1808 — resolve the boot-lazy MODE once here too (Off/Auto/Cold,
+    // not just the `defer_dev_bundle` gate above): the non-deferred Cold
+    // path's pre-bind stale-mark below needs it (see
+    // `premark_stale_before_bind_decision`), and the deferred boot task
+    // (spawned further down) needs the SAME resolved value for its own
+    // Cold-only post-publish premark (its `refresh_bundle_and_routes`
+    // success arm) — both must agree on what the env asked for.
+    let boot_lazy_mode_now = boot_lazy_decision(
+        lazy_dev_render_enabled(),
+        std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
+    );
+
     // #1550 — build the boot-time resolved-root inventory ONCE, before the
     // renderer boots, and thread it through every root-vs-event-path site
     // (renderer seeding, watch-root partition, policy content roots, and the
@@ -815,6 +827,24 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             None
         }
     };
+
+    // Issue #1808 — Cold's non-deferred path: `boot_dev_renderer` above
+    // already built the route tables + renderer EAGERLY (since
+    // `defer_dev_bundle` is false), so mark them all stale HERE, still
+    // before `TcpListener::bind` below. Left to `run_boot_render` alone
+    // (which only runs post-bind, inside the deferred boot task, after the
+    // manifest-digest walk) this would leave a needless [bind → mark-stale]
+    // 404 window — Cold has no `dist/` seed to cover it the way Auto's
+    // equivalent non-deferred window is covered. See
+    // `premark_stale_before_bind_decision` for the full rationale, including
+    // Cold's DEFERRED-path counterpart (a different call site, inside the
+    // boot task below) and why `run_boot_render` never needs to mark Cold's
+    // routes itself once either premark has run.
+    if premark_stale_before_bind_decision(boot_lazy_mode_now, defer_dev_bundle) {
+        if let Some(session) = dev_session.as_ref() {
+            session.mark_all_routes_stale();
+        }
+    }
 
     // S3 (#1231) — read the POST-precedence survivor InjectedRouteSet off the
     // dev session (built inside `boot_dev_renderer` from the same survivor set
@@ -1787,6 +1817,28 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                             if let Some(handle) = &ssr_route_set_for_boot {
                                 refresh_live_ssr_routes(session, handle);
                             }
+                            // Issue #1808 (post-implementation review finding):
+                            // Cold has no `dist/` seed to serve during the gap
+                            // between this publish and `run_boot_render`'s
+                            // stale-mark further down — steps 1-3 (the
+                            // manifest-digest walk + persisted-graph load,
+                            // #1161) run in between and can be slow on a large
+                            // tree. Left unmarked, a request in that gap
+                            // resolves the route (the tables just published)
+                            // but finds it not stale (`claim_stale` returns
+                            // `None`), so the render-on-request hook is a
+                            // no-op and the request falls through to a
+                            // straight 404 — Auto's identical gap is masked by
+                            // its servable `dist/` seed, which Cold doesn't
+                            // have. Mark stale immediately so the very next
+                            // request after this publish can already claim +
+                            // render. `run_boot_render`'s Cold branch detects
+                            // this already happened and skips its own
+                            // (otherwise redundant) mark. See
+                            // `premark_stale_after_deferred_publish_decision`.
+                            if premark_stale_after_deferred_publish_decision(boot_lazy_mode_now) {
+                                session.mark_all_routes_stale();
+                            }
                         }
                         Err(e) => {
                             // Same warn-and-continue contract as the eager
@@ -2262,18 +2314,22 @@ fn rebundle_islands(
 }
 
 /// Boot render — eager by default (zfb#642 / #644), opt-in boot-lazy
-/// (#1057). Extracted from `run` so it can run inside the deferred boot
-/// task (issue #1166) while staying readable.
+/// (#1057; seedless `cold` mode activated by #1808). Extracted from `run`
+/// so it can run inside the deferred boot task (issue #1166) while staying
+/// readable.
 ///
-/// Opt-in boot-lazy mode (issue #1057): with `ZFB_DEV_BOOT_LAZY=1` AND a
-/// valid prebuilt `dist/` present, SKIP the eager boot render entirely —
-/// mark every route stale and let the dev server serve the prebuilt
-/// `dist/` immediately (via the `read_from_dist` cold fallback, which
-/// points at `dist_root`), while the request-time render-on-request hook
-/// (#1026) re-renders each route on its first GET. Requires lazy
-/// rendering (the hook only exists then), enforced by `boot_lazy_enabled`;
-/// without a servable `dist/` we fall through to the eager render so the
-/// server never serves a wrong/empty body.
+/// Opt-in boot-lazy mode (issue #1057; Cold, #1806/#1808): with
+/// `ZFB_DEV_BOOT_LAZY=1` (Auto) AND a valid prebuilt `dist/` present, OR
+/// `ZFB_DEV_BOOT_LAZY=cold` (Cold) with or without one, SKIP the eager boot
+/// render entirely — mark every route stale and let the dev server serve
+/// the prebuilt `dist/` immediately where one exists (via the
+/// `read_from_dist` cold fallback, which points at `dist_root`) or the
+/// controlled dev 404 otherwise, while the request-time render-on-request
+/// hook (#1026) re-renders each route on its first GET. Requires lazy
+/// rendering (the hook only exists then), enforced by [`boot_lazy_decision`];
+/// Auto without a servable `dist/` falls through to the eager render so the
+/// server never serves a wrong/empty body — Cold has no such fallback
+/// because it doesn't need a seed in the first place.
 ///
 /// Eager mode request-before-render race (issue #1166): because this now
 /// runs on a background task AFTER the listener binds, a GET can arrive
@@ -2291,10 +2347,20 @@ fn run_boot_render(
     dev_session: Option<&DevRenderSession>,
     dist_root: &Path,
 ) -> Option<BuildOutcome> {
-    let boot_lazy = dev_session
-        .map(|s| boot_lazy_enabled(s.lazy_render_enabled()))
-        .unwrap_or(false)
-        && dist_is_servable_seed(dist_root);
+    let mode = dev_session
+        .map(|s| {
+            boot_lazy_decision(
+                s.lazy_render_enabled(),
+                std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
+            )
+        })
+        .unwrap_or(BootLazyMode::Off);
+    let dist_servable = dist_is_servable_seed(dist_root);
+    // Cold is seedless by design (issue #1806) — it takes the boot-lazy
+    // branch below regardless of a servable `dist/` seed. Auto's
+    // servable-seed requirement is untouched (#1807's no-behavior-change
+    // contract for that mode).
+    let boot_lazy = mode.is_active() && (mode == BootLazyMode::Cold || dist_servable);
 
     if boot_lazy {
         if let Some(session) = dev_session {
@@ -2303,16 +2369,53 @@ fn run_boot_render(
             // FIRST watcher edit takes the normal lazy path, not the
             // boot-eager one.
             let _ = session.inner.take_boot_render_pending();
-            let n = session.mark_all_routes_stale();
-            output::info(format!(
-                "dev: boot-lazy — serving prebuilt dist/ for {n} route(s); each \
-                 re-renders on first request (ZFB_DEV_BOOT_LAZY=1)"
-            ));
+            // #1808 — Cold's routes are ALREADY marked stale by this point,
+            // by an earlier call site: the non-deferred path marks PRE-BIND
+            // (`run`, right after `boot_dev_renderer` returns — see
+            // `premark_stale_before_bind_decision`); the deferred path marks
+            // immediately after `refresh_bundle_and_routes` publishes, in
+            // this same boot hook's step 0, before the manifest-digest walk
+            // that runs between there and here (a Codex review finding: Cold
+            // has no `dist/` seed to serve during that gap the way Auto's
+            // does). A deferred bundle that FAILED never published — the
+            // route tables stay the empty scaffold, so `route_count()` is
+            // `0` and this is a harmless no-op either way. So for Cold this
+            // is a report-only path; Auto still marks HERE (it never
+            // premarks — its servable seed covers the equivalent windows).
+            let n = if mode == BootLazyMode::Cold {
+                session.route_count()
+            } else {
+                session.mark_all_routes_stale()
+            };
+            match mode {
+                BootLazyMode::Cold => output::info(format!(
+                    "dev: cold-lazy — no prebuilt dist/ seed required; {n} route(s) render \
+                     on first request (ZFB_DEV_BOOT_LAZY=cold)"
+                )),
+                _ => output::info(format!(
+                    "dev: boot-lazy — serving prebuilt dist/ for {n} route(s); each \
+                     re-renders on first request (ZFB_DEV_BOOT_LAZY=1)"
+                )),
+            }
         }
         // Boot-lazy renders nothing eagerly (each route re-renders on its
         // first request), so there is no eager outcome to broadcast. The
         // request-time render path drives its own reload.
         return None;
+    }
+
+    // Issue #1808 — Auto requested boot-lazy but no servable `dist/` seed
+    // exists, so we're about to fall back to the eager render below. Hint
+    // the seedless `cold` mode — gated on the resolved `mode` (not the raw
+    // `ZFB_DEV_BOOT_LAZY` value), so the hint never fires when lazy dev
+    // rendering itself is off (e.g. `ZFB_DEV_EAGER=1`): `cold` wouldn't do
+    // anything in that case either.
+    if should_hint_cold_mode(mode, dist_servable) {
+        output::warn(
+            "dev: ZFB_DEV_BOOT_LAZY=1 requested boot-lazy, but no servable prebuilt dist/ \
+             seed was found — falling back to the eager boot render this once. Set \
+             ZFB_DEV_BOOT_LAZY=cold to render lazily without needing a dist/ seed.",
+        );
     }
 
     // Eager initial render (zfb#642 / #644).
@@ -2730,14 +2833,19 @@ fn resolve_lazy_dev_render(lazy_var: Option<&str>, eager_var: Option<&str>) -> b
 }
 
 /// Boot-lazy mode (issue #1057; extended to a 3-state switch by the Cold
-/// Lazy Boot epic, #1806/#1807): the resolved value of `ZFB_DEV_BOOT_LAZY`.
+/// Lazy Boot epic, #1806/#1807, and activated by #1808): the resolved
+/// value of `ZFB_DEV_BOOT_LAZY`.
 ///
-/// **Wave-1 coupling contract (issue #1807, THIS sub-issue):** `Cold`
-/// PARSES (see [`resolve_boot_lazy`]) but is deliberately inert — every
-/// operational predicate below goes through [`BootLazyMode::is_active`],
-/// which treats `Cold` exactly like `Off`. Activating Cold is issue
-/// #1808's job: flip the match arm inside `is_active`, not any call site —
-/// that's the whole point of routing every predicate through it now.
+/// **Activation history:** Wave 1 (#1807) introduced this type with `Cold`
+/// parsing but deliberately inert — every operational predicate routed
+/// through [`BootLazyMode::is_active`], which treated `Cold` exactly like
+/// `Off` (pinned by a since-superseded regression guard; see
+/// `cold_mode_is_active_and_defers_seedlessly` in the test module for its
+/// replacement). Wave 2 (#1808, THIS sub-issue) flips `is_active` to also
+/// match `Cold` — the ONE match arm that needed to change — so every
+/// downstream predicate ([`boot_lazy_decision`], [`defer_dev_bundle_decision`],
+/// `run_boot_render`'s boot-lazy branch) now treats `Cold` as active with no
+/// reshaping at the call sites, exactly as Wave 1 set up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BootLazyMode {
     /// Boot-lazy is off — the default `zfb dev` boot semantics ("every
@@ -2748,25 +2856,28 @@ enum BootLazyMode {
     /// servable prebuilt `dist/` seed exists (see
     /// [`dist_is_servable_seed`]); falls back to the eager boot render
     /// otherwise. Reproduces the pre-#1807 boolean switch's exact
-    /// semantics — this sub-issue is a no-behavior-change refactor.
+    /// semantics unchanged — #1808 does not touch this mode's contract.
     Auto,
     /// `ZFB_DEV_BOOT_LAZY=cold` (issue #1806): seedless boot-lazy — lazy
-    /// regardless of whether a `dist/` seed exists. Parsed by this
-    /// sub-issue but not yet active; see the coupling contract above.
+    /// regardless of whether a `dist/` seed exists. ACTIVE as of #1808:
+    /// [`defer_dev_bundle_decision`] defers the dev bundle for Cold
+    /// regardless of `dist_servable`, and `run_boot_render` takes its
+    /// boot-lazy branch for Cold without requiring
+    /// [`dist_is_servable_seed`].
     Cold,
 }
 
 impl BootLazyMode {
     /// Is this mode operationally boot-lazy TODAY?
     ///
-    /// Wave 1 (#1807): only `Auto` is active. `Cold` parses but is
-    /// deliberately withheld until #1808 activates it — this is the ONE
-    /// match arm that sub-issue changes. Every caller below
-    /// ([`boot_lazy_enabled`], [`defer_dev_bundle_decision`]) reads the
-    /// mode through this method rather than matching it directly, so
-    /// activating Cold needs no reshaping at the call sites.
+    /// Activated for `Cold` by #1808 — Wave 1 (#1807) left it withheld; see
+    /// the type's activation-history doc above. Every caller
+    /// ([`boot_lazy_decision`], [`defer_dev_bundle_decision`],
+    /// `run_boot_render`) reads the mode through this method rather than
+    /// matching it directly, so this was the ONLY match arm #1808 needed to
+    /// flip.
     fn is_active(self) -> bool {
-        matches!(self, BootLazyMode::Auto)
+        matches!(self, BootLazyMode::Auto | BootLazyMode::Cold)
     }
 }
 
@@ -2775,32 +2886,17 @@ impl BootLazyMode {
 /// the server is ready") are preserved exactly.
 const BOOT_LAZY_DEFAULT: BootLazyMode = BootLazyMode::Off;
 
-/// Resolve the opt-in boot-lazy switch once at boot (issue #1057).
-///
-/// `lazy_render_on` is the resolved lazy dev-render switch. Boot-lazy REUSES
-/// the request-time render-on-request hook (#1026), which is only installed
-/// when lazy rendering is on — so boot-lazy is force-disabled when lazy
-/// rendering is off (otherwise the prebuilt `dist/` would be served forever
-/// with no re-render), for every [`BootLazyMode`] the env asks for (issue
-/// #1806: once Cold is active, `ZFB_DEV_EAGER=1` still wins over it too).
-/// When active ([`BootLazyMode::is_active`]), the caller additionally
-/// requires a valid prebuilt `dist/` to seed from (see
-/// [`dist_is_servable_seed`]); absent that, it falls back to the eager boot
-/// render.
-fn boot_lazy_enabled(lazy_render_on: bool) -> bool {
-    boot_lazy_decision(
-        lazy_render_on,
-        std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
-    )
-    .is_active()
-}
-
-/// Pure boot-lazy decision (issue #1057; mode-aware since #1807): resolves
-/// the [`BootLazyMode`] the env asked for via [`resolve_boot_lazy`], then
-/// forces it to `Off` when lazy rendering itself is off — the "requires
-/// lazy" rule applies uniformly to every mode, `Cold` included. Split from
-/// [`boot_lazy_enabled`] so the rule is unit-testable without
-/// process-global env mutation.
+/// Pure boot-lazy decision (issue #1057; mode-aware since #1807, `Cold`
+/// activated by #1808): resolves the [`BootLazyMode`] the env asked for via
+/// [`resolve_boot_lazy`], then forces it to `Off` when lazy rendering itself
+/// is off — the "requires lazy" rule applies uniformly to every mode,
+/// `Cold` included (`ZFB_DEV_EAGER=1` wins over Cold too, same as it always
+/// has over Auto). Boot-lazy REUSES the request-time render-on-request hook
+/// (#1026), which is only installed when lazy rendering is on — this gate
+/// is what keeps that coupling honest for every caller
+/// ([`defer_dev_bundle_decision`], `run_boot_render`'s boot-lazy branch).
+/// Split out so the rule is unit-testable without process-global env
+/// mutation.
 fn boot_lazy_decision(lazy_render_on: bool, boot_lazy_var: Option<&str>) -> BootLazyMode {
     if !lazy_render_on {
         return BootLazyMode::Off;
@@ -2813,27 +2909,30 @@ fn boot_lazy_decision(lazy_render_on: bool, boot_lazy_var: Option<&str>) -> Boot
 /// build) past `TcpListener::bind` only when
 ///
 /// 1. boot-lazy is active ([`boot_lazy_decision`] + [`BootLazyMode::is_active`],
-///    mode-aware since #1807 — `Cold` does NOT satisfy this conjunct yet, see
-///    the [`BootLazyMode`] coupling contract) — so the request-time
-///    render-on-request hook (#1026) is installed and the prebuilt `dist/` is
-///    the serving source for every route until the renderer is published, AND
-/// 2. a servable `dist/` seed is present ([`dist_is_servable_seed`]), AND
+///    mode-aware since #1807, `Cold` included as of #1808) — so the
+///    request-time render-on-request hook (#1026) is installed and the
+///    prebuilt `dist/` (where one exists) is the serving source for every
+///    route until the renderer is published, AND
+/// 2. a servable `dist/` seed is present ([`dist_is_servable_seed`]) — UNLESS
+///    the resolved mode is [`BootLazyMode::Cold`] (issue #1806/#1808), which
+///    is seedless by design and satisfies this conjunct unconditionally, AND
 /// 3. the deferral is not opted out ([`resolve_defer_bundle`], issue #1188).
 ///
 /// The defer gate is a **strict subset** of the boot-lazy gate: deferring always
-/// implies boot-lazy (and a servable seed), so a *deferred* boot always takes
-/// [`run_boot_render`]'s boot-lazy branch there (mark-stale, no eager render).
-/// The opt-out (conjunct 3) and the servable-seed requirement (conjunct 2) only
-/// make *some* boot-lazy boots fall back to building the renderer eagerly before
-/// bind — exactly the pre-#1182 boot-lazy path. So the gate no longer "matches"
-/// the boot-lazy gate one-for-one, but the load-bearing direction (defer ⟹
-/// boot-lazy branch) still holds. When the gate is off, `boot_dev_renderer`
-/// builds the renderer eagerly before bind — the deferral is strictly additive.
+/// implies boot-lazy (and, for Auto, a servable seed), so a *deferred* boot
+/// always takes [`run_boot_render`]'s boot-lazy branch there (mark-stale, no
+/// eager render). The opt-out (conjunct 3) and, for Auto, the servable-seed
+/// requirement (conjunct 2) only make *some* boot-lazy boots fall back to
+/// building the renderer eagerly before bind — exactly the pre-#1182
+/// boot-lazy path. So the gate no longer "matches" the boot-lazy gate
+/// one-for-one, but the load-bearing direction (defer ⟹ boot-lazy branch)
+/// still holds. When the gate is off, `boot_dev_renderer` builds the
+/// renderer eagerly before bind — the deferral is strictly additive.
 ///
-/// SSR-window trade-off (issue #1182, accepted; opt-out added in #1188): the gate
-/// only proves SOME servable `index.html` exists, not that every route is covered
-/// during the deferred-bundle window. SSG routes with a prebuilt
-/// `dist/<route>/index.html` serve from the `read_from_dist` leg
+/// SSR-window trade-off (issue #1182, accepted; opt-out added in #1188): for
+/// Auto, the gate only proves SOME servable `index.html` exists, not that
+/// every route is covered during the deferred-bundle window. SSG routes with
+/// a prebuilt `dist/<route>/index.html` serve from the `read_from_dist` leg
 /// (`ServeOpts.dist_root`) the whole window; SSR-only (`prerender = false`) routes
 /// have no static artifact, so they serve the controlled dev 404 (+ livereload)
 /// until the renderer publishes — then the post-publish `pages_stale` broadcast
@@ -2847,7 +2946,9 @@ fn boot_lazy_decision(lazy_render_on: bool, boot_lazy_var: Option<&str>) -> Boot
 /// cost of a slower first-accept. (Opting out does NOT disable boot-lazy itself —
 /// the graph/render/islands deferral contracts remain.) A finer per-route
 /// dist-coverage gate would need the route tables, which need the very bundle
-/// being deferred, so it stays out of scope.
+/// being deferred, so it stays out of scope. Cold widens this same accepted
+/// window to EVERY route (not just SSR-only ones), since it has no `dist/`
+/// leg to fall back on at all — see the epic's accepted-contract note.
 ///
 /// Split out so the gate is unit-testable without process-global env mutation
 /// or a real `dist/` tree.
@@ -2857,18 +2958,85 @@ fn defer_dev_bundle_decision(
     dist_servable: bool,
     defer_var: Option<&str>,
 ) -> bool {
-    boot_lazy_decision(lazy_render_on, boot_lazy_var).is_active()
-        && dist_servable
-        && resolve_defer_bundle(defer_var)
+    let mode = boot_lazy_decision(lazy_render_on, boot_lazy_var);
+    // Cold is seedless (issue #1806/#1808) — it satisfies conjunct 2
+    // regardless of `dist_servable`. Auto's servable-seed requirement is
+    // untouched.
+    let seed_conjunct_satisfied = mode == BootLazyMode::Cold || dist_servable;
+    mode.is_active() && seed_conjunct_satisfied && resolve_defer_bundle(defer_var)
+}
+
+/// Issue #1808 — should `run_boot_render`'s eager fallback hint the seedless
+/// `cold` mode? Only when Auto (`ZFB_DEV_BOOT_LAZY=1`) was requested AND
+/// resolved active (`mode == Auto` already implies lazy dev rendering is
+/// genuinely on — [`boot_lazy_decision`] forces `Off` otherwise) but no
+/// servable `dist/` seed exists, so the eager render is about to run in its
+/// place. Gating on the resolved `mode` rather than the raw
+/// `ZFB_DEV_BOOT_LAZY` value matters: if lazy dev rendering itself is off
+/// (e.g. the `ZFB_DEV_EAGER=1` escape hatch), `cold` would not do anything
+/// either, so recommending it would be actively misleading.
+fn should_hint_cold_mode(mode: BootLazyMode, dist_servable: bool) -> bool {
+    mode == BootLazyMode::Auto && !dist_servable
+}
+
+/// Issue #1808 — should the boot session mark every route stale PRE-BIND,
+/// before `TcpListener::bind`?
+///
+/// Only Cold's non-deferred path needs this HERE. On that path
+/// (`defer_dev_bundle == false`) `boot_dev_renderer` already built the route
+/// tables + renderer state EAGERLY, before bind, so leaving the stale-mark
+/// to `run_boot_render` (which only runs post-bind, inside the deferred boot
+/// task, AFTER the manifest-digest walk) would open a needless
+/// [bind → mark-stale] 404 window: the routes exist but are neither stale
+/// (so the request-time render-on-request hook does nothing) nor backed by a
+/// prebuilt `dist/` seed (Cold is seedless by design). Auto's equivalent
+/// non-deferred window (a servable seed present but `ZFB_DEV_DEFER_BUNDLE=0`)
+/// is untouched — the servable seed already covers it, so `run_boot_render`
+/// alone is correct there.
+///
+/// Cold's DEFERRED path has its own analogous premark, at a different call
+/// site: the boot hook marks stale immediately after
+/// `DevRenderSession::refresh_bundle_and_routes` successfully publishes the
+/// route tables (step 0, inline — no separate decision fn, since the only
+/// condition is `mode == Cold`), rather than waiting for `run_boot_render`
+/// after the manifest-digest walk that runs in between (a Codex review
+/// finding — Cold has no `dist/` seed to serve during that gap either).
+/// Between the two, Cold's routes are ALWAYS stale by the time
+/// `run_boot_render` runs, so it never needs to mark them itself — see its
+/// Cold branch, which just reports `route_count()` instead.
+///
+/// Called from `run`, right after `boot_dev_renderer` returns, still before
+/// `TcpListener::bind`.
+fn premark_stale_before_bind_decision(mode: BootLazyMode, defer_dev_bundle: bool) -> bool {
+    mode == BootLazyMode::Cold && !defer_dev_bundle
+}
+
+/// Issue #1808 (post-implementation review finding) — Cold's DEFERRED-path
+/// counterpart to [`premark_stale_before_bind_decision`]: should the boot
+/// hook mark every route stale immediately after
+/// `DevRenderSession::refresh_bundle_and_routes` successfully PUBLISHES the
+/// route tables, rather than waiting for `run_boot_render` (which runs
+/// afterward, past the manifest-digest walk)?
+///
+/// Only Cold needs this — its seedless design means the gap between publish
+/// and `run_boot_render`'s stale-mark would otherwise serve a straight 404
+/// for however long that walk takes (routes resolve but aren't stale yet,
+/// so the request-time render-on-request hook is a no-op). Auto's identical
+/// gap is masked by its servable `dist/` seed (`read_from_dist` serves the
+/// prebuilt bytes in the meantime), so it does not premark here.
+///
+/// Called only from inside the `refresh_bundle_and_routes` success arm of
+/// the deferred boot task (so it never fires against the still-empty
+/// scaffold tables a failed refresh would leave behind).
+fn premark_stale_after_deferred_publish_decision(mode: BootLazyMode) -> bool {
+    mode == BootLazyMode::Cold
 }
 
 /// Pure precedence rule for the boot-lazy mode (issue #1057; 3-state since
-/// the #1806/#1807 Cold Lazy Boot epic): `ZFB_DEV_BOOT_LAZY=1|true` →
-/// [`BootLazyMode::Auto`]; `=cold` (same case/whitespace insensitivity) →
-/// [`BootLazyMode::Cold`] — parses here, but see the [`BootLazyMode`]
-/// coupling contract for why it is not yet operationally active; everything
-/// else (unset / `0` / unrecognized) falls back to [`BOOT_LAZY_DEFAULT`]
-/// (`Off`).
+/// the #1806/#1807 Cold Lazy Boot epic, `cold` activated by #1808):
+/// `ZFB_DEV_BOOT_LAZY=1|true` → [`BootLazyMode::Auto`]; `=cold` (same
+/// case/whitespace insensitivity) → [`BootLazyMode::Cold`]; everything else
+/// (unset / `0` / unrecognized) falls back to [`BOOT_LAZY_DEFAULT`] (`Off`).
 fn resolve_boot_lazy(var: Option<&str>) -> BootLazyMode {
     match var {
         Some(raw) => {
@@ -9468,9 +9636,8 @@ mod tests {
                 assert_eq!(resolve_boot_lazy(Some(" TRUE ")), BootLazyMode::Auto);
                 // `cold` parses to its own distinct mode, same case/whitespace
                 // insensitivity as the other recognized values — its
-                // wave-1 "operationally inert" contract is a separate
-                // concern, pinned by `cold_mode_parses_but_is_inert_like_off`
-                // below.
+                // active (#1808) behavior is a separate concern, pinned by
+                // `cold_mode_is_active_and_defers_seedlessly` below.
                 assert_eq!(resolve_boot_lazy(Some("cold")), BootLazyMode::Cold);
                 assert_eq!(resolve_boot_lazy(Some("COLD")), BootLazyMode::Cold);
                 assert_eq!(resolve_boot_lazy(Some(" Cold ")), BootLazyMode::Cold);
@@ -9481,13 +9648,14 @@ mod tests {
             /// is on). With lazy off, [`boot_lazy_decision`] resolves to
             /// `Off` regardless of the mode the env asked for — mode-aware
             /// since #1807, including `cold` (issue #1806's contract:
-            /// `ZFB_DEV_EAGER=1` wins over Cold too, once Cold is active).
+            /// `ZFB_DEV_EAGER=1` wins over Cold too, now that Cold is active
+            /// per #1808).
             #[test]
             fn boot_lazy_requires_lazy_rendering() {
                 // lazy on + env on => Auto.
                 assert_eq!(boot_lazy_decision(true, Some("1")), BootLazyMode::Auto);
-                // lazy on + env=cold => Cold (parses; its operational
-                // inertness is pinned separately, not by this test).
+                // lazy on + env=cold => Cold (its active behavior is pinned
+                // separately, not by this test).
                 assert_eq!(boot_lazy_decision(true, Some("cold")), BootLazyMode::Cold);
                 // lazy OFF + env on => Off (the key invariant), for every mode.
                 assert_eq!(boot_lazy_decision(false, Some("1")), BootLazyMode::Off);
@@ -9498,58 +9666,63 @@ mod tests {
                 assert_eq!(boot_lazy_decision(true, Some("0")), BootLazyMode::Off);
             }
 
-            /// #1807 — Wave 1's explicit coupling contract, pinned as a
-            /// regression guard: `cold` PARSES (`resolve_boot_lazy` returns
-            /// [`BootLazyMode::Cold`], a distinct variant, not `Off`) but is
-            /// operationally inert — [`BootLazyMode::is_active`] and every
-            /// predicate built on it ([`boot_lazy_decision`],
-            /// [`defer_dev_bundle_decision`]) treats a `cold`-parsed
-            /// decision IDENTICALLY to an `Off`-parsed one. Activating Cold
-            /// (#1808) means flipping `is_active`'s match arm; this test
-            /// exists so that flip fails loudly here if it happens by
-            /// accident before #1808.
+            /// #1808 — Cold ACTIVATES. Supersedes the Wave-1 (#1807) guard
+            /// `cold_mode_parses_but_is_inert_like_off`, which asserted the
+            /// opposite (`is_active()` agreeing with `Off`, and
+            /// `defer_dev_bundle_decision` treating a `cold`-parsed decision
+            /// bit-for-bit identically to an `Off`-parsed one across the
+            /// whole input space). This test now pins the activated
+            /// contract: `is_active()` agrees with `Auto`, not `Off`; and
+            /// `defer_dev_bundle_decision` defers for Cold across the WHOLE
+            /// input space too — but the value it converges to is
+            /// DIFFERENT from Off's (`true` whenever lazy rendering is on
+            /// and the deferral isn't opted out, regardless of
+            /// `dist_servable` — the one place Cold's gate diverges from
+            /// Auto's, which still requires a servable seed).
             #[test]
-            fn cold_mode_parses_but_is_inert_like_off() {
+            fn cold_mode_is_active_and_defers_seedlessly() {
                 // It parses to its own variant, not silently collapsed to
                 // Off at the parse step...
                 assert_eq!(resolve_boot_lazy(Some("cold")), BootLazyMode::Cold);
                 assert_ne!(resolve_boot_lazy(Some("cold")), BootLazyMode::Off);
                 assert_eq!(boot_lazy_decision(true, Some("cold")), BootLazyMode::Cold);
 
-                // ...but is operationally inert: `is_active()` agrees with `Off`.
-                assert!(!BootLazyMode::Cold.is_active());
+                // ...and is now operationally ACTIVE: `is_active()` agrees
+                // with `Auto`, not `Off`.
+                assert!(BootLazyMode::Cold.is_active());
                 assert_eq!(
+                    BootLazyMode::Cold.is_active(),
+                    BootLazyMode::Auto.is_active()
+                );
+                assert_ne!(
                     BootLazyMode::Cold.is_active(),
                     BootLazyMode::Off.is_active()
                 );
 
-                // Every downstream gate treats a `cold`-parsed decision
-                // identically to an `Off`-parsed one across the input space —
-                // bit-for-bit, not just "both false".
-                for lazy_render_on in [true, false] {
-                    for dist_servable in [true, false] {
-                        for defer_var in [None, Some("0"), Some("1")] {
-                            assert_eq!(
-                                defer_dev_bundle_decision(
-                                    lazy_render_on,
-                                    Some("cold"),
-                                    dist_servable,
-                                    defer_var
-                                ),
-                                defer_dev_bundle_decision(
-                                    lazy_render_on,
-                                    None,
-                                    dist_servable,
-                                    defer_var
-                                ),
-                                "cold must defer identically to Off for \
-                                 lazy_render_on={lazy_render_on}, \
-                                 dist_servable={dist_servable}, \
-                                 defer_var={defer_var:?}"
-                            );
-                        }
+                // `defer_dev_bundle_decision` defers for Cold across the
+                // WHOLE `dist_servable` × `defer_var` input space, as long as
+                // lazy rendering is on — the seedless point of Cold.
+                for dist_servable in [true, false] {
+                    for defer_var in [None, Some("1"), Some("true")] {
+                        assert!(
+                            defer_dev_bundle_decision(true, Some("cold"), dist_servable, defer_var),
+                            "cold must defer regardless of dist_servable={dist_servable} \
+                             when lazy rendering is on and defer_var={defer_var:?} does not \
+                             opt out"
+                        );
                     }
+                    // The #1188 opt-out still suppresses Cold's deferral, same as Auto's.
+                    assert!(!defer_dev_bundle_decision(
+                        true,
+                        Some("cold"),
+                        dist_servable,
+                        Some("0")
+                    ));
                 }
+                // Lazy rendering off still forces `Off` — the "requires lazy"
+                // rule applies uniformly, Cold included.
+                assert!(!defer_dev_bundle_decision(false, Some("cold"), true, None));
+                assert!(!defer_dev_bundle_decision(false, Some("cold"), false, None));
             }
 
             /// Issue #1182 — the eager dev bundle is deferred past
@@ -9602,20 +9775,80 @@ mod tests {
                 assert!(!defer_dev_bundle_decision(true, None, true, Some("true")));
                 assert!(!defer_dev_bundle_decision(true, Some("1"), false, None));
 
-                // #1807 — `cold` PARSES (`resolve_boot_lazy` returns `Cold`,
-                // not `Off`) but every conjunct here still evaluates false,
-                // identically to `Off`, because
-                // `boot_lazy_decision(..).is_active()` is false for `Cold`
-                // this wave — even with a servable dist and the deferral
-                // opted in.
-                assert!(!defer_dev_bundle_decision(true, Some("cold"), true, None));
-                assert!(!defer_dev_bundle_decision(
+                // #1808 — `cold` is now ACTIVE and seedless: it defers with
+                // a servable dist (like Auto)...
+                assert!(defer_dev_bundle_decision(true, Some("cold"), true, None));
+                assert!(defer_dev_bundle_decision(
                     true,
                     Some("cold"),
                     true,
                     Some("1")
                 ));
-                assert!(!defer_dev_bundle_decision(true, Some("COLD"), true, None));
+                assert!(defer_dev_bundle_decision(true, Some("COLD"), true, None));
+                // ...and ALSO defers with NO servable dist — the one place
+                // Cold's gate diverges from Auto's (see
+                // `cold_mode_is_active_and_defers_seedlessly` for full
+                // matrix coverage of this divergence).
+                assert!(defer_dev_bundle_decision(true, Some("cold"), false, None));
+                // The #1188 opt-out still suppresses Cold's deferral.
+                assert!(!defer_dev_bundle_decision(
+                    true,
+                    Some("cold"),
+                    true,
+                    Some("0")
+                ));
+                assert!(!defer_dev_bundle_decision(
+                    true,
+                    Some("cold"),
+                    false,
+                    Some("0")
+                ));
+            }
+
+            /// #1808 — full decision matrix for `defer_dev_bundle_decision`
+            /// across every `BootLazyMode` × servable-seed combination (lazy
+            /// rendering held ON throughout — its uniform Off-collapse is
+            /// already covered by `boot_lazy_requires_lazy_rendering`).
+            /// Auto's column reproduces the pre-#1806 boolean switch exactly
+            /// (`defer <=> dist_servable`, modulo the opt-out); Cold's column
+            /// drops the `dist_servable` conjunct entirely; Off's column is
+            /// always false. The #1188 opt-out (`defer_var = Some("0")`)
+            /// always suppresses, independent of mode/seed.
+            #[test]
+            fn defer_decision_matrix_off_auto_cold_x_seed_x_defer_optout() {
+                // (boot_lazy_var, dist_servable, expected defer when NOT opted out)
+                let cases: &[(Option<&str>, bool, bool)] = &[
+                    (None, true, false),
+                    (None, false, false),
+                    (Some("0"), true, false),
+                    (Some("0"), false, false),
+                    (Some("1"), true, true),
+                    (Some("1"), false, false),
+                    (Some("cold"), true, true),
+                    (Some("cold"), false, true),
+                ];
+                for (boot_lazy_var, dist_servable, expect_defer) in cases.iter().copied() {
+                    for defer_var in [None, Some("1"), Some("true")] {
+                        assert_eq!(
+                            defer_dev_bundle_decision(
+                                true,
+                                boot_lazy_var,
+                                dist_servable,
+                                defer_var
+                            ),
+                            expect_defer,
+                            "boot_lazy_var={boot_lazy_var:?} dist_servable={dist_servable} \
+                             defer_var={defer_var:?}"
+                        );
+                    }
+                    // The opt-out always suppresses, regardless of mode/seed.
+                    assert!(!defer_dev_bundle_decision(
+                        true,
+                        boot_lazy_var,
+                        dist_servable,
+                        Some("0")
+                    ));
+                }
             }
 
             /// Issue #1188 — the dev-bundle deferral opt-out resolver is ON by
@@ -9671,6 +9904,184 @@ mod tests {
                 fs::create_dir_all(nested.join("posts/a")).unwrap();
                 fs::write(nested.join("posts/a/index.html"), b"<html></html>").unwrap();
                 assert!(dist_is_servable_seed(&nested));
+            }
+
+            /// Issue #1808 — `should_hint_cold_mode` gates the cold-mode hint
+            /// on the RESOLVED mode, not the raw `ZFB_DEV_BOOT_LAZY` value.
+            /// The critical case: `ZFB_DEV_BOOT_LAZY=1` alone is not enough
+            /// to earn a hint — if lazy dev rendering itself is off (e.g. the
+            /// `ZFB_DEV_EAGER=1` escape hatch), `boot_lazy_decision` collapses
+            /// the mode to `Off` before it ever reaches
+            /// `should_hint_cold_mode`, so the misleading "try cold" hint
+            /// never fires for a mode where `cold` wouldn't do anything
+            /// either.
+            #[test]
+            fn cold_hint_gated_on_active_auto_mode_not_raw_env() {
+                // Auto + no seed => hint (the exact scenario the hint exists for).
+                assert!(should_hint_cold_mode(BootLazyMode::Auto, false));
+                // Auto + servable seed => no hint (nothing to fall back from).
+                assert!(!should_hint_cold_mode(BootLazyMode::Auto, true));
+                // Off or Cold => no hint (Off never asked for boot-lazy at
+                // all; Cold doesn't need the seed fallback in the first place).
+                assert!(!should_hint_cold_mode(BootLazyMode::Off, false));
+                assert!(!should_hint_cold_mode(BootLazyMode::Cold, false));
+
+                // The gate: lazy rendering off forces `boot_lazy_decision` to
+                // `Off` regardless of the raw `ZFB_DEV_BOOT_LAZY=1` value, so
+                // the hint gate downstream sees `Off`, not `Auto`.
+                let mode_with_lazy_disabled = boot_lazy_decision(false, Some("1"));
+                assert_eq!(mode_with_lazy_disabled, BootLazyMode::Off);
+                assert!(!should_hint_cold_mode(mode_with_lazy_disabled, false));
+            }
+
+            /// Issue #1808 — `premark_stale_before_bind_decision` says yes
+            /// ONLY for Cold's non-deferred path; every other combination
+            /// (Off, Auto either way, Cold deferred) is a no-op — `Auto`'s
+            /// non-deferred window stays covered by its servable seed
+            /// instead (untouched by this epic).
+            #[test]
+            fn premark_stale_before_bind_decision_only_for_cold_non_deferred() {
+                assert!(premark_stale_before_bind_decision(
+                    BootLazyMode::Cold,
+                    false
+                ));
+                assert!(!premark_stale_before_bind_decision(
+                    BootLazyMode::Cold,
+                    true
+                ));
+                assert!(!premark_stale_before_bind_decision(
+                    BootLazyMode::Auto,
+                    false
+                ));
+                assert!(!premark_stale_before_bind_decision(
+                    BootLazyMode::Auto,
+                    true
+                ));
+                assert!(!premark_stale_before_bind_decision(
+                    BootLazyMode::Off,
+                    false
+                ));
+                assert!(!premark_stale_before_bind_decision(BootLazyMode::Off, true));
+            }
+
+            /// Issue #1808 — BEHAVIORAL proof (not just the decision matrix
+            /// above): when `premark_stale_before_bind_decision` says yes,
+            /// actually calling `mark_all_routes_stale` makes the route
+            /// CLAIMABLE before any bind or render happens. This is exactly
+            /// what closes Cold's non-deferred [bind → mark-stale] 404
+            /// window (see `run`, right after `boot_dev_renderer` returns):
+            /// the very first post-bind request can immediately claim +
+            /// render through the request-time hook instead of falling
+            /// through to a 404 (Cold has no `dist/` seed to cover that
+            /// window the way Auto's non-deferred fallback does).
+            #[test]
+            fn cold_non_deferred_premark_makes_route_claimable_before_any_bind_or_render() {
+                let entry = RouteUniverseEntry {
+                    url_path: "/".into(),
+                    output_path: PathBuf::from("index.html"),
+                    route_key: "/".into(),
+                    static_html: false,
+                    source_path: None,
+                };
+                let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+                routes.insert(
+                    PathBuf::from("pages/index.tsx"),
+                    vec![DevRouteEntry {
+                        entry,
+                        params: None,
+                    }],
+                );
+                let session = DevRenderSession {
+                    inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+                };
+
+                // Baseline: a freshly-built session (mirrors `boot_dev_renderer`'s
+                // eager pre-bind path) starts with nothing stale — no request
+                // could claim the route for a request-time render yet.
+                assert!(
+                    session.claim_stale(Path::new("index.html")).is_none(),
+                    "a freshly-built session must start with nothing stale"
+                );
+
+                // Cold + non-deferred: `run`'s pre-bind gate fires...
+                assert!(premark_stale_before_bind_decision(
+                    BootLazyMode::Cold,
+                    false
+                ));
+                session.mark_all_routes_stale();
+
+                // ...so by the time bind (and the first request) happens, the
+                // route is already claimable — no [bind -> mark-stale] gap.
+                assert!(
+                    session.claim_stale(Path::new("index.html")).is_some(),
+                    "pre-bind marking must make the route claimable before bind"
+                );
+            }
+
+            /// Issue #1808 (post-implementation review finding) —
+            /// `premark_stale_after_deferred_publish_decision` says yes ONLY
+            /// for Cold; Auto never premarks after a deferred publish — its
+            /// servable seed already covers the equivalent window.
+            #[test]
+            fn premark_stale_after_deferred_publish_decision_only_for_cold() {
+                assert!(premark_stale_after_deferred_publish_decision(
+                    BootLazyMode::Cold
+                ));
+                assert!(!premark_stale_after_deferred_publish_decision(
+                    BootLazyMode::Auto
+                ));
+                assert!(!premark_stale_after_deferred_publish_decision(
+                    BootLazyMode::Off
+                ));
+            }
+
+            /// Issue #1808 (post-implementation review finding) — BEHAVIORAL
+            /// proof for Cold's DEFERRED-path premark: immediately after a
+            /// simulated successful `refresh_bundle_and_routes` publish,
+            /// calling `mark_all_routes_stale` (gated by
+            /// `premark_stale_after_deferred_publish_decision`) makes the
+            /// route claimable — closing the gap a Codex review pass found
+            /// between that publish and `run_boot_render`'s post-digest-walk
+            /// stale-mark, during which Cold (having no `dist/` seed) would
+            /// otherwise serve a straight 404.
+            #[test]
+            fn cold_deferred_premark_after_publish_makes_route_claimable() {
+                let entry = RouteUniverseEntry {
+                    url_path: "/".into(),
+                    output_path: PathBuf::from("index.html"),
+                    route_key: "/".into(),
+                    static_html: false,
+                    source_path: None,
+                };
+                let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+                routes.insert(
+                    PathBuf::from("pages/index.tsx"),
+                    vec![DevRouteEntry {
+                        entry,
+                        params: None,
+                    }],
+                );
+                let session = DevRenderSession {
+                    inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+                };
+
+                // Baseline: right after a simulated `refresh_bundle_and_routes`
+                // publish (routes exist, nothing rendered/staled yet).
+                assert!(session.claim_stale(Path::new("index.html")).is_none());
+
+                // Cold's deferred boot hook fires the post-publish premark...
+                assert!(premark_stale_after_deferred_publish_decision(
+                    BootLazyMode::Cold
+                ));
+                session.mark_all_routes_stale();
+
+                // ...so the route is claimable well before `run_boot_render`
+                // (and the manifest-digest walk that precedes it) ever runs.
+                assert!(
+                    session.claim_stale(Path::new("index.html")).is_some(),
+                    "post-publish marking must make the route claimable \
+                     before the manifest-digest walk / run_boot_render"
+                );
             }
 
             #[test]
